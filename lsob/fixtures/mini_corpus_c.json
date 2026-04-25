@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "corpus_id": "mini-c",
+    "company_id": "MiniC",
+    "months_simulated": 1,
+    "seed": 44,
+    "config_hash": "mini-c-hash",
+    "start_date": "2026-03-01T00:00:00Z",
+    "end_date": "2026-03-31T23:59:59Z",
+    "generator_version": "0.1.0"
+  },
+  "signals": [
+    {"signal_id": "c1",  "source_channel": "doc",    "author_id": "grace",   "content_text": "Design doc: replacing search backend.",                           "timestamp": "2026-03-02T10:00:00Z", "metadata": {"commitment_ref": "C-search"}},
+    {"signal_id": "c2",  "source_channel": "slack",  "author_id": "grace",   "content_text": "Estimating ~3 weeks. Medium confidence.",                         "timestamp": "2026-03-02T10:15:00Z", "metadata": {"commitment_ref": "C-search", "asserted_days": 21}},
+    {"signal_id": "c3",  "source_channel": "slack",  "author_id": "henry",   "content_text": "Gamma Inc onboarding starts today.",                              "timestamp": "2026-03-04T09:05:00Z", "metadata": {"customer_ref": "gamma"}},
+    {"signal_id": "c4",  "source_channel": "pr",     "author_id": "grace",   "content_text": "PR #1001: search index scaffolding.",                             "timestamp": "2026-03-08T14:33:00Z", "metadata": {"commitment_ref": "C-search"}},
+    {"signal_id": "c5",  "source_channel": "calendar","author_id": "ceo",    "content_text": "Reorg announcement town hall.",                                    "timestamp": "2026-03-14T16:00:00Z", "metadata": {"turbulence": "reorg"}},
+    {"signal_id": "c6",  "source_channel": "slack",  "author_id": "grace",   "content_text": "Reorg impact on search project unclear.",                          "timestamp": "2026-03-15T09:00:00Z", "metadata": {"commitment_ref": "C-search"}},
+    {"signal_id": "c7",  "source_channel": "slack",  "author_id": "henry",   "content_text": "Gamma happy so far.",                                               "timestamp": "2026-03-18T11:21:00Z", "metadata": {"customer_ref": "gamma", "health_signal": "healthy"}},
+    {"signal_id": "c8",  "source_channel": "slack",  "author_id": "grace",   "content_text": "Search project paused pending new priorities.",                   "timestamp": "2026-03-22T17:00:00Z", "metadata": {"commitment_ref": "C-search", "resolution": "paused"}},
+    {"signal_id": "c9",  "source_channel": "email",  "author_id": "henry",   "content_text": "Gamma wants integration assistance next month.",                   "timestamp": "2026-03-26T08:50:00Z", "metadata": {"customer_ref": "gamma"}},
+    {"signal_id": "c10", "source_channel": "slack",  "author_id": "grace",   "content_text": "Officially cancelled the search rewrite for now.",                "timestamp": "2026-03-30T15:00:00Z", "metadata": {"commitment_ref": "C-search", "resolution": "cancelled"}}
+  ],
+  "ground_truth": [
+    {
+      "timestamp": "2026-03-31T23:59:59Z",
+      "actors": [
+        {"id": "grace", "role": "staff-eng", "reliability": 0.85, "estimation_bias": 0.1},
+        {"id": "henry", "role": "cs",         "reliability": 0.9,  "estimation_bias": 0.0},
+        {"id": "ceo",   "role": "exec",       "reliability": 0.9,  "estimation_bias": 0.0}
+      ],
+      "commitments": [
+        {"id": "C-search", "owner": "grace", "true_complexity": "high", "true_duration_days": 0, "asserted_duration_days": 21, "true_outcome": "cancelled", "resolution_timestamp": "2026-03-30T15:00:00Z"},
+        {"id": "C-onboard","owner": "henry", "true_complexity": "med",  "true_duration_days": 30, "asserted_duration_days": 30, "true_outcome": "open"}
+      ],
+      "customers": [
+        {"id": "gamma", "true_health": "healthy", "revenue": 220000, "trajectory": ["healthy","healthy","healthy","healthy"]}
+      ],
+      "patterns": [
+        {"id": "P-reorg-impact", "description": "Reorg pauses cross-cutting rewrites", "detection_eligible_after": "2026-03-15T00:00:00Z"}
+      ],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "pred-c1", "proposition": "Search rewrite ships this month", "asserted_confidence": 0.55, "resolves_at": "2026-03-30T00:00:00Z", "outcome": "false"}
+      ]
+    }
+  ]
+}

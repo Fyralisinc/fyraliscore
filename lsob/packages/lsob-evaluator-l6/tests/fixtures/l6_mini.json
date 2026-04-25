@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "corpus_id": "l6-mini",
+    "company_id": "test-co",
+    "months_simulated": 1,
+    "seed": 42,
+    "config_hash": "deadbeef",
+    "start_date": "2026-01-01T00:00:00+00:00",
+    "end_date": "2026-01-31T23:59:59+00:00",
+    "generator_version": "0.1.0"
+  },
+  "signals": [],
+  "ground_truth": [
+    {
+      "timestamp": "2026-01-31T00:00:00+00:00",
+      "actors": [],
+      "commitments": [],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [],
+      "reference_diffs": [
+        {
+          "trigger_id": "trig-001",
+          "trigger": {
+            "trigger_id": "trig-001",
+            "kind": "commitment_deadline_near",
+            "payload": {"commitment_id": "C-ingest", "entity": "commitment:C-ingest"},
+            "timestamp": "2026-01-15T10:00:00+00:00"
+          },
+          "diff": {
+            "diff_id": "ref-001",
+            "produced_at": "2026-01-15T10:05:00+00:00",
+            "trigger_id": "trig-001",
+            "claim_ops": [
+              {
+                "op": "upsert_claim",
+                "claim_id": "cl-001",
+                "proposition": "Commitment C-ingest is at risk of slipping by two days.",
+                "proposition_kind": "risk_assessment",
+                "asserted_confidence": 0.82,
+                "falsifier": "If the dependency ticket closes today, risk drops to low.",
+                "evidence_signal_ids": ["s-1", "s-2"],
+                "entities": ["commitment:C-ingest"]
+              },
+              {
+                "op": "upsert_claim",
+                "claim_id": "cl-002",
+                "proposition": "Owner Alice has capacity this week to absorb slip.",
+                "proposition_kind": "capacity_assessment",
+                "asserted_confidence": 0.7,
+                "falsifier": "If Alice picks up another P0, capacity vanishes.",
+                "evidence_signal_ids": ["s-3"],
+                "entities": ["actor:alice"]
+              }
+            ],
+            "act_ops": [
+              {
+                "op": "transition",
+                "entity_ref": "commitment:C-ingest",
+                "from_state": "on_track",
+                "to_state": "at_risk",
+                "reason": "Two-day slip forecast."
+              }
+            ],
+            "resource_ops": [],
+            "rationale": "Deadline proximity + dependency ticket still open."
+          }
+        },
+        {
+          "trigger_id": "trig-002",
+          "trigger": {
+            "trigger_id": "trig-002",
+            "kind": "customer_health_dip",
+            "payload": {"customer_id": "cust-acme", "entity": "customer:cust-acme"},
+            "timestamp": "2026-01-20T09:00:00+00:00"
+          },
+          "diff": {
+            "diff_id": "ref-002",
+            "produced_at": "2026-01-20T09:05:00+00:00",
+            "trigger_id": "trig-002",
+            "claim_ops": [
+              {
+                "op": "upsert_claim",
+                "claim_id": "cl-010",
+                "proposition": "Customer Acme's health declined from green to yellow.",
+                "proposition_kind": "health_change",
+                "asserted_confidence": 0.9,
+                "falsifier": "If the missed standup was a scheduling conflict, not disengagement.",
+                "evidence_signal_ids": ["s-10"],
+                "entities": ["customer:cust-acme"]
+              }
+            ],
+            "act_ops": [
+              {
+                "op": "transition",
+                "entity_ref": "customer:cust-acme",
+                "from_state": "green",
+                "to_state": "yellow",
+                "reason": "Two missed check-ins in a week."
+              }
+            ],
+            "resource_ops": [],
+            "rationale": "Health downgrade triggered by engagement pattern."
+          }
+        }
+      ]
+    }
+  ]
+}

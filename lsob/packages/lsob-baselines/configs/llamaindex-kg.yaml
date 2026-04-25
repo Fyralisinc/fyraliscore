@@ -1,0 +1,7 @@
+# LlamaIndexKGBaseline config
+# In-memory knowledge graph with regex-based entity extraction.
+name: llamaindex-kg
+params:
+  max_triples_per_signal: 8     # cap on entities extracted per signal
+  retrieval_hops: 2             # BFS depth when traversing from the query entity
+  # Production knobs (Phase 2): kg_index_type, tree_index_depth, llm_model

@@ -1,0 +1,10 @@
+# LangChainMemoryBaseline config
+# Mimics ConversationSummaryBufferMemory + VectorStoreRetrieverMemory.
+name: langchain-memory
+params:
+  buffer_max: 20                # recent entries kept in the hot buffer
+  summary_max_chars: 2000       # truncation limit on the running summary
+  embedding_dim: 128
+  retrieval_k: 5
+  # Production knobs (Phase 2):
+  langchain_model: claude-3-5-sonnet-latest

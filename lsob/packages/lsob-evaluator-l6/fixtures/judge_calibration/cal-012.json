@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-012",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:soylent-011",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-011",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.64,
+        "claim_id": "ref-claim-011-a",
+        "entities": [
+          "commitment:soylent-011",
+          "actor:cs-5"
+        ],
+        "evidence_signal_ids": [
+          "signal-011-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:soylent-011)",
+        "op": "upsert_claim",
+        "proposition": "actor:cs-5 reports commitment:soylent-011 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.79,
+        "claim_id": "ref-claim-011-b",
+        "entities": [
+          "customer:soylent-011",
+          "commitment:soylent-011"
+        ],
+        "evidence_signal_ids": [
+          "signal-011-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:soylent-011 executive sponsor is monitoring commitment:soylent-011",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-011",
+    "metadata": {},
+    "produced_at": "2026-01-10T11:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-4",
+        "target_ref": "commitment:soylent-011"
+      }
+    ],
+    "trigger_id": "trig-ref-011"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.66,
+        "claim_id": "sut-claim-011-a",
+        "entities": [
+          "commitment:soylent-011"
+        ],
+        "evidence_signal_ids": [
+          "signal-011-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:cs-5 reports commitment:soylent-011 at risk due to upstream slip per the latest signal.",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-011",
+    "metadata": {},
+    "produced_at": "2026-01-10T11:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-011"
+  },
+  "trigger": {
+    "kind": "signal_landed",
+    "payload": {
+      "commitment_id": "commitment:soylent-011",
+      "customer_id": "customer:soylent-011",
+      "domain": "logistics",
+      "intensity": "medium"
+    },
+    "timestamp": "2026-01-10T11:00:00+00:00",
+    "trigger_id": "trig-ref-011"
+  }
+}

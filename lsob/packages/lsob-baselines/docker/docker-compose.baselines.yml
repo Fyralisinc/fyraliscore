@@ -1,0 +1,47 @@
+version: "3.9"
+
+# Optional backing services for the LSOB baselines.
+# Tests do NOT require these services — every baseline has an in-memory
+# fallback. Bring these up only when you want to exercise the production
+# code paths (pgvector for vanilla-rag, Ollama for nomic-embed-text).
+services:
+  baselines-postgres:
+    image: ankane/pgvector:latest
+    profiles: ["vanilla-rag", "all"]
+    environment:
+      POSTGRES_USER: lsob
+      POSTGRES_PASSWORD: lsob
+      POSTGRES_DB: lsob
+    ports:
+      - "5434:5432"
+    volumes:
+      - lsob_baselines_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lsob"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  baselines-ollama:
+    image: ollama/ollama:latest
+    profiles: ["vanilla-rag", "langchain-memory", "all"]
+    ports:
+      - "11435:11434"
+    volumes:
+      - lsob_baselines_ollama:/root/.ollama
+
+  baselines-neo4j:
+    image: neo4j:5-community
+    profiles: ["llamaindex-kg", "graphrag", "all"]
+    environment:
+      NEO4J_AUTH: neo4j/lsobpass
+    ports:
+      - "7687:7687"
+      - "7474:7474"
+    volumes:
+      - lsob_baselines_neo4j:/data
+
+volumes:
+  lsob_baselines_pg:
+  lsob_baselines_ollama:
+  lsob_baselines_neo4j:

@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "corpus_id": "mini-b",
+    "company_id": "MiniB",
+    "months_simulated": 1,
+    "seed": 43,
+    "config_hash": "mini-b-hash",
+    "start_date": "2026-02-01T00:00:00Z",
+    "end_date": "2026-02-28T23:59:59Z",
+    "generator_version": "0.1.0"
+  },
+  "signals": [
+    {"signal_id": "b1",  "source_channel": "slack",  "author_id": "dave",    "content_text": "Taking on the auth rewrite. ~2 weeks.",                           "timestamp": "2026-02-02T09:00:00Z", "metadata": {"commitment_ref": "C-auth", "asserted_days": 14}},
+    {"signal_id": "b2",  "source_channel": "ticket", "author_id": "erin",    "content_text": "Bug: session cookie invalidation on refresh.",                    "timestamp": "2026-02-03T13:12:00Z", "metadata": {"commitment_ref": "C-auth"}},
+    {"signal_id": "b3",  "source_channel": "pr",     "author_id": "dave",    "content_text": "PR #820: scaffolding for new auth module",                        "timestamp": "2026-02-05T10:45:00Z", "metadata": {"commitment_ref": "C-auth"}},
+    {"signal_id": "b4",  "source_channel": "slack",  "author_id": "frank",   "content_text": "Beta Corp churn risk — their usage dropped 40%.",                 "timestamp": "2026-02-08T15:20:00Z", "metadata": {"customer_ref": "beta", "health_signal": "warning"}},
+    {"signal_id": "b5",  "source_channel": "slack",  "author_id": "dave",    "content_text": "Ahead of schedule, should land by 2026-02-14.",                  "timestamp": "2026-02-10T11:10:00Z", "metadata": {"commitment_ref": "C-auth"}},
+    {"signal_id": "b6",  "source_channel": "pr",     "author_id": "dave",    "content_text": "PR #820 merged.",                                                   "timestamp": "2026-02-13T18:30:00Z", "metadata": {"commitment_ref": "C-auth", "resolution": "done"}},
+    {"signal_id": "b7",  "source_channel": "email",  "author_id": "frank",   "content_text": "Beta Corp scheduled a call — unhappy with onboarding.",           "timestamp": "2026-02-17T09:50:00Z", "metadata": {"customer_ref": "beta"}},
+    {"signal_id": "b8",  "source_channel": "slack",  "author_id": "erin",    "content_text": "Starting perf tuning. ETA 5 days.",                                "timestamp": "2026-02-20T14:00:00Z", "metadata": {"commitment_ref": "C-perf", "asserted_days": 5}},
+    {"signal_id": "b9",  "source_channel": "slack",  "author_id": "erin",    "content_text": "Profiling is harder than I thought; adding a week.",               "timestamp": "2026-02-24T17:00:00Z", "metadata": {"commitment_ref": "C-perf", "slip_signal": true}},
+    {"signal_id": "b10", "source_channel": "slack",  "author_id": "frank",   "content_text": "Beta Corp churned.",                                                "timestamp": "2026-02-27T10:05:00Z", "metadata": {"customer_ref": "beta", "health_signal": "critical"}}
+  ],
+  "ground_truth": [
+    {
+      "timestamp": "2026-02-28T23:59:59Z",
+      "actors": [
+        {"id": "dave",  "role": "senior-eng", "reliability": 0.92, "estimation_bias": -0.05},
+        {"id": "erin",  "role": "eng",        "reliability": 0.75, "estimation_bias": 0.4},
+        {"id": "frank", "role": "cs",         "reliability": 0.88, "estimation_bias": 0.0}
+      ],
+      "commitments": [
+        {"id": "C-auth", "owner": "dave", "true_complexity": "med", "true_duration_days": 11, "asserted_duration_days": 14, "true_outcome": "succeeded", "resolution_timestamp": "2026-02-13T18:30:00Z"},
+        {"id": "C-perf", "owner": "erin", "true_complexity": "high","true_duration_days": 21, "asserted_duration_days": 5,  "true_outcome": "will_slip"}
+      ],
+      "customers": [
+        {"id": "beta", "true_health": "critical", "revenue": 120000, "trajectory": ["warning","warning","degraded","critical"]}
+      ],
+      "patterns": [
+        {"id": "P-erin-optimism", "description": "Erin's perf estimates are 4x optimistic", "detection_eligible_after": "2026-02-24T00:00:00Z"}
+      ],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "pred-b1", "proposition": "Beta will renew", "asserted_confidence": 0.4, "resolves_at": "2026-02-27T00:00:00Z", "outcome": "false"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1235 @@
+{
+  "agreement_rate": 0.32,
+  "cohens_kappa": -8.163404592832034e-17,
+  "confusion_matrix": {
+    "reference_wins": {
+      "reference_wins": 11,
+      "sut_wins": 8,
+      "tie": 1
+    },
+    "sut_wins": {
+      "reference_wins": 5,
+      "sut_wins": 4,
+      "tie": 1
+    },
+    "tie": {
+      "reference_wins": 11,
+      "sut_wins": 8,
+      "tie": 1
+    }
+  },
+  "cost": {
+    "estimated_usd": 0.559701,
+    "input_tokens": 138567,
+    "output_tokens": 9600
+  },
+  "fixtures_dir": "default",
+  "judge_name": "mock-judge-v1",
+  "mode": "mock",
+  "model": "mock-judge-v1",
+  "n_items": 50,
+  "per_item": [
+    {
+      "human_label": "reference_wins",
+      "id": "cal-001",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 1,
+        "reasoning": 0,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 5,
+        "reasoning": 1,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-002",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 1,
+        "reasoning": 2,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 4,
+        "reasoning": 1,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-003",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 3,
+        "fabrication": 3,
+        "reasoning": 1,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-004",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 0,
+        "reasoning": 0,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 5,
+        "reasoning": 3,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-005",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 3,
+        "fabrication": 0,
+        "reasoning": 3,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 2,
+        "reasoning": 1,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-006",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 3,
+        "reasoning": 1,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 0,
+        "reasoning": 5,
+        "scope": 0
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-007",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 3,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 4,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-008",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 3,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 5,
+        "reasoning": 3,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-009",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 5,
+        "reasoning": 5,
+        "scope": 2
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 1,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-010",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 4,
+        "fabrication": 4,
+        "reasoning": 1,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-011",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 4,
+        "reasoning": 0,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 1,
+        "reasoning": 4,
+        "scope": 0
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-012",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 2,
+        "reasoning": 1,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 5,
+        "reasoning": 1,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-013",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 3,
+        "fabrication": 4,
+        "reasoning": 1,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 0,
+        "reasoning": 0,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-014",
+      "judge_label": "tie",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "tie",
+        "tie",
+        "tie"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 3,
+        "reasoning": 1,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 4,
+        "fabrication": 2,
+        "reasoning": 2,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-015",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 1,
+        "reasoning": 1,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 1,
+        "reasoning": 1,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-016",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 2,
+        "reasoning": 5,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 3,
+        "reasoning": 4,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-017",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 5,
+        "reasoning": 4,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 2,
+        "reasoning": 4,
+        "scope": 0
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-018",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 1,
+        "reasoning": 5,
+        "scope": 3
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 5,
+        "reasoning": 4,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-019",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 2,
+        "reasoning": 5,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 5,
+        "reasoning": 1,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "reference_wins",
+      "id": "cal-020",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 4,
+        "reasoning": 4,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 2,
+        "reasoning": 1,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-021",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 2,
+        "reasoning": 1,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-022",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-023",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 1,
+        "reasoning": 0,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 5,
+        "reasoning": 2,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-024",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 3,
+        "reasoning": 5,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 0,
+        "reasoning": 0,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-025",
+      "judge_label": "tie",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "tie",
+        "tie",
+        "tie"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 0,
+        "reasoning": 5,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 0,
+        "reasoning": 5,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-026",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 1,
+        "reasoning": 1,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 0,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-027",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 3,
+        "reasoning": 0,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 3,
+        "reasoning": 4,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-028",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 2
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 3,
+        "reasoning": 3,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-029",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 2,
+        "reasoning": 0,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 3,
+        "reasoning": 2,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-030",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 1,
+        "reasoning": 2,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 1,
+        "reasoning": 0,
+        "scope": 0
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-031",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 1,
+        "reasoning": 5,
+        "scope": 2
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-032",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 1,
+        "reasoning": 3,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 1,
+        "reasoning": 3,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-033",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 2,
+        "reasoning": 4,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 3,
+        "reasoning": 3,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-034",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 0,
+        "reasoning": 3,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 4,
+        "reasoning": 4,
+        "scope": 1
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-035",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 3,
+        "reasoning": 2,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 5
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-036",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 3,
+        "reasoning": 0,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 1,
+        "reasoning": 2,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-037",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 2,
+        "reasoning": 3,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 0,
+        "reasoning": 1,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-038",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 2,
+        "reasoning": 5,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 5,
+        "reasoning": 3,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-039",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 3,
+        "reasoning": 4,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "tie",
+      "id": "cal-040",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 1,
+        "fabrication": 2,
+        "reasoning": 0,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 3,
+        "reasoning": 2,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-041",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 4,
+        "reasoning": 5,
+        "scope": 4
+      },
+      "scores_sut": {
+        "completeness": 0,
+        "fabrication": 3,
+        "reasoning": 2,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-042",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 4,
+        "reasoning": 4,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-043",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 0,
+        "reasoning": 2,
+        "scope": 1
+      },
+      "scores_sut": {
+        "completeness": 4,
+        "fabrication": 4,
+        "reasoning": 0,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-044",
+      "judge_label": "tie",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "tie",
+        "tie",
+        "tie"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 4,
+        "reasoning": 1,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 1,
+        "reasoning": 5,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-045",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 3,
+        "reasoning": 5,
+        "scope": 5
+      },
+      "scores_sut": {
+        "completeness": 4,
+        "fabrication": 0,
+        "reasoning": 3,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-046",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 0,
+        "fabrication": 2,
+        "reasoning": 1,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 3,
+        "fabrication": 5,
+        "reasoning": 1,
+        "scope": 3
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-047",
+      "judge_label": "sut_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "sut",
+        "sut",
+        "sut"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 0,
+        "reasoning": 0,
+        "scope": 0
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 1,
+        "reasoning": 3,
+        "scope": 0
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-048",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 2,
+        "fabrication": 4,
+        "reasoning": 4,
+        "scope": 2
+      },
+      "scores_sut": {
+        "completeness": 2,
+        "fabrication": 4,
+        "reasoning": 2,
+        "scope": 2
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-049",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "ref_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 4,
+        "fabrication": 1,
+        "reasoning": 4,
+        "scope": 3
+      },
+      "scores_sut": {
+        "completeness": 1,
+        "fabrication": 2,
+        "reasoning": 2,
+        "scope": 4
+      }
+    },
+    {
+      "human_label": "sut_wins",
+      "id": "cal-050",
+      "judge_label": "reference_wins",
+      "low_confidence": false,
+      "ordering": "sut_first",
+      "raw_votes": [
+        "reference",
+        "reference",
+        "reference"
+      ],
+      "scores_reference": {
+        "completeness": 5,
+        "fabrication": 5,
+        "reasoning": 1,
+        "scope": 2
+      },
+      "scores_sut": {
+        "completeness": 5,
+        "fabrication": 1,
+        "reasoning": 3,
+        "scope": 1
+      }
+    }
+  ],
+  "prompt_hash": "c4f9778a438c8d6db9cc4b1b70347fcec474611cfe11924a87b804b67fa45f61",
+  "timestamp": "20260423T152136Z"
+}

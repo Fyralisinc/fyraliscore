@@ -1,0 +1,93 @@
+{
+  "meta": {
+    "corpus_id": "mini-6mo",
+    "company_id": "co-mini",
+    "months_simulated": 6,
+    "seed": 42,
+    "config_hash": "mini",
+    "start_date": "2024-01-15T00:00:00+00:00",
+    "end_date": "2024-06-15T00:00:00+00:00",
+    "generator_version": "0.1.0"
+  },
+  "signals": [],
+  "ground_truth": [
+    {
+      "timestamp": "2024-01-15T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-0-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-0-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "false"}
+      ]
+    },
+    {
+      "timestamp": "2024-02-14T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-1-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-1-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"}
+      ]
+    },
+    {
+      "timestamp": "2024-03-15T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-2-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-2-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"}
+      ]
+    },
+    {
+      "timestamp": "2024-04-14T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-3-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-3-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"}
+      ]
+    },
+    {
+      "timestamp": "2024-05-14T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-4-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-4-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"}
+      ]
+    },
+    {
+      "timestamp": "2024-06-13T00:00:00+00:00",
+      "actors": [],
+      "commitments": [
+        {"id": "c1", "owner": "a1", "true_outcome": "will_succeed"}
+      ],
+      "customers": [],
+      "patterns": [],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "p-5-0", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"},
+        {"prediction_id": "p-5-1", "proposition": "sample", "asserted_confidence": 0.95, "outcome": "true"}
+      ]
+    }
+  ]
+}

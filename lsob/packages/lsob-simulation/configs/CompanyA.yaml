@@ -1,0 +1,13 @@
+company_id: CompanyA
+num_actors: 200
+actor_personality_distribution:
+  reliable: 0.55
+  optimistic: 0.25
+  pessimistic: 0.1
+  flaky: 0.1
+commitment_generation_rate: 0.04
+customer_count: 30
+turbulence_events: []
+seed: 42
+start_date: "2026-01-01T00:00:00Z"
+duration_months: 12

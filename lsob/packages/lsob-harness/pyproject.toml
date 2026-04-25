@@ -1,0 +1,23 @@
+[project]
+name = "lsob-harness"
+version = "0.1.0"
+description = "LSOB package: lsob-harness"
+requires-python = ">=3.12"
+dependencies = [
+    "lsob-contracts",
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "pyyaml>=6",
+    "zstandard>=0.22",
+    "rich>=13",
+]
+
+[project.scripts]
+lsob = "lsob_harness.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lsob_harness"]

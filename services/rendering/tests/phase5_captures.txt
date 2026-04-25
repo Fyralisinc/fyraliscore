@@ -1,0 +1,27 @@
+=== AGENT-RND PHASE-5 SAMPLE CAPTURES (acme_tuesday) ===
+GREETING:
+Good morning. One thing is worth your attention before the day starts — Acme's renewal is <span class="serif">structurally unsafe</span> as of Sunday, and revenue hasn't caught it yet. One decision is on you by Thursday. Everything else is handled.
+OBSERVATION CARD:
+Acme's renewal is <span class="serif-hot">structurally unsafe</span>. Confidence dropped <span class="n">0.81 → 0.54</span> after two contracted deliverables slipped. Engineering has discussed this <span class="n">11 times</span> since Friday; the revenue channel has <span class="hl">zero mentions</span>. Revenue at risk: <span class="n">$487K</span>.
+DECISION CARD:
+<div class="card-content"><p class="dec-text">Re-scope the Acme deliverable, or <span class="serif">extend the renewal window</span>. Decide by <span class="n">Thu 24 Apr</span>; <span class="n">$487K</span> at stake. Drafts for both paths are ready.</p><div class="dec-chips"><span class="dec-chip hot">decide by <b>Thu 24 Apr</b></span><span class="dec-chip">at stake <b>$487K</b></span></div></div>
+QUESTION CARD:
+Is the DePIN goal a real bet, or is it there because letting it go would feel like giving up on Nepal?
+
+Six weeks, 0.3 FTE on g-42, no commitments, no Model movement. I can tell you're visiting it; <span class="hl">I can't tell you what visiting means</span>.
+QUERY GRID:
+  - [why hot urgent] Show me why Acme became unsafe
+  - [brief hot relevant] What this means for Thursday's board update
+  - [draft 2min] Draft a brief for Monica
+  - [timeline] What did I miss yesterday?
+  - [calibration] Which of my beliefs are least supported?
+  - [observation] Where is the company silent where it shouldn't be?
+CONVERSATION TURN:
+<div class="t-body">Model m-2841 carried a falsifier: <em>two or more contracted deliverables slip past 15 April</em>. It fired Saturday when c-187 transitioned to Blocked and Alice re-estimated c-203 from two days to ten.
+
+Neither transition reached the CEO channel. Monica's last customer touchpoint was 04 April; she has not been contested on her “rock solid” read. Engineering Slack has <span class="n">11 mentions</span> of the slip since Friday; revenue has <span class="hl">zero</span>.
+
+Current confidence: <span class="n">0.54</span>. Revenue at risk, computed structurally through the customer_commitments spine: <span class="n">$487,000</span>.</div>
+CLOSE LINE:
+That's the signal. You can go.
+=== END CAPTURES ===

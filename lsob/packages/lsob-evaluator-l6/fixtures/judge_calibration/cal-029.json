@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-029",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:acme-tie-008",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-008-a",
+        "entities": [
+          "commitment:acme-tie-008",
+          "actor:eng-9",
+          "customer:acme-tie-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-008-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:eng-9 needs to confirm updated commitment:acme-tie-008 deadline with customer:acme-tie-008",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-008-b",
+        "entities": [
+          "customer:acme-tie-008",
+          "commitment:acme-tie-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-008-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:acme-tie-008 is still engaged on commitment:acme-tie-008",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-008",
+    "metadata": {},
+    "produced_at": "2026-01-14T12:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-008"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:acme-tie-008",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-008-b",
+        "entities": [
+          "commitment:acme-tie-008",
+          "customer:acme-tie-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-008-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:acme-tie-008 is still engaged on commitment:acme-tie-008 per the latest signal.",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-008-a",
+        "entities": [
+          "actor:eng-9",
+          "commitment:acme-tie-008",
+          "customer:acme-tie-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-008-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:eng-9 needs to confirm updated commitment:acme-tie-008 deadline with customer:acme-tie-008 (observed)",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-008",
+    "metadata": {},
+    "produced_at": "2026-01-14T12:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-008"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:acme-tie-008",
+      "customer_id": "customer:acme-tie-008",
+      "domain": "enterprise-saas",
+      "observed_lag_days": 1
+    },
+    "timestamp": "2026-01-14T12:00:00+00:00",
+    "trigger_id": "trig-tie-008"
+  }
+}

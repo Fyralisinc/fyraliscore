@@ -1,0 +1,198 @@
+{
+  "cards": [
+    {
+      "body_html": "Nora's SEC-108 CVE patch is <span class=\"serif-hot\">moving to production</span>. She merged to main and is deploying within the hour. This resolves the critical auth bypass in authz-lib <span class=\"n\">2.4.3</span> that m-019db8e1 flagged. The Acme renewal's <span class=\"hl\">parallel crisis</span> for <span class=\"n\">$487K</span> ARR still requires your decision today.",
+      "cached_at": "2026-04-23T05:49:47.396319+00:00",
+      "expanded": {
+        "evidence": [
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:25.440608+00:00)",
+            "label": "signal 1"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:10.653392+00:00)",
+            "label": "signal 2"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:08.618776+00:00)",
+            "label": "signal 3"
+          }
+        ],
+        "reasoning_html": "Pattern surfaced from recent substrate activity. See evidence for supporting events.",
+        "verbs": [
+          {
+            "id": "why",
+            "label": "why",
+            "primary": true,
+            "query_template": "Why was this observation surfaced?"
+          },
+          {
+            "id": "timeline",
+            "label": "timeline",
+            "primary": false,
+            "query_template": "Show me the timeline for this."
+          },
+          {
+            "id": "save",
+            "label": "save",
+            "primary": false,
+            "query_template": ""
+          }
+        ]
+      },
+      "id": "observation:019db8e1-64c6-7000-8348-ac2db3f86111",
+      "kind": "observation",
+      "meta": "filed Thu 05:48 \u00b7 1m old",
+      "tag_color": "hot",
+      "tag_label": "Observation \u00b7 recent movement"
+    },
+    {
+      "body_html": "Nora moved SEC-108 to in_progress and opened PR #302, <span class=\"serif-hot\">executing the CVE patch</span>. The authz-lib upgrade is now in staging per m-019db8e1. Acme's <span class=\"hl\">$487K ARR risk</span> and this critical security fix converge today, requiring your decision by Thursday.",
+      "cached_at": "2026-04-23T05:49:47.396319+00:00",
+      "expanded": {
+        "evidence": [
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:25.440608+00:00)",
+            "label": "signal 1"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:10.653392+00:00)",
+            "label": "signal 2"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:08.618776+00:00)",
+            "label": "signal 3"
+          }
+        ],
+        "reasoning_html": "Pattern surfaced from recent substrate activity. See evidence for supporting events.",
+        "verbs": [
+          {
+            "id": "why",
+            "label": "why",
+            "primary": true,
+            "query_template": "Why was this observation surfaced?"
+          },
+          {
+            "id": "timeline",
+            "label": "timeline",
+            "primary": false,
+            "query_template": "Show me the timeline for this."
+          },
+          {
+            "id": "save",
+            "label": "save",
+            "primary": false,
+            "query_template": ""
+          }
+        ]
+      },
+      "id": "observation:019db8e1-143e-7000-9792-aa30590e9b70",
+      "kind": "observation",
+      "meta": "filed Thu 05:48 \u00b7 1m old",
+      "tag_color": "hot",
+      "tag_label": "Observation \u00b7 recent movement"
+    },
+    {
+      "body_html": "Nora merged SEC\u2011108 to main and is deploying to production within the hour, <span class=\"serif-hot\">containing the CVE</span>. The gateway was on authz\u2011lib <span class=\"n\">2.4.3</span>; the patch moves to <span class=\"n\">2.4.9</span>. No functional regressions in staging per m\u2011019db8e1.",
+      "cached_at": "2026-04-23T05:49:47.396319+00:00",
+      "expanded": {
+        "evidence": [
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:25.440608+00:00)",
+            "label": "signal 1"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:10.653392+00:00)",
+            "label": "signal 2"
+          },
+          {
+            "body_html": "<span class='serif'></span> on model (2026-04-23T05:48:08.618776+00:00)",
+            "label": "signal 3"
+          }
+        ],
+        "reasoning_html": "Pattern surfaced from recent substrate activity. See evidence for supporting events.",
+        "verbs": [
+          {
+            "id": "why",
+            "label": "why",
+            "primary": true,
+            "query_template": "Why was this observation surfaced?"
+          },
+          {
+            "id": "timeline",
+            "label": "timeline",
+            "primary": false,
+            "query_template": "Show me the timeline for this."
+          },
+          {
+            "id": "save",
+            "label": "save",
+            "primary": false,
+            "query_template": ""
+          }
+        ]
+      },
+      "id": "observation:019db8e1-a185-7000-8a68-2369f20824e6",
+      "kind": "observation",
+      "meta": "filed Thu 05:48 \u00b7 0m old",
+      "tag_color": "hot",
+      "tag_label": "Observation \u00b7 recent movement"
+    }
+  ],
+  "close_line": {
+    "body": "Nothing else demands you. You can go.",
+    "metadata": {
+      "calibration_pct": 74,
+      "external_moves": 0,
+      "signal_count": 36
+    }
+  },
+  "greeting": {
+    "body_html": "Good morning. Two risks are converging today \u2014 Acme is escalating over <span class=\"n\">12</span> billing failures and Nora is patching a critical CVE in the gateway. One decision is on you by Thursday. Everything else is handled.",
+    "cached_at": "2026-04-23T05:49:52.695291+00:00",
+    "meta": {
+      "date_iso": "2026-04-23",
+      "recomputed_at": "2026-04-23T05:49:47.396319+00:00",
+      "signals_watched_count": 46
+    },
+    "staleness_seconds": 0
+  },
+  "query_grid": {
+    "cached_at": "2026-04-23T05:49:52.696117+00:00",
+    "queries": [
+      {
+        "hot": false,
+        "icon": "calibration",
+        "id": "evergreen:why_calibration",
+        "label": "Why my calibration shifted",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "customer",
+        "id": "evergreen:customer_drift",
+        "label": "Which customers are drifting",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "timeline",
+        "id": "evergreen:timeline",
+        "label": "What changed yesterday",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "dependency",
+        "id": "evergreen:dependency",
+        "label": "What is blocked by dependencies",
+        "tag": "evergreen"
+      }
+    ]
+  },
+  "status": {
+    "calibration_pct": 74,
+    "needs_you_count": 0,
+    "substrate_alive": true
+  }
+}

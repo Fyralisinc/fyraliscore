@@ -1,0 +1,95 @@
+{
+  "human_label": "sut_wins",
+  "id": "cal-048",
+  "notes": "Reference adds an unsupported churn-risk claim (no evidence). SUT correctly omits it and provides a cleaner state transition. Human reviewer preferred SUT on fabrication grounds.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wonka-sut-007",
+        "from_state": null,
+        "op": "transition",
+        "reason": null,
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "claim-core-007",
+        "entities": [
+          "commitment:wonka-sut-007",
+          "actor:cs-7"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-007-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:wonka-sut-007 cleared integration review on schedule",
+        "proposition_kind": "milestone"
+      },
+      {
+        "asserted_confidence": 0.62,
+        "claim_id": "claim-noise-007",
+        "entities": [
+          "customer:wonka-sut-007"
+        ],
+        "evidence_signal_ids": [],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:wonka-sut-007 is likely to churn next quarter",
+        "proposition_kind": "risk_assessment"
+      }
+    ],
+    "diff_id": "ref-sut-007",
+    "metadata": {},
+    "produced_at": "2026-01-18T15:00:00+00:00",
+    "rationale": "Reference: correct milestone + unsupported churn speculation.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-007"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wonka-sut-007",
+        "from_state": "integration_pending",
+        "op": "transition",
+        "reason": "review pass",
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "sut-claim-core-007",
+        "entities": [
+          "commitment:wonka-sut-007",
+          "actor:cs-7"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-007-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:wonka-sut-007 cleared integration review on schedule (observed)",
+        "proposition_kind": "milestone"
+      }
+    ],
+    "diff_id": "sut-sut-007",
+    "metadata": {},
+    "produced_at": "2026-01-18T15:00:00+00:00",
+    "rationale": "SUT: records the milestone transition without fabricating churn risk.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-007"
+  },
+  "trigger": {
+    "kind": "ticket_status_changed",
+    "payload": {
+      "commitment_id": "commitment:wonka-sut-007",
+      "customer_id": "customer:wonka-sut-007",
+      "domain": "consumer-goods"
+    },
+    "timestamp": "2026-01-18T15:00:00+00:00",
+    "trigger_id": "trig-sut-007"
+  }
+}

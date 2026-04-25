@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-033",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:umbrella-tie-012",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-012-a",
+        "entities": [
+          "commitment:umbrella-tie-012",
+          "actor:pm-8",
+          "customer:umbrella-tie-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-012-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:pm-8 needs to confirm updated commitment:umbrella-tie-012 deadline with customer:umbrella-tie-012",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-012-b",
+        "entities": [
+          "customer:umbrella-tie-012",
+          "commitment:umbrella-tie-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-012-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:umbrella-tie-012 is still engaged on commitment:umbrella-tie-012",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-012",
+    "metadata": {},
+    "produced_at": "2026-01-14T16:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-012"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:umbrella-tie-012",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-012-b",
+        "entities": [
+          "commitment:umbrella-tie-012",
+          "customer:umbrella-tie-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-012-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "Customer:umbrella-tie-012 is still engaged on commitment:umbrella-tie-012",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-012-a",
+        "entities": [
+          "actor:pm-8",
+          "commitment:umbrella-tie-012",
+          "customer:umbrella-tie-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-012-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:pm-8 needs to confirm updated commitment:umbrella-tie-012 deadline with customer:umbrella-tie-012",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-012",
+    "metadata": {},
+    "produced_at": "2026-01-14T16:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-012"
+  },
+  "trigger": {
+    "kind": "pr_merged",
+    "payload": {
+      "commitment_id": "commitment:umbrella-tie-012",
+      "customer_id": "customer:umbrella-tie-012",
+      "domain": "fintech",
+      "observed_lag_days": 2
+    },
+    "timestamp": "2026-01-14T16:00:00+00:00",
+    "trigger_id": "trig-tie-012"
+  }
+}

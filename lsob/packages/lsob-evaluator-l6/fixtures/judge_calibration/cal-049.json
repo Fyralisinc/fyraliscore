@@ -1,0 +1,95 @@
+{
+  "human_label": "sut_wins",
+  "id": "cal-049",
+  "notes": "Reference adds an unsupported churn-risk claim (no evidence). SUT correctly omits it and provides a cleaner state transition. Human reviewer preferred SUT on fabrication grounds.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:acme-sut-008",
+        "from_state": null,
+        "op": "transition",
+        "reason": null,
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "claim-core-008",
+        "entities": [
+          "commitment:acme-sut-008",
+          "actor:cs-8"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-008-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:acme-sut-008 cleared integration review on schedule",
+        "proposition_kind": "milestone"
+      },
+      {
+        "asserted_confidence": 0.62,
+        "claim_id": "claim-noise-008",
+        "entities": [
+          "customer:acme-sut-008"
+        ],
+        "evidence_signal_ids": [],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:acme-sut-008 is likely to churn next quarter",
+        "proposition_kind": "risk_assessment"
+      }
+    ],
+    "diff_id": "ref-sut-008",
+    "metadata": {},
+    "produced_at": "2026-01-18T16:00:00+00:00",
+    "rationale": "Reference: correct milestone + unsupported churn speculation.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-008"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:acme-sut-008",
+        "from_state": "integration_pending",
+        "op": "transition",
+        "reason": "review pass",
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "sut-claim-core-008",
+        "entities": [
+          "commitment:acme-sut-008",
+          "actor:cs-8"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-008-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:acme-sut-008 cleared integration review on schedule",
+        "proposition_kind": "milestone"
+      }
+    ],
+    "diff_id": "sut-sut-008",
+    "metadata": {},
+    "produced_at": "2026-01-18T16:00:00+00:00",
+    "rationale": "SUT: records the milestone transition without fabricating churn risk.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-008"
+  },
+  "trigger": {
+    "kind": "signal_landed",
+    "payload": {
+      "commitment_id": "commitment:acme-sut-008",
+      "customer_id": "customer:acme-sut-008",
+      "domain": "enterprise-saas"
+    },
+    "timestamp": "2026-01-18T16:00:00+00:00",
+    "trigger_id": "trig-sut-008"
+  }
+}

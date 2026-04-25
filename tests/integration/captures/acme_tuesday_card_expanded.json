@@ -1,0 +1,25 @@
+{
+  "expanded": {
+    "reasoning_html": "Model <b>m-2841</b> carried a falsifier: <span class=\"note\">two or more contracted deliverables slip past 15 April</span>. That fired Saturday when <b>c-187</b> transitioned to <span class=\"serif\">Blocked</span> and Alice re-estimated <b>c-203</b> from <span class=\"n\">2 days</span> to <span class=\"n\">10 days</span>. Neither reached the CEO channel; revenue has <span class=\"hl\">zero mentions</span> of the <span class=\"n\">$487K</span> at risk.",
+    "evidence": [
+      {
+        "label": "linear webhook — Sat 19:03",
+        "body_html": "c-187 transitioned InProgress → Blocked <span class=\"cite\">linear webhook — Sat 19:03</span>; rate-limiter SLA missed."
+      },
+      {
+        "label": "Alice — Sat 22:41",
+        "body_html": "Alice re-estimated c-203 from <span class=\"n\">2d</span> to <span class=\"n\">~10d</span> <span class=\"cite\">Alice — Sat 22:41</span>. <span class=\"note\">Not escalated to revenue.</span>"
+      },
+      {
+        "label": "m-2841 — Sun 03:12",
+        "body_html": "Confidence on m-2841 moved <span class=\"n\">0.81 → 0.54</span> <span class=\"cite\">falsifier fired — Sun 03:12</span>."
+      }
+    ]
+  },
+  "rendering_model_used": "deepseek-chat",
+  "cost_usd": "0.000082",
+  "retried": false,
+  "flagged": false,
+  "latency_ms": 0,
+  "violations": []
+}

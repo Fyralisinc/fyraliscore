@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-019",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:initech-018",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-018",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.74,
+        "claim_id": "ref-claim-018-a",
+        "entities": [
+          "commitment:initech-018",
+          "actor:sales-7"
+        ],
+        "evidence_signal_ids": [
+          "signal-018-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:initech-018)",
+        "op": "upsert_claim",
+        "proposition": "actor:sales-7 reports commitment:initech-018 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.86,
+        "claim_id": "ref-claim-018-b",
+        "entities": [
+          "customer:initech-018",
+          "commitment:initech-018"
+        ],
+        "evidence_signal_ids": [
+          "signal-018-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:initech-018 executive sponsor is monitoring commitment:initech-018",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-018",
+    "metadata": {},
+    "produced_at": "2026-01-10T18:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-4",
+        "target_ref": "commitment:initech-018"
+      }
+    ],
+    "trigger_id": "trig-ref-018"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.56,
+        "claim_id": "sut-claim-018-a",
+        "entities": [
+          "commitment:initech-018"
+        ],
+        "evidence_signal_ids": [
+          "signal-018-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:sales-7 reports commitment:initech-018 at risk due to upstream slip (observed)",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-018",
+    "metadata": {},
+    "produced_at": "2026-01-10T18:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-018"
+  },
+  "trigger": {
+    "kind": "doc_published",
+    "payload": {
+      "commitment_id": "commitment:initech-018",
+      "customer_id": "customer:initech-018",
+      "domain": "healthtech",
+      "intensity": "low"
+    },
+    "timestamp": "2026-01-10T18:00:00+00:00",
+    "trigger_id": "trig-ref-018"
+  }
+}

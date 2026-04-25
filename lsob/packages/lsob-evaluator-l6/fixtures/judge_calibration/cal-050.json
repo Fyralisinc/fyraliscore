@@ -1,0 +1,95 @@
+{
+  "human_label": "sut_wins",
+  "id": "cal-050",
+  "notes": "Reference adds an unsupported churn-risk claim (no evidence). SUT correctly omits it and provides a cleaner state transition. Human reviewer preferred SUT on fabrication grounds.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-sut-009",
+        "from_state": null,
+        "op": "transition",
+        "reason": null,
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "claim-core-009",
+        "entities": [
+          "commitment:globex-sut-009",
+          "actor:sales-6"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-009-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:globex-sut-009 cleared integration review on schedule",
+        "proposition_kind": "milestone"
+      },
+      {
+        "asserted_confidence": 0.62,
+        "claim_id": "claim-noise-009",
+        "entities": [
+          "customer:globex-sut-009"
+        ],
+        "evidence_signal_ids": [],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:globex-sut-009 is likely to churn next quarter",
+        "proposition_kind": "risk_assessment"
+      }
+    ],
+    "diff_id": "ref-sut-009",
+    "metadata": {},
+    "produced_at": "2026-01-18T17:00:00+00:00",
+    "rationale": "Reference: correct milestone + unsupported churn speculation.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-009"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-sut-009",
+        "from_state": "integration_pending",
+        "op": "transition",
+        "reason": "review pass",
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "sut-claim-core-009",
+        "entities": [
+          "commitment:globex-sut-009",
+          "actor:sales-6"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-009-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:globex-sut-009 cleared integration review on schedule (observed)",
+        "proposition_kind": "milestone"
+      }
+    ],
+    "diff_id": "sut-sut-009",
+    "metadata": {},
+    "produced_at": "2026-01-18T17:00:00+00:00",
+    "rationale": "SUT: records the milestone transition without fabricating churn risk.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-009"
+  },
+  "trigger": {
+    "kind": "doc_published",
+    "payload": {
+      "commitment_id": "commitment:globex-sut-009",
+      "customer_id": "customer:globex-sut-009",
+      "domain": "marketplace"
+    },
+    "timestamp": "2026-01-18T17:00:00+00:00",
+    "trigger_id": "trig-sut-009"
+  }
+}

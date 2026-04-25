@@ -1,0 +1,60 @@
+name: quiet_week
+description: >-
+  A week with nothing consequential. Normal engineering, a design
+  update, a calendar meeting, a couple of PRs. Tests that the greeting
+  collapses to its two-beat quiet form: "Nothing consequential since
+  yesterday; the company is running at normal metabolism."
+
+narrative:
+  - t: "-6d 10:00"
+    actor: alice
+    channel: eng
+    content: "weekly dep upgrade landed cleanly. nothing exciting."
+
+  - t: "-5d 14:30"
+    actor: sara
+    channel: design
+    content: |-
+      Figma refresh for the settings surface is up. No design decisions
+      pending; this is a polish round.
+
+  - t: "-4d 09:00"
+    actor: jakob
+    kind: calendar
+    event: meeting_scheduled
+    title: "Weekly leadership sync"
+    when: "-3d 10:00"
+    attendees: [rachin, marcus, monica, david]
+
+  - t: "-3d 10:15"
+    actor: marcus
+    channel: leadership
+    content: "Sync done. No new risks. Usual cadence."
+
+  - t: "-3d 15:00"
+    actor: nora
+    kind: github_pr
+    event: merged
+    repo: payments
+    number: 870
+    title: "small: improve error message on invalid-token"
+
+  - t: "-2d 11:00"
+    actor: ben
+    channel: eng
+    content: "on-call week uneventful. 0 pages. closing up."
+
+  - t: "-1d 09:45"
+    actor: tomas
+    channel: revenue
+    content: "pipeline unchanged. one new demo next week. — t."
+
+  - t: "-12h"
+    actor: priya
+    channel: customer-acme
+    content: "Acme weekly ops sync done. Nothing to flag. They're happy."
+
+  - t: "-4h"
+    actor: alice
+    channel: eng
+    content: "morning; no fires. starting billing phase 2."

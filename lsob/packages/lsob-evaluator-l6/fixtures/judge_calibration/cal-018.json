@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-018",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-017",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-017",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.67,
+        "claim_id": "ref-claim-017-a",
+        "entities": [
+          "commitment:globex-017",
+          "actor:sales-7"
+        ],
+        "evidence_signal_ids": [
+          "signal-017-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:globex-017)",
+        "op": "upsert_claim",
+        "proposition": "actor:sales-7 reports commitment:globex-017 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.72,
+        "claim_id": "ref-claim-017-b",
+        "entities": [
+          "customer:globex-017",
+          "commitment:globex-017"
+        ],
+        "evidence_signal_ids": [
+          "signal-017-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:globex-017 executive sponsor is monitoring commitment:globex-017",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-017",
+    "metadata": {},
+    "produced_at": "2026-01-10T17:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-3",
+        "target_ref": "commitment:globex-017"
+      }
+    ],
+    "trigger_id": "trig-ref-017"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.55,
+        "claim_id": "sut-claim-017-a",
+        "entities": [
+          "commitment:globex-017"
+        ],
+        "evidence_signal_ids": [
+          "signal-017-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:sales-7 reports commitment:globex-017 at risk due to upstream slip per the latest signal.",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-017",
+    "metadata": {},
+    "produced_at": "2026-01-10T17:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-017"
+  },
+  "trigger": {
+    "kind": "calendar_event_completed",
+    "payload": {
+      "commitment_id": "commitment:globex-017",
+      "customer_id": "customer:globex-017",
+      "domain": "marketplace",
+      "intensity": "low"
+    },
+    "timestamp": "2026-01-10T17:00:00+00:00",
+    "trigger_id": "trig-ref-017"
+  }
+}

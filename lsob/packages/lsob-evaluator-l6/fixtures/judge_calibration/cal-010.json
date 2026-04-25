@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-010",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-009",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-009",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.75,
+        "claim_id": "ref-claim-009-a",
+        "entities": [
+          "commitment:globex-009",
+          "actor:eng-1"
+        ],
+        "evidence_signal_ids": [
+          "signal-009-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:globex-009)",
+        "op": "upsert_claim",
+        "proposition": "actor:eng-1 reports commitment:globex-009 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "ref-claim-009-b",
+        "entities": [
+          "customer:globex-009",
+          "commitment:globex-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-009-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:globex-009 executive sponsor is monitoring commitment:globex-009",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-009",
+    "metadata": {},
+    "produced_at": "2026-01-10T09:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-2",
+        "target_ref": "commitment:globex-009"
+      }
+    ],
+    "trigger_id": "trig-ref-009"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.67,
+        "claim_id": "sut-claim-009-a",
+        "entities": [
+          "commitment:globex-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-009-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:eng-1 reports commitment:globex-009 at risk due to upstream slip per the latest signal.",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-009",
+    "metadata": {},
+    "produced_at": "2026-01-10T09:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-009"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:globex-009",
+      "customer_id": "customer:globex-009",
+      "domain": "marketplace",
+      "intensity": "low"
+    },
+    "timestamp": "2026-01-10T09:00:00+00:00",
+    "trigger_id": "trig-ref-009"
+  }
+}

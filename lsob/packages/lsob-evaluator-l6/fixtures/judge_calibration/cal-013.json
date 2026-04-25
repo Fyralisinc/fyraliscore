@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-013",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:umbrella-012",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-012",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.64,
+        "claim_id": "ref-claim-012-a",
+        "entities": [
+          "commitment:umbrella-012",
+          "actor:cs-3"
+        ],
+        "evidence_signal_ids": [
+          "signal-012-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:umbrella-012)",
+        "op": "upsert_claim",
+        "proposition": "actor:cs-3 reports commitment:umbrella-012 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.71,
+        "claim_id": "ref-claim-012-b",
+        "entities": [
+          "customer:umbrella-012",
+          "commitment:umbrella-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-012-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:umbrella-012 executive sponsor is monitoring commitment:umbrella-012",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-012",
+    "metadata": {},
+    "produced_at": "2026-01-10T12:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-5",
+        "target_ref": "commitment:umbrella-012"
+      }
+    ],
+    "trigger_id": "trig-ref-012"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.55,
+        "claim_id": "sut-claim-012-a",
+        "entities": [
+          "commitment:umbrella-012"
+        ],
+        "evidence_signal_ids": [
+          "signal-012-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:cs-3 reports commitment:umbrella-012 at risk due to upstream slip per the latest signal.",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-012",
+    "metadata": {},
+    "produced_at": "2026-01-10T12:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-012"
+  },
+  "trigger": {
+    "kind": "calendar_event_completed",
+    "payload": {
+      "commitment_id": "commitment:umbrella-012",
+      "customer_id": "customer:umbrella-012",
+      "domain": "fintech",
+      "intensity": "medium"
+    },
+    "timestamp": "2026-01-10T12:00:00+00:00",
+    "trigger_id": "trig-ref-012"
+  }
+}

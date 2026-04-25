@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-007",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wayne-006",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-006",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.6,
+        "claim_id": "ref-claim-006-a",
+        "entities": [
+          "commitment:wayne-006",
+          "actor:cs-1"
+        ],
+        "evidence_signal_ids": [
+          "signal-006-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:wayne-006)",
+        "op": "upsert_claim",
+        "proposition": "actor:cs-1 reports commitment:wayne-006 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.89,
+        "claim_id": "ref-claim-006-b",
+        "entities": [
+          "customer:wayne-006",
+          "commitment:wayne-006"
+        ],
+        "evidence_signal_ids": [
+          "signal-006-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:wayne-006 executive sponsor is monitoring commitment:wayne-006",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-006",
+    "metadata": {},
+    "produced_at": "2026-01-10T06:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-6",
+        "target_ref": "commitment:wayne-006"
+      }
+    ],
+    "trigger_id": "trig-ref-006"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.56,
+        "claim_id": "sut-claim-006-a",
+        "entities": [
+          "commitment:wayne-006"
+        ],
+        "evidence_signal_ids": [
+          "signal-006-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:cs-1 reports commitment:wayne-006 at risk due to upstream slip",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-006",
+    "metadata": {},
+    "produced_at": "2026-01-10T06:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-006"
+  },
+  "trigger": {
+    "kind": "calendar_event_completed",
+    "payload": {
+      "commitment_id": "commitment:wayne-006",
+      "customer_id": "customer:wayne-006",
+      "domain": "security",
+      "intensity": "medium"
+    },
+    "timestamp": "2026-01-10T06:00:00+00:00",
+    "trigger_id": "trig-ref-006"
+  }
+}

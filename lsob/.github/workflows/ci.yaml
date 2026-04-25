@@ -1,0 +1,59 @@
+name: lsob-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - lsob-contracts
+          - lsob-simulation
+          - lsob-evaluator-l1
+          - lsob-evaluator-l2
+          - lsob-evaluator-l3
+          - lsob-evaluator-l4
+          - lsob-evaluator-l5
+          - lsob-evaluator-l6
+          - lsob-baselines
+          - lsob-harness
+          - lsob-reporting
+    defaults:
+      run:
+        working-directory: lsob
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - name: Sync workspace
+        run: uv sync --all-packages
+      - name: Run tests for ${{ matrix.package }}
+        run: uv run pytest -n auto packages/${{ matrix.package }}/tests
+
+  judge-calibration-mock:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lsob
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - name: Sync workspace
+        run: uv sync --all-packages
+      - name: Run mock judge calibration harness
+        env:
+          LSOB_RUN_REAL_JUDGE: "0"
+        run: |
+          uv run python packages/lsob-evaluator-l6/scripts/judge_calibration.py \
+            --out reports/judge_calibration
+      - name: Upload calibration report
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-calibration-mock-report
+          path: lsob/reports/judge_calibration/*.json

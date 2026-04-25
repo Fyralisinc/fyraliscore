@@ -1,0 +1,22 @@
+[project]
+name = "lsob-evaluator-l3"
+version = "0.1.0"
+description = "LSOB Layer 3 (calibration) evaluator"
+requires-python = ">=3.12"
+dependencies = [
+    "lsob-contracts",
+    "pydantic>=2.7",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "typer>=0.12",
+]
+
+[project.scripts]
+lsob-eval-l3 = "lsob_evaluator_l3.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lsob_evaluator_l3"]

@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-016",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wonka-015",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-015",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.74,
+        "claim_id": "ref-claim-015-a",
+        "entities": [
+          "commitment:wonka-015",
+          "actor:pm-5"
+        ],
+        "evidence_signal_ids": [
+          "signal-015-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:wonka-015)",
+        "op": "upsert_claim",
+        "proposition": "actor:pm-5 reports commitment:wonka-015 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.85,
+        "claim_id": "ref-claim-015-b",
+        "entities": [
+          "customer:wonka-015",
+          "commitment:wonka-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-015-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:wonka-015 executive sponsor is monitoring commitment:wonka-015",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-015",
+    "metadata": {},
+    "produced_at": "2026-01-10T15:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-1",
+        "target_ref": "commitment:wonka-015"
+      }
+    ],
+    "trigger_id": "trig-ref-015"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.58,
+        "claim_id": "sut-claim-015-a",
+        "entities": [
+          "commitment:wonka-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-015-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:pm-5 reports commitment:wonka-015 at risk due to upstream slip (observed)",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-015",
+    "metadata": {},
+    "produced_at": "2026-01-10T15:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-015"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:wonka-015",
+      "customer_id": "customer:wonka-015",
+      "domain": "consumer-goods",
+      "intensity": "high"
+    },
+    "timestamp": "2026-01-10T15:00:00+00:00",
+    "trigger_id": "trig-ref-015"
+  }
+}

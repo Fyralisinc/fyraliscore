@@ -1,0 +1,338 @@
+name: acme_tuesday
+description: >-
+  Seven days of events that put Acme's renewal in a structurally unsafe
+  state by Sunday. The substrate should produce at least these Models
+  by Tuesday morning: billing refactor is over-running; rate-limiter
+  regression shipped into staging; Acme CS tickets spiked after the
+  weekend; Acme AE reports renewal timing slipping; CFO flags revenue
+  at risk; the Thursday decision for Rachin is whether to rebase
+  billing onto the pre-refactor branch or ship with the known
+  regression. Also includes background noise from design, support
+  on-call, and a couple of healthy channels so Think has contrast.
+
+# Anchor = "now"; scenario starts at anchor-7d and rolls forward.
+narrative:
+  # -------- day -7 (Tuesday prior): refactor kicks off --------
+  - t: "-7d 15:30"
+    actor: alice
+    channel: eng
+    content: |-
+      heads up — billing service refactor is bigger than planned. extract is tangled up w/ rate limiter. might need 10d not 2. will scope down tomorrow
+
+  - t: "-7d 16:05"
+    actor: marcus
+    channel: eng
+    content: >-
+      Ack. If 10 days we miss the pre-Acme freeze. Let's talk tomorrow
+      morning — Alice, can you write the two options tonight?
+
+  - t: "-7d 16:40"
+    actor: nora
+    channel: payments
+    content: |-
+      if we pull rate-limiter out of the refactor it ships this week but then billing extract goes into 2 PRs not 1 — ok but loses test coverage on the boundary
+
+  - t: "-7d 17:12"
+    actor: alice
+    kind: linear
+    event: status_change
+    ticket: ENG-412
+    title: billing-service extract
+    from_state: in_progress
+    to_state: blocked
+    body: depends on rate-limiter refactor landing first; scope decision Wed
+
+  # -------- day -6 (Wed): option pick + PR opens ---------------
+  - t: "-6d 09:15"
+    actor: alice
+    kind: github_pr
+    event: opened
+    repo: payments
+    number: 847
+    title: "Scope reduction on rate-limiter before Acme deadline"
+    body: |-
+      Pulls rate-limiter out of the billing extract so billing can ship
+      in one PR after this lands. Known regression: per-tenant token
+      bucket resets on deploy until ENG-413 follows up. Acceptable for
+      a week.
+
+  - t: "-6d 09:35"
+    actor: marcus
+    channel: eng
+    content: |-
+      Proposal: we take PR #847 as-is and file ENG-413 for the reset-on-deploy
+      regression. That keeps billing on timeline for Acme. Objections?
+
+  - t: "-6d 10:02"
+    actor: nora
+    channel: payments
+    content: |-
+      concern: acme hits our rate limits more than anyone. a reset-on-deploy
+      is a 60-90s window where they can burst through. they won't notice
+      every time but they will sometimes.
+
+  - t: "-6d 10:08"
+    actor: marcus
+    channel: eng
+    content: |-
+      Noted. Risk to Acme is real but bounded — 60-90s windows, infrequent
+      deploys. Still prefer shipping billing on schedule. Opening to team.
+
+  - t: "-6d 14:20"
+    actor: alice
+    kind: github_pr
+    event: reviewed
+    repo: payments
+    number: 847
+    review_state: approved
+    body: LGTM. Let's merge behind a feature flag if we want the safety net.
+
+  - t: "-6d 15:05"
+    actor: alice
+    kind: github_pr
+    event: merged
+    repo: payments
+    number: 847
+    title: "Scope reduction on rate-limiter before Acme deadline"
+    body: merged to main. deploy pending staging green
+
+  # -------- day -5 (Thu): quiet, some unrelated noise ---------
+  - t: "-5d 10:00"
+    actor: sara
+    channel: design
+    content: >-
+      revenue dashboard v2 wireframes up in figma. eyes welcome but not
+      urgent — this is for the June launch window.
+
+  - t: "-5d 11:30"
+    actor: jakob
+    channel: leadership
+    content: |-
+      Question: do we want to pre-announce the pricing tier change to
+      Acme specifically given the renewal timing? Feels better to be
+      transparent.
+
+  - t: "-5d 16:45"
+    actor: ben
+    kind: linear
+    event: comment
+    ticket: SUP-231
+    title: "acme — intermittent rate limit 429s"
+    body: Acme support tix trickling in this week. Nothing systemic yet.
+
+  # -------- day -4 (Fri): staging ships, minor wobble ---------
+  - t: "-4d 09:45"
+    actor: alice
+    kind: github_pr
+    event: merged
+    repo: payments
+    number: 852
+    title: "billing-service extract phase 1"
+
+  - t: "-4d 14:15"
+    actor: ben
+    channel: eng
+    content: |-
+      ack. staging deploy 14:12 UTC. monitoring. eta 15 min for rate
+      limiter normalization per Alice's note on #847.
+
+  - t: "-4d 16:20"
+    actor: tomas
+    kind: email
+    direction: outbound
+    subject: "Acme — renewal timeline check-in"
+    to: [chris@acme.example]
+    body: >-
+      Chris — heading into renewal week. We're tracking contract expiry
+      on 30 April. Any blockers I should flag on our side? — t.
+
+  # -------- day -3 (Sat): Acme start to see issues ---------
+  - t: "-3d 11:22"
+    actor: priya
+    channel: customer-acme
+    content: |-
+      - Chris (Acme) pinged me directly re: intermittent API errors
+      - Pattern: 429s clustered around deploy windows
+      - His words: "It's not catastrophic but it's new. Is something up?"
+      - urgent: soft (for now), but this is tone-shift territory
+
+  - t: "-3d 11:40"
+    actor: priya
+    kind: email
+    direction: inbound
+    subject: "Re: weekly ops sync — concerns"
+    to: [priya@fyralis.internal]
+    body: |-
+      Hi Priya — wanted to flag that our monitoring is showing a bump
+      in 429s from your platform in the last 48h. Not blocking ops
+      yet but it's new. Can you check?  — Chris Abbott, Acme VP Eng
+
+  - t: "-3d 12:05"
+    actor: ben
+    channel: eng
+    content: >-
+      priya flagged acme 429s. cross-ref w/ deploys: last 48h had 3
+      deploys on payments, each with a ~90s rate-limiter reset window.
+      matches pattern.
+
+  - t: "-3d 13:15"
+    actor: marcus
+    channel: eng
+    content: |-
+      Confirming this is ENG-413 territory. Acme is the customer I was
+      worried about on Wed. Priority bumped on the fix. Nora — ETA?
+
+  - t: "-3d 13:32"
+    actor: nora
+    channel: eng
+    content: |-
+      ENG-413 fix is 2-3 days of work. i can start monday. no earlier
+      without pulling off billing phase 2.
+
+  # -------- day -2 (Sun): escalation ------------------------
+  - t: "-2d 03:12"
+    actor: priya
+    channel: customer-acme
+    content: |-
+      Acme ops on-call just escalated. 12 failed batch-billing jobs in
+      the last hour, all retried ok but their dashboard is red. Chris
+      is now looping in their head of revenue. this shifted from "new
+      thing" to "loud thing".
+
+  - t: "-2d 08:45"
+    actor: tomas
+    channel: revenue
+    content: |-
+      Acme renewal conversation just got harder. they are asking for
+      reliability data covering the last 30d. will send. — t.
+
+  - t: "-2d 09:30"
+    actor: monica
+    channel: revenue
+    content: >-
+      This is bad. Acme is our second-largest account — $487K ARR on
+      the line. We cannot ship a known regression into their renewal
+      window. Marcus, Alice — options?
+
+  - t: "-2d 10:05"
+    actor: david
+    channel: leadership
+    content: |-
+      Revenue at risk. $487K ARR Acme is 7% of book. Need a decision
+      by Thu so ops can respond before their renewal lands on 30 Apr.
+
+  - t: "-2d 11:15"
+    actor: alice
+    channel: eng
+    content: |-
+      two real options:
+      a) rebase billing onto pre-refactor branch. ships 2-3 days late,
+         acme stable, no reset-on-deploy window.
+      b) ship as-is, fast-track ENG-413 by mon night, accept ~48h of
+         risk window touching acme traffic.
+      both ship on time for renewal. (a) is safer, (b) is faster.
+
+  - t: "-2d 14:40"
+    actor: monica
+    kind: email
+    direction: outbound
+    subject: "Internal — Acme renewal risk assessment"
+    to: [rachin@fyralis.internal, david@fyralis.internal, marcus@fyralis.internal]
+    body: |-
+      Summary: Acme renewal is structurally unsafe as of this weekend.
+      Their VP Eng is asking for reliability data. Our options are (a)
+      rebase billing, 2-3 days late, stable, or (b) ship with a known
+      rate-limiter regression and patch fast. Need a decision by end
+      of Thursday so we can either reassure Acme or pre-position the
+      rebase. — Monica
+
+  # -------- day -1 (Mon): ops day, pressure mounts ----------
+  - t: "-1d 08:10"
+    actor: ben
+    kind: linear
+    event: status_change
+    ticket: SUP-247
+    title: "acme — escalation collecting reliability data"
+    from_state: todo
+    to_state: in_progress
+
+  - t: "-1d 09:30"
+    actor: priya
+    channel: customer-acme
+    content: |-
+      Spoke to Chris. Direct quote: "If this isn't resolved by renewal,
+      we will want to renegotiate terms." That's the first time he has
+      used the word "renegotiate" in writing. I am reading that as
+      structurally unsafe.
+
+  - t: "-1d 10:00"
+    actor: nora
+    kind: github_pr
+    event: opened
+    repo: payments
+    number: 861
+    title: "ENG-413 — per-tenant token bucket survives deploy"
+    body: WIP. tests pending. not for merge until green.
+
+  - t: "-1d 11:20"
+    actor: marcus
+    channel: leadership
+    content: |-
+      Proposal for Rachin Thursday: recommend option (a) rebase. The
+      downside on (b) is a deliverability claim to Acme we cannot make
+      in good conscience if ENG-413 slips even a day.
+
+  - t: "-1d 13:00"
+    actor: jakob
+    kind: calendar
+    event: meeting_scheduled
+    title: "Acme renewal — decision with Rachin"
+    when: "+2d 14:00"
+    attendees: [rachin, marcus, monica, priya]
+    notes: Thursday afternoon; lock the call before Friday ops day.
+
+  - t: "-1d 15:45"
+    actor: tomas
+    kind: email
+    direction: outbound
+    subject: "Acme — reliability data (as requested)"
+    to: [chris@acme.example]
+    body: |-
+      Chris — attached is our last 30d reliability snapshot. We are
+      actively addressing the 429 pattern. I'd like to set up a call
+      Friday to walk through it. — t.
+
+  - t: "-1d 17:30"
+    actor: david
+    channel: leadership
+    content: "Rachin — decision tree for Thu is on your desk."
+
+  # -------- day 0 (Tue, today) -----------------------------
+  - t: "-6h"
+    actor: priya
+    channel: customer-acme
+    content: |-
+      Overnight: 3 more 429 clusters on Acme. Nora's PR still WIP.
+      Chris asked for a status update by end of Tuesday.
+
+  - t: "-4h"
+    actor: ben
+    channel: eng
+    content: >-
+      on call update — 06:12 UTC — no new production incidents in last
+      4h. ENG-413 PR still WIP.
+
+  - t: "-90m"
+    actor: monica
+    channel: revenue
+    content: >-
+      Reminder: Thursday 14:00 UTC decision meeting on your calendar.
+      Acme renewal contract expiry 30 Apr. $487K ARR.
+
+  - t: "-30m"
+    actor: priya
+    channel: customer-acme
+    content: |-
+      Chris just IMed me: "Monday is the cutoff on our side." That
+      means anything not decided by Thursday is effectively decided
+      against us.

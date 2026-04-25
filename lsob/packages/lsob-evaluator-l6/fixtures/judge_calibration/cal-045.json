@@ -1,0 +1,95 @@
+{
+  "human_label": "sut_wins",
+  "id": "cal-045",
+  "notes": "Reference adds an unsupported churn-risk claim (no evidence). SUT correctly omits it and provides a cleaner state transition. Human reviewer preferred SUT on fabrication grounds.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:umbrella-sut-004",
+        "from_state": null,
+        "op": "transition",
+        "reason": null,
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "claim-core-004",
+        "entities": [
+          "commitment:umbrella-sut-004",
+          "actor:sales-8"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-004-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:umbrella-sut-004 cleared integration review on schedule",
+        "proposition_kind": "milestone"
+      },
+      {
+        "asserted_confidence": 0.62,
+        "claim_id": "claim-noise-004",
+        "entities": [
+          "customer:umbrella-sut-004"
+        ],
+        "evidence_signal_ids": [],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:umbrella-sut-004 is likely to churn next quarter",
+        "proposition_kind": "risk_assessment"
+      }
+    ],
+    "diff_id": "ref-sut-004",
+    "metadata": {},
+    "produced_at": "2026-01-18T12:00:00+00:00",
+    "rationale": "Reference: correct milestone + unsupported churn speculation.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-004"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:umbrella-sut-004",
+        "from_state": "integration_pending",
+        "op": "transition",
+        "reason": "review pass",
+        "to_state": "integration_cleared"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.88,
+        "claim_id": "sut-claim-core-004",
+        "entities": [
+          "commitment:umbrella-sut-004",
+          "actor:sales-8"
+        ],
+        "evidence_signal_ids": [
+          "signal-sut-004-core"
+        ],
+        "falsifier": "review_reopen_within_7d",
+        "op": "upsert_claim",
+        "proposition": "commitment:umbrella-sut-004 cleared integration review on schedule (observed)",
+        "proposition_kind": "milestone"
+      }
+    ],
+    "diff_id": "sut-sut-004",
+    "metadata": {},
+    "produced_at": "2026-01-18T12:00:00+00:00",
+    "rationale": "SUT: records the milestone transition without fabricating churn risk.",
+    "resource_ops": [],
+    "trigger_id": "trig-sut-004"
+  },
+  "trigger": {
+    "kind": "calendar_event_completed",
+    "payload": {
+      "commitment_id": "commitment:umbrella-sut-004",
+      "customer_id": "customer:umbrella-sut-004",
+      "domain": "fintech"
+    },
+    "timestamp": "2026-01-18T12:00:00+00:00",
+    "trigger_id": "trig-sut-004"
+  }
+}

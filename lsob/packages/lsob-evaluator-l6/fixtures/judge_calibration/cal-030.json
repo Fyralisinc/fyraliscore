@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-030",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-tie-009",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-009-a",
+        "entities": [
+          "commitment:globex-tie-009",
+          "actor:cs-3",
+          "customer:globex-tie-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-009-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:cs-3 needs to confirm updated commitment:globex-tie-009 deadline with customer:globex-tie-009",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-009-b",
+        "entities": [
+          "customer:globex-tie-009",
+          "commitment:globex-tie-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-009-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:globex-tie-009 is still engaged on commitment:globex-tie-009",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-009",
+    "metadata": {},
+    "produced_at": "2026-01-14T13:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-009"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:globex-tie-009",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-009-b",
+        "entities": [
+          "commitment:globex-tie-009",
+          "customer:globex-tie-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-009-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:globex-tie-009 is still engaged on commitment:globex-tie-009",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-009-a",
+        "entities": [
+          "actor:cs-3",
+          "commitment:globex-tie-009",
+          "customer:globex-tie-009"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-009-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:cs-3 needs to confirm updated commitment:globex-tie-009 deadline with customer:globex-tie-009",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-009",
+    "metadata": {},
+    "produced_at": "2026-01-14T13:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-009"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:globex-tie-009",
+      "customer_id": "customer:globex-tie-009",
+      "domain": "marketplace",
+      "observed_lag_days": 1
+    },
+    "timestamp": "2026-01-14T13:00:00+00:00",
+    "trigger_id": "trig-tie-009"
+  }
+}

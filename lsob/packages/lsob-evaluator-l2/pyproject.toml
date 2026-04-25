@@ -1,0 +1,21 @@
+[project]
+name = "lsob-evaluator-l2"
+version = "0.1.0"
+description = "LSOB package: lsob-evaluator-l2 — Layer 2 belief correctness evaluator"
+requires-python = ">=3.12"
+dependencies = [
+    "lsob-contracts",
+    "pydantic>=2.7",
+    "numpy>=1.26",
+    "typer>=0.12",
+]
+
+[project.scripts]
+lsob-eval-l2 = "lsob_evaluator_l2.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lsob_evaluator_l2"]

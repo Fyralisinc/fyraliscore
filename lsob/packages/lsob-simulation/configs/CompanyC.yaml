@@ -1,0 +1,17 @@
+company_id: CompanyC
+num_actors: 500
+actor_personality_distribution:
+  reliable: 0.4
+  optimistic: 0.35
+  pessimistic: 0.1
+  flaky: 0.15
+commitment_generation_rate: 0.05
+customer_count: 60
+turbulence_events:
+  - event_id: reorg-month-6
+    kind: reorg
+    scheduled_at: "2026-07-01T00:00:00Z"
+    magnitude: 0.7
+seed: 42
+start_date: "2026-01-01T00:00:00Z"
+duration_months: 12

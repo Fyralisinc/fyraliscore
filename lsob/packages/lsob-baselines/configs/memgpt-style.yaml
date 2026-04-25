@@ -1,0 +1,6 @@
+# MemGPTStyleBaseline config
+# Two-tier working/recall memory with recency eviction.
+name: memgpt-style
+params:
+  working_capacity: 200         # hot-tier size
+  # Production knobs (Phase 2): eviction_llm, page_in_threshold

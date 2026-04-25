@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-009",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:acme-008",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-008",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.74,
+        "claim_id": "ref-claim-008-a",
+        "entities": [
+          "commitment:acme-008",
+          "actor:ops-8"
+        ],
+        "evidence_signal_ids": [
+          "signal-008-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:acme-008)",
+        "op": "upsert_claim",
+        "proposition": "actor:ops-8 reports commitment:acme-008 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.89,
+        "claim_id": "ref-claim-008-b",
+        "entities": [
+          "customer:acme-008",
+          "commitment:acme-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-008-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:acme-008 executive sponsor is monitoring commitment:acme-008",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-008",
+    "metadata": {},
+    "produced_at": "2026-01-10T08:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-1",
+        "target_ref": "commitment:acme-008"
+      }
+    ],
+    "trigger_id": "trig-ref-008"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.51,
+        "claim_id": "sut-claim-008-a",
+        "entities": [
+          "commitment:acme-008"
+        ],
+        "evidence_signal_ids": [
+          "signal-008-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "actor:ops-8 reports commitment:acme-008 at risk due to upstream slip (observed)",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-008",
+    "metadata": {},
+    "produced_at": "2026-01-10T08:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-008"
+  },
+  "trigger": {
+    "kind": "pr_merged",
+    "payload": {
+      "commitment_id": "commitment:acme-008",
+      "customer_id": "customer:acme-008",
+      "domain": "enterprise-saas",
+      "intensity": "low"
+    },
+    "timestamp": "2026-01-10T08:00:00+00:00",
+    "trigger_id": "trig-ref-008"
+  }
+}

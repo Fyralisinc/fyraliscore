@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "corpus_id": "mini-a",
+    "company_id": "MiniA",
+    "months_simulated": 1,
+    "seed": 42,
+    "config_hash": "mini-a-hash",
+    "start_date": "2026-01-01T00:00:00Z",
+    "end_date": "2026-01-31T23:59:59Z",
+    "generator_version": "0.1.0"
+  },
+  "signals": [
+    {"signal_id": "s1",  "source_channel": "slack", "author_id": "alice",   "content_text": "Starting work on the ingest pipeline refactor.",                 "timestamp": "2026-01-02T09:15:00Z", "metadata": {"commitment_ref": "C-ingest"}},
+    {"signal_id": "s2",  "source_channel": "slack", "author_id": "alice",   "content_text": "Should be done by end of sprint. ~5 days.",                      "timestamp": "2026-01-02T09:20:00Z", "metadata": {"commitment_ref": "C-ingest", "asserted_days": 5}},
+    {"signal_id": "s3",  "source_channel": "pr",    "author_id": "alice",   "content_text": "PR #412: skeleton of new ingest worker",                          "timestamp": "2026-01-05T14:02:00Z", "metadata": {"commitment_ref": "C-ingest"}},
+    {"signal_id": "s4",  "source_channel": "slack", "author_id": "bob",     "content_text": "Customer Acme says the old dashboard is slow.",                   "timestamp": "2026-01-06T10:11:00Z", "metadata": {"customer_ref": "acme"}},
+    {"signal_id": "s5",  "source_channel": "slack", "author_id": "alice",   "content_text": "Hit a snag with the schema migration, might take longer.",       "timestamp": "2026-01-09T16:45:00Z", "metadata": {"commitment_ref": "C-ingest"}},
+    {"signal_id": "s6",  "source_channel": "email", "author_id": "carol",   "content_text": "Acme renewal call Friday — please prep.",                          "timestamp": "2026-01-12T08:30:00Z", "metadata": {"customer_ref": "acme"}},
+    {"signal_id": "s7",  "source_channel": "pr",    "author_id": "alice",   "content_text": "PR #412 still in review; addressing comments.",                   "timestamp": "2026-01-14T11:00:00Z", "metadata": {"commitment_ref": "C-ingest"}},
+    {"signal_id": "s8",  "source_channel": "slack", "author_id": "alice",   "content_text": "Realistically slipping to end of next week.",                    "timestamp": "2026-01-16T17:05:00Z", "metadata": {"commitment_ref": "C-ingest", "slip_signal": true}},
+    {"signal_id": "s9",  "source_channel": "slack", "author_id": "bob",     "content_text": "Acme escalated — dashboard issue now P1.",                         "timestamp": "2026-01-20T09:40:00Z", "metadata": {"customer_ref": "acme", "health_signal": "degraded"}},
+    {"signal_id": "s10", "source_channel": "pr",    "author_id": "alice",   "content_text": "PR #412 merged. Ingest pipeline is live.",                         "timestamp": "2026-01-28T19:22:00Z", "metadata": {"commitment_ref": "C-ingest", "resolution": "done"}}
+  ],
+  "ground_truth": [
+    {
+      "timestamp": "2026-01-31T23:59:59Z",
+      "actors": [
+        {"id": "alice", "role": "senior-eng", "reliability": 0.78, "estimation_bias": 0.35},
+        {"id": "bob",   "role": "cs-lead",    "reliability": 0.9,  "estimation_bias": 0.05},
+        {"id": "carol", "role": "sales",      "reliability": 0.85, "estimation_bias": 0.1}
+      ],
+      "commitments": [
+        {"id": "C-ingest", "owner": "alice", "true_complexity": "high", "true_duration_days": 21, "asserted_duration_days": 5, "true_outcome": "slipped_but_completed", "resolution_timestamp": "2026-01-28T19:22:00Z"},
+        {"id": "C-dash",   "owner": "bob",   "true_complexity": "med",  "true_duration_days": 14, "asserted_duration_days": 14,"true_outcome": "open"}
+      ],
+      "customers": [
+        {"id": "acme",  "true_health": "degraded", "revenue": 500000, "trajectory": ["healthy","healthy","warning","degraded"]}
+      ],
+      "patterns": [
+        {"id": "P-alice-optimism", "description": "Alice's ingest-related estimates are 4x optimistic", "detection_eligible_after": "2026-01-16T00:00:00Z"}
+      ],
+      "predictions_that_will_resolve": [
+        {"prediction_id": "pred-1", "proposition": "C-ingest will ship by 2026-01-09", "asserted_confidence": 0.7, "resolves_at": "2026-01-09T00:00:00Z", "outcome": "false"}
+      ]
+    }
+  ]
+}

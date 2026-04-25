@@ -1,0 +1,2017 @@
+{
+  "test_bridge_query_after_no_signals_returns_empty_or_default": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:03:37.670612+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:18:11.052700+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:10:57.391833+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_commitment_completion_updates_goal_health": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:35:44.252390+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:09:43.995593+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:01:26.397752+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_commitment_transition_signals_produce_state_change_observations": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:53:24.580464+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:16:36.073317+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:08:51.457780+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_customer_crisis_to_intervention_signal_chain": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:14:50.227075+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:20:53.761425+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Globex churn email + sales triage should produce at least one Model scoped to Globex with risk/renewal language: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:14:21.054324+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_customer_health_summary_query_returns_results": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:03:37.380649+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:18:10.794164+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Acme has scenario ARR $180K, expected arr_usd > 0, got 0.00\nassert Decimal('0.00') > 0\n +  where Decimal('0.00') = CustomerDetailDashboard(customer_resource_id=UUID('019db474-93c8-7000-bea9-bbd161dfe98e'), identity='Acme Corp', arr_usd=Decimal('0.00'), served_commitments=[], revenue_at_risk_usd=Decimal('0'), health_timeline=[HealthPoint(day=datetime.date(2026, 3, 24), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 25), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 26), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 27), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 28), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 29), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 30), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 3, 31), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 1), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 2),...commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 12), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 13), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 14), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 15), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 16), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 17), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 18), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 19), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 20), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 21), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0), HealthPoint(day=datetime.date(2026, 4, 22), total_at_risk_usd=Decimal('0'), blocked_commitment_count=0)], active_deployments=[]).arr_usd",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:10:57.069845+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_customer_revenue_at_risk_after_churn_signal": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:48:13.094056+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:15:24.581969+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:07:09.271658+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_decision_revisit_flags_constrained_commitments": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:43:01.828597+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:12:39.328206+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:06:04.747385+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_early_startup_founder_disagreement_produces_contestation_signals": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:24:52.929110+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "founder_debate produced 8 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "founder_debate produced 13 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "founder_debate produced 16 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:24:03.705545+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "founder_debate produced 9 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "founder_debate produced 15 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "founder_debate produced 18 Models with no signal_readings populated AND no overlapping scope_entity across Models; expected either contestation-signal evidence OR at least two Models referencing the same scope_entity. scope_entity_keys=[]\nassert 0 >= 1",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:17:05.484981+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_feature_launch_produces_coordinated_models_across_actors": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:19:51.632763+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:22:13.307181+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:15:12.563782+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_full_flow_github_merge_to_models_to_state_change": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "expected >=2 Models scoped to Alice (019db05a-8e04-7000-9dda-45e7e25cb8ad) OR refund-flow commitment (019db05a-8e1c-7000-b7ed-23cdecd5293a); got 0 (alice=0, refund=0)\nassert 0 >= 2\n +  where 0 = len(set())",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:09:49.015349+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:19:35.849760+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:12:41.365892+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_ingestion_dedups_repeated_external_id": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:33:07.420664+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:25:15.856094+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:18:57.554065+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_ingestion_handles_external_actor_signals": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:33:07.025209+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:25:15.503681+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:18:57.196788+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_ingestion_preserves_signal_through_to_observation": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:24:54.184655+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:24:04.365109+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:17:08.806981+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_ingestion_triggers_think_which_produces_models": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T12:58:13.252897+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:00:52.447172+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:01:44.763599+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:06:55.754875+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:17:47.593267+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:21:45.258322+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 16 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:25:56.650710+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:29:08.043197+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 15 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 29 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 42 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:33:05.885868+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T16:21:53.447039+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 16 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "alice_ships_refund_flow should produce a tractable Model set: Model count 26 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T16:43:48.202528+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:19:49.851490+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 7 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:31:22.474619+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:35:59.553904+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 9 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:56:07.110820+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 9 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:57:17.656650+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 9 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:58:36.626901+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T17:59:51.720390+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 9 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:00:57.299644+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:08:30.923483+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:09:30.705720+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:10:37.383593+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 11 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:11:55.998020+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:13:01.902675+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:16:15.218258+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 9 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:17:14.944960+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 8 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:19:32.979120+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:20:17.434285+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "At least one Model should be scoped to Alice Chen: No Model matching criteria found among 10 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T18:21:02.523226+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:25:14.909254+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:18:56.463038+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_revenue_at_risk_reflects_customer_health": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T13:58:25.798723+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:17:46.350788+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Globex customer 019db473-0b63-7000-9fb5-680b2c18ed27 missing from revenue_at_risk report; saw customers: []\nassert None is not None",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Globex customer 019db473-0b63-7000-9fb5-680b2c18ed27 missing from revenue_at_risk report; saw customers: []\nassert None is not None",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Globex customer 019db473-0b63-7000-9fb5-680b2c18ed27 missing from revenue_at_risk report; saw customers: []\nassert None is not None",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:10:31.611406+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_revenue_at_risk_zero_for_healthy_customers_only": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-21T13:58:36.097097+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:17:46.596553+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:10:31.892730+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_01_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-04-21T12:42:00.696574+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-04-21T12:42:19.345973+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:42:58.525111+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:43:07.253606+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:50:49.928210+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:33:07.718583+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:25:16.160052+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:18:57.858668+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_02_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:42:58.834414+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:43:07.585246+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:50:50.278898+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:33:08.002872+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:25:16.456584+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:18:58.139350+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_03_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T12:42:01.332492+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-04-21T12:42:20.003725+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:42:59.162544+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:43:07.908006+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T12:50:50.606504+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T14:33:08.304829+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:25:16.780630+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-22T09:18:58.444263+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_state_change_observations_chain_via_cause_id": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-04-21T13:38:00.980424+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "First injected signal should have at least one downstream observation referencing it via cause_id: Cascade chain from 019db405-fbe3-7001-89b2-f234c5549c05 reached depth 0, expected >= 1",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-04-22T07:10:24.614875+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": "First injected signal should have at least one downstream observation referencing it via cause_id: Cascade chain from 019db46c-a986-7001-b75c-d32af6b506f3 reached depth 0, expected >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "First injected signal should have at least one downstream observation referencing it via cause_id: Cascade chain from 019db46d-8cdc-7001-b864-a662f153593f reached depth 0, expected >= 1",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:03:35.550597+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_captures_commitment_progress": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:44:35.538455+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:27:49.544208+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:22:01.446770+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_handles_contested_signals": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 3,
+        "timestamp": "2026-04-21T14:55:52.819849+00:00",
+        "total": 5
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 3,
+        "threshold": 3,
+        "timestamp": "2026-04-22T07:31:11.849402+00:00",
+        "total": 5
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 3,
+        "threshold": 3,
+        "timestamp": "2026-04-22T09:25:16.024261+00:00",
+        "total": 5
+      }
+    ]
+  },
+  "test_think_models_have_valid_proposition_kinds": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:50:51.559428+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 0.83 (expected 0.00-0.80)",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:29:45.135057+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:23:31.575423+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_models_scope_to_relevant_entities": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "16/16 Models have no actor or entity scope; example ids: ['019db091-ae34-7000-86c2-1b6de121f6d9', '019db091-ae20-7000-a5ce-833ce5d5d5b5', '019db090-cb24-7000-9249-035f848b18dc']\nassert not [ModelRow(id=UUID('019db091-ae34-7000-86c2-1b6de121f6d9'), tenant_id=UUID('019db08f-8a72-7000-a28a-f2f9a979ea85'), born_from_event_id=UUID('019db08f-8d10-7001-b0c8-285b57f26fcb'), proposition={'kind': 'concern', 'about': 'partial-refund edge case', 'nature': 'potential issue where original charge was already in dispute', 'raised_by': 'reviewer'}, natural='There is a concern about a partial-refund edge case where the original charge was already in dispute, which could lead to problems and warrants a unit test.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ....0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T03:06:30.354719+00:00', 'valid_until': None}, confidence=0.85, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'Observation of refund flow failing in staging, smoke test failures, or deployment rollback from staging', 'within_window': 'P1D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 21, 15, 2, 1, 265012, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.85, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0), ...]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "32/32 Models have no actor or entity scope; example ids: ['019db092-d7fb-7000-9dac-a9ee936f7282', '019db092-d7f1-7000-81a1-8032fecea054', '019db092-8b6e-7000-bda0-9331b353f507']\nassert not [ModelRow(id=UUID('019db092-d7fb-7000-9dac-a9ee936f7282'), tenant_id=UUID('019db08f-8a72-7000-a28a-f2f9a979ea85'), born_from_event_id=UUID('019db091-af42-7001-8cd3-4fe2b1bb7c3a'), proposition={'kind': 'prediction', 'expected': 'PR #847 will be reviewed and merged soon, enabling refund flow deployment', 'resolution': 'PR merge status changes to merged in GitHub or deployment activities are observed'}, natural='PR #847 is likely to be reviewed and merged soon, leading to the deployment of the refund flow MVP.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.... 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T03:06:30.354719+00:00', 'valid_until': None}, confidence=0.85, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'Observation of refund flow failing in staging or smoke tests failing, reported via engineering channels (slack:eng-general, linear:eng, or github:acme/payments)', 'within_window': 'P1D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 21, 15, 4, 18, 276475, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.85, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0), ...]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "47/47 Models have no actor or entity scope; example ids: ['019db093-f8a5-7000-915e-e9347244aeb7', '019db093-f8a3-7000-a737-90f32ffb1068', '019db093-b5f8-7000-aa33-2de79fd815f8']\nassert not [ModelRow(id=UUID('019db093-f8a5-7000-915e-e9347244aeb7'), tenant_id=UUID('019db08f-8a72-7000-a28a-f2f9a979ea85'), born_from_event_id=UUID('019db092-dbab-7001-8329-25312bb1f9a9'), proposition={'kind': 'prediction', 'expected': 'ENG-501 refund flow will be successfully deployed to production at 3pm', 'resolution': 'Observation of deployment completion or failure notification in engineering channels'}, natural='The refund flow from ENG-501 is scheduled for production deployment at 3pm today and is expected to complete successfully.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,....0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T03:01:30.354719+00:00', 'valid_until': None}, confidence=0.85, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'Observation of PR #847 being reverted, closed without merge, or code changes being removed from main branch', 'within_window': 'P7D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 21, 15, 5, 32, 744574, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.85, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0), ...]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T15:06:21.179091+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "1/7 Models have no actor or entity scope; example ids: ['019db41a-8994-7000-aaf7-f33d2c78e377']\nassert not [ModelRow(id=UUID('019db41a-8994-7000-aaf7-f33d2c78e377'), tenant_id=UUID('019db41a-6276-7000-ad3b-518a1906d766'), born_from_event_id=UUID('019db41a-62ad-7001-866c-6937aa7da7d2'), proposition={'kind': 'state', 'subject': 'PR #847', 'assertion': 'PR #847 (Refund flow MVP) has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation'}, natural='PR #847 for the refund flow MVP has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0....0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T07:32:01.270969+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 7, 32, 1, 451261, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "1/13 Models have no actor or entity scope; example ids: ['019db41a-8994-7000-aaf7-f33d2c78e377']\nassert not [ModelRow(id=UUID('019db41a-8994-7000-aaf7-f33d2c78e377'), tenant_id=UUID('019db41a-6276-7000-ad3b-518a1906d766'), born_from_event_id=UUID('019db41a-62ad-7001-866c-6937aa7da7d2'), proposition={'kind': 'state', 'subject': 'PR #847', 'assertion': 'PR #847 (Refund flow MVP) has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation'}, natural='PR #847 for the refund flow MVP has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0....0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T07:32:01.270969+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 7, 32, 1, 451261, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "1/17 Models have no actor or entity scope; example ids: ['019db41a-8994-7000-aaf7-f33d2c78e377']\nassert not [ModelRow(id=UUID('019db41a-8994-7000-aaf7-f33d2c78e377'), tenant_id=UUID('019db41a-6276-7000-ad3b-518a1906d766'), born_from_event_id=UUID('019db41a-62ad-7001-866c-6937aa7da7d2'), proposition={'kind': 'state', 'subject': 'PR #847', 'assertion': 'PR #847 (Refund flow MVP) has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation'}, natural='PR #847 for the refund flow MVP has been opened, covering partial refunds, idempotency keys, and Stripe webhook reconciliation.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0....0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T07:32:01.270969+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 7, 32, 1, 451261, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:33:57.506499+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "2/10 Models have no actor or entity scope; example ids: ['019db483-19fa-7000-acca-a2744d40bb6a', '019db483-1946-7000-9f54-b467c8a7b24b']\nassert not [ModelRow(id=UUID('019db483-19fa-7000-acca-a2744d40bb6a'), tenant_id=UUID('019db482-efb5-7000-99b7-95296b252316'), born_from_event_id=UUID('019db482-f08d-7001-a2f6-09c230519409'), proposition={'kind': 'state', 'subject': 'the reviewed work', 'assertion': 'a reviewer flagged the partial-refund edge case (original charge already in dispute) as needing a unit test'}, natural='A reviewer approved the work overall but noted the partial-refund edge case where the original charge was already in dispute needs a unit test.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T09:26:13.173587+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 9, 26, 13, 388739, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "2/17 Models have no actor or entity scope; example ids: ['019db483-19fa-7000-acca-a2744d40bb6a', '019db483-1946-7000-9f54-b467c8a7b24b']\nassert not [ModelRow(id=UUID('019db483-19fa-7000-acca-a2744d40bb6a'), tenant_id=UUID('019db482-efb5-7000-99b7-95296b252316'), born_from_event_id=UUID('019db482-f08d-7001-a2f6-09c230519409'), proposition={'kind': 'state', 'subject': 'the reviewed work', 'assertion': 'a reviewer flagged the partial-refund edge case (original charge already in dispute) as needing a unit test'}, natural='A reviewer approved the work overall but noted the partial-refund edge case where the original charge was already in dispute needs a unit test.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T09:26:13.173587+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 9, 26, 13, 388739, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "2/18 Models have no actor or entity scope; example ids: ['019db483-19fa-7000-acca-a2744d40bb6a', '019db483-1946-7000-9f54-b467c8a7b24b']\nassert not [ModelRow(id=UUID('019db483-19fa-7000-acca-a2744d40bb6a'), tenant_id=UUID('019db482-efb5-7000-99b7-95296b252316'), born_from_event_id=UUID('019db482-f08d-7001-a2f6-09c230519409'), proposition={'kind': 'state', 'subject': 'the reviewed work', 'assertion': 'a reviewer flagged the partial-refund edge case (original charge already in dispute) as needing a unit test'}, natural='A reviewer approved the work overall but noted the partial-refund edge case where the original charge was already in dispute needs a unit test.', embedding=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], scope_actors=[], scope_entities=[], scope_temporal={'valid_from': '2026-04-22T09:26:13.173587+00:00', 'valid_until': None}, confidence=0.95, activation=1.0, falsifier={'kind': 'observation_pattern', 'pattern': 'PR #847 is closed without merging or marked as draft/withdrawn', 'within_window': 'P30D'}, signal_readings=[], reading_contestable=True, supporting_event_ids=[], supporting_model_ids=[], evidential_weight=0.5, status='active', archived_at=None, archive_reason=None, created_at=datetime.datetime(2026, 4, 22, 9, 26, 13, 388739, tzinfo=datetime.timezone.utc), last_retrieved_at=None, retrieval_count=0, evaluate_at=None, resolution_criteria=None, contributing_models=[], visible_to_subjects=True, proposition_kind='state', confirmed_count=0, contested_count=0, last_confirmed_at=None, confidence_at_assertion=0.95, resolved_at=None, resolution_outcome=None, activation_coefficient=1.0)]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:28:41.479541+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_produces_high_confidence_models_with_falsifiers": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T15:01:30.081869+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:32:00.854973+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:26:12.961114+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_recognizes_cross_team_dependency_block": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T15:11:22.078936+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:35:30.903206+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "cross_team_dependency_block scoped Models: Model count 0 outside expected range [2, 15]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:30:47.406786+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_recognizes_customer_churn_risk": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T14:38:09.080016+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:26:45.127204+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Globex churn signals should produce a risk-themed Model: No Model matching criteria found among 0 Models",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:20:39.016429+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_think_recognizes_decision_revisit": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-21T15:16:33.646839+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T07:37:01.362187+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-04-22T09:33:36.928167+00:00",
+        "total": 3
+      }
+    ]
+  }
+}

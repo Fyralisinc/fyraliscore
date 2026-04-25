@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-036",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wonka-tie-015",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-015-a",
+        "entities": [
+          "commitment:wonka-tie-015",
+          "actor:pm-1",
+          "customer:wonka-tie-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-015-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:pm-1 needs to confirm updated commitment:wonka-tie-015 deadline with customer:wonka-tie-015",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-015-b",
+        "entities": [
+          "customer:wonka-tie-015",
+          "commitment:wonka-tie-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-015-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:wonka-tie-015 is still engaged on commitment:wonka-tie-015",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-015",
+    "metadata": {},
+    "produced_at": "2026-01-14T19:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-015"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:wonka-tie-015",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-015-b",
+        "entities": [
+          "commitment:wonka-tie-015",
+          "customer:wonka-tie-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-015-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "Customer:wonka-tie-015 is still engaged on commitment:wonka-tie-015",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-015-a",
+        "entities": [
+          "actor:pm-1",
+          "commitment:wonka-tie-015",
+          "customer:wonka-tie-015"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-015-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:pm-1 needs to confirm updated commitment:wonka-tie-015 deadline with customer:wonka-tie-015 per the latest signal.",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-015",
+    "metadata": {},
+    "produced_at": "2026-01-14T19:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-015"
+  },
+  "trigger": {
+    "kind": "calendar_event_completed",
+    "payload": {
+      "commitment_id": "commitment:wonka-tie-015",
+      "customer_id": "customer:wonka-tie-015",
+      "domain": "consumer-goods",
+      "observed_lag_days": 1
+    },
+    "timestamp": "2026-01-14T19:00:00+00:00",
+    "trigger_id": "trig-tie-015"
+  }
+}

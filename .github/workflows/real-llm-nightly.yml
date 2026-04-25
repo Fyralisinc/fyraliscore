@@ -1,0 +1,138 @@
+# Real-LLM nightly test suite.
+#
+# Runs against DeepSeek across 3 hand-authored scenarios. Per
+# REAL-LLM-TEST-SUITE-PLAN.md §1.5: this workflow does NOT run on every PR.
+# Triggers are scheduled (nightly) and manual (workflow_dispatch).
+#
+# Required secrets (configure in repo settings):
+#   - DEEPSEEK_API_KEY    (mandatory; tests skip without it)
+#   - SLACK_WEBHOOK_URL   (optional; uncomment notification step to use)
+#
+# Postgres + Ollama are spun up in-job via docker-compose, so the workflow is
+# self-contained and does not depend on any external services beyond DeepSeek.
+
+name: real-llm-nightly
+
+on:
+  schedule:
+    # 07:00 UTC daily — chosen so the report lands before US morning standup.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      bypass_cache:
+        description: "Bypass response cache (always re-call LLM). Default true for ad-hoc runs."
+        required: false
+        type: boolean
+        default: true
+
+# Cancel a stale nightly run if a fresh one starts (manual re-trigger common).
+concurrency:
+  group: real-llm-nightly
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Real-LLM suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      # Nightly defaults to bypass cache so we catch real LLM drift.
+      # workflow_dispatch lets the operator override via input.
+      LLM_CACHE_BYPASS: ${{ github.event_name == 'schedule' && '1' || (inputs.bypass_cache && '1' || '0') }}
+      DATABASE_URL: postgresql://company_os:company_os@localhost:5432/company_os
+      OLLAMA_URL: http://localhost:11434
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      RUN_REAL_LLM: "1"
+      COMPANY_OS_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Create venv and install project (with dev extras)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Spin up Postgres + Ollama via docker-compose
+        # docker-compose.yml at repo root defines pgvector/pgvector:pg16 +
+        # ollama/ollama:latest. Default GH Actions ubuntu runners ship Docker
+        # and the `docker compose` plugin, so no extra setup is required.
+        run: |
+          docker compose up -d postgres ollama
+
+      - name: Wait for Postgres readiness
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U company_os -d company_os; then
+              echo "Postgres ready."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres failed to become ready in 120s." >&2
+          docker compose logs postgres
+          exit 1
+
+      - name: Wait for Ollama readiness
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf "${OLLAMA_URL}/api/tags" > /dev/null; then
+              echo "Ollama ready."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Ollama failed to become ready in 120s." >&2
+          docker compose logs ollama
+          exit 1
+
+      - name: Pull embedding model (nomic-embed-text:v1.5)
+        run: |
+          docker compose exec -T ollama ollama pull nomic-embed-text:v1.5
+
+      - name: Run real-LLM suite
+        # `tee` preserves stdout for the artifact while letting pytest's exit
+        # code propagate via `set -o pipefail`.
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest tests/real_llm/tests/ \
+            -v --timeout=1200 --tb=line \
+            2>&1 | tee real-llm-run.log
+
+      - name: Upload reports + run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-llm-reports-${{ github.run_id }}
+          path: |
+            tests/real_llm/reports/
+            real-llm-run.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Tear down docker-compose
+        if: always()
+        run: docker compose down -v
+
+      # Optional Slack notification. Uncomment + set SLACK_WEBHOOK_URL secret
+      # to enable. Posts a one-line summary; for the full dashboard, point
+      # readers at the artifact URL.
+      #
+      # - name: Notify Slack
+      #   if: always()
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      #   run: |
+      #     STATUS="${{ job.status }}"
+      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      #     curl -X POST -H 'Content-type: application/json' \
+      #       --data "{\"text\":\"Real-LLM nightly: ${STATUS} — ${RUN_URL}\"}" \
+      #       "${SLACK_WEBHOOK_URL}"

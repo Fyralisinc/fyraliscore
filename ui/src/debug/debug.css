@@ -1,0 +1,328 @@
+/* Debug UI — dense, dev-tool visual register. No serifs, no warmth. */
+
+/* The CEO view pins body { overflow: hidden } for its fixed-viewport
+   layout. The inspector is a scroll-heavy dev tool, so it has to be its
+   own scroll container — otherwise long timelines / JSON blobs clip
+   under the sticky header and nothing scrolls. */
+.debug-app {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.debug-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 20px;
+  background: #0a0e14;
+  border-bottom: 1px solid #30363d;
+}
+
+.debug-title strong {
+  color: #e6edf3;
+  letter-spacing: 0.2px;
+}
+.debug-title span {
+  color: #8b949e;
+}
+
+.debug-nav {
+  display: flex;
+  gap: 4px;
+}
+.debug-nav a {
+  padding: 4px 10px;
+  text-decoration: none;
+  color: #8b949e;
+  border-radius: 4px;
+  font-size: 12.5px;
+}
+.debug-nav a.active {
+  color: #e6edf3;
+  background: #1f242c;
+}
+.debug-nav a:hover {
+  color: #e6edf3;
+}
+
+.debug-stats {
+  display: flex;
+  gap: 14px;
+  color: #8b949e;
+  font-size: 12px;
+  align-items: center;
+}
+.debug-stats b {
+  color: #e6edf3;
+  font-weight: 500;
+  padding-left: 3px;
+}
+.debug-stats a.back {
+  color: #58a6ff;
+  text-decoration: none;
+  margin-left: 16px;
+}
+.debug-stats .err {
+  color: #f85149;
+}
+
+.debug-main {
+  padding: 18px 20px 60px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Filters row */
+.debug-filters {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.debug-filters label {
+  color: #8b949e;
+  font-size: 12px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.debug-filters select,
+.debug-filters input {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  padding: 3px 6px;
+  font: inherit;
+  border-radius: 3px;
+}
+.debug-filters button {
+  background: #1f242c;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.debug-filters button:hover {
+  background: #2a323d;
+}
+
+/* Table */
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.debug-table th,
+.debug-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+  vertical-align: top;
+}
+.debug-table th {
+  color: #8b949e;
+  font-weight: 500;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #0a0e14;
+  position: sticky;
+  top: 44px;
+}
+.debug-table tbody tr:hover {
+  background: #161b22;
+  cursor: pointer;
+}
+.debug-table td.truncate {
+  max-width: 720px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* For tables that really do need a wide row, let the main area scroll
+   horizontally rather than clipping. Applied to any table wrapped in
+   .scroll-x. */
+.scroll-x {
+  width: 100%;
+  overflow-x: auto;
+}
+.debug-table .mono {
+  color: #79c0ff;
+}
+.debug-table .muted {
+  color: #6e7681;
+}
+.debug-table .pill {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #1f242c;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  font-size: 11px;
+  color: #e6edf3;
+}
+.debug-table .pill.ok { background: #0a3622; border-color: #2ea043; color: #7ee787; }
+.debug-table .pill.err { background: #3a0e10; border-color: #da3633; color: #ff7b72; }
+.debug-table .pill.warm { background: #3a2810; border-color: #bb8009; color: #e3b341; }
+
+/* Detail layout */
+.detail {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 20px;
+}
+.detail .back {
+  color: #58a6ff;
+  text-decoration: none;
+  margin-bottom: 14px;
+  display: inline-block;
+}
+.detail h1 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.detail h2 {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.detail .card {
+  background: #0a0e14;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.detail .kv {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 4px 16px;
+}
+.detail .kv dt {
+  color: #8b949e;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.detail .kv dd {
+  margin: 0;
+  word-break: break-word;
+  font-size: 12.5px;
+}
+.detail .kv a { color: #79c0ff; text-decoration: none; }
+.detail .kv a:hover { text-decoration: underline; }
+
+/* JSON viewer */
+.json-box {
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 10px 12px;
+  max-height: 600px;
+  overflow: auto;
+  font-size: 12px;
+  /* pre-wrap + overflow-wrap so long strings inside JSON values wrap
+     across lines instead of being clipped off-screen. Indentation from
+     JSON.stringify's 2-space output is preserved via the \n newlines. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: #c9d1d9;
+}
+.json-box .k { color: #79c0ff; }
+.json-box .s { color: #a5d6ff; }
+.json-box .n { color: #d2a8ff; }
+.json-box .b { color: #ffa657; }
+
+/* Timeline (for signal detail → artifacts) */
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.timeline .step {
+  background: #0a0e14;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.timeline .step-header {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.timeline .step-header .stage-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  font-size: 11px;
+  color: #e6edf3;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.timeline .step-header .ts {
+  color: #6e7681;
+  font-size: 11.5px;
+}
+.timeline .step-body {
+  color: #c9d1d9;
+}
+
+/* Signal HTML preview (shows render HTML with design doc voice) */
+.preview-html {
+  padding: 10px 14px;
+  background: #161b22;
+  border-left: 3px solid #30363d;
+  border-radius: 3px;
+  font-family: "Inter", sans-serif;
+  color: #e6edf3;
+  line-height: 1.55;
+  font-size: 14px;
+}
+.preview-html .serif,
+.preview-html .serif-hot {
+  font-family: "Fraunces", serif;
+  color: #f0f6fc;
+}
+.preview-html .n { font-variant-numeric: tabular-nums; color: #f0f6fc; }
+.preview-html .cite { color: #79c0ff; font-family: monospace; font-size: 12.5px; }
+.preview-html .note { color: #8b949e; font-size: 12.5px; }
+.preview-html .hl { background: rgba(255,215,0,0.15); padding: 0 2px; }
+
+/* Loading / empty */
+.loading, .empty {
+  padding: 40px;
+  text-align: center;
+  color: #8b949e;
+  font-size: 13px;
+}
+.error-box {
+  background: #3a0e10;
+  border: 1px solid #da3633;
+  padding: 10px 14px;
+  border-radius: 4px;
+  color: #ff7b72;
+  margin-bottom: 12px;
+}

@@ -1,0 +1,12 @@
+# CompanyOSBaseline config
+# Phase 1: the adapter is stubbed and defers to MockCompanyOSClient.
+# Phase 2.1 swaps in a real HTTP client against a running Company OS
+# instance; these knobs will then be honoured.
+name: company-os
+params:
+  # Endpoint of the Company OS service (Phase 2.1).
+  endpoint: http://localhost:8080
+  # Tenant id — if null, a fresh tenant is created per run.
+  tenant_id: null
+  # Timeout for each request to the real service.
+  request_timeout_seconds: 30

@@ -1,0 +1,54 @@
+{
+  "trig-001": {
+    "diff_id": "sut-001",
+    "claim_ops": [
+      {
+        "op": "upsert_claim",
+        "claim_id": "sut-cl-001",
+        "proposition": "C-ingest is slipping by roughly two days.",
+        "proposition_kind": "risk_assessment",
+        "asserted_confidence": 0.75,
+        "falsifier": "If the dep ticket resolves today, risk is low.",
+        "evidence_signal_ids": ["s-1"],
+        "entities": ["commitment:C-ingest"]
+      }
+    ],
+    "act_ops": [
+      {
+        "op": "transition",
+        "entity_ref": "commitment:C-ingest",
+        "from_state": "on_track",
+        "to_state": "at_risk",
+        "reason": "Slip forecast."
+      }
+    ],
+    "resource_ops": [],
+    "rationale": "Under-split: one claim only."
+  },
+  "trig-002": {
+    "diff_id": "sut-002",
+    "claim_ops": [
+      {
+        "op": "upsert_claim",
+        "claim_id": "sut-cl-010",
+        "proposition": "Customer Acme slipped to yellow.",
+        "proposition_kind": "health_change",
+        "asserted_confidence": 0.88,
+        "falsifier": "Missed standup could have been a scheduling conflict.",
+        "evidence_signal_ids": ["s-10"],
+        "entities": ["customer:cust-acme"]
+      }
+    ],
+    "act_ops": [
+      {
+        "op": "transition",
+        "entity_ref": "customer:cust-acme",
+        "from_state": "green",
+        "to_state": "yellow",
+        "reason": "Two missed check-ins."
+      }
+    ],
+    "resource_ops": [],
+    "rationale": "Matches reference closely."
+  }
+}

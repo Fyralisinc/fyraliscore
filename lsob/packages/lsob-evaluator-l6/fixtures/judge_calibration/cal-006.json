@@ -1,0 +1,104 @@
+{
+  "human_label": "reference_wins",
+  "id": "cal-006",
+  "notes": "SUT is missing the `at_risk` transition on the commitment and the pattern creation. Reference also provides richer falsifier + stakeholder framing.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:vandelay-005",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "slip",
+        "to_state": "at_risk"
+      },
+      {
+        "entity_ref": "pattern:stall-005",
+        "from_state": null,
+        "op": "create",
+        "reason": null,
+        "to_state": "active"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-claim-005-a",
+        "entities": [
+          "commitment:vandelay-005",
+          "actor:sales-7"
+        ],
+        "evidence_signal_ids": [
+          "signal-005-alpha"
+        ],
+        "falsifier": "weekly_review_check(commitment:vandelay-005)",
+        "op": "upsert_claim",
+        "proposition": "actor:sales-7 reports commitment:vandelay-005 at risk due to upstream slip",
+        "proposition_kind": "risk_assessment"
+      },
+      {
+        "asserted_confidence": 0.81,
+        "claim_id": "ref-claim-005-b",
+        "entities": [
+          "customer:vandelay-005",
+          "commitment:vandelay-005"
+        ],
+        "evidence_signal_ids": [
+          "signal-005-beta"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:vandelay-005 executive sponsor is monitoring commitment:vandelay-005",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-diff-005",
+    "metadata": {},
+    "produced_at": "2026-01-10T05:00:00+00:00",
+    "rationale": "Reference: full chain of claims + state transition + resource move.",
+    "resource_ops": [
+      {
+        "amount": 0.5,
+        "op": "reallocate",
+        "resource_ref": "resource:engineer-5",
+        "target_ref": "commitment:vandelay-005"
+      }
+    ],
+    "trigger_id": "trig-ref-005"
+  },
+  "sut_diff": {
+    "act_ops": [],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.7,
+        "claim_id": "sut-claim-005-a",
+        "entities": [
+          "commitment:vandelay-005"
+        ],
+        "evidence_signal_ids": [
+          "signal-005-alpha"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "Actor:sales-7 reports commitment:vandelay-005 at risk due to upstream slip",
+        "proposition_kind": "observation"
+      }
+    ],
+    "diff_id": "sut-diff-005",
+    "metadata": {},
+    "produced_at": "2026-01-10T05:00:00+00:00",
+    "rationale": "SUT: partial observation, no state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-ref-005"
+  },
+  "trigger": {
+    "kind": "ticket_status_changed",
+    "payload": {
+      "commitment_id": "commitment:vandelay-005",
+      "customer_id": "customer:vandelay-005",
+      "domain": "edtech",
+      "intensity": "medium"
+    },
+    "timestamp": "2026-01-10T05:00:00+00:00",
+    "trigger_id": "trig-ref-005"
+  }
+}

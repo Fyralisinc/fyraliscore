@@ -1,0 +1,6 @@
+# GraphRAGBaseline config
+# Entity + community detection + hierarchical summaries.
+name: graphrag
+params:
+  summary_max_signals: 5        # signals summarised per community
+  # Production knobs (Phase 2): community_algorithm, llm_summariser

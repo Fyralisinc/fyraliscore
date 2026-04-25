@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_USER: lsob
+      POSTGRES_PASSWORD: lsob
+      POSTGRES_DB: lsob
+    ports:
+      - "5433:5432"
+    volumes:
+      - lsob_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lsob"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - lsob_ollama:/root/.ollama
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      DEBUG: 0
+    volumes:
+      - lsob_ls:/var/lib/localstack
+
+volumes:
+  lsob_pg:
+  lsob_ollama:
+  lsob_ls:

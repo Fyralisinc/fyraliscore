@@ -1,0 +1,21 @@
+{
+  "computed_at": "2026-04-23T06:12:35.610784Z",
+  "latency_ms": 5594,
+  "query_echo": "Show me why Acme became unsafe",
+  "response_html": "<div class=\"t-body\">I don't have a grounded answer to that yet. The retrieval for \"Acme\" returned no observations, models, or commitments.\n\nThe substrate needs to see the structural signals\u2014a falsified Model, a blocked commitment, a re-estimation\u2014to show you the cause. The current context is empty.\n\nTo unblock this, I need to know which company or project \"Acme\" refers to, or see the specific Model that became unsafe.</div>",
+  "turn_id": "faf85c13-00fc-433d-bd55-2e9339dc09d2",
+  "verbs": [
+    {
+      "id": "followup",
+      "label": "Follow up"
+    },
+    {
+      "id": "save",
+      "label": "Save"
+    },
+    {
+      "id": "done",
+      "label": "Done"
+    }
+  ]
+}

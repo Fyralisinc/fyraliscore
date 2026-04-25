@@ -1,0 +1,63 @@
+# ---- Secrets / env ----
+# Never commit any .env variant. Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Editor / OS ----
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- Node / UI ----
+node_modules/
+ui/dist/
+ui/.vite/
+ui/test-results/
+ui/playwright-report/
+ui/coverage/
+
+# ---- Local data / artifacts ----
+*.local
+docker-compose.override.yml
+*.log
+/tmp/
+.scheduled_tasks.lock
+.claude/scheduled_tasks.lock
+
+# ---- Credentials / keys (defensive) ----
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+id_rsa*
+id_ed25519*
+
+# ---- Local databases / dumps ----
+*.sqlite
+*.sqlite3
+*.db
+*.dump

@@ -1,0 +1,14 @@
+# VanillaRAGBaseline config
+# Production values (for Phase 2 integration) are noted in comments.
+name: vanilla-rag
+params:
+  # In Phase 1 we use a deterministic hash-trick embedding (no model
+  # required). In production, swap these knobs for:
+  #   embedding_model: nomic-embed-text-v1.5 (via Ollama)
+  #   vector_store: pgvector (see docker/docker-compose.baselines.yml)
+  embedding_dim: 128
+  chunk_size_chars: 512        # ~512 tokens in production
+  retrieval_k: 6
+  # Production-only knobs (ignored by the in-memory fallback):
+  pgvector_dsn: postgresql://lsob:lsob@localhost:5433/lsob
+  ollama_url: http://localhost:11434

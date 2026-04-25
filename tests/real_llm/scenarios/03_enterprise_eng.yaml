@@ -1,0 +1,459 @@
+scenario_id: enterprise_eng
+scenario_name: "600-person enterprise engineering org"
+description: |
+  A 600-person engineering organization split across five distinct teams: Platform,
+  Payments, Identity, Data, and SRE. Healthy ARR base with two large enterprise
+  contracts that depend on cross-team deliverables. Scenario emphasizes scale,
+  cross-team isolation, multi-week DAG depth, and the ability to surface
+  anomalies inside long-running noisy work.
+
+  Test focus: retrieval at scale, cross-team dependency cascades, decision
+  revision propagation, anomaly detection inside multi-week migrations.
+
+foundation:
+  actors:
+    # ---- Platform team (auth platform, internal libraries) ----
+    - {name: "Priya Raman",     role: "platform_tech_lead",   slack: "slack:U01PRIYA",    github: "github:praman",     kind: "human_internal"}
+    - {name: "Omar Khalil",     role: "platform_engineer",    slack: "slack:U02OMAR",     github: "github:okhalil",    kind: "human_internal"}
+    - {name: "Yuki Tanaka",     role: "platform_engineer",    slack: "slack:U03YUKI",     github: "github:ytanaka",    kind: "human_internal"}
+
+    # ---- Payments team ----
+    - {name: "Marco Silva",     role: "payments_tech_lead",   slack: "slack:U04MARCO",    github: "github:msilva",     kind: "human_internal"}
+    - {name: "Hannah Goldberg", role: "payments_engineer",    slack: "slack:U05HANNAH",   github: "github:hgoldberg",  kind: "human_internal"}
+    - {name: "Diego Ramirez",   role: "payments_engineer",    slack: "slack:U06DIEGO",    github: "github:dramirez",   kind: "human_internal"}
+
+    # ---- Identity team (consumes Platform's auth v3) ----
+    - {name: "Aisha Mohammed",  role: "identity_tech_lead",   slack: "slack:U07AISHA",    github: "github:amohammed",  kind: "human_internal"}
+    - {name: "Ravi Kumar",      role: "identity_engineer",    slack: "slack:U08RAVI",     github: "github:rkumar",     kind: "human_internal"}
+
+    # ---- Data team ----
+    - {name: "Lena Novak",      role: "data_tech_lead",       slack: "slack:U09LENA",     github: "github:lnovak",     kind: "human_internal"}
+    - {name: "Tomás Becker",    role: "data_engineer",        slack: "slack:U10TOMAS",    github: "github:tbecker",    kind: "human_internal"}
+
+    # ---- SRE ----
+    - {name: "Felix Wong",      role: "sre_tech_lead",        slack: "slack:U11FELIX",    github: "github:fwong",      kind: "human_internal"}
+    - {name: "Sara Petrov",     role: "sre_engineer",         slack: "slack:U12SARA",     github: "github:spetrov",    kind: "human_internal"}
+
+  customers:
+    - {name: "Northwind Financial",   arr_usd: 1800000, health: "healthy",  contract_start_days_ago: 540}
+    - {name: "Atlas Logistics Group", arr_usd:  950000, health: "stable",   contract_start_days_ago: 320}
+    - {name: "Helix BioWorks",        arr_usd:  620000, health: "healthy",  contract_start_days_ago: 180}
+
+  goals:
+    - {title: "Migrate auth platform to v3", altitude: "strategic", target_days_from_start: 90}
+    - {title: "Reduce p99 API latency to under 100ms", altitude: "operational", target_days_from_start: 60}
+    - {title: "Launch Stripe Treasury integration for Northwind", altitude: "tactical", target_days_from_start: 30}
+
+  commitments:
+    # Platform team — owns the migration spine
+    - {title: "Ship auth-svc v3 RC1 to staging", owner: "Priya Raman", state: "active", due_days_from_start: 21,
+       contributes_to_goal: "Migrate auth platform to v3"}
+    - {title: "Publish auth-v3 client SDK", owner: "Omar Khalil", state: "active", due_days_from_start: 28,
+       contributes_to_goal: "Migrate auth platform to v3"}
+
+    # Identity team — depends on Platform's SDK
+    - {title: "Cut Identity service over to auth-v3", owner: "Aisha Mohammed", state: "blocked", due_days_from_start: 45,
+       contributes_to_goal: "Migrate auth platform to v3"}
+
+    # Payments team — tactical Treasury launch + latency work
+    - {title: "Integrate Stripe Treasury endpoints", owner: "Marco Silva", state: "active", due_days_from_start: 30,
+       contributes_to_goal: "Launch Stripe Treasury integration for Northwind"}
+    - {title: "Move payment ledger reads to read-replica", owner: "Hannah Goldberg", state: "active", due_days_from_start: 25,
+       contributes_to_goal: "Reduce p99 API latency to under 100ms"}
+
+    # Data team — feeds latency goal
+    - {title: "Stand up Kafka 3.x cluster for event bus", owner: "Lena Novak", state: "active", due_days_from_start: 35,
+       contributes_to_goal: "Reduce p99 API latency to under 100ms"}
+
+    # SRE — observability for migration + latency
+    - {title: "Roll out p99 latency SLO dashboards", owner: "Felix Wong", state: "active", due_days_from_start: 18,
+       contributes_to_goal: "Reduce p99 API latency to under 100ms"}
+    - {title: "Add canary deploy gating for auth-svc", owner: "Sara Petrov", state: "proposed", due_days_from_start: 24,
+       contributes_to_goal: "Migrate auth platform to v3"}
+
+  decisions:
+    - title: "Adopt Kafka as the company-wide event bus"
+      decision_text: |
+        We will adopt Kafka 3.x as the canonical event bus across Platform, Payments,
+        Identity, and Data. Existing RabbitMQ queues will be drained and decommissioned
+        within two quarters. Data team owns cluster operations; Platform owns the
+        client library and schema registry conventions.
+      state: "active"
+    - title: "Sunset legacy auth-svc v1 by Q3"
+      decision_text: |
+        auth-svc v1 will be sunset by end of Q3. All consuming services must migrate
+        to auth-v3 SDK. v2 remains supported for one quarter as a bridge. Identity,
+        Payments, and Data services are the named migration targets.
+      state: "active"
+
+signal_sequences:
+
+  # ============================================================
+  # 1. cross_team_dependency_block
+  # ------------------------------------------------------------
+  # Identity is blocked on Platform's auth-v3 SDK. Identity engineer
+  # surfaces the block in their team channel; Identity tech lead
+  # escalates to Platform tech lead; Platform engineer responds with
+  # an ETA; Identity unblocks themselves with a workaround.
+  # Should produce: cross-team dependency observations, Commitment
+  # state transitions blocked -> active, Models scoped across both teams.
+  # ============================================================
+  cross_team_dependency_block:
+    description: |
+      Identity team is blocked on the auth-v3 SDK that Platform owns.
+      Escalation cascades from IC -> tech lead -> cross-team tech lead
+      -> Platform IC, ending with a workaround that unblocks Identity.
+    signals:
+      - channel: "slack:eng-identity"
+        actor: "Ravi Kumar"
+        content: |
+          Heads up team — IDN-412 (cut Identity service over to auth-v3) is hard
+          blocked. The SDK in PLAT-301 still doesn't expose the
+          `verify_session_with_scopes()` helper we agreed on in the design doc,
+          and the published 0.7.x artifact 500s when we pass `scope_set=None`.
+          I've worked around the second issue locally but I can't ship without
+          the helper. Going to pause the cutover branch until Platform lands it.
+        delay_minutes: 0
+
+      - channel: "slack:eng-identity"
+        actor: "Aisha Mohammed"
+        content: |
+          Thanks Ravi. That's our second week sitting on this — escalating to
+          Priya's team now. I'll make sure we don't lose the week of work you've
+          already done; let's keep IDN-412 in `blocked` and I'll move our
+          downstream tickets (IDN-415, IDN-417) behind it in the sprint board.
+        delay_minutes: 12
+        thread_of: 0
+
+      - channel: "slack:eng-platform"
+        actor: "Aisha Mohammed"
+        content: |
+          Hi Platform — flagging a cross-team block. Identity has been waiting on
+          `verify_session_with_scopes()` in the auth-v3 SDK (tracked under
+          PLAT-301) for ~10 days. We're holding IDN-412 and two follow-on tickets.
+          Could one of you give us an honest ETA? If it slips past this week we
+          need to plan around it for the auth-v3 cutover milestone.
+        delay_minutes: 25
+
+      - channel: "slack:eng-platform"
+        actor: "Priya Raman"
+        content: |
+          Aisha — ack, sorry for the silence on this one. Let me get a real
+          number from Omar today. The helper itself is small but it's gated on
+          the scope-set refactor we hadn't finished. I'll update by EOD.
+        delay_minutes: 35
+        thread_of: 2
+
+      - channel: "slack:eng-platform"
+        actor: "Omar Khalil"
+        content: |
+          Picking this up. Honest ETA on `verify_session_with_scopes()`:
+          two working days. The 500 on `scope_set=None` is a real bug — I'll
+          patch it tonight in 0.7.4 so you can at least get a workable SDK.
+          Full helper lands in 0.8.0 by Thursday. PLAT-301 will reflect both.
+        delay_minutes: 95
+        thread_of: 2
+
+      - channel: "linear:PLAT"
+        actor: "Omar Khalil"
+        content: |
+          PLAT-301 updated: split into PLAT-301a (scope_set=None bug, due Tue)
+          and PLAT-301b (verify_session_with_scopes helper, due Thu). Tagging
+          IDN-412 as a downstream consumer.
+        delay_minutes: 110
+
+      - channel: "slack:eng-identity"
+        actor: "Ravi Kumar"
+        content: |
+          Update: with the 0.7.4 patch I can route around the helper by calling
+          `verify_session()` then doing the scope check inline. Ugly but
+          unblocks IDN-412 today; we'll swap in `verify_session_with_scopes()`
+          once 0.8.0 is out. Moving IDN-412 back to in-progress.
+        delay_minutes: 1500
+
+      - channel: "linear:IDN"
+        actor: "Aisha Mohammed"
+        content: |
+          IDN-412 unblocked — moving from Blocked to In Progress. Workaround
+          documented in the ticket; we'll revisit the helper swap after
+          PLAT-301b ships Thursday. Keeping IDN-415/417 on the original plan.
+        delay_minutes: 1520
+
+
+  # ============================================================
+  # 2. decision_revision_cascade
+  # ------------------------------------------------------------
+  # The "Adopt Kafka as the company-wide event bus" decision needs
+  # to be revisited because operational reality has shifted. Senior
+  # engineer raises the concern, tech lead schedules a review, team
+  # discusses, decision moves to "revisited" and constrained
+  # commitments are flagged.
+  # ============================================================
+  decision_revision_cascade:
+    description: |
+      A senior data engineer surfaces new info that calls the Kafka-as-event-bus
+      decision into question. Lena schedules a review; the team discusses;
+      the decision is moved to revisited; downstream commitments that depend
+      on it (Lena's Kafka cluster, Hannah's ledger work) get flagged.
+    signals:
+      - channel: "slack:eng-data"
+        actor: "Tomás Becker"
+        content: |
+          I want to flag something on the Kafka decision (DEC-007: "Adopt Kafka
+          as the company-wide event bus"). Two things have changed since we
+          made that call in February:
+
+          1. The MSK pricing model shifted — our projected steady-state cost
+             is now ~2.4x what we modeled, mostly because of cross-AZ traffic
+             on the Payments topics.
+          2. Confluent rolled out tiered storage in their managed offering,
+             which would let us drop the dedicated long-term retention tier
+             we were planning to build ourselves.
+
+          I'm not arguing we reverse the decision, but I think we owe ourselves
+          a revisit before Lena commits another sprint to the cluster build.
+        delay_minutes: 0
+
+      - channel: "slack:eng-data"
+        actor: "Lena Novak"
+        content: |
+          Tomás — agreed, this deserves a real look. Let me put time on the
+          calendar. I'll schedule a 60-minute review with Platform and Payments
+          reps for this Thursday; I'd rather pause DATA-220 (Kafka 3.x cluster)
+          for two days than charge ahead and have to redo work.
+        delay_minutes: 22
+        thread_of: 0
+
+      - channel: "email:inbox"
+        actor: "Lena Novak"
+        content: |
+          Subject: [Decision review] Revisiting DEC-007 (Kafka as event bus)
+
+          Sending calendar invites for Thursday 14:00 UTC, 60 minutes.
+
+          Required: Priya (Platform), Marco (Payments), Tomás (Data), me.
+          Optional: Aisha (Identity), Felix (SRE).
+
+          Goal: re-evaluate DEC-007 in light of (a) revised MSK cost model and
+          (b) Confluent tiered storage availability. Outcome will be either
+          "decision stands as-is", "decision stands with amended scope", or
+          "decision is revisited and we re-run the option analysis".
+
+          Pre-read in the doc linked in the invite. Please skim before the
+          meeting.
+        delay_minutes: 60
+
+      - channel: "slack:eng-platform"
+        actor: "Priya Raman"
+        content: |
+          FYI Platform — I'm in Lena's Thursday meeting on the Kafka decision.
+          If anyone has strong opinions on the schema-registry assumptions
+          we baked into PLAT-301 (specifically that we'd own the registry
+          ourselves), please drop them in the doc by Wednesday.
+        delay_minutes: 240
+
+      - channel: "slack:eng-payments"
+        actor: "Marco Silva"
+        content: |
+          Same heads-up here. Hannah, your read-replica work (PAY-118)
+          assumes we're emitting ledger events through the Kafka path. If the
+          decision shifts to managed Confluent the topic naming and partition
+          plan probably change. Don't rip anything up yet, but flag it in the
+          PR description.
+        delay_minutes: 260
+
+      - channel: "slack:eng-data"
+        actor: "Lena Novak"
+        content: |
+          Review wrapped. Outcome: decision is being formally revisited. We're
+          not reversing — Kafka is still the direction — but the
+          self-managed-vs-Confluent question is reopened, and the schema
+          registry ownership is being re-scoped to Data instead of Platform.
+
+          I'll mark DEC-007 as `revisited` in the registry and circulate an
+          amended proposal next week. Pausing DATA-220 until the proposal is
+          signed off; expect ~5 day slip on the latency goal.
+        delay_minutes: 1500
+
+      - channel: "linear:PLAT"
+        actor: "Priya Raman"
+        content: |
+          Per the Thursday review: PLAT-301 (auth-v3 SDK) is unaffected for now,
+          but we're removing the schema-registry workstream from the Platform
+          roadmap and handing it to Data. I'll update PLAT-301 description to
+          reflect the narrower scope.
+        delay_minutes: 1540
+
+      - channel: "slack:eng-payments"
+        actor: "Hannah Goldberg"
+        content: |
+          Noted on PAY-118 — adding a section to the PR description calling
+          out the topic-naming assumption explicitly so reviewers know it may
+          churn after the DEC-007 revision lands. Not blocking my work but
+          worth flagging.
+        delay_minutes: 1560
+
+
+  # ============================================================
+  # 3. platform_migration
+  # ------------------------------------------------------------
+  # Long-running multi-week auth-svc v3 migration. Multiple PRs and
+  # progress check-ins. One failed deploy with a rollback (the
+  # transient anomaly), then a successful re-deploy.
+  # delay_minutes spans roughly 14 days.
+  # ============================================================
+  platform_migration:
+    description: |
+      Multi-week migration of auth-svc to v3 by the Platform team, with
+      steady progress signals from Priya, Omar, and Yuki. Includes a
+      failed canary deploy that triggers a rollback (anomaly), root-cause
+      identification by SRE, fix, and successful re-deploy. Time range
+      spans ~14 simulated days.
+    signals:
+      - channel: "github:enterprise/auth-svc"
+        actor: "Yuki Tanaka"
+        content: |
+          Opened PR #1842: scaffold v3 service module, wire dependency
+          injection, port the session store interface. Tracking: PLAT-300.
+          ~1.4k LOC, mostly mechanical. Not yet hooked into the router.
+        delay_minutes: 0
+
+      - channel: "slack:eng-platform"
+        actor: "Priya Raman"
+        content: |
+          Kicking off auth-svc v3 migration officially. PR #1842 is the
+          skeleton — please review by Wednesday. Plan for the next two weeks:
+
+          Week 1: scaffolding, scope refactor, SDK 0.7.x patches.
+          Week 2: canary deploy to staging, then 1% prod canary, then ramp.
+
+          Sara is wiring canary gating in parallel (PLAT-310). Felix's team
+          owns the rollback runbook. Daily check-ins in this channel at 10:00.
+        delay_minutes: 30
+
+      - channel: "github:enterprise/auth-svc"
+        actor: "Omar Khalil"
+        content: |
+          Merged PR #1842 (scaffold). Opening PR #1851: scope-set refactor +
+          fix for `scope_set=None` 500. Tagged for SDK 0.7.4.
+        delay_minutes: 1500
+
+      - channel: "slack:eng-platform"
+        actor: "Yuki Tanaka"
+        content: |
+          Day 2 update: scaffold merged, scope refactor in review. I'm
+          starting on the session-store v3 implementation today (PLAT-302).
+          No blockers. ETA for v3 service responding to traffic in staging:
+          end of week.
+        delay_minutes: 2900
+
+      - channel: "github:enterprise/auth-svc"
+        actor: "Yuki Tanaka"
+        content: |
+          PR #1867: session-store v3 backend (Postgres-backed, no Redis
+          dependency). Includes migration script and a feature flag to fall
+          back to v1 store at runtime. Reviewers: Omar, Priya.
+        delay_minutes: 5800
+
+      - channel: "slack:eng-platform"
+        actor: "Priya Raman"
+        content: |
+          Day 5 check-in: scaffold + scope refactor merged, session store in
+          review, SDK 0.7.4 published. We're roughly on track for the staging
+          canary on Monday. Sara's canary gating (PLAT-310) is also ready;
+          we'll dry-run it tomorrow.
+        delay_minutes: 7200
+
+      - channel: "github:enterprise/auth-svc"
+        actor: "Sara Petrov"
+        content: |
+          PR #1880 merged: canary deploy gating with automated rollback on
+          5xx-rate breach (>0.5% over 3 minutes) or p99 latency breach
+          (>250ms over 5 minutes). Tested against the staging canary
+          pipeline; dry-run looked clean.
+        delay_minutes: 8800
+
+      # --- Day 8: the failed deploy + rollback (the transient anomaly) ---
+      - channel: "github:enterprise/auth-svc"
+        actor: "Omar Khalil"
+        content: |
+          PR #1895 merged: enable v3 endpoint in staging behind feature flag.
+          Kicking off staging canary now via the new gating workflow.
+        delay_minutes: 11000
+
+      - channel: "slack:incidents"
+        actor: "Sara Petrov"
+        content: |
+          INCIDENT — auth-svc v3 staging canary auto-rolled back at 14:07 UTC.
+          5xx rate climbed to 1.8% within 90 seconds of cutover. Gating
+          worked as intended; no customer impact (staging only). Investigating
+          root cause now. Felix is paged.
+        delay_minutes: 11015
+
+      - channel: "slack:incidents"
+        actor: "Felix Wong"
+        content: |
+          Initial read: the v3 service is throwing on session lookups when
+          the JWT carries the legacy `aud` claim format. Our test fixtures
+          all use the new format; we never exercised the legacy path. Roughly
+          15% of staging traffic still uses the legacy format, which matches
+          the 5xx fan-out we saw. This is a real bug, not a deploy artifact.
+        delay_minutes: 11045
+        thread_of: 8
+
+      - channel: "linear:PLAT"
+        actor: "Priya Raman"
+        content: |
+          Filed PLAT-330: legacy `aud` claim handling in v3 session lookup.
+          Severity: blocker for next canary attempt. Yuki picking it up
+          this afternoon. Pushing the prod canary out by 48 hours.
+        delay_minutes: 11080
+
+      - channel: "github:enterprise/auth-svc"
+        actor: "Yuki Tanaka"
+        content: |
+          PR #1903: handle legacy `aud` claim format in v3 session lookup,
+          plus regression tests covering both formats. Confirmed locally
+          with replayed staging traffic. Ready for review.
+        delay_minutes: 13500
+
+      - channel: "slack:eng-platform"
+        actor: "Priya Raman"
+        content: |
+          Day 10 update: PR #1903 merged, regression tests green, second
+          staging canary kicked off 30 minutes ago. 5xx rate steady at
+          baseline (~0.04%). Letting it bake overnight. If it's still clean
+          tomorrow we'll start the 1% prod canary.
+        delay_minutes: 14400
+
+      - channel: "slack:incidents"
+        actor: "Sara Petrov"
+        content: |
+          Staging canary held overnight: 5xx 0.05%, p99 78ms — both well
+          under thresholds. Promoting to 100% staging traffic now. Prod
+          canary tomorrow as planned.
+        delay_minutes: 17200
+
+      - channel: "slack:eng-platform"
+        actor: "Omar Khalil"
+        content: |
+          Prod 1% canary live for ~4 hours. 5xx 0.03%, p99 81ms. No alerts.
+          Will ramp to 10% in the morning per the runbook.
+        delay_minutes: 19000
+
+      - channel: "github:enterprise/auth-svc"
+        actor: "Priya Raman"
+        content: |
+          Tagged v3.0.0 release. Auth-svc v3 is now serving 10% of prod
+          traffic, ramping 10% per day this week per the migration plan.
+          Identity team can now safely cut their service over (IDN-412)
+          against the v3 endpoint. Closing PLAT-300 once we hit 100%.
+        delay_minutes: 20160
+
+
+expected_behaviors:
+  - "Cross-team dependency signals (cross_team_dependency_block) should produce Models that surface the cross-team relationship and a Commitment state transition from blocked to active for IDN-412 (Cut Identity service over to auth-v3)."
+  - "decision_revision_cascade should drive the 'Adopt Kafka as the company-wide event bus' Decision into a revisited state and flag downstream Commitments (Stand up Kafka 3.x cluster, Move payment ledger reads to read-replica) that are constrained by it."
+  - "platform_migration should generate a steady stream of Commitment progress signals on 'Ship auth-svc v3 RC1 to staging' and surface the failed-canary event as an anomaly without that anomaly being lost in the surrounding noise."
+  - "Models produced from one team's channel (e.g. slack:eng-payments) should remain scoped appropriately and not bleed into Models scoped to unrelated teams' commitments."
+  - "Long-running migration signals spanning ~14 days should not collapse into a single Model; Think should produce multiple Models tracking distinct phases (scaffold, canary, rollback, re-deploy, ramp)."

@@ -1,0 +1,21 @@
+company_id: CompanyB
+num_actors: 1000
+actor_personality_distribution:
+  reliable: 0.45
+  optimistic: 0.3
+  pessimistic: 0.1
+  flaky: 0.15
+commitment_generation_rate: 0.05
+customer_count: 120
+turbulence_events:
+  - event_id: exec-departure-q2
+    kind: exec_departure
+    scheduled_at: "2026-04-15T00:00:00Z"
+    magnitude: 0.5
+  - event_id: layoff-q3
+    kind: layoff
+    scheduled_at: "2026-07-01T00:00:00Z"
+    magnitude: 0.3
+seed: 42
+start_date: "2026-01-01T00:00:00Z"
+duration_months: 12

@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: company_os_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: company_os
+      POSTGRES_PASSWORD: company_os
+      POSTGRES_DB: company_os
+    ports:
+      - "5432:5432"
+    volumes:
+      - company_os_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U company_os -d company_os"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: company_os_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - company_os_ollama:/root/.ollama
+    # Pull the embed model on first run. Safe on re-run — Ollama
+    # skips the pull if the model is already present.
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve & sleep 3 &&
+       ollama pull nomic-embed-text &&
+       wait"
+
+  gateway:
+    # Stub: real image built in Wave 2-A. This service exists so that
+    # `docker-compose up` reflects the full dependency graph.
+    image: python:3.11-slim
+    container_name: company_os_gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+    command: ["/bin/sh", "-c", "echo 'gateway stub — implemented in Wave 2-A' && sleep infinity"]
+    profiles:
+      - full
+
+volumes:
+  company_os_pgdata:
+  company_os_ollama:

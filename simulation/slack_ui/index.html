@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Simulation — Slack authoring</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="./styles.css" />
+    <!--
+      We intentionally ship React via ESM CDN instead of adding a
+      Vite pipeline. The harness is a dogfood tool run only in
+      dev/staging by Rachin; keeping zero build-time dependencies
+      means `uvicorn simulation.server:app` is the only command
+      needed to iterate on the UI.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18.3.1",
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+          "htm": "https://esm.sh/htm@3.1.1/preact/standalone.mjs"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root">Loading simulation harness…</div>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

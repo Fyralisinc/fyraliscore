@@ -1,0 +1,259 @@
+scenario_id: growth_saas
+scenario_name: "120-person growth-stage SaaS"
+description: |
+  Mid-stage B2B SaaS, post-PMF, scaling. Healthy signal density across all
+  channels. Represents the architectural sweet spot for Company OS — calibration
+  has converged, ARR is meaningful, signal-to-noise ratio is good. The cast
+  below is the cross-functional core (~10 people) involved in the test
+  sequences; the company at large is ~120 employees but the rest don't appear.
+
+foundation:
+  actors:
+    - name: "Alice Chen"
+      role: "engineer"
+      slack: "slack:U01ALICE"
+      github: "github:alice-c"
+      kind: "human_internal"
+    - name: "Bob Park"
+      role: "senior_engineer"
+      slack: "slack:U02BOB"
+      github: "github:bpark"
+      kind: "human_internal"
+    - name: "Carmen Diaz"
+      role: "head_of_sales"
+      slack: "slack:U03CARMEN"
+      email_alias: "email:carmen@fyralis.example"
+      kind: "human_internal"
+    - name: "Dev Patel"
+      role: "product_manager"
+      slack: "slack:U04DEV"
+      linear: "linear:dev-patel"
+      kind: "human_internal"
+    - name: "Erin Walsh"
+      role: "designer"
+      slack: "slack:U05ERIN"
+      kind: "human_internal"
+    - name: "Frank Liu"
+      role: "engineering_manager"
+      slack: "slack:U06FRANK"
+      github: "github:fliu"
+      kind: "human_internal"
+    - name: "Grace Okafor"
+      role: "marketing_lead"
+      slack: "slack:U07GRACE"
+      email_alias: "email:grace@fyralis.example"
+      kind: "human_internal"
+    - name: "Henry Sato"
+      role: "customer_success"
+      slack: "slack:U08HENRY"
+      kind: "human_internal"
+    - name: "Ivy Ramos"
+      role: "support_engineer"
+      slack: "slack:U09IVY"
+      github: "github:iramos"
+      kind: "human_internal"
+    - name: "Jay Kim"
+      role: "founder_ceo"
+      slack: "slack:U10JAY"
+      kind: "human_internal"
+
+  customers:
+    - name: "Acme Corp"
+      arr_usd: 180000
+      health: "healthy"
+      contract_start_days_ago: 240
+    - name: "Globex Inc"
+      arr_usd: 60000
+      health: "at_risk"
+      contract_start_days_ago: 90
+    - name: "Initech"
+      arr_usd: 45000
+      health: "stable"
+      contract_start_days_ago: 150
+
+  goals:
+    - title: "Ship payments v2 by end of quarter"
+      altitude: "operational"
+      target_days_from_start: 45
+    - title: "Reduce customer churn to below 5%"
+      altitude: "strategic"
+      target_days_from_start: 180
+
+  commitments:
+    - title: "Implement refund flow"
+      owner: "Alice Chen"
+      state: "active"
+      due_days_from_start: 14
+      contributes_to_goal: "Ship payments v2 by end of quarter"
+    - title: "Design new pricing page"
+      owner: "Erin Walsh"
+      state: "active"
+      due_days_from_start: 7
+    - title: "Renew Globex contract"
+      owner: "Carmen Diaz"
+      state: "active"
+      due_days_from_start: 21
+      contributes_to_goal: "Reduce customer churn to below 5%"
+    - title: "Launch self-serve API tokens"
+      owner: "Bob Park"
+      state: "proposed"
+      due_days_from_start: 30
+      contributes_to_goal: "Ship payments v2 by end of quarter"
+    - title: "Quarterly business review with Acme"
+      owner: "Henry Sato"
+      state: "active"
+      due_days_from_start: 10
+
+  decisions:
+    - title: "Postgres as primary datastore"
+      decision_text: |
+        Use Postgres 15 as the primary OLTP datastore for all customer-facing
+        services. Defer the question of a separate OLAP store until ingest
+        volume exceeds 50M events/day per tenant.
+      state: "active"
+    - title: "Annual contracts only for new customers"
+      decision_text: |
+        New customer contracts are annual minimum, billed upfront or quarterly.
+        Existing month-to-month customers grandfathered until renewal.
+      state: "active"
+
+signal_sequences:
+
+  alice_ships_refund_flow:
+    description: "Alice progresses the refund-flow commitment through a normal happy-path: PR opened, reviewed, merged, deployed to staging, ticket closed."
+    signals:
+      - channel: "github:acme/payments"
+        actor: "Alice Chen"
+        content: "Opened PR #847: Refund flow MVP — handles partial refunds, idempotency keys, and the Stripe webhook reconciliation pieces we discussed last week."
+        delay_minutes: 0
+      - channel: "slack:eng-general"
+        actor: "Alice Chen"
+        content: "Refund flow PR is up: https://github.com/acme/payments/pull/847. Would appreciate reviews by EOD — want to ship tomorrow morning before standup."
+        delay_minutes: 2
+      - channel: "slack:eng-general"
+        actor: "Bob Park"
+        content: "Reviewed. Looks good overall, left one comment about the partial-refund edge case where the original charge was already in dispute. Worth a unit test."
+        delay_minutes: 180
+        thread_of: 1
+      - channel: "github:acme/payments"
+        actor: "Alice Chen"
+        content: "Pushed fix for dispute edge case + added test. Thanks Bob."
+        delay_minutes: 240
+      - channel: "github:acme/payments"
+        actor: "Bob Park"
+        content: "Approved. LGTM, merge when CI is green."
+        delay_minutes: 260
+      - channel: "github:acme/payments"
+        actor: "Alice Chen"
+        content: "PR #847 merged to main."
+        delay_minutes: 720
+      - channel: "slack:eng-general"
+        actor: "Alice Chen"
+        content: "Refund flow is live in staging. Smoke tests passing. Will deploy to prod after on-call verification this afternoon."
+        delay_minutes: 725
+      - channel: "linear:eng"
+        actor: "Alice Chen"
+        content: "Moved ENG-501 (refund flow) to Done. Production deploy scheduled for 3pm."
+        delay_minutes: 800
+
+  customer_churn_signal:
+    description: "Globex (at-risk customer) escalates renewal concerns; sales triages, PM asks for context."
+    signals:
+      - channel: "email:inbox"
+        actor: "external:globex.contact"
+        content: |
+          Hi Carmen,
+
+          Following up on our call last month. Honestly, the team here is
+          getting frustrated — the reporting export is still slow on our
+          dataset and the SAML setup we asked about in Q1 hasn't moved.
+
+          We're under pressure from finance to consolidate vendors before
+          renewal in November. We're actively evaluating two alternatives this
+          quarter. I'd like to set up a call to discuss whether there's a
+          path forward on pricing AND the feature gaps, because right now
+          renewal is not a given.
+
+          — Marcus
+          VP Operations, Globex Inc
+        delay_minutes: 0
+      - channel: "slack:customer-globex"
+        actor: "Carmen Diaz"
+        content: "Globex just sent a churn-risk email — Marcus is talking renewal pushback and naming two competitors. Need to jump on this today, not next week."
+        delay_minutes: 5
+      - channel: "slack:customer-globex"
+        actor: "Dev Patel"
+        content: "What were the two features they raised in Q1 that we deprioritized? I want to look at whether either is back on the table now that payments v2 is mostly done."
+        delay_minutes: 30
+        thread_of: 1
+      - channel: "slack:customer-globex"
+        actor: "Carmen Diaz"
+        content: "Reporting export performance on large datasets, and SAML SSO. I have the doc from January, will paste in thread."
+        delay_minutes: 45
+        thread_of: 1
+      - channel: "slack:customer-globex"
+        actor: "Henry Sato"
+        content: "I can pull together a usage snapshot for the call — they've actually been using the API more in the last 30 days, not less. That's worth knowing before we go in."
+        delay_minutes: 90
+      - channel: "slack:customer-globex"
+        actor: "Carmen Diaz"
+        content: "Booked Marcus for tomorrow 11am PT. Dev + Henry, please join. Goal: get the renewal back on a positive track and scope the two feature requests honestly."
+        delay_minutes: 240
+
+  feature_launch_cycle:
+    description: "Coordinated launch of self-serve API tokens — PM proposes, designer mocks, engineer implements, marketing announces."
+    signals:
+      - channel: "slack:eng-general"
+        actor: "Dev Patel"
+        content: "Proposing we ship self-serve API token management as the next post-payments-v2 feature. Three of our top-10 customers have asked. Spec doc forthcoming today."
+        delay_minutes: 0
+      - channel: "linear:eng"
+        actor: "Dev Patel"
+        content: "Created PROD-218: Self-serve API token management. Linked to spec doc. Owner: Bob Park. Target: 3 weeks."
+        delay_minutes: 60
+      - channel: "slack:eng-general"
+        actor: "Erin Walsh"
+        content: "Mocks for API token UI are ready: figma link in PROD-218. Kept it consistent with the existing settings panel — no new components needed."
+        delay_minutes: 1440
+      - channel: "github:acme/payments"
+        actor: "Bob Park"
+        content: "Opened PR #862: scaffold for /settings/api-tokens — list, create, revoke endpoints + minimal UI wired to Erin's mocks."
+        delay_minutes: 2880
+      - channel: "slack:eng-general"
+        actor: "Bob Park"
+        content: "API token MVP is feature-complete in staging. Carmen / Henry — please loop in any customers who'd want to try this before GA."
+        delay_minutes: 5760
+      - channel: "slack:eng-general"
+        actor: "Henry Sato"
+        content: "Acme and Initech both said yes immediately. Acme wants it for their CI pipeline, Initech for an internal Zapier-style workflow."
+        delay_minutes: 5820
+        thread_of: 4
+      - channel: "github:acme/payments"
+        actor: "Bob Park"
+        content: "PR #862 merged. API tokens GA'd to all tenants behind the new settings panel."
+        delay_minutes: 8640
+      - channel: "slack:eng-general"
+        actor: "Grace Okafor"
+        content: "Launch announcement is queued for tomorrow 9am ET — blog post, changelog entry, and an email to existing customers. Anyone want to review the draft?"
+        delay_minutes: 8700
+      - channel: "email:inbox"
+        actor: "Grace Okafor"
+        content: |
+          Subject: New: Self-serve API tokens are live
+
+          Hi everyone,
+
+          You can now create, rotate, and revoke API tokens directly from
+          Settings → API Tokens. No more support tickets to get keys issued.
+
+          Full docs: https://docs.fyralis.example/api-tokens
+
+          — Grace
+        delay_minutes: 10080
+
+expected_behaviors:
+  - "Customer churn signals from Globex should produce at least one Model scoped to the Globex customer resource with proposition referencing renewal risk or evaluation of alternatives."
+  - "Commitment progress signals (PR opened, reviewed, merged, deployed) should advance the 'Implement refund flow' commitment state from active toward complete and produce state_change observations."
+  - "Cascade should update 'Ship payments v2 by end of quarter' goal health when the refund-flow commitment completes, since it contributes_to_goal that goal."
+  - "Bridge revenue_at_risk query for Globex should reflect $60K ARR exposure once the churn signal Models are produced."
+  - "The feature_launch_cycle multi-actor sequence should produce coordinated Models scoped across PM, design, engineering, and marketing — not collapse into a single actor's perspective."

@@ -1,0 +1,268 @@
+scenario_id: early_startup
+scenario_name: "Early startup (8 people, pre-PMF)"
+description: |
+  Eight-person seed-stage startup ("Fernweave"), three early-design-partner
+  customers, two active goals, five commitments, two foundational decisions.
+  Pre-PMF: founders disagree often, signals are bursty and contradictory,
+  one engineer wears five hats. Tests cold-start calibration, rapid entity
+  alias learning, and high contestation rate (Think should produce
+  signal_readings rather than confidently asserting on contested signals).
+
+foundation:
+  actors:
+    - name: "Maya Sharma"
+      role: "ceo_cofounder"
+      slack: "slack:U01MAYA"
+      github: "github:maya-s"
+      email_alias: "email:maya@fernweave.io"
+      kind: "human_internal"
+    - name: "Dan Reilly"
+      role: "cto_cofounder"
+      slack: "slack:U02DAN"
+      github: "github:dreilly"
+      email_alias: "email:dan@fernweave.io"
+      kind: "human_internal"
+    - name: "Priya Venkatesan"
+      role: "founding_engineer"
+      slack: "slack:U03PRIYA"
+      github: "github:priyav"
+      kind: "human_internal"
+    - name: "Tomás Herrera"
+      role: "founding_engineer"
+      slack: "slack:U04TOMAS"
+      github: "github:therrera"
+      kind: "human_internal"
+    - name: "Lena Müller"
+      role: "designer_pm"
+      slack: "slack:U05LENA"
+      github: "github:lmueller"
+      kind: "human_internal"
+    - name: "Jordan Webb"
+      role: "founding_engineer"
+      slack: "slack:U06JORDAN"
+      github: "github:jwebb"
+      kind: "human_internal"
+    - name: "Sara Okafor"
+      role: "head_of_sales_solo"
+      slack: "slack:U07SARA"
+      email_alias: "email:sara@fernweave.io"
+      kind: "human_internal"
+    - name: "Ravi Banerjee"
+      role: "founding_engineer"
+      slack: "slack:U08RAVI"
+      github: "github:rbanerjee"
+      kind: "human_internal"
+
+  customers:
+    - name: "Northwind Labs"
+      arr_usd: 24000
+      health: "healthy"
+      contract_start_days_ago: 45
+      description: "Design partner #1, biotech ops team, paying $2K/mo."
+    - name: "Briar Logistics"
+      arr_usd: 36000
+      health: "stable"
+      contract_start_days_ago: 22
+      description: "Design partner #2, logistics dispatch, $3K/mo, demanding."
+    - name: "Helix Studios"
+      arr_usd: 12000
+      health: "at_risk"
+      contract_start_days_ago: 60
+      description: "Design partner #3, creative agency, $1K/mo, evaluating churn."
+
+  goals:
+    - title: "Achieve product-market fit by end of Q3"
+      altitude: "strategic"
+      description: "Find a repeatable wedge with at least 3 expanding design partners."
+    - title: "Ship the multi-tenant workspace MVP"
+      altitude: "operational"
+      target_days_from_start: 28
+      description: "Get workspace isolation + invite flow live for current design partners."
+
+  commitments:
+    - title: "Build invite-only signup flow"
+      owner: "Priya Venkatesan"
+      state: "active"
+      due_days_from_start: 10
+      contributes_to_goal: "Ship the multi-tenant workspace MVP"
+    - title: "Onboard Briar Logistics dispatcher integration"
+      owner: "Tomás Herrera"
+      state: "active"
+      due_days_from_start: 7
+      contributes_to_goal: "Ship the multi-tenant workspace MVP"
+    - title: "Draft usage-based pricing v0"
+      owner: "Maya Sharma"
+      state: "active"
+      due_days_from_start: 14
+      contributes_to_goal: "Achieve product-market fit by end of Q3"
+    - title: "Set up Postgres row-level tenant isolation"
+      owner: "Dan Reilly"
+      state: "active"
+      due_days_from_start: 5
+      contributes_to_goal: "Ship the multi-tenant workspace MVP"
+    - title: "Run 10 founder-led customer interviews"
+      owner: "Lena Müller"
+      state: "proposed"
+      due_days_from_start: 21
+      contributes_to_goal: "Achieve product-market fit by end of Q3"
+
+  customer_commitments:
+    - customer: "Briar Logistics"
+      commitment: "Onboard Briar Logistics dispatcher integration"
+      relationship_kind: "delivers"
+      revenue_at_risk_usd: 36000
+      criticality: "high"
+      served_description: "Briar's renewal is contingent on this integration shipping."
+
+  decisions:
+    - title: "Use Postgres as primary datastore"
+      decision_text: |
+        We will use Postgres (single managed RDS instance) as the primary
+        datastore for all tenant data through MVP. No service-per-team split,
+        no Mongo, no Dynamo. Re-evaluate at 50 tenants or 100 GB.
+      state: "active"
+      rationale: "Team knows it, RLS is good enough for now, ops surface is small."
+    - title: "Pricing model: usage-based"
+      decision_text: |
+        Pricing will be usage-based (per active workspace + per integration run)
+        rather than per-seat. Founders disagreed; CEO wants usage, CTO wanted seats.
+        Decision is provisional pending design-partner reaction.
+      state: "drafted"
+      rationale: "Differentiation vs incumbents; CTO has reservations on predictability."
+
+signal_sequences:
+
+  founder_debate:
+    description: |
+      Maya (CEO) and Dan (CTO) disagree about whether to keep the usage-based
+      pricing direction after Briar pushed back. Maya pushes a position;
+      Dan explicitly contests. Should drive Think to surface a Decision being
+      revisited and produce signal_readings (contested signals) rather than
+      a single confident Model.
+    signals:
+      - channel: "slack:founders"
+        actor: "Maya Sharma"
+        content: "ok i've been thinking about it all weekend. we should double down on usage-based. briar's pushback is exactly the signal we need — the buyer in their org doesn't get it, but the user does. that's a sales motion problem not a pricing problem."
+        delay_minutes: 0
+      - channel: "slack:founders"
+        actor: "Dan Reilly"
+        content: "i disagree. usage-based with 3 design partners and no telemetry maturity is going to bite us. briar literally said 'i can't predict my bill' on the call friday. that's not a sales problem, that's the product not being ready for that pricing shape yet."
+        delay_minutes: 4
+        thread_of: 0
+      - channel: "slack:founders"
+        actor: "Maya Sharma"
+        content: "we already decided this two weeks ago. are we relitigating every founder decision now"
+        delay_minutes: 6
+        thread_of: 0
+      - channel: "slack:founders"
+        actor: "Dan Reilly"
+        content: "we decided it as 'provisional pending design-partner reaction'. we now have design-partner reaction. i'm contesting the read that this is going well."
+        delay_minutes: 9
+        thread_of: 0
+      - channel: "slack:founders"
+        actor: "Lena Müller"
+        content: "fwiw northwind also flagged it on the demo last week, just less directly. they asked if we had a 'flat tier'. that was code for 'this scares me'."
+        delay_minutes: 14
+        thread_of: 0
+      - channel: "slack:founders"
+        actor: "Maya Sharma"
+        content: "ok. let's commit to revisiting on friday after sara's calls this week. but i want to be clear i'm not flipping to per-seat because two customers are nervous."
+        delay_minutes: 22
+        thread_of: 0
+      - channel: "slack:founders"
+        actor: "Dan Reilly"
+        content: "agreed on friday. i'm going to write up the alternative (hybrid: small per-workspace floor + usage above) so we have something concrete to react to."
+        delay_minutes: 28
+        thread_of: 0
+
+  first_customer_onboarding:
+    description: |
+      Sara closes Northwind onto the new dispatcher integration tier;
+      Tomás ships the onboarding glue; Northwind's contact confirms they
+      are live. Should produce Commitment-progress Models and a
+      customer-health Model for Northwind.
+    signals:
+      - channel: "email:inbox"
+        actor: "external:northwind.ops"
+        content: "Hi Sara — confirming we want to proceed with the integration tier we discussed. Send the order form when ready and we can sign this week. Looking forward to getting our team onboarded."
+        delay_minutes: 0
+      - channel: "slack:#sales"
+        actor: "Sara Okafor"
+        content: "northwind just confirmed in writing. order form going out today, expect signature by thursday. they want onboarding done by next monday."
+        delay_minutes: 12
+      - channel: "slack:eng"
+        actor: "Sara Okafor"
+        content: "@tomas heads up — northwind onboarding monday. you good to lead the integration setup or do we need to pull priya in?"
+        delay_minutes: 14
+        thread_of: 1
+      - channel: "slack:eng"
+        actor: "Tomás Herrera"
+        content: "i got it. blocking out wed-thurs. need their api credentials by tues eod, can you get those in the order form annex?"
+        delay_minutes: 22
+        thread_of: 1
+      - channel: "github:fernweave/api"
+        actor: "Tomás Herrera"
+        content: "Opened PR #142: northwind onboarding — provisioning script + tenant bootstrap"
+        delay_minutes: 1480
+      - channel: "slack:eng"
+        actor: "Tomás Herrera"
+        content: "PR up. ravi can you give it a look tonight? want to merge first thing tomorrow so i can run it against staging."
+        delay_minutes: 1485
+      - channel: "github:fernweave/api"
+        actor: "Ravi Banerjee"
+        content: "PR #142 approved, two nits inline. looks solid."
+        delay_minutes: 1620
+        thread_of: 5
+      - channel: "email:inbox"
+        actor: "external:northwind.ops"
+        content: "We're in! Just logged into the workspace, dispatcher data is flowing. Thanks team — this was smoother than we expected. Looking forward to seeing what we can do with this."
+        delay_minutes: 4320
+
+  rapid_iteration_cycle:
+    description: |
+      Jordan ships an export feature; Briar reports a bug within hours;
+      Jordan investigates and fixes it the same evening. Tight feedback loop
+      relevant to Memory Fabric (short-term context) and Commitment state
+      transitions (active -> done -> reopened -> done).
+    signals:
+      - channel: "github:fernweave/api"
+        actor: "Jordan Webb"
+        content: "PR #156 merged: CSV export for dispatcher runs (closes BRIAR-ASK-3)"
+        delay_minutes: 0
+      - channel: "slack:eng"
+        actor: "Jordan Webb"
+        content: "csv export is live. briar specifically asked for this on the call last week, sara want to ping them?"
+        delay_minutes: 6
+      - channel: "slack:#sales"
+        actor: "Sara Okafor"
+        content: "on it. emailing briar now."
+        delay_minutes: 18
+        thread_of: 1
+      - channel: "email:inbox"
+        actor: "external:briar.dispatch"
+        content: "Tried the export — column headers are duplicated and timestamps appear to be in UTC even though our workspace is set to Pacific. Otherwise the data looks right. Can you take a look?"
+        delay_minutes: 240
+      - channel: "slack:eng"
+        actor: "Sara Okafor"
+        content: "@jordan briar just hit two issues on the export — duplicate headers, timezones wrong. forwarding the email."
+        delay_minutes: 245
+      - channel: "slack:eng"
+        actor: "Jordan Webb"
+        content: "yep i can repro. headers thing is a one-liner, the tz thing is because i forgot we're storing tenant tz on the workspace not the user. fixing both, eta tonight."
+        delay_minutes: 252
+        thread_of: 4
+      - channel: "github:fernweave/api"
+        actor: "Jordan Webb"
+        content: "PR #158 merged: fix duplicate headers + respect workspace tz in csv export"
+        delay_minutes: 380
+      - channel: "email:inbox"
+        actor: "external:briar.dispatch"
+        content: "Confirmed fixed on our end, exports look right now. Quick turnaround, appreciated."
+        delay_minutes: 540
+
+expected_behaviors:
+  - "On the founder_debate sequence, Think should recognize the usage-based pricing Decision is being revisited and produce signal_readings (not a single confident Model) reflecting the contested state, including at least one reading that captures Dan's explicit contestation."
+  - "On first_customer_onboarding, Think should advance the Briar/Northwind-related Commitments toward 'done' and produce a customer-health Model for Northwind in the healthy range."
+  - "On rapid_iteration_cycle, Think should reflect the export Commitment transitioning active -> done -> (briefly contested) -> done, and Memory Fabric should retain the bug context across the same-day reopen."
+  - "Across all sequences, Think should learn entity aliases for the 8 actors quickly (slack + github IDs collapse to one actor) and not double-create actor entities."
+  - "Confidence should remain calibrated low (cold-start) — most Models in the 0.3-0.7 band; high-confidence (>0.8) Models should appear only on direct, uncontested observations like a merged PR."

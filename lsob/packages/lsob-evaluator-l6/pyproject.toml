@@ -1,0 +1,23 @@
+[project]
+name = "lsob-evaluator-l6"
+version = "0.1.0"
+description = "LSOB package: lsob-evaluator-l6 — Layer 6 (decision-support quality) evaluator"
+requires-python = ">=3.12"
+dependencies = [
+    "lsob-contracts",
+    "pydantic>=2.7",
+    "numpy>=1.26",
+    "typer>=0.12",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+lsob-eval-l6 = "lsob_evaluator_l6.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lsob_evaluator_l6"]

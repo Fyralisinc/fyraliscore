@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-031",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:initech-tie-010",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-010-a",
+        "entities": [
+          "commitment:initech-tie-010",
+          "actor:eng-8",
+          "customer:initech-tie-010"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-010-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:eng-8 needs to confirm updated commitment:initech-tie-010 deadline with customer:initech-tie-010",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-010-b",
+        "entities": [
+          "customer:initech-tie-010",
+          "commitment:initech-tie-010"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-010-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:initech-tie-010 is still engaged on commitment:initech-tie-010",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-010",
+    "metadata": {},
+    "produced_at": "2026-01-14T14:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-010"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:initech-tie-010",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-010-b",
+        "entities": [
+          "commitment:initech-tie-010",
+          "customer:initech-tie-010"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-010-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:initech-tie-010 is still engaged on commitment:initech-tie-010",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-010-a",
+        "entities": [
+          "actor:eng-8",
+          "commitment:initech-tie-010",
+          "customer:initech-tie-010"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-010-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:eng-8 needs to confirm updated commitment:initech-tie-010 deadline with customer:initech-tie-010 (observed)",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-010",
+    "metadata": {},
+    "produced_at": "2026-01-14T14:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-010"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:initech-tie-010",
+      "customer_id": "customer:initech-tie-010",
+      "domain": "healthtech",
+      "observed_lag_days": 2
+    },
+    "timestamp": "2026-01-14T14:00:00+00:00",
+    "trigger_id": "trig-tie-010"
+  }
+}

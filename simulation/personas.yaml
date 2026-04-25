@@ -1,0 +1,165 @@
+# Simulation personas — Company OS dogfood cast.
+#
+# Each persona is authored content on the caller's side; when signals
+# are injected via services/synthetic/core.inject() they flow through
+# the uniform ingestion path and the persona's slack/github/email
+# refs resolve to this UUID via actor_identity_mappings.
+#
+# UUIDs are stable so re-runs of the same scenario produce the same
+# actor_id in the DB (after a reset.py purge). Re-rolling them is OK
+# but then every fixture / scenario YAML needs regenerating.
+#
+# Voice hints are prompt snippets shown above the Slack-UI composer
+# to remind Rachin how this persona sounds before they type. They are
+# NOT consumed by any LLM — they are a UX aid only.
+
+personas:
+  - id: 11111111-aaaa-7000-8000-000000000001
+    name: Alice Chen
+    role: engineer
+    title: Staff Engineer, Payments
+    voice_style_notes: >-
+      terse, engineering-focused, lowercase sentences, drops
+      articles, signs off without punctuation. uses "lol" but
+      never emoji. links PRs bare.
+    typical_channels: [slack_eng, slack_payments, github, linear]
+    slack_handle: alice
+    github_handle: alice-dev
+    email: alice@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000002
+    name: Marcus Dent
+    role: head_of_engineering
+    title: Head of Engineering
+    voice_style_notes: >-
+      measured, writes in full sentences, asks before asserting.
+      prefers numbered options. capitalizes product names. no emoji.
+    typical_channels: [slack_eng, slack_leadership, email, github]
+    slack_handle: marcus
+    github_handle: marcus-d
+    email: marcus@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000003
+    name: Monica Rao
+    role: head_of_sales
+    title: Head of Sales
+    voice_style_notes: >-
+      crisp, direct, puts numbers first. uses customer names in
+      every message. will say "this is bad" without softening.
+      occasional em-dashes.
+    typical_channels: [slack_revenue, slack_leadership, email, calendar]
+    slack_handle: monica
+    github_handle: null
+    email: monica@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000004
+    name: Priya Shah
+    role: customer_success
+    title: Customer Success Lead (Acme account)
+    voice_style_notes: >-
+      warm but precise, quotes customer words verbatim, tags urgency
+      explicitly. writes in bullets more than prose.
+    typical_channels: [slack_customer_acme, slack_revenue, email, calendar]
+    slack_handle: priya
+    github_handle: null
+    email: priya@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000005
+    name: David Okonkwo
+    role: cfo
+    title: CFO
+    voice_style_notes: >-
+      very short messages. always asks about dollars. ends questions
+      without question marks when the answer is obvious. formal email
+      signatures.
+    typical_channels: [slack_leadership, email, calendar]
+    slack_handle: david
+    github_handle: null
+    email: david@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000006
+    name: Nora Bell
+    role: engineer
+    title: Senior Engineer, Rate Limiter owner
+    voice_style_notes: >-
+      technical, cares about correctness, will push back with data.
+      lowercase, quick. responds in Slack threads not top-level.
+    typical_channels: [slack_eng, slack_payments, github, linear]
+    slack_handle: nora
+    github_handle: nora-b
+    email: nora@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000007
+    name: Jakob Iversen
+    role: head_of_product
+    title: Head of Product
+    voice_style_notes: >-
+      framing-first, names tradeoffs explicitly, writes in paragraphs.
+      starts messages with "Question:" or "Proposal:" often.
+    typical_channels: [slack_leadership, slack_eng, email, linear]
+    slack_handle: jakob
+    github_handle: jakob-i
+    email: jakob@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000008
+    name: Sara Liu
+    role: designer
+    title: Staff Designer
+    voice_style_notes: >-
+      visual language, links Figma. short reactive messages, long
+      weekly updates. careful with opinions, direct when asked.
+    typical_channels: [slack_design, slack_eng, email]
+    slack_handle: sara
+    github_handle: null
+    email: sara@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-000000000009
+    name: Tomás Alvarez
+    role: account_executive
+    title: Enterprise AE (Acme)
+    voice_style_notes: >-
+      optimistic tone, signs messages with "t." or "tomás". shares
+      customer quotes in single sentences. updates the #customer-acme
+      channel daily.
+    typical_channels: [slack_customer_acme, slack_revenue, email, calendar]
+    slack_handle: tomas
+    github_handle: null
+    email: tomas@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-00000000000a
+    name: Evelyn Park
+    role: legal_counsel
+    title: General Counsel
+    voice_style_notes: >-
+      formal, precise, prefers email over slack. single-paragraph
+      messages. cites contract sections. never speculates.
+    typical_channels: [email, slack_leadership]
+    slack_handle: evelyn
+    github_handle: null
+    email: evelyn@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-00000000000b
+    name: Ben Ortiz
+    role: support_engineer
+    title: Support Engineer on-call
+    voice_style_notes: >-
+      incident-style, timestamps every line, uses "ack / eta / cause".
+      short blocks separated by horizontal breaks in chat.
+    typical_channels: [slack_eng, slack_customer_acme, linear]
+    slack_handle: ben
+    github_handle: ben-o
+    email: ben@fyralis.internal
+
+  - id: 11111111-aaaa-7000-8000-00000000000c
+    name: Rachin Kalakheti
+    role: ceo
+    title: CEO / founder
+    voice_style_notes: >-
+      this is you. direct, asks for reasoning not answers. writes
+      short messages that are often questions. will push back on
+      hedging. the persona exists so Rachin can inject his own
+      signals into the substrate (e.g. a journal entry).
+    typical_channels: [slack_leadership, email, journal]
+    slack_handle: rachin
+    github_handle: rachin
+    email: rachin@fyralis.internal

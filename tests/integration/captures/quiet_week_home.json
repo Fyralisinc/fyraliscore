@@ -1,0 +1,59 @@
+{
+  "cards": [],
+  "close_line": {
+    "body": "Nothing else demands you. You can go.",
+    "metadata": {
+      "calibration_pct": 74,
+      "external_moves": 0,
+      "signal_count": 24
+    }
+  },
+  "greeting": {
+    "body_html": "Good morning. Nothing consequential since yesterday; the company is running at normal metabolism.",
+    "cached_at": "2026-04-23T05:46:33.646350+00:00",
+    "meta": {
+      "date_iso": "2026-04-23",
+      "recomputed_at": "2026-04-23T05:46:31.270179+00:00",
+      "signals_watched_count": 24
+    },
+    "staleness_seconds": 0
+  },
+  "query_grid": {
+    "cached_at": "2026-04-23T05:46:33.647531+00:00",
+    "queries": [
+      {
+        "hot": false,
+        "icon": "calibration",
+        "id": "evergreen:why_calibration",
+        "label": "Why my calibration shifted",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "customer",
+        "id": "evergreen:customer_drift",
+        "label": "Which customers are drifting",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "timeline",
+        "id": "evergreen:timeline",
+        "label": "What changed yesterday",
+        "tag": "evergreen"
+      },
+      {
+        "hot": false,
+        "icon": "dependency",
+        "id": "evergreen:dependency",
+        "label": "What's blocked by dependencies",
+        "tag": "evergreen"
+      }
+    ]
+  },
+  "status": {
+    "calibration_pct": 74,
+    "needs_you_count": 0,
+    "substrate_alive": true
+  }
+}

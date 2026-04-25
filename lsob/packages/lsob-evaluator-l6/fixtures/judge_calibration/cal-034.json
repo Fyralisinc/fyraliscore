@@ -1,0 +1,116 @@
+{
+  "human_label": "tie",
+  "id": "cal-034",
+  "notes": "Reference and SUT capture the same facts and the same transition. SUT reorders claims and adds a minor `reason` string but does not change substance. Human reviewer treated this as a tie.",
+  "reference_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:vandelay-tie-013",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": null,
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.78,
+        "claim_id": "ref-tie-013-a",
+        "entities": [
+          "commitment:vandelay-tie-013",
+          "actor:sales-1",
+          "customer:vandelay-tie-013"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-013-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:sales-1 needs to confirm updated commitment:vandelay-tie-013 deadline with customer:vandelay-tie-013",
+        "proposition_kind": "todo"
+      },
+      {
+        "asserted_confidence": 0.82,
+        "claim_id": "ref-tie-013-b",
+        "entities": [
+          "customer:vandelay-tie-013",
+          "commitment:vandelay-tie-013"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-013-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:vandelay-tie-013 is still engaged on commitment:vandelay-tie-013",
+        "proposition_kind": "stakeholder"
+      }
+    ],
+    "diff_id": "ref-tie-013",
+    "metadata": {},
+    "produced_at": "2026-01-14T17:00:00+00:00",
+    "rationale": "Reference: confirm + stakeholder claim + state transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-013"
+  },
+  "sut_diff": {
+    "act_ops": [
+      {
+        "entity_ref": "commitment:vandelay-tie-013",
+        "from_state": "on_track",
+        "op": "transition",
+        "reason": "awaiting customer confirmation",
+        "to_state": "pending_confirmation"
+      }
+    ],
+    "claim_ops": [
+      {
+        "asserted_confidence": 0.8,
+        "claim_id": "sut-tie-013-b",
+        "entities": [
+          "commitment:vandelay-tie-013",
+          "customer:vandelay-tie-013"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-013-2"
+        ],
+        "falsifier": null,
+        "op": "upsert_claim",
+        "proposition": "customer:vandelay-tie-013 is still engaged on commitment:vandelay-tie-013",
+        "proposition_kind": "stakeholder"
+      },
+      {
+        "asserted_confidence": 0.77,
+        "claim_id": "sut-tie-013-a",
+        "entities": [
+          "actor:sales-1",
+          "commitment:vandelay-tie-013",
+          "customer:vandelay-tie-013"
+        ],
+        "evidence_signal_ids": [
+          "signal-tie-013-1"
+        ],
+        "falsifier": "deadline_confirmed_email",
+        "op": "upsert_claim",
+        "proposition": "actor:sales-1 needs to confirm updated commitment:vandelay-tie-013 deadline with customer:vandelay-tie-013 (observed)",
+        "proposition_kind": "todo"
+      }
+    ],
+    "diff_id": "sut-tie-013",
+    "metadata": {},
+    "produced_at": "2026-01-14T17:00:00+00:00",
+    "rationale": "SUT: same set of claims plus explicit reason on the transition.",
+    "resource_ops": [],
+    "trigger_id": "trig-tie-013"
+  },
+  "trigger": {
+    "kind": "email_thread_updated",
+    "payload": {
+      "commitment_id": "commitment:vandelay-tie-013",
+      "customer_id": "customer:vandelay-tie-013",
+      "domain": "edtech",
+      "observed_lag_days": 3
+    },
+    "timestamp": "2026-01-14T17:00:00+00:00",
+    "trigger_id": "trig-tie-013"
+  }
+}

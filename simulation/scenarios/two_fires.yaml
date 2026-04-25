@@ -1,0 +1,97 @@
+name: two_fires
+description: >-
+  Two concurrent situations hitting the same Tuesday morning: an
+  Acme-like customer renewal risk AND an unrelated security disclosure
+  from a third-party vendor. Tests multi-card ranking and whether the
+  greeting can hold more than one "one thing".
+
+narrative:
+  # --- Fire 1: renewal risk (compressed version of acme_tuesday) ---
+  - t: "-5d 09:15"
+    actor: alice
+    kind: github_pr
+    event: merged
+    repo: payments
+    number: 847
+    title: "rate-limiter scope reduction — known regression"
+    body: "deploy window reset-on-deploy; ENG-413 follow-up filed"
+
+  - t: "-3d 11:22"
+    actor: priya
+    channel: customer-acme
+    content: "Acme noticing 429s around deploy windows. urgent: soft."
+
+  - t: "-2d 03:12"
+    actor: priya
+    channel: customer-acme
+    content: "Acme escalated — 12 failed billing jobs tonight. loud now."
+
+  - t: "-2d 09:30"
+    actor: monica
+    channel: revenue
+    content: "$487K ARR at risk. Need Rachin decision Thursday."
+
+  - t: "-1d 11:20"
+    actor: marcus
+    channel: leadership
+    content: "Recommend rebasing billing to avoid shipping the regression."
+
+  # --- Fire 2: third-party vendor security disclosure ---
+  - t: "-2d 16:45"
+    actor: marcus
+    kind: email
+    direction: inbound
+    subject: "Security advisory — authz-lib 2.4.x CVE-2026-12345"
+    to: [security@fyralis.internal]
+    body: |-
+      A critical-severity auth bypass has been disclosed in authz-lib
+      versions 2.4.0 through 2.4.7. We ship 2.4.3 in the gateway.
+      Patched versions available; upgrade recommended within 72h.
+
+  - t: "-2d 17:10"
+    actor: marcus
+    channel: leadership
+    content: |-
+      authz-lib CVE dropped. we're on 2.4.3 in gateway. this is a
+      separate risk from acme. need someone to own the upgrade today.
+
+  - t: "-1d 09:00"
+    actor: nora
+    kind: linear
+    event: status_change
+    ticket: SEC-108
+    title: "upgrade authz-lib to 2.4.9"
+    from_state: todo
+    to_state: in_progress
+
+  - t: "-1d 14:20"
+    actor: nora
+    kind: github_pr
+    event: opened
+    repo: gateway
+    number: 302
+    title: "SEC-108: bump authz-lib to 2.4.9"
+
+  - t: "-20h"
+    actor: ben
+    channel: eng
+    content: |-
+      SEC-108 in staging. no functional regressions observed. waiting
+      on security review before prod.
+
+  - t: "-10h"
+    actor: david
+    channel: leadership
+    content: |-
+      Two risks hitting same week — Acme renewal ($487K ARR) and CVE
+      patch. Different owners, but founder attention needed on both.
+
+  - t: "-2h"
+    actor: priya
+    channel: customer-acme
+    content: "Chris reminded me monday is the cutoff. Thursday decision stands."
+
+  - t: "-1h"
+    actor: nora
+    channel: eng
+    content: "sec-108 merged to main. deploying to prod next hour."
