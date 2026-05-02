@@ -89,6 +89,7 @@ _MODEL_SELECT_COLS = (
     "confidence_at_assertion",
     "resolved_at", "resolution_outcome",
     "activation_coefficient",
+    "target_actor_id", "caused_act_change_id",
 )
 _MODEL_SELECT_SQL = ", ".join(_MODEL_SELECT_COLS)
 
@@ -634,6 +635,27 @@ async def pathway_a_structural(
     )
 
 
+def _conn_has_vector_codec(conn: asyncpg.Connection) -> bool:
+    """True when the pgvector codec is registered on the connection.
+
+    asyncpg.Connection uses __slots__, so we cannot tag the connection
+    directly. Instead the gateway pool init and ModelsRepo's lazy
+    register both add `id(conn)` to the module-level registry in
+    services.models.repo. PoolConnectionProxy.__getattr__ delegates
+    `_con` to the wrapped Connection, so we identify by that id.
+    """
+    try:
+        from services.models.repo import _VECTOR_REGISTERED_IDS
+    except Exception:
+        return False
+    if id(conn) in _VECTOR_REGISTERED_IDS:
+        return True
+    inner = getattr(conn, "_con", None)
+    if inner is not None and id(inner) in _VECTOR_REGISTERED_IDS:
+        return True
+    return False
+
+
 # =====================================================================
 # Pathway B — Semantic similarity (embedding cosine over active Models)
 # =====================================================================
@@ -733,9 +755,18 @@ async def pathway_b_semantic(
     # event when either event_actors or event_entities is supplied.
     # Semantics: OR between the two dimensions. A Model matches if
     #   (scope_actors && event_actors) OR (scope_entities && event_entities).
-    # pgvector expects string '[x,y,...]' when no codec is registered.
-    # Stringify here so asyncpg sees a str, matched to $2::vector cast.
-    vec_param = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
+    # Bind format depends on whether asyncpg has the pgvector binary
+    # codec registered on this connection. The encoder accepts a
+    # numpy array (or anything `Vector(...)` can wrap); the no-codec
+    # path needs the stringified `[…]` literal that the `::vector`
+    # cast can parse as text.
+    if _conn_has_vector_codec(conn):
+        import numpy as _np
+        vec_param: Any = _np.asarray(
+            [float(x) for x in vec], dtype="float32"
+        )
+    else:
+        vec_param = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
     scope_clauses: list[str] = []
     scope_params: list[Any] = [tenant_id, vec_param, k]
     actor_list: list[UUID] = []

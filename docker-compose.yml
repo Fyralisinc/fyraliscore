@@ -34,20 +34,89 @@ services:
        wait"
 
   gateway:
-    # Stub: real image built in Wave 2-A. This service exists so that
-    # `docker-compose up` reflects the full dependency graph.
-    image: python:3.11-slim
+    build: .
     container_name: company_os_gateway
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
       OLLAMA_URL: http://ollama:11434
-    command: ["/bin/sh", "-c", "echo 'gateway stub — implemented in Wave 2-A' && sleep infinity"]
-    profiles:
-      - full
+      COMPANY_OS_ENV: prod
+      GATEWAY_MOUNT_SIM: "1"
+      GATEWAY_START_GRT_SCHEDULER: "1"
+      GATEWAY_OWNS_POOL: "1"
+    env_file: .env.production
+    expose:
+      - "8000"
+
+  think_worker:
+    build: .
+    container_name: company_os_think_worker
+    command: python scripts/run_think_worker.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+    env_file: .env.production
+
+  post_commit_worker:
+    build: .
+    container_name: company_os_post_commit_worker
+    command: python scripts/run_post_commit_worker.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+    env_file: .env.production
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: company_os_ui
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      VIRTUAL_HOST: demo.fyralis.xyz
+      LETSENCRYPT_HOST: demo.fyralis.xyz
+      LETSENCRYPT_EMAIL: rachin.kalakheti@gmail.com
+
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - nginx-certs:/etc/nginx/certs
+      - ./nginx/vhost.d:/etc/nginx/vhost.d
+      - nginx-html:/usr/share/nginx/html
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: acme-companion
+    restart: unless-stopped
+    environment:
+      DEFAULT_EMAIL: rachin.kalakheti@gmail.com
+    volumes_from:
+      - nginx-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - acme:/etc/acme.sh
 
 volumes:
   company_os_pgdata:
   company_os_ollama:
+  nginx-certs:
+  nginx-html:
+  acme:

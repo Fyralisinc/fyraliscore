@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, model_validator
 
 from lib.shared.errors import ValidationError
 from lib.shared.types import PropositionKind
@@ -115,6 +115,59 @@ class EnvironmentalTrendProposition(_PropositionBase):
     strength: str | float
 
 
+# Recommendation proposition — Stage 1 decision support.
+#
+# A recommendation Model surfaces to a target actor (typically the CEO)
+# a specific Act-layer change they should approve. Required fields are
+# enforced via this discriminated-union variant. Cross-field invariants
+# (target_act_ref existence, state-machine reachability for transitions)
+# are checked in services.models.recommendations at INSERT time.
+
+_LEGAL_ACT_REF_TYPES = frozenset({"goal", "commitment", "decision", "resource"})
+_LEGAL_PROPOSED_OPS = frozenset({"create", "update", "archive", "transition"})
+
+
+class RecommendationProposition(_PropositionBase):
+    kind: Literal["recommendation"] = "recommendation"
+    target_act_ref: dict[str, Any]
+    proposed_change: dict[str, Any]
+    expected_impact: float | None = None
+    qualitative_impact: str | None = None
+    target_actor_id: str  # UUID string
+
+    @model_validator(mode="after")
+    def _check_recommendation_shape(self) -> "RecommendationProposition":
+        ref_type = self.target_act_ref.get("type")
+        ref_id = self.target_act_ref.get("id")
+        if ref_type not in _LEGAL_ACT_REF_TYPES:
+            raise ValueError(
+                f"target_act_ref.type must be one of "
+                f"{sorted(_LEGAL_ACT_REF_TYPES)}; got {ref_type!r}"
+            )
+        if not isinstance(ref_id, str) or not ref_id:
+            raise ValueError("target_act_ref.id must be a non-empty UUID string")
+
+        op = self.proposed_change.get("operation")
+        if op not in _LEGAL_PROPOSED_OPS:
+            raise ValueError(
+                f"proposed_change.operation must be one of "
+                f"{sorted(_LEGAL_PROPOSED_OPS)}; got {op!r}"
+            )
+        if not isinstance(self.proposed_change.get("payload"), dict):
+            raise ValueError("proposed_change.payload must be a dict")
+
+        if self.expected_impact is None and not (
+            self.qualitative_impact and self.qualitative_impact.strip()
+        ):
+            raise ValueError(
+                "either expected_impact (numeric) or qualitative_impact "
+                "(non-empty string) must be supplied"
+            )
+        if not isinstance(self.target_actor_id, str) or not self.target_actor_id:
+            raise ValueError("target_actor_id must be a non-empty UUID string")
+        return self
+
+
 # ---------------------------------------------------------------------
 # Discriminated union
 # ---------------------------------------------------------------------
@@ -131,6 +184,7 @@ PropositionModel = Annotated[
         ConcernProposition,
         MarketAssessmentProposition,
         EnvironmentalTrendProposition,
+        RecommendationProposition,
     ],
     Field(discriminator="kind"),
 ]
@@ -154,6 +208,7 @@ _KIND_TO_CLASS: dict[str, type[_PropositionBase]] = {
     "concern": ConcernProposition,
     "market_assessment": MarketAssessmentProposition,
     "environmental_trend": EnvironmentalTrendProposition,
+    "recommendation": RecommendationProposition,
 }
 
 LEGAL_KINDS: frozenset[str] = frozenset(_KIND_TO_CLASS.keys())
@@ -218,6 +273,7 @@ __all__ = [
     "ConcernProposition",
     "MarketAssessmentProposition",
     "EnvironmentalTrendProposition",
+    "RecommendationProposition",
     "validate_proposition",
     "proposition_kind",
     "LEGAL_KINDS",

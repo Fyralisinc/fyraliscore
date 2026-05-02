@@ -172,6 +172,9 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("resolved_at", TS, True),
             _col("resolution_outcome", BOOL, True),
             _col("activation_coefficient", FLOAT, False, default=True),
+            # Migration 0022 — recommendation proposition support.
+            _col("target_actor_id", UUID, True),         # generated stored
+            _col("caused_act_change_id", UUID, True),
         ]),
         indexes={
             "models_pkey",
@@ -184,6 +187,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             "models_supporting_idx",
             "models_activation_idx",
             "models_proposition_kind_idx",   # A2
+            "recommendations_active_idx",    # 0022
         },
     ),
     "model_status_notes": Table(

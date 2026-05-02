@@ -21,8 +21,10 @@ from .conftest import every_kind_proposition
 
 
 def test_all_ten_proposition_kinds_validate_and_round_trip() -> None:
-    """Every spec kind must validate without error and dump back
-    to the same kind discriminator."""
+    """Every spec kind in `every_kind_proposition()` must validate
+    and round-trip its discriminator. The Stage-1 `recommendation`
+    kind is exercised separately in test_recommendations.py because
+    its shape requires a target_act_ref + proposed_change pair."""
     seen: set[str] = set()
     for raw in every_kind_proposition():
         parsed = validate_proposition(raw)
@@ -30,13 +32,14 @@ def test_all_ten_proposition_kinds_validate_and_round_trip() -> None:
         dumped = parsed.model_dump()
         assert dumped["kind"] == raw["kind"]
         seen.add(raw["kind"])
-    # Every spec kind covered exactly once.
-    assert seen == LEGAL_KINDS
+    # The 10 base kinds covered exactly once; recommendation lives
+    # in a dedicated test file because of its DB-backed validators.
+    assert seen == LEGAL_KINDS - {"recommendation"}
 
 
 def test_legal_kinds_matches_spec() -> None:
-    """Post-Wave-0: the 10 spec kinds are immutable. Changing the
-    set requires a SCHEMA-LOCK amendment."""
+    """Original Wave-0 set, plus the Stage-1 recommendation kind.
+    Changing this set requires a SCHEMA-LOCK amendment + migration."""
     assert LEGAL_KINDS == frozenset(
         {
             "state",
@@ -49,6 +52,7 @@ def test_legal_kinds_matches_spec() -> None:
             "concern",
             "market_assessment",
             "environmental_trend",
+            "recommendation",
         }
     )
 

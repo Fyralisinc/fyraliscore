@@ -95,8 +95,18 @@ Proposition schemas (`proposition` field MUST match one of these exactly based o
 - concern               → {"kind": "concern", "about": "<subject>", "nature": "<what is concerning>", "raised_by": "<actor or role>"}
 - market_assessment     → {"kind": "market_assessment", "subject_external": "<external entity>", "assessment": "<...>"}
 - environmental_trend   → {"kind": "environmental_trend", "signature": "<...>", "direction": "<up|down|mixed>", "strength": "<weak|moderate|strong>"}
+- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid>"}, "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>"}
 
-The ten kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opportunity", or others — map them to the closest valid kind (concern, prediction, etc.).
+The eleven kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opportunity", or others — map them to the closest valid kind (concern, prediction, etc.).
+
+Recommendations — when to emit, when NOT to:
+A `recommendation` Model surfaces a specific Act-layer action a human (typically the CEO) should approve. Produce one when reasoning identifies a concrete change to the Act layer that warrants human approval — revisit a Goal whose assumptions broke, transition a Commitment whose state no longer reflects reality, archive a Decision a newer signal supersedes, reallocate a Resource. Do NOT produce a recommendation for changes the system can make autonomously (a confidence update, a doneunverified transition off a self-reported merge, a Model archive — those are claim_ops or act_ops). Recommendations are for the human-approval queue, not the system's automatic ledger.
+
+Each recommendation MUST set `target_act_ref` (the Act/Resource the change is on), `proposed_change` (operation + payload that the act handler will apply via existing endpoints), `target_actor_id` (the actor who should see this; pull from <actors_in_context> — typically the CEO), and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
+
+Cap recommendations at FIVE per Think invocation. If the situation surfaces more, pick the highest-impact ones and drop the rest.
+
+For recommendation-kind Models, scope_actors should typically be `[<target_actor_id>]` (the actor expected to decide), and scope_entities should include the targeted Act/Resource so the action list ranker and audit logs can find it.
 
 Model Scope — scope_actors and scope_entities are REQUIRED for every inserted Model.
 A Model with both arrays empty cannot be retrieved via the structural pathway,

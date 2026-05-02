@@ -191,6 +191,7 @@ class QueryHandler:
         access_context_builder: Optional[
             Callable[[UUID], AccessContext]
         ] = None,
+        embedder: Optional[Any] = None,
     ) -> None:
         self._conn_provider = conn_provider
         self._classifier = classifier or QueryClassifier()
@@ -200,6 +201,7 @@ class QueryHandler:
         self._access_builder = access_context_builder or (
             lambda tid: AccessContext(tenant_id=tid)
         )
+        self._embedder = embedder
 
     # ------------------------------------------------------------------
     # Entry point
@@ -255,6 +257,7 @@ class QueryHandler:
                     conversation_history=request.conversation_history,
                     card_context=card_ctx,
                     now=datetime.now(timezone.utc),
+                    embedder=self._embedder,
                 )
                 result: StrategyResult = await strategy.gather(parsed, ctx)
         latency_retrieve_ms = int((time.perf_counter() - t_retrieve) * 1000)

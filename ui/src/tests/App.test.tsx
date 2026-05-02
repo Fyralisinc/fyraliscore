@@ -1,26 +1,37 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../App";
+import { TODAY_FIXTURE } from "../api/today-mock";
 import { HOME_FIXTURE, mockAsk } from "../api/mock-data";
 
-// Fetch-mock covers /view/ceo/home, /view/ceo/ask, /view/ceo/turn-action.
-// The WS stream fails to connect in jsdom; that's fine — useHome falls
-// back to the HTTP snapshot and flags offline=false because the initial
-// fetch succeeded.
+// Fetch-mock covers /v1/today, /v1/recommendations/<id>/triage, plus the
+// legacy /view/ceo/* surface used by the Ask Zone. The WS stream fails
+// to connect in jsdom; useToday falls back to the HTTP snapshot.
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.endsWith("/v1/today") && method === "GET") {
+        return new Response(JSON.stringify(TODAY_FIXTURE), { status: 200 });
+      }
+      if (/\/v1\/recommendations\/[^/]+\/triage$/.test(url) && method === "POST") {
+        return new Response(
+          JSON.stringify({ ok: true, recommendation_id: "rec-x", action: "act" }),
+          { status: 200 }
+        );
+      }
+      if (url.endsWith("/v1/today/brand") && method === "POST") {
+        return new Response(JSON.stringify({ ok: true, name: "X" }), { status: 200 });
+      }
       if (url.endsWith("/view/ceo/home")) {
         return new Response(JSON.stringify(HOME_FIXTURE), { status: 200 });
       }
       if (url.endsWith("/view/ceo/ask")) {
         const body = JSON.parse((init?.body as string) ?? "{}");
-        return new Response(JSON.stringify(mockAsk(body.query)), {
-          status: 200,
-        });
+        return new Response(JSON.stringify(mockAsk(body.query)), { status: 200 });
       }
       if (url.endsWith("/view/ceo/turn-action")) {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -46,101 +57,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("CEO view", () => {
-  it("renders greeting, query grid, cards, and close line", async () => {
+describe("Today page", () => {
+  it("renders date header, signal strip, and the seven cards", async () => {
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
+      expect(screen.getByText(TODAY_FIXTURE.page.date_label)).toBeInTheDocument()
     );
-    expect(screen.getByText(/Company OS/i)).toBeInTheDocument();
-    expect(screen.getByText(/view \//)).toBeInTheDocument();
-    expect(screen.getByTestId("query-grid")).toBeInTheDocument();
-    // Six chips in the grid.
-    expect(
-      screen.getByTestId("query-grid").querySelectorAll("button.q")
-    ).toHaveLength(6);
-    // Three cards (observation / decision / question).
-    expect(screen.getByTestId("card-observation")).toBeInTheDocument();
-    expect(screen.getByTestId("card-decision")).toBeInTheDocument();
-    expect(screen.getByTestId("card-question")).toBeInTheDocument();
-    expect(screen.getByTestId("close-line")).toBeInTheDocument();
+    // Sidebar brand
+    expect(screen.getByText("Fyralis")).toBeInTheDocument();
+    // Signal strip — 4 metric labels
+    const labels = Array.from(document.querySelectorAll(".signal-label")).map(
+      (el) => el.textContent?.trim()
+    );
+    expect(labels).toEqual(expect.arrayContaining(["ARR", "Runway", "Commitments", "My calibration"]));
+    // Cards (kind labels)
+    expect(screen.getAllByText(/Decision drift/i).length).toBeGreaterThan(0);
+    expect(document.querySelectorAll("article.card").length).toBe(
+      TODAY_FIXTURE.cards.length
+    );
   });
 
-  it("expands a card and closes on Esc", async () => {
+  it("filters strategic only when pressing 3", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
+      expect(screen.getByText(TODAY_FIXTURE.page.date_label)).toBeInTheDocument()
     );
-    const card = screen.getByTestId("card-observation");
-    await user.click(card);
-    expect(card).toHaveAttribute("aria-expanded", "true");
-    // Esc closes.
+    await user.keyboard("3");
+    const visible = document.querySelectorAll("article.card[data-kind='strategic']");
+    expect(visible.length).toBeGreaterThan(0);
+    expect(document.querySelectorAll("article.card[data-kind='operational']").length).toBe(0);
+  });
+
+  it("opens shortcuts overlay when ? is pressed and closes on Esc", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText(TODAY_FIXTURE.page.date_label)).toBeInTheDocument()
+    );
+    await user.keyboard("?");
+    expect(screen.getByText(/Keyboard shortcuts/)).toBeInTheDocument();
     await user.keyboard("{Escape}");
-    expect(card).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("submits a query from the ground input and shows a turn", async () => {
-    const user = userEvent.setup();
-    render(<App />);
     await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
-    );
-    const input = screen.getByPlaceholderText(/Ask anything else/);
-    await user.type(input, "Show me why Acme became unsafe{Enter}");
-    await waitFor(() =>
-      expect(screen.getByTestId("turn")).toBeInTheDocument()
-    );
-    expect(screen.getByTestId("turn")).toHaveTextContent(
-      /Show me why Acme became unsafe/
+      expect(screen.queryByText(/Keyboard shortcuts/)).not.toBeInTheDocument()
     );
   });
 
-  it("tapping a query chip opens a turn with the chip's label", async () => {
+  it("focuses the ask field when / is pressed", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
+      expect(screen.getByText(TODAY_FIXTURE.page.date_label)).toBeInTheDocument()
     );
-    const chip = screen.getByRole("button", {
-      name: /Show me why Acme became unsafe/,
-    });
-    await user.click(chip);
-    await waitFor(() =>
-      expect(screen.getByTestId("turn")).toBeInTheDocument()
-    );
-  });
-
-  it("pressing / focuses the ground input from anywhere", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
-    );
-    const input = screen.getByPlaceholderText(/Ask anything else/);
-    // Ensure focus is not already there.
+    const input = screen.getByPlaceholderText(/What did we decide about pricing/);
     (input as HTMLInputElement).blur();
     expect(document.activeElement).not.toBe(input);
-    await act(async () => {
-      await user.keyboard("/");
-    });
+    await user.keyboard("/");
     expect(document.activeElement).toBe(input);
-  });
-
-  it("tapping a card verb sends the query template and collapses the card", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await waitFor(() =>
-      expect(screen.getByTestId("greeting")).toBeInTheDocument()
-    );
-    const card = screen.getByTestId("card-observation");
-    await user.click(card);
-    const verb = await screen.findByRole("button", { name: /Full reasoning/ });
-    await user.click(verb);
-    await waitFor(() =>
-      expect(screen.getByTestId("turn")).toBeInTheDocument()
-    );
-    // Card collapsed.
-    expect(card).toHaveAttribute("aria-expanded", "false");
   });
 });

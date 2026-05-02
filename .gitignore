@@ -46,6 +46,17 @@ docker-compose.override.yml
 .scheduled_tasks.lock
 .claude/scheduled_tasks.lock
 
+# ---- Simulation run artifacts ----
+truss_run/
+truss_run_*/
+test-results/
+
+# ---- External tools / large local dirs ----
+lsob/
+
+# ---- Production secrets (server-only) ----
+.env.production
+
 # ---- Credentials / keys (defensive) ----
 *.pem
 *.key

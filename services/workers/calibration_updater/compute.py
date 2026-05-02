@@ -73,6 +73,9 @@ PROP_KIND_DEFAULTS: dict[str, float] = {
     "concern":               0.92,
     "market_assessment":     0.87,
     "environmental_trend":   0.90,
+    # Recommendations are inferential ("you should do X") and prone to
+    # over-confidence in the same way as predictions; mirror that prior.
+    "recommendation":        0.85,
 }
 
 # Back-compat alias. Older call sites reference `DEFAULT_OFFSETS`.

@@ -42,6 +42,106 @@ _PROPOSITION_KINDS: list[dict] = [
     _proposition_variant("concern",               ["about", "nature", "raised_by"]),
     _proposition_variant("market_assessment",     ["subject_external", "assessment"]),
     _proposition_variant("environmental_trend",   ["signature", "direction", "strength"]),
+    # recommendation has a structured shape, not all-string fields, so
+    # build it manually rather than via the _proposition_variant helper.
+    {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "kind",
+            "target_act_ref",
+            "proposed_change",
+            "expected_impact",
+            "qualitative_impact",
+            "target_actor_id",
+        ],
+        "properties": {
+            "kind": {"type": "string", "enum": ["recommendation"]},
+            "target_act_ref": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "id"],
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["goal", "commitment", "decision", "resource"],
+                    },
+                    "id": _UUID_STR,
+                },
+            },
+            "proposed_change": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["operation", "payload"],
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "update", "archive", "transition"],
+                    },
+                    # `payload` varies by operation+target type. DeepSeek
+                    # strict mode rejects a bare `{"type": "object"}`
+                    # ("An object with no properties is not allowed"),
+                    # and rejects `additionalProperties: true`. So we
+                    # enumerate every payload field the recommendations
+                    # applier reads (services.recommendations.handlers,
+                    # services.think.applier) as nullable. Fields that
+                    # don't apply to the current operation come back as
+                    # null and the applier ignores them.
+                    "payload": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "new_state",
+                            "title",
+                            "description",
+                            "altitude",
+                            "parent_goal_id",
+                            "success_criteria",
+                            "target_date",
+                            "field",
+                            "new_value",
+                            "reason",
+                            "kind",
+                            "identity",
+                            "current_value",
+                            "metadata",
+                            "utilization_state",
+                            "controllability",
+                            "temporal_character",
+                            "valuation_confidence",
+                        ],
+                        "properties": {
+                            "new_state":            {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "title":                {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "description":          {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "altitude":             {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "parent_goal_id":       {"anyOf": [_UUID_STR, {"type": "null"}]},
+                            "success_criteria":     {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "target_date":          {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "field":                {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "new_value":            {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "reason":               {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "kind":                 {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "identity":             {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "current_value":        {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "metadata":             {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "utilization_state":    {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "controllability":      {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "temporal_character":   {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                            "valuation_confidence": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                        },
+                    },
+                },
+            },
+            "expected_impact": {
+                "anyOf": [{"type": "number"}, {"type": "null"}],
+            },
+            "qualitative_impact": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+            },
+            "target_actor_id": _UUID_STR,
+        },
+    },
 ]
 
 

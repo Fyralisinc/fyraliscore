@@ -184,6 +184,10 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/simulation/",
     "/simulation-ui/",
     "/debug/",
+    # Demo picker page calls these from an unauthenticated browser; the
+    # /sessions/start endpoint mints the auth token for everything else.
+    "/v1/demo/companies",
+    "/v1/demo/sessions/start",
 )
 
 
@@ -205,6 +209,30 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             or request.url.path.startswith("/stream")
             or any(request.url.path.startswith(p) for p in _PUBLIC_PATH_PREFIXES)
         ):
+            # Public paths skip auth, BUT if the caller passes a demo
+            # bearer token we still resolve it and inject X-Tenant-Id
+            # so the CEO-view sub-router's `tenant_dep` (which reads
+            # the header) finds the demo tenant. Without this, the
+            # bottom AskZone hits /view/ceo/ask with a bearer token
+            # only and the dep raises "x-tenant-id header required".
+            authz = request.headers.get("Authorization", "")
+            if authz.startswith("Bearer "):
+                token = authz[len("Bearer ") :].strip()
+                if token:
+                    deps = _deps(request)
+                    ctx = await validate_token(deps.pool, token)
+                    if ctx is not None:
+                        request.state.auth = ctx
+                        hdr_tenant = request.headers.get("X-Tenant-Id")
+                        if not hdr_tenant:
+                            tenant_str = str(ctx.tenant_id).encode("latin-1")
+                            new_headers = [
+                                (n, v)
+                                for (n, v) in request.scope["headers"]
+                                if n.lower() != b"x-tenant-id"
+                            ]
+                            new_headers.append((b"x-tenant-id", tenant_str))
+                            request.scope["headers"] = new_headers
             return await call_next(request)
 
         authz = request.headers.get("Authorization", "")
@@ -228,6 +256,21 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 {"error": "tenant_mismatch"},
                 status_code=status.HTTP_403_FORBIDDEN,
             )
+        # Inject the bearer-resolved tenant into the request headers so
+        # downstream routers that resolve tenant via `X-Tenant-Id`
+        # (services.query.api.tenant_dep, services.greeting.api, …) work
+        # under demo bearer auth without forcing every client to send
+        # the header explicitly. Demo sessions don't expose tenant_id
+        # to the browser so the UI can't send it.
+        if not hdr_tenant:
+            tenant_str = str(ctx.tenant_id).encode("latin-1")
+            new_headers = [
+                (name, value)
+                for (name, value) in request.scope["headers"]
+                if name.lower() != b"x-tenant-id"
+            ]
+            new_headers.append((b"x-tenant-id", tenant_str))
+            request.scope["headers"] = new_headers
         return await call_next(request)
 
 
@@ -430,6 +473,13 @@ def build_app(
         )
 
         _configure_realtime(app, pool=pool, start=False)
+
+    # Mount the demo router (Session 1 of DEMO-BUILD-PLAN). Adds the
+    # picker, session lifecycle, simulator, and SSE recommendation
+    # stream under /v1/demo/* (and /v1/recommendations/stream).
+    from services.demo.router import demo_router as _demo_router
+
+    app.include_router(_demo_router)
     return app
 
 
@@ -878,6 +928,472 @@ def _register_routes(app: FastAPI) -> None:
                 return JSONResponse({"error": str(e)}, status_code=404)
         return json.loads(result.model_dump_json())
 
+    # ---------------- /v1/recommendations (Stage 1 decision support) -
+    # Three endpoints: list (ranker), act, dismiss. All require an
+    # actor session (BearerAuthMiddleware). Authorization rule for v1:
+    # the requesting actor must be the queried/owning actor — Wave 5-A
+    # delegation is not yet wired in here. See
+    # services/recommendations/{repo,handlers}.py for the read/write
+    # surfaces this thin route layer wraps.
+    @app.get("/v1/recommendations")
+    async def list_recommendations(request: Request) -> JSONResponse:
+        from services.recommendations.repo import list_for_actor
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover — middleware guarantees this
+            return _unauth("missing_bearer")
+
+        actor_param = request.query_params.get("actor_id")
+        if actor_param is None:
+            target_actor = auth.actor_id
+        else:
+            try:
+                target_actor = UUID(str(actor_param))
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    {"error": "invalid_actor_id"}, status_code=400
+                )
+            # v1: only the actor themselves can query their own action
+            # list. Delegation lands with Wave 5-A.
+            if target_actor != auth.actor_id:
+                return JSONResponse(
+                    {"error": "forbidden",
+                     "reason": "cross_actor_access_not_supported"},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        limit_raw = request.query_params.get("limit", "15")
+        try:
+            limit = max(1, min(100, int(limit_raw)))
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "invalid_limit"}, status_code=400)
+
+        deps = _deps(request)
+        async with deps.pool.acquire() as conn:
+            views = await list_for_actor(
+                tenant_id=auth.tenant_id,
+                target_actor_id=target_actor,
+                limit=limit,
+                conn=conn,
+            )
+
+        return JSONResponse(
+            {
+                "items": [_serialize_recommendation(v) for v in views],
+                "count": len(views),
+            },
+            status_code=200,
+        )
+
+    @app.post("/v1/recommendations/{recommendation_id}/act")
+    async def act_on_recommendation_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        from services.recommendations.handlers import (
+            AlreadyArchivedError,
+            act_on_recommendation,
+        )
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            rec_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_recommendation_id"}, status_code=400
+            )
+
+        try:
+            body = await request.json() if (await request.body()) else {}
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        notes_raw = body.get("notes") if isinstance(body, dict) else None
+        notes = (
+            str(notes_raw).strip()
+            if isinstance(notes_raw, str) and notes_raw.strip()
+            else None
+        )
+
+        deps = _deps(request)
+        try:
+            async with deps.pool.acquire() as conn:
+                async with conn.transaction():
+                    # v1 access policy: only the recommendation's
+                    # target_actor_id can act on it.
+                    target_row = await conn.fetchrow(
+                        "SELECT target_actor_id FROM models "
+                        "WHERE id = $1 AND tenant_id = $2 "
+                        "  AND proposition_kind = 'recommendation'",
+                        rec_id, auth.tenant_id,
+                    )
+                    if target_row is None:
+                        return JSONResponse(
+                            {"error": "not_found"}, status_code=404,
+                        )
+                    if target_row["target_actor_id"] != auth.actor_id:
+                        return JSONResponse(
+                            {"error": "forbidden",
+                             "reason": "not_target_actor"},
+                            status_code=403,
+                        )
+
+                    result = await act_on_recommendation(
+                        recommendation_id=rec_id,
+                        actor_id=auth.actor_id,
+                        tenant_id=auth.tenant_id,
+                        notes=notes,
+                        conn=conn,
+                    )
+        except AlreadyArchivedError as e:
+            return JSONResponse(
+                {"error": "already_archived", "detail": e.to_dict()},
+                status_code=409,
+            )
+        except ValidationError as e:
+            return JSONResponse(
+                {"error": "validation_error", "detail": e.to_dict()},
+                status_code=400,
+            )
+        except CompanyOSError as e:
+            return JSONResponse(
+                {"error": e.code, "detail": e.to_dict()},
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "recommendation_id": str(result.recommendation_id),
+                "target_act_change_kind": result.target_act_change_kind,
+                "target_act_change_id": str(result.target_act_change_id),
+            },
+            status_code=200,
+        )
+
+    @app.post("/v1/recommendations/{recommendation_id}/dismiss")
+    async def dismiss_recommendation_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        from services.recommendations.handlers import (
+            AlreadyArchivedError,
+            dismiss_recommendation,
+        )
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            rec_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_recommendation_id"}, status_code=400
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        reason = (body or {}).get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return JSONResponse(
+                {"error": "reason_required"}, status_code=400,
+            )
+
+        deps = _deps(request)
+        try:
+            async with deps.pool.acquire() as conn:
+                async with conn.transaction():
+                    target_row = await conn.fetchrow(
+                        "SELECT target_actor_id FROM models "
+                        "WHERE id = $1 AND tenant_id = $2 "
+                        "  AND proposition_kind = 'recommendation'",
+                        rec_id, auth.tenant_id,
+                    )
+                    if target_row is None:
+                        return JSONResponse(
+                            {"error": "not_found"}, status_code=404,
+                        )
+                    if target_row["target_actor_id"] != auth.actor_id:
+                        return JSONResponse(
+                            {"error": "forbidden",
+                             "reason": "not_target_actor"},
+                            status_code=403,
+                        )
+
+                    await dismiss_recommendation(
+                        recommendation_id=rec_id,
+                        actor_id=auth.actor_id,
+                        tenant_id=auth.tenant_id,
+                        reason=reason,
+                        conn=conn,
+                    )
+        except AlreadyArchivedError as e:
+            return JSONResponse(
+                {"error": "already_archived", "detail": e.to_dict()},
+                status_code=409,
+            )
+        except ValidationError as e:
+            return JSONResponse(
+                {"error": "validation_error", "detail": e.to_dict()},
+                status_code=400,
+            )
+        except CompanyOSError as e:
+            return JSONResponse(
+                {"error": e.code, "detail": e.to_dict()},
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "recommendation_id": str(rec_id),
+                "archived_with_reason": reason.strip(),
+            },
+            status_code=200,
+        )
+
+    # ---------------- /v1/today (Fyralis Today aggregator) -------
+    # The Today UI (ui/src/App.tsx) consumes a single payload that
+    # combines recommendations + signal strip + vitals + state line.
+    # services.today.aggregator owns the substrate→UI mapping.
+    @app.get("/v1/today")
+    async def today_endpoint(request: Request) -> JSONResponse:
+        from services.today import build_today
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover — middleware enforces
+            return _unauth("missing_bearer")
+
+        actor_param = request.query_params.get("actor_id")
+        target_actor = auth.actor_id
+        if actor_param is not None:
+            try:
+                target_actor = UUID(str(actor_param))
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    {"error": "invalid_actor_id"}, status_code=400,
+                )
+            if target_actor != auth.actor_id:
+                return JSONResponse(
+                    {"error": "forbidden",
+                     "reason": "cross_actor_access_not_supported"},
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        deps = _deps(request)
+        # Pull the actor's display name for the ask-zone suggestions.
+        display_name: str | None = None
+        async with deps.pool.acquire() as conn:
+            actor_row = await conn.fetchrow(
+                "SELECT display_name FROM actors WHERE id = $1 AND tenant_id = $2",
+                target_actor, auth.tenant_id,
+            )
+            if actor_row is not None:
+                display_name = actor_row["display_name"]
+
+            tenant_row = await conn.fetchrow(
+                "SELECT min(ingested_at) AS first_seen FROM observations "
+                "WHERE tenant_id = $1",
+                auth.tenant_id,
+            )
+            days_since = 1
+            if tenant_row and tenant_row["first_seen"] is not None:
+                from datetime import datetime as _dt, timezone as _tz
+                delta = _dt.now(_tz.utc) - tenant_row["first_seen"]
+                days_since = max(1, int(delta.days) + 1)
+
+            # Read brand_name override from a per-tenant key/value if
+            # the tenant has one; default to "Fyralis" otherwise.
+            brand_row = await conn.fetchrow(
+                "SELECT current_value FROM resources "
+                "WHERE tenant_id = $1 AND kind = 'ip' "
+                "  AND identity = 'fyralis.brand_name' "
+                "  AND archived_at IS NULL "
+                "ORDER BY last_updated_at DESC LIMIT 1",
+                auth.tenant_id,
+            )
+            brand_name = "Fyralis"
+            if brand_row is not None:
+                cv = brand_row["current_value"] or {}
+                if isinstance(cv, str):
+                    try:
+                        cv = json.loads(cv)
+                    except json.JSONDecodeError:
+                        cv = {}
+                if isinstance(cv, dict) and isinstance(cv.get("name"), str):
+                    brand_name = cv["name"]
+
+            payload = await build_today(
+                tenant_id=auth.tenant_id,
+                actor_id=target_actor,
+                actor_display_name=display_name,
+                brand_name=brand_name,
+                conn=conn,
+                days_since_inception=days_since,
+            )
+        return JSONResponse(payload.to_dict(), status_code=200)
+
+    @app.post("/v1/today/brand")
+    async def today_brand_endpoint(request: Request) -> JSONResponse:
+        """Persist a per-tenant brand-name override (the user clicks the
+        wordmark and renames Fyralis to anything that better fits the
+        company's self-perception, per spec §10.5)."""
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        new_name = (body or {}).get("name")
+        if not isinstance(new_name, str) or not new_name.strip():
+            return JSONResponse({"error": "name_required"}, status_code=400)
+        new_name = new_name.strip()[:64]
+
+        deps = _deps(request)
+        async with deps.pool.acquire() as conn:
+            async with conn.transaction():
+                existing = await conn.fetchrow(
+                    "SELECT id FROM resources "
+                    "WHERE tenant_id = $1 AND kind = 'ip' "
+                    "  AND identity = 'fyralis.brand_name' "
+                    "  AND archived_at IS NULL",
+                    auth.tenant_id,
+                )
+                if existing is None:
+                    await conn.execute(
+                        """
+                        INSERT INTO resources (
+                            id, tenant_id, kind, identity, current_value,
+                            created_at, last_updated_at
+                        ) VALUES ($1, $2, 'ip', 'fyralis.brand_name',
+                                  $3::jsonb, now(), now())
+                        """,
+                        uuid7(), auth.tenant_id,
+                        json.dumps({"name": new_name}),
+                    )
+                else:
+                    await conn.execute(
+                        "UPDATE resources SET current_value = $2::jsonb, "
+                        "last_updated_at = now() WHERE id = $1",
+                        existing["id"], json.dumps({"name": new_name}),
+                    )
+        return JSONResponse(
+            {"ok": True, "name": new_name}, status_code=200,
+        )
+
+    @app.post("/v1/recommendations/{recommendation_id}/triage")
+    async def triage_recommendation_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        """Generic triage endpoint covering hold / route / snooze /
+        dismiss. `act` keeps its dedicated `/act` endpoint because it
+        applies the proposed_change. Everything else archives with
+        `archive_reason='manual'` and records the actor's intent in
+        the audit-trail Observation."""
+        from services.today import (
+            TriageError,
+            triage_recommendation,
+        )
+        from services.recommendations.handlers import (
+            AlreadyArchivedError,
+        )
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            rec_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_recommendation_id"}, status_code=400,
+            )
+        try:
+            body = await request.json() if (await request.body()) else {}
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        action_raw = body.get("action")
+        if action_raw not in ("hold", "route", "snooze", "dismiss"):
+            return JSONResponse(
+                {"error": "invalid_action",
+                 "reason": "use /act for act; one of hold/route/snooze/dismiss here"},
+                status_code=400,
+            )
+
+        reason = body.get("reason") if isinstance(body.get("reason"), str) else None
+        routed_to = body.get("routed_to") if isinstance(body.get("routed_to"), str) else None
+        snooze_until_raw = body.get("snooze_until")
+        snooze_until = None
+        if isinstance(snooze_until_raw, str) and snooze_until_raw.strip():
+            try:
+                from datetime import datetime as _dt
+                snooze_until = _dt.fromisoformat(snooze_until_raw)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "invalid_snooze_until"}, status_code=400,
+                )
+
+        deps = _deps(request)
+        try:
+            async with deps.pool.acquire() as conn:
+                async with conn.transaction():
+                    target_row = await conn.fetchrow(
+                        "SELECT target_actor_id FROM models "
+                        "WHERE id = $1 AND tenant_id = $2 "
+                        "  AND proposition_kind = 'recommendation'",
+                        rec_id, auth.tenant_id,
+                    )
+                    if target_row is None:
+                        return JSONResponse(
+                            {"error": "not_found"}, status_code=404,
+                        )
+                    if target_row["target_actor_id"] != auth.actor_id:
+                        return JSONResponse(
+                            {"error": "forbidden",
+                             "reason": "not_target_actor"},
+                            status_code=403,
+                        )
+                    result = await triage_recommendation(
+                        recommendation_id=rec_id,
+                        actor_id=auth.actor_id,
+                        tenant_id=auth.tenant_id,
+                        action=action_raw,
+                        reason=reason,
+                        routed_to=routed_to,
+                        snooze_until=snooze_until,
+                        conn=conn,
+                    )
+        except AlreadyArchivedError as e:
+            return JSONResponse(
+                {"error": "already_archived", "detail": e.to_dict()},
+                status_code=409,
+            )
+        except TriageError as e:
+            return JSONResponse(
+                {"error": e.code, "detail": e.to_dict()},
+                status_code=400,
+            )
+        except ValidationError as e:
+            return JSONResponse(
+                {"error": "validation_error", "detail": e.to_dict()},
+                status_code=400,
+            )
+        except CompanyOSError as e:
+            return JSONResponse(
+                {"error": e.code, "detail": e.to_dict()},
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "recommendation_id": str(result.recommendation_id),
+                "action": result.action,
+            },
+            status_code=200,
+        )
+
     # ---------------- WS /stream ------------------------------------
     # Wave 4-D mounts the real realtime router on startup via
     # `services.realtime.configure_realtime(app, pool=pool)`. The
@@ -929,6 +1445,41 @@ async def _generic_list(
 
 def _clip(x: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, int(x)))
+
+
+def _serialize_recommendation(view: Any) -> dict[str, Any]:
+    """Hand-rolled JSON projection for /v1/recommendations responses.
+
+    Keeps the API stable independently of `RecommendationView` field
+    layout. The action-list UI consumes this shape directly.
+    """
+    target = view.target_entity
+    return {
+        "id": str(view.id),
+        "proposition_text": view.proposition_text,
+        "confidence": view.confidence,
+        "target_act_ref": view.target_act_ref,
+        "proposed_change": view.proposed_change,
+        "expected_impact": view.expected_impact,
+        "qualitative_impact": view.qualitative_impact,
+        "target_actor_id": str(view.target_actor_id),
+        "supporting_event_ids": [str(x) for x in view.supporting_event_ids],
+        "supporting_model_ids": [str(x) for x in view.supporting_model_ids],
+        "created_at": view.created_at.isoformat(),
+        "scope_entities": view.scope_entities,
+        "rank_score": view.rank_score,
+        "target_entity": (
+            {
+                "type": target.type,
+                "id": str(target.id),
+                "title": target.title,
+                "state": target.state,
+                "archived": target.archived,
+            }
+            if target is not None
+            else None
+        ),
+    }
 
 
 # ---------------------------------------------------------------------
@@ -1040,15 +1591,38 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     from services.query.core import QueryHandler
     from services.query.api import build_router as build_query_router
 
+    # Reuse the gateway's shared Ollama embedder so QRY pathway B
+    # (semantic) can vectorise the seed text. Without this, retrieval
+    # silently skips Pathway B and the LLM gets an empty context, so
+    # /view/ceo/ask answers come back with "0 observations / 0 models".
+    deps = getattr(app_.state, "deps", None)
+    qry_embedder = deps.embedder if deps is not None else None
     qry_handler = QueryHandler(
         conn_provider=pool.acquire,
         rendering_adapter=_build_qry_rnd(),
         cache_adapter=_build_qry_cache(pool=pool),
+        embedder=qry_embedder,
     )
     default_tenant_uuid = _UUID(default_tenant) if default_tenant else None
     app_.include_router(
         build_query_router(qry_handler, default_tenant_id=default_tenant_uuid),
     )
+
+    # ---- 3.5 Card conversations (Driftwood revision) ---------------
+    from services.conversations import (
+        ConversationRepo,
+        ProbeHandler,
+        build_router as build_conversations_router,
+    )
+
+    conv_repo = ConversationRepo(pool)
+    probe_handler = ProbeHandler(
+        repo=conv_repo, pool=pool, query_handler=qry_handler,
+    )
+    app_.include_router(
+        build_conversations_router(repo=conv_repo, handler=probe_handler)
+    )
+    app_.state.conversations = {"repo": conv_repo, "handler": probe_handler}
 
     # ---- 4. SIM — authoring-side endpoints -------------------------
     # Week 5: `simulation.server.build_sim_router(deps)` returns a plain

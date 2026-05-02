@@ -47,6 +47,11 @@ TrustTierValue = Literal[
     "inferential",
     "inferential_external",
     "unvetted",
+    # Synthesized observations carry trust derived from their parent
+    # signal (demo snapshots, replay tooling). Schema-side this is just
+    # text; the literal needs to mirror what the DB actually stores or
+    # ObservationRow validation crashes pathway-C retrieval.
+    "derived",
 ]
 
 ModelStatus = Literal["active", "archived", "superseded", "contested_false"]
@@ -62,6 +67,10 @@ ModelArchiveReason = Literal[
     "resolved_violated",
     "severe_drift",
     "deprecated",   # Post-Wave-0 A3: replaces pseudo-code's deprecated_at
+    # Recommendation-kind lifecycle reasons (Stage 1 decision support):
+    "acted_upon",          # the recommended change was applied
+    "dismissed_by_user",   # the user explicitly rejected the recommendation
+    "situation_resolved",  # the underlying condition no longer holds
 ]
 
 ModelStatusNoteKind = Literal["first_person_override", "manual", "system"]
@@ -70,6 +79,7 @@ PropositionKind = Literal[
     "state", "relation", "prediction", "pattern", "pattern_instance",
     "capability_assessment", "hypothesis", "concern",
     "market_assessment", "environmental_trend",
+    "recommendation",
 ]
 
 GoalState = Literal["active", "paused", "achieved", "abandoned"]
@@ -210,6 +220,14 @@ class ModelRow(_Strict):
     resolved_at: datetime | None = None
     resolution_outcome: bool | None = None
     activation_coefficient: float = 1.0
+    # Recommendation-kind generated/auxiliary columns (migration 0022).
+    # `target_actor_id` is GENERATED from proposition->>'target_actor_id'
+    # for recommendation kind, NULL otherwise. `caused_act_change_id`
+    # records the resulting Act-layer entity id when a recommendation
+    # is acted upon — populated by the act handler, NULL for all other
+    # proposition kinds.
+    target_actor_id: UUID | None = None
+    caused_act_change_id: UUID | None = None
 
 
 class ModelCreate(_Strict):
@@ -438,6 +456,66 @@ class EntityAliasRow(_Strict):
     source_event_id: UUID | None = None
 
 
+# =====================================================================
+# Demo infrastructure (migration 0023) — tenants registry, demo configs,
+# demo sessions, per-call cost ledger.
+# =====================================================================
+
+DemoCompanyId = Literal["truss", "northwind", "meridian"]
+DemoSessionEndReason = Literal["user_ended", "inactivity", "cost_cap"]
+
+
+class TenantRow(_Strict):
+    id: UUID
+    name: str = "unnamed"
+    is_demo: bool = False
+    demo_config_id: UUID | None = None
+    created_at: datetime
+    archived_at: datetime | None = None
+
+
+class DemoConfigRow(_Strict):
+    id: UUID
+    company_id: DemoCompanyId
+    name: str
+    description: str
+    tagline: str = ""
+    snapshot_uri: str
+    model_routing: dict[str, Any] = Field(default_factory=dict)
+    cost_cap_usd_per_session: Decimal
+    notifications_suppressed: bool = True
+    determinism_seed: int | None = None
+    reset_on_session_end: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class DemoSessionRow(_Strict):
+    id: UUID
+    tenant_id: UUID
+    demo_config_id: UUID
+    ceo_actor_id: UUID | None = None
+    started_at: datetime
+    last_active_at: datetime
+    ended_at: datetime | None = None
+    end_reason: DemoSessionEndReason | None = None
+    total_cost_usd: Decimal
+    signals_injected: int = 0
+    actions_taken: int = 0
+    cost_cap_breached_at: datetime | None = None
+
+
+class DemoSessionCostRow(_Strict):
+    id: UUID
+    demo_session_id: UUID
+    call_kind: str
+    model_name: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: Decimal
+    occurred_at: datetime
+
+
 __all__ = [
     # enum literals
     "ObservationKind", "TrustTierValue", "ModelStatus", "ModelArchiveReason",
@@ -448,6 +526,7 @@ __all__ = [
     "ResourceKind", "ResourceUtilizationState", "ResourceControllability",
     "ResourceTemporalCharacter", "ResourceTransactionType",
     "ActorType", "ActorStatus",
+    "DemoCompanyId", "DemoSessionEndReason",
     # row models
     "ObservationRow", "ObservationCreate",
     "ModelRow", "ModelCreate", "ModelStatusNoteRow",
@@ -459,4 +538,5 @@ __all__ = [
     "CustomerCommitmentRow", "CustomerCommitmentRelationshipKind", "CustomerCommitmentCriticality",
     "ActorRow", "ActorIdentityMappingRow",
     "EntityAliasRow",
+    "TenantRow", "DemoConfigRow", "DemoSessionRow", "DemoSessionCostRow",
 ]

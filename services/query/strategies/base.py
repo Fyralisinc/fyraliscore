@@ -82,6 +82,11 @@ class StrategyContext:
     conversation_history: list["Turn"] = field(default_factory=list)  # noqa: F821
     card_context: Optional["CardContext"] = None                       # noqa: F821
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Pathway B (semantic) needs an embedder to vectorise the seed text;
+    # without one it skips and retrieval silently returns 0 models. The
+    # API layer plumbs this through from the gateway's shared Ollama
+    # client.
+    embedder: Optional[Any] = None
 
 
 @dataclass
@@ -314,7 +319,9 @@ async def run_retrieval(
         _BUDGET_OBSERVATIONS,
     )
 
-    retrieval_result = await primary_retrieve(trigger, ctx.conn)
+    retrieval_result = await primary_retrieve(
+        trigger, ctx.conn, embedder=ctx.embedder,
+    )
     bundle = await assemble_context(
         retrieval_result,
         ctx.access_context,

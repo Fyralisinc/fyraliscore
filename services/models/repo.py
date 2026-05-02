@@ -95,6 +95,7 @@ from lib.shared.types import (
 from services.models.calibration import apply_calibration
 from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
+from services.models.recommendations import validate_recommendation
 from services.observations.state_change import emit_state_change
 
 
@@ -163,6 +164,10 @@ _SELECT_COLS = (
     "confidence_at_assertion",
     "resolved_at", "resolution_outcome",
     "activation_coefficient",
+    # Recommendation-kind columns (migration 0022). target_actor_id is
+    # GENERATED from the proposition JSONB; caused_act_change_id is
+    # written by the recommendation act handler.
+    "target_actor_id", "caused_act_change_id",
 )
 _SELECT_COLS_SQL = ", ".join(_SELECT_COLS)
 
@@ -411,6 +416,16 @@ class ModelsRepo:
             new_supports=list(proposed.supporting_model_ids or []),
         )
 
+        # -- 3b. Recommendation cross-field validation.
+        # Pydantic enforces shape; here we check live DB state:
+        # target entity exists in tenant, transition reachable.
+        if prop_kind == "recommendation":
+            await validate_recommendation(
+                proposed.proposition,
+                tenant_id=proposed.tenant_id,
+                conn=conn,
+            )
+
         # -- 4. Apply calibration (Wave 4-C: real DB lookup) -----------
         calibrated_conf = await apply_calibration(
             proposed.confidence,
@@ -518,6 +533,28 @@ class ModelsRepo:
                 "confidence": hydrated.confidence,
             },
         )
+
+        # Demo SSE: notify any open action-list streams for this actor
+        # that a new recommendation has landed. No-op outside demo
+        # mode (publish is a fan-out to in-process subscribers; if no
+        # one is listening, nothing happens).
+        if hydrated.proposition_kind == "recommendation" and hydrated.target_actor_id:
+            from services.demo.sse import publish_recommendation_event
+
+            await publish_recommendation_event(
+                tenant_id=hydrated.tenant_id,
+                actor_id=hydrated.target_actor_id,
+                event="created",
+                recommendation_id=hydrated.id,
+                summary={
+                    "natural": hydrated.natural,
+                    "confidence": hydrated.confidence,
+                    "expected_impact": (
+                        hydrated.proposition.get("expected_impact")
+                        if isinstance(hydrated.proposition, dict) else None
+                    ),
+                },
+            )
 
         return hydrated
 

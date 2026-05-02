@@ -51,6 +51,26 @@ async def _register_codecs(conn: asyncpg.Connection) -> None:
         decoder=json.loads,
         schema="pg_catalog",
     )
+    # Register the pgvector codec so vector parameters can be bound
+    # consistently across the gateway pool. Without this, ModelsRepo
+    # registers it lazily on whichever connection it lands on, which
+    # causes pathway B's stringified `$2::vector` binds to crash on
+    # connections that already have the codec installed (the codec
+    # expects a list/numpy array, not a `'[…]'` string). Registering
+    # at pool init makes every acquired connection behave identically.
+    try:
+        from pgvector.asyncpg import register_vector
+        await register_vector(conn)
+        # Reuse the module-level registry that ModelsRepo also populates
+        # so pathway B's vector binding picks the correct format
+        # (numpy array when codec is live, stringified for tests that
+        # opt out). asyncpg.Connection uses __slots__, so we can't tag
+        # the connection object directly.
+        from services.models.repo import _VECTOR_REGISTERED_IDS
+        _VECTOR_REGISTERED_IDS.add(id(conn))
+    except Exception:
+        # `vector` extension is optional in some test fixtures.
+        pass
 
 
 async def create_gateway_pool(
