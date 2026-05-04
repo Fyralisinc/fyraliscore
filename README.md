@@ -212,7 +212,77 @@ To stop everything:
 
 ---
 
-## 9. Running tests
+## 9. Starting and stopping the stack (day-to-day)
+
+Once the one-time setup (sections 1–8) is complete, use `scripts/start.sh`
+and `scripts/stop.sh` for all subsequent runs.
+
+### First run after setup
+
+`start.sh` handles migrations and builds the demo snapshots automatically,
+so no manual steps are needed beyond ensuring Postgres is up:
+
+```bash
+# Make sure the Docker postgres container is running.
+docker start company_os_postgres
+
+# Start everything. On first run this builds the Truss / Northwind / Meridian
+# demo snapshots — expect an extra minute or two while the LLM generates them.
+./scripts/start.sh
+```
+
+When the stack is ready you will see:
+
+```
+=== Fyralis stack up ===
+  Demo picker:   http://127.0.0.1:5173/demo
+  UI:            http://127.0.0.1:5173
+  Gateway:       http://127.0.0.1:8000
+  Healthz:       curl http://127.0.0.1:8000/healthz
+  Logs dir:      /tmp/fyralis_logs/
+  Stop stack:    scripts/stop.sh
+```
+
+The demo picker opens in your browser automatically. Pass `--no-browser` to
+skip that:
+
+```bash
+./scripts/start.sh --no-browser
+```
+
+### Every subsequent start
+
+```bash
+docker start company_os_postgres   # only needed if it stopped (e.g. after a reboot)
+./scripts/start.sh
+```
+
+New migrations are applied automatically on each start; demo snapshots already
+on disk are reused. Pass `--rebuild-snapshots` to force-regenerate them.
+
+### Stopping
+
+```bash
+./scripts/stop.sh
+```
+
+This sends SIGTERM to all stack processes (gateway, think worker, post-commit
+worker, Vite UI), waits 2 s, then SIGKILLs anything still alive. It does
+**not** stop the Docker postgres container — that keeps running so the next
+start is instant.
+
+### Tailing logs
+
+```bash
+tail -f /tmp/fyralis_logs/*.log
+```
+
+Separate log files are written for each process:
+`gateway.log`, `think_worker.log`, `post_commit_worker.log`, `ui.log`.
+
+---
+
+## 10. Running tests
 
 The test suite uses a real Postgres (no mocks), so the `docker compose`
 services from step 3 must be running.
@@ -245,7 +315,7 @@ npm run typecheck
 
 ---
 
-## 10. Running individual processes
+## 11. Running individual processes
 
 If you don't want the full dogfood stack, you can run the components
 individually:
@@ -266,7 +336,7 @@ cd ui && npm run dev:mock
 
 ---
 
-## 11. Common issues
+## 12. Common issues
 
 **`ERROR: .env not found`** — copy `.env.example` to `.env` and fill in
 `DEEPSEEK_API_KEY` (or your chosen provider's key).
@@ -287,7 +357,7 @@ it (`brew services stop postgresql`) or change the port in
 
 ---
 
-## 12. Layout
+## 13. Layout
 
 ```
 .
