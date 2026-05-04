@@ -107,6 +107,25 @@ async def start(request: Request) -> JSONResponse:
             {"error": "demo_start_failed", "detail": str(e)},
             status_code=500,
         )
+
+    # Register the new tenant with the greeting scheduler so it receives
+    # cache refreshes (and WebSocket pushes) after think runs.
+    try:
+        ceo_view = getattr(request.app.state, "ceo_view", None)
+        if ceo_view:
+            from services.greeting.snapshot import FounderContext
+            scheduler = ceo_view["scheduler"]
+            founder = FounderContext(
+                tenant_id=result.tenant_id,
+                role="ceo",
+                display_name=company_id.capitalize(),
+                timezone_name="UTC",
+                observed_rhythms={},
+            )
+            scheduler.register_tenant(result.tenant_id, founder)
+    except Exception as _reg_exc:  # noqa: BLE001
+        log.warning("demo_scheduler_register_failed", error=str(_reg_exc))
+
     return JSONResponse(
         {
             "session_id": str(result.session_id),

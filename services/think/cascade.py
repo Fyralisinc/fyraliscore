@@ -538,6 +538,59 @@ async def _branch_resource_terminal(
     return out
 
 
+async def enqueue_t2_belief_updated(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    source_observation_id: UUID | None,
+) -> UUID:
+    """Enqueue a T2:belief_updated trigger for a newly-inserted state/concern
+    model so the LLM can decide whether it warrants a recommendation card.
+
+    Fetches the model's natural text and scope_actors so pathway B (semantic)
+    and pathway A (structural) have seeds to work with even when scope_entities
+    is empty.
+    """
+    import json as _json
+    # Fetch natural text + scope actors from the model so retrieval has seeds.
+    row = await conn.fetchrow(
+        'SELECT "natural", scope_actors FROM models WHERE id = $1 AND tenant_id = $2',
+        model_id,
+        tenant_id,
+    )
+    natural_text: str | None = None
+    scope_actors: list[str] = []
+    if row is not None:
+        natural_text = row["natural"]
+        raw_actors = row["scope_actors"] or []
+        scope_actors = [str(a) for a in raw_actors]
+
+    new_id = uuid7()
+    payload = _json.dumps(
+        {
+            "source_model_id": str(model_id),
+            "source_observation_id": str(source_observation_id) if source_observation_id else None,
+            "seed_natural_text": natural_text,
+            "scope_actors": scope_actors,
+        }
+    )
+    await conn.execute(
+        """
+        INSERT INTO think_trigger_queue (
+            id, tenant_id, trigger_kind, trigger_subkind,
+            model_id, observation_id, payload
+        ) VALUES ($1, $2, 'T2', 'belief_updated', $3, $4, $5::jsonb)
+        """,
+        new_id,
+        tenant_id,
+        model_id,
+        source_observation_id,
+        payload,
+    )
+    return new_id
+
+
 __all__ = [
     "CascadeEvent",
     "CascadeResult",
@@ -545,4 +598,5 @@ __all__ = [
     "MAX_CASCADE_DEPTH",
     "propagate_cascade_depth",
     "enqueue_cascade_t1",
+    "enqueue_t2_belief_updated",
 ]

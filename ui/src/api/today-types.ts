@@ -60,19 +60,77 @@ export type ProbeChip = {
   text: string;
 };
 
+// UX-3 expanded-card additions: structured "show your work" bands.
+// Every field is optional so older backends keep parsing.
+export type DiffPanel = {
+  target_title: string;        // e.g. "Drive SSO requirements doc"
+  target_kind: string;         // e.g. "commitment" | "goal" | "decision" | "resource"
+  current_state?: string;      // e.g. "proposed"
+  to_state?: string;           // e.g. "active" — null for archive/create/update
+  operation: string;           // operation name from proposed_change
+  owner_name?: string;         // e.g. "Sarah Chen"
+  created_at?: string;         // ISO timestamp
+  days_idle?: number;          // optional integer derived from updated_at
+  acceptance?: string;         // commitment acceptance criteria / decision summary / etc
+};
+
+export type SignalRow = {
+  date_label: string;          // mono "apr 12"
+  source: string;              // mono "linear" / "vercel" / "slack"
+  attribution?: string;        // sans gray "cto · q1 review"
+  quote: string;               // serif italic
+  observation_id?: string;     // optional; lets the UI route to a probe
+};
+
+export type ReasoningItem = {
+  natural: string;             // "3 design partners blocked on SSO"
+  confidence: number;          // 0..1
+  model_id?: string;           // optional UUID for navigation
+};
+export type ReasoningGroup = {
+  kind: string;                // proposition_kind
+  label: string;               // "STATE" | "PATTERN" | "PREDICTION" etc
+  items: ReasoningItem[];
+};
+
+export type Calibration = {
+  kind_label: string;          // "SSO-style" / "decision-drift" / "personnel"
+  hit_rate?: number;           // 0..1, omitted when n_prior < 3
+  n_prior: number;             // total prior recommendations of this kind
+  window_days: number;         // e.g. 90
+};
+
+export type Falsifier = {
+  text: string;                // "the cluster fades to two or fewer signals"
+  watchable: boolean;          // can the user subscribe to a watcher?
+  predicate?: string;          // server-side predicate id (when watchable)
+};
+
 export type DetailPanel = {
-  // Legacy fields — kept on the wire so older clients don't break, but
-  // the revised UI ignores them. New backends MAY omit them.
+  // Legacy fields — kept on the wire so older clients don't break.
   reasoning_html?: string;
   evidence?: EvidenceRow[];
   evidence_label?: string;
   confidence?: ConfidenceCell[];
   paths?: SuggestedPath[];
   show_ask?: boolean;
-  // Revision additions:
-  probe_chips?: ProbeChip[];      // 3–5 substrate-suggested probes
-  conversation_id?: string;       // server-generated, persistence handle
+  // Driftwood revision (probe/ask conversation):
+  probe_chips?: ProbeChip[];
+  conversation_id?: string;
+  // UX-3 expanded-card bands:
+  diff?: DiffPanel;
+  signals?: SignalRow[];
+  reasoning?: ReasoningGroup[];
+  calibration?: Calibration;
+  falsifier?: Falsifier;
+  // True when the user has an active watch on this recommendation's
+  // falsifier predicate (so the UI can show "Watching" instead of
+  // "Watch for revision").
+  is_watched?: boolean;
 };
+
+export type WatchRequest = { recommendation_id: string };
+export type WatchResponse = { ok: boolean; watch_id: string; recommendation_id: string };
 
 // One probe → response exchange in a card-scoped conversation.
 // Mirrors the row shape of card_exchanges (migration 0024).
@@ -122,9 +180,14 @@ export type RecCard = {
   tag?: Tag;
   headline_html: string;         // serif sentence with <em> refs
   supporting_html?: string;      // sans line with single <em> emphasis
-  stats?: Stat[];                // up to 3
-  expand_cta?: string;           // "Open" | "See evidence" | "See paths"
-  actions: TriageAction[];       // primary first
+  stats?: Stat[];                // legacy — UI no longer renders, kept on wire
+  // Driftwood UX-2 additions: structured proposal / honest epistemics /
+  // specialized approval. Optional so older backends keep working.
+  proposed_change_text?: string; // e.g. "Transition c-5 → closed"
+  epistemic_line?: string;       // e.g. "82% — would revise if Marcus reaffirms in writing."
+  approve_label?: string;        // specialized: "Close c-5", "Schedule 1:1", "Add to Q2"
+  expand_cta?: string;           // "Ask why" | "Inspect" | "Open"
+  actions: TriageAction[];       // primary first; UI collapses into Approve / Discuss / Not now
   detail?: DetailPanel;
 };
 

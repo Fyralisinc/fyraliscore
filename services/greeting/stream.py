@@ -223,6 +223,18 @@ def build_ceo_stream_router(manager: ViewCeoStreamManager) -> APIRouter:
 
         tenant_id = manager.resolve_token(token)
         if tenant_id is None:
+            # Fall back to actor_sessions (demo / real auth tokens).
+            try:
+                from services.gateway.auth import validate_token
+                deps = getattr(ws.app.state, "deps", None)
+                pool = deps.pool if deps else None
+                if pool:
+                    ctx = await validate_token(pool, token)
+                    if ctx is not None:
+                        tenant_id = ctx.tenant_id
+            except Exception:
+                pass
+        if tenant_id is None:
             await _close_with(ws, CLOSE_POLICY_VIOLATION, "invalid_token")
             return
 

@@ -17,6 +17,7 @@ read against the substrate.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -348,7 +349,10 @@ async def _fetch_evidence(
         kind_part = (r["source_channel"] or r["kind"] or "signal")[:14].lower()
         out.append(
             {
+                "id": str(r["id"]),
                 "src": f"{date_part} · {kind_part}",
+                "date_part": date_part,
+                "kind_part": kind_part,
                 "quote_html": _truncate(r["content_text"] or "", 240),
                 "attribution": r["source_channel"] or "",
             }
@@ -412,6 +416,7 @@ async def _fetch_supporting_models(
     for r in rows:
         grouped.setdefault(r["proposition_kind"] or "unknown", []).append(
             {
+                "model_id": str(r["id"]),
                 "natural": r["natural"] or "",
                 "confidence": float(r["confidence"] or 0.0),
             }
@@ -491,6 +496,306 @@ def _format_impact_short(usd: float) -> str:
 
 
 # ---------------------------------------------------------------------
+# UX-3 expanded-card bands: diff / signals / reasoning / calibration / falsifier
+# ---------------------------------------------------------------------
+
+
+# Per-table SELECTs for the diff panel. Only columns verified to exist
+# on the table are referenced; if a column doesn't exist the SQL fails
+# loudly at first call rather than silently returning None.
+_DIFF_SQL_BY_TYPE: dict[str, str] = {
+    "commitment": (
+        "SELECT c.id, c.title, c.state, c.description AS acceptance, "
+        "c.created_at, c.last_state_change_at AS updated_at, "
+        "a.display_name AS owner_name "
+        "FROM commitments c "
+        "LEFT JOIN actors a ON a.id = c.owner_id "
+        "WHERE c.id = $1 AND c.tenant_id = $2"
+    ),
+    "goal": (
+        "SELECT id, title, state, description AS acceptance, "
+        "created_at, last_state_change_at AS updated_at, "
+        "NULL::text AS owner_name "
+        "FROM goals "
+        "WHERE id = $1 AND tenant_id = $2"
+    ),
+    "decision": (
+        "SELECT id, title, state, rationale AS acceptance, "
+        "created_at, last_state_change_at AS updated_at, "
+        "NULL::text AS owner_name "
+        "FROM decisions "
+        "WHERE id = $1 AND tenant_id = $2"
+    ),
+    "resource": (
+        "SELECT id, identity AS title, NULL::text AS state, "
+        "description AS acceptance, "
+        "created_at, last_updated_at AS updated_at, "
+        "NULL::text AS owner_name "
+        "FROM resources "
+        "WHERE id = $1 AND tenant_id = $2"
+    ),
+}
+
+
+async def _fetch_target_diff_extras(
+    ref_type: str, ref_id: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+) -> dict[str, Any]:
+    """Single SELECT per card pulling the entity row + owner display
+    name (for commitments) for the diff band. Per-type SQL strings only
+    reference columns confirmed to exist on the table."""
+    sql = _DIFF_SQL_BY_TYPE.get(ref_type)
+    if sql is None:
+        return {}
+    row = await conn.fetchrow(sql, ref_id, tenant_id)
+    if row is None:
+        return {}
+    return dict(row)
+
+
+async def _render_diff(
+    view: RecommendationView,
+    *,
+    now: datetime,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> dict[str, Any] | None:
+    ref = view.target_act_ref
+    if ref is None:
+        return None
+    ref_type = ref.get("type")
+    ref_id_raw = ref.get("id")
+    if not ref_type or not ref_id_raw:
+        return None
+    try:
+        ref_id = UUID(str(ref_id_raw))
+    except (ValueError, TypeError):
+        return None
+
+    target_title: str
+    if view.target_entity is not None and view.target_entity.title:
+        target_title = view.target_entity.title
+    else:
+        target_title = ref_type
+
+    payload = (view.proposed_change or {}).get("payload") or {}
+    op = (view.proposed_change or {}).get("operation")
+    to_state = payload.get("new_state") if op == "transition" else None
+
+    extras = await _fetch_target_diff_extras(ref_type, ref_id, tenant_id, conn)
+
+    created_at = extras.get("created_at")
+    updated_at = extras.get("updated_at") or created_at
+    days_idle: int | None = None
+    if updated_at is not None:
+        delta = now - updated_at
+        days_idle = max(int(delta.total_seconds() // 86400), 0)
+
+    acceptance_raw = extras.get("acceptance")
+    acceptance: str | None = None
+    if isinstance(acceptance_raw, str) and acceptance_raw.strip():
+        acceptance = _truncate(acceptance_raw, 240)
+
+    out: dict[str, Any] = {
+        "target_title": target_title,
+        "target_kind": ref_type,
+        "operation": op or "",
+    }
+    if view.target_entity is not None and view.target_entity.state:
+        out["current_state"] = view.target_entity.state
+    if to_state:
+        out["to_state"] = to_state
+    owner_name = extras.get("owner_name")
+    if owner_name:
+        out["owner_name"] = owner_name
+    if created_at is not None:
+        out["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+    if days_idle is not None:
+        out["days_idle"] = days_idle
+    if acceptance:
+        out["acceptance"] = acceptance
+    return out
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(s: str) -> str:
+    return _TAG_RE.sub("", s or "").strip()
+
+
+def _render_signals(
+    view: RecommendationView,
+    evidence: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Restructure the existing evidence rows into structured SignalRow
+    items for direct rendering. Caps at 5 — the UI shows 3 by default."""
+    out: list[dict[str, Any]] = []
+    for ev in evidence[:5]:
+        date_label = (ev.get("date_part") or "").lower()
+        # Source: prefer the kind_part suffix from `_fetch_evidence`
+        # (already lowercased + truncated), fall back to attribution.
+        source = (ev.get("kind_part") or ev.get("attribution") or "").lower()
+        attribution = (ev.get("attribution") or "").lower() or None
+        quote = _strip_html(ev.get("quote_html") or "")
+        row: dict[str, Any] = {
+            "date_label": date_label,
+            "source": source,
+            "quote": quote,
+        }
+        if attribution:
+            row["attribution"] = attribution
+        if ev.get("id"):
+            row["observation_id"] = ev["id"]
+        out.append(row)
+    return out
+
+
+_KIND_LABEL_MAP: dict[str, str] = {
+    "state": "STATE",
+    "pattern": "PATTERN",
+    "pattern_instance": "PATTERN",
+    "prediction": "PREDICTION",
+    "concern": "CONCERN",
+    "hypothesis": "HYPOTHESIS",
+    "capability_assessment": "CAPABILITY",
+    "market_assessment": "MARKET",
+    "environmental_trend": "TREND",
+    "relation": "RELATION",
+}
+
+
+def _render_reasoning_groups(
+    models_by_kind: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Group supporting models by proposition_kind in canonical order.
+    Caps the total number of items across groups at 6 (most-confident
+    first within each group)."""
+    out: list[dict[str, Any]] = []
+    remaining = 6
+    for kind, _heading in _SECTION_ORDER:
+        if remaining <= 0:
+            break
+        bucket = models_by_kind.get(kind) or []
+        if not bucket:
+            continue
+        items_take = min(3, len(bucket), remaining)
+        items: list[dict[str, Any]] = []
+        for m in bucket[:items_take]:
+            row: dict[str, Any] = {
+                "natural": m.get("natural") or "",
+                "confidence": float(m.get("confidence") or 0.0),
+            }
+            mid = m.get("model_id")
+            if mid:
+                row["model_id"] = mid
+            items.append(row)
+        if not items:
+            continue
+        out.append(
+            {
+                "kind": kind,
+                "label": _KIND_LABEL_MAP.get(kind, kind.upper()),
+                "items": items,
+            }
+        )
+        remaining -= len(items)
+    return out
+
+
+def _calibration_kind_label(view: RecommendationView) -> str:
+    """Human-friendly descriptor for the calibration band. Special-cases
+    a few common shapes (SSO-style, for instance) and otherwise falls
+    back to operation·ref_type."""
+    op = (view.proposed_change or {}).get("operation") or "?"
+    ref_type = (view.target_act_ref or {}).get("type") or "?"
+    payload = (view.proposed_change or {}).get("payload") or {}
+    blob = " ".join(
+        str(x).lower() for x in (
+            view.proposition_text or "",
+            payload.get("title") or "",
+            view.target_entity.title if view.target_entity else "",
+        )
+    )
+    if "sso" in blob:
+        return "SSO-style"
+    return f"{op}·{ref_type}"
+
+
+async def _render_calibration(
+    view: RecommendationView,
+    *,
+    tenant_id: UUID,
+    target_actor_id: UUID,
+    conn: asyncpg.Connection,
+) -> dict[str, Any]:
+    """Count prior recommendations of the same shape (same
+    proposition_kind, operation, target ref type) addressed to this
+    actor in the last 90 days. We use the recommendation Models
+    archive_reason as the truth: 'acted_upon' is a hit, 'dismissed_*'
+    is a miss. Soft triage ('manual') is excluded — neither a hit nor
+    a miss. n_prior counts approved + dismissed only."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+    op = (view.proposed_change or {}).get("operation")
+    ref_type = (view.target_act_ref or {}).get("type")
+    pk = view.proposition_kind
+
+    row = await conn.fetchrow(
+        """
+        SELECT
+          count(*) FILTER (WHERE archive_reason = 'acted_upon')         AS acted,
+          count(*) FILTER (WHERE archive_reason LIKE 'dismissed%')      AS dismissed
+        FROM models
+        WHERE tenant_id = $1
+          AND target_actor_id = $2
+          AND proposition_kind = 'recommendation'
+          AND status = 'archived'
+          AND archived_at >= $3
+          AND coalesce(proposition->>'proposition_kind', $4) IS NOT DISTINCT FROM $4
+          AND coalesce(proposition->'proposed_change'->>'operation', $5) IS NOT DISTINCT FROM $5
+          AND coalesce(proposition->'target_act_ref'->>'type', $6) IS NOT DISTINCT FROM $6
+        """,
+        tenant_id, target_actor_id, cutoff, pk, op, ref_type,
+    )
+    acted = int((row or {}).get("acted") or 0)
+    dismissed = int((row or {}).get("dismissed") or 0)
+    n_prior = acted + dismissed
+
+    out: dict[str, Any] = {
+        "kind_label": _calibration_kind_label(view),
+        "n_prior": n_prior,
+        "window_days": 90,
+    }
+    if n_prior >= 3:
+        out["hit_rate"] = acted / n_prior
+    return out
+
+
+def _choose_falsifier(view: RecommendationView) -> tuple[str, str]:
+    """Returns (text, branch_id). The branch_id is a stable token used
+    to compose the watch predicate id."""
+    pk = (view.proposition_kind or "").lower()
+    op = (view.proposed_change or {}).get("operation")
+    impact = view.expected_impact
+
+    if impact is not None and impact > 1.0:
+        return ("the cluster fades to two or fewer signals", "cluster_fade")
+    if "personnel" in pk or "people" in pk:
+        return ("stronger contrary observations land", "contrary_personnel")
+    if op == "transition" or "concern" in pk or "state" in pk:
+        return ("the underlying state changes back", "state_revert")
+    return ("a stronger contrary signal appears", "contrary_signal")
+
+
+def _render_falsifier(view: RecommendationView) -> dict[str, Any]:
+    text, branch = _choose_falsifier(view)
+    return {
+        "text": text,
+        "watchable": True,
+        "predicate": f"falsifier:{view.id}:{branch}",
+    }
+
+
+# ---------------------------------------------------------------------
 # Card builder
 # ---------------------------------------------------------------------
 
@@ -500,6 +805,7 @@ async def _build_card(
     *,
     now: datetime,
     tenant_id: UUID,
+    target_actor_id: UUID,
     conn: asyncpg.Connection,
 ) -> dict[str, Any]:
     severity = _derive_severity(view)
@@ -550,6 +856,25 @@ async def _build_card(
         # (actor, card), and the actor scoping happens at the API layer.
         "conversation_id": f"conv-{view.id}",
     }
+
+    # UX-3 expanded-card bands. Each renderer is a pure addition to
+    # `detail`; older clients keep parsing the legacy fields above.
+    diff_panel = await _render_diff(
+        view, now=now, tenant_id=tenant_id, conn=conn,
+    )
+    if diff_panel is not None:
+        detail["diff"] = diff_panel
+    signals = _render_signals(view, evidence)
+    if signals:
+        detail["signals"] = signals
+    reasoning_groups = _render_reasoning_groups(supporting_models)
+    if reasoning_groups:
+        detail["reasoning"] = reasoning_groups
+    detail["calibration"] = await _render_calibration(
+        view, tenant_id=tenant_id, target_actor_id=target_actor_id, conn=conn,
+    )
+    detail["falsifier"] = _render_falsifier(view)
+
     # Decorate phrases with <probe> markup so they're clickable.
     headline_html = _add_probe_markup(headline_html, str(view.id), kind_hint=view)
     if supporting_html:
@@ -569,7 +894,10 @@ async def _build_card(
         "headline_html": headline_html,
         "supporting_html": supporting_html,
         "stats": _derive_stats(view),
-        "expand_cta": "See evidence" if evidence else "Open",
+        "proposed_change_text": _render_proposed_change_text(view),
+        "epistemic_line": _render_epistemic_line(view),
+        "approve_label": _render_approve_label(view),
+        "expand_cta": "Inspect" if evidence else "Ask why",
         "actions": _derive_actions(view),
         "detail": detail,
     }
@@ -688,6 +1016,169 @@ def _action_phrase(view: RecommendationView) -> str:
         field_name = payload.get("field") or "the value"
         return f"Update {field_name} on {target_label}."
     return "Take the action above so the signal does not keep accumulating."
+
+
+def _truncate_label(s: str, n: int) -> str:
+    """Shrink a label to <= n chars without trailing whitespace."""
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    return s[: max(n - 1, 1)].rstrip()
+
+
+def _render_proposed_change_text(view: RecommendationView) -> str | None:
+    """Compact directive form of `proposed_change`. Returns None when
+    there is no actionable proposed_change (purely diagnostic
+    recommendations). Examples:
+      transition commitment -> "Transition <title> -> <new_state>"
+      transition decision    -> "Reaffirm <title>" / "Revise <title>"
+      create goal            -> "Add <title> to goals"
+      create commitment      -> "Commit to <title>"
+      archive decision       -> "Archive <title>"
+      archive commitment     -> "Close <title>"
+      update resource        -> "Update <field> on <title>"
+    Falls back to "Take the proposed action" only as a last resort.
+    """
+    pc = view.proposed_change or {}
+    op = pc.get("operation")
+    if not op:
+        return None
+    payload = pc.get("payload") or {}
+    ref_type = (view.target_act_ref or {}).get("type")
+    target_title = view.target_entity.title if view.target_entity else None
+    target_label = target_title or (ref_type or "this")
+
+    # Where there's a structural tail (arrow + new_state, "to goals",
+    # field-on-target), truncate the *title* if needed so the structural
+    # part survives. Generic _truncate_label runs at the end as a backstop.
+    text: str
+    if op == "transition":
+        new_state = payload.get("new_state")
+        if ref_type == "decision":
+            # Decisions transition by re-ratification rather than state moves.
+            verb = "Revise" if new_state in ("revised", "rejected", "archived") else "Reaffirm"
+            text = f"{verb} {_fit_title(target_label, 50 - len(verb) - 1)}"
+        elif new_state:
+            head = "Transition "
+            tail = f" \u2192 {new_state}"
+            text = head + _fit_title(target_label, 50 - len(head) - len(tail)) + tail
+        else:
+            text = f"Transition {_fit_title(target_label, 50 - len('Transition '))}"
+    elif op == "create":
+        title = payload.get("title") or target_title or "proposed item"
+        if ref_type == "goal":
+            tail = " to goals"
+            text = "Add " + _fit_title(title, 50 - 4 - len(tail)) + tail
+        elif ref_type == "commitment":
+            text = "Commit to " + _fit_title(title, 50 - len("Commit to "))
+        else:
+            text = "Create " + _fit_title(title, 50 - len("Create "))
+    elif op == "archive":
+        if ref_type == "commitment":
+            text = "Close " + _fit_title(target_label, 50 - len("Close "))
+        else:
+            text = "Archive " + _fit_title(target_label, 50 - len("Archive "))
+    elif op == "update":
+        field_name = payload.get("field") or "value"
+        head = f"Update {field_name} on "
+        text = head + _fit_title(target_label, 50 - len(head))
+    else:
+        text = "Take the proposed action"
+
+    return _truncate_label(text, 50)
+
+
+def _fit_title(title: str, budget: int) -> str:
+    """Trim a title to budget chars with a single ellipsis. Used so that
+    the structural tail of a directive ('→ closed', 'to goals') is never
+    cut off when the title is long."""
+    title = (title or "").strip()
+    if budget < 4:
+        return title[:max(budget, 0)]
+    if len(title) <= budget:
+        return title
+    return title[: budget - 1].rstrip() + "\u2026"
+
+
+def _render_epistemic_line(view: RecommendationView) -> str:
+    """Single sentence combining confidence + falsifier. Two regimes:
+    - High confidence (>= 0.75): "<NN>% confident - would revise if <falsifier>."
+    - Lower:                      "<NN>% confident, low calibration - would
+                                   revise if <falsifier>."
+    Falsifier text:
+      - For dollar-impact recommendations: "the cluster fades to two or fewer
+        signals"
+      - For state/concern transitions: "the underlying state changes back"
+      - For personnel-style: "stronger contrary observations land"
+      - Default: "a stronger contrary signal appears"
+    """
+    pct = int(round(view.confidence * 100))
+
+    pk = (view.proposition_kind or "").lower()
+    op = (view.proposed_change or {}).get("operation")
+    impact = view.expected_impact
+
+    if impact is not None and impact > 1.0:
+        falsifier = "the cluster fades to two or fewer signals"
+    elif "personnel" in pk or "people" in pk:
+        falsifier = "stronger contrary observations land"
+    elif op == "transition" or "concern" in pk or "state" in pk:
+        falsifier = "the underlying state changes back"
+    else:
+        falsifier = "a stronger contrary signal appears"
+
+    if view.confidence >= 0.75:
+        return f"{pct}% confident \u2014 would revise if {falsifier}."
+    return f"{pct}% confident, low calibration \u2014 would revise if {falsifier}."
+
+
+def _render_approve_label(view: RecommendationView) -> str:
+    """Verb-specialized button label. Max ~22 chars; trim aggressively.
+    transition commitment  -> "Move to <new_state>" or "Close <short_id>"
+                              if new_state == 'closed'
+    transition decision    -> "Reaffirm <short_id>"
+    create goal/commitment -> "Add to goals" / "Commit"
+    archive                -> "Archive <short_id>"
+    update resource        -> "Update <field>"
+    Fallback                -> "Approve"
+    """
+    pc = view.proposed_change or {}
+    op = pc.get("operation")
+    payload = pc.get("payload") or {}
+    ref_type = (view.target_act_ref or {}).get("type")
+    target_id = view.target_entity.id if view.target_entity else None
+    short = _short_id(target_id) if target_id is not None else None
+
+    text: str
+    if op == "transition":
+        new_state = payload.get("new_state")
+        if ref_type == "commitment":
+            if new_state == "closed" and short:
+                text = f"Close {short}"
+            elif new_state:
+                text = f"Move to {new_state}"
+            else:
+                text = "Move commitment"
+        elif ref_type == "decision":
+            text = f"Reaffirm {short}" if short else "Reaffirm"
+        else:
+            text = f"Move to {new_state}" if new_state else "Apply"
+    elif op == "create":
+        if ref_type == "goal":
+            text = "Add to goals"
+        elif ref_type == "commitment":
+            text = "Commit"
+        else:
+            text = "Create"
+    elif op == "archive":
+        text = f"Archive {short}" if short else "Archive"
+    elif op == "update":
+        field_name = payload.get("field")
+        text = f"Update {field_name}" if field_name else "Apply update"
+    else:
+        text = "Approve"
+
+    return _truncate_label(text, 22)
 
 
 def _derive_meta(view: RecommendationView) -> str | None:
@@ -1046,9 +1537,29 @@ async def build_today(
     )
 
     cards = [
-        await _build_card(v, now=now, tenant_id=tenant_id, conn=conn)
+        await _build_card(
+            v, now=now, tenant_id=tenant_id,
+            target_actor_id=actor_id, conn=conn,
+        )
         for v in recommendations
     ]
+
+    # Fan out per-actor watch subscriptions onto cards in one bulk
+    # query, post-loop. Only set is_watched=True on cards that have an
+    # active watch — absent on the rest, to keep the payload tight.
+    if cards:
+        from services.recommendations.watchers import list_active_watches
+        watched_ids = await list_active_watches(
+            tenant_id=tenant_id,
+            recommendation_ids=[v.id for v in recommendations],
+            actor_id=actor_id,
+            conn=conn,
+        )
+        if watched_ids:
+            watched_str = {str(rid) for rid in watched_ids}
+            for card in cards:
+                if card["id"] in watched_str:
+                    card["detail"]["is_watched"] = True
 
     signal_strip = await _build_signal_strip(
         tenant_id=tenant_id, target_actor=actor_id, conn=conn,

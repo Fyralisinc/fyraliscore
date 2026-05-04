@@ -136,6 +136,8 @@ async def apply_diff(
         models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
 
     # --- 1. claim_ops ---------------------------------------------
+    _belief_updated_model_ids: list[UUID] = []
+    _T2_BELIEF_KINDS = {"state", "concern", "expectation"}
     for op in diff.claim_ops:
         result = await _apply_claim_op(
             op, conn, models_repo, diff.tenant_id,
@@ -144,6 +146,11 @@ async def apply_diff(
         ops_summary["claim_ops"].append(result["summary"])
         if result.get("model_id") is not None:
             applied_model_ids.append(result["model_id"])
+            if (
+                op.op == "insert"
+                and result["summary"].get("proposition_kind") in _T2_BELIEF_KINDS
+            ):
+                _belief_updated_model_ids.append(result["model_id"])
         state_changes_emitted += result.get("state_changes", 0)
 
     # --- 2. act_ops -----------------------------------------------
@@ -164,7 +171,18 @@ async def apply_diff(
         ops_summary["resource_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
-    # --- 4. Mark applied_triggers success (still in same tx) ------
+    # --- 4. Enqueue T2:belief_updated for each new state/concern model ----
+    if _belief_updated_model_ids:
+        from services.think.cascade import enqueue_t2_belief_updated
+        for mid in _belief_updated_model_ids:
+            await enqueue_t2_belief_updated(
+                conn,
+                tenant_id=diff.tenant_id,
+                model_id=mid,
+                source_observation_id=trigger_cause_event_id,
+            )
+
+    # --- 5. Mark applied_triggers success (still in same tx) ------
     await conn.execute(
         "UPDATE applied_triggers SET outcome = 'success' WHERE trigger_id = $1",
         diff.trigger_ref,

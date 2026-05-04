@@ -184,6 +184,7 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/simulation/",
     "/simulation-ui/",
     "/debug/",
+    "/api/debug/",
     # Demo picker page calls these from an unauthenticated browser; the
     # /sessions/start endpoint mints the auth token for everything else.
     "/v1/demo/companies",
@@ -1150,6 +1151,83 @@ def _register_routes(app: FastAPI) -> None:
             },
             status_code=200,
         )
+
+    # ---------------- /v1/recommendations/{id}/watch -----------------
+    # Per-actor "Watch for revision" subscription on a falsifier
+    # predicate. The substrate stores the row; T2 cascade work that
+    # detects predicate firing lands later. See
+    # services/recommendations/watchers.py + migration 0027.
+    @app.post("/v1/recommendations/{recommendation_id}/watch")
+    async def watch_recommendation_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        from services.recommendations.watchers import create_watch
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            rec_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_recommendation_id"}, status_code=400,
+            )
+        try:
+            body = await request.json() if (await request.body()) else {}
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        predicate_raw = body.get("predicate")
+        if not isinstance(predicate_raw, str) or not predicate_raw.strip():
+            return JSONResponse(
+                {"error": "predicate_required"}, status_code=400,
+            )
+        predicate = predicate_raw.strip()
+
+        deps = _deps(request)
+        async with deps.pool.acquire() as conn:
+            watch_id = await create_watch(
+                tenant_id=auth.tenant_id,
+                recommendation_id=rec_id,
+                actor_id=auth.actor_id,
+                predicate=predicate,
+                conn=conn,
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "watch_id": str(watch_id),
+                "recommendation_id": str(rec_id),
+            },
+            status_code=200,
+        )
+
+    @app.delete("/v1/recommendations/{recommendation_id}/watch")
+    async def unwatch_recommendation_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        from services.recommendations.watchers import clear_watch
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            rec_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_recommendation_id"}, status_code=400,
+            )
+
+        deps = _deps(request)
+        async with deps.pool.acquire() as conn:
+            await clear_watch(
+                tenant_id=auth.tenant_id,
+                recommendation_id=rec_id,
+                actor_id=auth.actor_id,
+                conn=conn,
+            )
+        return JSONResponse({"ok": True}, status_code=200)
 
     # ---------------- /v1/today (Fyralis Today aggregator) -------
     # The Today UI (ui/src/App.tsx) consumes a single payload that

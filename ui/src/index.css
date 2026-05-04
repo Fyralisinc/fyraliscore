@@ -19,6 +19,15 @@
   --surface:      #FFFFFF;
   --surface-soft: #F9FAFB;
 
+  /* ─── PAPER ─── warm card surfaces (UX-5 polish) */
+  --paper:        #FCFBF8;   /* card body warm off-white */
+  --paper-deep:   #F7F5EF;   /* card hover & quote backgrounds */
+  --paper-cream:  #FAF6EC;   /* acceptance / quote callouts */
+  --paper-edge:   #E9E5DA;   /* warm hairlines */
+  --warm-ink:     #1B1B22;   /* body text — slightly warm black */
+  --warm-ink-2:   #3F4047;   /* secondary body */
+  --warm-ink-3:   #6E6F78;   /* tertiary / labels */
+
   /* ─── INK ─── deep cool-leaning near-black */
   --ink:    #0A0A0F;
   --ink-2:  #2C2D33;
@@ -671,12 +680,18 @@ a { color: inherit; text-decoration: none; }
  * ─────────────────────────────────────────────── */
 
 .card {
-  background: linear-gradient(180deg, #FFFFFF 0%, #FCFCFD 100%);
-  border-radius: 10px;
+  /* Warm paper surface with the faintest top-to-bottom gradient. The
+     eye reads this as "thoughtful note" rather than "spreadsheet cell". */
+  background: linear-gradient(180deg, #FCFBF8 0%, #F8F6EF 100%);
+  border-radius: 12px;
   overflow: hidden;
   position: relative;
   max-height: 1800px;
-  box-shadow: var(--shadow-card);
+  box-shadow:
+    0 0 0 1px rgba(28, 24, 18, 0.05),
+    0 1px 2px rgba(28, 24, 18, 0.04),
+    0 6px 14px rgba(28, 24, 18, 0.03);
+  border-left: 3px solid transparent;
   transition:
     transform var(--t-base) var(--ease-spring),
     box-shadow var(--t-base) var(--ease-out),
@@ -686,27 +701,55 @@ a { color: inherit; text-decoration: none; }
   will-change: transform, box-shadow;
   cursor: pointer;
 }
+/* Severity colors the left rule AND seeds a soft right-edge bloom.
+   Each rule sets two custom props; the ::after pseudo paints the bloom. */
+.card[data-sev="critical"]  { border-left-color: #B91C1C; --card-bloom: rgba(185, 28, 28, 0.05); }
+.card[data-sev="strategic"] { border-left-color: #6D28D9; --card-bloom: rgba(109, 40, 217, 0.05); }
+.card[data-sev="high"]      { border-left-color: #B45309; --card-bloom: rgba(180, 83, 9, 0.06); }
+.card[data-sev="med"]       { border-left-color: #475569; --card-bloom: rgba(71, 85, 105, 0.04); }
+.card[data-sev="low"]       { border-left-color: #D6D3CB; --card-bloom: transparent; }
+/* Top hairline highlight — sells the paper feel. */
 .card::before {
   content: '';
   position: absolute;
   top: 0; left: 0; right: 0;
   height: 1px;
   background: linear-gradient(90deg,
-    rgba(255,255,255,0) 0%,
-    rgba(255,255,255,0.9) 20%,
-    rgba(255,255,255,0.9) 80%,
-    rgba(255,255,255,0) 100%);
+    rgba(255, 250, 240, 0) 0%,
+    rgba(255, 250, 240, 0.95) 30%,
+    rgba(255, 250, 240, 0.95) 70%,
+    rgba(255, 250, 240, 0) 100%);
   z-index: 1;
   pointer-events: none;
 }
+/* Severity bloom on the right side. */
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 65% 120% at 100% 50%,
+    var(--card-bloom, transparent) 0%,
+    transparent 65%
+  );
+  pointer-events: none;
+}
 .card:hover {
-  box-shadow: var(--shadow-card-hover);
-  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px rgba(28, 24, 18, 0.06),
+    0 1px 2px rgba(28, 24, 18, 0.05),
+    0 4px 10px rgba(28, 24, 18, 0.04),
+    0 14px 28px rgba(28, 24, 18, 0.06);
+  transform: translateY(-1px);
   transition-delay: 0.04s, 0s, 0s, 0s;
 }
 .card.focused {
-  box-shadow: var(--shadow-card-focus);
-  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px rgba(15, 118, 110, 0.45),
+    0 0 0 4px rgba(15, 118, 110, 0.07),
+    0 4px 10px rgba(28, 24, 18, 0.04),
+    0 16px 32px rgba(28, 24, 18, 0.06);
+  transform: translateY(-1px);
 }
 .card.dismissing {
   opacity: 0;
@@ -723,18 +766,13 @@ a { color: inherit; text-decoration: none; }
 }
 
 .card-header {
-  height: 38px;
-  padding: 9px 22px;
+  height: 28px;
+  padding: 6px 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
 }
-.card[data-sev="critical"]  .card-header { background: var(--critical-bg);  border-bottom: 1px solid var(--critical-bg-2); }
-.card[data-sev="strategic"] .card-header { background: var(--strategic-bg); border-bottom: 1px solid var(--strategic-bg-2); }
-.card[data-sev="high"]      .card-header { background: var(--high-bg);      border-bottom: 1px solid var(--high-bg-2); }
-.card[data-sev="med"]       .card-header { background: var(--med-bg);       border-bottom: 1px solid var(--med-bg-2); }
-.card[data-sev="low"]       .card-header { background: var(--base-recess);  border-bottom: 1px solid var(--rule-faint); }
 
 .card-header-left {
   display: flex;
@@ -743,17 +781,13 @@ a { color: inherit; text-decoration: none; }
   min-width: 0;
 }
 .card-kind {
-  font-size: 11.5px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   white-space: nowrap;
+  color: var(--ink-3);
 }
-.card[data-sev="critical"]  .card-kind { color: var(--critical-text); }
-.card[data-sev="strategic"] .card-kind { color: var(--strategic-text); }
-.card[data-sev="high"]      .card-kind { color: var(--high-text); }
-.card[data-sev="med"]       .card-kind { color: var(--med-text); }
-.card[data-sev="low"]       .card-kind { color: var(--ink-3); }
 
 .card-meta {
   font-size: 11.5px;
@@ -791,36 +825,44 @@ a { color: inherit; text-decoration: none; }
 }
 
 .card-body {
-  padding: 18px 24px;
+  padding: 22px 26px 20px;
+  position: relative;
+  z-index: 2;
 }
 .card-headline {
   font-family: var(--serif);
-  font-size: 19px;
-  font-weight: 400;
-  line-height: 1.4;
-  letter-spacing: -0.015em;
-  color: var(--ink);
+  font-size: 20px;
+  font-weight: 420;
+  line-height: 1.42;
+  letter-spacing: -0.018em;
+  color: var(--warm-ink, #1B1B22);
   max-width: 640px;
   font-optical-sizing: auto;
 }
-.card-headline em { font-style: italic; }
+.card-headline em {
+  font-style: italic;
+  color: var(--warm-ink, #1B1B22);
+  /* Soft accent on emphasized phrases — gives serif italics a quiet
+     warmth without competing with state pills below. */
+  background: linear-gradient(180deg, transparent 60%, rgba(180, 83, 9, 0.10) 60%);
+}
 .card-headline .ref {
-  border-bottom: 1px solid var(--ink-5);
+  border-bottom: 1px dashed rgba(28, 24, 18, 0.20);
   cursor: pointer;
   transition: border-color var(--t-fast) var(--ease-out);
 }
 .card-headline .ref:hover { border-color: var(--accent); }
 
 .card-supporting {
-  margin-top: 7px;
+  margin-top: 8px;
   font-size: 13.5px;
-  color: var(--ink-2);
-  line-height: 1.55;
+  color: var(--warm-ink-2, #3F4047);
+  line-height: 1.6;
   max-width: 640px;
 }
 .card-supporting em {
   font-style: normal;
-  color: var(--ink);
+  color: var(--warm-ink, #1B1B22);
   font-weight: 500;
 }
 
@@ -880,32 +922,39 @@ a { color: inherit; text-decoration: none; }
 .stat-value.green { color: var(--accent); }
 
 .card-footer {
-  padding: 10px 18px 10px 24px;
-  min-height: 42px;
-  background: linear-gradient(180deg, #F9FAFB 0%, #F7F8FA 100%);
-  border-top: 1px solid var(--rule-faint);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  padding: 12px 20px 12px 26px;
+  min-height: 46px;
+  background: linear-gradient(180deg, rgba(247, 245, 239, 0.5) 0%, rgba(244, 242, 234, 0.7) 100%);
+  border-top: 1px solid rgba(28, 24, 18, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 252, 245, 0.7);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  position: relative;
+  z-index: 2;
 }
 
 .expand-cta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--ink-3);
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 450;
+  letter-spacing: 0.005em;
+  color: var(--warm-ink-3, #6E6F78);
   background: none;
   border: none;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
-  transition: color var(--t-fast) var(--ease-out);
+  padding: 5px 8px 5px 4px;
+  border-radius: 5px;
+  transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
 }
-.expand-cta:hover { color: var(--ink); }
+.expand-cta:hover {
+  color: var(--warm-ink, #1B1B22);
+  background: rgba(28, 24, 18, 0.04);
+}
 .expand-cta .chevron {
   display: inline-block;
   transition: transform var(--t-base) var(--ease-out);
@@ -916,16 +965,17 @@ a { color: inherit; text-decoration: none; }
 .card-actions { display: flex; gap: 4px; align-items: center; }
 
 .card-action {
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 7px 13px;
+  border-radius: 7px;
   background: transparent;
   border: 1px solid transparent;
   font-size: 11.5px;
   font-weight: 450;
-  color: var(--ink-2);
+  color: var(--warm-ink-2, #3F4047);
   transition:
     background var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
     transform var(--t-quick) var(--ease-spring),
     box-shadow var(--t-quick) var(--ease-out);
   display: inline-flex;
@@ -934,47 +984,59 @@ a { color: inherit; text-decoration: none; }
   cursor: pointer;
   will-change: transform;
 }
-.card-action:hover { background: var(--base-recess); color: var(--ink); }
+.card-action:hover {
+  background: rgba(28, 24, 18, 0.04);
+  color: var(--warm-ink, #1B1B22);
+  border-color: rgba(28, 24, 18, 0.06);
+}
 .card-action:active { transform: scale(0.96); transition-duration: 0.08s; }
 
 .card-action.primary {
-  background: linear-gradient(180deg, #1A1B22 0%, #0A0A0F 100%);
-  color: var(--surface);
+  /* Warm-black with a subtle teal undertone — matches the paper. */
+  background:
+    linear-gradient(180deg, #232327 0%, #14151A 100%);
+  color: #FCFBF8;
   font-weight: 500;
+  border-color: rgba(0, 0, 0, 0.4);
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.18),
-    0 0 0 1px rgba(0, 0, 0, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    inset 0 1px 0 rgba(255, 252, 245, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.20);
 }
 .card-action.primary:hover {
   transform: translateY(-1px);
+  border-color: rgba(15, 118, 110, 0.45);
   box-shadow:
-    0 2px 4px rgba(15, 23, 42, 0.2),
-    0 4px 12px rgba(15, 23, 42, 0.15),
-    0 0 0 1px rgba(15, 118, 110, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    0 2px 4px rgba(15, 23, 42, 0.18),
+    0 6px 14px rgba(15, 118, 110, 0.18),
+    0 0 0 1px rgba(15, 118, 110, 0.35),
+    inset 0 1px 0 rgba(255, 252, 245, 0.14);
+  background:
+    linear-gradient(180deg, #2A2A30 0%, #181920 100%);
 }
 .card-action.primary:active {
   transform: scale(0.97) translateY(0);
   box-shadow:
     0 1px 1px rgba(15, 23, 42, 0.2),
     inset 0 2px 4px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    inset 0 1px 0 rgba(255, 252, 245, 0.04);
   transition-duration: 0.08s;
 }
 
 .card-action .key {
   font-family: var(--mono);
-  font-size: 10px;
-  background: var(--base-recess);
-  padding: 1px 5px;
+  font-size: 9.5px;
+  background: rgba(28, 24, 18, 0.06);
+  padding: 2px 5px;
   border-radius: 3px;
-  color: var(--ink-3);
+  color: var(--warm-ink-3, #6E6F78);
   font-weight: 500;
+  letter-spacing: 0.02em;
 }
 .card-action.primary .key {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255,255,255,0.78);
+  background: rgba(255, 252, 245, 0.10);
+  color: rgba(255, 252, 245, 0.82);
 }
 
 /* ───────────────────────────────────────────────
@@ -4906,7 +4968,12 @@ a { color: inherit; text-decoration: none; }
 .card-detail-inner.revision {
   display: flex;
   flex-direction: column;
-  padding: 0;
+  /* Match collapsed-body horizontal padding (30px) so headline,
+     bands, probe row, and ask field all sit at the same left/right
+     rail as the collapsed view. Vertical padding lives on children
+     (.card-body.in-detail's top, .card-band's margin) so the
+     sticky-footer math stays correct. */
+  padding: 0 30px 18px;
   max-height: 700px;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -4921,7 +4988,9 @@ a { color: inherit; text-decoration: none; }
 .card-detail-inner.revision::-webkit-scrollbar-track { background: transparent; }
 
 .card-detail-inner.revision .card-body.in-detail {
-  padding: 18px 24px 0;
+  /* Horizontal padding now lives on the parent .card-detail-inner.revision;
+     this only owns the top breathing room. */
+  padding: 26px 0 0;
 }
 
 .card-detail-inner.revision.has-scroll-above::before,
@@ -5222,16 +5291,1204 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 -2px 8px rgba(15, 23, 42, 0.04);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* Footer holds primary triage actions only — collapse lives at the
+     top so it never competes with Approve / Discuss / Not now. */
+  justify-content: flex-end;
   min-height: 42px;
 }
-.expand-cta.collapse .chevron.rotated {
-  transform: rotate(0deg);
+
+/* Sticky top-right "Collapse" pill — the persistent, discoverable inverse
+   of the "▸ Ask why" CTA in the collapsed footer. Stays reachable as the
+   user scrolls through bands; decoupled from the action row below. */
+.card-collapse-handle {
+  position: sticky;
+  top: 10px;
+  align-self: flex-end;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px 5px 9px;
+  margin-bottom: -28px; /* float over the headline; don't push layout */
+  margin-right: -6px;
+  background: rgba(255, 252, 245, 0.92);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(28, 24, 18, 0.10);
+  border-radius: 999px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 450;
+  letter-spacing: 0.005em;
+  color: var(--warm-ink-3, #6E6F78);
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-quick) var(--ease-spring);
 }
+.card-collapse-handle:hover {
+  color: var(--warm-ink, #1B1B22);
+  background: rgba(255, 252, 245, 1);
+  border-color: rgba(28, 24, 18, 0.22);
+}
+.card-collapse-handle:active { transform: scale(0.96); }
+.card-collapse-handle .chevron-up {
+  font-size: 9px;
+  line-height: 1;
+  display: inline-block;
+}
+
+/* The headline area in the expanded view is itself a toggle target —
+   clicking it collapses, symmetric with how clicking the collapsed card
+   expands. The cursor signals it; the explicit pill above reinforces it. */
+.card.expanded .card-body.in-detail {
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background var(--t-fast) var(--ease-out);
+}
+.card.expanded .card-body.in-detail:hover {
+  background: rgba(28, 24, 18, 0.025);
+}
+/* Probe phrases inside the headline keep their own affordance; don't
+   override their cursor when hovering them. */
+.card.expanded .card-body.in-detail [data-probe-id] { cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
   .card-detail-inner.revision { scroll-behavior: auto; }
   .exchange { animation: none; }
   [data-probe-id].pulse { background: transparent; }
   .thinking-dots::after { animation: none; }
+}
+
+/* ───────────────────────────────────────────────
+ * CARD UX-2 — proposal line, epistemic line, action menu
+ * ─────────────────────────────────────────────── */
+
+.card-proposal {
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--warm-ink-2, #3F4047);
+  letter-spacing: -0.005em;
+  line-height: 1.5;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  max-width: 640px;
+  padding: 6px 10px 6px 11px;
+  background: rgba(247, 245, 239, 0.7);
+  border: 1px solid rgba(28, 24, 18, 0.06);
+  border-radius: 6px;
+  width: fit-content;
+}
+.card-proposal::before {
+  content: "→";
+  color: var(--accent);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+.card-proposal-target {
+  color: var(--warm-ink, #1B1B22);
+  font-weight: 500;
+}
+
+.card-epistemic {
+  margin-top: 10px;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--warm-ink-3, #6E6F78);
+  line-height: 1.55;
+  max-width: 640px;
+  font-family: var(--serif);
+  letter-spacing: 0.005em;
+}
+.card-epistemic .conf {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin-right: 4px;
+}
+
+.card-action.secondary-menu {
+  position: relative;
+}
+.card-action.secondary-menu .caret {
+  margin-left: 4px;
+  font-size: 9px;
+  opacity: 0.65;
+}
+.card-action-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  background: #FFFFFF;
+  border: 1px solid var(--rule-faint);
+  border-radius: 8px;
+  box-shadow:
+    0 6px 20px rgba(15, 23, 42, 0.10),
+    0 1px 2px rgba(15, 23, 42, 0.06);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 30;
+  animation: cardMenuIn 0.14s var(--ease-out);
+}
+@keyframes cardMenuIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.card-action-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+  font-weight: 450;
+  transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.card-action-menu button:hover {
+  background: var(--base-recess);
+  color: var(--ink);
+}
+.card-action-menu .item-key {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  background: var(--base-recess);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.card-action-menu .item-danger {
+  color: var(--critical-text);
+}
+.card-action-menu .item-danger:hover {
+  background: var(--critical-bg);
+  color: var(--critical-text);
+}
+
+/* ───────────────────────────────────────────────
+ * CARD UX-3 — expanded bands (diff / signals / reasoning / uncertainty)
+ * ─────────────────────────────────────────────── */
+
+.card-band {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-faint);
+}
+.card-band:first-of-type {
+  margin-top: 22px;
+}
+.band-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.band-count {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--ink-5, #94a3b8);
+  text-transform: none;
+}
+
+/* Band 1 — diff */
+.band-diff .diff-row {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  list-style: none;
+  margin-left: 0;
+}
+.band-diff .diff-target {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.band-diff .diff-states {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.band-diff .diff-from {
+  color: var(--ink-3);
+}
+.band-diff .diff-arrow {
+  color: var(--ink-3);
+  margin: 0 6px;
+}
+.band-diff .diff-to {
+  color: var(--ink);
+  font-weight: 500;
+}
+.band-diff .diff-meta {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.band-diff .diff-acceptance {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  border-left: 2px solid var(--rule-faint);
+  padding-left: 10px;
+  margin-top: 6px;
+}
+.band-diff .diff-target-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 500;
+  color: var(--ink);
+  font-size: 14px;
+}
+.band-diff .diff-target-kind {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--base-recess);
+  vertical-align: 1px;
+}
+.band-diff .diff-effect {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.65;
+  max-width: 640px;
+}
+.band-diff .diff-effect .diff-from,
+.band-diff .diff-effect .diff-to {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.band-diff .diff-effect .diff-from {
+  color: var(--ink-3);
+  background: var(--base-recess);
+}
+.band-diff .diff-effect .diff-to {
+  color: var(--ink);
+  background: rgba(15, 118, 110, 0.10);
+  font-weight: 500;
+}
+.band-diff .diff-effect .diff-arrow {
+  color: var(--ink-3);
+  margin: 0 4px;
+  font-family: var(--sans);
+}
+
+/* Band 2 — signals */
+.band-signals .signal-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.band-signals .signal-row {
+  display: grid;
+  grid-template-columns: 50px 70px 1fr;
+  column-gap: 12px;
+  align-items: baseline;
+  line-height: 1.5;
+}
+.band-signals .signal-date {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: lowercase;
+}
+.band-signals .signal-source {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-transform: lowercase;
+}
+.band-signals .signal-quote {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink);
+  display: block;
+}
+.band-signals .signal-quote::before {
+  content: "\201C";
+  opacity: 0.5;
+}
+.band-signals .signal-quote::after {
+  content: "\201D";
+  opacity: 0.5;
+}
+.band-signals .signal-attr {
+  grid-column: 3;
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: -2px;
+  text-transform: lowercase;
+}
+.band-signals .signals-more {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.band-signals .signals-more:hover {
+  color: var(--ink);
+}
+
+/* Band 3 — reasoning (scoped to .band-reasoning to avoid colliding with legacy .reasoning-list) */
+.band-reasoning .reasoning-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.band-reasoning .reasoning-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 50px;
+  column-gap: 12px;
+  align-items: baseline;
+  line-height: 1.5;
+  padding: 4px 0;
+  border-bottom: 1px dotted transparent;
+}
+.band-reasoning .reasoning-kind {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.band-reasoning .reasoning-natural {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink);
+}
+.band-reasoning .reasoning-conf {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Band 4 — uncertainty */
+.band-uncertainty .uncertainty-conf {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.band-uncertainty .uncertainty-pct {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.band-uncertainty .uncertainty-falsifier {
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-2);
+  font-family: var(--serif);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+.band-uncertainty .falsifier-prefix {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  margin-right: 6px;
+}
+.band-uncertainty .uncertainty-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.band-uncertainty .watch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  font-weight: 450;
+  color: var(--ink-2);
+  background: var(--surface, #fff);
+  border: 1px solid var(--rule-faint);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+.band-uncertainty .watch-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink-5);
+  background: var(--base-recess);
+}
+.band-uncertainty .watch-btn .watch-icon {
+  font-size: 9px;
+  opacity: 0.7;
+}
+.band-uncertainty .watch-btn.watching {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(15, 118, 110, 0.06);
+}
+.band-uncertainty .watch-btn.watching .watch-icon {
+  color: var(--accent);
+  opacity: 1;
+}
+.band-uncertainty .calibration-line {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+.band-uncertainty .calibration-line strong {
+  font-style: normal;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+/* ───────────────────────────────────────────────
+ * CARD UX-4 — kind label demoted to subtitle under headline
+ * ─────────────────────────────────────────────── */
+
+.card-subtitle {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.card-subtitle-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--warm-ink-3, #6E6F78);
+  line-height: 1;
+  position: relative;
+  padding-left: 10px;
+}
+.card-subtitle-kind::before {
+  /* Severity-tinted dot anchoring the kind caption. */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  transform: translateY(-50%);
+}
+.card[data-sev="critical"]  .card-subtitle-kind::before { background: #B91C1C; opacity: 0.75; }
+.card[data-sev="strategic"] .card-subtitle-kind::before { background: #6D28D9; opacity: 0.75; }
+.card[data-sev="high"]      .card-subtitle-kind::before { background: #B45309; opacity: 0.8; }
+.card[data-sev="med"]       .card-subtitle-kind::before { background: #475569; opacity: 0.65; }
+.card-subtitle .tag-new {
+  /* slightly smaller than the original corner badge so it doesn't
+     fight the demoted kind caption */
+  font-size: 9.5px;
+  padding: 1px 6px;
+}
+
+/* ───────────────────────────────────────────────
+ * CARD UX-5 — visual polish (warm paper aesthetic)
+ *   • dividers fade at the ends instead of solid 1px rules
+ *   • band labels get refined letter-spacing & a tiny anchor dot
+ *   • acceptance / quote callouts shift to warm cream
+ *   • signal & reasoning rows hover-tint and use tabular numerals
+ *   • state pills get refined padding & semantic warmth
+ *   • watch button refinement (off vs on states)
+ * ─────────────────────────────────────────────── */
+
+.card-band {
+  border-top: none;
+  position: relative;
+  margin-top: 22px;
+  padding-top: 18px;
+}
+.card-band::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(28, 24, 18, 0.085) 14%,
+    rgba(28, 24, 18, 0.085) 86%,
+    transparent 100%);
+  pointer-events: none;
+}
+
+.band-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warm-ink-3, #6E6F78);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  padding-left: 12px;
+}
+.band-label::before {
+  /* Tiny anchor dot — gives each band a left-edge marker the eye can
+     track as it scans down the card. */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(28, 24, 18, 0.22);
+}
+.band-label .band-count {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--warm-ink-3, #6E6F78);
+  text-transform: lowercase;
+  opacity: 0.7;
+}
+
+/* ── Diff band polish ───────────────────────────── */
+.band-diff .diff-effect .diff-from,
+.band-diff .diff-effect .diff-to {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.005em;
+  font-weight: 500;
+}
+.band-diff .diff-effect .diff-from {
+  color: var(--warm-ink-3, #6E6F78);
+  background: rgba(28, 24, 18, 0.05);
+  border: 1px solid rgba(28, 24, 18, 0.06);
+}
+.band-diff .diff-effect .diff-to {
+  color: #134E4A;
+  background: rgba(15, 118, 110, 0.10);
+  border: 1px solid rgba(15, 118, 110, 0.18);
+}
+.band-diff .diff-effect .diff-arrow {
+  color: var(--warm-ink-3, #6E6F78);
+  margin: 0 4px;
+  font-family: var(--sans);
+  opacity: 0.7;
+}
+
+.band-diff .diff-target-name {
+  color: var(--warm-ink, #1B1B22);
+  font-weight: 500;
+}
+.band-diff .diff-target-kind {
+  background: rgba(28, 24, 18, 0.05);
+  color: var(--warm-ink-3, #6E6F78);
+  border: 1px solid rgba(28, 24, 18, 0.06);
+}
+
+.band-diff .diff-effect {
+  color: var(--warm-ink-2, #3F4047);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.band-diff .diff-meta {
+  color: var(--warm-ink-3, #6E6F78);
+  margin-top: 8px;
+  font-size: 12px;
+}
+.band-diff .diff-acceptance {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-left: 3px solid #C7B89E;
+  background: linear-gradient(180deg, #FBF8F1 0%, #F8F4EA 100%);
+  border-radius: 0 6px 6px 0;
+  color: var(--warm-ink-2, #3F4047);
+  font-size: 13px;
+  line-height: 1.6;
+  font-style: italic;
+  font-family: var(--serif);
+}
+
+/* ── Signals band polish ────────────────────────── */
+.band-signals .signal-list { gap: 4px; }
+.band-signals .signal-row {
+  grid-template-columns: 56px 78px 1fr;
+  column-gap: 14px;
+  padding: 7px 10px;
+  margin-left: -10px;
+  margin-right: -10px;
+  border-radius: 6px;
+  transition: background var(--t-fast) var(--ease-out);
+}
+.band-signals .signal-row:hover {
+  background: rgba(28, 24, 18, 0.025);
+}
+.band-signals .signal-date {
+  color: var(--warm-ink-3, #6E6F78);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.band-signals .signal-source {
+  font-size: 10.5px;
+  color: var(--warm-ink-2, #3F4047);
+  letter-spacing: 0.04em;
+}
+.band-signals .signal-quote {
+  color: var(--warm-ink, #1B1B22);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.band-signals .signal-quote::before,
+.band-signals .signal-quote::after {
+  color: #C7B89E;
+  opacity: 1;
+  font-weight: 400;
+}
+.band-signals .signal-attr {
+  color: var(--warm-ink-3, #6E6F78);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.band-signals .signals-more {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--warm-ink-3, #6E6F78);
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.band-signals .signals-more:hover {
+  background: rgba(28, 24, 18, 0.04);
+  color: var(--warm-ink, #1B1B22);
+}
+
+/* ── Reasoning band polish ──────────────────────── */
+.band-reasoning .reasoning-list { gap: 2px; }
+.band-reasoning .reasoning-row {
+  grid-template-columns: 100px 1fr 56px;
+  column-gap: 14px;
+  padding: 8px 10px;
+  margin-left: -10px;
+  margin-right: -10px;
+  border-radius: 6px;
+  transition: background var(--t-fast) var(--ease-out);
+  border-bottom: none;
+}
+.band-reasoning .reasoning-row:hover {
+  background: rgba(28, 24, 18, 0.025);
+}
+.band-reasoning .reasoning-kind {
+  color: var(--warm-ink-3, #6E6F78);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  position: relative;
+  padding-left: 9px;
+}
+.band-reasoning .reasoning-kind::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(28, 24, 18, 0.30);
+}
+.band-reasoning .reasoning-natural {
+  color: var(--warm-ink, #1B1B22);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.band-reasoning .reasoning-conf {
+  color: var(--warm-ink-2, #3F4047);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── Uncertainty band polish ────────────────────── */
+.band-uncertainty .uncertainty-conf {
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--warm-ink-2, #3F4047);
+}
+.band-uncertainty .uncertainty-pct {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--warm-ink, #1B1B22);
+  letter-spacing: -0.01em;
+  font-family: var(--mono);
+}
+.band-uncertainty .uncertainty-text {
+  font-style: italic;
+  font-family: var(--serif);
+  color: var(--warm-ink-3, #6E6F78);
+}
+.band-uncertainty .uncertainty-falsifier {
+  background: linear-gradient(180deg, #FBF8F1 0%, #F8F4EA 100%);
+  border: 1px solid rgba(199, 184, 158, 0.5);
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin: 12px 0 14px;
+  font-size: 13px;
+  color: var(--warm-ink-2, #3F4047);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.band-uncertainty .falsifier-prefix {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #B45309;
+  margin-right: 2px;
+  font-weight: 600;
+  flex: none;
+}
+.band-uncertainty .falsifier-text {
+  font-family: var(--serif);
+  font-style: italic;
+}
+
+.band-uncertainty .watch-btn {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  border-radius: 999px;
+  background: rgba(255, 252, 245, 0.85);
+  border-color: rgba(28, 24, 18, 0.10);
+  color: var(--warm-ink-2, #3F4047);
+}
+.band-uncertainty .watch-btn:hover {
+  background: rgba(255, 252, 245, 1);
+  border-color: rgba(15, 118, 110, 0.4);
+  color: var(--accent-deep);
+}
+.band-uncertainty .watch-btn.watching {
+  background: rgba(15, 118, 110, 0.10);
+  border-color: rgba(15, 118, 110, 0.55);
+  color: var(--accent-deep);
+}
+.band-uncertainty .watch-btn .watch-icon {
+  font-size: 8.5px;
+}
+.band-uncertainty .calibration-line {
+  font-size: 11.5px;
+  color: var(--warm-ink-3, #6E6F78);
+  font-style: italic;
+  font-family: var(--serif);
+}
+.band-uncertainty .calibration-line strong {
+  font-style: normal;
+  color: var(--warm-ink, #1B1B22);
+  font-weight: 500;
+}
+
+/* ── Probe / ask polish (consistent with paper aesthetic) ── */
+.card-detail-inner.revision .probe-row { padding-top: 4px; }
+.card-detail-inner.revision .probe-row-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warm-ink-3, #6E6F78);
+}
+.card-detail-inner.revision .probe-chip {
+  background: rgba(255, 252, 245, 0.85);
+  border-color: rgba(28, 24, 18, 0.10);
+  color: var(--warm-ink-2, #3F4047);
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 6px 13px;
+}
+.card-detail-inner.revision .probe-chip:hover {
+  background: rgba(255, 252, 245, 1);
+  border-color: rgba(15, 118, 110, 0.4);
+  color: var(--accent-deep);
+}
+.card-detail-inner.revision .card-ask {
+  background: rgba(247, 245, 239, 0.7);
+  border: 1px solid rgba(28, 24, 18, 0.07);
+}
+.card-detail-inner.revision .card-ask:focus-within {
+  border-color: rgba(15, 118, 110, 0.45);
+  background: rgba(255, 252, 245, 0.95);
+}
+
+/* The expanded scroll-edge gradients: tint to paper, not white. */
+.card-detail-inner.revision.has-scroll-above::before,
+.card-detail-inner.revision.has-scroll-below::after {
+  background: linear-gradient(to bottom, var(--paper, #FCFBF8), transparent);
+}
+.card-detail-inner.revision.has-scroll-below::after {
+  background: linear-gradient(to top, var(--paper, #FCFBF8), transparent);
+}
+
+/* Dismissing animation — slightly warmer */
+.card.dismissing { transform: translateY(-12px) scale(0.97); }
+
+/* ───────────────────────────────────────────────
+ * CARD UX-6 — readable bands (overrides UX-3/UX-5 row grids)
+ *   Bigger section headers, more vertical air, signals & reasoning
+ *   now render as quoted callouts with attribution below — not
+ *   left-to-right rows. The eye reads down a single column.
+ * ─────────────────────────────────────────────── */
+
+/* Card body — give the content room to breathe. */
+.card-body { padding: 26px 30px 22px; }
+.card.expanded .card-body.in-detail { padding-bottom: 0; }
+
+/* Section headers: sentence-case sans 14px instead of tiny mono caps.
+   The dot-anchor was reading as decoration; drop it. The eye now lands
+   on a real header that announces the band. */
+.card-band {
+  margin-top: 32px;
+  padding-top: 24px;
+}
+.card-band::before {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(28, 24, 18, 0.10) 16%,
+    rgba(28, 24, 18, 0.10) 84%,
+    transparent 100%);
+}
+.band-label {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--warm-ink, #1B1B22);
+  margin-bottom: 16px;
+  padding-left: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.band-label::before { display: none; }
+.band-label .band-count {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--warm-ink-3, #6E6F78);
+  text-transform: none;
+  opacity: 1;
+}
+
+/* ── Signals: each signal is a quoted callout, not a row. ── */
+.band-signals .signal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.band-signals .signal-row {
+  /* break the grid — block layout, quote prominent, meta below */
+  display: block;
+  grid-template-columns: none;
+  padding: 14px 16px;
+  margin: 0;
+  background: rgba(252, 251, 248, 0.7);
+  border: 1px solid rgba(28, 24, 18, 0.06);
+  border-left: 2px solid rgba(199, 184, 158, 0.6);
+  border-radius: 6px;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+.band-signals .signal-row:hover {
+  background: rgba(255, 252, 245, 1);
+  border-left-color: rgba(180, 83, 9, 0.5);
+}
+.band-signals .signal-quote {
+  display: block;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--warm-ink, #1B1B22);
+  margin: 0 0 8px;
+  font-weight: 380;
+}
+.band-signals .signal-quote::before { content: "\201C"; color: #C7B89E; margin-right: 1px; }
+.band-signals .signal-quote::after  { content: "\201D"; color: #C7B89E; margin-left: 1px; }
+.band-signals .signal-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-family: var(--sans);
+  color: var(--warm-ink-3, #6E6F78);
+  letter-spacing: 0.01em;
+  flex-wrap: wrap;
+}
+.band-signals .signal-meta-sep { opacity: 0.5; }
+.band-signals .signal-source {
+  text-transform: lowercase;
+  font-weight: 500;
+  color: var(--warm-ink-2, #3F4047);
+}
+.band-signals .signal-date { font-variant-numeric: tabular-nums; }
+.band-signals .signal-attr { font-style: italic; color: var(--warm-ink-3, #6E6F78); }
+.band-signals .signals-more {
+  margin-top: 12px;
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--warm-ink-3, #6E6F78);
+  padding: 4px 10px;
+  border-radius: 5px;
+}
+.band-signals .signals-more:hover {
+  color: var(--warm-ink, #1B1B22);
+  background: rgba(28, 24, 18, 0.04);
+}
+
+/* ── Reasoning: each model is a claim with attribution below. ── */
+.band-reasoning .reasoning-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.band-reasoning .reasoning-row {
+  display: block;
+  grid-template-columns: none;
+  padding: 14px 16px;
+  margin: 0;
+  background: rgba(252, 251, 248, 0.7);
+  border: 1px solid rgba(28, 24, 18, 0.06);
+  border-radius: 6px;
+  transition: background var(--t-fast) var(--ease-out);
+  border-bottom: 1px solid rgba(28, 24, 18, 0.06);
+}
+.band-reasoning .reasoning-row:hover {
+  background: rgba(255, 252, 245, 1);
+}
+.band-reasoning .reasoning-natural {
+  display: block;
+  margin: 0 0 8px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--warm-ink, #1B1B22);
+  font-weight: 420;
+}
+.band-reasoning .reasoning-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--warm-ink-3, #6E6F78);
+  letter-spacing: 0.01em;
+}
+.band-reasoning .reasoning-meta-sep { opacity: 0.5; }
+.band-reasoning .reasoning-kind {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--warm-ink-2, #3F4047);
+  padding: 2px 6px;
+  background: rgba(28, 24, 18, 0.06);
+  border-radius: 3px;
+  position: static;
+  padding-left: 6px;
+}
+.band-reasoning .reasoning-kind::before { display: none; }
+.band-reasoning .reasoning-conf {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-weight: 500;
+  color: var(--warm-ink-2, #3F4047);
+  font-size: 11px;
+}
+
+/* ── Diff band: tighten the meta line, more space around acceptance ── */
+.band-diff .diff-effect {
+  font-size: 14px;
+  line-height: 1.7;
+  margin-bottom: 4px;
+}
+.band-diff .diff-meta { margin-top: 12px; font-size: 12px; }
+.band-diff .diff-acceptance { margin-top: 14px; padding: 12px 16px; }
+
+/* ── Uncertainty: tighten the visual rhythm ── */
+.band-uncertainty .uncertainty-conf { margin-bottom: 8px; }
+.band-uncertainty .uncertainty-falsifier { margin: 14px 0 16px; padding: 11px 14px; }
+.band-uncertainty .uncertainty-actions { gap: 16px; }
+
+/* Probe row — bigger header to match the band rhythm */
+.card-detail-inner.revision .probe-row { margin-top: 32px; padding-top: 24px; position: relative; }
+.card-detail-inner.revision .probe-row::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(28, 24, 18, 0.10) 16%,
+    rgba(28, 24, 18, 0.10) 84%,
+    transparent 100%);
+  pointer-events: none;
+}
+.card-detail-inner.revision .probe-row-label {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--warm-ink, #1B1B22);
+  margin-bottom: 14px;
+}
+.card-detail-inner.revision .card-ask-wrap { margin-top: 14px; }
+
+/* ───────────────────────────────────────────────
+ * FOCUS MODE — hide sidebar + signal strip, full-width main
+ * ─────────────────────────────────────────────── */
+
+.cockpit[data-focus="true"] {
+  /* Single track so the (display:none) sidebar doesn't claim auto-
+     placement and starve `main` of its width. */
+  grid-template-columns: 1fr;
+}
+.cockpit[data-focus="true"] .sidebar {
+  display: none;
+}
+.cockpit[data-focus="true"] .signal-strip {
+  display: none;
+}
+.cockpit[data-focus="true"] main {
+  padding-top: 14px;
+}
+
+.chrome-toggle {
+  position: fixed;
+  top: 14px;
+  left: 18px;
+  z-index: 70;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--warm-ink-2, #3F4047);
+  background: rgba(255, 252, 245, 0.85);
+  border: 1px solid rgba(28, 24, 18, 0.10);
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow:
+    0 1px 2px rgba(28, 24, 18, 0.06),
+    0 4px 10px rgba(28, 24, 18, 0.05);
+  transition:
+    background var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-quick) var(--ease-spring),
+    box-shadow var(--t-quick) var(--ease-out);
+}
+.chrome-toggle:hover {
+  color: var(--warm-ink, #1B1B22);
+  border-color: rgba(15, 118, 110, 0.4);
+  background: rgba(255, 252, 245, 1);
+  transform: translateY(-1px);
+}
+.chrome-toggle:active { transform: scale(0.97); }
+.chrome-toggle-icon {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--warm-ink-3, #6E6F78);
+}
+.chrome-toggle.hidden-chrome {
+  /* When chrome is hidden, the toggle stays visible as the only way back */
+  background: rgba(15, 118, 110, 0.08);
+  border-color: rgba(15, 118, 110, 0.4);
+  color: var(--accent-deep);
+}
+.chrome-toggle.hidden-chrome .chrome-toggle-icon { color: var(--accent); }
+
+@media (max-width: 720px) {
+  .chrome-toggle-label { display: none; }
+  .chrome-toggle { padding: 7px 9px; }
 }

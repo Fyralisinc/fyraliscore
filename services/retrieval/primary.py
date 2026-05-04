@@ -69,7 +69,7 @@ TriggerKind = Literal["T1", "T2", "T3", "T4"]
 # can call the individual pathways directly.
 _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
     "T1": {"A": 0.4, "B": 0.4, "C": 0.2},
-    "T2": {"A": 0.5, "D": 0.5},
+    "T2": {"A": 0.4, "B": 0.4, "D": 0.2},
     "T3": {"A": 0.5, "B": 0.3, "C": 0.2},
     "T4": {"D": 0.6, "A": 0.4},
 }

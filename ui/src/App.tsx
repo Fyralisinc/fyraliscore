@@ -49,6 +49,26 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [justArrived, setJustArrived] = useState<Set<string>>(() => new Set());
   const [holdPickerCard, setHoldPickerCard] = useState<RecCardType | null>(null);
+  // Focus mode: hide sidebar + signal strip so the cards are the only
+  // thing on screen. Persists across reloads.
+  const [focusMode, setFocusMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("focusMode") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleFocusMode = useCallback(() => {
+    setFocusMode((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("focusMode", next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
 
   const askRef = useRef<HTMLInputElement | null>(null);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -271,6 +291,17 @@ export default function App() {
           e.preventDefault();
           return;
         }
+        // Esc collapses the focused expanded card — the keyboard inverse
+        // to Enter (which toggles).
+        if (focusedId && expandedIds.has(focusedId)) {
+          e.preventDefault();
+          setExpandedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(focusedId);
+            return next;
+          });
+          return;
+        }
         return;
       }
       if (isInput(active)) return;
@@ -291,6 +322,12 @@ export default function App() {
       if (!e.shiftKey && k === "m") {
         e.preventDefault();
         navigate("/mind");
+        return;
+      }
+      // \ — toggle focus mode (hide sidebar + signal strip).
+      if (e.key === "\\") {
+        e.preventDefault();
+        toggleFocusMode();
         return;
       }
 
@@ -350,7 +387,7 @@ export default function App() {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [focusNext, focusedId, navigate, onTriage, shortcutsOpen, toggleExpansion, visibleCards]);
+  }, [expandedIds, focusNext, focusedId, navigate, onTriage, shortcutsOpen, toggleExpansion, toggleFocusMode, visibleCards]);
 
   const onRename = useCallback(() => {
     if (!today) return;
@@ -368,7 +405,18 @@ export default function App() {
           backend unreachable · showing last good state
         </div>
       ) : null}
-      <div className="cockpit">
+      <button
+        type="button"
+        className={"chrome-toggle" + (focusMode ? " hidden-chrome" : "")}
+        onClick={toggleFocusMode}
+        title={focusMode ? "Show sidebar & signal strip (\\)" : "Hide sidebar & signal strip (\\)"}
+        aria-label={focusMode ? "Show chrome" : "Hide chrome"}
+        aria-pressed={focusMode}
+      >
+        <span className="chrome-toggle-icon">{focusMode ? "⇲" : "⇱"}</span>
+        <span className="chrome-toggle-label">{focusMode ? "Show chrome" : "Focus"}</span>
+      </button>
+      <div className="cockpit" data-focus={focusMode ? "true" : undefined}>
         <Sidebar
           brand={today?.brand ?? { name: "Fyralis", mark: "D", pulse_day: 0 }}
           nav={injectMyMindNav(today?.nav ?? [])}

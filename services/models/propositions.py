@@ -129,23 +129,24 @@ _LEGAL_PROPOSED_OPS = frozenset({"create", "update", "archive", "transition"})
 
 class RecommendationProposition(_PropositionBase):
     kind: Literal["recommendation"] = "recommendation"
-    target_act_ref: dict[str, Any]
+    target_act_ref: dict[str, Any] | None = None
     proposed_change: dict[str, Any]
     expected_impact: float | None = None
     qualitative_impact: str | None = None
-    target_actor_id: str  # UUID string
+    target_actor_id: str | None = None
 
     @model_validator(mode="after")
     def _check_recommendation_shape(self) -> "RecommendationProposition":
-        ref_type = self.target_act_ref.get("type")
-        ref_id = self.target_act_ref.get("id")
-        if ref_type not in _LEGAL_ACT_REF_TYPES:
-            raise ValueError(
-                f"target_act_ref.type must be one of "
-                f"{sorted(_LEGAL_ACT_REF_TYPES)}; got {ref_type!r}"
-            )
-        if not isinstance(ref_id, str) or not ref_id:
-            raise ValueError("target_act_ref.id must be a non-empty UUID string")
+        if self.target_act_ref is not None:
+            ref_type = self.target_act_ref.get("type")
+            ref_id = self.target_act_ref.get("id")
+            if ref_type not in _LEGAL_ACT_REF_TYPES:
+                raise ValueError(
+                    f"target_act_ref.type must be one of "
+                    f"{sorted(_LEGAL_ACT_REF_TYPES)}; got {ref_type!r}"
+                )
+            if not isinstance(ref_id, str) or not ref_id:
+                raise ValueError("target_act_ref.id must be a non-empty UUID string")
 
         op = self.proposed_change.get("operation")
         if op not in _LEGAL_PROPOSED_OPS:
@@ -163,7 +164,9 @@ class RecommendationProposition(_PropositionBase):
                 "either expected_impact (numeric) or qualitative_impact "
                 "(non-empty string) must be supplied"
             )
-        if not isinstance(self.target_actor_id, str) or not self.target_actor_id:
+        if self.target_actor_id is not None and (
+            not isinstance(self.target_actor_id, str) or not self.target_actor_id
+        ):
             raise ValueError("target_actor_id must be a non-empty UUID string")
         return self
 

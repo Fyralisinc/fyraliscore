@@ -58,7 +58,9 @@ async def validate_recommendation(
         tenant, or the entity is in a state that makes the proposed
         change unreachable.
     """
-    ref = proposition["target_act_ref"]
+    ref = proposition.get("target_act_ref")
+    if ref is None:
+        return
     ref_type = ref["type"]
     ref_id_raw = ref["id"]
     try:

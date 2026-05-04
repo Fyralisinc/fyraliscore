@@ -956,7 +956,7 @@ class DeepSeekProvider(OpenAIProvider):
     failures observed with plain `response_format: json_object`.
     """
     base_url = "https://api.deepseek.com"
-    strict_base_url = "https://api.deepseek.com/beta"
+    strict_base_url = "https://api.deepseek.com"
 
     async def _structured_raw(
         self,

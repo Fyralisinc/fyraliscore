@@ -13,7 +13,7 @@ const ROWS: Array<{ keys: string[]; label: string }> = [
   { keys: ["/"], label: "Focus the Ask field" },
   { keys: ["1", "2", "3"], label: "Filter All / Operational / Strategic" },
   { keys: ["?"], label: "Show this overlay" },
-  { keys: ["Esc"], label: "Close overlay or blur input" },
+  { keys: ["Esc"], label: "Collapse expanded card · close overlay · blur input" },
 ];
 
 // Per spec §5.7 — modal overlay; click outside or Esc closes.

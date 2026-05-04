@@ -47,7 +47,7 @@ class RecommendationView:
     id: UUID
     proposition_text: str       # the Model.natural sentence
     confidence: float
-    target_act_ref: dict[str, Any]
+    target_act_ref: dict[str, Any] | None
     proposed_change: dict[str, Any]
     expected_impact: float | None
     qualitative_impact: str | None
@@ -58,6 +58,7 @@ class RecommendationView:
     scope_entities: list[dict[str, Any]]
     target_entity: TargetEntitySummary | None
     rank_score: float           # impact * confidence; ties broken on created_at DESC
+    proposition_kind: str | None = None
 
 
 class RecommendationsRepoError(CompanyOSError):
@@ -75,6 +76,7 @@ SELECT
     m.proposition,
     m."natural"               AS natural,
     m.confidence,
+    m.proposition_kind,
     m.target_actor_id,
     m.supporting_event_ids,
     m.supporting_model_ids,
@@ -83,7 +85,7 @@ SELECT
 FROM models m
 WHERE m.tenant_id           = $1
   AND m.proposition_kind    = 'recommendation'
-  AND m.target_actor_id     = $2
+  AND (m.target_actor_id = $2 OR m.target_actor_id IS NULL)
   AND m.status              = 'active'
   AND m.archived_at IS NULL
 ORDER BY (
@@ -126,13 +128,19 @@ async def list_for_actor(
 
     # Group target_act_refs by entity type so we can do at most 4 batch
     # fetches (one per Acts/Resources table) instead of N queries.
+    # Rows with null target_act_ref (organic T2 recommendations) are kept
+    # with ref=None and shown without a target entity.
     by_type: dict[str, list[UUID]] = {}
-    parsed: list[tuple[asyncpg.Record, dict[str, Any], dict[str, Any]]] = []
+    parsed: list[tuple[asyncpg.Record, dict[str, Any], dict[str, Any] | None]] = []
     for r in rows:
         proposition = _coerce_jsonb(r["proposition"])
-        ref = (proposition or {}).get("target_act_ref") or {}
-        ref_type = ref.get("type")
-        ref_id_raw = ref.get("id")
+        raw_ref = (proposition or {}).get("target_act_ref")
+        if not raw_ref:
+            # Organic recommendation — no specific act target.
+            parsed.append((r, proposition, None))
+            continue
+        ref_type = raw_ref.get("type")
+        ref_id_raw = raw_ref.get("id")
         if ref_type not in _REF_TYPE_TO_TABLE or not ref_id_raw:
             # Malformed recommendation; skip rather than crash the list.
             continue
@@ -141,7 +149,7 @@ async def list_for_actor(
         except (ValueError, TypeError):
             continue
         by_type.setdefault(ref_type, []).append(ref_id)
-        parsed.append((r, proposition, {**ref, "id": ref_id}))
+        parsed.append((r, proposition, {**raw_ref, "id": ref_id}))
 
     target_index: dict[tuple[str, UUID], TargetEntitySummary] = {}
     for ref_type, ids in by_type.items():
@@ -181,15 +189,20 @@ async def list_for_actor(
 
     out: list[RecommendationView] = []
     for r, proposition, ref in parsed:
-        # Filter out recommendations whose target was archived OR whose
-        # target Commitment reached a terminal state (closed/doneverified).
-        target = target_index.get((ref["type"], ref["id"]))
-        if target is None:
-            continue
-        if target.archived:
-            continue
-        if ref["type"] == "commitment" and target.state in ("closed", "doneverified"):
-            continue
+        if ref is not None:
+            # Filter out recommendations whose target was archived OR whose
+            # target Commitment reached a terminal state (closed/doneverified).
+            target: TargetEntitySummary | None = target_index.get((ref["type"], ref["id"]))
+            if target is None:
+                continue
+            if target.archived:
+                continue
+            if ref["type"] == "commitment" and target.state in ("closed", "doneverified"):
+                continue
+            target_act_ref_out: dict[str, Any] | None = {"type": ref["type"], "id": str(ref["id"])}
+        else:
+            target = None
+            target_act_ref_out = None
 
         ei_raw = proposition.get("expected_impact")
         try:
@@ -203,7 +216,7 @@ async def list_for_actor(
                 id=r["id"],
                 proposition_text=r["natural"],
                 confidence=float(r["confidence"]),
-                target_act_ref={"type": ref["type"], "id": str(ref["id"])},
+                target_act_ref=target_act_ref_out,
                 proposed_change=proposition.get("proposed_change") or {},
                 expected_impact=ei,
                 qualitative_impact=proposition.get("qualitative_impact"),
@@ -214,6 +227,7 @@ async def list_for_actor(
                 scope_entities=_coerce_jsonb_list(r["scope_entities"]),
                 target_entity=target,
                 rank_score=rank_score,
+                proposition_kind=r["proposition_kind"],
             )
         )
 

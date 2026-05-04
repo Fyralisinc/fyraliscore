@@ -9,6 +9,7 @@ import type {
   TodayResponse,
   TriageRequest,
   TriageResponse,
+  WatchResponse,
 } from "./today-types";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -67,6 +68,29 @@ export function postTriage(
   return request<TriageResponse>(
     `/v1/recommendations/${recommendationId}/triage`,
     { method: "POST", body: JSON.stringify(body) },
+    signal
+  );
+}
+
+export function postWatch(
+  recommendationId: string,
+  predicate: string,
+  signal?: AbortSignal
+): Promise<WatchResponse> {
+  return request<WatchResponse>(
+    `/v1/recommendations/${recommendationId}/watch`,
+    { method: "POST", body: JSON.stringify({ predicate }) },
+    signal
+  );
+}
+
+export function deleteWatch(
+  recommendationId: string,
+  signal?: AbortSignal
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(
+    `/v1/recommendations/${recommendationId}/watch`,
+    { method: "DELETE" },
     signal
   );
 }

@@ -398,7 +398,7 @@ def build_debug_router() -> APIRouter:
             rows = await conn.fetch(
                 "SELECT cache_key, cached_at, "
                 "       extract(epoch from (now() - cached_at))::int as age_seconds, "
-                "       payload "
+                "       cached_content as payload "
                 "FROM view_ceo_cache WHERE tenant_id = $1 "
                 "ORDER BY cached_at DESC",
                 tid,

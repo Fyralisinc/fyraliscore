@@ -58,16 +58,21 @@ _PROPOSITION_KINDS: list[dict] = [
         "properties": {
             "kind": {"type": "string", "enum": ["recommendation"]},
             "target_act_ref": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["type", "id"],
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["goal", "commitment", "decision", "resource"],
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "id"],
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["goal", "commitment", "decision", "resource"],
+                            },
+                            "id": _UUID_STR,
+                        },
                     },
-                    "id": _UUID_STR,
-                },
+                    {"type": "null"},
+                ],
             },
             "proposed_change": {
                 "type": "object",
@@ -139,7 +144,7 @@ _PROPOSITION_KINDS: list[dict] = [
             "qualitative_impact": {
                 "anyOf": [{"type": "string"}, {"type": "null"}],
             },
-            "target_actor_id": _UUID_STR,
+            "target_actor_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
         },
     },
 ]

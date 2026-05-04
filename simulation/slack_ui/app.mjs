@@ -15,6 +15,10 @@
 import { createElement as h, useEffect, useState, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 
+// Read demo tenant from URL ?tenant_id= so the simulator routes signals
+// to the active demo session even though it runs on a different origin.
+const _urlTenantId = new URLSearchParams(window.location.search).get('tenant_id');
+
 const API = {
   personas: '/simulation/personas',
   channels: '/simulation/channels',
@@ -239,6 +243,7 @@ function App() {
         channel: activeChannel,
         content_text: text,
         occurred_at: timeShift || 'now',
+        ...(_urlTenantId ? { tenant_id: _urlTenantId } : {}),
       };
       const res = await j(API.inject, {
         method: 'POST',

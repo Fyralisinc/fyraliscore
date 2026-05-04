@@ -77,7 +77,8 @@ export default function DemoLanding() {
   }, [sessionId, busy, navigate]);
 
   if (!sessionId) {
-    return <App />;
+    navigate("/demo");
+    return null;
   }
 
   const cost = info ? info.total_cost_usd.toFixed(2) : "0.00";
@@ -99,6 +100,14 @@ export default function DemoLanding() {
           <span className="demo-session-stat-value">{signals}</span>
         </div>
         <div className="demo-session-actions">
+          <a
+            className="demo-session-btn"
+            href={`/simulation/slack_ui/?tenant_id=${sessionId ? localStorage.getItem("demoTenantId") ?? "" : ""}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Slack sim
+          </a>
           <button
             type="button"
             className="demo-session-btn"

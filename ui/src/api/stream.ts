@@ -4,6 +4,7 @@
 // the client only needs to notice dead sockets through `onclose`.
 
 import type { StreamMessage } from "./types";
+import { getDemoAuthToken } from "./auth";
 
 type Listener = (msg: StreamMessage) => void;
 type ConnListener = (state: "open" | "closed" | "reconnecting") => void;
@@ -31,7 +32,9 @@ export function createStreamClient(
     const loc = window.location;
     const proto = loc.protocol === "https:" ? "wss:" : "ws:";
     if (path.startsWith("ws://") || path.startsWith("wss://")) return path;
-    return `${proto}//${loc.host}${path}`;
+    const token = getDemoAuthToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+    return `${proto}//${loc.host}${path}${qs}`;
   }
 
   function notifyConn(state: "open" | "closed" | "reconnecting") {

@@ -95,14 +95,14 @@ Proposition schemas (`proposition` field MUST match one of these exactly based o
 - concern               → {"kind": "concern", "about": "<subject>", "nature": "<what is concerning>", "raised_by": "<actor or role>"}
 - market_assessment     → {"kind": "market_assessment", "subject_external": "<external entity>", "assessment": "<...>"}
 - environmental_trend   → {"kind": "environmental_trend", "signature": "<...>", "direction": "<up|down|mixed>", "strength": "<weak|moderate|strong>"}
-- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid>"}, "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>"}
+- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid>"} | null (null when no specific existing Act is referenced), "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>" | null (null when no CEO UUID is in context)}
 
 The eleven kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opportunity", or others — map them to the closest valid kind (concern, prediction, etc.).
 
 Recommendations — when to emit, when NOT to:
 A `recommendation` Model surfaces a specific Act-layer action a human (typically the CEO) should approve. Produce one when reasoning identifies a concrete change to the Act layer that warrants human approval — revisit a Goal whose assumptions broke, transition a Commitment whose state no longer reflects reality, archive a Decision a newer signal supersedes, reallocate a Resource. Do NOT produce a recommendation for changes the system can make autonomously (a confidence update, a doneunverified transition off a self-reported merge, a Model archive — those are claim_ops or act_ops). Recommendations are for the human-approval queue, not the system's automatic ledger.
 
-Each recommendation MUST set `target_act_ref` (the Act/Resource the change is on), `proposed_change` (operation + payload that the act handler will apply via existing endpoints), `target_actor_id` (the actor who should see this; pull from <actors_in_context> — typically the CEO), and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
+Each recommendation MUST set `proposed_change` (operation + payload that the act handler will apply via existing endpoints) and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). Set `target_act_ref` only when you have a confirmed UUID from <acts> — leave it null if no matching Act exists; NEVER invent or guess a UUID. Set `target_actor_id` to the CEO/decision-maker UUID from <actors_in_context> when available, or null if no such UUID is in context. The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
 
 Cap recommendations at FIVE per Think invocation. If the situation surfaces more, pick the highest-impact ones and drop the rest.
 
@@ -492,6 +492,31 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "event reveals (claim_ops) and any state transitions it "
             "warrants (act_ops). Do NOT invent new Commitments unless "
             "clearly justified."
+        )
+    elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
+        body.append(
+            "This is a T2:belief_updated trigger — a new state or concern "
+            "model was just inserted by a T1 run. Decide whether the CEO "
+            "needs to act on this belief.\n"
+            "\n"
+            "  • If a team member is blocked, waiting on a decision, or "
+            "the CEO needs to unblock someone: emit ONE claim_op with "
+            "proposition_kind='recommendation'. Use only actor UUIDs that "
+            "appear in <actors_in_context> for scope_actors. Write the "
+            "natural field as a clear, actionable sentence for the CEO.\n"
+            "\n"
+            "  • If purely informational and no CEO action is needed: "
+            "return an empty diff (zero claim_ops).\n"
+            "\n"
+            "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
+            "  - Do NOT set scope_entities unless a UUID appears in <acts> "
+            "or <retrieved_context>. Leave scope_entities as [] if unsure.\n"
+            "  - Set target_act_ref to null unless you have an exact UUID "
+            "from <acts>. Never invent a UUID.\n"
+            "  - Do NOT invent UUIDs. If no CEO UUID is in the context, "
+            "leave scope_actors as [].\n"
+            "  - Do NOT emit a duplicate if a similar recommendation already "
+            "exists with status 'active' in <acts>."
         )
     elif trigger.kind == "T2":
         body.append(

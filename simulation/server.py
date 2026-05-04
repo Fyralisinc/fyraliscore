@@ -101,6 +101,7 @@ class InjectRequest(BaseModel):
     )
     scenario_id: Optional[str] = None
     external_id: Optional[str] = None
+    tenant_id: Optional[str] = Field(None, description="Override tenant UUID (for demo sessions).")
 
 
 class InjectResponse(BaseModel):
@@ -220,9 +221,10 @@ def build_sim_router(deps: SimDeps) -> APIRouter:
             scenario_id=req.scenario_id,
             run_id=deps.run_id,
         )
+        effective_tenant = UUID(req.tenant_id) if req.tenant_id else deps.tenant_id
         result = await inject(
             signal,
-            deps.tenant_id,
+            effective_tenant,
             pool=deps.pool,
             actor_repo=deps.actor_repo,
             alias_repo=deps.alias_repo,
@@ -231,7 +233,7 @@ def build_sim_router(deps: SimDeps) -> APIRouter:
         return InjectResponse(
             observation_id=str(result.observation.id),
             deduped=result.deduped,
-            tenant_id=str(deps.tenant_id),
+            tenant_id=str(effective_tenant),
             run_id=deps.run_id,
             channel=source_channel,
             occurred_at=occurred_at.isoformat(),

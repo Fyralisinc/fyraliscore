@@ -3,6 +3,11 @@
 
 const BASE = "/api/debug";
 
+function tenantHeaders(): Record<string, string> {
+  const tid = localStorage.getItem("demoTenantId");
+  return tid ? { "X-Tenant-Id": tid } : {};
+}
+
 export async function dget<T = unknown>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
   const qs = params
     ? "?" +
@@ -12,7 +17,7 @@ export async function dget<T = unknown>(path: string, params?: Record<string, st
         .join("&")
     : "";
   const res = await fetch(`${BASE}${path}${qs}`, {
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...tenantHeaders() },
   });
   if (!res.ok) {
     const body = await res.text();
