@@ -36,8 +36,17 @@ jobs:
             docker compose up -d --build --remove-orphans
 
             echo "==> Waiting for gateway health check"
-            if ! timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'; then
-              echo "==> Health check FAILED — rolling back to ${PREV_SHA}"
+            if ! timeout 90 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'; then
+              echo "==> Health check FAILED — capturing container logs before rollback"
+              echo "----- gateway logs (last 200 lines) -----"
+              docker compose logs gateway --tail=200 || true
+              echo "----- think_worker logs (last 50 lines) -----"
+              docker compose logs think_worker --tail=50 || true
+              echo "----- post_commit_worker logs (last 50 lines) -----"
+              docker compose logs post_commit_worker --tail=50 || true
+              echo "----- container ps -----"
+              docker compose ps || true
+              echo "==> Rolling back to ${PREV_SHA}"
               git reset --hard "${PREV_SHA}"
               docker compose up -d --build --remove-orphans
               echo "==> Rolled back. Failing the job so the bad commit is visible."
