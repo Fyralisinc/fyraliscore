@@ -233,12 +233,45 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_ROLE_DISPLAY_TITLE = {
+    "founder": "Founder & CEO",
+    "cto": "CTO",
+    "vp_eng": "VP Engineering",
+    "vp_sales": "VP Sales",
+    "head_cs": "Head of Customer Success",
+    "head_sales": "Head of Sales",
+    "head_ops": "Head of Operations",
+    "head_finance": "Head of Finance",
+    "cfo": "CFO",
+    "engineer": "Engineer",
+    "data_engineer": "Data Engineer",
+    "ml_engineer": "ML Engineer",
+    "pm": "Product Manager",
+    "designer": "Designer",
+    "ae": "Account Executive",
+    "se": "Sales Engineer",
+    "cs_manager": "Customer Success Manager",
+    "customer_success": "Customer Success",
+    "sales": "Sales",
+    "implementation": "Implementation Engineer",
+    "marketing": "Marketing",
+    "finance_ops": "Finance / Ops",
+    "recruiter": "Recruiter",
+    "fractional_legal": "Fractional Legal Counsel",
+}
+
+
 def _actor_insert(a, ceo_id: str) -> str:
     is_ceo = a.id == ceo_id
+    title = _ROLE_DISPLAY_TITLE.get(
+        a.role,
+        a.role.replace("_", " ").title() if a.role else "Team member",
+    )
     metadata = {
         "role": a.role,
         "personality_brief": a.personality_brief,
         "is_ceo": is_ceo,
+        "title": title,
     }
     if is_ceo:
         metadata["title"] = "Founder & CEO"

@@ -156,6 +156,16 @@ def _commitment_state_from_outcome(outcome: str | None) -> str:
 def _commitments_from_spec(sim_dict: dict[str, Any]) -> list[GeneratedCommitment]:
     out: list[GeneratedCommitment] = []
     for s in sim_dict.get("commitment_seeds", []):
+        goal_id = s.get("goal_id")
+        # Constrain by the decision(s) that govern this commitment's
+        # goal — the seeded commit ↔ goal mapping is already explicit
+        # in the spec; goal ↔ decision mapping comes from
+        # _GOAL_TO_DECISIONS so seeded and rate-gen commits use the
+        # same source of truth.
+        decision_ids: list[str] = []
+        if goal_id:
+            for dk in _GOAL_TO_DECISIONS.get(goal_id, []):
+                decision_ids.append(did(COMPANY, "decision", dk))
         out.append(GeneratedCommitment(
             id=did(COMPANY, "commitment", s["commitment_id"]),
             title=s["title"],
@@ -164,42 +174,173 @@ def _commitments_from_spec(sim_dict: dict[str, Any]) -> list[GeneratedCommitment
             state=_commitment_state_from_outcome(s.get("intended_outcome")),
             due_date=days_from_now(s.get("created_offset_days", 0)
                                    + s["asserted_duration_days"]),
-            contributes_to_goal_id=(did(COMPANY, "goal", s["goal_id"])
-                                    if s.get("goal_id") else None),
+            contributes_to_goal_id=(did(COMPANY, "goal", goal_id)
+                                    if goal_id else None),
             depends_on=[],
-            constrained_by_decision_ids=[],
+            constrained_by_decision_ids=decision_ids,
             served_by_customer_id=(did(COMPANY, "customer", s["customer_id"])
                                    if s.get("customer_id") else None),
         ))
     return out
 
 
+# Rate-gen commits don't carry titles, goals, or customer links in the
+# spec. We derive each from the corpus: title from owner role + family,
+# goal from a role-family heuristic, customer from the most-frequent
+# customer_ref in the commit's signals, decision from the implied goal.
+
+# Map (role_family or role) → display verb-phrase that prefixes a title
+_ROLE_FAMILY_TO_TITLE_VERB = {
+    "engineering": "Backend integration work",
+    "data_ml":     "Data pipeline / ML feature work",
+    "sales":       "Pipeline / deal-cycle thread",
+    "customer_success": "Customer-success engagement",
+    "product":     "Product roadmap thread",
+    "design":      "Design work",
+    "exec":        "Executive coordination thread",
+    "founder":     "Founder-driven thread",
+    "marketing":   "Marketing / launch thread",
+    "finance":     "Finance / ops thread",
+    "people":      "Recruiting thread",
+}
+
+# Map (role_family) → primary goal_id (the simulator's seeded goal ids)
+_ROLE_FAMILY_TO_GOAL = {
+    "engineering": "G-2-multi-crm",
+    "data_ml":     "G-4-incident-halve",
+    "sales":       "G-1-arr-target",
+    "customer_success": "G-3-renewal-90",
+    "product":     "G-5-conv-ai-v1",
+    "design":      "G-5-conv-ai-v1",
+    "exec":        "G-1-arr-target",
+    "founder":     "G-1-arr-target",
+    "marketing":   "G-1-arr-target",
+    "finance":     "G-1-arr-target",
+    "people":      "G-6-vp-eng-successor",
+}
+
+# Map (goal_id) → list of decision_ids that constrain commits under that goal.
+# Decision IDs come from demo/generation/specs/pelago.yaml `decisions:`.
+_GOAL_TO_DECISIONS = {
+    "G-1-arr-target":   ["D-4-uk-ae", "D-5-pricing-model"],
+    "G-2-multi-crm":    ["D-1-crm-in-house", "D-3-snowflake"],
+    "G-4-incident-halve": ["D-3-snowflake"],
+    "G-5-conv-ai-v1":   ["D-2-conv-ai-first"],
+}
+
+
+def _per_commit_signal_stats() -> dict[str, dict[str, Any]]:
+    """One pass over the corpus: count signals per commitment, track the
+    most-referenced customer, the first/last touch dates."""
+    stats: dict[str, dict[str, Any]] = {}
+    if not SHARDS_DIR.is_dir():
+        return stats
+    for sf in sorted(SHARDS_DIR.glob("day-*.jsonl")):
+        for raw in sf.read_text().splitlines():
+            if not raw.strip():
+                continue
+            s = json.loads(raw)
+            m = s.get("metadata") or {}
+            cref = m.get("commitment_ref")
+            if not cref:
+                continue
+            kref = m.get("customer_ref")
+            ts = s["timestamp"]
+            entry = stats.setdefault(cref, {
+                "signal_count": 0,
+                "customers": {},
+                "first_ts": None,
+                "last_ts": None,
+            })
+            entry["signal_count"] += 1
+            if kref:
+                entry["customers"][kref] = entry["customers"].get(kref, 0) + 1
+            if entry["first_ts"] is None or ts < entry["first_ts"]:
+                entry["first_ts"] = ts
+            if entry["last_ts"] is None or ts > entry["last_ts"]:
+                entry["last_ts"] = ts
+    return stats
+
+
 def _rate_generated_commitments_from_gt(
     actor_ids: set[str],
     customer_ids: set[str],
     seeded_ids: set[str],
+    sim_dict: dict[str, Any],
     target_count: int = RATE_COMMITMENTS_TARGET,
 ) -> list[GeneratedCommitment]:
-    """Pick a representative slice of the rate-based commitments from the
-    final ground-truth snapshot. These give the bundle a realistic
-    operational-tempo background; they don't carry custom titles."""
+    """Build rate-gen commitments enriched with derived titles + goals
+    + customer links + decision links. Only includes commits with
+    sustained signal traffic so the bundle reflects real operational
+    tempo, not empty placeholders."""
     gt_files = sorted(GT_DIR.glob("snapshot-month-*.json"))
     if not gt_files:
         return []
     gt = json.loads(gt_files[-1].read_text())
     rate_commits = [c for c in gt.get("commitments", []) if c["id"] not in seeded_ids]
-    rng = random.Random(SIGNAL_SAMPLE_SEED)
-    rng.shuffle(rate_commits)
+
+    # Index actor metadata by id for role/role_family lookup
+    actor_profile_by_id = {
+        ap["actor_id"]: ap for ap in sim_dict.get("actor_profiles", [])
+    }
+
+    sig_stats = _per_commit_signal_stats()
+    # Filter to rate-gen with meaningful traffic, sort by signal count desc
+    enriched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for c in rate_commits:
+        st = sig_stats.get(c["id"])
+        if not st or st["signal_count"] < 25:
+            continue
+        owner = c.get("owner")
+        if owner not in actor_profile_by_id:
+            continue
+        owner_uuid = did(COMPANY, "actor", owner)
+        if owner_uuid not in actor_ids:
+            continue
+        enriched.append((c, st))
+    enriched.sort(key=lambda pair: pair[1]["signal_count"], reverse=True)
 
     out: list[GeneratedCommitment] = []
-    for c in rate_commits:
+    for idx, (c, st) in enumerate(enriched):
         if len(out) >= target_count:
             break
-        owner_uuid = did(COMPANY, "actor", c["owner"])
-        if owner_uuid not in actor_ids:
-            continue  # owner deactivated / not in spec
+        owner = c["owner"]
+        owner_uuid = did(COMPANY, "actor", owner)
+        owner_profile = actor_profile_by_id[owner]
+        owner_name = owner_profile["name"].split()[0]
+        role = owner_profile.get("role", "engineer")
+        family = owner_profile.get("role_family", "engineering")
+
+        # Most-referenced customer if signals overwhelmingly cite one
+        served_customer_uuid: str | None = None
+        served_customer_label: str | None = None
+        if st["customers"]:
+            top_cust, top_n = max(st["customers"].items(), key=lambda x: x[1])
+            if top_n / max(1, st["signal_count"]) >= 0.4:
+                cuuid = did(COMPANY, "customer", top_cust)
+                if cuuid in customer_ids:
+                    served_customer_uuid = cuuid
+                    served_customer_label = top_cust
+
+        # Goal heuristic from role_family
+        goal_key = _ROLE_FAMILY_TO_GOAL.get(family)
+        goal_uuid = did(COMPANY, "goal", goal_key) if goal_key else None
+
+        # Decision links from goal
+        decision_uuids: list[str] = []
+        if goal_key:
+            for dk in _GOAL_TO_DECISIONS.get(goal_key, []):
+                decision_uuids.append(did(COMPANY, "decision", dk))
+
+        # Title: verb-phrase + (customer | owner) + complexity hint
+        verb = _ROLE_FAMILY_TO_TITLE_VERB.get(family, "Operational thread")
+        complexity = c.get("true_complexity") or "med"
+        if served_customer_label:
+            title = f"{verb} — {owner_name} ({served_customer_label.replace('cust-','').title()})"
+        else:
+            title = f"{verb} — {owner_name} ({complexity}-complexity)"
+
         outcome = c.get("true_outcome")
-        # Map sim outcome → demo state.
         if outcome in ("succeeded", "slipped_but_completed"):
             state = "done"
         elif outcome == "cancelled":
@@ -208,17 +349,18 @@ def _rate_generated_commitments_from_gt(
             state = "at_risk"
         else:
             state = "active"
+
         out.append(GeneratedCommitment(
             id=did(COMPANY, "commitment", c["id"]),
-            title=f"Operational task {c['id']}",
+            title=title,
             owner_id=owner_uuid,
             contributors=[],
             state=state,
             due_date=None,
-            contributes_to_goal_id=None,
+            contributes_to_goal_id=goal_uuid,
             depends_on=[],
-            constrained_by_decision_ids=[],
-            served_by_customer_id=None,
+            constrained_by_decision_ids=decision_uuids,
+            served_by_customer_id=served_customer_uuid,
         ))
     return out
 
@@ -553,7 +695,7 @@ def build_bundle() -> tuple[GeneratedBundle, dict[str, Any]]:
     customer_id_set = {c.id for c in customers}
     seeded_sim_ids = {s["commitment_id"] for s in sim_dict.get("commitment_seeds", [])}
     rate_commits = _rate_generated_commitments_from_gt(
-        actor_id_set, customer_id_set, seeded_sim_ids,
+        actor_id_set, customer_id_set, seeded_sim_ids, sim_dict,
     )
     commitments = seeded_commits + rate_commits
 
