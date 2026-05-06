@@ -518,7 +518,16 @@ def _register_routes(app: FastAPI) -> None:
         Returns {"token": "...", "expires_at": "..."}.
         """
         deps = _deps(request)
-        bootstrap = os.environ.get("AUTH_BOOTSTRAP_SECRET")
+        bootstrap = os.environ.get("AUTH_BOOTSTRAP_SECRET", "")
+        env_name = os.environ.get("COMPANY_OS_ENV", "dev").lower()
+        # Production MUST have AUTH_BOOTSTRAP_SECRET set. An empty secret
+        # in dev is intentional; in prod it would leave session minting open
+        # to anyone who can enumerate a valid actor_id.
+        if not bootstrap and env_name == "prod":
+            return JSONResponse(
+                {"error": "auth_bootstrap_not_configured"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         hdr = request.headers.get("X-Bootstrap-Secret", "")
         if bootstrap and hdr != bootstrap:
             return JSONResponse(
