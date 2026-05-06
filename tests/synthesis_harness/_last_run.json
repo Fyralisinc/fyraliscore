@@ -4,17 +4,17 @@
     "name": "pathway_A_actor_scope",
     "intent": "T1 with scope_actor seeds pathway A and surfaces actor-scoped Models",
     "passed": true,
-    "elapsed_ms": 50,
+    "elapsed_ms": 56,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe2c-9f83-7000-b2e0-392ac8d7c5d9",
-        "019dfe2c-9f94-7000-ad61-7da6d00e1ed6"
+        "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac",
+        "019dfe4f-1fc5-7000-b4a2-d0dd23868147"
       ],
       "scores": {
-        "019dfe2c-9f83-7000-b2e0-392ac8d7c5d9": 0.03278688524590164,
-        "019dfe2c-9f94-7000-ad61-7da6d00e1ed6": 0.02258064516129032
+        "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac": 0.03268112109994712,
+        "019dfe4f-1fc5-7000-b4a2-d0dd23868147": 0.022686409307244845
       },
       "pathways_run": [
         "A",
@@ -23,8 +23,8 @@
       ]
     },
     "expected": {
-      "in_scope": "019dfe2c-9f83-7000-b2e0-392ac8d7c5d9",
-      "out_scope": "019dfe2c-9f94-7000-ad61-7da6d00e1ed6"
+      "in_scope": "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac",
+      "out_scope": "019dfe4f-1fc5-7000-b4a2-d0dd23868147"
     }
   },
   {
@@ -32,17 +32,17 @@
     "name": "pathway_B_semantic_top1",
     "intent": "Pathway B ranks the cosine-nearest Model first",
     "passed": true,
-    "elapsed_ms": 48,
+    "elapsed_ms": 55,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe2c-9f82-7000-8d26-95b426af295c",
-        "019dfe2c-9f94-7001-9654-b5e5785b527f"
+        "019dfe4f-1faf-7000-a93f-b616537be969",
+        "019dfe4f-1fc7-7000-bbc0-960254bc0ffa"
       ]
     },
     "expected": {
-      "first_must_be": "019dfe2c-9f82-7000-8d26-95b426af295c"
+      "first_must_be": "019dfe4f-1faf-7000-a93f-b616537be969"
     }
   },
   {
@@ -50,50 +50,50 @@
     "name": "pathway_C_temporal_window",
     "intent": "Pathway C surfaces in-window obs/models and excludes out-of-window",
     "passed": true,
-    "elapsed_ms": 69,
+    "elapsed_ms": 73,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe2c-9f8b-7000-a59b-08278c2a48cd",
-        "019dfe2c-9f9e-7001-866f-84b0682abbbf"
+        "019dfe4f-1fb8-7000-9248-3d8763434325",
+        "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
       ],
       "obs_ids": [
-        "019dfe2c-9fac-7000-85fe-17db732ccdbc"
+        "019dfe4f-1fdc-7000-9e3a-e16c23706d90"
       ],
       "scores": {
-        "019dfe2c-9f8b-7000-a59b-08278c2a48cd": 0.03268112109994712,
-        "019dfe2c-9f9e-7001-866f-84b0682abbbf": 0.02913802221047065
+        "019dfe4f-1fb8-7000-9248-3d8763434325": 0.03278688524590164,
+        "019dfe4f-1fcd-7000-a8f0-d651188c22d1": 0.029032258064516127
       },
       "pathway_results": [
         {
           "name": "A",
           "model_ids": [
-            "019dfe2c-9f8b-7000-a59b-08278c2a48cd",
-            "019dfe2c-9f9e-7001-866f-84b0682abbbf"
+            "019dfe4f-1fb8-7000-9248-3d8763434325",
+            "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
           ]
         },
         {
           "name": "B",
           "model_ids": [
-            "019dfe2c-9f9e-7001-866f-84b0682abbbf",
-            "019dfe2c-9f8b-7000-a59b-08278c2a48cd"
+            "019dfe4f-1fb8-7000-9248-3d8763434325",
+            "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
           ]
         },
         {
           "name": "C",
           "model_ids": [
-            "019dfe2c-9f8b-7000-a59b-08278c2a48cd"
+            "019dfe4f-1fb8-7000-9248-3d8763434325"
           ]
         }
       ]
     },
     "expected": {
       "must_include_obs": [
-        "019dfe2c-9fac-7000-85fe-17db732ccdbc"
+        "019dfe4f-1fdc-7000-9e3a-e16c23706d90"
       ],
-      "must_include_model": "019dfe2c-9f8b-7000-a59b-08278c2a48cd",
-      "out_win": "019dfe2c-9f9e-7001-866f-84b0682abbbf"
+      "must_include_model": "019dfe4f-1fb8-7000-9248-3d8763434325",
+      "out_win": "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
     }
   },
   {
@@ -101,22 +101,22 @@
     "name": "pathway_D_pattern_signature",
     "intent": "T4 with seed_signature returns matching pattern and its instances",
     "passed": true,
-    "elapsed_ms": 64,
+    "elapsed_ms": 72,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe2c-9f89-7000-bdea-b947de83ae5d",
-        "019dfe2c-9f9c-7000-bc05-22cce2d9feef"
+        "019dfe4f-1fb7-7000-b713-6a08063861dc",
+        "019dfe4f-1fcb-7000-9008-3d840c60dc12"
       ]
     },
     "expected": {
       "must_include": [
-        "019dfe2c-9f89-7000-bdea-b947de83ae5d",
-        "019dfe2c-9f9c-7000-bc05-22cce2d9feef"
+        "019dfe4f-1fb7-7000-b713-6a08063861dc",
+        "019dfe4f-1fcb-7000-9008-3d840c60dc12"
       ],
       "must_exclude": [
-        "019dfe2c-9fa9-7000-a72c-25697e497dd0"
+        "019dfe4f-1fdb-7000-85cf-977fc54b7797"
       ]
     }
   },
@@ -125,22 +125,22 @@
     "name": "rrf_fusion_multipathway",
     "intent": "RRF fusion: A\u2229B model outranks B-only model with higher activation",
     "passed": true,
-    "elapsed_ms": 40,
+    "elapsed_ms": 45,
     "diff": "",
     "error": null,
     "actual": {
       "ids": [
-        "019dfe2c-9fb2-7000-8283-12d267d96be9",
-        "019dfe2c-9fbf-7000-a835-4c8e0dbf9908"
+        "019dfe4f-1fe7-7000-9ecd-7ff44f497772",
+        "019dfe4f-1ff7-7000-b266-9eac5a79761c"
       ],
       "scores": {
-        "019dfe2c-9fb2-7000-8283-12d267d96be9": 0.03265468006345849,
-        "019dfe2c-9fbf-7000-a835-4c8e0dbf9908": 0.022712850343733475
+        "019dfe4f-1fe7-7000-9ecd-7ff44f497772": 0.03265468006345849,
+        "019dfe4f-1ff7-7000-b266-9eac5a79761c": 0.022712850343733475
       }
     },
     "expected": {
-      "x_first": "019dfe2c-9fb2-7000-8283-12d267d96be9",
-      "y_present": "019dfe2c-9fbf-7000-a835-4c8e0dbf9908"
+      "x_first": "019dfe4f-1fe7-7000-9ecd-7ff44f497772",
+      "y_present": "019dfe4f-1ff7-7000-b266-9eac5a79761c"
     }
   },
   {
@@ -148,7 +148,7 @@
     "name": "second_pass_sparse_activation",
     "intent": "Sparse primary result triggers second-pass with reason 'sparse'",
     "passed": true,
-    "elapsed_ms": 40,
+    "elapsed_ms": 44,
     "diff": "",
     "error": null,
     "actual": {
@@ -173,13 +173,13 @@
     "actual": {
       "primary": [
         "commitment",
-        "019dfe2c-9fbf-7001-a50c-0e71aa126723"
+        "019dfe4f-1ff4-7000-9877-a357710bbf28"
       ]
     },
     "expected": {
       "primary": [
         "commitment",
-        "019dfe2c-9fbf-7001-a50c-0e71aa126723"
+        "019dfe4f-1ff4-7000-9877-a357710bbf28"
       ]
     }
   },
@@ -193,12 +193,12 @@
     "error": null,
     "actual": {
       "a": [
-        -153782538,
-        2094692695
+        1170286978,
+        -1475915025
       ],
       "b": [
-        -153782538,
-        2094692695
+        1170286978,
+        -1475915025
       ]
     },
     "expected": {
@@ -234,28 +234,28 @@
       "touched": [
         [
           "commitment",
-          "019dfe2c-9fbf-700e-b002-4454b3ea1c18"
+          "019dfe4f-1ff5-7001-a9da-51be1d62f0c5"
         ],
         [
           "commitment",
-          "019dfe2c-9fbf-7011-8fdc-d6a4505545c8"
+          "019dfe4f-1ff5-7004-9c05-42d0ac027736"
         ],
         [
           "goal",
-          "019dfe2c-9fbf-700f-9e0a-5cb0a4570663"
+          "019dfe4f-1ff5-7002-9a08-ebd175144ff8"
         ],
         [
           "model",
-          "019dfe2c-9fbf-700d-b60e-23e8ccf63c17"
+          "019dfe4f-1ff5-7000-bdfc-72ff2a85cdd5"
         ],
         [
           "observation",
-          "019dfe2c-9fbf-7010-8522-92e550bca0d7"
+          "019dfe4f-1ff5-7003-8098-2ab4817f2176"
         ]
       ]
     },
     "expected": {
-      "set": "{('commitment', '019dfe2c-9fbf-700e-b002-4454b3ea1c18'), ('commitment', '019dfe2c-9fbf-7011-8fdc-d6a4505545c8'), ('observation', '019dfe2c-9fbf-7010-8522-92e550bca0d7'), ('goal', '019dfe2c-9fbf-700f-9e0a-5cb0a4570663'), ('model', '019dfe2c-9fbf-700d-b60e-23e8ccf63c17')}"
+      "set": "{('model', '019dfe4f-1ff5-7000-bdfc-72ff2a85cdd5'), ('observation', '019dfe4f-1ff5-7003-8098-2ab4817f2176'), ('commitment', '019dfe4f-1ff5-7001-a9da-51be1d62f0c5'), ('commitment', '019dfe4f-1ff5-7004-9c05-42d0ac027736'), ('goal', '019dfe4f-1ff5-7002-9a08-ebd175144ff8')}"
     }
   },
   {
@@ -288,7 +288,7 @@
     "name": "primary_subject_belief_multiplier",
     "intent": "Belief contestation by primary subject (scope_actors[0]) \u2192 confidence \u00d7 0.3, floor 0.15",
     "passed": true,
-    "elapsed_ms": 19,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -312,7 +312,7 @@
     "name": "secondary_subject_belief_multiplier",
     "intent": "Belief contestation by secondary subject \u2192 confidence \u00d7 0.5",
     "passed": true,
-    "elapsed_ms": 18,
+    "elapsed_ms": 19,
     "diff": "",
     "error": null,
     "actual": {
@@ -331,7 +331,7 @@
     "name": "confidence_floor_clamp",
     "intent": "Confidence \u00d7 0.3 below 0.15 clamps to OVERRIDE_FLOOR",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 22,
     "diff": "",
     "error": null,
     "actual": {
@@ -346,7 +346,7 @@
     "name": "no_standing_raises",
     "intent": "Outsider with no scope/owner/contributor link \u2192 NoStandingError",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 19,
     "diff": "",
     "error": null,
     "actual": {
@@ -363,7 +363,7 @@
     "name": "standing_via_commitment_owner",
     "intent": "Actor who owns a commitment in scope_entities has standing with basis='owner'",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 22,
     "diff": "",
     "error": null,
     "actual": {
@@ -380,7 +380,7 @@
     "name": "standing_via_contributor",
     "intent": "Contributor on a scoped commitment has standing with basis='contributor'",
     "passed": true,
-    "elapsed_ms": 21,
+    "elapsed_ms": 24,
     "diff": "",
     "error": null,
     "actual": {
@@ -397,7 +397,7 @@
     "name": "reading_contestation_marks_entry",
     "intent": "Reading contestation marks signal_readings entry without changing confidence",
     "passed": true,
-    "elapsed_ms": 24,
+    "elapsed_ms": 19,
     "diff": "",
     "error": null,
     "actual": {
@@ -406,10 +406,10 @@
       "previous_confidence": 0.7,
       "signal_readings": [
         {
-          "actor_id": "019dfe2c-9fe8-7001-8c7f-2627c8357a72",
+          "actor_id": "019dfe4f-201d-7001-988a-5ee980e1e1a7",
           "contested": true,
           "rationale": "my reading was not what I meant",
-          "contested_at": "2026-05-06T16:43:50.653210+00:00"
+          "contested_at": "2026-05-06T17:21:31.692909+00:00"
         }
       ],
       "db_confidence": 0.7
@@ -417,7 +417,7 @@
     "expected": {
       "override_applied": false,
       "confidence_unchanged": 0.7,
-      "actor_id_str": "019dfe2c-9fe8-7001-8c7f-2627c8357a72"
+      "actor_id_str": "019dfe4f-201d-7001-988a-5ee980e1e1a7"
     }
   },
   {
@@ -475,7 +475,7 @@
     "name": "eval_observation_pattern_violated",
     "intent": "observation_pattern: matching obs in window \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 7,
+    "elapsed_ms": 9,
     "diff": "",
     "error": null,
     "actual": {
@@ -490,7 +490,7 @@
     "name": "eval_observation_pattern_inconclusive",
     "intent": "observation_pattern: no matching obs in window \u2192 'inconclusive'",
     "passed": true,
-    "elapsed_ms": 8,
+    "elapsed_ms": 7,
     "diff": "",
     "error": null,
     "actual": {
@@ -520,7 +520,7 @@
     "name": "eval_commitment_outcome_terminal_confirmed",
     "intent": "commitment_outcome: commit reached terminal state w/o contradiction \u2192 'confirmed'",
     "passed": true,
-    "elapsed_ms": 5,
+    "elapsed_ms": 6,
     "diff": "",
     "error": null,
     "actual": {
@@ -535,7 +535,7 @@
     "name": "eval_explicit_contestation_violated",
     "intent": "explicit_contestation: required actors contested in window \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 7,
+    "elapsed_ms": 6,
     "diff": "",
     "error": null,
     "actual": {
@@ -578,11 +578,144 @@
     }
   },
   {
+    "stage": "falsifier",
+    "name": "window_parser_iso8601_forms",
+    "intent": "parse_within_window accepts 8 ISO-8601 duration forms with correct timedeltas",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "results": {
+        "P7D": [
+          604800.0,
+          604800.0
+        ],
+        "P1D": [
+          86400.0,
+          86400.0
+        ],
+        "PT4H": [
+          14400.0,
+          14400.0
+        ],
+        "PT30M": [
+          1800.0,
+          1800.0
+        ],
+        "P2W": [
+          1209600.0,
+          1209600.0
+        ],
+        "P1M": [
+          2592000.0,
+          2592000.0
+        ],
+        "P1Y": [
+          31536000.0,
+          31536000.0
+        ],
+        "P1DT12H": [
+          129600.0,
+          129600.0
+        ]
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "falsifier",
+    "name": "window_parser_human_readable_forms",
+    "intent": "parse_within_window accepts 8 human-readable duration forms with correct timedeltas",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "results": {
+        "7 days": [
+          604800.0,
+          604800.0
+        ],
+        "1 day": [
+          86400.0,
+          86400.0
+        ],
+        "4 hours": [
+          14400.0,
+          14400.0
+        ],
+        "30 minutes": [
+          1800.0,
+          1800.0
+        ],
+        "2 weeks": [
+          1209600.0,
+          1209600.0
+        ],
+        "1 month": [
+          2592000.0,
+          2592000.0
+        ],
+        "1 year": [
+          31536000.0,
+          31536000.0
+        ],
+        "any 4-week period": [
+          2419200.0,
+          2419200.0
+        ]
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "falsifier",
+    "name": "window_parser_malformed_raises_loudly",
+    "intent": "Malformed within_window strings raise MalformedFalsifierError (no silent None)",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": {
+        "P-7D": "within_window",
+        "PXYZ": "within_window",
+        "4w": "within_window",
+        "seven days": "within_window",
+        "P": "within_window",
+        "P0D": "within_window",
+        "next tuesday": "within_window",
+        "P7DT": "within_window"
+      }
+    },
+    "expected": {
+      "all_raised": true
+    }
+  },
+  {
+    "stage": "falsifier",
+    "name": "adequacy_rejects_malformed_within_window",
+    "intent": "is_adequate_falsifier raises MalformedFalsifierError for unparseable window (not silent False)",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "field": "within_window"
+    },
+    "expected": {
+      "raised": true,
+      "field": "within_window"
+    }
+  },
+  {
     "stage": "cascade",
     "name": "commitment_state_change_unblocks_dependent",
     "intent": "doneverified on dep with no other unsatisfied deps unblocks dependent \u2192 state=active",
     "passed": true,
-    "elapsed_ms": 31,
+    "elapsed_ms": 32,
     "diff": "",
     "error": null,
     "actual": {
@@ -606,7 +739,7 @@
     "name": "commitment_state_change_no_unblock_when_other_deps",
     "intent": "Dependent stays blocked when at least one other dependency unsatisfied",
     "passed": true,
-    "elapsed_ms": 18,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -622,7 +755,7 @@
     "name": "decision_revisited_flags_constrained_commitments",
     "intent": "decision_revisited flags every non-terminal constrained_by commitment for review",
     "passed": true,
-    "elapsed_ms": 35,
+    "elapsed_ms": 36,
     "diff": "",
     "error": null,
     "actual": {
@@ -632,11 +765,11 @@
         "commitment_flagged_for_review",
         "commitment_flagged_for_review"
       ],
-      "flagged_ids": "{'019dfe2c-a007-7000-821a-833602b43c52', '019dfe2c-a002-7000-848d-81426013f969'}"
+      "flagged_ids": "{'019dfe4f-2037-7001-8cac-5e5dd5834d88', '019dfe4f-203d-7000-b372-e2ebafd63722'}"
     },
     "expected": {
-      "must_flag": "{'019dfe2c-a007-7000-821a-833602b43c52', '019dfe2c-a002-7000-848d-81426013f969'}",
-      "must_not_flag": "{'019dfe2c-a00b-7000-bb1b-ca772adf59ca'}"
+      "must_flag": "{'019dfe4f-2037-7001-8cac-5e5dd5834d88', '019dfe4f-203d-7000-b372-e2ebafd63722'}",
+      "must_not_flag": "{'019dfe4f-2042-7001-a03b-fa3e2d0320bf'}"
     }
   },
   {
@@ -661,7 +794,7 @@
     "name": "unknown_kind_halts_cleanly",
     "intent": "Unknown cascade kind returns no downstream and visited count=1",
     "passed": true,
-    "elapsed_ms": 1,
+    "elapsed_ms": 0,
     "diff": "",
     "error": null,
     "actual": {
@@ -673,6 +806,32 @@
       "events_visited": 1,
       "bound_violated": false,
       "depth_reached": 0
+    }
+  },
+  {
+    "stage": "cascade",
+    "name": "invariant_violation_surfaces_explicitly",
+    "intent": "Orphan-commitment unblock rejection appears on CascadeResult and bumps metric (T1b)",
+    "passed": true,
+    "elapsed_ms": 21,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "blocked_state": "blocked",
+      "events_visited": 1,
+      "bound_violated": false,
+      "violations_count": 1,
+      "violation_branch": "commitment_unblock",
+      "violation_entity_id": "019dfe4f-204b-7000-b46d-8a43e10d40db",
+      "violation_code": "C4",
+      "metric_delta": 1
+    },
+    "expected": {
+      "blocked_state": "blocked",
+      "bound_violated": false,
+      "violations_count": 1,
+      "violation_branch": "commitment_unblock",
+      "violation_entity_id": "019dfe4f-204b-7000-b46d-8a43e10d40db"
     }
   },
   {
@@ -699,7 +858,7 @@
     "name": "applied_triggers_outcome_success",
     "intent": "Applier writes applied_triggers row with outcome='success'",
     "passed": true,
-    "elapsed_ms": 9,
+    "elapsed_ms": 6,
     "diff": "",
     "error": null,
     "actual": {
@@ -714,7 +873,7 @@
     "name": "think_end_to_end_deepseek_smoke",
     "intent": "Real DeepSeek call: think() completes end-to-end, returns success or skipped",
     "passed": true,
-    "elapsed_ms": 9180,
+    "elapsed_ms": 9852,
     "diff": "",
     "error": null,
     "actual": {
@@ -722,9 +881,9 @@
       "status": "success",
       "ops_applied_count": 1,
       "llm_calls_count": 1,
-      "llm_input_tokens": 8496,
+      "llm_input_tokens": 8503,
       "model": "deepseek-chat",
-      "elapsed_ms": 9158.834459027275,
+      "elapsed_ms": 9828.74295907095,
       "error": null
     },
     "expected": {
@@ -736,7 +895,7 @@
     "name": "think_repeat_trigger_id_skipped_idempotent",
     "intent": "Calling think() twice with the same trigger_id \u2192 second run skipped_idempotent",
     "passed": true,
-    "elapsed_ms": 16854,
+    "elapsed_ms": 16786,
     "diff": "",
     "error": null,
     "actual": {

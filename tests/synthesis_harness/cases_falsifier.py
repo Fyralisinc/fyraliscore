@@ -6,7 +6,11 @@ from uuid import UUID
 
 import asyncpg
 
-from services.models.falsifier import is_adequate_falsifier
+from lib.shared.errors import MalformedFalsifierError
+from services.models.falsifier import (
+    is_adequate_falsifier,
+    parse_within_window,
+)
 from services.workers.deadline_resolver.evaluators import (
     EvaluationContext,
     evaluate_falsifier,
@@ -478,6 +482,189 @@ CASE_ADEQ_UNKNOWN = Case(
 )
 
 
+# =====================================================================
+# F11 — within_window parser: ISO-8601 forms parse to expected timedelta
+# =====================================================================
+#
+# T1a: the parser must accept both ISO-8601 (P7D, PT4H, P2W, P1Y, …)
+# and human-readable forms. Eight ISO and eight human forms are
+# exercised so a regression in either grammar is loud.
+
+
+async def _run_window_iso(_pool: asyncpg.Pool, _ctx: dict) -> dict:
+    iso_cases = {
+        "P7D": timedelta(days=7),
+        "P1D": timedelta(days=1),
+        "PT4H": timedelta(hours=4),
+        "PT30M": timedelta(minutes=30),
+        "P2W": timedelta(weeks=2),
+        "P1M": timedelta(days=30),  # month approximated to 30d (matches human form)
+        "P1Y": timedelta(days=365),
+        "P1DT12H": timedelta(days=1, hours=12),
+    }
+    out = {}
+    for spec, expected in iso_cases.items():
+        td = parse_within_window(spec)
+        out[spec] = (td.total_seconds(), expected.total_seconds())
+    return {"results": out}
+
+
+def _expected_window_iso(_ctx: dict) -> dict:
+    return {}
+
+
+def _assert_window_iso(actual: dict, _expected: dict, _ctx: dict) -> tuple[bool, str]:
+    diffs = []
+    for spec, (got, want) in actual["results"].items():
+        if abs(got - want) > 1e-6:
+            diffs.append(f"{spec}: got {got}s expected {want}s")
+    return (not diffs), "; ".join(diffs)
+
+
+CASE_WINDOW_ISO = Case(
+    stage="falsifier",
+    name="window_parser_iso8601_forms",
+    intent="parse_within_window accepts 8 ISO-8601 duration forms with correct timedeltas",
+    setup=_setup_adequacy_short,
+    run=_run_window_iso,
+    expected=_expected_window_iso,
+    assertion=_assert_window_iso,
+)
+
+
+# =====================================================================
+# F12 — within_window parser: human-readable forms parse correctly
+# =====================================================================
+
+
+async def _run_window_human(_pool: asyncpg.Pool, _ctx: dict) -> dict:
+    human_cases = {
+        "7 days": timedelta(days=7),
+        "1 day": timedelta(days=1),
+        "4 hours": timedelta(hours=4),
+        "30 minutes": timedelta(minutes=30),
+        "2 weeks": timedelta(weeks=2),
+        "1 month": timedelta(days=30),
+        "1 year": timedelta(days=365),
+        "any 4-week period": timedelta(weeks=4),
+    }
+    out = {}
+    for spec, expected in human_cases.items():
+        td = parse_within_window(spec)
+        out[spec] = (td.total_seconds(), expected.total_seconds())
+    return {"results": out}
+
+
+CASE_WINDOW_HUMAN = Case(
+    stage="falsifier",
+    name="window_parser_human_readable_forms",
+    intent="parse_within_window accepts 8 human-readable duration forms with correct timedeltas",
+    setup=_setup_adequacy_short,
+    run=_run_window_human,
+    expected=_expected_window_iso,
+    assertion=_assert_window_iso,
+)
+
+
+# =====================================================================
+# F13 — Malformed within_window raises MalformedFalsifierError loudly
+# =====================================================================
+#
+# Regression for the silent-`inconclusive` failure mode. Every input
+# that doesn't match either grammar must raise at adequacy time so
+# the validator can drop the op with reason='malformed_falsifier'
+# rather than letting the bad row land in models and silently
+# evaluate to `inconclusive` when the deadline fires.
+
+
+async def _run_window_malformed(_pool: asyncpg.Pool, _ctx: dict) -> dict:
+    malformed = [
+        "P-7D",        # negative
+        "PXYZ",        # garbled ISO
+        "4w",          # legacy abbreviation, not supported
+        "seven days",  # number-as-word
+        "P",           # ISO with no components
+        "P0D",         # zero-length
+        "next tuesday",
+        "P7DT",        # ISO with empty time portion
+    ]
+    raised = {}
+    for spec in malformed:
+        try:
+            parse_within_window(spec)
+            raised[spec] = "no_raise"
+        except MalformedFalsifierError as exc:
+            raised[spec] = exc.field or "malformed"
+        except Exception as exc:  # noqa: BLE001
+            raised[spec] = f"wrong_type:{type(exc).__name__}"
+    return {"raised": raised}
+
+
+def _expected_window_malformed(_ctx: dict) -> dict:
+    return {"all_raised": True}
+
+
+def _assert_window_malformed(actual: dict, _expected: dict, _ctx: dict) -> tuple[bool, str]:
+    bad = []
+    for spec, marker in actual["raised"].items():
+        if marker != "within_window":
+            bad.append(f"{spec!r}: {marker}")
+    return (not bad), "; ".join(bad)
+
+
+CASE_WINDOW_MALFORMED = Case(
+    stage="falsifier",
+    name="window_parser_malformed_raises_loudly",
+    intent="Malformed within_window strings raise MalformedFalsifierError (no silent None)",
+    setup=_setup_adequacy_short,
+    run=_run_window_malformed,
+    expected=_expected_window_malformed,
+    assertion=_assert_window_malformed,
+)
+
+
+# =====================================================================
+# F14 — Adequacy now rejects malformed within_window via parser exception
+# =====================================================================
+
+
+async def _run_adeq_window_malformed(_pool: asyncpg.Pool, _ctx: dict) -> dict:
+    falsifier = {
+        "kind": "observation_pattern",
+        "pattern": "any authoritative observation reporting elevated error rate",
+        "within_window": "next quarter",  # neither ISO nor human
+    }
+    raised = False
+    err = None
+    try:
+        is_adequate_falsifier(falsifier)
+    except MalformedFalsifierError as exc:
+        raised = True
+        err = exc.field
+    return {"raised": raised, "field": err}
+
+
+def _expected_adeq_window_malformed(_ctx: dict) -> dict:
+    return {"raised": True, "field": "within_window"}
+
+
+def _assert_adeq_window_malformed(actual: dict, expected: dict, _ctx: dict) -> tuple[bool, str]:
+    if actual != expected:
+        return False, f"got {actual} expected {expected}"
+    return True, ""
+
+
+CASE_ADEQ_WINDOW_MALFORMED = Case(
+    stage="falsifier",
+    name="adequacy_rejects_malformed_within_window",
+    intent="is_adequate_falsifier raises MalformedFalsifierError for unparseable window (not silent False)",
+    setup=_setup_adequacy_short,
+    run=_run_adeq_window_malformed,
+    expected=_expected_adeq_window_malformed,
+    assertion=_assert_adeq_window_malformed,
+)
+
+
 CASES = [
     CASE_ADEQ_SHORT,
     CASE_ADEQ_OK,
@@ -489,4 +676,8 @@ CASES = [
     CASE_EVAL_EXPL,
     CASE_ADEQ_EXPL_EMPTY,
     CASE_ADEQ_UNKNOWN,
+    CASE_WINDOW_ISO,
+    CASE_WINDOW_HUMAN,
+    CASE_WINDOW_MALFORMED,
+    CASE_ADEQ_WINDOW_MALFORMED,
 ]

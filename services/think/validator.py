@@ -52,6 +52,7 @@ from lib.shared.errors import (
     CompanyOSError,
     FalsifierInadequateError,
     InvariantViolation,
+    MalformedFalsifierError,
     TrustTierError,
     ValidationError,
 )
@@ -69,7 +70,12 @@ from .thresholds import compute_threshold
 def _classify_claim_drop_reason(exc: Exception) -> str:
     """Map a per-op exception to a short, stable `failure_reason`
     classification tag. Used by OP-4 dropped-op logging."""
-    from lib.shared.errors import FalsifierInadequateError  # local import
+    from lib.shared.errors import (  # local import
+        FalsifierInadequateError,
+        MalformedFalsifierError,
+    )
+    if isinstance(exc, MalformedFalsifierError):
+        return "malformed_falsifier"
     if isinstance(exc, FalsifierInadequateError):
         return "inadequate_falsifier"
     msg = str(getattr(exc, "message", exc)).lower()
@@ -338,7 +344,7 @@ async def validate(
             v_op = await _validate_claim_op(
                 op, retrieval_result, conn, tenant_id=diff.tenant_id
             )
-        except (FalsifierInadequateError, ValidationError) as e:
+        except (FalsifierInadequateError, MalformedFalsifierError, ValidationError) as e:
             reason = _classify_claim_drop_reason(e)
             errors.append(
                 f"claim_op {op.op}: {e.message if hasattr(e, 'message') else str(e)}"
