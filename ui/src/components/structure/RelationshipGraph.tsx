@@ -452,11 +452,11 @@ function FocusRouter(props: {
 // ────────────────────────────────────────────────────────────────────
 
 const FOCUS_RADIUS = {
-  goal: 170,
-  decision: 170,
-  resource: 200,
-  people: 200,
-  related: 240,
+  goal: 180,
+  decision: 180,
+  resource: 240,
+  people: 240,
+  related: 280,
 };
 
 function CommitmentFocus({
@@ -537,7 +537,7 @@ function CommitmentFocus({
   const chipW = compact ? 132 : 168;
   const chipH = compact ? 38 : 50;
   const radii = compact
-    ? { goal: 150, decision: 150, resource: 180, people: 180, related: 220 }
+    ? { goal: 160, decision: 160, resource: 220, people: 220, related: 260 }
     : FOCUS_RADIUS;
 
   const goalPos = quadrantArcs(cx, cy, radii.goal, -Math.PI / 2, goals.length, chipW, 0.9);
@@ -689,24 +689,26 @@ function ArtifactFanout({
   }, [commitments]);
 
   // Ring layout: pack commitments onto concentric rings so chips never
-  // overlap. Innermost ring carries the highest-priority status items.
+  // overlap. Per-ring capacity is derived from the chord distance
+  // between adjacent chip CENTERS — chord = 2*r*sin(step/2) — so chips
+  // at the chosen step physically fit without their rectangles
+  // colliding. Innermost ring carries the highest-priority status
+  // items (already sorted by caller).
   const compact = count > 8;
   const chipW = compact ? 132 : 168;
   const chipH = compact ? 38 : 50;
-  // Approximate min spacing between chip centers along an arc.
-  const minStep = chipW + 14;
 
   const positions = useMemo(() => {
     if (count === 0) return [];
-    const baseR = Math.min(w * 0.22, h * 0.30, 200);
-    const ringStep = compact ? 70 : 88;
+    const baseR = Math.min(w * 0.24, h * 0.34, 220);
+    const ringStep = compact ? 80 : 96;
     type Ring = { r: number; capacity: number };
     const rings: Ring[] = [];
     let placed = 0;
     while (placed < count) {
       const r = baseR + rings.length * ringStep;
-      const circumference = 2 * Math.PI * r;
-      const cap = Math.max(4, Math.floor(circumference / minStep));
+      const minStepRad = minAngularStepFor(chipW, r);
+      const cap = Math.max(2, Math.floor(2 * Math.PI / minStepRad));
       rings.push({ r, capacity: cap });
       placed += cap;
     }
@@ -734,7 +736,7 @@ function ArtifactFanout({
       }
     }
     return out;
-  }, [count, compact, cx, cy, h, w, minStep]);
+  }, [count, compact, cx, cy, h, w, chipW]);
 
   // Off-track count for the center-readout
   const offTrack = sorted.filter((c) => c.status !== "on-track").length;
@@ -1458,21 +1460,41 @@ function Edge({
   return <line className={"rg-edge rg-edge-" + kind} x1={x1} y1={y1} x2={x2} y2={y2} />;
 }
 
+// Compute the minimum angular step (in radians) between two chips
+// of a given pixel width on a ring of radius r so their bounding
+// rectangles stay 14px apart along the chord.
+function minAngularStepFor(chipW: number, r: number): number {
+  const minChord = chipW + 14;
+  if (2 * r <= minChord) return Math.PI;  // radius too small — one chip
+  return 2 * Math.asin(minChord / (2 * r));
+}
+
+// Place `count` chips on a ring of radius r, centered around
+// centerAngle. The angular step is the smaller of:
+//   - whatever fits the chips evenly across the spread arc, OR
+//   - a target step that keeps adjacent chip rectangles ~14px apart.
+// Using the smaller step prevents a 2-chip arc from fanning to its
+// extremes (the previous bug — 2 goal chips with spread=0.9π landed
+// on the horizontal axis instead of staying near the top).
 function arcPositions(
   cx: number,
   cy: number,
   r: number,
   centerAngle: number,
   count: number,
-  spread: number
+  spread: number,
+  chipW: number = 168,
 ) {
   if (count === 0) return [];
   if (count === 1) {
     return [{ x2: cx + Math.cos(centerAngle) * r, y2: cy + Math.sin(centerAngle) * r }];
   }
-  const arc = Math.PI * spread;
-  const step = arc / (count - 1);
-  const start = centerAngle - arc / 2;
+  const maxArc = Math.PI * spread;
+  const evenStep = maxArc / (count - 1);
+  const targetStep = minAngularStepFor(chipW, r);
+  const step = Math.min(evenStep, targetStep);
+  const totalArc = step * (count - 1);
+  const start = centerAngle - totalArc / 2;
   return Array.from({ length: count }, (_, i) => {
     const a = start + step * i;
     return { x2: cx + Math.cos(a) * r, y2: cy + Math.sin(a) * r };
@@ -1480,10 +1502,10 @@ function arcPositions(
 }
 
 // Multi-arc positioning: when more chips would fit on a single arc than
-// its capacity allows (chip width + gap > chord length), push the
-// remainder onto progressively larger concentric arcs. Keeps the
-// commitment-focus quadrants readable when a commitment carries many
-// relations of one kind.
+// its capacity allows (chip rectangles overlap along the chord), push
+// the remainder onto progressively larger concentric arcs. Capacity
+// is computed from the chord length, not the arc length, so chips
+// never visually collide.
 function quadrantArcs(
   cx: number,
   cy: number,
@@ -1495,16 +1517,20 @@ function quadrantArcs(
 ) {
   if (count === 0) return [];
   const out: { x2: number; y2: number }[] = [];
-  const minStep = chipW + 14;
-  const ringStep = 78;
+  const ringStep = 88;
   let placed = 0;
   let ringIdx = 0;
   while (placed < count) {
     const r = baseR + ringIdx * ringStep;
-    const arcLen = Math.PI * spread * r;
-    const cap = Math.max(2, Math.floor(arcLen / minStep) + 1);
+    const minStep = minAngularStepFor(chipW, r);
+    const maxArc = Math.PI * spread;
+    // How many chips physically fit on this ring's arc with the
+    // chord-derived min step? Always at least 1.
+    const cap = Math.max(1, Math.floor(maxArc / minStep) + 1);
     const inThisArc = Math.min(cap, count - placed);
-    const positions = arcPositions(cx, cy, r, centerAngle, inThisArc, spread);
+    const positions = arcPositions(
+      cx, cy, r, centerAngle, inThisArc, spread, chipW,
+    );
     out.push(...positions);
     placed += inThisArc;
     ringIdx += 1;
