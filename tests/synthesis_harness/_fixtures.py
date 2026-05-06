@@ -17,8 +17,25 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 from lib.shared.ids import uuid7
+
+
+async def _ensure_vector(conn: asyncpg.Connection) -> None:
+    """Idempotently register pgvector codec on this connection.
+
+    Some retrieval pathways call register_vector on connections checked
+    out of the pool, which mutates the connection's codec map. If a
+    fixture then writes via `'[…]'::vector` SQL cast on the same pooled
+    connection, asyncpg's codec interprets the string as float[] and
+    fails. Registering up-front and writing as a Python list avoids
+    that race entirely.
+    """
+    try:
+        await register_vector(conn)
+    except Exception:
+        pass
 
 EMBED_DIM = 768
 
@@ -86,10 +103,10 @@ async def make_observation(
     trust_tier: str = "authoritative",
     embed_seed: str | None = None,
 ) -> UUID:
+    await _ensure_vector(conn)
     obs_id = uuid7()
     occurred_at = occurred_at or isoplus(0)
     embed = deterministic_vector(embed_seed or content_text) if embed_seed or content_text else None
-    embed_str = "[" + ",".join(str(x) for x in embed) + "]" if embed else None
     await conn.execute(
         """
         INSERT INTO observations (
@@ -102,7 +119,7 @@ async def make_observation(
             $1, $2, $3, $3, $4,
             'harness:synthetic', NULL, $5,
             $6::jsonb, $7,
-            $8::vector, FALSE,
+            $8, FALSE,
             $9, NULL, NULL, $10::jsonb
         )
         """,
@@ -110,7 +127,7 @@ async def make_observation(
         actor_id,
         json.dumps({"content_text": content_text}),
         content_text,
-        embed_str,
+        embed,
         trust_tier,
         json.dumps(entities_mentioned or []),
     )
@@ -144,6 +161,7 @@ async def make_model(
     supporting_event_ids: list[UUID] | None = None,
     supporting_model_ids: list[UUID] | None = None,
 ) -> UUID:
+    await _ensure_vector(conn)
     mid = uuid7()
     if born_from_event_id is None:
         # Need a valid observation as parent
@@ -158,13 +176,12 @@ async def make_model(
         "valid_until": None,
     }
     embed = deterministic_vector(embed_seed or natural)
-    embed_str = "[" + ",".join(str(x) for x in embed) + "]"
 
     await conn.execute(
         """
         INSERT INTO models (
             id, tenant_id, born_from_event_id,
-            proposition, natural, embedding,
+            proposition, "natural", embedding,
             scope_actors, scope_entities, scope_temporal,
             confidence, activation, falsifier,
             signal_readings, reading_contestable,
@@ -174,7 +191,7 @@ async def make_model(
             visible_to_subjects, confidence_at_assertion, last_retrieved_at
         ) VALUES (
             $1, $2, $3,
-            $4::jsonb, $5, $6::vector,
+            $4::jsonb, $5, $6,
             $7::uuid[], $8::jsonb, $9::jsonb,
             $10, $11, $12::jsonb,
             '[]'::jsonb, TRUE,
@@ -185,7 +202,7 @@ async def make_model(
         )
         """,
         mid, tenant_id, born_from_event_id,
-        json.dumps(proposition), natural, embed_str,
+        json.dumps(proposition), natural, embed,
         scope_actors, json.dumps(scope_entities), json.dumps(scope_temporal),
         confidence, activation,
         json.dumps(falsifier) if falsifier is not None else None,
