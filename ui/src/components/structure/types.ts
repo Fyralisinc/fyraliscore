@@ -13,7 +13,57 @@ export type TerritoryId =
 
 export type LayerId = "commits" | "decisions" | "people" | "customers" | "model";
 
-export type LayoutMode = "territory" | "two-axis";
+export type LayoutMode = "relational" | "territory" | "two-axis";
+export type EntityKind = "all" | "goals" | "commitments" | "people";
+
+export type PatternEvidence = {
+  // ISO YYYY-MM-DD or human-friendly window like "Q1 2026".
+  when: string;
+  // Short summary of the observation.
+  text: string;
+  // Optional pointers — clicking these in the UI focuses the artifact.
+  ref?:
+    | { kind: "commitment"; id: string }
+    | { kind: "decision"; id: string }
+    | { kind: "goal"; id: string };
+  // Optional confidence in this single observation (0–1). Aggregated
+  // confidence across evidences contributes to pattern strength.
+  weight?: number;
+};
+
+export type LearnedPattern = {
+  id: string;
+  // The pattern statement (what the system has learned).
+  statement: string;
+  // 0–1 — how strongly the evidence supports this pattern.
+  strength: number;
+  // First → most relevant evidence supporting the pattern.
+  evidence: PatternEvidence[];
+};
+
+export type PersonProfile = {
+  id: string;
+  label: string;
+  role: string;
+  // Curated, surfaceable patterns the system has inferred about this person.
+  // Order: most load-bearing first.
+  patterns: LearnedPattern[];
+  // One-line "what's been observed lately" — drives the row's secondary line.
+  recent_observation: string;
+  // Calibration: 0–1, how confident the system is in the current model.
+  calibration: number;
+};
+
+export type GoalRef = { id: string; label: string; altitude: "strategic" | "operational" };
+export type DecisionRef = { id: string; label: string; state: "in-force" | "drifting" | "revisited" };
+export type ResourceRef = { id: string; label: string; kind: "financial" | "human" | "technical" };
+
+export type CommitmentEdges = {
+  contributes_to: string[];   // goal ids
+  constrained_by: string[];   // decision ids
+  consumes: string[];         // resource ids
+  contributors: string[];     // actor ids beyond owner
+};
 export type ColorMode = "status" | "owner" | "customer" | "decision";
 export type TimeWindow = "next-7" | "quarter" | "all";
 
@@ -35,11 +85,22 @@ export type Commitment = {
   stakeholder: "internal" | "customer";
   stakeholder_label: string;
   customer?: string;
-  traces_to: string[]; // decision ids
+  traces_to: string[]; // decision ids (legacy alias for constrained_by)
   related: string[]; // commitment ids
+  edges?: CommitmentEdges;
   progress?: string;
   substrate_insight?: string;
   activity: ActivityEntry[];
+  // Curated, surfaceable patterns the system has noticed about this
+  // commitment (slip history, drift cluster membership, etc.).
+  learnings?: LearnedPattern[];
+};
+
+export type GoalLearnings = {
+  // 0–1 — how confidently the system models this goal's progress.
+  calibration: number;
+  recent_observation: string;
+  patterns: LearnedPattern[];
 };
 
 export type ShapeRef =
@@ -54,11 +115,19 @@ export type ShapeStatementToken =
   | { kind: "ref"; ref: ShapeRef };
 
 export type Filters = {
+  entityKind: EntityKind;
   time: TimeWindow;
   statuses: Set<CommitmentStatus>;
   owner: string | null;
   customer: string | null;
 };
+
+// Focus target for the relational graph. Generalizes "selected
+// commitment" so any node in the graph (goal, decision, resource,
+// actor, related commitment) can become the center on click.
+export type FocusKind =
+  | "commitment" | "goal" | "decision" | "resource" | "actor";
+export type FocusTarget = { kind: FocusKind; id: string };
 
 export type ActiveRefFilter =
   | null

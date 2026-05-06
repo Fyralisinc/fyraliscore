@@ -103,9 +103,11 @@ export const RecCard = forwardRef<HTMLElement, Props>(function RecCard(
   // Wire phrase clicks via event delegation.
   const handleProbeClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      const target = (e.target as HTMLElement).closest<HTMLElement>(
-        "[data-probe-id]"
-      );
+      const eventTarget = e.target as HTMLElement;
+      // Artifact-link clicks open the drawer (handled at the App level
+      // via document delegation) — they must not also trigger a probe.
+      if (eventTarget.closest(".artifact-link")) return;
+      const target = eventTarget.closest<HTMLElement>("[data-probe-id]");
       if (!target) return;
       e.stopPropagation();
       const probeId = target.dataset.probeId!;
@@ -284,6 +286,7 @@ export const RecCard = forwardRef<HTMLElement, Props>(function RecCard(
         if (t.closest(".conversation")) return;
         if (t.closest(".card-footer")) return;
         if (t.closest("[data-probe-id]")) return;
+        if (t.closest(".artifact-link")) return;
         onFocus();
         onToggle();
       }}
@@ -483,13 +486,13 @@ export const RecCard = forwardRef<HTMLElement, Props>(function RecCard(
   );
 });
 
-// CardCore — the content stack used in both collapsed and expanded
-// views. headline → subtitle (kind_label, demoted) → proposal →
-// supporting (when present) → epistemic. The kind taxonomy
-// ("Commitment shift" / "Goal direction" / etc) is engineering jargon
-// that doesn't deserve to lead the card; it's now a quiet caption
-// under the headline. The legacy `stats` grid is rendered ONLY as a
-// fallback when the server has not emitted an epistemic_line.
+// CardCore — content stack used in both collapsed and expanded
+// views: headline → subtitle (kind_label) → supporting → epistemic.
+// The structured proposal sentence ("Transition X → active") used to
+// live here as a mono callout, but it duplicated info already carried
+// by the specialized Approve button label below ("Move to active") and
+// by the diff band in the expanded view ("If you approve…"). Removing
+// it here cleans up the collapsed scan without losing any information.
 function CardCore({ card, justArrived }: { card: RecCardModel; justArrived?: boolean }) {
   const showNewTag = justArrived && card.tag?.kind === "new";
   return (
@@ -507,11 +510,6 @@ function CardCore({ card, justArrived }: { card: RecCardModel; justArrived?: boo
             <span className="tag-new">{card.tag!.label}</span>
           ) : null}
         </div>
-      ) : null}
-      {card.proposed_change_text ? (
-        <p className="card-proposal">
-          <span className="card-proposal-target">{card.proposed_change_text}</span>
-        </p>
       ) : null}
       {card.supporting_html ? (
         <p
@@ -752,14 +750,12 @@ const REASONING_KIND_LABEL: Record<string, string> = {
 // and is honest about no-op transitions ("Already at X; approving
 // confirms this is the right call.").
 function DiffBand({ diff }: { diff: DiffPanel }) {
-  const { target_title, target_kind, current_state, to_state, operation, owner_name, created_at, days_idle, acceptance } = diff;
+  const {
+    target_title, target_kind, target_id,
+    current_state, to_state, operation,
+    owner_name, owner_actor_id, created_at, days_idle, acceptance,
+  } = diff;
   const created = created_at ? formatShortDate(created_at) : null;
-  const contextParts: string[] = [];
-  if (owner_name) contextParts.push(`Owned by ${owner_name}`);
-  if (created) contextParts.push(`created ${created}`);
-  if (typeof days_idle === "number" && days_idle >= 1) {
-    contextParts.push(`idle ${days_idle}d`);
-  }
   return (
     <section className="card-band band-diff">
       <div className="band-label">If you approve</div>
@@ -767,18 +763,58 @@ function DiffBand({ diff }: { diff: DiffPanel }) {
         <DiffEffectSentence
           targetTitle={target_title}
           targetKind={target_kind}
+          targetId={target_id}
           operation={operation}
           currentState={current_state}
           toState={to_state}
         />
       </p>
-      {contextParts.length > 0 ? (
-        <div className="diff-row diff-meta">{contextParts.join(" · ")}</div>
+      {(owner_name || created || (typeof days_idle === "number" && days_idle >= 1)) ? (
+        <div className="diff-row diff-meta">
+          {owner_name ? (
+            <>
+              Owned by{" "}
+              {owner_actor_id ? (
+                <ArtifactSpan kind="actor" id={owner_actor_id}>{owner_name}</ArtifactSpan>
+              ) : (
+                owner_name
+              )}
+            </>
+          ) : null}
+          {owner_name && created ? " · " : null}
+          {created ? <>created {created}</> : null}
+          {(owner_name || created) && typeof days_idle === "number" && days_idle >= 1 ? " · " : null}
+          {typeof days_idle === "number" && days_idle >= 1 ? <>idle {days_idle}d</> : null}
+        </div>
       ) : null}
       {acceptance ? (
         <div className="diff-row diff-acceptance">{truncate(acceptance, 220)}</div>
       ) : null}
     </section>
+  );
+}
+
+// Inline span that renders a clickable artifact reference. Identical
+// markup to the server-emitted `<a class="artifact-link">` so the
+// global click handler in App.tsx picks it up uniformly.
+function ArtifactSpan({
+  kind,
+  id,
+  children,
+}: {
+  kind: string;
+  id: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      className="artifact-link"
+      data-artifact-type={kind}
+      data-artifact-id={id}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -789,20 +825,29 @@ function DiffBand({ diff }: { diff: DiffPanel }) {
 function DiffEffectSentence({
   targetTitle,
   targetKind,
+  targetId,
   operation,
   currentState,
   toState,
 }: {
   targetTitle: string;
   targetKind: string;
+  targetId?: string;
   operation: string;
   currentState?: string;
   toState?: string;
 }) {
   const kind = targetKind || "item";
+  const nameNode = targetId ? (
+    <ArtifactSpan kind={targetKind} id={targetId}>
+      <em className="diff-target-name">"{targetTitle}"</em>
+    </ArtifactSpan>
+  ) : (
+    <em className="diff-target-name">"{targetTitle}"</em>
+  );
   const Subject = (
     <>
-      <em className="diff-target-name">"{targetTitle}"</em>{" "}
+      {nameNode}{" "}
       <span className="diff-target-kind">{kind}</span>
     </>
   );
@@ -843,7 +888,7 @@ function DiffEffectSentence({
   if (operation === "create") {
     return (
       <>
-        A new {kind} is <span className="diff-to">created</span>: <em className="diff-target-name">"{targetTitle}"</em>.
+        A new {kind} is <span className="diff-to">created</span>: {nameNode}.
       </>
     );
   }
@@ -875,9 +920,16 @@ function SignalsBand({ signals }: { signals: SignalRow[] }) {
         {visible.map((s, i) => {
           const cleanSource = s.source.split(":")[0];
           const showAttr = s.attribution && s.attribution !== s.source && s.attribution !== cleanSource;
+          const quoteNode = s.observation_id ? (
+            <ArtifactSpan kind="observation" id={s.observation_id}>
+              <q className="signal-quote">{s.quote}</q>
+            </ArtifactSpan>
+          ) : (
+            <q className="signal-quote">{s.quote}</q>
+          );
           return (
             <li key={s.observation_id ?? i} className="signal-row">
-              <q className="signal-quote">{s.quote}</q>
+              {quoteNode}
               <div className="signal-meta">
                 <span className="signal-source">{cleanSource}</span>
                 <span className="signal-meta-sep">·</span>
@@ -927,7 +979,13 @@ function ReasoningBand({ groups }: { groups: ReasoningGroup[] }) {
       <ul className="reasoning-list">
         {rows.map((r, i) => (
           <li key={r.id ?? i} className="reasoning-row">
-            <p className="reasoning-natural">{r.natural}</p>
+            {r.id ? (
+              <ArtifactSpan kind="model" id={r.id}>
+                <p className="reasoning-natural">{r.natural}</p>
+              </ArtifactSpan>
+            ) : (
+              <p className="reasoning-natural">{r.natural}</p>
+            )}
             <div className="reasoning-meta">
               <span className="reasoning-kind">{r.label}</span>
               <span className="reasoning-meta-sep">·</span>

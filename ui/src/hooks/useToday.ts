@@ -13,6 +13,10 @@ export type TriageToast = {
   headline: string;          // 1-line confirmation, eg "Reaffirmed: …"
   detail?: string;           // optional secondary line
   at: number;                // timestamp the toast was created
+  // Optional CTA — rendered as a link inside the toast. Used after an
+  // accept that creates a new entity so the user can jump straight to
+  // the Structure page focused on the freshly-created commitment.
+  action?: { label: string; href: string };
 };
 
 export type TodayState = {
@@ -49,6 +53,16 @@ export function useToday(): TodayState {
   const [toast, setToast] = useState<TriageToast | null>(null);
   const lastGoodRef = useRef<TodayResponse | null>(null);
   const toastIdRef = useRef(0);
+  // The "Just learned" banner is disabled for now — the backend keeps
+  // re-emitting it across polls and the noise outweighs the value.
+  // Stripping at the hook layer kills both the App.tsx and Structure.tsx
+  // renders without touching the JSX.
+  function suppressDismissed(data: TodayResponse): TodayResponse {
+    if (data.just_updated) {
+      return { ...data, just_updated: undefined };
+    }
+    return data;
+  }
 
   // Initial fetch.
   useEffect(() => {
@@ -56,8 +70,9 @@ export function useToday(): TodayState {
     let alive = true;
     (async () => {
       try {
-        const data = await getToday(ctrl.signal);
+        const raw = await getToday(ctrl.signal);
         if (!alive) return;
+        const data = suppressDismissed(raw);
         setToday(data);
         lastGoodRef.current = data;
         setLoading(false);
@@ -88,9 +103,11 @@ export function useToday(): TodayState {
         const base = prev ?? lastGoodRef.current;
         if (!base) return prev;
         switch (msg.type) {
-          case "today_updated":
-            lastGoodRef.current = msg.today;
-            return msg.today;
+          case "today_updated": {
+            const next = suppressDismissed(msg.today);
+            lastGoodRef.current = next;
+            return next;
+          }
           case "vitals_updated":
             return { ...base, vitals: msg.vitals };
           case "signal_strip_updated":
@@ -113,6 +130,34 @@ export function useToday(): TodayState {
       unsubData();
       unsubConn();
       stream.stop();
+    };
+  }, []);
+
+  // Polling safety net for new recommendation arrival.
+  // The /stream/view/ceo/stream WebSocket only pushes today_updated
+  // when the greeting scheduler refreshes its cache; new recommendation
+  // Models publish to a different bus (services/demo/sse.py) the
+  // frontend isn't subscribed to, so a fresh card from a live signal
+  // injection won't appear without a refetch. A 4s poll keeps the demo
+  // feel snappy without the cost of a second stream client.
+  useEffect(() => {
+    let alive = true;
+    const id = window.setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        const raw = await getToday();
+        if (!alive) return;
+        const data = suppressDismissed(raw);
+        setToday(data);
+        lastGoodRef.current = data;
+        setOffline(false);
+      } catch {
+        // Swallow — the WS path will surface real connection errors.
+      }
+    }, 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
     };
   }, []);
 
@@ -152,8 +197,21 @@ export function useToday(): TodayState {
         selected_path_id: extra?.selected_path_id,
       };
       let serverError: string | null = null;
+      let toastAction: { label: string; href: string } | undefined;
       try {
-        await postTriage(cardId, body);
+        const res = await postTriage(cardId, body);
+        // When an accept produces a freshly-created commitment, offer a
+        // jump-to-Structure CTA on the confirmation toast.
+        if (
+          action === "act" &&
+          res?.target_act_change_kind === "create_commitment" &&
+          res?.target_act_change_id
+        ) {
+          toastAction = {
+            label: "See in graph →",
+            href: `/structure?focus=${res.target_act_change_id}`,
+          };
+        }
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) {
           // No-op — already gone.
@@ -176,6 +234,7 @@ export function useToday(): TodayState {
         headline: `${verb} — ${cardHeadline.slice(0, 70)}${cardHeadline.length > 70 ? "…" : ""}`,
         detail: detailParts.length ? detailParts.join(" ") : undefined,
         at: Date.now(),
+        action: toastAction,
       });
       // Auto-dismiss after 4.5s — only if no newer toast has replaced it.
       window.setTimeout(() => {

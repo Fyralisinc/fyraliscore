@@ -171,10 +171,16 @@ async def wipe_tenant(
         "depends_on",
         "contributes_to",
         "commitment_contributors",
-        # Models reference observations; observations reference models'
-        # born_from_event. Order matters.
-        "models",
+        # Order matters across these FKs:
+        #   - commitments.last_confidence_basis → models.id
+        #   - commitments.created_by_event_id   → observations.id
+        #   - models.born_from_event_id         → observations.id
+        # so commitments must be wiped before models, and models before
+        # observations. (Earlier order put models first which broke
+        # reset whenever a Commitment had a last_confidence_basis set
+        # by a Think run that picked up an augmented Model.)
         "commitments",
+        "models",
         "goals",
         "decisions",
         "resource_transactions",

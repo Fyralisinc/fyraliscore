@@ -34,7 +34,7 @@ from services.retrieval.primary import TriggerContext
 # Per-section char budgets.
 _OBS_CHAR_BUDGET = 4000
 _MODELS_CHAR_BUDGET = 4000
-_ACTS_CHAR_BUDGET = 2000
+_ACTS_CHAR_BUDGET = 12000
 _RESOURCES_CHAR_BUDGET = 1000
 _PER_ITEM_CHAR_LIMIT = 1500
 
@@ -49,6 +49,7 @@ Core discipline:
 - Every claim must be traceable to an Observation or existing Model.
 - Calibration will be applied to your confidence numbers; assert honestly.
 - Every inserted Model MUST be scoped (see "Model Scope" below). scope_actors and scope_entities usually both carry entries; an unscoped Model is invisible to the system.
+- **HARD RULE — new self-reported work MUST become a `create_commitment` recommendation.** When the signal contains "I've started", "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or any equivalent phrase referring to a unit of work, AND `<acts>` contains NO commitment whose title clearly matches that work, you MUST emit a recommendation claim_op with `proposition.proposed_change.operation = "create"` and `proposition.target_act_ref = {"type":"commitment","id":null}`. Self-reports are NOT "purely informational" — they are exactly when the ledger needs a new commitment to track the work. Co-emit the state Model AND the recommendation; they are not redundant. Skipping this rule is a violation of the diff contract. The payload shape and worked example appear below in "Recommendations" — follow it exactly.
 
 Falsifier schema (pick the right kind):
   1. observation_pattern    — {"kind": "observation_pattern", "pattern": "<specific signal shape, >=20 chars>", "within_window": "ISO-8601 duration"}
@@ -101,6 +102,18 @@ The eleven kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opp
 
 Recommendations — when to emit, when NOT to:
 A `recommendation` Model surfaces a specific Act-layer action a human (typically the CEO) should approve. Produce one when reasoning identifies a concrete change to the Act layer that warrants human approval — revisit a Goal whose assumptions broke, transition a Commitment whose state no longer reflects reality, archive a Decision a newer signal supersedes, reallocate a Resource. Do NOT produce a recommendation for changes the system can make autonomously (a confidence update, a doneunverified transition off a self-reported merge, a Model archive — those are claim_ops or act_ops). Recommendations are for the human-approval queue, not the system's automatic ledger.
+
+**MANDATORY RULE — emit `create_commitment` for new self-reported work**:
+When a signal contains a phrase like "I've started", "kicking off", "picked up", "I'm building", "working on", or "I'll deliver" referring to a piece of work, AND `<acts>` does NOT contain a commitment whose title clearly matches that work, you MUST emit a recommendation with `proposed_change.operation="create"` and `target_act_ref={"type":"commitment","id":null}`. The fact that the work is self-reported is exactly why a commitment is needed — without one, the work is invisible to the ledger. Do NOT skip this with reasoning like "purely informational" or "no human approval needed" — the human approval here is the CEO ratifying the new scope. The payload MUST be:
+```
+{
+  "title": "<short noun phrase from the signal, e.g. 'Backend rewrite'>",
+  "owner_id": "<UUID of the actor who self-reported, from actor_id in <observations> or <actors_in_context>>",
+  "due_date": "<ISO date — pull from the signal if it gives a deadline ('in a week' → 7 days from now); otherwise default to 30 days from now>",
+  "contributes_to_goal_ids": ["<best-fit goal UUID from <acts>>"]
+}
+```
+If no goal in `<acts>` plausibly fits, omit `contributes_to_goal_ids` and set `"is_maintenance": true` instead. The presence of an existing `state` Model recording the same fact is NOT a reason to skip the recommendation — `state` Models are epistemic; the recommendation is the ledger-facing counterpart and both should coexist.
 
 Each recommendation MUST set `proposed_change` (operation + payload that the act handler will apply via existing endpoints) and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). Set `target_act_ref` only when you have a confirmed UUID from <acts> — leave it null if no matching Act exists; NEVER invent or guess a UUID. Set `target_actor_id` to the CEO/decision-maker UUID from <actors_in_context> when available, or null if no such UUID is in context. The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
 
@@ -185,6 +198,40 @@ Examples (UUIDs abbreviated here — use the full 36-char UUIDs from the context
       scope_actors:   []
       scope_entities: [{"type": "customer",
                         "id": "33333333-3333-3333-3333-333333333333"}]
+
+  <observations> contains:
+    - id=cccc... actor_id=44444444-4444-4444-4444-444444444444 channel=slack
+      at=...: "Sarah: I've started work on the backend rewrite."
+  <acts> contains:
+    - goal id=55555555-5555-5555-5555-555555555555 title=Platform reliability
+      altitude=operational state=active
+    (no commitment matching "backend rewrite")
+  <actors_in_context>:
+    - id=44444444-4444-4444-4444-444444444444 display_name=Sarah role=eng
+    - id=99999999-9999-9999-9999-999999999999 display_name=Carmen role=ceo
+
+  → Emit a `state` Model recording "Sarah is leading the backend rewrite",
+    AND a `recommendation` Model so the CEO can ratify the new scope:
+      proposition: {
+        "kind": "recommendation",
+        "target_act_ref": {"type": "commitment", "id": null},
+        "proposed_change": {
+          "operation": "create",
+          "payload": {
+            "title": "Backend rewrite",
+            "owner_id": "44444444-4444-4444-4444-444444444444",
+            "due_date": "<ISO date ~30-60 days from now>",
+            "contributes_to_goal_ids":
+              ["55555555-5555-5555-5555-555555555555"]
+          }
+        },
+        "qualitative_impact": "Tracks newly-started in-flight work",
+        "target_actor_id": "99999999-9999-9999-9999-999999999999"
+      }
+      natural: "Track the backend rewrite as a commitment owned by Sarah."
+      scope_actors: ["99999999-9999-9999-9999-999999999999"]
+      scope_entities: [{"type": "goal",
+                        "id": "55555555-5555-5555-5555-555555555555"}]
 
 When to emit act_ops — the claim_ops are facts you've observed; act_ops are the
 state transitions those facts warrant on Goals / Commitments / Decisions in <acts>.
@@ -490,8 +537,21 @@ def _build_instructions(trigger: TriggerContext) -> str:
         body.append(
             "This is a T1 trigger — a new signal. Focus on what this "
             "event reveals (claim_ops) and any state transitions it "
-            "warrants (act_ops). Do NOT invent new Commitments unless "
-            "clearly justified."
+            "warrants (act_ops).\n"
+            "\n"
+            "MANDATORY: if the signal contains 'I've started', "
+            "'kicking off', 'picked up', 'I'm building', 'working on', "
+            "'I'll deliver', or any equivalent self-report of new "
+            "in-flight work, AND <acts> contains NO commitment whose "
+            "title matches that work, you MUST emit a recommendation "
+            "claim_op with `proposition.proposed_change.operation = "
+            "\"create\"` and `target_act_ref = {\"type\":\"commitment\","
+            "\"id\":null}`. Do not skip this with reasoning like "
+            "'purely informational' or 'no human approval needed' — the "
+            "approval here is the CEO ratifying the new scope into the "
+            "ledger. Co-emit the state Model AND the recommendation; "
+            "they are not redundant. See the worked Sarah/backend-rewrite "
+            "example above for the exact shape."
         )
     elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
         body.append(
@@ -504,6 +564,16 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "proposition_kind='recommendation'. Use only actor UUIDs that "
             "appear in <actors_in_context> for scope_actors. Write the "
             "natural field as a clear, actionable sentence for the CEO.\n"
+            "\n"
+            "  • If the new state Model encodes a self-report of new "
+            "in-flight work ('started X', 'building Y', 'picked up Z') "
+            "AND <acts> has no matching commitment, you MUST emit a "
+            "recommendation with proposed_change.operation='create' and "
+            "target_act_ref={\"type\":\"commitment\",\"id\":null}. Use "
+            "the payload shape from the worked Sarah/backend-rewrite "
+            "example above. 'Purely informational progress update' is "
+            "NOT an acceptable reason to skip — the ledger needs a "
+            "commitment for the work to be tracked.\n"
             "\n"
             "  • If purely informational and no CEO action is needed: "
             "return an empty diff (zero claim_ops).\n"

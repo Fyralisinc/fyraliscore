@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { TriageToast as TriageToastModel } from "@/hooks/useToday";
 
 type Props = {
@@ -15,9 +16,12 @@ export function TriageToast({ toast, onDismiss }: Props) {
   useEffect(() => {
     if (!toast) return;
     setPhase("in");
-    const fade = window.setTimeout(() => setPhase("out"), 4000);
+    // Stay visible longer when the toast carries an action so the user
+    // has time to click through.
+    const lifetime = toast.action ? 8000 : 4000;
+    const fade = window.setTimeout(() => setPhase("out"), lifetime);
     return () => window.clearTimeout(fade);
-  }, [toast?.id]);
+  }, [toast?.id, toast?.action]);
 
   if (!toast) return null;
 
@@ -31,6 +35,15 @@ export function TriageToast({ toast, onDismiss }: Props) {
       <div className="triage-toast-headline">{toast.headline}</div>
       {toast.detail ? (
         <div className="triage-toast-detail">{toast.detail}</div>
+      ) : null}
+      {toast.action ? (
+        <Link
+          className="triage-toast-action"
+          to={toast.action.href}
+          onClick={onDismiss}
+        >
+          {toast.action.label}
+        </Link>
       ) : null}
       <button
         className="triage-toast-close"

@@ -53,6 +53,7 @@ test-results/
 
 # ---- External tools / large local dirs ----
 lsob/
+corpora/
 
 # ---- Production secrets (server-only) ----
 .env.production

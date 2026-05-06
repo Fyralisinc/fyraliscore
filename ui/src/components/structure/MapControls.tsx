@@ -1,22 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type {
-  ColorMode,
   CommitmentStatus,
+  EntityKind,
   Filters,
-  LayoutMode,
   TimeWindow,
 } from "./types";
 
-// Spec Part 6 — three controls (Layout / Color by / Filter), each a
-// toggle button that opens a dropdown panel below it.
+// Sole control surface for the relational view: a Filter button.
+// View-mode and color-by toggles were removed when the relational view
+// became the only mode. The filter panel now also drives an entity-kind
+// toggle so the left list can show goals only, commitments only, or both.
 type Props = {
-  layout: LayoutMode;
-  color: ColorMode;
   filters: Filters;
   ownerOptions: { id: string; label: string }[];
   customerOptions: { id: string; label: string }[];
-  onLayoutChange: (m: LayoutMode) => void;
-  onColorChange: (c: ColorMode) => void;
   onFiltersChange: (f: Filters) => void;
 };
 
@@ -27,26 +24,29 @@ const STATUS_LABEL: Record<CommitmentStatus, string> = {
   blocked: "Blocked",
 };
 
+const ENTITY_LABEL: Record<EntityKind, string> = {
+  all: "All",
+  goals: "Goals only",
+  commitments: "Commitments only",
+  people: "Team only",
+};
+
 export function MapControls({
-  layout,
-  color,
   filters,
   ownerOptions,
   customerOptions,
-  onLayoutChange,
-  onColorChange,
   onFiltersChange,
 }: Props) {
-  const [open, setOpen] = useState<null | "layout" | "color" | "filter">(null);
+  const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) setOpen(null);
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(null);
+      if (e.key === "Escape") setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -57,6 +57,7 @@ export function MapControls({
   }, []);
 
   const filterActive =
+    filters.entityKind !== "all" ||
     filters.time !== "quarter" ||
     filters.statuses.size !== 4 ||
     filters.owner !== null ||
@@ -71,12 +72,10 @@ export function MapControls({
 
   function resetFilters() {
     onFiltersChange({
+      entityKind: "all",
       time: "quarter",
       statuses: new Set<CommitmentStatus>([
-        "on-track",
-        "slipping",
-        "at-risk",
-        "blocked",
+        "on-track", "slipping", "at-risk", "blocked",
       ]),
       owner: null,
       customer: null,
@@ -89,92 +88,33 @@ export function MapControls({
         <button
           type="button"
           className="control-toggle"
-          aria-haspopup="menu"
-          aria-expanded={open === "layout"}
-          onClick={() => setOpen(open === "layout" ? null : "layout")}
-        >
-          Layout:{" "}
-          <span className="control-value">
-            {layout === "territory" ? "Territory" : "Two-axis"}
-          </span>
-          <span className="chevron" aria-hidden="true">▾</span>
-        </button>
-        {open === "layout" ? (
-          <div className="control-menu" role="menu">
-            <button
-              type="button"
-              className="menu-item"
-              data-selected={layout === "territory"}
-              onClick={() => {
-                onLayoutChange("territory");
-                setOpen(null);
-              }}
-            >
-              <span className="menu-check">✓</span>Territory
-            </button>
-            <button
-              type="button"
-              className="menu-item"
-              data-selected={layout === "two-axis"}
-              onClick={() => {
-                onLayoutChange("two-axis");
-                setOpen(null);
-              }}
-            >
-              <span className="menu-check">✓</span>Two-axis (priority × time)
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="control-wrap">
-        <button
-          type="button"
-          className="control-toggle"
-          aria-haspopup="menu"
-          aria-expanded={open === "color"}
-          onClick={() => setOpen(open === "color" ? null : "color")}
-        >
-          Color by: <span className="control-value">{labelForColor(color)}</span>
-          <span className="chevron" aria-hidden="true">▾</span>
-        </button>
-        {open === "color" ? (
-          <div className="control-menu" role="menu">
-            {(["status", "owner", "customer", "decision"] as ColorMode[]).map(
-              (m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className="menu-item"
-                  data-selected={color === m}
-                  onClick={() => {
-                    onColorChange(m);
-                    setOpen(null);
-                  }}
-                >
-                  <span className="menu-check">✓</span>
-                  {labelForColor(m)}
-                </button>
-              )
-            )}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="control-wrap">
-        <button
-          type="button"
-          className="control-toggle"
           data-active={filterActive ? "true" : "false"}
           aria-haspopup="dialog"
-          aria-expanded={open === "filter"}
-          onClick={() => setOpen(open === "filter" ? null : "filter")}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
         >
           Filter
           <span className="chevron" aria-hidden="true">▾</span>
         </button>
-        {open === "filter" ? (
-          <div className="filter-panel" role="dialog" aria-label="Filter map">
+        {open ? (
+          <div className="filter-panel" role="dialog" aria-label="Filter">
+            <div className="filter-section">
+              <span className="filter-section-label">Show</span>
+              <div className="filter-radio-group">
+                {(Object.keys(ENTITY_LABEL) as EntityKind[]).map((k) => (
+                  <label key={k}>
+                    <input
+                      type="radio"
+                      name="entity-kind"
+                      checked={filters.entityKind === k}
+                      onChange={() => onFiltersChange({ ...filters, entityKind: k })}
+                    />
+                    {ENTITY_LABEL[k]}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <hr className="filter-divider" />
             <div className="filter-section">
               <span className="filter-section-label">Time window</span>
               <div className="filter-radio-group">
@@ -259,7 +199,7 @@ export function MapControls({
               <button
                 type="button"
                 className="btn-primary"
-                onClick={() => setOpen(null)}
+                onClick={() => setOpen(false)}
               >
                 Apply
               </button>
@@ -269,11 +209,4 @@ export function MapControls({
       </div>
     </div>
   );
-}
-
-function labelForColor(m: ColorMode): string {
-  if (m === "status") return "Status";
-  if (m === "owner") return "Owner";
-  if (m === "customer") return "Customer";
-  return "Decision lineage";
 }

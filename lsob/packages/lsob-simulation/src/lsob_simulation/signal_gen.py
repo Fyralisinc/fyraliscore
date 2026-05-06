@@ -1,4 +1,18 @@
-"""Signal generators: template-based (deterministic) and LLM (stubbed)."""
+"""Signal generators: template-based (deterministic) and LLM (stubbed).
+
+Two template paths:
+
+  - **Legacy path** — actors with auto-generated names (e.g. "Reliable 0",
+    role from the 9-element role cycle) get the original templates. Existing
+    CompanyA/B/C corpora stay byte-identical.
+  - **Rich path** — when an actor has `role_family` set on its persona
+    (i.e. it came from an `ActorProfile` in `actor_profiles`), templates
+    reference the actor by first name, the customer by `company_name`,
+    the commitment by its `title`, and occasionally mention a peer drawn
+    from the simulator's `peers` list.
+
+Both paths are deterministic given the same RNG seed.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +25,10 @@ from lsob_contracts import Signal, SourceChannel
 from lsob_simulation.state import ActorState, CommitmentState, CustomerState
 
 
-# --------------------------- Template library --------------------------------
+# =====================================================================
+# LEGACY TEMPLATE BANK (do not modify — CompanyA/B/C tests depend on it)
+# =====================================================================
 
-# Channel-specific templates indexed by (trigger_kind, persona_tone).
-# Each template references placeholders that the generator substitutes.
 _SLACK_CHATTER: dict[str, list[str]] = {
     "start": [
         "Kicking off {commitment}. Hoping to wrap by +{days}d.",
@@ -112,6 +126,272 @@ _TEMPLATE_INDEX: dict[SourceChannel, dict[str, list[str]]] = {
 }
 
 
+# =====================================================================
+# RICH TEMPLATE BANK (used when actor.persona.role_family is set)
+# =====================================================================
+#
+# Placeholders available:
+#   {author}        — actor first name
+#   {commitment}    — commitment.truth.title (falls back to id)
+#   {customer}      — customer.truth.company_name (falls back to id)
+#   {peer}          — first name of a randomly-selected peer (if any)
+#   {pct}, {days}   — same as legacy
+#
+# Banks are keyed by role_family → channel → trigger.
+
+_RICH_ENG_SLACK: dict[str, list[str]] = {
+    "start": [
+        "Kicking off {commitment} this morning — thinking ~{days} days end-to-end.",
+        "Picking up {commitment}. Should land in {days}d if no surprises.",
+        "Branched off main for {commitment}. {days}d is my honest guess.",
+        "Starting on {commitment}. Will sync with {peer} on the API surface.",
+    ],
+    "progress": [
+        "{commitment} is at ~{pct}%. Mostly the wiring left.",
+        "Halfway-ish on {commitment}. Edge cases biting harder than I expected.",
+        "Update: {commitment} ~{pct}% done. Need {peer}'s eyes on the migration step.",
+        "Pushed another commit on {commitment}. About {pct}% there.",
+        "Tests passing locally for {commitment} — staging deploy next.",
+        "Refactored the {commitment} worker — feels cleaner now.",
+    ],
+    "slip": [
+        "{commitment} is going to slip — found a regression in the dependency graph.",
+        "Realistically {commitment} needs another {days} days. Calling it now.",
+        "Flagging: {commitment} is blocked on the {peer}-owned change. Sync needed.",
+        "Hit a wall on {commitment}. Going to need to redesign the queue layer.",
+    ],
+    "done": [
+        "{commitment} is merged and out the door. Moving on.",
+        "Shipped {commitment} to prod, no incidents on the canary.",
+        "{commitment} is closed. {peer}, your review caught the off-by-one — thanks.",
+        "Done with {commitment}. Will write the postmortem note tomorrow.",
+    ],
+    "customer": [
+        "Heads up — saw {customer} hit a 500 on the dashboard. Looking now.",
+        "Picking up the {customer} ticket. Looks reproducible.",
+    ],
+}
+
+_RICH_ENG_PR: dict[str, list[str]] = {
+    "start": [
+        "PR opened: scaffolding for {commitment}. WIP, no review yet.",
+        "Draft PR for {commitment} — sharing early for shape feedback from {peer}.",
+        "PR: initial implementation of {commitment}. Tests stubbed.",
+    ],
+    "progress": [
+        "PR update on {commitment}: addressing review notes from {peer}.",
+        "Pushed iteration #3 on {commitment}. Edge cases now covered.",
+        "PR for {commitment}: rebased on main, tests green.",
+    ],
+    "done": [
+        "Merged: {commitment} ({pct}% behind plan but landing today).",
+        "PR closed: {commitment} shipped. Rolling out behind the flag.",
+    ],
+}
+
+_RICH_ENG_DOC: dict[str, list[str]] = {
+    "progress": [
+        "Updated the design doc for {commitment} with the dependency-ordering question.",
+        "Notes from the {commitment} sync: scope locked, trade-offs captured.",
+        "Spec for {commitment} — added the migration runbook section.",
+    ],
+}
+
+_RICH_ENG_EMAIL: dict[str, list[str]] = {
+    "progress": [
+        "Weekly update on {commitment}: tracking at ~{pct}%, on pace for the {days}-day target.",
+        "Status: {commitment} ~{pct}% complete. {peer} unblocked the data-layer piece.",
+    ],
+    "slip": [
+        "Hi — quick flag that {commitment} is going to slip. New target is +{days}d. Will share root cause in standup.",
+    ],
+}
+
+_RICH_SALES_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "{customer} call went well — they want a follow-up on the forecast accuracy claim.",
+        "Pipeline update: {customer} moved to procurement. Slow but real.",
+        "Pinged {customer} on the renewal date — waiting for their finance team.",
+        "Demo with {customer} prep — anyone seen the latest dashboard screenshots?",
+    ],
+    "customer": [
+        "{customer} pushed back on pricing — need to escalate to {peer}.",
+        "Flagging: {customer} is going dark on emails. Three messages no reply.",
+        "{customer} is asking for an SSO feature before they sign. Not in scope yet.",
+        "{customer} called the support line — security review concerns. Routing to {peer}.",
+        "{customer} renewal at risk — they're talking to a competitor.",
+    ],
+    "done": [
+        "Closed: {customer} signed the order form. ${pct}K ARR.",
+        "{customer} renewal in. Took longer than I'd hoped.",
+    ],
+}
+
+_RICH_SALES_EMAIL: dict[str, list[str]] = {
+    "customer": [
+        "Notes from the {customer} call: they're evaluating us against two others. Decision in {days}d.",
+        "{customer} prep — please review the proposal before the QBR. {peer} flagged the procurement angle.",
+        "Following up on the {customer} ask around forecast attribution. Will need eng input from {peer}.",
+    ],
+    "progress": [
+        "Pipeline: {customer} stage moved to legal review. Expecting close in {days}d.",
+    ],
+}
+
+_RICH_CS_SLACK: dict[str, list[str]] = {
+    "customer": [
+        "{customer} health check this morning — usage flat for two weeks.",
+        "Heads up: {customer} just opened their fourth ticket on Salesforce sync this month.",
+        "{customer} not showing up to weekly syncs. Re-engaging via {peer}.",
+        "QBR prep for {customer} — {peer} can you review the deck?",
+        "{customer} executive sponsor changed. New person hasn't logged in yet.",
+        "Flagging churn risk on {customer} — usage drift past 30 days.",
+    ],
+    "progress": [
+        "{customer} adoption is picking up — weekly active up {pct}%.",
+        "Onboarding for {customer}: completed the data integration step today.",
+    ],
+    "done": [
+        "{customer} renewal closed. Kept the multi-year discount.",
+    ],
+}
+
+_RICH_CS_EMAIL: dict[str, list[str]] = {
+    "customer": [
+        "Hi {peer} — wanted to flag that {customer} has been quiet. Three weeks since last touchpoint. Plan to re-engage.",
+        "Health summary for {customer}: amber. Usage trending down, exec turnover. Recommending a save play.",
+        "{customer} QBR notes attached — they're asking for ICP scoring as a renewal condition.",
+    ],
+    "progress": [
+        "{customer} weekly: adoption ~{pct}% of seats active, on track for healthy renewal.",
+    ],
+}
+
+_RICH_FOUNDER_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "Quick FYI — {commitment} is the current critical path. Leaning on {peer} for delivery.",
+        "Board update prep — pulling latest numbers on {customer} and {commitment}.",
+        "Talked to {customer} this morning. They want a path to ICP scoring. {peer}, can we sync?",
+        "Spending the day on hiring — VP Eng search continues.",
+        "Reviewing the roadmap with {peer} — too many parallel workstreams.",
+    ],
+    "slip": [
+        "{commitment} is going to slip. I'd rather we slip cleanly than ship something half-baked.",
+        "Flagging to the team: {commitment} pushed by {days}d. Communicating to design partners today.",
+    ],
+    "customer": [
+        "Just got off a call with {customer}. They're considering churning. Need a save play this week.",
+        "{customer} escalated to me directly. Looping {peer}.",
+    ],
+}
+
+_RICH_FOUNDER_EMAIL: dict[str, list[str]] = {
+    "progress": [
+        "Team — weekly update: {commitment} progressing at {pct}%, {customer} moving through procurement, hiring tracking against plan.",
+        "Quick thoughts after the {customer} meeting: we should re-scope {commitment} to address their feedback. {peer}, let's discuss.",
+    ],
+    "slip": [
+        "Heads-up note to investors: anticipating {days}d slip on {commitment}. Will brief in the next monthly.",
+    ],
+    "customer": [
+        "Brief: {customer} expansion conversation is live. Need {peer}'s input on the technical scope.",
+    ],
+}
+
+_RICH_PRODUCT_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "{commitment} spec update — incorporated {peer}'s feedback on the data model.",
+        "Roadmap review: {commitment} stays in this quarter, {customer} feedback validated.",
+        "PRD for {commitment} ready for review. {peer} please take a pass.",
+    ],
+    "slip": [
+        "Re-scoping {commitment} based on {customer} feedback. Will reduce the surface area.",
+    ],
+    "customer": [
+        "{customer} discovery notes: their forecast accuracy is suffering on multi-product deals.",
+        "Three customers ({customer} included) all asking for the same thing. Worth productizing.",
+    ],
+}
+
+_RICH_DESIGN_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "{commitment} mocks updated. {peer} please take a pass before I post in the channel.",
+        "User testing notes from {customer} — the new flow tested well. Iterating on edge cases.",
+    ],
+}
+
+_RICH_OPS_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "Vendor renewal due in {days}d for the {commitment} stack.",
+        "Pulling together the offsite logistics — {peer}, can you confirm the headcount?",
+    ],
+}
+
+_RICH_FINANCE_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "Burn update: tracking ~{pct}% of plan. Runway model attached.",
+        "{customer} invoice cleared. AR aging looks fine.",
+    ],
+}
+
+_RICH_PEOPLE_SLACK: dict[str, list[str]] = {
+    "progress": [
+        "Pipeline for the open eng role: {pct} candidates this week, two strong.",
+        "{peer}'s offer goes out today — fingers crossed.",
+    ],
+}
+
+_RICH_BANKS: dict[str, dict[SourceChannel, dict[str, list[str]]]] = {
+    "engineering": {
+        SourceChannel.slack: _RICH_ENG_SLACK,
+        SourceChannel.pr: _RICH_ENG_PR,
+        SourceChannel.doc: _RICH_ENG_DOC,
+        SourceChannel.email: _RICH_ENG_EMAIL,
+    },
+    "data_ml": {
+        SourceChannel.slack: _RICH_ENG_SLACK,
+        SourceChannel.pr: _RICH_ENG_PR,
+        SourceChannel.doc: _RICH_ENG_DOC,
+        SourceChannel.email: _RICH_ENG_EMAIL,
+    },
+    "sales": {
+        SourceChannel.slack: _RICH_SALES_SLACK,
+        SourceChannel.email: _RICH_SALES_EMAIL,
+    },
+    "customer_success": {
+        SourceChannel.slack: _RICH_CS_SLACK,
+        SourceChannel.email: _RICH_CS_EMAIL,
+    },
+    "founder": {
+        SourceChannel.slack: _RICH_FOUNDER_SLACK,
+        SourceChannel.email: _RICH_FOUNDER_EMAIL,
+    },
+    "exec": {
+        SourceChannel.slack: _RICH_FOUNDER_SLACK,
+        SourceChannel.email: _RICH_FOUNDER_EMAIL,
+    },
+    "product": {
+        SourceChannel.slack: _RICH_PRODUCT_SLACK,
+        SourceChannel.email: _RICH_FOUNDER_EMAIL,  # exec-tone is OK
+    },
+    "design": {
+        SourceChannel.slack: _RICH_DESIGN_SLACK,
+    },
+    "ops": {
+        SourceChannel.slack: _RICH_OPS_SLACK,
+    },
+    "finance": {
+        SourceChannel.slack: _RICH_FINANCE_SLACK,
+    },
+    "legal": {
+        SourceChannel.slack: _RICH_OPS_SLACK,
+    },
+    "people": {
+        SourceChannel.slack: _RICH_PEOPLE_SLACK,
+    },
+}
+
+
 # --------------------------- Protocol & impls -------------------------------
 
 @runtime_checkable
@@ -130,15 +410,21 @@ class SignalGenerator(Protocol):
         channel: SourceChannel,
         trigger_kind: str,
         signal_id: str,
+        peers: list[ActorState] | None = None,
     ) -> Signal:
         ...
+
+
+def _first_name(full_name: str) -> str:
+    parts = full_name.strip().split()
+    return parts[0] if parts else full_name
 
 
 class TemplateSignalGenerator:
     """Deterministic signal generator using seeded random + templates.
 
-    Varies text by source_channel, commitment state, and actor persona (tone hints).
-    """
+    Dispatches between the legacy bank (no role_family on persona) and the
+    rich bank (role_family set, e.g. by ActorProfile)."""
 
     def generate(
         self,
@@ -152,30 +438,19 @@ class TemplateSignalGenerator:
         channel: SourceChannel,
         trigger_kind: str,
         signal_id: str,
+        peers: list[ActorState] | None = None,
     ) -> Signal:
-        family = _TEMPLATE_INDEX.get(channel, _SLACK_CHATTER)
-        templates = family.get(trigger_kind) or next(iter(family.values()))
-        template = templates[rng.randrange(len(templates))]
-        commitment_label = commitment.truth.commitment_id if commitment else "the project"
-        pct = int((commitment.true_progress if commitment else 0.0) * 100)
-        days = commitment.truth.asserted_duration_days if commitment else 7
-        customer_label = customer.truth.customer_id if customer else "the account"
-        body = template.format(
-            commitment=commitment_label,
-            pct=max(5, min(95, pct)),
-            days=days,
-            customer=customer_label,
-        )
-        # Persona voice. Append a small marker by persona archetype.
-        tone = _persona_tone(actor)
-        if tone and channel == SourceChannel.slack and rng.random() < 0.45:
-            body = f"{body} {tone}"
-        # Optimists under-report slips; pessimists amplify.
-        if actor.persona.estimation_bias > 0.25 and trigger_kind == "slip" and rng.random() < 0.5:
-            body = body.replace("slipping", "slightly delayed").replace("behind", "a touch late")
-        if actor.persona.estimation_bias < -0.25 and trigger_kind == "progress" and rng.random() < 0.4:
-            body = body + " (not confident in this estimate)"
-
+        rich = actor.persona.role_family is not None
+        if rich:
+            body = self._render_rich(
+                actor=actor, rng=rng, commitment=commitment, customer=customer,
+                channel=channel, trigger_kind=trigger_kind, peers=peers or [],
+            )
+        else:
+            body = self._render_legacy(
+                actor=actor, rng=rng, commitment=commitment, customer=customer,
+                channel=channel, trigger_kind=trigger_kind,
+            )
         metadata: dict[str, object] = {
             "tick": tick,
             "trigger_kind": trigger_kind,
@@ -196,6 +471,107 @@ class TemplateSignalGenerator:
             timestamp=timestamp,
             metadata=metadata,
         )
+
+    # ------------ legacy ------------
+
+    def _render_legacy(
+        self,
+        *,
+        actor: ActorState,
+        rng: random.Random,
+        commitment: CommitmentState | None,
+        customer: CustomerState | None,
+        channel: SourceChannel,
+        trigger_kind: str,
+    ) -> str:
+        family = _TEMPLATE_INDEX.get(channel, _SLACK_CHATTER)
+        templates = family.get(trigger_kind) or next(iter(family.values()))
+        template = templates[rng.randrange(len(templates))]
+        commitment_label = commitment.truth.commitment_id if commitment else "the project"
+        pct = int((commitment.true_progress if commitment else 0.0) * 100)
+        days = commitment.truth.asserted_duration_days if commitment else 7
+        customer_label = customer.truth.customer_id if customer else "the account"
+        body = template.format(
+            commitment=commitment_label,
+            pct=max(5, min(95, pct)),
+            days=days,
+            customer=customer_label,
+        )
+        tone = _persona_tone(actor)
+        if tone and channel == SourceChannel.slack and rng.random() < 0.45:
+            body = f"{body} {tone}"
+        if actor.persona.estimation_bias > 0.25 and trigger_kind == "slip" and rng.random() < 0.5:
+            body = body.replace("slipping", "slightly delayed").replace("behind", "a touch late")
+        if actor.persona.estimation_bias < -0.25 and trigger_kind == "progress" and rng.random() < 0.4:
+            body = body + " (not confident in this estimate)"
+        return body
+
+    # ------------ rich ------------
+
+    def _render_rich(
+        self,
+        *,
+        actor: ActorState,
+        rng: random.Random,
+        commitment: CommitmentState | None,
+        customer: CustomerState | None,
+        channel: SourceChannel,
+        trigger_kind: str,
+        peers: list[ActorState],
+    ) -> str:
+        family_key = actor.persona.role_family or "engineering"
+        family_bank = _RICH_BANKS.get(family_key) or _RICH_BANKS["engineering"]
+        channel_bank = family_bank.get(channel)
+        if channel_bank is None:
+            # Fall back to slack bank for channels this family doesn't author often.
+            channel_bank = family_bank.get(SourceChannel.slack, _RICH_ENG_SLACK)
+        templates = channel_bank.get(trigger_kind)
+        if not templates:
+            # Try other triggers within the same channel; then any trigger.
+            for t in ("progress", "customer", "slip", "done", "start"):
+                templates = channel_bank.get(t)
+                if templates:
+                    trigger_kind = t
+                    break
+        if not templates:
+            templates = next(iter(channel_bank.values()))
+
+        template = templates[rng.randrange(len(templates))]
+
+        commitment_label = (
+            (commitment.truth.title or commitment.truth.commitment_id)
+            if commitment else "the project"
+        )
+        pct = int((commitment.true_progress if commitment else 0.0) * 100)
+        days = commitment.truth.asserted_duration_days if commitment else 7
+        customer_label = (
+            (customer.truth.company_name or customer.truth.customer_id)
+            if customer else "the account"
+        )
+        author = _first_name(actor.persona.name)
+        peer_label = "the team"
+        if peers:
+            peer_label = _first_name(peers[rng.randrange(len(peers))].persona.name)
+
+        body = template.format(
+            author=author,
+            commitment=commitment_label,
+            pct=max(5, min(95, pct)),
+            days=days,
+            customer=customer_label,
+            peer=peer_label,
+        )
+
+        # Persona tone — same idea as legacy.
+        tone = _persona_tone(actor)
+        if tone and channel == SourceChannel.slack and rng.random() < 0.35:
+            body = f"{body} {tone}"
+        # Optimist softening / pessimist hedging.
+        if actor.persona.estimation_bias > 0.25 and trigger_kind == "slip" and rng.random() < 0.5:
+            body = body.replace("slipping", "slightly delayed").replace("behind", "a touch late")
+        if actor.persona.estimation_bias < -0.25 and trigger_kind == "progress" and rng.random() < 0.35:
+            body += " (still digesting; estimate is rough)"
+        return body
 
 
 def _persona_tone(actor: ActorState) -> str:
@@ -237,6 +613,7 @@ class LLMSignalGenerator:
         channel: SourceChannel,
         trigger_kind: str,
         signal_id: str,
+        peers: list[ActorState] | None = None,
     ) -> Signal:  # pragma: no cover - intentional stub
         """Ready to wire; raises if invoked without a real client configured."""
         if self._client is None:

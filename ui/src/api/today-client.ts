@@ -6,6 +6,8 @@
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
+  ArtifactDetail,
+  ArtifactKind,
   TodayResponse,
   TriageRequest,
   TriageResponse,
@@ -91,6 +93,18 @@ export function deleteWatch(
   return request<{ ok: boolean }>(
     `/v1/recommendations/${recommendationId}/watch`,
     { method: "DELETE" },
+    signal
+  );
+}
+
+export function getArtifact(
+  kind: ArtifactKind,
+  id: string,
+  signal?: AbortSignal
+): Promise<ArtifactDetail> {
+  return request<ArtifactDetail>(
+    `/v1/artifacts/${kind}/${id}`,
+    undefined,
     signal
   );
 }

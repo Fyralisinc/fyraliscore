@@ -1,142 +1,352 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from "@/components/Sidebar";
 import { ShortcutsOverlay } from "@/components/ShortcutsOverlay";
 import { JustUpdated } from "@/components/JustUpdated";
-import { LayerStrip } from "@/components/structure/LayerStrip";
-import { NarrativeBand } from "@/components/structure/NarrativeBand";
 import { MapControls } from "@/components/structure/MapControls";
-import { TerritoryMap } from "@/components/structure/TerritoryMap";
-import { CommitmentPanel } from "@/components/structure/CommitmentPanel";
+import { CommitmentList } from "@/components/structure/CommitmentList";
+import { RelationshipGraph } from "@/components/structure/RelationshipGraph";
 import { useToday } from "@/hooks/useToday";
 import {
   SAMPLE_COMMITMENTS,
   SAMPLE_CUSTOMERS,
-  SAMPLE_LAYER_COUNTS,
+  SAMPLE_DECISIONS,
+  SAMPLE_GOALS,
+  SAMPLE_GOAL_LEARNINGS,
   SAMPLE_OWNERS,
-  SAMPLE_RECENT_CHANGE,
-  SAMPLE_SHAPE_STATEMENT,
+  SAMPLE_PEOPLE,
+  SAMPLE_PEOPLE_INDEX,
+  SAMPLE_RESOURCES,
 } from "@/components/structure/sample-data";
-import { computeFreshlyUpdatedIds } from "@/components/structure/fresh-match";
 import type {
-  ActiveRefFilter,
-  ColorMode,
+  Commitment,
   CommitmentStatus,
   Filters,
-  LayerId,
-  LayoutMode,
+  FocusTarget,
+  GoalRef,
+  PersonProfile,
 } from "@/components/structure/types";
+import {
+  getStructureOverlay,
+  getStructureRecent,
+  type StructureOverlayCommitment,
+  type StructureOverlayCustomer,
+  type StructureOverlayGoal,
+  type StructureOverlayPerson,
+  type StructureOverlayResponse,
+} from "@/api/structure-client";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Driftwood — Structure page (Part 1-15 of DRIFTWOOD_STRUCTURE_SPEC.md).
-// Only the Commitments layer is interactive in v1; layers 2-5 render
-// "Coming soon" per Part 2.4.
+// Combined overlay state — accepts both the focus-by-id payload (one
+// commitment) and the recent-commitments payload (many) and merges
+// them by entity id. Backend models these without UI fields like
+// territory/activity, so we synthesize defaults here.
+type OverlayState = {
+  commitments: StructureOverlayCommitment[];
+  goals: StructureOverlayGoal[];
+  people: StructureOverlayPerson[];
+  customers: StructureOverlayCustomer[];
+};
+
+function emptyOverlayState(): OverlayState {
+  return { commitments: [], goals: [], people: [], customers: [] };
+}
+
+function mergeOverlayBundle(
+  state: OverlayState,
+  bundle: { commitments: StructureOverlayCommitment[]; goals: StructureOverlayGoal[]; people: StructureOverlayPerson[]; customers: StructureOverlayCustomer[] }
+): OverlayState {
+  const cIds = new Set(state.commitments.map((c) => c.id));
+  const gIds = new Set(state.goals.map((g) => g.id));
+  const pIds = new Set(state.people.map((p) => p.id));
+  const customerIds = new Set(state.customers.map((c) => c.id));
+  return {
+    commitments: [
+      ...bundle.commitments.filter((c) => !cIds.has(c.id)),
+      ...state.commitments,
+    ],
+    goals: [
+      ...state.goals,
+      ...bundle.goals.filter((g) => !gIds.has(g.id)),
+    ],
+    people: [
+      ...state.people,
+      ...bundle.people.filter((p) => !pIds.has(p.id)),
+    ],
+    customers: [
+      ...state.customers,
+      ...bundle.customers.filter((c) => !customerIds.has(c.id)),
+    ],
+  };
+}
+
+function adaptOverlayCommitment(
+  c: StructureOverlayCommitment,
+  customerLabel: string | null,
+  todayIso: string
+): Commitment {
+  const ownerId = c.owner ?? "unknown-owner";
+  const ownerLabel = c.owner_display ?? "Owner";
+  const territory = c.customer ? "customer-facing" : "strategic";
+  return {
+    id: c.id,
+    label: c.label,
+    territory,
+    owner: ownerId,
+    owner_display: ownerLabel,
+    due_date: c.due_date ?? todayIso,
+    created_date: todayIso,
+    status: c.status,
+    priority: c.priority,
+    stakeholder: c.customer ? "customer" : "internal",
+    stakeholder_label: c.customer_label ?? customerLabel ?? "Internal",
+    customer: c.customer ?? undefined,
+    traces_to: [],
+    related: [],
+    edges: {
+      contributes_to: c.edges.contributes_to,
+      constrained_by: c.edges.constrained_by,
+      consumes: c.edges.consumes,
+      contributors: c.edges.contributors,
+    },
+    progress: "just created",
+    substrate_insight:
+      c.substrate_insight ??
+      "Created from a Today recommendation moments ago.",
+    activity: c.activity && c.activity.length > 0
+      ? c.activity
+      : [{ date: todayIso, desc: "created from recommendation" }],
+  };
+}
+
+function adaptOverlayPerson(p: StructureOverlayPerson): PersonProfile {
+  return {
+    id: p.id,
+    label: p.label,
+    role: p.role,
+    recent_observation: "Newly assigned via accepted recommendation.",
+    calibration: 0.6,
+    patterns: [],
+  };
+}
+
+// Driftwood — Structure page. One view: relational (list rail + graph).
+// The Lanes / Two-axis modes were removed; relational is the only mode.
 export default function Structure() {
   const navigate = useNavigate();
   const now = useMemo(() => new Date(), []);
-  // Reuse Today's hook just for the just-updated banner. The Structure
-  // map itself still renders SAMPLE_COMMITMENTS per the v1 spec, but
-  // the banner gives the user feedback that an injected signal landed
-  // in the substrate even when no card is warranted.
+  const todayIso = useMemo(() => now.toISOString().slice(0, 10), [now]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusParam = searchParams.get("focus");
   const { today, dismissJustUpdated } = useToday();
-  const [layer, setLayer] = useState<LayerId>("commits");
-  const [layout, setLayout] = useState<LayoutMode>("territory");
-  const [color, setColor] = useState<ColorMode>("status");
   const [filters, setFilters] = useState<Filters>(() => ({
+    entityKind: "all",
     time: "quarter",
     statuses: new Set<CommitmentStatus>([
-      "on-track",
-      "slipping",
-      "at-risk",
-      "blocked",
+      "on-track", "slipping", "at-risk", "blocked",
     ]),
     owner: null,
     customer: null,
   }));
-  const [activeRef, setActiveRef] = useState<ActiveRefFilter>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<FocusTarget | null>(null);
+  const [hoveredCommitmentId, setHoveredCommitmentId] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [overlayState, setOverlayState] = useState<OverlayState>(() =>
+    emptyOverlayState()
+  );
+  const [overlayError, setOverlayError] = useState<string | null>(null);
+
+  // On mount and again every 8s while visible, pull commitments
+  // created in the recent past so auto-accepted ones (server-side
+  // create-commitment recommendations that fired without a click)
+  // surface in the relational view.
+  useEffect(() => {
+    let alive = true;
+    async function fetchRecent() {
+      if (document.hidden) return;
+      try {
+        const res = await getStructureRecent(15);
+        if (!alive) return;
+        if (res.commitments.length === 0) return;
+        setOverlayState((prev) =>
+          mergeOverlayBundle(prev, {
+            commitments: res.commitments,
+            goals: res.goals,
+            people: res.people,
+            customers: res.customers,
+          })
+        );
+      } catch {
+        // Surface only persistent failures; one-off transients shouldn't
+        // be loud.
+      }
+    }
+    void fetchRecent();
+    const id = window.setInterval(fetchRecent, 8000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // When ?focus=<id> points to a commitment that's not yet in the
+  // overlay state or the sample data, fetch the single-commitment
+  // overlay and merge it in. Always advance the focus state so the
+  // graph centers on the targeted commitment.
+  useEffect(() => {
+    if (!focusParam) {
+      setOverlayError(null);
+      return;
+    }
+    if (
+      SAMPLE_COMMITMENTS.some((c) => c.id === focusParam) ||
+      overlayState.commitments.some((c) => c.id === focusParam)
+    ) {
+      setOverlayError(null);
+      setFocus({ kind: "commitment", id: focusParam });
+      return;
+    }
+    const ctrl = new AbortController();
+    let alive = true;
+    (async () => {
+      try {
+        const res = await getStructureOverlay(focusParam, ctrl.signal);
+        if (!alive) return;
+        setOverlayState((prev) =>
+          mergeOverlayBundle(prev, {
+            commitments: [res.commitment],
+            goals: res.goals,
+            people: res.people,
+            customers: res.customers,
+          })
+        );
+        setOverlayError(null);
+        setFocus({ kind: "commitment", id: res.commitment.id });
+      } catch (err) {
+        if (!alive) return;
+        if (err instanceof Error && err.name === "AbortError") return;
+        setOverlayError(
+          err instanceof Error ? err.message : "overlay fetch failed"
+        );
+      }
+    })();
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, [focusParam, overlayState.commitments]);
+
+  const overlayCustomerLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of overlayState.customers) m.set(c.id, c.label);
+    return m;
+  }, [overlayState.customers]);
+
+  const overlayCommitments = useMemo<Commitment[]>(() => {
+    return overlayState.commitments.map((c) =>
+      adaptOverlayCommitment(
+        c,
+        c.customer ? overlayCustomerLabelById.get(c.customer) ?? null : null,
+        todayIso
+      )
+    );
+  }, [overlayState.commitments, overlayCustomerLabelById, todayIso]);
+
+  const overlayPeople = useMemo<PersonProfile[]>(() => {
+    return overlayState.people.map(adaptOverlayPerson);
+  }, [overlayState.people]);
+
+  const allCommitments = useMemo(() => {
+    if (overlayCommitments.length === 0) return SAMPLE_COMMITMENTS;
+    const known = new Set(SAMPLE_COMMITMENTS.map((c) => c.id));
+    const extras = overlayCommitments.filter((c) => !known.has(c.id));
+    return [...extras, ...SAMPLE_COMMITMENTS];
+  }, [overlayCommitments]);
+
+  const allGoals = useMemo(() => {
+    if (overlayState.goals.length === 0) return SAMPLE_GOALS;
+    const known = new Set(SAMPLE_GOALS.map((g) => g.id));
+    const extras = overlayState.goals.filter((g) => !known.has(g.id));
+    return [...SAMPLE_GOALS, ...extras];
+  }, [overlayState.goals]);
+
+  const allPeople = useMemo(() => {
+    if (overlayPeople.length === 0) return SAMPLE_PEOPLE;
+    const known = new Set(SAMPLE_PEOPLE.map((p) => p.id));
+    const extras = overlayPeople.filter((p) => !known.has(p.id));
+    return [...extras, ...SAMPLE_PEOPLE];
+  }, [overlayPeople]);
+
+  const allOwners = useMemo(() => {
+    if (overlayState.people.length === 0) return SAMPLE_OWNERS;
+    const known = new Set(SAMPLE_OWNERS.map((o) => o.id));
+    const extras = overlayState.people
+      .filter((p) => !known.has(p.id))
+      .map((p) => ({ id: p.id, label: p.label }));
+    return [...SAMPLE_OWNERS, ...extras];
+  }, [overlayState.people]);
+
+  const allCustomers = useMemo(() => {
+    if (overlayState.customers.length === 0) return SAMPLE_CUSTOMERS;
+    const known = new Set(SAMPLE_CUSTOMERS.map((c) => c.id));
+    const extras = overlayState.customers.filter((c) => !known.has(c.id));
+    return [...SAMPLE_CUSTOMERS, ...extras];
+  }, [overlayState.customers]);
+
+  const allPeopleIndex = useMemo(() => {
+    if (overlayPeople.length === 0) return SAMPLE_PEOPLE_INDEX;
+    const idx: Record<string, PersonProfile> = { ...SAMPLE_PEOPLE_INDEX };
+    for (const p of overlayPeople) {
+      if (!idx[p.id]) idx[p.id] = p;
+    }
+    return idx;
+  }, [overlayPeople]);
+
+  const newestOverlayCommitment = overlayCommitments[0];
 
   const maxDaysVisible =
-    filters.time === "next-7"
-      ? 7
-      : filters.time === "all"
-        ? 365
-        : 90;
+    filters.time === "next-7" ? 7 : filters.time === "all" ? 365 : 90;
 
-  // Apply filter pipeline → visible commitments.
   const visibleCommitments = useMemo(() => {
-    return SAMPLE_COMMITMENTS.filter((c) => {
+    return allCommitments.filter((c) => {
       if (!filters.statuses.has(c.status)) return false;
       if (filters.owner && c.owner !== filters.owner) return false;
       if (filters.customer && c.customer !== filters.customer) return false;
-      const daysToDue =
-        (new Date(c.due_date).getTime() - now.getTime()) / DAY_MS;
-      // include overdue regardless of time window
-      if (daysToDue > maxDaysVisible) return false;
+      const days = (new Date(c.due_date).getTime() - now.getTime()) / DAY_MS;
+      if (days > maxDaysVisible) return false;
       return true;
     });
-  }, [filters, maxDaysVisible, now]);
+  }, [allCommitments, filters, maxDaysVisible, now]);
 
-  // Pulse a ring on dots whose owner / customer is mentioned in the
-  // most recent inbound signal, so the user sees the substrate change
-  // reflected on the map (not just in the banner above it).
-  const freshlyUpdatedIds = useMemo(
-    () => computeFreshlyUpdatedIds(today?.just_updated?.text_html, SAMPLE_COMMITMENTS),
-    [today?.just_updated?.text_html]
-  );
-
-  // The activeRef from the narrative band dims rather than removes — so
-  // it doesn't mutate the visible list, just shades non-matching dots.
-  const dimSet = useMemo(() => {
-    if (!activeRef) return null;
-    const dim = new Set<string>();
+  // Goals are filtered indirectly: hide goals with zero contributing
+  // commitments after the commitment filter is applied (so the list
+  // stays in sync with what's actually visible). When customer/owner
+  // filters are set, goals only show if they have at least one
+  // remaining commitment.
+  const visibleGoals = useMemo(() => {
+    if (filters.owner === null && filters.customer === null) return allGoals;
+    const linked = new Set<string>();
     for (const c of visibleCommitments) {
-      let match = false;
-      if (activeRef.kind === "territory") {
-        match = c.territory === activeRef.id;
-      } else if (activeRef.kind === "person") {
-        match = c.owner === activeRef.id;
-      } else if (activeRef.kind === "commitment") {
-        match = c.id === activeRef.id;
-      } else if (activeRef.kind === "customer") {
-        match = c.customer === activeRef.id;
-      }
-      if (!match) dim.add(c.id);
+      for (const gid of c.edges?.contributes_to ?? []) linked.add(gid);
     }
-    return dim;
-  }, [activeRef, visibleCommitments]);
+    return allGoals.filter((g) => linked.has(g.id));
+  }, [allGoals, filters.owner, filters.customer, visibleCommitments]);
 
-  // When a person ref becomes active, color-by switches to Owner per spec.
-  useEffect(() => {
-    if (activeRef?.kind === "person" && color !== "owner") setColor("owner");
-  }, [activeRef, color]);
+  // People mirror the goal logic: when no owner/customer filter is set,
+  // show the whole team. Otherwise narrow to people who own or contribute
+  // to a currently-visible commitment, plus the explicitly-filtered owner.
+  const visiblePeople = useMemo(() => {
+    if (filters.owner === null && filters.customer === null) return allPeople;
+    const linked = new Set<string>();
+    for (const c of visibleCommitments) {
+      linked.add(c.owner);
+      for (const cid of c.edges?.contributors ?? []) linked.add(cid);
+    }
+    if (filters.owner) linked.add(filters.owner);
+    return allPeople.filter((p) => linked.has(p.id));
+  }, [allPeople, filters.owner, filters.customer, visibleCommitments]);
 
-  // When ref points at a specific commitment, also open the side panel.
-  useEffect(() => {
-    if (activeRef?.kind === "commitment") setSelectedId(activeRef.id);
-  }, [activeRef]);
-
-  const onSwitchLayer = useCallback((id: LayerId) => {
-    setLayer(id);
-    setSelectedId(null);
-    // reset filters per spec 8.4
-    setFilters({
-      time: "quarter",
-      statuses: new Set<CommitmentStatus>([
-        "on-track",
-        "slipping",
-        "at-risk",
-        "blocked",
-      ]),
-      owner: null,
-      customer: null,
-    });
-    setActiveRef(null);
-  }, []);
-
-  // Keyboard model: ? shortcuts, 1-5 layers, Esc closes things.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -149,13 +359,8 @@ export default function Structure() {
           e.preventDefault();
           return;
         }
-        if (selectedId) {
-          setSelectedId(null);
-          e.preventDefault();
-          return;
-        }
-        if (activeRef) {
-          setActiveRef(null);
+        if (focus) {
+          setFocus(null);
           e.preventDefault();
         }
         return;
@@ -165,30 +370,12 @@ export default function Structure() {
       if (e.key === "?") {
         e.preventDefault();
         setShortcutsOpen(true);
-        return;
-      }
-      const layerKeys: Record<string, LayerId> = {
-        "1": "commits",
-        "2": "decisions",
-        "3": "people",
-        "4": "customers",
-        "5": "model",
-      };
-      if (layerKeys[e.key]) {
-        e.preventDefault();
-        onSwitchLayer(layerKeys[e.key]);
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [activeRef, onSwitchLayer, selectedId, shortcutsOpen]);
+  }, [focus, shortcutsOpen]);
 
-  const selectedCommitment =
-    selectedId !== null
-      ? SAMPLE_COMMITMENTS.find((c) => c.id === selectedId) ?? null
-      : null;
-
-  // Sidebar shell — same nav as Today, but mark Structure active.
   const nav = useMemo(
     () => [
       {
@@ -198,50 +385,36 @@ export default function Structure() {
           { id: "today", label: "Today", active: false, href: "/" },
           { id: "structure", label: "Structure", active: true },
           { id: "history", label: "History", active: false },
-          { id: "mind", label: "My Mind", shortcut: "M" },
-          { id: "communicate", label: "Communicate", disabled: true, badge: "soon" },
         ],
       },
     ],
     []
   );
 
-  // Map-empty conditions
-  const mapEmpty =
-    visibleCommitments.length === 0
-      ? SAMPLE_COMMITMENTS.length === 0
-        ? { reason: "no-commitments" as const }
-        : {
-            reason: "filtered-zero" as const,
-            onClear: () => {
-              setFilters({
-                time: "quarter",
-                statuses: new Set([
-                  "on-track",
-                  "slipping",
-                  "at-risk",
-                  "blocked",
-                ]),
-                owner: null,
-                customer: null,
-              });
-              setActiveRef(null);
-            },
-          }
-      : undefined;
-
   return (
     <>
       <div className="cockpit">
         <Sidebar
-          brand={{ name: "Driftwood", mark: "D", pulse_day: 3 }}
+          brand={{ name: "Fyralis", mark: "F", pulse_day: 3 }}
           nav={nav}
-          vitals={[]}
+          onBrandClick={() => {
+            // Reset Structure to its default view: no focus, no filter.
+            setFocus(null);
+            setHoveredCommitmentId(null);
+            setFilters({
+              entityKind: "all",
+              time: "quarter",
+              statuses: new Set<CommitmentStatus>([
+                "on-track", "slipping", "at-risk", "blocked",
+              ]),
+              owner: null,
+              customer: null,
+            });
+          }}
           onNavigate={(_s, item) => {
             if (item === "today") navigate("/");
             else if (item === "structure") navigate("/structure");
             else if (item === "history") navigate("/history");
-            else if (item === "mind") navigate("/mind");
           }}
         />
 
@@ -252,72 +425,72 @@ export default function Structure() {
               onDismiss={dismissJustUpdated}
             />
           ) : null}
-          <LayerStrip
-            active={layer}
-            counts={SAMPLE_LAYER_COUNTS}
-            onSwitch={onSwitchLayer}
-            onShortcuts={() => setShortcutsOpen(true)}
+
+          {newestOverlayCommitment ? (
+            <JustUpdated
+              text_html={`Just tracked: <strong>${newestOverlayCommitment.label}</strong>${
+                overlayCommitments.length > 1
+                  ? ` (+${overlayCommitments.length - 1} more)`
+                  : newestOverlayCommitment.stakeholder_label &&
+                    newestOverlayCommitment.stakeholder === "customer"
+                  ? ` — ${newestOverlayCommitment.stakeholder_label}`
+                  : ""
+              }`}
+              onDismiss={() => {
+                setOverlayState(emptyOverlayState());
+                setSearchParams((prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.delete("focus");
+                  return next;
+                });
+              }}
+            />
+          ) : null}
+
+          {overlayError ? (
+            <div className="just-updated" role="status">
+              <span>Couldn't load the new commitment ({overlayError}).</span>
+            </div>
+          ) : null}
+
+          <MapControls
+            filters={filters}
+            ownerOptions={allOwners}
+            customerOptions={allCustomers}
+            onFiltersChange={setFilters}
           />
 
-          {layer === "commits" ? (
-            <>
-              <NarrativeBand
-                statement={SAMPLE_SHAPE_STATEMENT}
-                commitments={visibleCommitments}
-                recentChange={SAMPLE_RECENT_CHANGE}
-                onRef={setActiveRef}
-                activeRef={activeRef}
-              />
-              <MapControls
-                layout={layout}
-                color={color}
-                filters={filters}
-                ownerOptions={SAMPLE_OWNERS}
-                customerOptions={SAMPLE_CUSTOMERS}
-                onLayoutChange={setLayout}
-                onColorChange={setColor}
-                onFiltersChange={setFilters}
-              />
-              <TerritoryMap
-                commitments={visibleCommitments}
-                layout={layout}
-                color={color}
-                maxDaysVisible={maxDaysVisible}
-                now={now}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                dimNonMatching={dimSet}
-                freshlyUpdatedIds={freshlyUpdatedIds}
-                emptyState={mapEmpty}
-              />
-            </>
-          ) : (
-            <ComingSoonLayer />
-          )}
+          <div className="relational-shell">
+            <CommitmentList
+              commitments={visibleCommitments}
+              goals={visibleGoals}
+              people={visiblePeople}
+              entityKind={filters.entityKind}
+              focus={focus}
+              onFocus={setFocus}
+              onHover={setHoveredCommitmentId}
+            />
+            <RelationshipGraph
+              commitments={visibleCommitments}
+              goals={visibleGoals}
+              decisions={SAMPLE_DECISIONS}
+              resources={SAMPLE_RESOURCES}
+              peopleIndex={allPeopleIndex}
+              goalLearnings={SAMPLE_GOAL_LEARNINGS}
+              ownerLabels={Object.fromEntries(
+                allOwners.map((o) => [o.id, o.label])
+              )}
+              focus={focus}
+              hoveredCommitmentId={hoveredCommitmentId}
+              onFocus={setFocus}
+            />
+          </div>
         </main>
       </div>
-
-      <CommitmentPanel
-        commitment={selectedCommitment}
-        onClose={() => {
-          setSelectedId(null);
-          if (activeRef?.kind === "commitment") setActiveRef(null);
-        }}
-        onJumpToCommitment={(id) => setSelectedId(id)}
-      />
 
       {shortcutsOpen ? (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       ) : null}
     </>
-  );
-}
-
-function ComingSoonLayer() {
-  return (
-    <div className="layer-coming-soon">
-      <p>This layer is coming soon.</p>
-      <p>For now, Commitments is the primary view.</p>
-    </div>
   );
 }

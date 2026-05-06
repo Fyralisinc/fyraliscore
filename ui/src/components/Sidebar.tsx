@@ -1,93 +1,123 @@
-import type { NavSection, VitalRow } from "@/api/today-types";
+import { useCallback, useEffect, useState } from "react";
+import type { NavSection } from "@/api/today-types";
 
 type Props = {
   brand: { name: string; mark: string; pulse_day: number };
   nav: NavSection[];
-  vitals: VitalRow[];
-  onRename?: () => void;
+  /** Called when the user clicks the brand mark or wordmark.
+   *  Pages use this to reset to their default view. */
+  onBrandClick?: () => void;
   onNavigate?: (sectionId: string, itemId: string) => void;
 };
 
-// Per spec §3.2 — sticky 240px, brand zone + nav sections + vitals at bottom.
-// Brand mark + wordmark are clickable to rename. Vitals row is what the
-// substrate is actively watching (not generic dashboard metrics).
-export function Sidebar({ brand, nav, vitals, onRename, onNavigate }: Props) {
+// Sidebar — brand zone + page links only. Vitals, watching widgets,
+// and other dashboard-y noise have been cut. Carries a single
+// expand/collapse toggle (persisted via localStorage). When collapsed,
+// only the brand zone is visible; when expanded, the nav links appear
+// below it.
+export function Sidebar({ brand, nav, onBrandClick, onNavigate }: Props) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("sidebarCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = useCallback(() => {
+    setCollapsed((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("sidebarCollapsed", next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  // Reflect collapsed state on the body so the cockpit grid can
+  // narrow the sidebar track via [data-sidebar-collapsed].
+  useEffect(() => {
+    document.body.dataset.sidebarCollapsed = collapsed ? "true" : "false";
+    return () => {
+      delete document.body.dataset.sidebarCollapsed;
+    };
+  }, [collapsed]);
+
   return (
-    <aside className="sidebar" aria-label="Navigation">
+    <aside
+      className={"sidebar" + (collapsed ? " collapsed" : "")}
+      aria-label="Navigation"
+    >
       <div className="sidebar-brand">
         <button
           className="brand-mark"
-          onClick={onRename}
-          aria-label="Brand mark — click to rename"
+          onClick={onBrandClick}
+          aria-label="Home"
           type="button"
         >
           {brand.mark}
         </button>
+        {!collapsed ? (
+          <button
+            className="brand-wordmark"
+            onClick={onBrandClick}
+            type="button"
+            title="Reset view"
+          >
+            {brand.name}
+          </button>
+        ) : null}
         <button
-          className="brand-wordmark"
-          onClick={onRename}
+          className="sidebar-toggle"
+          onClick={toggle}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-pressed={collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           type="button"
-          title="Click to rename"
         >
-          {brand.name}
+          {collapsed ? "›" : "‹"}
         </button>
-        <span
-          className="brand-pulse"
-          aria-hidden="true"
-          title={`Perceiving · day ${brand.pulse_day}`}
-        />
       </div>
 
-      {nav.map((section) => (
-        <div className="nav-section" key={section.id}>
-          <div className="nav-section-label">{section.label}</div>
-          {section.items.map((item) => (
-            <button
-              key={item.id}
-              className={
-                "nav-item" +
-                (item.active ? " active" : "") +
-                (item.disabled ? " disabled" : "")
-              }
-              disabled={item.disabled}
-              onClick={() => onNavigate?.(section.id, item.id)}
-              type="button"
-            >
-              <span className="nav-icon" aria-hidden="true">
-                <NavGlyph active={item.active} />
-              </span>
-              <span>{item.label}</span>
-              {item.badge ? (
-                <span
+      {!collapsed
+        ? nav.map((section) => (
+            <div className="nav-section" key={section.id}>
+              <div className="nav-section-label">{section.label}</div>
+              {section.items.map((item) => (
+                <button
+                  key={item.id}
                   className={
-                    "nav-badge" +
-                    (item.badge_warn ? " warn" : "") +
-                    (item.badge === "soon" ? " soon" : "")
+                    "nav-item" +
+                    (item.active ? " active" : "") +
+                    (item.disabled ? " disabled" : "")
                   }
+                  disabled={item.disabled}
+                  onClick={() => onNavigate?.(section.id, item.id)}
+                  type="button"
                 >
-                  {item.badge}
-                </span>
-              ) : item.shortcut ? (
-                <span className="nav-badge">{item.shortcut}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
-      ))}
-
-      {vitals.length > 0 ? (
-        <div className="vitals">
-          <div className="vitals-label">Watching</div>
-          {vitals.map((v) => (
-            <div className="vital-row" key={v.id}>
-              <span className="vital-label">{v.label}</span>
-              <span className={"vital-value" + (v.tone ? ` ${v.tone}` : "")}>
-                {v.value}
-              </span>
+                  <span className="nav-icon" aria-hidden="true">
+                    <NavGlyph active={item.active} />
+                  </span>
+                  <span>{item.label}</span>
+                  {item.badge ? (
+                    <span
+                      className={
+                        "nav-badge" +
+                        (item.badge_warn ? " warn" : "") +
+                        (item.badge === "soon" ? " soon" : "")
+                      }
+                    >
+                      {item.badge}
+                    </span>
+                  ) : item.shortcut ? (
+                    <span className="nav-badge">{item.shortcut}</span>
+                  ) : null}
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
-      ) : null}
+          ))
+        : null}
     </aside>
   );
 }

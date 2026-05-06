@@ -235,7 +235,6 @@ export default function MyMind() {
         <Sidebar
           brand={{ name: "Driftwood", mark: "D", pulse_day: 4 }}
           nav={nav}
-          vitals={[]}
           onNavigate={(_s, item) => {
             if (item === "today") navigate("/");
             else if (item === "structure") navigate("/structure");

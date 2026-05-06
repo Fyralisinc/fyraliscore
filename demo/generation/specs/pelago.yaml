@@ -1,0 +1,284 @@
+# Pelago — Series A B2B SaaS revenue-intelligence platform.
+# Single source of truth for both the LSOB simulator (lsob-simulation)
+# and the demo SQL snapshot bundler (demo/generation/built/pelago.py).
+company_id: pelago
+seed: 42
+start_date: "2026-01-01T00:00:00Z"
+duration_months: 9                  # 270 simulated days
+commitment_generation_rate: 0.04
+num_actors: 35                      # validator anchor; profiles drive actual count
+customer_count: 28
+actor_personality_distribution:
+  reliable: 0.5
+  optimistic: 0.3
+  pessimistic: 0.1
+  flaky: 0.1
+
+# 100-200 signals/day baseline; 400-500/day in the ±14d windows around each
+# turbulence event. Approx 35-50k signals total over 270 days.
+signal_density:
+  baseline_min: 100
+  baseline_max: 200
+  crisis_min: 400
+  crisis_max: 500
+  crisis_window_days: 14
+
+company_metadata:
+  company_name: Pelago
+  ceo_actor_id: diana
+  vertical: b2b_saas_revops
+  tagline: "Series A, prosumer-priced AI forecasting hitting enterprise sales orgs."
+  description: >-
+    35-person B2B SaaS revenue-intelligence platform. Just closed a $14M
+    Series A. Sells forecast accuracy + revenue intelligence to mid-market
+    and enterprise SaaS sales orgs. Customers: Beacon Analytics, Northvale
+    Insights, Conduit Software (3 anchor design partners) plus 25 mid-market
+    accounts and prospects. 9-month window: anchor design-partner churn at
+    month 3, VP Eng departs at month 5, reorg at month 7.
+
+# =====================================================================
+# 35 named actors — reporting depth 3 layers, all rooted at Diana.
+# Manager chain:
+#   Diana (CEO)
+#     ├── Sanjay (CTO) ── 3 ML eng + Tom (VP Eng)
+#     │                          └── 5 backend + 3 data + 2 frontend (10 ICs)
+#     ├── Owen (VP Sales) ── 4 AEs + 2 SEs
+#     ├── Priya (Head CS) ── 3 CS managers + 2 implementation
+#     ├── 2 PMs (Caleb, Brielle) — Theo (Designer) reports to Caleb
+#     ├── Quinn (Marketing)
+#     ├── Beatriz (Finance/Ops)
+#     └── Olu (Recruiter)
+# =====================================================================
+actor_profiles:
+  # ----- founders & VPs -----
+  - { actor_id: diana,    name: "Diana Mercer",      role: founder,        role_family: founder,      manager_id: null,    persona_kind: optimistic, email: "diana@pelago.dev",    brief: "CEO/founder. Third-time founder, ex-VP Sales at a mid-market SaaS. Operating at full cognitive load." }
+  - { actor_id: sanjay,   name: "Sanjay Iyer",       role: cto,            role_family: founder,      manager_id: diana,   persona_kind: reliable,   email: "sanjay@pelago.dev",   brief: "Co-founder/CTO. Ex-data platform lead. Owns ingestion + forecast model stack." }
+  - { actor_id: tom,      name: "Tom Reilly",        role: vp_eng,         role_family: exec,         manager_id: sanjay,  persona_kind: pessimistic, email: "tom@pelago.dev",     brief: "VP Engineering. Quietly capable but worn down; will depart at month 5 for a hyperscaler." }
+  - { actor_id: owen,     name: "Owen Bowes",        role: vp_sales,       role_family: exec,         manager_id: diana,   persona_kind: optimistic, email: "owen@pelago.dev",     brief: "VP Sales. Closer mentality; strong on enterprise procurement." }
+  - { actor_id: priya,    name: "Priya Devarajan",   role: head_cs,        role_family: exec,         manager_id: diana,   persona_kind: reliable,   email: "priya@pelago.dev",    brief: "Head of Customer Success. Ex-Gainsight; runs the CS+implementation org." }
+
+  # ----- backend engineering (5 ICs under Tom) -----
+  - { actor_id: maya,     name: "Maya Tran",         role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: reliable,   email: "maya@pelago.dev",     brief: "Lead backend engineer. Owns the Salesforce sync surface; on incident rotation 4/6 weeks." }
+  - { actor_id: wei,      name: "Wei Zhao",          role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: reliable,   email: "wei@pelago.dev",      brief: "Senior backend engineer. Owns the API layer and rate limiting." }
+  - { actor_id: marcus,   name: "Marcus Lee",        role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: pessimistic, email: "marcus@pelago.dev",  brief: "Senior backend engineer. Quietly raises capacity flags in standups." }
+  - { actor_id: elena,    name: "Elena Vasquez",     role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: optimistic, email: "elena@pelago.dev",    brief: "Mid-level backend engineer. Eager but stretched across two pods." }
+  - { actor_id: sam,      name: "Sam Doherty",       role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: flaky,      email: "sam@pelago.dev",      brief: "Mid-level backend engineer. Strong individual contributor, async-skewed." }
+
+  # ----- data / ingestion engineering (3 ICs under Tom) -----
+  - { actor_id: nikita,   name: "Nikita Volkov",     role: data_engineer,  role_family: data_ml,      manager_id: tom,     persona_kind: reliable,   email: "nikita@pelago.dev",   brief: "Data engineer. Owns the Snowflake warehouse and dbt pipeline." }
+  - { actor_id: hannah,   name: "Hannah Cole",       role: data_engineer,  role_family: data_ml,      manager_id: tom,     persona_kind: reliable,   email: "hannah@pelago.dev",   brief: "Data engineer. Owns the BigQuery → Snowflake migration and observability." }
+  - { actor_id: dimitri,  name: "Dimitri Joshi",     role: data_engineer,  role_family: data_ml,      manager_id: tom,     persona_kind: flaky,      email: "dimitri@pelago.dev",  brief: "Data engineer. Connector specialist; floats between Salesforce/HubSpot/Pipedrive." }
+
+  # ----- frontend engineering (2 ICs under Tom) -----
+  - { actor_id: yuki,     name: "Yuki Tanaka",       role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: reliable,   email: "yuki@pelago.dev",     brief: "Senior frontend engineer. Owns the dashboard surface." }
+  - { actor_id: aisha,    name: "Aisha Khan",        role: engineer,       role_family: engineering,  manager_id: tom,     persona_kind: optimistic, email: "aisha@pelago.dev",    brief: "Frontend engineer. Owns onboarding and reporting flows." }
+
+  # ----- ML / forecast (3 ICs under Sanjay) -----
+  - { actor_id: felix,    name: "Felix Park",        role: ml_engineer,    role_family: data_ml,      manager_id: sanjay,  persona_kind: reliable,   email: "felix@pelago.dev",    brief: "ML engineer. Owns the forecast model. Quietly the smartest person in the room." }
+  - { actor_id: naomi,    name: "Naomi Schreiber",   role: ml_engineer,    role_family: data_ml,      manager_id: sanjay,  persona_kind: pessimistic, email: "naomi@pelago.dev",   brief: "ML engineer. Owns conversation-AI module. Skeptical of the v1 timeline." }
+  - { actor_id: ravi,     name: "Ravi Pillai",       role: ml_engineer,    role_family: data_ml,      manager_id: sanjay,  persona_kind: optimistic, email: "ravi@pelago.dev",     brief: "ML engineer. Researching ICP scoring; senior-IC track." }
+
+  # ----- product (2 PMs under Diana, 1 designer under PM Caleb) -----
+  - { actor_id: caleb,    name: "Caleb Foster",      role: pm,             role_family: product,      manager_id: diana,   persona_kind: optimistic, email: "caleb@pelago.dev",    brief: "Product manager — forecast model + ICP scoring. Manages the designer." }
+  - { actor_id: brielle,  name: "Brielle Mensah",    role: pm,             role_family: product,      manager_id: diana,   persona_kind: reliable,   email: "brielle@pelago.dev",  brief: "Product manager — integrations + data warehouse. Ex-Atlassian." }
+  - { actor_id: theo,     name: "Theo Schmidt",      role: designer,       role_family: design,       manager_id: caleb,   persona_kind: reliable,   email: "theo@pelago.dev",     brief: "Sole designer. Splits time between dashboard v2 and onboarding flow." }
+
+  # ----- sales (4 AEs + 2 SEs under Owen) -----
+  - { actor_id: liam,     name: "Liam Cole",         role: ae,             role_family: sales,        manager_id: owen,    persona_kind: optimistic, email: "liam@pelago.dev",     brief: "Account executive. Owns the Conduit Software expansion deal." }
+  - { actor_id: sophie,   name: "Sophie Bennett",    role: ae,             role_family: sales,        manager_id: owen,    persona_kind: reliable,   email: "sophie@pelago.dev",   brief: "Account executive. Owns the Northvale Insights renewal." }
+  - { actor_id: marco,    name: "Marco Russo",       role: ae,             role_family: sales,        manager_id: owen,    persona_kind: flaky,      email: "marco@pelago.dev",    brief: "Account executive. Mid-market focus; pipeline coverage uneven." }
+  - { actor_id: tess,     name: "Tess Okonkwo",      role: ae,             role_family: sales,        manager_id: owen,    persona_kind: optimistic, email: "tess@pelago.dev",     brief: "Account executive. Net-new mid-market hunter." }
+  - { actor_id: jordan,   name: "Jordan Wei",        role: se,             role_family: sales,        manager_id: owen,    persona_kind: reliable,   email: "jordan@pelago.dev",   brief: "Sales engineer. Technical demos + integration scoping." }
+  - { actor_id: adrienne, name: "Adrienne Lacroix",  role: se,             role_family: sales,        manager_id: owen,    persona_kind: reliable,   email: "adrienne@pelago.dev", brief: "Sales engineer. Enterprise-focused; partners with Sophie/Liam." }
+
+  # ----- customer success (3 CS + 2 implementation under Priya) -----
+  - { actor_id: eve,      name: "Eve Nakamura",      role: cs_manager,     role_family: customer_success, manager_id: priya, persona_kind: reliable, email: "eve@pelago.dev",      brief: "CS manager. Owns Beacon Analytics + Conduit (anchor accounts)." }
+  - { actor_id: adam,     name: "Adam Pinkerton",    role: cs_manager,     role_family: customer_success, manager_id: priya, persona_kind: pessimistic, email: "adam@pelago.dev",  brief: "CS manager. Skeptical of the conversation-AI roadmap; advocates for stability." }
+  - { actor_id: robin,    name: "Robin Beale",       role: cs_manager,     role_family: customer_success, manager_id: priya, persona_kind: optimistic, email: "robin@pelago.dev",   brief: "CS manager. Owns the long tail of mid-market accounts." }
+  - { actor_id: carlos,   name: "Carlos Mendes",     role: implementation, role_family: customer_success, manager_id: priya, persona_kind: reliable, email: "carlos@pelago.dev",   brief: "Implementation engineer. Hands-on Salesforce + Snowflake integrations." }
+  - { actor_id: hema,     name: "Hema Ranganathan",  role: implementation, role_family: customer_success, manager_id: priya, persona_kind: reliable, email: "hema@pelago.dev",     brief: "Implementation engineer. Ex-consultant; runs the runbook standardization." }
+
+  # ----- functional support (under Diana) -----
+  - { actor_id: quinn,    name: "Quinn Ashford",     role: marketing,      role_family: marketing,    manager_id: diana,   persona_kind: optimistic, email: "quinn@pelago.dev",    brief: "Solo marketing lead. Demand gen + content + events." }
+  - { actor_id: beatriz,  name: "Beatriz Costa",     role: finance_ops,    role_family: finance,      manager_id: diana,   persona_kind: reliable,   email: "beatriz@pelago.dev",  brief: "Finance/ops lead. Burn forecasts, vendor mgmt, board prep." }
+  - { actor_id: olu,      name: "Olu Adeyemi",       role: recruiter,      role_family: people,       manager_id: diana,   persona_kind: reliable,   email: "olu@pelago.dev",      brief: "Sole recruiter. Owns the VP Eng successor search post-month-5." }
+
+# =====================================================================
+# 28 customers — 8 design partners ($3.37M ARR), 12 mid-market ($2.34M ARR),
+# 8 prospects ($0). Total ARR ~ $5.7M.
+# =====================================================================
+customer_profiles:
+  # ----- design partners (8) -----
+  - { customer_id: cust-beacon,    company_name: "Beacon Analytics",      segment: design_partner, arr_usd: 610000, initial_health: warning,    primary_contact_actor_ids: [eve, liam] }
+  - { customer_id: cust-northvale, company_name: "Northvale Insights",    segment: design_partner, arr_usd: 680000, initial_health: warning,    primary_contact_actor_ids: [eve, sophie] }
+  - { customer_id: cust-conduit,   company_name: "Conduit Software",      segment: design_partner, arr_usd: 750000, initial_health: warning,    primary_contact_actor_ids: [eve, liam, jordan] }
+  - { customer_id: cust-strand,    company_name: "Strand Labs",           segment: design_partner, arr_usd: 360000, initial_health: warning,    primary_contact_actor_ids: [robin, sophie] }
+  - { customer_id: cust-quartz,    company_name: "Quartz Forge",          segment: design_partner, arr_usd: 290000, initial_health: healthy,    primary_contact_actor_ids: [robin] }
+  - { customer_id: cust-pebble,    company_name: "Pebble Co",             segment: design_partner, arr_usd: 220000, initial_health: healthy,    primary_contact_actor_ids: [robin, marco] }
+  - { customer_id: cust-forester,  company_name: "Forester DataOps",      segment: design_partner, arr_usd: 180000, initial_health: healthy,    primary_contact_actor_ids: [adam, marco] }
+  - { customer_id: cust-anchor,    company_name: "Anchor Compute",        segment: design_partner, arr_usd: 280000, initial_health: healthy,    primary_contact_actor_ids: [adam, jordan] }
+
+  # ----- mid-market (12) -----
+  - { customer_id: cust-sleeve,    company_name: "Sleeve.io",             segment: mid_market,     arr_usd: 320000, initial_health: healthy,    primary_contact_actor_ids: [robin, tess] }
+  - { customer_id: cust-glade,     company_name: "Glade Software",        segment: mid_market,     arr_usd: 270000, initial_health: healthy,    primary_contact_actor_ids: [robin, marco] }
+  - { customer_id: cust-rooty,     company_name: "Rooty CX",              segment: mid_market,     arr_usd: 210000, initial_health: healthy,    primary_contact_actor_ids: [adam, marco] }
+  - { customer_id: cust-tilt,      company_name: "Tilt",                  segment: mid_market,     arr_usd:  90000, initial_health: warning,    primary_contact_actor_ids: [robin, marco] }
+  - { customer_id: cust-fern,      company_name: "Fern Labs",             segment: mid_market,     arr_usd: 195000, initial_health: healthy,    primary_contact_actor_ids: [adam, tess] }
+  - { customer_id: cust-kelter,    company_name: "Kelter Systems",        segment: mid_market,     arr_usd: 290000, initial_health: healthy,    primary_contact_actor_ids: [robin, sophie] }
+  - { customer_id: cust-borealis,  company_name: "Borealis Pipeline",     segment: mid_market,     arr_usd: 175000, initial_health: healthy,    primary_contact_actor_ids: [adam, marco] }
+  - { customer_id: cust-jasper,    company_name: "Jasper Cloud",          segment: mid_market,     arr_usd: 155000, initial_health: healthy,    primary_contact_actor_ids: [robin, tess] }
+  - { customer_id: cust-cobalt,    company_name: "Cobalt Streams",        segment: mid_market,     arr_usd: 165000, initial_health: healthy,    primary_contact_actor_ids: [adam, marco] }
+  - { customer_id: cust-vela,      company_name: "Vela Workflows",        segment: mid_market,     arr_usd: 250000, initial_health: healthy,    primary_contact_actor_ids: [robin, sophie] }
+  - { customer_id: cust-arden,     company_name: "Arden Stack",           segment: mid_market,     arr_usd: 130000, initial_health: healthy,    primary_contact_actor_ids: [adam, tess] }
+  - { customer_id: cust-mercer,    company_name: "Mercer Logistics",      segment: mid_market,     arr_usd:  95000, initial_health: healthy,    primary_contact_actor_ids: [robin, marco] }
+
+  # ----- prospects (8) — $0 ARR -----
+  - { customer_id: cust-lattice,   company_name: "Lattice Optics",        segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [tess, jordan] }
+  - { customer_id: cust-pylon,     company_name: "Pylon Bridge",          segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [marco, adrienne] }
+  - { customer_id: cust-forge,     company_name: "Forge Telemetry",       segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [tess] }
+  - { customer_id: cust-halcyon,   company_name: "Halcyon Analytics",     segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [liam, jordan] }
+  - { customer_id: cust-resonance, company_name: "Resonance Stack",       segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [sophie, adrienne] }
+  - { customer_id: cust-crescent,  company_name: "Crescent Bridge",       segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [marco] }
+  - { customer_id: cust-gulfstream,company_name: "Gulfstream RevOps",     segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [liam, adrienne] }
+  - { customer_id: cust-skyline,   company_name: "Skyline Ledger",        segment: prospect,       arr_usd: 0,      initial_health: healthy,    primary_contact_actor_ids: [tess, jordan] }
+
+# =====================================================================
+# Goals (6) — strategic + operational, owners spread across leadership.
+# =====================================================================
+goals:
+  - { goal_id: G-1-arr-target,        title: "Hit $10M ARR by EOY",                              owner_actor_id: diana,  altitude: strategic,  description: "Series B fundraise readiness depends on a clean run rate at $10M ARR by Q4. All GTM commitments roll up here.", target_offset_days: 270 }
+  - { goal_id: G-2-multi-crm,         title: "Ship multi-CRM forecast pipeline",                 owner_actor_id: sanjay, altitude: operational, description: "Salesforce + HubSpot + Pipedrive forecast ingest stable; nightly forecast model consumes from all three.", target_offset_days: 180 }
+  - { goal_id: G-3-renewal-90,        title: "Achieve 90% gross renewal rate",                   owner_actor_id: priya,  altitude: operational, description: "Health-scoring + save-play playbook landed across the CS org; 90% gross renewal across the FY.", target_offset_days: 270 }
+  - { goal_id: G-4-incident-halve,    title: "Reduce P1 incidents by 50%",                       owner_actor_id: tom,    altitude: operational, description: "P1 incident rate halved by Q3. Driven by Salesforce sync stabilization and observability tooling.", target_offset_days: 210 }
+  - { goal_id: G-5-conv-ai-v1,        title: "Ship conversation-AI module v1",                   owner_actor_id: sanjay, altitude: operational, description: "Conversation-AI module taps into Gong/Chorus call recordings and surfaces deal risk signals. Q3 release.", target_offset_days: 240 }
+  - { goal_id: G-6-vp-eng-successor,  title: "Hire VP Eng successor",                            owner_actor_id: olu,    altitude: operational, description: "Open after Tom's departure (m5). Needed before Q4 to unblock the forecast model release.", target_offset_days: 240 }
+
+# =====================================================================
+# Decisions (5) — material company choices captured early in the window.
+# =====================================================================
+decisions:
+  - { decision_id: D-1-crm-in-house,  title: "Build CRM connectors in-house vs partner",         decision_text: "We'll build the Salesforce/HubSpot/Pipedrive connectors in-house rather than partner with Workato/Tray.", rationale: "Owning the ingest layer is core to our data quality story. Partner adds latency and limits what we can do for design partners.", decided_offset_days: -30 }
+  - { decision_id: D-2-conv-ai-first, title: "Roll out conversation-AI before ICP scoring",      decision_text: "Conversation-AI v1 ships ahead of ICP scoring. ICP scoring stays in research.", rationale: "Conversation-AI is a clearer wedge for design partners. ICP scoring is a longer model-build cycle.", decided_offset_days: -14 }
+  - { decision_id: D-3-snowflake,     title: "Adopt Snowflake as data lake (over BigQuery)",     decision_text: "Snowflake replaces our BigQuery dual-writes. Migration completes Q2.", rationale: "Snowflake's cost model is better for our usage shape; design partners are already on Snowflake.", decided_offset_days: -45 }
+  - { decision_id: D-4-uk-ae,         title: "Open a UK-based AE seat",                          decision_text: "First non-US AE; remote, London-based.", rationale: "European pipeline has been growing organically; we need a local time zone for late-stage demos.", decided_offset_days: 30 }
+  - { decision_id: D-5-pricing-model, title: "Usage-based vs seat-based pricing for new tier",   decision_text: "Stay with seat-based for Q1; revisit usage-based at the post-Series B board.", rationale: "Usage-based pricing creates renewal risk for our smaller mid-market accounts; seat-based predictable for now.", decided_offset_days: 14 }
+
+# =====================================================================
+# Commitment seeds (~31) — explicitly authored work the simulator
+# materializes at created_offset_days. The simulator's rate-based
+# generator fills in additional ad-hoc commitments alongside.
+# =====================================================================
+commitment_seeds:
+  # ----- Salesforce / CRM connector work (5) -----
+  - { commitment_id: C-sf-stabilize,   title: "Stabilize Salesforce sync for Beacon",            owner_actor_id: maya,    customer_id: cust-beacon,    goal_id: G-2-multi-crm,    asserted_duration_days: 21, true_complexity: high, intended_outcome: will_slip,        created_offset_days:   0 }
+  - { commitment_id: C-sf-rate-limit,  title: "Salesforce rate-limit handling",                  owner_actor_id: wei,     customer_id: cust-conduit,   goal_id: G-2-multi-crm,    asserted_duration_days: 14, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:   0 }
+  - { commitment_id: C-sf-history,     title: "Salesforce history backfill",                     owner_actor_id: marcus,  customer_id: cust-northvale, goal_id: G-2-multi-crm,    asserted_duration_days: 21, true_complexity: high, intended_outcome: will_slip,        created_offset_days:  30 }
+  - { commitment_id: C-hub-bridge,     title: "HubSpot bridge connector",                        owner_actor_id: elena,   customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 14, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  14 }
+  - { commitment_id: C-pipedrive-spike, title: "Pipedrive connector spike",                      owner_actor_id: sam,     customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days:  7, true_complexity: low,  intended_outcome: will_succeed,     created_offset_days:  60 }
+
+  # ----- data / warehouse (4) -----
+  - { commitment_id: C-snowflake-perf, title: "Snowflake query perf for nightly forecast",       owner_actor_id: nikita,  customer_id: null,           goal_id: G-3-renewal-90,   asserted_duration_days: 30, true_complexity: high, intended_outcome: will_succeed,     created_offset_days:   0 }
+  - { commitment_id: C-bigquery-kill,  title: "Remove BigQuery dual-writes",                     owner_actor_id: hannah,  customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 21, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  30 }
+  - { commitment_id: C-redshift-spike, title: "Redshift connector spike",                        owner_actor_id: dimitri, customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 14, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  90 }
+  - { commitment_id: C-dbt-models,     title: "Migrate forecast models to dbt",                  owner_actor_id: nikita,  customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 35, true_complexity: high, intended_outcome: will_slip,        created_offset_days:  60 }
+
+  # ----- ML / forecast (5) -----
+  - { commitment_id: C-forecast-v2,    title: "Forecast model v2 with multi-product",            owner_actor_id: felix,   customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 60, true_complexity: high, intended_outcome: will_slip,        created_offset_days:   0 }
+  - { commitment_id: C-conv-ai-v1,     title: "Conversation-AI module v1",                       owner_actor_id: naomi,   customer_id: null,           goal_id: G-5-conv-ai-v1,   asserted_duration_days: 90, true_complexity: high, intended_outcome: will_slip,        created_offset_days:   0 }
+  - { commitment_id: C-icp-spike,      title: "ICP scoring research spike",                      owner_actor_id: ravi,    customer_id: null,           goal_id: G-5-conv-ai-v1,   asserted_duration_days: 21, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  30 }
+  - { commitment_id: C-bias-eval,      title: "Forecast bias evaluation harness",                owner_actor_id: felix,   customer_id: null,           goal_id: G-2-multi-crm,    asserted_duration_days: 21, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  60 }
+  - { commitment_id: C-anomaly-detect, title: "Anomaly detection for sync regressions",          owner_actor_id: naomi,   customer_id: null,           goal_id: G-4-incident-halve, asserted_duration_days: 28, true_complexity: high, intended_outcome: will_slip,      created_offset_days: 120 }
+
+  # ----- frontend / UX (3) -----
+  - { commitment_id: C-dashboard-v2,   title: "Dashboard v2 redesign",                           owner_actor_id: yuki,    customer_id: null,           goal_id: G-3-renewal-90,   asserted_duration_days: 35, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:   0 }
+  - { commitment_id: C-onboarding-flow, title: "New onboarding flow",                            owner_actor_id: aisha,   customer_id: null,           goal_id: G-3-renewal-90,   asserted_duration_days: 28, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  30 }
+  - { commitment_id: C-mobile-spike,   title: "Mobile companion spike",                          owner_actor_id: yuki,    customer_id: null,           goal_id: G-1-arr-target,   asserted_duration_days: 14, true_complexity: low,  intended_outcome: will_be_cancelled, created_offset_days: 150 }
+
+  # ----- sales / GTM (4) -----
+  - { commitment_id: C-northvale-renew, title: "Close Northvale renewal",                        owner_actor_id: sophie,  customer_id: cust-northvale, goal_id: G-1-arr-target,   asserted_duration_days: 60, true_complexity: high, intended_outcome: will_slip,        created_offset_days:   0 }
+  - { commitment_id: C-conduit-expand,  title: "Conduit expansion deal",                         owner_actor_id: liam,    customer_id: cust-conduit,   goal_id: G-1-arr-target,   asserted_duration_days: 90, true_complexity: high, intended_outcome: will_succeed,     created_offset_days:   0 }
+  - { commitment_id: C-tilt-save-play,  title: "Tilt save play",                                 owner_actor_id: marco,   customer_id: cust-tilt,      goal_id: G-3-renewal-90,   asserted_duration_days: 30, true_complexity: high, intended_outcome: will_be_cancelled, created_offset_days:  60 }
+  - { commitment_id: C-mid-market-pipe, title: "Build mid-market pipeline (Q1-Q2)",              owner_actor_id: tess,    customer_id: null,           goal_id: G-1-arr-target,   asserted_duration_days: 90, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:   0 }
+
+  # ----- CS / implementation (4) -----
+  - { commitment_id: C-beacon-stabilize, title: "Beacon stabilization plan",                     owner_actor_id: eve,     customer_id: cust-beacon,    goal_id: G-3-renewal-90,   asserted_duration_days: 60, true_complexity: high, intended_outcome: will_be_cancelled, created_offset_days:   0 }
+  - { commitment_id: C-strand-onboard,   title: "Strand Labs onboarding completion",             owner_actor_id: carlos,  customer_id: cust-strand,    goal_id: G-3-renewal-90,   asserted_duration_days: 45, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:   0 }
+  - { commitment_id: C-conduit-qbr,      title: "Conduit QBR prep",                              owner_actor_id: eve,     customer_id: cust-conduit,   goal_id: G-3-renewal-90,   asserted_duration_days: 14, true_complexity: low,  intended_outcome: will_succeed,     created_offset_days:  14 }
+  - { commitment_id: C-impl-runbook,     title: "Implementation runbook v2",                     owner_actor_id: hema,    customer_id: null,           goal_id: G-3-renewal-90,   asserted_duration_days: 28, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  30 }
+
+  # ----- product / design (3) -----
+  - { commitment_id: C-roadmap-q3,       title: "Q3 roadmap planning",                           owner_actor_id: caleb,   customer_id: null,           goal_id: G-1-arr-target,   asserted_duration_days: 14, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  14 }
+  - { commitment_id: C-icp-prd,          title: "ICP scoring PRD",                               owner_actor_id: brielle, customer_id: null,           goal_id: G-5-conv-ai-v1,   asserted_duration_days: 21, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  60 }
+  - { commitment_id: C-design-system-v2, title: "Design system v2",                              owner_actor_id: theo,    customer_id: null,           goal_id: G-3-renewal-90,   asserted_duration_days: 35, true_complexity: low,  intended_outcome: will_succeed,     created_offset_days:  30 }
+
+  # ----- ops / hiring / marketing (3) -----
+  - { commitment_id: C-vp-eng-search,    title: "VP Eng successor search",                       owner_actor_id: olu,     customer_id: null,           goal_id: G-6-vp-eng-successor, asserted_duration_days: 90, true_complexity: high, intended_outcome: will_slip,    created_offset_days: 160 }
+  - { commitment_id: C-budget-q3,        title: "Q3 budget reforecast",                          owner_actor_id: beatriz, customer_id: null,           goal_id: G-1-arr-target,   asserted_duration_days: 14, true_complexity: med,  intended_outcome: will_succeed,     created_offset_days:  90 }
+  - { commitment_id: C-event-presence,   title: "Q4 industry event presence",                    owner_actor_id: quinn,   customer_id: null,           goal_id: G-1-arr-target,   asserted_duration_days: 30, true_complexity: low,  intended_outcome: will_succeed,     created_offset_days:  60 }
+
+# =====================================================================
+# Multi-shock turbulence — months 3 / 5 / 7.
+# Day 94  = 2026-04-05  (Beacon Analytics churn)
+# Day 160 = 2026-06-10  (VP Eng departure)
+# Day 226 = 2026-08-15  (post-VP-Eng reorg)
+# =====================================================================
+turbulence_events:
+  - event_id: anchor-design-partner-loss-m3
+    kind: major_customer_loss
+    scheduled_at: "2026-04-05T00:00:00Z"
+    magnitude: 0.6
+    payload:
+      customer_id: cust-beacon
+      narrative: "Beacon Analytics churns after Salesforce sync regressions corrupt their pipeline data three quarters in a row."
+  - event_id: vp-eng-departure-m5
+    kind: exec_departure
+    scheduled_at: "2026-06-10T00:00:00Z"
+    magnitude: 0.7
+    payload:
+      actor_id: tom
+      narrative: "Tom Reilly (VP Eng) departs for a hyperscaler; eng leadership vacuum during the integration-debt period."
+  - event_id: reorg-m7
+    kind: reorg
+    scheduled_at: "2026-08-15T00:00:00Z"
+    magnitude: 0.5
+    payload:
+      narrative: "Post-VP-Eng reorg: pods restructured around integration surfaces (CRM pod / warehouse pod / conversation-AI pod)."
+
+# =====================================================================
+# Demo-bridge extras — these fields are not part of SimulationConfig.
+# The demo bundler (demo/generation/built/pelago.py) reads them via
+# spec_io.load_spec to author the SQL snapshot's recommendations and
+# validator targets.
+# =====================================================================
+recommendations:
+  - { kind: capacity,         proposition: "Engineering at 92% utilization — pause new commitments before Q3 saturation",                                       impact_usd:  120000 }
+  - { kind: customer_pressure, proposition: "3 anchor customers (Beacon, Northvale, Conduit) escalating Salesforce sync issues — $2.04M ARR exposure",          impact_usd: 2040000 }
+  - { kind: personnel,        proposition: "VP Eng successor open 8+ weeks — Q3 forecast-model release blocked",                                                impact_usd:   80000 }
+  - { kind: decision_revisit, proposition: "Conversation-AI commitment predates 4 customer requests for ICP scoring — re-scope",                                impact_usd:  200000 }
+  - { kind: customer_pressure, proposition: "Design-partner health drift across Conduit, Strand, +2 mid-market accounts post-reorg",                            impact_usd:  340000 }
+  - { kind: founder_context,  proposition: "Founder–CTO sync overdue 6 weeks — data-warehouse pricing decision (D-3) unowned",                                  impact_usd:  150000 }
+  - { kind: customer_pressure, proposition: "Tilt ($90K) showing 30-day usage drift — churn risk",                                                              impact_usd:   40000 }
+
+# Validator targets (±10%) used by demo/generation/built/pelago.py.
+recommendation_count: 7
+goal_count: 6
+decision_count: 5
+commitment_count: 140                  # ~31 seeds + ~110 rate-generated
+signal_window_days: 270
+
+role_mix:
+  founder: 2
+  exec: 3
+  engineer: 7                          # 5 backend + 2 frontend
+  data_engineer: 3
+  ml_engineer: 3
+  pm: 2
+  designer: 1
+  ae: 4
+  se: 2
+  cs_manager: 3
+  implementation: 2
+  marketing: 1
+  finance_ops: 1
+  recruiter: 1
+reporting_depth: 3

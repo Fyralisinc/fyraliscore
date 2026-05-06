@@ -309,7 +309,7 @@ async def _apply_proposed_change(
     Acts service entry points. Returns (kind_label, resulting_entity_id).
 
     Operation/target combinations supported by v1:
-      - create on goal
+      - create on goal / commitment
       - transition on goal / commitment / decision
       - archive on decision (state machine: active|revisited -> archived)
       - update on resource (delegates to resources.repo.update_attributes)
@@ -330,6 +330,49 @@ async def _apply_proposed_change(
                 conn=conn,
             )
             return ("create_goal", row.id)
+        if ref_type == "commitment":
+            contributes_to: list[UUID] = []
+            for g in payload.get("contributes_to_goal_ids") or []:
+                gid = _optional_uuid(g)
+                if gid is not None:
+                    contributes_to.append(gid)
+            contributors: list[tuple[UUID, str | None]] = []
+            for c in payload.get("contributors") or []:
+                if isinstance(c, dict):
+                    cid = _optional_uuid(c.get("actor_id"))
+                    role = c.get("role") if isinstance(c.get("role"), str) else None
+                else:
+                    cid = _optional_uuid(c)
+                    role = None
+                if cid is not None:
+                    contributors.append((cid, role))
+            row = await commitments_svc.create(
+                title=_required_str(payload, "title"),
+                description=payload.get("description"),
+                initial_state=payload.get("initial_state", "proposed"),
+                owner_id=_optional_uuid(payload.get("owner_id")),
+                due_date=_optional_dt(payload.get("due_date")),
+                ambition_level=payload.get("ambition_level", "base"),
+                priority=int(payload.get("priority", 5)),
+                success_criteria=payload.get("success_criteria"),
+                contributes_to_goal_ids=contributes_to or None,
+                contributors=contributors or None,
+                is_maintenance=payload.get("is_maintenance"),
+                created_by_event_id=_required_event_id(cause_event_id),
+                tenant_id=tenant_id,
+                conn=conn,
+            )
+            customer_resource_id = _optional_uuid(payload.get("customer_resource_id"))
+            if customer_resource_id is not None:
+                from services.resources import customer_commitments as cc_svc
+
+                await cc_svc.link_commitment(
+                    customer_resource_id=customer_resource_id,
+                    commitment_id=row.id,
+                    tenant_id=tenant_id,
+                    conn=conn,
+                )
+            return ("create_commitment", row.id)
         raise ValidationError(
             f"create operation not supported on {ref_type}",
             field="proposed_change.operation",

@@ -151,8 +151,6 @@ export default function History() {
           { id: "today", label: "Today", active: false },
           { id: "structure", label: "Structure", active: false },
           { id: "history", label: "History", active: true },
-          { id: "mind", label: "My Mind", shortcut: "M" },
-          { id: "communicate", label: "Communicate", disabled: true, badge: "soon" },
         ],
       },
     ],
@@ -178,14 +176,28 @@ export default function History() {
     <>
       <div className="cockpit">
         <Sidebar
-          brand={{ name: "Driftwood", mark: "D", pulse_day: 4 }}
+          brand={{ name: "Fyralis", mark: "F", pulse_day: 4 }}
           nav={nav}
-          vitals={[]}
+          onBrandClick={() => {
+            // Reset History to its default view: chronicle layer, no
+            // filter, no panel.
+            setLayer("chronicle");
+            setSelectedEventId(null);
+            setSelectedPredictionId(null);
+            setSelectedArcId(null);
+            setFilters({
+              period: "90d",
+              types: new Set<EventType>(),
+              significance: "all",
+              arcsOn: true,
+              search: "",
+              arcId: null,
+            });
+          }}
           onNavigate={(_s, item) => {
             if (item === "today") navigate("/");
             else if (item === "structure") navigate("/structure");
             else if (item === "history") navigate("/history");
-            else if (item === "mind") navigate("/mind");
           }}
         />
 

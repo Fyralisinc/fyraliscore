@@ -507,7 +507,7 @@ _DIFF_SQL_BY_TYPE: dict[str, str] = {
     "commitment": (
         "SELECT c.id, c.title, c.state, c.description AS acceptance, "
         "c.created_at, c.last_state_change_at AS updated_at, "
-        "a.display_name AS owner_name "
+        "a.display_name AS owner_name, c.owner_id AS owner_id "
         "FROM commitments c "
         "LEFT JOIN actors a ON a.id = c.owner_id "
         "WHERE c.id = $1 AND c.tenant_id = $2"
@@ -598,6 +598,7 @@ async def _render_diff(
     out: dict[str, Any] = {
         "target_title": target_title,
         "target_kind": ref_type,
+        "target_id": str(ref_id),
         "operation": op or "",
     }
     if view.target_entity is not None and view.target_entity.state:
@@ -607,6 +608,9 @@ async def _render_diff(
     owner_name = extras.get("owner_name")
     if owner_name:
         out["owner_name"] = owner_name
+    owner_id = extras.get("owner_id")
+    if owner_id is not None:
+        out["owner_actor_id"] = str(owner_id)
     if created_at is not None:
         out["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
     if days_idle is not None:
@@ -976,13 +980,24 @@ def _escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _link_artifact(text: str, kind: str, artifact_id: str) -> str:
+    """Wrap `text` in an `<a class="artifact-link">` carrying type+id so
+    the UI can fetch + render details on click. The text inside is
+    assumed already-escaped by the caller."""
+    return (
+        f'<a class="artifact-link" data-artifact-type="{_escape(kind)}" '
+        f'data-artifact-id="{_escape(artifact_id)}">{text}</a>'
+    )
+
+
 def _render_headline(view: RecommendationView) -> str:
     text = _escape(view.proposition_text)
     target = view.target_entity
     if target and target.title:
         title_safe = _escape(target.title)
         if title_safe in text:
-            text = text.replace(title_safe, f"<em>{title_safe}</em>", 1)
+            inner = _link_artifact(title_safe, target.type, str(target.id))
+            text = text.replace(title_safe, f"<em>{inner}</em>", 1)
     return text
 
 
@@ -1440,34 +1455,64 @@ async def _build_vitals(
 
 def _build_page_header(
     *, recommendations: list[RecommendationView], now: datetime,
+    actor_display_name: str | None = None,
 ) -> dict[str, Any]:
     crit = sum(1 for v in recommendations if _derive_severity(v) == "critical")
     strat = sum(1 for v in recommendations if _derive_severity(v) == "strategic")
     total = len(recommendations)
 
+    ops = total - strat - crit  # everything that's not strategic or critical
     if total == 0:
         tone = "quiet"
-        text = "Quiet morning. Nothing pressing — I'll surface again if anything material changes."
+        text = (
+            "Quiet morning. Nothing pressing — I'll surface again if anything "
+            "material changes. You can ease into the day; nothing here needs you yet."
+        )
     elif crit >= 1:
         tone = "tense"
         if total > 1:
-            text = f"{total} items need you today; {strat} are strategic."
+            text = (
+                f"{total} items need you today; {strat} are strategic. "
+                f"Start with the critical one — it's the most time-sensitive thing on the list, "
+                f"and the rest will read clearer once it's resolved."
+            )
         else:
-            text = "One critical item is the main thing on my mind."
+            text = (
+                "One critical item is the main thing on my mind. "
+                "Start there; the rest of your day stays your own once it's handled."
+            )
     elif strat >= 2:
         tone = "unsettled"
-        text = f"Heavy day. {strat} strategic decisions and {total - strat} operational."
+        ops_word = "item" if ops == 1 else "items"
+        text = (
+            f"Heavy day. {strat} strategic decisions and {ops} operational {ops_word}. "
+            f"Block time for the strategic ones — they each deserve a careful read "
+            f"before you approve, route, or set aside."
+        )
     elif strat >= 1:
         tone = "loaded"
-        text = f"{strat} strategic item to think about; {total - strat} operational."
+        ops_word = "item" if ops == 1 else "items"
+        text = (
+            f"{strat} strategic item to think about; {ops} operational {ops_word}. "
+            f"Take your time with the strategic one. The operational items are mostly "
+            f"quick approvals or routes — most should clear in under a minute each."
+        )
     else:
         tone = "steady"
-        text = f"Slow morning — {total} small things, none urgent."
+        things = "thing" if total == 1 else "things"
+        text = (
+            f"Slow morning — {total} small {things}, none urgent. "
+            f"Most are routine acknowledgments; you can clear them in a single pass "
+            f"and reclaim the rest of the morning."
+        )
 
+    # First name only — keeps the greeting personal and short.
+    first_name = (actor_display_name.split()[0] if actor_display_name else None)
     return {
         "date_label": now.strftime("%A, %B %-d.").rstrip("."),
         "state_tone": tone,
         "state_text": text,
+        "viewer_name": first_name,
     }
 
 
@@ -1570,7 +1615,10 @@ async def build_today(
         recommendations=recommendations,
         conn=conn,
     )
-    page = _build_page_header(recommendations=recommendations, now=now)
+    page = _build_page_header(
+        recommendations=recommendations, now=now,
+        actor_display_name=actor_display_name,
+    )
 
     held = await conn.fetchval(
         """

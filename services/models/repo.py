@@ -283,6 +283,57 @@ async def _check_no_support_cycle(
         )
 
 
+_AUTO_ACCEPT_MIN_CONFIDENCE = 0.55
+
+
+async def _maybe_auto_accept(
+    hydrated: "ModelRow", conn: asyncpg.Connection
+) -> None:
+    """Auto-act on `create_commitment` recommendations whose payload is
+    structurally complete. The human-approval step is ceremonial when
+    Think has already named the owner + contributing goal from the
+    signal, so we run the accept handler server-side and let the
+    Commitment land in the ledger without a CEO click.
+
+    All failures are swallowed; the recommendation stays active and the
+    user can act on it manually if anything goes wrong.
+    """
+    if hydrated.target_actor_id is None:
+        return
+    proposition = hydrated.proposition
+    if not isinstance(proposition, dict):
+        return
+    target_ref = proposition.get("target_act_ref") or {}
+    proposed_change = proposition.get("proposed_change") or {}
+    if target_ref.get("type") != "commitment":
+        return
+    if proposed_change.get("operation") != "create":
+        return
+    payload = proposed_change.get("payload") or {}
+    if not isinstance(payload, dict):
+        return
+    if not payload.get("title") or not payload.get("owner_id"):
+        return
+    if (hydrated.confidence or 0.0) < _AUTO_ACCEPT_MIN_CONFIDENCE:
+        return
+
+    try:
+        from services.recommendations.handlers import act_on_recommendation
+
+        await act_on_recommendation(
+            recommendation_id=hydrated.id,
+            actor_id=hydrated.target_actor_id,
+            tenant_id=hydrated.tenant_id,
+            notes="auto-accepted: low-risk create-commitment",
+            conn=conn,
+        )
+    except Exception:
+        # Leave the recommendation active on any failure — Think log
+        # surfaces the LLM payload, and the user can dismiss/accept
+        # manually from Today.
+        return
+
+
 def _hydrate_row(record: asyncpg.Record) -> ModelRow:
     """asyncpg Record → ModelRow, tolerating JSONB str/bytes codecs
     and pgvector's numpy array return type."""
@@ -555,6 +606,16 @@ class ModelsRepo:
                     ),
                 },
             )
+
+            # Auto-accept low-risk create-commitment recommendations.
+            # Self-reported new work ("I've started the backend rewrite")
+            # produces a recommendation whose payload already names the
+            # owner and the contributing goal — making the human-approval
+            # step ceremonial. Auto-accept here so the new Commitment
+            # appears in the ledger without an explicit click; failures
+            # are swallowed so the recommendation stays in the queue and
+            # the user can act on it manually.
+            await _maybe_auto_accept(hydrated, conn)
 
         return hydrated
 

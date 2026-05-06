@@ -65,13 +65,45 @@ export type ProbeChip = {
 export type DiffPanel = {
   target_title: string;        // e.g. "Drive SSO requirements doc"
   target_kind: string;         // e.g. "commitment" | "goal" | "decision" | "resource"
+  target_id?: string;          // UUID for the artifact-drawer link
   current_state?: string;      // e.g. "proposed"
   to_state?: string;           // e.g. "active" — null for archive/create/update
   operation: string;           // operation name from proposed_change
   owner_name?: string;         // e.g. "Sarah Chen"
+  owner_actor_id?: string;     // UUID of the owner actor (linkable)
   created_at?: string;         // ISO timestamp
   days_idle?: number;          // optional integer derived from updated_at
   acceptance?: string;         // commitment acceptance criteria / decision summary / etc
+};
+
+// Artifact drawer payload — returned by GET /v1/artifacts/{type}/{id}
+// and rendered by <ArtifactDrawer/> when the user clicks a dotted link.
+export type ArtifactKind =
+  | "actor" | "commitment" | "goal" | "decision"
+  | "resource" | "observation" | "model";
+
+export type ArtifactField = { label: string; value: string };
+
+export type ArtifactLink = {
+  type: ArtifactKind;
+  id: string;
+  primary: string;       // short headline shown bold
+  secondary?: string;    // dim sub-line (e.g. "slack · 2 days ago")
+  meta?: string;         // tiny right-aligned mono tag (e.g. "78%")
+};
+
+export type ArtifactSection =
+  | { kind: "fields"; title?: string; rows: ArtifactField[] }
+  | { kind: "narrative"; title: string; body: string }
+  | { kind: "links"; title: string; empty_text?: string; items: ArtifactLink[] };
+
+export type ArtifactDetail = {
+  type: ArtifactKind;
+  id: string;
+  title: string;
+  subtitle: string;
+  summary?: string;      // one-line orienting sentence under the title
+  sections: ArtifactSection[];
 };
 
 export type SignalRow = {
@@ -244,7 +276,8 @@ export type StateLineTone =
 export type PageHeader = {
   date_label: string;            // "Saturday, April 25."
   state_tone: StateLineTone;
-  state_text: string;            // first-person sentence(s)
+  state_text: string;            // first-person sentence(s); UI may not render
+  viewer_name?: string;          // first name of the actor — used for greeting
 };
 
 export type JustUpdated = {
@@ -286,6 +319,11 @@ export type TriageResponse = {
   ok: boolean;
   recommendation_id: string;
   action: TriageAction;
+  // Present only when action === "act". Identifies the Act-layer entity
+  // the recommendation produced (transition_commitment, create_commitment,
+  // create_goal, etc.) so the UI can deep-link to it.
+  target_act_change_kind?: string;
+  target_act_change_id?: string;
 };
 
 export type StreamMessageToday =

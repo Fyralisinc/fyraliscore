@@ -88,6 +88,19 @@ WHERE m.tenant_id           = $1
   AND (m.target_actor_id = $2 OR m.target_actor_id IS NULL)
   AND m.status              = 'active'
   AND m.archived_at IS NULL
+  -- Drop recommendations whose target commitment is already paused
+  -- or blocked. These cards represented a "CEO should unblock X"
+  -- ask; once the commitment is in a non-active state the system
+  -- has already absorbed the block, so the card is stale.
+  AND NOT EXISTS (
+      SELECT 1 FROM commitments c
+      WHERE c.tenant_id = m.tenant_id
+        AND m.proposition -> 'target_act_ref' ->> 'type' = 'commitment'
+        AND m.proposition -> 'target_act_ref' ->> 'id'
+            ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+        AND c.id::text = m.proposition -> 'target_act_ref' ->> 'id'
+        AND c.state IN ('paused', 'blocked')
+  )
 ORDER BY (
     COALESCE((m.proposition->>'expected_impact')::float, 0)
     * m.confidence

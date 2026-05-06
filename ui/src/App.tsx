@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sidebar } from "@/components/Sidebar";
-import { SignalStrip } from "@/components/SignalStrip";
 import { PageHeader } from "@/components/PageHeader";
 import { JustUpdated } from "@/components/JustUpdated";
-import { FilterStrip, type FilterId } from "@/components/FilterStrip";
+import { FilterBar, DEFAULT_FILTERS, type TodayFilters } from "@/components/FilterBar";
 import { RecCard } from "@/components/RecCard";
 import { EmptyState } from "@/components/EmptyState";
 import { RoutedCoda } from "@/components/RoutedCoda";
@@ -14,6 +13,8 @@ import { Conversation } from "@/components/Conversation";
 import { ThinkingTurn } from "@/components/ThinkingTurn";
 import { SignalSimulator } from "@/components/SignalSimulator";
 import { TriageToast } from "@/components/TriageToast";
+import { ArtifactDrawer } from "@/components/ArtifactDrawer";
+import type { ArtifactKind } from "@/api/today-types";
 import { useToday } from "@/hooks/useToday";
 import { useAsk } from "@/hooks/useAsk";
 import { useRecommendationStream } from "@/hooks/useRecommendationStream";
@@ -36,40 +37,22 @@ export default function App() {
     dismissingIds,
     cleared,
     triage,
-    rename,
     dismissJustUpdated,
     toast,
     dismissToast,
   } = useToday();
   const { turns, ask, dismiss, save, markDone, sending, pending } = useAsk();
 
-  const [filter, setFilter] = useState<FilterId>("all");
+  const [filters, setFilters] = useState<TodayFilters>(() => DEFAULT_FILTERS);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [justArrived, setJustArrived] = useState<Set<string>>(() => new Set());
   const [holdPickerCard, setHoldPickerCard] = useState<RecCardType | null>(null);
+  const [artifactTarget, setArtifactTarget] = useState<
+    { kind: ArtifactKind; id: string } | null
+  >(null);
   // Focus mode: hide sidebar + signal strip so the cards are the only
-  // thing on screen. Persists across reloads.
-  const [focusMode, setFocusMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("focusMode") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const toggleFocusMode = useCallback(() => {
-    setFocusMode((v) => {
-      const next = !v;
-      try {
-        localStorage.setItem("focusMode", next ? "1" : "0");
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
-
   const askRef = useRef<HTMLInputElement | null>(null);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
 
@@ -126,22 +109,42 @@ export default function App() {
     }
   }, [streamEvents]);
 
-  // Filter the cards by category. The "all" tab matches everything.
+  // Multi-dimensional filter. Empty sets = no constraint on that axis.
   const visibleCards = useMemo(() => {
     if (!today) return [];
-    if (filter === "all") return today.cards;
-    if (filter === "ops") return today.cards.filter((c) => c.category === "operational");
-    return today.cards.filter((c) => c.category === "strategic");
-  }, [today, filter]);
+    return today.cards.filter((c) => {
+      if (filters.category !== "all" && c.category !== filters.category) return false;
+      if (filters.severities.size > 0 && !filters.severities.has(c.severity)) return false;
+      if (filters.targetKinds.size > 0) {
+        const tk = c.detail?.diff?.target_kind;
+        if (!tk || !filters.targetKinds.has(tk)) return false;
+      }
+      if (filters.owners.size > 0) {
+        const owner = c.detail?.diff?.owner_name;
+        if (!owner || !filters.owners.has(owner)) return false;
+      }
+      if (filters.newOnly && c.tag?.kind !== "new") return false;
+      return true;
+    });
+  }, [today, filters]);
 
-  const counts = useMemo(() => {
-    const cards = today?.cards ?? [];
-    return {
-      all: cards.length,
-      ops: cards.filter((c) => c.category === "operational").length,
-      strategic: cards.filter((c) => c.category === "strategic").length,
-    };
-  }, [today]);
+  // Derive multi-select option lists from the current feed.
+  const ownerOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of today?.cards ?? []) {
+      const o = c.detail?.diff?.owner_name;
+      if (o) set.add(o);
+    }
+    return [...set].sort();
+  }, [today?.cards]);
+  const targetKindOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of today?.cards ?? []) {
+      const tk = c.detail?.diff?.target_kind;
+      if (tk) set.add(tk);
+    }
+    return [...set].sort();
+  }, [today?.cards]);
 
   // Initial focus: first card after 100ms (per spec §5.3).
   useEffect(() => {
@@ -161,7 +164,7 @@ export default function App() {
     el.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [focusedId]);
 
-  // Reset focus when filter changes.
+  // Reset focus when filters change.
   useEffect(() => {
     if (visibleCards.length === 0) {
       setFocusedId(null);
@@ -169,7 +172,7 @@ export default function App() {
     }
     if (focusedId && visibleCards.find((c) => c.id === focusedId)) return;
     setFocusedId(visibleCards[0]?.id ?? null);
-  }, [filter, visibleCards, focusedId]);
+  }, [filters, visibleCards, focusedId]);
 
   const focusNext = useCallback(
     (delta: number) => {
@@ -270,6 +273,31 @@ export default function App() {
     onTriageRef.current = onTriage;
   }, [onTriage]);
 
+  // Delegated artifact-link clicks. Server emits `<a class="artifact-link"
+  // data-artifact-type=… data-artifact-id=…>`; we catch those and open
+  // the drawer. Stop propagation so card-level toggles + probe handlers
+  // don't fire on the same click.
+  useEffect(() => {
+    const KNOWN: ReadonlySet<ArtifactKind> = new Set([
+      "actor", "commitment", "goal", "decision",
+      "resource", "observation", "model",
+    ]);
+    function onDocClick(e: MouseEvent) {
+      const link = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+        ".artifact-link"
+      );
+      if (!link) return;
+      const kind = link.dataset.artifactType ?? "";
+      const id = link.dataset.artifactId ?? "";
+      if (!id || !KNOWN.has(kind as ArtifactKind)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setArtifactTarget({ kind: kind as ArtifactKind, id });
+    }
+    document.addEventListener("click", onDocClick, true);
+    return () => document.removeEventListener("click", onDocClick, true);
+  }, []);
+
   // Keyboard model per spec §5.2. Single-key shortcuts only fire when
   // no input/textarea is focused; Esc always works to blur.
   useEffect(() => {
@@ -318,19 +346,6 @@ export default function App() {
         setHoldPickerCard(card);
         return;
       }
-      // M — open My Mind page.
-      if (!e.shiftKey && k === "m") {
-        e.preventDefault();
-        navigate("/mind");
-        return;
-      }
-      // \ — toggle focus mode (hide sidebar + signal strip).
-      if (e.key === "\\") {
-        e.preventDefault();
-        toggleFocusMode();
-        return;
-      }
-
       switch (k) {
         case "j":
           e.preventDefault();
@@ -367,18 +382,6 @@ export default function App() {
           e.preventDefault();
           askRef.current?.focus();
           break;
-        case "1":
-          e.preventDefault();
-          setFilter("all");
-          break;
-        case "2":
-          e.preventDefault();
-          setFilter("ops");
-          break;
-        case "3":
-          e.preventDefault();
-          setFilter("strategic");
-          break;
         case "?":
           e.preventDefault();
           setShortcutsOpen(true);
@@ -387,16 +390,7 @@ export default function App() {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [expandedIds, focusNext, focusedId, navigate, onTriage, shortcutsOpen, toggleExpansion, toggleFocusMode, visibleCards]);
-
-  const onRename = useCallback(() => {
-    if (!today) return;
-    const next = window.prompt(
-      "What do you want to call your company's self-perception?",
-      today.brand.name
-    );
-    if (next && next.trim()) void rename(next.trim());
-  }, [today, rename]);
+  }, [expandedIds, focusNext, focusedId, navigate, onTriage, shortcutsOpen, toggleExpansion, visibleCards]);
 
   return (
     <>
@@ -405,35 +399,34 @@ export default function App() {
           backend unreachable · showing last good state
         </div>
       ) : null}
-      <button
-        type="button"
-        className={"chrome-toggle" + (focusMode ? " hidden-chrome" : "")}
-        onClick={toggleFocusMode}
-        title={focusMode ? "Show sidebar & signal strip (\\)" : "Hide sidebar & signal strip (\\)"}
-        aria-label={focusMode ? "Show chrome" : "Hide chrome"}
-        aria-pressed={focusMode}
-      >
-        <span className="chrome-toggle-icon">{focusMode ? "⇲" : "⇱"}</span>
-        <span className="chrome-toggle-label">{focusMode ? "Show chrome" : "Focus"}</span>
-      </button>
-      <div className="cockpit" data-focus={focusMode ? "true" : undefined}>
+      <div className="cockpit">
         <Sidebar
-          brand={today?.brand ?? { name: "Fyralis", mark: "D", pulse_day: 0 }}
-          nav={injectMyMindNav(today?.nav ?? [])}
-          vitals={today?.vitals ?? []}
-          onRename={onRename}
+          brand={{ name: "Fyralis", mark: "F", pulse_day: today?.brand?.pulse_day ?? 0 }}
+          nav={[
+            {
+              id: "primary",
+              label: "Surfaces",
+              items: [
+                { id: "today", label: "Today", active: true },
+                { id: "structure", label: "Structure" },
+                { id: "history", label: "History" },
+              ],
+            },
+          ]}
+          onBrandClick={() => {
+            // Reset Today to its default view: clear all filters,
+            // collapse expanded cards, focus the first card.
+            setFilters(DEFAULT_FILTERS);
+            setExpandedIds(new Set());
+            setFocusedId(null);
+          }}
           onNavigate={(_section, item) => {
             if (item === "structure") navigate("/structure");
             else if (item === "history") navigate("/history");
-            else if (item === "mind") navigate("/mind");
             else if (item === "today") navigate("/");
           }}
         />
         <main>
-          <SignalStrip
-            metrics={today?.signal_strip ?? []}
-            onShortcuts={() => setShortcutsOpen(true)}
-          />
           <div className="feed">
             {loading && !today ? (
               <div className="loading-shell">Warming up…</div>
@@ -457,11 +450,14 @@ export default function App() {
                   />
                 ) : null}
 
-                <FilterStrip
-                  active={filter}
-                  counts={counts}
+                <FilterBar
+                  filters={filters}
+                  onChange={setFilters}
+                  ownerOptions={ownerOptions}
+                  targetKindOptions={targetKindOptions}
+                  visibleCount={visibleCards.length}
+                  totalCount={today.cards.length}
                   cleared={cleared}
-                  onChange={setFilter}
                 />
 
                 <div className="feed-list">
@@ -472,8 +468,15 @@ export default function App() {
                     />
                   ) : visibleCards.length === 0 ? (
                     <div className="feed-empty-filter">
-                      No {filter === "ops" ? "operational" : "strategic"} items today.
-                      <br />Try All or {filter === "ops" ? "Strategic" : "Operational"}.
+                      No items match the current filter.
+                      <br />
+                      <button
+                        type="button"
+                        className="btn-text"
+                        onClick={() => setFilters(DEFAULT_FILTERS)}
+                      >
+                        Clear filters
+                      </button>
                     </div>
                   ) : (
                     visibleCards.slice(0, 12).map((card) => (
@@ -555,50 +558,13 @@ export default function App() {
       ) : null}
 
       <TriageToast toast={toast} onDismiss={dismissToast} />
+
+      <ArtifactDrawer
+        target={artifactTarget}
+        onClose={() => setArtifactTarget(null)}
+      />
     </>
   );
-}
-
-// Inject "My Mind" into the surfaces section of the backend-supplied nav
-// so all four surfaces appear in the sidebar regardless of where the
-// payload came from.
-function injectMyMindNav(
-  nav: { id: string; label: string; items: import("@/api/today-types").NavItem[] }[]
-) {
-  if (nav.length === 0) {
-    return [
-      {
-        id: "primary",
-        label: "Surfaces",
-        items: [
-          { id: "today", label: "Today", active: true },
-          { id: "structure", label: "Structure" },
-          { id: "history", label: "History" },
-          { id: "mind", label: "My Mind", shortcut: "M" },
-        ],
-      },
-    ];
-  }
-  return nav.map((section) => {
-    const hasSurface = section.items.some(
-      (it) => it.id === "today" || it.id === "structure" || it.id === "history"
-    );
-    if (!hasSurface) return section;
-    if (section.items.some((it) => it.id === "mind")) return section;
-    const items: typeof section.items = [];
-    let inserted = false;
-    for (const it of section.items) {
-      items.push(it);
-      if (!inserted && it.id === "history") {
-        items.push({ id: "mind", label: "My Mind", shortcut: "M" });
-        inserted = true;
-      }
-    }
-    if (!inserted) {
-      items.push({ id: "mind", label: "My Mind", shortcut: "M" });
-    }
-    return { ...section, items };
-  });
 }
 
 // Helpers for held-from-Today integration (spec §12).

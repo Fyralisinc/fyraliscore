@@ -2,10 +2,13 @@ import type { PageHeader as PageHeaderModel } from "@/api/today-types";
 
 type Props = { header: PageHeaderModel; live?: boolean | null };
 
-// Per spec §3.4 — date in serif 32px (always ends in period), state line
-// with severity-colored pill + first-person sentence(s). When `live` is
-// non-null, show a connection dot that reflects the SSE state.
+// Date headline → first-name greeting → one-line orienting summary.
+// The summary is the substrate's first-person framing of the day,
+// rendered as a small italic sentence so the user knows what they're
+// walking into before they hit the cards.
 export function PageHeader({ header, live }: Props) {
+  const name = header.viewer_name?.trim();
+  const summary = header.state_text?.trim();
   return (
     <div className="page-head">
       <h1 className="page-h1">
@@ -13,10 +16,10 @@ export function PageHeader({ header, live }: Props) {
         {live === true ? <span className="live-dot">live</span> : null}
         {live === false ? <span className="live-dot off">offline</span> : null}
       </h1>
-      <div className="page-head-state">
-        <span className={`pill ${header.state_tone}`}>{header.state_tone}</span>
-        <span>{header.state_text}</span>
-      </div>
+      <p className="page-greeting">
+        {name ? <>Welcome back, <span className="page-greeting-name">{name}</span>.</> : "Welcome back."}
+      </p>
+      {summary ? <p className="page-summary">{summary}</p> : null}
     </div>
   );
 }
