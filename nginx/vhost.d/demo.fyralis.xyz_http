@@ -1,0 +1,5 @@
+# Explicit HTTP → HTTPS redirect for demo.fyralis.xyz.
+# Included in the port-80 server block by nginx-proxy.
+# This makes the redirect explicit and independent of nginx-proxy's
+# automatic cert-detection logic.
+return 301 https://$host$request_uri;
