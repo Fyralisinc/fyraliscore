@@ -1,3 +1,4 @@
+<!-- ci smoke test 2026-05-06: verify branch protection on main. Safe to revert. -->
 # Fyralis Core
 
 Organizational intelligence runtime. A multi-tenant FastAPI gateway, Postgres
