@@ -163,7 +163,7 @@ export default function Structure() {
   const [focus, setFocus] = useState<FocusTarget | null>(null);
   const [hoveredCommitmentId, setHoveredCommitmentId] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [listOpen, setListOpen] = useState(false);
+  const [listOpen, setListOpen] = useState(true);
   const [overlayState, setOverlayState] = useState<OverlayState>(() =>
     emptyOverlayState()
   );
