@@ -172,25 +172,28 @@ function DemoPicker({
 
         {companies?.map((c) => (
           <article key={c.company_id} className="demo-picker-card">
-            <div className="demo-picker-card-tagline">{c.tagline}</div>
-            <h2 className="demo-picker-card-name">{c.name}</h2>
-            <p className="demo-picker-card-desc">{c.description}</p>
-            <button
-              type="button"
-              className="demo-picker-card-cta"
-              onClick={() => void onStart(c.company_id)}
-              data-testid={`start-${c.company_id}`}
-            >
-              Start demo
-            </button>
+            <div>
+              <div className="demo-picker-card-tagline">{c.tagline}</div>
+              <h2 className="demo-picker-card-name">{c.name}</h2>
+              <p className="demo-picker-card-desc">{c.description}</p>
+            </div>
+            <div className="demo-picker-card-cta-wrap">
+              <button
+                type="button"
+                className="demo-picker-card-cta"
+                onClick={() => void onStart(c.company_id)}
+                data-testid={`start-${c.company_id}`}
+              >
+                Start demo
+              </button>
+              <p className="demo-picker-card-cta-hint">
+                Simulated company based on common organizational patterns.
+                You will land in the action list as the CEO.
+              </p>
+            </div>
           </article>
         ))}
       </div>
-
-      <footer className="demo-picker-foot">
-        Simulated company based on common organizational patterns.
-        Start the demo to explore Company OS as the CEO.
-      </footer>
     </div>
   );
 }

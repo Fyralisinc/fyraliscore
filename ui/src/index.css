@@ -1882,27 +1882,28 @@ a { color: inherit; text-decoration: none; }
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-start;
-  padding: 80px 32px 64px;
-  gap: 56px;
+  padding: 28px 40px 40px;
+  gap: 32px;
   background:
-    radial-gradient(ellipse at 50% -10%, rgba(255,255,255,0.85) 0%, transparent 60%),
+    radial-gradient(ellipse at 0% -10%, rgba(255,255,255,0.85) 0%, transparent 55%),
     var(--base);
 }
 
 .demo-picker-head {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  gap: 14px;
-  max-width: 720px;
+  column-gap: 14px;
+  row-gap: 4px;
+  text-align: left;
 }
 
 .demo-picker-mark {
-  width: 48px;
-  height: 48px;
+  grid-row: 1 / span 2;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1911,9 +1912,9 @@ a { color: inherit; text-decoration: none; }
     linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
   color: var(--accent-soft);
   font-family: var(--serif);
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 600;
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow:
     0 0 0 1px rgba(19, 78, 74, 0.25),
     0 1px 2px rgba(19, 78, 74, 0.32),
@@ -1923,19 +1924,18 @@ a { color: inherit; text-decoration: none; }
 
 .demo-picker-title {
   font-family: var(--serif);
-  font-size: 44px;
-  font-weight: 400;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1;
   color: var(--ink);
   font-optical-sizing: auto;
 }
 
 .demo-picker-subtitle {
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.4;
   color: var(--ink-3);
-  max-width: 560px;
 }
 
 .demo-picker-error {
@@ -1946,15 +1946,15 @@ a { color: inherit; text-decoration: none; }
   padding: 10px 16px;
   border-radius: 8px;
   max-width: 520px;
-  text-align: center;
 }
 
 .demo-picker-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 24px;
   width: 100%;
-  max-width: 1100px;
+  flex: 1;
+  align-content: start;
 }
 
 .demo-picker-skeleton {
@@ -1967,11 +1967,12 @@ a { color: inherit; text-decoration: none; }
 
 .demo-picker-card {
   background: linear-gradient(180deg, #FFFFFF 0%, #FCFCFD 100%);
-  border-radius: 14px;
-  padding: 28px 28px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  border-radius: 18px;
+  padding: 56px clamp(40px, 6vw, 88px);
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(280px, 4fr);
+  gap: 56px clamp(40px, 6vw, 80px);
+  align-items: center;
   box-shadow: var(--shadow-card);
   transition:
     transform var(--t-base) var(--ease-spring),
@@ -1979,7 +1980,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .demo-picker-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   box-shadow: var(--shadow-card-hover);
 }
 
@@ -1990,31 +1991,40 @@ a { color: inherit; text-decoration: none; }
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent);
+  margin-bottom: 12px;
 }
 
 .demo-picker-card-name {
   font-family: var(--serif);
-  font-size: 30px;
+  font-size: clamp(48px, 6vw, 72px);
   font-weight: 400;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
+  letter-spacing: -0.025em;
+  line-height: 1;
   color: var(--ink);
   font-optical-sizing: auto;
+  margin-bottom: 24px;
 }
 
 .demo-picker-card-desc {
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.65;
   color: var(--ink-2);
-  flex: 1;
+  max-width: 56ch;
+}
+
+.demo-picker-card-cta-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
 }
 
 .demo-picker-card-cta {
   margin-top: 6px;
   align-self: flex-start;
-  padding: 10px 18px;
-  border-radius: 8px;
-  font-size: 13px;
+  padding: 14px 28px;
+  border-radius: 10px;
+  font-size: 15px;
   font-weight: 500;
   background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%);
   color: #FFFFFF;
@@ -2027,6 +2037,13 @@ a { color: inherit; text-decoration: none; }
     box-shadow var(--t-quick) var(--ease-out),
     background var(--t-fast) var(--ease-out);
   cursor: pointer;
+}
+
+.demo-picker-card-cta-hint {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  max-width: 32ch;
 }
 
 .demo-picker-card-cta:hover {
@@ -2043,10 +2060,10 @@ a { color: inherit; text-decoration: none; }
 }
 
 .demo-picker-foot {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--ink-3);
-  text-align: center;
+  text-align: left;
   max-width: 640px;
 }
 
@@ -2085,10 +2102,14 @@ a { color: inherit; text-decoration: none; }
   line-height: 1.55;
 }
 
-@media (max-width: 1023px) {
-  .demo-picker-grid { grid-template-columns: 1fr; max-width: 520px; }
-  .demo-picker-shell { padding: 56px 20px 48px; gap: 36px; }
-  .demo-picker-title { font-size: 34px; }
+@media (max-width: 900px) {
+  .demo-picker-shell { padding: 24px 20px 32px; gap: 24px; }
+  .demo-picker-card {
+    grid-template-columns: 1fr;
+    padding: 32px 24px;
+    gap: 24px;
+  }
+  .demo-picker-card-name { font-size: 42px; }
 }
 
 /* ───────────────────────────────────────────────
