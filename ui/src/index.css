@@ -3491,14 +3491,29 @@ a { color: inherit; text-decoration: none; }
   stroke-width: 1.5;
   filter: drop-shadow(0 2px 6px rgba(15, 23, 42, 0.06));
 }
+.rg-agg-goal.alt-strategic .rg-agg-goal-bg {
+  stroke: rgba(91, 33, 182, 0.7);
+  stroke-width: 2.5;
+  fill: rgba(245, 243, 255, 0.95);
+}
 .rg-agg-goal.alt-operational .rg-agg-goal-bg {
   stroke: rgba(133, 77, 14, 0.4);
+}
+.rg-agg-goal-edge {
+  stroke: rgba(91, 33, 182, 0.30);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 3;
+  fill: none;
 }
 .rg-agg-goal-label {
   font-family: var(--sans);
   font-size: 10px;
   font-weight: 600;
   fill: var(--ink);
+}
+.rg-agg-goal.alt-strategic .rg-agg-goal-label {
+  font-size: 10.5px;
+  font-weight: 700;
 }
 .rg-agg-goal-count {
   font-family: var(--sans);
