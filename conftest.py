@@ -62,6 +62,10 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
+    # Exclude tables that are seeded only by migrations (no test mutates
+    # them) — truncating would wipe the seed and migrations don't re-run
+    # between tests, so dependent tests would see an empty table.
+    seed_only = ("demo_configs",)
     rows = await conn.fetch(
         """
         SELECT c.relname
@@ -70,7 +74,9 @@ async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-        """
+          AND c.relname <> ALL($1::text[])
+        """,
+        list(seed_only),
     )
     return [r["relname"] for r in rows]
 

@@ -316,7 +316,7 @@ async def execute_pipeline(
 def _cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m demo.generation.generate")
     p.add_argument("--company", required=True,
-                   choices=["truss", "northwind", "meridian"])
+                   choices=["pelago"])
     p.add_argument("--execute", action="store_true",
                    help="Actually invoke the LLM. Without this flag, "
                         "the script prints a plan + estimated cost and exits.")

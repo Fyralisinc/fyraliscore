@@ -21,7 +21,6 @@ import pytest
 from lib.llm.provider import (
     LLMConfig,
     LLMContentViolationError,
-    LLMError,
     LLMErrorClass,
     LLMParseError,
     LLMPermanentError,

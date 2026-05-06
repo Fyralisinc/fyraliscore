@@ -10,7 +10,7 @@ beforeEach(() => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/v1/demo/simulator/suggested")) {
       return new Response(
-        JSON.stringify({ company_id: "truss", tabs: { slack: [] } }),
+        JSON.stringify({ company_id: "pelago", tabs: { slack: [] } }),
         { status: 200 }
       );
     }

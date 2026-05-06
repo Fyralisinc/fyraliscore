@@ -24,13 +24,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import pathlib
 import struct
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -47,7 +45,6 @@ from services.gateway.auth import create_session
 from services.gateway.db_bootstrap import _register_codecs
 from services.gateway.main import GatewayDeps, build_app
 from services.gateway.rate_limit import RateLimiter
-from services.ingestion.handlers.slack import verify_slack_signature
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -128,6 +125,9 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
+    # demo_configs is seeded only by migrations; truncating it leaves
+    # the table empty between tests because migrations don't re-run.
+    seed_only = ["demo_configs"]
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -135,7 +135,9 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-        """
+          AND c.relname <> ALL($1::text[])
+        """,
+        seed_only,
     )
     tables = [r["relname"] for r in rows]
     if not tables:

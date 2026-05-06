@@ -30,7 +30,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 from uuid import UUID
 
 from .core import AnswerQueryRequest, QueryHandler

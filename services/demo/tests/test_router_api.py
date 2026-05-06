@@ -16,7 +16,7 @@ async def test_list_companies_is_public(client: httpx.AsyncClient):
     assert resp.status_code == 200
     body = resp.json()
     company_ids = {c["company_id"] for c in body["items"]}
-    assert company_ids == {"truss", "northwind", "meridian"}
+    assert company_ids == {"pelago"}
     for item in body["items"]:
         assert item["name"]
         assert item["description"]
@@ -29,11 +29,11 @@ async def test_start_session_returns_token_and_provisions_tenant(
 ):
     resp = await client.post(
         "/v1/demo/sessions/start",
-        json={"company_id": "truss"},
+        json={"company_id": "pelago"},
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["company_id"] == "truss"
+    assert body["company_id"] == "pelago"
     assert body["auth_token"]
     assert body["tenant_id"]
     assert body["session_id"]
@@ -63,7 +63,7 @@ async def test_session_info_requires_auth(
     client: httpx.AsyncClient,
 ):
     resp = await client.post("/v1/demo/sessions/start",
-                              json={"company_id": "northwind"})
+                              json={"company_id": "pelago"})
     body = resp.json()
     sid = body["session_id"]
 
@@ -87,7 +87,7 @@ async def test_session_info_requires_auth(
 @pytest.mark.asyncio
 async def test_end_session_marks_ended(client: httpx.AsyncClient):
     resp = await client.post("/v1/demo/sessions/start",
-                              json={"company_id": "meridian"})
+                              json={"company_id": "pelago"})
     body = resp.json()
     sid, token, tid = body["session_id"], body["auth_token"], body["tenant_id"]
 

@@ -6,7 +6,7 @@ sample captures.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 from services.rendering.contracts import (
@@ -76,7 +76,7 @@ def acme_tuesday_snapshot() -> SubstrateSnapshot:
             revenue_at_risk="$487K",
         ),
         ResourceRef(
-            id="r-cust-northwind",
+            id="r-cust-pelago",
             kind="customer",
             name="Northwind",
             health="healthy",

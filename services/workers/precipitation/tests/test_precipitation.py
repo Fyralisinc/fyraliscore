@@ -11,17 +11,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
 
 import asyncpg
 import pytest
 
-from lib.shared.ids import uuid7
 from services.workers.precipitation.clustering import (
-    DENSITY_THRESHOLD,
-    MIN_CLUSTER_SIZE,
     cluster_active_models,
-    synthesize_candidate_payload,
 )
 from services.workers.precipitation.proposer import (
     enqueue_pattern_review_triggers,
@@ -32,7 +27,6 @@ from services.workers.precipitation.proposer import (
 from services.workers.precipitation.tests.conftest import (
     insert_model,
     make_embedding,
-    similar_embedding,
 )
 
 

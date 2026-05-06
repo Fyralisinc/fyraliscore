@@ -14,7 +14,7 @@ export type TerritoryId =
 export type LayerId = "commits" | "decisions" | "people" | "customers" | "model";
 
 export type LayoutMode = "relational" | "territory" | "two-axis";
-export type EntityKind = "all" | "goals" | "commitments" | "people";
+export type EntityKind = "all" | "goals" | "commitments" | "people" | "resources";
 
 export type PatternEvidence = {
   // ISO YYYY-MM-DD or human-friendly window like "Q1 2026".
@@ -54,9 +54,31 @@ export type PersonProfile = {
   calibration: number;
 };
 
-export type GoalRef = { id: string; label: string; altitude: "strategic" | "operational" };
+export type GoalRef = {
+  id: string;
+  label: string;
+  altitude: "strategic" | "operational";
+  // null/absent for top-of-tree strategic goals; otherwise the id of
+  // the strategic parent this operational goal rolls up to.
+  parent_goal_id?: string | null;
+};
 export type DecisionRef = { id: string; label: string; state: "in-force" | "drifting" | "revisited" };
-export type ResourceRef = { id: string; label: string; kind: "financial" | "human" | "technical" };
+export type ResourceKind = "financial" | "human" | "technical" | "time";
+export type ResourceRef = {
+  id: string;
+  label: string;
+  kind: ResourceKind;
+  // Optional metrics — present when the row comes from the
+  // /v1/structure/resources/aggregate endpoint, absent for sample data.
+  unit?: string | null;
+  capacity?: number | null;
+  deployed?: number | null;
+  utilization_pct?: number | null;
+  deployments_count?: number | null;
+  health?: "available" | "under-utilized" | "deployed" | "constrained" | "over-allocated" | null;
+  // Per-commitment slice (only on commitment overlay path).
+  deployed_quantity?: number | null;
+};
 
 export type CommitmentEdges = {
   contributes_to: string[];   // goal ids
@@ -70,6 +92,17 @@ export type TimeWindow = "next-7" | "quarter" | "all";
 export type ActivityEntry = {
   date: string; // ISO YYYY-MM-DD
   desc: string;
+};
+
+// Per-commit slice of a consumed resource, populated by the gateway's
+// commitment overlay. Gives chips/side-panels the deployed quantity in
+// the resource's native unit without a separate fetch.
+export type CommitmentResourceSlice = {
+  id: string;
+  label: string;
+  kind: ResourceKind;
+  unit?: string | null;
+  deployed_quantity?: number | null;
 };
 
 export type Commitment = {
@@ -88,6 +121,7 @@ export type Commitment = {
   traces_to: string[]; // decision ids (legacy alias for constrained_by)
   related: string[]; // commitment ids
   edges?: CommitmentEdges;
+  consumed_resources?: CommitmentResourceSlice[];
   progress?: string;
   substrate_insight?: string;
   activity: ActivityEntry[];

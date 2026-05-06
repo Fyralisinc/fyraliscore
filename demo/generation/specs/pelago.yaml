@@ -146,12 +146,18 @@ customer_profiles:
 # Goals (6) — strategic + operational, owners spread across leadership.
 # =====================================================================
 goals:
-  - { goal_id: G-1-arr-target,        title: "Hit $10M ARR by EOY",                              owner_actor_id: diana,  altitude: strategic,  description: "Series B fundraise readiness depends on a clean run rate at $10M ARR by Q4. All GTM commitments roll up here.", target_offset_days: 270 }
-  - { goal_id: G-2-multi-crm,         title: "Ship multi-CRM forecast pipeline",                 owner_actor_id: sanjay, altitude: operational, description: "Salesforce + HubSpot + Pipedrive forecast ingest stable; nightly forecast model consumes from all three.", target_offset_days: 180 }
-  - { goal_id: G-3-renewal-90,        title: "Achieve 90% gross renewal rate",                   owner_actor_id: priya,  altitude: operational, description: "Health-scoring + save-play playbook landed across the CS org; 90% gross renewal across the FY.", target_offset_days: 270 }
-  - { goal_id: G-4-incident-halve,    title: "Reduce P1 incidents by 50%",                       owner_actor_id: tom,    altitude: operational, description: "P1 incident rate halved by Q3. Driven by Salesforce sync stabilization and observability tooling.", target_offset_days: 210 }
-  - { goal_id: G-5-conv-ai-v1,        title: "Ship conversation-AI module v1",                   owner_actor_id: sanjay, altitude: operational, description: "Conversation-AI module taps into Gong/Chorus call recordings and surfaces deal risk signals. Q3 release.", target_offset_days: 240 }
-  - { goal_id: G-6-vp-eng-successor,  title: "Hire VP Eng successor",                            owner_actor_id: olu,    altitude: operational, description: "Open after Tom's departure (m5). Needed before Q4 to unblock the forecast model release.", target_offset_days: 240 }
+  # ---- Strategic (3) — top of the tree, no parent. -----------------
+  - { goal_id: G-S1-revenue-growth,   title: "Hit $10M ARR & Series B readiness",                owner_actor_id: diana,  altitude: strategic, description: "Top-of-house growth narrative for the Series B raise: clean run rate at $10M ARR by Q4 and gross retention that holds the base.", target_offset_days: 270 }
+  - { goal_id: G-S2-platform-stability, title: "Stabilize the integration & data surface",       owner_actor_id: sanjay, altitude: strategic, description: "Cut the integration-debt blast radius. CRM ingest reliability, P1 incident rate, and engineering leadership continuity are the three load-bearing pillars.", target_offset_days: 270 }
+  - { goal_id: G-S3-product-roadmap,  title: "Ship the AI roadmap on time",                      owner_actor_id: sanjay, altitude: strategic, description: "Conversation-AI v1 + ICP scoring on a credible Q3/Q4 cadence. Forecast model v2 ships under this umbrella.", target_offset_days: 270 }
+
+  # ---- Operational (6) — each rolls up to one strategic parent. ----
+  - { goal_id: G-1-arr-target,        title: "Close $10M ARR run rate",                          owner_actor_id: diana,  altitude: operational, parent_goal_id: G-S1-revenue-growth,    description: "GTM rollup: net-new + expansion bookings + healthy renewals to land at $10M ARR by Q4.", target_offset_days: 270 }
+  - { goal_id: G-3-renewal-90,        title: "Achieve 90% gross renewal rate",                   owner_actor_id: priya,  altitude: operational, parent_goal_id: G-S1-revenue-growth,    description: "Health-scoring + save-play playbook landed across the CS org; 90% gross renewal across the FY.", target_offset_days: 270 }
+  - { goal_id: G-2-multi-crm,         title: "Ship multi-CRM forecast pipeline",                 owner_actor_id: sanjay, altitude: operational, parent_goal_id: G-S2-platform-stability, description: "Salesforce + HubSpot + Pipedrive forecast ingest stable; nightly forecast model consumes from all three.", target_offset_days: 180 }
+  - { goal_id: G-4-incident-halve,    title: "Reduce P1 incidents by 50%",                       owner_actor_id: tom,    altitude: operational, parent_goal_id: G-S2-platform-stability, description: "P1 incident rate halved by Q3. Driven by Salesforce sync stabilization and observability tooling.", target_offset_days: 210 }
+  - { goal_id: G-6-vp-eng-successor,  title: "Hire VP Eng successor",                            owner_actor_id: olu,    altitude: operational, parent_goal_id: G-S2-platform-stability, description: "Open after Tom's departure (m5). Needed before Q4 to unblock the forecast model release.", target_offset_days: 240 }
+  - { goal_id: G-5-conv-ai-v1,        title: "Ship conversation-AI module v1",                   owner_actor_id: sanjay, altitude: operational, parent_goal_id: G-S3-product-roadmap,    description: "Conversation-AI module taps into Gong/Chorus call recordings and surfaces deal risk signals. Q3 release.", target_offset_days: 240 }
 
 # =====================================================================
 # Decisions (5) — material company choices captured early in the window.
@@ -261,7 +267,7 @@ recommendations:
 
 # Validator targets (±10%) used by demo/generation/built/pelago.py.
 recommendation_count: 7
-goal_count: 6
+goal_count: 9                           # 3 strategic + 6 operational
 decision_count: 5
 commitment_count: 140                  # ~31 seeds + ~110 rate-generated
 signal_window_days: 270

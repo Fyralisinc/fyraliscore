@@ -5,8 +5,8 @@
 #   1. Sources .env (and .env.dogfood when present) and validates the
 #      DEEPSEEK_API_KEY secret + Postgres + Ollama dependencies.
 #   2. Applies any database migrations that haven't been recorded.
-#   3. Builds + emits the Truss / Northwind / Meridian demo snapshots
-#      when the .sql.zst files don't exist yet.
+#   3. Builds + emits the Pelago demo snapshot when the .sql.zst file
+#      doesn't exist yet.
 #   4. Starts gateway, think_worker, post_commit_worker, and the Vite
 #      UI dev server. PIDs land in /tmp/fyralis_stack.pids so
 #      `scripts/stop.sh` can shut them down cleanly.
@@ -34,8 +34,8 @@ for arg in "$@"; do
 Usage: scripts/start.sh [--no-browser] [--rebuild-snapshots]
 
   --no-browser          Don't open the demo picker in your browser.
-  --rebuild-snapshots   Re-emit Truss/Northwind/Meridian SQL snapshots
-                        even if the .sql.zst files already exist.
+  --rebuild-snapshots   Re-emit the Pelago SQL snapshot even if the
+                        .sql.zst already exists.
 HELP
       exit 0 ;;
     *)
@@ -116,19 +116,13 @@ done
 log "Migrations: ${applied} new"
 
 # ----------------------------------------------------------------------
-# 3. Demo snapshots
+# 3. Demo snapshot
 # ----------------------------------------------------------------------
-need_snapshots=0
-for c in truss northwind meridian; do
-  [ -f "demo/snapshots/${c}-v1.sql.zst" ] || need_snapshots=1
-done
-if [ "$REBUILD_SNAPSHOTS" = "1" ] || [ "$need_snapshots" = "1" ]; then
-  log "Building demo snapshots (truss/northwind/meridian)…"
-  .venv/bin/python -m demo.generation.built.truss     --emit --compress >/dev/null
-  .venv/bin/python -m demo.generation.built.northwind --emit --compress --no-spec-counts >/dev/null
-  .venv/bin/python -m demo.generation.built.meridian  --emit --compress --no-spec-counts >/dev/null
+if [ "$REBUILD_SNAPSHOTS" = "1" ] || [ ! -f "demo/snapshots/pelago-v1.sql.zst" ]; then
+  log "Building Pelago demo snapshot…"
+  .venv/bin/python -m demo.generation.built.pelago --emit --compress >/dev/null
 else
-  log "Demo snapshots already present (use --rebuild-snapshots to refresh)"
+  log "Pelago snapshot already present (use --rebuild-snapshots to refresh)"
 fi
 
 # ----------------------------------------------------------------------

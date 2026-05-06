@@ -32,8 +32,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.demo.repo import get_demo_session, increment_signal_count
-from services.demo.sse import publish_recommendation_event
+from services.demo.repo import increment_signal_count
 from services.ingestion.core import ingest
 
 # Eagerly import every ingestion handler we route to. The gateway's
@@ -449,11 +448,9 @@ SuggestedSignal = dict[str, Any]
 
 def list_suggested_signals(company_id: str) -> dict[str, list[SuggestedSignal]]:
     """Return suggested signals grouped by channel tab for the given
-    company. Used by the simulator UI's "Suggested signals" section.
-
-    Each signal is one click → fills the form. Wording calibrated to
-    the company's spec so the demo flow is rehearsable."""
-    return _SUGGESTED.get(company_id, _DEFAULT_SUGGESTED)
+    company. Used by the simulator UI's "Suggested signals" section."""
+    del company_id  # single-tenant demo — only pelago, no per-company variants
+    return _DEFAULT_SUGGESTED
 
 
 _DEFAULT_SUGGESTED: dict[str, list[SuggestedSignal]] = {
@@ -512,161 +509,6 @@ _DEFAULT_SUGGESTED: dict[str, list[SuggestedSignal]] = {
             "json": {"event": "custom_demo", "note": "fill in your own payload"},
         },
     ],
-}
-
-
-_SUGGESTED: dict[str, dict[str, list[SuggestedSignal]]] = {
-    "truss": {
-        "slack": [
-            {
-                "label": "Linear asks about SSO",
-                "channel_name": "#sales",
-                "author_label": "Founder — Jules Park",
-                "text": "Linear just asked us about SSO too — that's the 4th design partner this quarter. Should we accelerate?",
-            },
-            {
-                "label": "Engineer slip warning",
-                "channel_name": "#eng",
-                "author_label": "Eng — Sarah Chen",
-                "text": "API redesign is uglier than I scoped — going to need 3 more weeks. Three customers waiting on stable v1.",
-            },
-            {
-                "label": "Founder context",
-                "channel_name": "#founder-private",
-                "author_label": "Founder — Jules Park",
-                "text": "Haven't synced with Tom on hiring priorities in 3 weeks; need to fix that this week.",
-            },
-        ],
-        "email": [
-            {
-                "label": "Replit follow-up",
-                "from_label": "Replit — Eng Lead",
-                "to_label": "CEO",
-                "subject": "Following up on SSO conversation",
-                "body": "Hey Maya — circling back on SSO. We're standardizing on enterprise auth across vendors and need a date.",
-            },
-        ],
-        "github": [
-            {
-                "label": "Sarah opens PR for redesign",
-                "repo": "truss/api",
-                "event_type": "pr_opened",
-                "author_label": "Eng — Sarah Chen",
-                "title": "[WIP] API redesign — feedback wanted",
-            },
-        ],
-        "calendar": [
-            {
-                "label": "Jules ↔ Tom 1:1",
-                "title": "1:1 — Jules / Tom (overdue)",
-                "attendees_labels": ["Founder — Jules Park", "VP Eng — Tom Bishop"],
-                "minutes_ago": 0,
-            },
-        ],
-        "stripe": [
-            {
-                "label": "Vercel invoice paid",
-                "event_type": "payment",
-                "customer_label": "Vercel",
-                "amount_usd": 88000,
-            },
-        ],
-        "custom": _DEFAULT_SUGGESTED["custom"],
-    },
-    "northwind": {
-        "slack": [
-            {
-                "label": "Acme asks about SAML again",
-                "channel_name": "#sales",
-                "author_label": "AE — Diego Rivera",
-                "text": "Acme is asking about the SAML feature again — 4th time in 2 weeks. They're starting to flag it as a contract risk.",
-            },
-            {
-                "label": "Engineer raises capacity flag",
-                "channel_name": "#eng-leads",
-                "author_label": "EM — Marcus Lee",
-                "text": "We're at 91% capacity heading into Q3 push. Anything else lands and we slip.",
-            },
-        ],
-        "email": [
-            {
-                "label": "Acme contract renewal",
-                "from_label": "CSM — Avery Nakamura",
-                "to_label": "CEO",
-                "subject": "Acme — contract renewal in 60 days",
-                "body": "Acme is up for renewal. Their procurement is asking for SAML to be locked in writing.",
-            },
-        ],
-        "github": _DEFAULT_SUGGESTED["github"],
-        "calendar": [
-            {
-                "label": "Acme exec sync",
-                "title": "Acme Q3 Roadmap Sync",
-                "attendees_labels": ["CEO", "Acme CIO"],
-                "minutes_ago": 15,
-            },
-        ],
-        "stripe": [
-            {
-                "label": "Notion expansion payment",
-                "event_type": "payment",
-                "customer_label": "Notion",
-                "amount_usd": 410000,
-            },
-        ],
-        "custom": _DEFAULT_SUGGESTED["custom"],
-    },
-    "meridian": {
-        "slack": [
-            {
-                "label": "Industrium gives 2-week extension",
-                "channel_name": "#industrium-warroom",
-                "author_label": "CSM — Avery Nakamura",
-                "text": "Industrium CSM said they'll consider giving us 2 more weeks if we commit to a specific milestone by Friday.",
-            },
-            {
-                "label": "VP Eng off-channel",
-                "channel_name": "#eng-leads",
-                "author_label": "VP Eng — Tom Bishop",
-                "text": "I haven't been looped in on the Industrium thread — what's the actual scope risk?",
-            },
-        ],
-        "email": [
-            {
-                "label": "Industrium escalation",
-                "from_label": "Industrium — VP Operations",
-                "to_label": "CEO",
-                "subject": "Escalating — missed Q2 milestone",
-                "body": "Sam, this is the second time we've missed on this commitment. We need a credible recovery plan by next week.",
-            },
-        ],
-        "github": [
-            {
-                "label": "Industrium PR merged",
-                "repo": "meridian/optimizer",
-                "event_type": "pr_merged",
-                "author_label": "Eng — Theo Schmidt",
-                "title": "Industrium-specific batch sizing fix",
-            },
-        ],
-        "calendar": [
-            {
-                "label": "Industrium war-room",
-                "title": "Industrium Recovery War Room",
-                "attendees_labels": ["CEO", "VP Eng — Tom Bishop", "CSM — Avery Nakamura"],
-                "minutes_ago": 5,
-            },
-        ],
-        "stripe": [
-            {
-                "label": "Acme Co. churn risk — invoice failed",
-                "event_type": "payment_failed",
-                "customer_label": "Acme Co.",
-                "amount_usd": 31600,
-            },
-        ],
-        "custom": _DEFAULT_SUGGESTED["custom"],
-    },
 }
 
 

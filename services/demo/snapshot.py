@@ -1,35 +1,18 @@
 """services/demo/snapshot.py — load + wipe demo tenant snapshots.
 
-Two paths:
-
-  * SQL snapshot file (Session 2 produces these): plain .sql or .sql.zst
-    in `demo/snapshots/<company>-v1.sql.zst`. We read it, swap the
-    placeholder tenant id (00000000-0000-0000-0000-000000000000) with
-    the real tenant_id, and execute it inside the caller's transaction.
-
-  * Synthetic fallback: when the SQL file is absent (which is the case
-    until Session 2 runs full LLM generation), we materialize a small,
-    deterministic in-process snapshot — enough actors, goals,
-    commitments, customers, and recommendations that the action list
-    surfaces something meaningful. The synthetic snapshot is not as
-    rich as the LLM-generated one but is sufficient for end-to-end
-    smoke and for demos that don't require the full company depth.
-
-Both paths return the CEO actor's id so the session orchestrator can
-mint a token bound to that actor.
+Loads a .sql or .sql.zst from `demo/snapshots/<company>-v1.sql.zst`,
+swaps the placeholder tenant id (00000000-0000-0000-0000-000000000000)
+for the real tenant_id, and executes it inside the caller's
+transaction. Returns the CEO actor's id so the session orchestrator
+can mint a token bound to that actor.
 """
 from __future__ import annotations
 
 import gzip
-import os
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import asyncpg
-
-from lib.shared.ids import uuid7
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -88,25 +71,25 @@ async def load_snapshot(
 ) -> UUID:
     """Load `snapshot_uri` into `tenant_id`. Returns the CEO actor id.
 
-    Resolution: try the SQL file at `<repo>/<snapshot_uri>` first; if
-    absent, materialize the synthetic fallback for `company_id`.
+    Reads the SQL file at `<repo>/<snapshot_uri>` and executes it.
+    Raises FileNotFoundError if the snapshot is missing — every
+    registered demo company is expected to ship a snapshot file.
 
-    `preserve_ceo_actor_id` is set on reset to keep the existing auth
-    token valid across resets.
+    `preserve_ceo_actor_id` is accepted for API compatibility with the
+    reset flow, but the snapshot path doesn't need it; the CEO actor id
+    is recovered by querying the loaded tenant rows.
     """
+    del company_id, preserve_ceo_actor_id
     sql_path = REPO_ROOT / snapshot_uri
-    if sql_path.exists():
-        sql = _read_snapshot_file(sql_path)
-        sql = _remap_snapshot_uuids(sql, tenant_id)
-        await conn.execute(sql)
-        return await _find_ceo_actor(
-            conn, tenant_id=tenant_id,
+    if not sql_path.exists():
+        raise FileNotFoundError(
+            f"demo snapshot not found at {sql_path}; ensure the snapshot "
+            f"file is committed under demo/snapshots/"
         )
-
-    return await _materialize_synthetic(
-        conn, tenant_id=tenant_id, company_id=company_id,
-        preserve_ceo_actor_id=preserve_ceo_actor_id,
-    )
+    sql = _read_snapshot_file(sql_path)
+    sql = _remap_snapshot_uuids(sql, tenant_id)
+    await conn.execute(sql)
+    return await _find_ceo_actor(conn, tenant_id=tenant_id)
 
 
 async def _find_ceo_actor(
@@ -167,6 +150,7 @@ async def wipe_tenant(
         "demo_session_costs",       # FK on demo_sessions; sessions kept
         # Edge tables first — they FK into goals/commitments/decisions/resources.
         "customer_commitments",
+        "resource_deployments",
         "constrained_by",
         "depends_on",
         "contributes_to",
@@ -198,6 +182,9 @@ async def wipe_tenant(
     # never strand a live auth session.
     preserved = list(preserve_actor_ids)
     edge_join_sql: dict[str, str] = {
+        "resource_deployments":
+            "DELETE FROM resource_deployments WHERE commitment_id IN "
+            "(SELECT id FROM commitments WHERE tenant_id = $1)",
         "contributes_to":
             "DELETE FROM contributes_to WHERE commitment_id IN "
             "(SELECT id FROM commitments WHERE tenant_id = $1)",
@@ -275,373 +262,3 @@ def _read_snapshot_file(path: Path) -> str:
             return fh.read()
     return path.read_text()
 
-
-# ---------------------------------------------------------------------
-# Synthetic fallback — small, deterministic, sufficient for demos
-# ---------------------------------------------------------------------
-
-
-# Per-company shape parameters. Headcount + customer counts per spec.
-_COMPANY_SHAPE: dict[str, dict[str, Any]] = {
-    "truss": {
-        "ceo_name": "Maya Patel", "ceo_email": "maya@truss.dev",
-        "actor_count": 40, "customer_count": 35,
-        "company_name": "Truss",
-        "tagline": "Series A founder at full cognitive load",
-        "recommendations": [
-            ("Engineering capacity hitting saturation — pause new commitments",
-             "capacity", 95000.0),
-            ("3 design partners requested SSO in past 60 days — $280K ARR exposure",
-             "customer_pressure", 280000.0),
-            ("Lead engineer Sarah on incident rotation 4 of 6 weeks — burnout risk",
-             "personnel", 50000.0),
-            ("API redesign commitment predates 3 customer requests for stable v1 — re-scope",
-             "decision_revisit", 120000.0),
-            ("Roadmap has 8 active workstreams; 3 lack customer demand signal",
-             "strategic", 200000.0),
-            ("3 weeks since founder-VP Eng sync; 2 open roles blocking critical path",
-             "founder_context", 75000.0),
-        ],
-    },
-    "northwind": {
-        "ceo_name": "Jordan Reyes", "ceo_email": "jordan@northwind.io",
-        "actor_count": 60, "customer_count": 50,
-        "company_name": "Northwind Software",
-        "tagline": "Series B, healthy growth, normal Tuesday",
-        "recommendations": [
-            ("Engineering at 91% utilization — reallocate before Q3 push",
-             "capacity", 60000.0),
-            ("Postgres-only architecture decision (14 mo old) — conditions changed",
-             "decision_revisit", 90000.0),
-            ("Manager has gone 6 weeks without 1:1s with direct report — attention",
-             "personnel", 30000.0),
-            ("3 customers requested SAML SSO in past 60 days — $410K ARR",
-             "customer_pressure", 410000.0),
-            ("Acme Corp commitment showing slip risk — mid-priority, watch",
-             "slip_warning", 80000.0),
-            ("Pipeline lean on enterprise — $2M Series B target needs deeper top-of-funnel",
-             "strategic", 1500000.0),
-        ],
-    },
-    "meridian": {
-        "ceo_name": "Sam Whitfield", "ceo_email": "sam@meridianindustrial.com",
-        "actor_count": 80, "customer_count": 70,
-        "company_name": "Meridian Industrial",
-        "tagline": "Series C, $4.2M ARR customer escalating",
-        "recommendations": [
-            ("Industrium ($4.2M ARR) — 3 critical-path commitments in slip risk",
-             "bridge_alert", 4200000.0),
-            ("Cross-team allocation needed for Industrium recovery this week",
-             "capacity", 350000.0),
-            ("VP Engineering has not been engaged on Industrium issue — needs visibility",
-             "personnel", 120000.0),
-            ("Original Industrium commitment scope grew 3x — re-scope before retry",
-             "decision_revisit", 280000.0),
-            ("Past 4 enterprise customers all hit the same scope-growth pattern",
-             "pattern", 800000.0),
-            ("Q4 pipeline composition shifting to mid-market — strategic check",
-             "strategic", 1200000.0),
-            ("Renewal risk on Acme Co. ($380K ARR) — health drift over 30 days",
-             "customer_pressure", 380000.0),
-        ],
-    },
-}
-
-
-async def _materialize_synthetic(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    company_id: str,
-    preserve_ceo_actor_id: UUID | None = None,
-) -> UUID:
-    shape = _COMPANY_SHAPE.get(company_id)
-    if shape is None:
-        raise ValueError(f"no synthetic snapshot for company_id={company_id!r}")
-
-    now = datetime.now(timezone.utc)
-    ceo_id = preserve_ceo_actor_id or uuid7()
-
-    # 1) CEO actor (target of every recommendation)
-    await conn.execute(
-        """
-        INSERT INTO actors (
-            id, tenant_id, type, display_name, email, status, metadata,
-            created_at, last_seen_at
-        ) VALUES ($1, $2, 'human_internal', $3, $4, 'active',
-                  $5::jsonb, $6, $6)
-        """,
-        ceo_id, tenant_id, shape["ceo_name"], shape["ceo_email"],
-        '{"role":"ceo","title":"Founder & CEO"}', now,
-    )
-
-    # 2) Surrounding cast — small, deterministic, enough to back recs
-    surrounding = await _create_surrounding_actors(
-        conn, tenant_id=tenant_id, count=12, company_id=company_id, base_now=now,
-    )
-
-    # 3) Seed observation (every Model needs born_from_event_id)
-    seed_obs_id = await _insert_seed_observation(
-        conn, tenant_id=tenant_id, actor_id=surrounding[0], now=now,
-        company_id=company_id,
-    )
-
-    # 4) A handful of customer Resources
-    customer_ids = await _create_customer_resources(
-        conn, tenant_id=tenant_id, count=min(5, shape["customer_count"]),
-        company_id=company_id, seed_obs_id=seed_obs_id, now=now,
-    )
-
-    # 5) A backbone goal so recommendations have a real target_act_ref.
-    backbone_goal_id = await _create_backbone_goal(
-        conn, tenant_id=tenant_id, owner_id=ceo_id,
-        seed_obs_id=seed_obs_id, company_name=shape["company_name"],
-        now=now,
-    )
-
-    # 6) Recommendations — the substance the action list surfaces.
-    # Round-robin target_act_ref over backbone_goal + customer resources
-    # so the action-list ranker's denormalization step finds real
-    # entities for every card.
-    targets = [("goal", backbone_goal_id)] + [
-        ("resource", cid) for cid in customer_ids
-    ]
-    for i, (proposition_text, kind_label, impact_usd) in enumerate(shape["recommendations"]):
-        ref_type, ref_id = targets[i % len(targets)]
-        await _insert_recommendation(
-            conn,
-            tenant_id=tenant_id,
-            target_actor_id=ceo_id,
-            seed_obs_id=seed_obs_id,
-            proposition_text=proposition_text,
-            kind_label=kind_label,
-            impact_usd=impact_usd,
-            target_ref_type=ref_type,
-            target_ref_id=ref_id,
-            now=now,
-        )
-
-    return ceo_id
-
-
-async def _create_backbone_goal(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    owner_id: UUID,
-    seed_obs_id: UUID,
-    company_name: str,
-    now: datetime,
-) -> UUID:
-    gid = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO goals (
-            id, tenant_id, title, description, state, altitude,
-            cached_health, cached_health_computed_at,
-            created_at, last_state_change_at, created_by_event_id
-        ) VALUES (
-            $1, $2, $3, $4, 'active', 'strategic',
-            'healthy', $5,
-            $5, $5, $6
-        )
-        """,
-        gid, tenant_id,
-        f"{company_name} — operating cadence",
-        f"Backbone goal for the {company_name} demo. Recommendations "
-        f"hang off this goal so they have a concrete target_act_ref.",
-        now, seed_obs_id,
-    )
-    return gid
-
-
-async def _create_surrounding_actors(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    count: int,
-    company_id: str,
-    base_now: datetime,
-) -> list[UUID]:
-    names = [
-        ("Sarah Chen", "sarah@example.com", "engineer"),
-        ("Marcus Lee", "marcus@example.com", "engineer"),
-        ("Priya Shah", "priya@example.com", "pm"),
-        ("Diego Rivera", "diego@example.com", "sales"),
-        ("Riley Kim", "riley@example.com", "sales"),
-        ("Avery Nakamura", "avery@example.com", "cs"),
-        ("Tom Bishop", "tom@example.com", "vp_eng"),
-        ("Grace Liu", "grace@example.com", "design"),
-        ("Imani Black", "imani@example.com", "ops"),
-        ("Jules Park", "jules@example.com", "founder"),
-        ("Noor Hassan", "noor@example.com", "marketing"),
-        ("Theo Schmidt", "theo@example.com", "engineer"),
-    ]
-    ids: list[UUID] = []
-    for name, email, role in names[:count]:
-        aid = uuid7()
-        await conn.execute(
-            """
-            INSERT INTO actors (
-                id, tenant_id, type, display_name, email, status,
-                metadata, created_at, last_seen_at
-            ) VALUES ($1, $2, 'human_internal', $3, $4, 'active',
-                      $5::jsonb, $6, $6)
-            """,
-            aid, tenant_id, name, email,
-            f'{{"role":"{role}"}}', base_now,
-        )
-        ids.append(aid)
-    return ids
-
-
-async def _insert_seed_observation(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    actor_id: UUID,
-    now: datetime,
-    company_id: str,
-) -> UUID:
-    """Synthetic seed observation. Leaves embedding NULL —
-    `embedding_pending=TRUE` lets the embedder backfill on demand and
-    sidesteps the asyncpg vector-codec registration that the seed-only
-    path doesn't otherwise need."""
-    obs_id = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO observations (
-            id, tenant_id, occurred_at, ingested_at, kind, source_channel,
-            source_actor_ref, actor_id, content, content_text,
-            embedding, embedding_pending,
-            trust_tier, external_id, entities_mentioned, sequence_num
-        ) VALUES (
-            $1, $2, $3, $3, 'signal', 'system:demo_seed',
-            $4, $5, $6::jsonb, $7,
-            NULL, TRUE,
-            'authoritative', $8, '[]'::jsonb,
-            (SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM observations
-             WHERE tenant_id = $2)
-        )
-        """,
-        obs_id, tenant_id, now,
-        actor_id.hex[:12], actor_id,
-        '{"event":"demo_seed"}',
-        f"Demo seed for {company_id}",
-        f"demo_seed_{obs_id}",
-    )
-    return obs_id
-
-
-async def _create_customer_resources(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    count: int,
-    company_id: str,
-    seed_obs_id: UUID,
-    now: datetime,
-) -> list[UUID]:
-    customer_pool = {
-        "truss": [
-            ("Linear", 65000.0), ("Vercel", 88000.0), ("Replit", 42000.0),
-            ("Cursor Labs", 110000.0), ("Modal", 71000.0),
-        ],
-        "northwind": [
-            ("Acme Corp", 240000.0), ("Wayfair", 380000.0),
-            ("Drift", 195000.0), ("Pendo", 220000.0), ("Notion", 410000.0),
-        ],
-        "meridian": [
-            ("Industrium Corp", 4200000.0), ("Acme Co.", 380000.0),
-            ("Globex Manufacturing", 920000.0), ("Sirius Logistics", 1100000.0),
-            ("Helios Heavy Industries", 1850000.0),
-        ],
-    }
-    customers = customer_pool.get(company_id, [])[:count]
-    ids: list[UUID] = []
-    for name, arr in customers:
-        rid = uuid7()
-        await conn.execute(
-            """
-            INSERT INTO resources (
-                id, tenant_id, kind, identity, description,
-                current_value, utilization_state, controllability,
-                temporal_character, metadata, created_at,
-                last_updated_at, last_updated_by_event_id
-            ) VALUES (
-                $1, $2, 'relational', $3, $4,
-                $5::jsonb, 'deployed', 'owned',
-                'time_limited', $6::jsonb, $7, $7, $8
-            )
-            """,
-            rid, tenant_id, f"customer:{name.lower().replace(' ', '_')}",
-            f"{name} — paying customer (synthetic demo data)",
-            f'{{"arr_usd":{arr}}}',
-            '{"segment":"demo","source":"synthetic_snapshot"}',
-            now, seed_obs_id,
-        )
-        ids.append(rid)
-    return ids
-
-
-async def _insert_recommendation(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    target_actor_id: UUID,
-    seed_obs_id: UUID,
-    proposition_text: str,
-    kind_label: str,
-    impact_usd: float,
-    target_ref_type: str,
-    target_ref_id: UUID,
-    now: datetime,
-) -> UUID:
-    """Insert a single recommendation Model. Uses a synthetic vector
-    of zeros so the NOT NULL embedding constraint is satisfied without
-    registering the pgvector codec on the connection."""
-    mid = uuid7()
-    op = "update" if target_ref_type == "resource" else "transition"
-    payload: dict[str, Any] = {"description": proposition_text}
-    if op == "transition":
-        payload["new_state"] = "active"
-    proposition = {
-        "kind": "recommendation",
-        "natural": proposition_text,
-        "target_actor_id": str(target_actor_id),
-        "target_act_ref": {
-            "type": target_ref_type,
-            "id": str(target_ref_id),
-        },
-        "proposed_change": {
-            "operation": op,
-            "payload": payload,
-        },
-        "expected_impact": impact_usd,
-        "qualitative_impact": kind_label,
-        "supporting_observation_ids": [str(seed_obs_id)],
-        "supporting_model_ids": [],
-    }
-    import json
-    embedding_literal = "[" + ",".join("0" for _ in range(768)) + "]"
-    await conn.execute(
-        """
-        INSERT INTO models (
-            id, tenant_id, born_from_event_id, proposition, "natural",
-            embedding, scope_temporal, confidence, activation,
-            confidence_at_assertion, status, created_at,
-            visible_to_subjects
-        ) VALUES (
-            $1, $2, $3, $4::jsonb, $5,
-            $6::vector, $7::jsonb, $8, 1.0,
-            $8, 'active', $9, TRUE
-        )
-        """,
-        mid, tenant_id, seed_obs_id, json.dumps(proposition), proposition_text,
-        embedding_literal, '{"window":"current"}',
-        0.78, now,
-    )
-    return mid
-
-
-__all__ = ["load_snapshot", "wipe_tenant", "REPO_ROOT"]

@@ -19,8 +19,7 @@ Covers Wave 3-B Outstanding #3:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -29,9 +28,8 @@ from lib.shared.ids import uuid7
 from services.acts import commitments as commitments_svc
 from services.acts import goals as goals_svc
 from services.acts import decisions as decisions_svc
-from services.observations.state_change import emit_state_change
 from services.think.cascade import (
-    CascadeEvent, CascadeResult, cascade,
+    CascadeEvent, cascade,
 )
 from services.think.tests.conftest import make_embedding
 

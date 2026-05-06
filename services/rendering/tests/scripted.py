@@ -5,7 +5,7 @@ pattern used in `lib/llm/tests/test_provider.py`.
 """
 from __future__ import annotations
 
-from lib.llm.provider import LLMConfig, LLMProvider, compute_cost_usd
+from lib.llm.provider import LLMConfig, LLMProvider
 
 
 class ScriptedProvider(LLMProvider):

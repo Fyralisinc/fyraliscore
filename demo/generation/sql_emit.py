@@ -21,6 +21,8 @@ from demo.generation.schemas import (
     GeneratedGoal,
     GeneratedModel,
     GeneratedRecommendation,
+    GeneratedResource,
+    GeneratedResourceDeployment,
 )
 
 
@@ -66,11 +68,18 @@ def emit_sql(bundle: GeneratedBundle) -> str:
     parts.append("-- seed observation")
     parts.append(_seed_observation_insert(seed_obs_id, seed_actor_id, bundle.company_id))
 
-    # 3) resources (customers)
+    # 3a) resources (customers)
     parts.append("")
     parts.append("-- resources (customers)")
     for c in bundle.customers:
         parts.append(_resource_insert(c, seed_obs_id))
+
+    # 3b) resources (capacity pools — human pods, financial, technical)
+    if bundle.resources:
+        parts.append("")
+        parts.append("-- resources (capacity pools)")
+        for r in bundle.resources:
+            parts.append(_capacity_resource_insert(r, seed_obs_id))
 
     # 4) observations (signals)
     parts.append("")
@@ -106,6 +115,14 @@ def emit_sql(bundle: GeneratedBundle) -> str:
             parts.append(_constrained_by_insert(c.id, did))
         if c.served_by_customer_id:
             parts.append(_customer_commitment_insert(c.served_by_customer_id, c.id))
+
+    # 7b) resource_deployments — bridge each commitment to the capacity
+    # resources it consumes (FTE, engineer-weeks, GPU-hours, USD).
+    if bundle.resource_deployments:
+        parts.append("")
+        parts.append("-- resource_deployments")
+        for dep in bundle.resource_deployments:
+            parts.append(_resource_deployment_insert(dep))
 
     # 8) models — diverse epistemic substrate (state / relation /
     # prediction / pattern / capability_assessment / hypothesis /
@@ -233,12 +250,45 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_ROLE_DISPLAY_TITLE = {
+    "founder": "Founder & CEO",
+    "cto": "CTO",
+    "vp_eng": "VP Engineering",
+    "vp_sales": "VP Sales",
+    "head_cs": "Head of Customer Success",
+    "head_sales": "Head of Sales",
+    "head_ops": "Head of Operations",
+    "head_finance": "Head of Finance",
+    "cfo": "CFO",
+    "engineer": "Engineer",
+    "data_engineer": "Data Engineer",
+    "ml_engineer": "ML Engineer",
+    "pm": "Product Manager",
+    "designer": "Designer",
+    "ae": "Account Executive",
+    "se": "Sales Engineer",
+    "cs_manager": "Customer Success Manager",
+    "customer_success": "Customer Success",
+    "sales": "Sales",
+    "implementation": "Implementation Engineer",
+    "marketing": "Marketing",
+    "finance_ops": "Finance / Ops",
+    "recruiter": "Recruiter",
+    "fractional_legal": "Fractional Legal Counsel",
+}
+
+
 def _actor_insert(a, ceo_id: str) -> str:
     is_ceo = a.id == ceo_id
+    title = _ROLE_DISPLAY_TITLE.get(
+        a.role,
+        a.role.replace("_", " ").title() if a.role else "Team member",
+    )
     metadata = {
         "role": a.role,
         "personality_brief": a.personality_brief,
         "is_ceo": is_ceo,
+        "title": title,
     }
     if is_ceo:
         metadata["title"] = "Founder & CEO"
@@ -285,6 +335,49 @@ def _resource_insert(c, seed_obs_id: str) -> str:
         f"{_q(current_value)}::jsonb, 'deployed', 'owned', 'time_limited', "
         f"{_q(metadata)}::jsonb, {_q(_now())}, {_q(seed_obs_id)}) "
         "ON CONFLICT (id) DO NOTHING;"
+    )
+
+
+def _capacity_resource_insert(r: GeneratedResource, seed_obs_id: str) -> str:
+    """Insert a capacity-class resource (human pod / financial pool /
+    technical platform). Distinct from `_resource_insert` which serializes
+    Customer rows as `kind='relational'`. Capacity resources expose
+    `current_value = {capacity, unit, label}` — utilization is computed
+    at read time from `resource_deployments`."""
+    current_value = {
+        "capacity": r.capacity,
+        "unit": r.unit,
+        "label": r.label,
+    }
+    metadata = {
+        **r.metadata,
+        "label": r.label,
+        "source": "demo_generation",
+    }
+    return (
+        "INSERT INTO resources (id, tenant_id, kind, identity, description, "
+        "current_value, utilization_state, controllability, temporal_character, "
+        "metadata, created_at, last_updated_by_event_id) VALUES ("
+        f"{_q(r.id)}, {_q(PLACEHOLDER_TENANT_ID)}, {_q(r.kind)}, "
+        f"{_q(r.identity)}, {_q(r.description)}, "
+        f"{_q(current_value)}::jsonb, {_q(r.utilization_state)}, "
+        f"{_q(r.controllability)}, {_q(r.temporal_character)}, "
+        f"{_q(metadata)}::jsonb, {_q(_now())}, {_q(seed_obs_id)}) "
+        "ON CONFLICT (id) DO NOTHING;"
+    )
+
+
+def _resource_deployment_insert(dep: GeneratedResourceDeployment) -> str:
+    """Insert a resource_deployments row tying a commitment to a capacity
+    resource with a numeric quantity. The unit is implicit on the resource
+    row; the bridge stores `{value: X}` so the join can sum."""
+    quantity = {"value": dep.deployed_quantity}
+    return (
+        "INSERT INTO resource_deployments "
+        "(resource_id, commitment_id, deployed_quantity, deployed_at) "
+        f"VALUES ({_q(dep.resource_id)}, {_q(dep.commitment_id)}, "
+        f"{_q(quantity)}::jsonb, {_q(_now())}) "
+        "ON CONFLICT (resource_id, commitment_id) DO NOTHING;"
     )
 
 

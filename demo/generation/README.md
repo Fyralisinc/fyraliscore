@@ -2,18 +2,16 @@
 
 Source-of-truth: [`DEMO-BUILD-PLAN.md`](../../DEMO-BUILD-PLAN.md), Session 2.
 
-This package builds a SQL snapshot per demo company (Truss, Northwind,
-Meridian) by running a sequenced LLM pipeline. Each step's output feeds
-the next step's prompt so cross-references stay consistent.
+This package builds a SQL snapshot for the Pelago demo company by
+running a sequenced LLM pipeline. Each step's output feeds the next
+step's prompt so cross-references stay consistent.
 
 ## Layout
 
 ```
 demo/generation/
   specs/             # company-shaped YAML inputs
-    truss.yaml
-    northwind.yaml
-    meridian.yaml
+    pelago.yaml
   prompts/           # markdown templates with {{ var }} placeholders
     actors.md
     customers.md
@@ -34,13 +32,13 @@ demo/generation/
 
 ```bash
 # Plan + cost estimate. No LLM call. No API key required.
-python -m demo.generation.generate --company truss
+python -m demo.generation.generate --company pelago
 
-# Execute. Requires LLM_API_KEY in env. Writes demo/snapshots/truss-v1.sql.
-python -m demo.generation.generate --company truss --execute
+# Execute. Requires LLM_API_KEY in env. Writes demo/snapshots/pelago-v1.sql.
+python -m demo.generation.generate --company pelago --execute
 
 # Compressed snapshot (recommended for the loader).
-python -m demo.generation.generate --company truss --execute --compress
+python -m demo.generation.generate --company pelago --execute --compress
 ```
 
 The generation pipeline runs sequentially:
@@ -73,13 +71,11 @@ Per DEMO-BUILD-PLAN.md:
 
 | Company    | Calls (approx) | Estimated cost |
 |------------|----------------|----------------|
-| Truss      | ~37            | $5–15          |
-| Northwind  | ~45            | $10–25         |
-| Meridian   | ~58            | $15–30         |
+| Pelago     | ~50            | $10–25         |
 
-Total across all three: $30–70. Budget 2–3× for prompt iteration. The
-dry-run plan output gives a per-call cost estimate based on the
-heuristic table in `generate.py:COST_ESTIMATES_USD`.
+Budget 2–3× for prompt iteration. The dry-run plan output gives a
+per-call cost estimate based on the heuristic table in
+`generate.py:COST_ESTIMATES_USD`.
 
 ## Validation rules (`validate.py`)
 

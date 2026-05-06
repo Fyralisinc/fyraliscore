@@ -28,8 +28,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
 from uuid import UUID
 
@@ -437,7 +437,7 @@ class GreetingScheduler:
             await self._cache.set_cached(
                 tenant_id, key, payload, reason=reason
             )
-
+    
         # 6. Publish updates on the WS stream if a publisher is wired.
         if self._publisher is not None:
             await self._publish_many(

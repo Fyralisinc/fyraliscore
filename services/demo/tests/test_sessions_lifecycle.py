@@ -1,5 +1,5 @@
 """services/demo/tests/test_sessions_lifecycle.py — start / reset / end
-flow exercised against the synthetic snapshot loader."""
+flow exercised against the Pelago snapshot loader."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -9,7 +9,6 @@ import pytest
 
 from lib.shared.ids import uuid7
 from services.demo.repo import (
-    get_active_session_for_tenant,
     get_demo_config_by_company,
     get_demo_session,
     insert_demo_session,
@@ -30,8 +29,8 @@ pytestmark = pytest.mark.integration
 async def test_start_session_provisions_tenant_and_actor(
     fresh_db: asyncpg.Pool,
 ):
-    result = await start_session(fresh_db, company_id="truss")
-    assert result.company_id == "truss"
+    result = await start_session(fresh_db, company_id="pelago")
+    assert result.company_id == "pelago"
     assert result.auth_token
 
     tenant_row = await fresh_db.fetchrow(
@@ -71,7 +70,7 @@ async def test_start_session_rejects_unknown_company(
 async def test_reset_keeps_tenant_id_and_ceo_actor(
     fresh_db: asyncpg.Pool,
 ):
-    started = await start_session(fresh_db, company_id="northwind")
+    started = await start_session(fresh_db, company_id="pelago")
 
     # Mutate state so reset has something to undo.
     await fresh_db.execute(
@@ -102,7 +101,7 @@ async def test_reset_keeps_tenant_id_and_ceo_actor(
 
 @pytest.mark.asyncio
 async def test_end_session_marks_ended_with_reason(fresh_db: asyncpg.Pool):
-    started = await start_session(fresh_db, company_id="meridian")
+    started = await start_session(fresh_db, company_id="pelago")
     ok = await end_session(
         fresh_db, session_id=started.session_id, end_reason="user_ended",
     )
@@ -115,11 +114,11 @@ async def test_end_session_marks_ended_with_reason(fresh_db: asyncpg.Pool):
 
 @pytest.mark.asyncio
 async def test_inactivity_sweeper_ends_idle_sessions(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="truss-sweeper",
+        fresh_db, tenant_id=tid, name="pelago-sweeper",
         is_demo=True, demo_config_id=cfg.id,
     )
     sess = await insert_demo_session(

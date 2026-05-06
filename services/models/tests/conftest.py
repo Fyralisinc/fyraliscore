@@ -25,7 +25,6 @@ import hashlib
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
 
 import asyncpg
 import pytest

@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import DemoLanding from "./pages/DemoLanding";
-import DemoPicker from "./pages/DemoPicker";
 import Structure from "./pages/Structure";
 import History from "./pages/History";
 import MyMind from "./pages/MyMind";
@@ -25,7 +24,7 @@ ReactDOM.createRoot(root).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<DemoLanding />} />
-        <Route path="/demo" element={<DemoPicker />} />
+        <Route path="/demo" element={<Navigate to="/" replace />} />
         <Route path="/structure" element={<Structure />} />
         <Route path="/history" element={<History />} />
         <Route path="/mind" element={<MyMind />} />

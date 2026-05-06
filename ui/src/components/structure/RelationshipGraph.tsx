@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  StructureResourceOverlayResponse,
+} from "@/api/structure-client";
+import type {
   Commitment,
   DecisionRef,
   FocusTarget,
@@ -16,6 +19,7 @@ type Props = {
   goals: GoalRef[];
   decisions: DecisionRef[];
   resources: ResourceRef[];
+  resourceFocus?: StructureResourceOverlayResponse | null;
   peopleIndex: Record<string, PersonProfile>;
   goalLearnings: Record<string, GoalLearnings>;
   ownerLabels: Record<string, string>;
@@ -23,6 +27,19 @@ type Props = {
   hoveredCommitmentId: string | null;
   onFocus: (target: FocusTarget | null) => void;
 };
+
+function formatResourceQty(value: number | null | undefined, unit: string | null | undefined): string {
+  if (value == null) return "";
+  const u = (unit || "").toLowerCase();
+  if (u.includes("usd")) {
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `$${Math.round(value / 1_000)}k`;
+    return `$${Math.round(value)}`;
+  }
+  if (u.includes("fte")) return `${value.toFixed(2)} FTE`;
+  if (!unit) return value.toFixed(2);
+  return `${Math.round(value)} ${unit}`;
+}
 
 // Pan/zoom limits — applied uniformly to actor / commitment / goal /
 // aggregate views.
@@ -46,6 +63,7 @@ export function RelationshipGraph({
   goals,
   decisions,
   resources,
+  resourceFocus,
   peopleIndex,
   goalLearnings,
   ownerLabels,
@@ -102,8 +120,8 @@ export function RelationshipGraph({
     (hoveredCommitmentId ? { kind: "commitment", id: hoveredCommitmentId } : null);
 
   // Decide whether a side panel is shown for the live focus. People,
-  // commitments, and goals all get their own learnings panel.
-  const sidePanelKind: "actor" | "commitment" | "goal" | null =
+  // commitments, goals, and resources each have their own panel kind.
+  const sidePanelKind: "actor" | "commitment" | "goal" | "resource" | null =
     liveFocus
       ? liveFocus.kind === "actor"
         ? "actor"
@@ -111,9 +129,19 @@ export function RelationshipGraph({
         ? "commitment"
         : liveFocus.kind === "goal"
         ? "goal"
+        : liveFocus.kind === "resource"
+        ? "resource"
         : null
       : null;
-  const sidePanelOpen = !!sidePanelKind;
+
+  // The detail panel can be hidden via its X button. Re-show on every
+  // new focus so picking a different artifact brings the panel back
+  // without an extra click.
+  const [panelHidden, setPanelHidden] = useState(false);
+  useEffect(() => {
+    setPanelHidden(false);
+  }, [focus?.kind, focus?.id]);
+  const sidePanelOpen = !!sidePanelKind && !panelHidden;
 
   // Reset pan/zoom whenever focus changes — and pre-shift the graph
   // left when a side panel is open, so the focused artifact stays
@@ -248,7 +276,7 @@ export function RelationshipGraph({
         </g>
       </svg>
 
-      {sidePanelKind === "actor" && liveFocus ? (
+      {sidePanelOpen && sidePanelKind === "actor" && liveFocus ? (
         <ActorPanel
           profile={peopleIndex[liveFocus.id]}
           fallbackLabel={ownerLabels[liveFocus.id] ?? liveFocus.id}
@@ -256,9 +284,10 @@ export function RelationshipGraph({
             (c) => c.owner === liveFocus.id || (c.edges?.contributors ?? []).includes(liveFocus.id)
           )}
           onFocus={onFocus}
+          onHidePanel={() => setPanelHidden(true)}
         />
       ) : null}
-      {sidePanelKind === "commitment" && liveFocus ? (
+      {sidePanelOpen && sidePanelKind === "commitment" && liveFocus ? (
         <CommitmentPanel
           commitment={idIndex.get(liveFocus.id)}
           goalIndex={goalIndex}
@@ -266,9 +295,10 @@ export function RelationshipGraph({
           resourceIndex={resourceIndex}
           ownerLabels={ownerLabels}
           onFocus={onFocus}
+          onHidePanel={() => setPanelHidden(true)}
         />
       ) : null}
-      {sidePanelKind === "goal" && liveFocus ? (
+      {sidePanelOpen && sidePanelKind === "goal" && liveFocus ? (
         <GoalPanel
           goal={goalIndex.get(liveFocus.id)}
           learnings={goalLearnings[liveFocus.id]}
@@ -276,6 +306,16 @@ export function RelationshipGraph({
             (c.edges?.contributes_to ?? []).includes(liveFocus.id)
           )}
           onFocus={onFocus}
+          onHidePanel={() => setPanelHidden(true)}
+        />
+      ) : null}
+      {sidePanelOpen && sidePanelKind === "resource" && liveFocus ? (
+        <ResourcePanel
+          resource={resourceIndex.get(liveFocus.id)}
+          overlay={resourceFocus && resourceFocus.resource.id === liveFocus.id ? resourceFocus : null}
+          ownerLabels={ownerLabels}
+          onFocus={onFocus}
+          onHidePanel={() => setPanelHidden(true)}
         />
       ) : null}
 
@@ -452,11 +492,11 @@ function FocusRouter(props: {
 // ────────────────────────────────────────────────────────────────────
 
 const FOCUS_RADIUS = {
-  goal: 170,
-  decision: 170,
-  resource: 200,
-  people: 200,
-  related: 240,
+  goal: 180,
+  decision: 180,
+  resource: 240,
+  people: 240,
+  related: 280,
 };
 
 function CommitmentFocus({
@@ -511,7 +551,7 @@ function CommitmentFocus({
       .map((id) => resourceIndex.get(id))
       .filter(Boolean) as ResourceRef[];
     const order: Record<ResourceRef["kind"], number> = {
-      financial: 0, human: 1, technical: 2,
+      financial: 0, human: 1, technical: 2, time: 3,
     };
     return list.sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
   }, [c, resourceIndex]);
@@ -537,7 +577,7 @@ function CommitmentFocus({
   const chipW = compact ? 132 : 168;
   const chipH = compact ? 38 : 50;
   const radii = compact
-    ? { goal: 150, decision: 150, resource: 180, people: 180, related: 220 }
+    ? { goal: 160, decision: 160, resource: 220, people: 220, related: 260 }
     : FOCUS_RADIUS;
 
   const goalPos = quadrantArcs(cx, cy, radii.goal, -Math.PI / 2, goals.length, chipW, 0.9);
@@ -594,20 +634,30 @@ function CommitmentFocus({
           onClick={() => onFocus({ kind: "decision", id: d.id })}
         />
       ))}
-      {res.map((r, i) => (
-        <ChipNode
-          key={"n-r-" + r.id}
-          x={resourcePos[i].x2}
-          y={resourcePos[i].y2}
-          label={r.label}
-          sub={r.kind}
-          kind="resource"
-          glyph="▤"
-          width={chipW}
-          height={chipH}
-          onClick={() => onFocus({ kind: "resource", id: r.id })}
-        />
-      ))}
+      {res.map((r, i) => {
+        // Per-commit deployed quantity, when known. Lets the chip
+        // surface "Engineering pod · 0.4 FTE" instead of the bare
+        // resource kind.
+        const slice = (c.consumed_resources ?? []).find((s) => s.id === r.id);
+        const sliceText =
+          slice && slice.deployed_quantity != null
+            ? formatResourceQty(slice.deployed_quantity, slice.unit ?? r.unit ?? null)
+            : null;
+        return (
+          <ChipNode
+            key={"n-r-" + r.id}
+            x={resourcePos[i].x2}
+            y={resourcePos[i].y2}
+            label={r.label}
+            sub={sliceText ?? r.kind}
+            kind="resource"
+            glyph="▤"
+            width={chipW}
+            height={chipH}
+            onClick={() => onFocus({ kind: "resource", id: r.id })}
+          />
+        );
+      })}
       {peopleIds.map((p, i) => (
         <ChipNode
           key={"n-p-" + p}
@@ -689,24 +739,26 @@ function ArtifactFanout({
   }, [commitments]);
 
   // Ring layout: pack commitments onto concentric rings so chips never
-  // overlap. Innermost ring carries the highest-priority status items.
+  // overlap. Per-ring capacity is derived from the chord distance
+  // between adjacent chip CENTERS — chord = 2*r*sin(step/2) — so chips
+  // at the chosen step physically fit without their rectangles
+  // colliding. Innermost ring carries the highest-priority status
+  // items (already sorted by caller).
   const compact = count > 8;
   const chipW = compact ? 132 : 168;
   const chipH = compact ? 38 : 50;
-  // Approximate min spacing between chip centers along an arc.
-  const minStep = chipW + 14;
 
   const positions = useMemo(() => {
     if (count === 0) return [];
-    const baseR = Math.min(w * 0.22, h * 0.30, 200);
-    const ringStep = compact ? 70 : 88;
+    const baseR = Math.min(w * 0.24, h * 0.34, 220);
+    const ringStep = compact ? 80 : 96;
     type Ring = { r: number; capacity: number };
     const rings: Ring[] = [];
     let placed = 0;
     while (placed < count) {
       const r = baseR + rings.length * ringStep;
-      const circumference = 2 * Math.PI * r;
-      const cap = Math.max(4, Math.floor(circumference / minStep));
+      const minStepRad = minAngularStepFor(chipW, r);
+      const cap = Math.max(2, Math.floor(2 * Math.PI / minStepRad));
       rings.push({ r, capacity: cap });
       placed += cap;
     }
@@ -734,7 +786,7 @@ function ArtifactFanout({
       }
     }
     return out;
-  }, [count, compact, cx, cy, h, w, minStep]);
+  }, [count, compact, cx, cy, h, w, chipW]);
 
   // Off-track count for the center-readout
   const offTrack = sorted.filter((c) => c.status !== "on-track").length;
@@ -836,17 +888,30 @@ function PanelShell({
   eyebrow,
   name,
   sub,
+  onHidePanel,
   children,
 }: {
   accent: "actor" | "commitment-on-track" | "commitment-slipping" | "commitment-at-risk" | "commitment-blocked" | "goal-strategic" | "goal-operational";
   eyebrow: string;
   name: string;
   sub?: string;
+  onHidePanel?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <aside className={"rg-side-panel rg-side-panel-" + accent} aria-label={eyebrow}>
       <div className="rg-actor-panel">
+        {onHidePanel ? (
+          <button
+            type="button"
+            className="rg-actor-panel-close"
+            onClick={onHidePanel}
+            aria-label="Hide panel"
+            title="Hide panel"
+          >
+            ×
+          </button>
+        ) : null}
         <div className="rg-actor-panel-head">
           <span className="rg-actor-panel-eyebrow">{eyebrow}</span>
           <span className="rg-actor-panel-name">{name}</span>
@@ -917,11 +982,13 @@ function ActorPanel({
   fallbackLabel,
   commitments,
   onFocus,
+  onHidePanel,
 }: {
   profile: PersonProfile | undefined;
   fallbackLabel: string;
   commitments: Commitment[];
   onFocus: (t: FocusTarget | null) => void;
+  onHidePanel: () => void;
 }) {
   const offTrack = commitments.filter((c) => c.status !== "on-track").length;
   const high = commitments.filter((c) => c.priority === "high").length;
@@ -930,7 +997,13 @@ function ActorPanel({
   );
   if (!profile) {
     return (
-      <PanelShell accent="actor" eyebrow="Person" name={fallbackLabel} sub="PERSON">
+      <PanelShell
+        accent="actor"
+        eyebrow="Person"
+        name={fallbackLabel}
+        sub="PERSON"
+        onHidePanel={onHidePanel}
+      >
         <p className="rg-actor-recent">No profile data for this person yet.</p>
       </PanelShell>
     );
@@ -941,6 +1014,7 @@ function ActorPanel({
       eyebrow="What I've learned"
       name={profile.label}
       sub={profile.role}
+      onHidePanel={onHidePanel}
     >
       <div className="rg-actor-stats">
         <div className="rg-actor-stat">
@@ -985,6 +1059,7 @@ function CommitmentPanel({
   resourceIndex,
   ownerLabels,
   onFocus,
+  onHidePanel,
 }: {
   commitment: Commitment | undefined;
   goalIndex: Map<string, GoalRef>;
@@ -992,6 +1067,7 @@ function CommitmentPanel({
   resourceIndex: Map<string, ResourceRef>;
   ownerLabels: Record<string, string>;
   onFocus: (t: FocusTarget | null) => void;
+  onHidePanel: () => void;
 }) {
   if (!commitment) return null;
   const c = commitment;
@@ -1020,6 +1096,7 @@ function CommitmentPanel({
       eyebrow="What I've noticed"
       name={c.label}
       sub={`${c.id.toUpperCase()} · ${c.status.replace("-", " ").toUpperCase()}`}
+      onHidePanel={onHidePanel}
     >
       <div className="rg-actor-stats">
         <div className="rg-actor-stat">
@@ -1113,11 +1190,13 @@ function GoalPanel({
   learnings,
   commitments,
   onFocus,
+  onHidePanel,
 }: {
   goal: GoalRef | undefined;
   learnings: GoalLearnings | undefined;
   commitments: Commitment[];
   onFocus: (t: FocusTarget | null) => void;
+  onHidePanel: () => void;
 }) {
   if (!goal) return null;
   const total = commitments.length;
@@ -1136,6 +1215,7 @@ function GoalPanel({
       eyebrow="What I've noticed"
       name={goal.label}
       sub={`${goal.altitude.toUpperCase()} GOAL`}
+      onHidePanel={onHidePanel}
     >
       <div className="rg-actor-stats">
         <div className="rg-actor-stat">
@@ -1198,6 +1278,151 @@ function formatLongDate(iso: string): string {
 }
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function ResourcePanel({
+  resource,
+  overlay,
+  ownerLabels,
+  onFocus,
+  onHidePanel,
+}: {
+  resource: ResourceRef | undefined;
+  overlay: StructureResourceOverlayResponse | null;
+  ownerLabels: Record<string, string>;
+  onFocus: (t: FocusTarget | null) => void;
+  onHidePanel: () => void;
+}) {
+  if (!resource) {
+    return (
+      <PanelShell
+        accent="actor"
+        eyebrow="Resource"
+        name="(unknown resource)"
+        onHidePanel={onHidePanel}
+      >
+        <p className="rg-actor-recent">Resource details aren't loaded yet.</p>
+      </PanelShell>
+    );
+  }
+  const accent =
+    resource.kind === "human" ? "actor"
+    : resource.kind === "financial" ? "goal-strategic"
+    : resource.kind === "technical" ? "commitment-on-track"
+    : "goal-operational";
+
+  // Prefer overlay numbers when available, fall back to summary fields
+  // baked into the ResourceRef from the aggregate endpoint.
+  const capacity = overlay?.resource.capacity ?? resource.capacity ?? null;
+  const deployed = overlay?.resource.deployed ?? resource.deployed ?? null;
+  const utilPct = overlay?.resource.utilization_pct ?? resource.utilization_pct ?? null;
+  const unit = overlay?.resource.unit ?? resource.unit ?? "";
+  const description = overlay?.resource.description ?? "";
+  const consumers = overlay?.consumers ?? [];
+
+  const barWidth = utilPct == null ? 0 : Math.min(100, Math.max(0, utilPct));
+  const overflow = utilPct != null && utilPct > 100 ? Math.min(50, utilPct - 100) : 0;
+
+  return (
+    <PanelShell
+      accent={accent}
+      eyebrow="Resource"
+      name={resource.label}
+      sub={resource.kind.toUpperCase()}
+      onHidePanel={onHidePanel}
+    >
+      <div className="rg-actor-stats">
+        <div className="rg-actor-stat">
+          <span className="rg-actor-stat-num">
+            {capacity != null ? formatResourceQty(capacity, unit) : "—"}
+          </span>
+          <span className="rg-actor-stat-lbl">capacity</span>
+        </div>
+        <div className={"rg-actor-stat" + (utilPct != null && utilPct > 100 ? " warn" : "")}>
+          <span className="rg-actor-stat-num">
+            {deployed != null ? formatResourceQty(deployed, unit) : "—"}
+          </span>
+          <span className="rg-actor-stat-lbl">deployed</span>
+        </div>
+        <div className={"rg-actor-stat" + (utilPct != null && utilPct > 100 ? " warn" : "")}>
+          <span className="rg-actor-stat-num">
+            {utilPct != null ? Math.round(utilPct) + "%" : "—"}
+          </span>
+          <span className="rg-actor-stat-lbl">utilized</span>
+        </div>
+      </div>
+
+      {utilPct != null ? (
+        <div className="rg-resource-bar" aria-hidden>
+          <div
+            className={"rg-resource-bar-fill" + (utilPct > 100 ? " over" : utilPct >= 85 ? " warn" : "")}
+            style={{ width: barWidth + "%" }}
+          />
+          {overflow > 0 ? (
+            <div className="rg-resource-bar-over" style={{ width: overflow + "%" }} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {description ? (
+        <section className="rg-actor-section">
+          <h4>About</h4>
+          <p className="rg-actor-recent">{description}</p>
+        </section>
+      ) : null}
+
+      <section className="rg-actor-section">
+        <h4>Consuming commitments {consumers.length > 0 ? `(${consumers.length})` : ""}</h4>
+        {consumers.length === 0 ? (
+          <p className="rg-actor-patterns-empty">
+            {overlay
+              ? "No active commitments are pulling on this resource."
+              : "Loading consumers…"}
+          </p>
+        ) : (
+          <ul className="rg-link-list">
+            {consumers.slice(0, 12).map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  className="rg-link-row"
+                  onClick={() => onFocus({ kind: "commitment", id: c.id })}
+                >
+                  <span className="rg-link-glyph">▤</span>
+                  <span className="rg-link-label">{c.label}</span>
+                  <span className="rg-link-meta">
+                    {formatResourceQty(c.deployed_quantity, unit)}
+                    {c.state ? ` · ${c.state}` : ""}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {overlay && overlay.owners.length > 0 ? (
+        <section className="rg-actor-section">
+          <h4>Top owners</h4>
+          <ul className="rg-link-list">
+            {overlay.owners.slice(0, 8).map((o) => (
+              <li key={o.id}>
+                <button
+                  type="button"
+                  className="rg-link-row"
+                  onClick={() => onFocus({ kind: "actor", id: o.id })}
+                >
+                  <span className="rg-link-glyph">◯</span>
+                  <span className="rg-link-label">{o.label}</span>
+                  <span className="rg-link-meta">{o.role}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </PanelShell>
+  );
 }
 
 // Single pattern row inside the side panel. Click toggles the evidence
@@ -1347,26 +1572,42 @@ function CenterArtifact({
 // ────────────────────────────────────────────────────────────────────
 
 function CenterCommitment({ c, cx, cy }: { c: Commitment; cx: number; cy: number }) {
-  const w = 240;
-  const h = 76;
+  // Vertical compartments — id row, label block (max 2 lines), meta row.
+  // Box grew from 76 → 96 so the 2-line label can't bleed into the meta
+  // row, which previously caused visual overlap.
+  const w = 260;
+  const h = 96;
+  const top = cy - h / 2;
+  const labelTop = top + 24;     // 24px reserved for id row
+  const labelHeight = 40;        // room for 2 lines at 14px / 1.3 lh
   return (
     <g className="rg-center" data-status={c.status}>
       <rect
         x={cx - w / 2}
-        y={cy - h / 2}
+        y={top}
         width={w}
         height={h}
         rx="10"
         ry="10"
         className="rg-center-bg"
       />
-      <text x={cx} y={cy - 14} textAnchor="middle" className="rg-center-id">
+      <text x={cx} y={top + 16} textAnchor="middle" className="rg-center-id">
         {c.id} · {c.status.replace("-", " ")}
       </text>
-      <foreignObject x={cx - w / 2 + 10} y={cy - 4} width={w - 20} height={32}>
+      <foreignObject
+        x={cx - w / 2 + 12}
+        y={labelTop}
+        width={w - 24}
+        height={labelHeight}
+      >
         <div className="rg-center-label">{c.label}</div>
       </foreignObject>
-      <text x={cx} y={cy + h / 2 - 8} textAnchor="middle" className="rg-center-meta">
+      <text
+        x={cx}
+        y={top + h - 10}
+        textAnchor="middle"
+        className="rg-center-meta"
+      >
         {c.owner_display} · due{" "}
         {new Date(c.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
       </text>
@@ -1442,21 +1683,41 @@ function Edge({
   return <line className={"rg-edge rg-edge-" + kind} x1={x1} y1={y1} x2={x2} y2={y2} />;
 }
 
+// Compute the minimum angular step (in radians) between two chips
+// of a given pixel width on a ring of radius r so their bounding
+// rectangles stay 14px apart along the chord.
+function minAngularStepFor(chipW: number, r: number): number {
+  const minChord = chipW + 14;
+  if (2 * r <= minChord) return Math.PI;  // radius too small — one chip
+  return 2 * Math.asin(minChord / (2 * r));
+}
+
+// Place `count` chips on a ring of radius r, centered around
+// centerAngle. The angular step is the smaller of:
+//   - whatever fits the chips evenly across the spread arc, OR
+//   - a target step that keeps adjacent chip rectangles ~14px apart.
+// Using the smaller step prevents a 2-chip arc from fanning to its
+// extremes (the previous bug — 2 goal chips with spread=0.9π landed
+// on the horizontal axis instead of staying near the top).
 function arcPositions(
   cx: number,
   cy: number,
   r: number,
   centerAngle: number,
   count: number,
-  spread: number
+  spread: number,
+  chipW: number = 168,
 ) {
   if (count === 0) return [];
   if (count === 1) {
     return [{ x2: cx + Math.cos(centerAngle) * r, y2: cy + Math.sin(centerAngle) * r }];
   }
-  const arc = Math.PI * spread;
-  const step = arc / (count - 1);
-  const start = centerAngle - arc / 2;
+  const maxArc = Math.PI * spread;
+  const evenStep = maxArc / (count - 1);
+  const targetStep = minAngularStepFor(chipW, r);
+  const step = Math.min(evenStep, targetStep);
+  const totalArc = step * (count - 1);
+  const start = centerAngle - totalArc / 2;
   return Array.from({ length: count }, (_, i) => {
     const a = start + step * i;
     return { x2: cx + Math.cos(a) * r, y2: cy + Math.sin(a) * r };
@@ -1464,10 +1725,10 @@ function arcPositions(
 }
 
 // Multi-arc positioning: when more chips would fit on a single arc than
-// its capacity allows (chip width + gap > chord length), push the
-// remainder onto progressively larger concentric arcs. Keeps the
-// commitment-focus quadrants readable when a commitment carries many
-// relations of one kind.
+// its capacity allows (chip rectangles overlap along the chord), push
+// the remainder onto progressively larger concentric arcs. Capacity
+// is computed from the chord length, not the arc length, so chips
+// never visually collide.
 function quadrantArcs(
   cx: number,
   cy: number,
@@ -1479,16 +1740,20 @@ function quadrantArcs(
 ) {
   if (count === 0) return [];
   const out: { x2: number; y2: number }[] = [];
-  const minStep = chipW + 14;
-  const ringStep = 78;
+  const ringStep = 88;
   let placed = 0;
   let ringIdx = 0;
   while (placed < count) {
     const r = baseR + ringIdx * ringStep;
-    const arcLen = Math.PI * spread * r;
-    const cap = Math.max(2, Math.floor(arcLen / minStep) + 1);
+    const minStep = minAngularStepFor(chipW, r);
+    const maxArc = Math.PI * spread;
+    // How many chips physically fit on this ring's arc with the
+    // chord-derived min step? Always at least 1.
+    const cap = Math.max(1, Math.floor(maxArc / minStep) + 1);
     const inThisArc = Math.min(cap, count - placed);
-    const positions = arcPositions(cx, cy, r, centerAngle, inThisArc, spread);
+    const positions = arcPositions(
+      cx, cy, r, centerAngle, inThisArc, spread, chipW,
+    );
     out.push(...positions);
     placed += inThisArc;
     ringIdx += 1;
@@ -1498,10 +1763,17 @@ function quadrantArcs(
 
 function corners(cx: number, cy: number, r: number, count: number) {
   if (count === 0) return [];
+  // Four diagonal anchors. When more than 4 related items exist, push
+  // the overflow onto progressively-larger concentric rings rather
+  // than nudging by 0.18rad which causes chip overlap (chord step at
+  // r=240 is only ~43px vs chip width 168).
   const angles = [-Math.PI / 4, -3 * Math.PI / 4, Math.PI / 4, 3 * Math.PI / 4];
+  const ringStep = 90;
   return Array.from({ length: count }, (_, i) => {
-    const a = angles[i % angles.length] + Math.floor(i / angles.length) * 0.18;
-    return { x2: cx + Math.cos(a) * r, y2: cy + Math.sin(a) * r };
+    const ringIdx = Math.floor(i / angles.length);
+    const a = angles[i % angles.length];
+    const ringR = r + ringIdx * ringStep;
+    return { x2: cx + Math.cos(a) * ringR, y2: cy + Math.sin(a) * ringR };
   });
 }
 
@@ -1531,17 +1803,93 @@ function AggregateGraph({
 
   const cx = w / 2;
   const cy = h / 2;
-  const innerR = Math.min(w, h) * 0.18;
-  const outerR = Math.min(w, h) * 0.36;
+  // Three concentric levels:
+  //   inner ring (innerR)  → strategic goals
+  //   outer ring (outerR)  → operational sub-goals, clustered angularly
+  //                          near their strategic parent
+  //   orbit around each op → commits as leaves
+  const innerR = Math.min(w, h) * 0.20;
+  const outerR = Math.min(w, h) * 0.46;
+  // Cap leaves shown around each goal so high-count goals don't grow
+  // their orbit past adjacent goals; remaining count surfaces as a
+  // "+N more" indicator.
+  const MAX_VISIBLE_LEAVES = 24;
 
   const strat = goals.filter((g) => g.altitude === "strategic");
   const op = goals.filter((g) => g.altitude === "operational");
-  const stratPos = ringPositions(cx, cy, innerR, strat.length, -Math.PI / 2);
-  const opPos = ringPositions(cx, cy, outerR, op.length, -Math.PI / 2 + 0.4);
+  const opByParent = new Map<string, GoalRef[]>();
+  const orphanOp: GoalRef[] = [];
+  for (const g of op) {
+    if (g.parent_goal_id && strat.some((s) => s.id === g.parent_goal_id)) {
+      const list = opByParent.get(g.parent_goal_id) ?? [];
+      list.push(g);
+      opByParent.set(g.parent_goal_id, list);
+    } else {
+      orphanOp.push(g);
+    }
+  }
 
   const goalCenter = new Map<string, { x: number; y: number }>();
-  strat.forEach((g, i) => goalCenter.set(g.id, stratPos[i]));
-  op.forEach((g, i) => goalCenter.set(g.id, opPos[i]));
+  const stratAngle = new Map<string, number>();
+
+  // Place strategic goals evenly on the inner ring.
+  if (strat.length > 0) {
+    const start = -Math.PI / 2;
+    strat.forEach((g, i) => {
+      const a = start + (i / strat.length) * Math.PI * 2;
+      stratAngle.set(g.id, a);
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * innerR,
+        y: cy + Math.sin(a) * innerR,
+      });
+    });
+  }
+
+  // For each strategic, fan its operational children on the outer ring
+  // across an angular slice around the strategic's own angle. Each
+  // strategic gets an equal slice of the full circle; orphan
+  // operationals share whatever remains.
+  const totalSlices = strat.length + (orphanOp.length > 0 ? 1 : 0);
+  const sliceSpan =
+    totalSlices > 0 ? (Math.PI * 2) / totalSlices : Math.PI * 2;
+  // Operational fans inside their parent's slice — leave a small gap
+  // at slice edges so neighboring fans don't visually collide.
+  const fanShrink = 0.85;
+
+  strat.forEach((s) => {
+    const parentAngle = stratAngle.get(s.id) ?? 0;
+    const children = opByParent.get(s.id) ?? [];
+    if (children.length === 0) return;
+    const span = sliceSpan * fanShrink;
+    children.forEach((g, i) => {
+      const offset =
+        children.length === 1
+          ? 0
+          : ((i / (children.length - 1)) - 0.5) * span;
+      const a = parentAngle + offset;
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * outerR,
+        y: cy + Math.sin(a) * outerR,
+      });
+    });
+  });
+
+  // Orphans land in their own slice at the bottom of the ring.
+  if (orphanOp.length > 0) {
+    const baseAngle = Math.PI / 2;       // bottom
+    const span = sliceSpan * fanShrink;
+    orphanOp.forEach((g, i) => {
+      const offset =
+        orphanOp.length === 1
+          ? 0
+          : ((i / (orphanOp.length - 1)) - 0.5) * span;
+      const a = baseAngle + offset;
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * outerR,
+        y: cy + Math.sin(a) * outerR,
+      });
+    });
+  }
 
   const byGoal = new Map<string, Commitment[]>();
   for (const c of commitments) {
@@ -1564,6 +1912,26 @@ function AggregateGraph({
         click any node to drill in
       </text>
 
+      {/* Parent → child goal edges drawn first so they sit beneath leaves. */}
+      {strat.flatMap((s) => {
+        const sCenter = goalCenter.get(s.id);
+        if (!sCenter) return [];
+        return (opByParent.get(s.id) ?? []).map((c) => {
+          const cCenter = goalCenter.get(c.id);
+          if (!cCenter) return null;
+          return (
+            <line
+              key={"goal-edge-" + s.id + "-" + c.id}
+              className="rg-agg-goal-edge"
+              x1={sCenter.x}
+              y1={sCenter.y}
+              x2={cCenter.x}
+              y2={cCenter.y}
+            />
+          );
+        });
+      })}
+
       {[...byGoal.entries()].map(([gid, list]) => {
         if (gid === "__orphan__") return null;
         const center = goalCenter.get(gid);
@@ -1576,13 +1944,23 @@ function AggregateGraph({
         const sorted = [...list].sort(
           (a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9)
         );
-        // Multi-ring leaves so dots never collide. Capacity per ring
-        // scales with circumference; a wider base keeps leaves clear of
-        // the goal-node label below the circle.
-        const leafPos = orbitPositions(center.x, center.y, sorted.length);
+        // Cap visible leaves so a high-traffic goal's orbit can't grow
+        // past adjacent goals on the other ring.
+        const overflow = Math.max(0, sorted.length - MAX_VISIBLE_LEAVES);
+        const visible = overflow > 0
+          ? sorted.slice(0, MAX_VISIBLE_LEAVES)
+          : sorted;
+        // Multi-ring leaves so dots never collide; baseR offsets from
+        // the goal's own radius so leaves never cross into the goal
+        // circle.
+        const goalCnt = counts.get(gid) ?? 0;
+        const goalR = 14 + Math.min(28, goalCnt * 1.6);
+        const leafPos = orbitPositions(
+          center.x, center.y, visible.length, goalR,
+        );
         return (
           <g key={"agg-" + gid}>
-            {sorted.map((c, i) => (
+            {visible.map((c, i) => (
               <line
                 key={"el-" + c.id}
                 className={"rg-agg-edge s-" + c.status}
@@ -1592,7 +1970,7 @@ function AggregateGraph({
                 y2={leafPos[i].y}
               />
             ))}
-            {sorted.map((c, i) => (
+            {visible.map((c, i) => (
               <circle
                 key={"ll-" + c.id}
                 className={"rg-agg-leaf s-" + c.status}
@@ -1606,6 +1984,16 @@ function AggregateGraph({
                 </title>
               </circle>
             ))}
+            {overflow > 0 ? (
+              <text
+                x={center.x}
+                y={center.y - goalR - 14}
+                textAnchor="middle"
+                className="rg-agg-overflow"
+              >
+                +{overflow} more
+              </text>
+            ) : null}
           </g>
         );
       })}
@@ -1613,8 +2001,19 @@ function AggregateGraph({
       {goals.map((g) => {
         const p = goalCenter.get(g.id);
         if (!p) return null;
-        const cnt = counts.get(g.id) ?? 0;
-        const r = 14 + Math.min(28, cnt * 1.6);
+        // Strategic goals roll up their operational children's
+        // commitment counts so the parent node reflects total load.
+        let cnt = counts.get(g.id) ?? 0;
+        if (g.altitude === "strategic") {
+          for (const ch of opByParent.get(g.id) ?? []) {
+            cnt += counts.get(ch.id) ?? 0;
+          }
+        }
+        const isStrategic = g.altitude === "strategic";
+        const r =
+          isStrategic
+            ? 18 + Math.min(28, cnt * 0.8)
+            : 12 + Math.min(22, cnt * 1.2);
         return (
           <g
             key={"goal-" + g.id}
@@ -1660,19 +2059,26 @@ function ringPositions(
 }
 
 // Multi-ring orbit for the aggregate-graph leaves around each goal.
-// Leaves are tiny circles (r ≈ 4) so each ring can carry 8-12; we open
+// Leaves are tiny circles (r ≈ 4) so each ring can carry many; we open
 // a second ring once the first fills, keeping leaves from stacking and
 // avoiding overlap with the goal-node label that sits just below.
+//
+// goalRadius is the parent goal's circle radius — we offset baseR
+// from the goal's edge so leaves never cross into the goal circle.
 function orbitPositions(
   cx: number,
   cy: number,
-  count: number
+  count: number,
+  goalRadius: number = 0
 ): { x: number; y: number }[] {
   if (count === 0) return [];
   const out: { x: number; y: number }[] = [];
-  const baseR = 32;
+  // Start one full leaf-diameter clear of the goal's outer edge so
+  // leaves never visually overlap the goal circle even when the goal
+  // grows large with high commitment counts.
+  const baseR = Math.max(34, goalRadius + 12);
   const ringStep = 14;
-  const perRing = 9;
+  const perRing = 12;
   let placed = 0;
   let ringIdx = 0;
   while (placed < count) {

@@ -18,7 +18,6 @@ import os
 import pathlib
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID
 
 import asyncpg

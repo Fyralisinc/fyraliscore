@@ -1,7 +1,6 @@
 """Tests for services/resources/transactions.py."""
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 

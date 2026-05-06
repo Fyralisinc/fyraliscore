@@ -6,10 +6,10 @@ test("clicking Reaffirm path on a card commits the action", async ({ page }) => 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(`${e.name}: ${e.message}`));
 
-  await page.goto(`${BASE}/demo`);
+  await page.goto(`${BASE}/`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.getByTestId("start-truss").click();
+  await page.getByTestId("start-pelago").click();
   await page.waitForURL(`${BASE}/`);
   await page.waitForTimeout(3500);
 

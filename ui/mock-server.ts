@@ -14,6 +14,16 @@
 import type { Plugin } from "vite";
 import { HOME_FIXTURE, mockAsk } from "./src/api/mock-data";
 import { TODAY_FIXTURE, mockTriage } from "./src/api/today-mock";
+import {
+  ARCS_NARRATIVE_STATEMENT,
+  CHRONICLE_PERIOD_STATEMENT,
+  PREDICTIONS_NARRATIVE_STATEMENT,
+  SAMPLE_ARCS,
+  SAMPLE_CALIBRATION,
+  SAMPLE_EVENTS,
+  SAMPLE_LAYER_COUNTS,
+  SAMPLE_PREDICTIONS,
+} from "./src/components/history/sample-data";
 import type {
   TriageAction,
   TriageResponse,
@@ -262,6 +272,22 @@ export function mockBackend(): Plugin {
           // visible in interactive testing.
           await new Promise((r) => setTimeout(r, 150));
           json(res, mockProbeResponse(id, body));
+          return;
+        }
+
+        // ---- History page surface --------------------------------
+        if (method === "GET" && url.startsWith("/api/v1/history")) {
+          json(res, {
+            events: SAMPLE_EVENTS,
+            predictions: SAMPLE_PREDICTIONS,
+            arcs: SAMPLE_ARCS,
+            calibration: SAMPLE_CALIBRATION,
+            layer_counts: SAMPLE_LAYER_COUNTS,
+            chronicle_statement: CHRONICLE_PERIOD_STATEMENT,
+            predictions_statement: PREDICTIONS_NARRATIVE_STATEMENT,
+            arcs_statement: ARCS_NARRATIVE_STATEMENT,
+            period: new URLSearchParams(url.split("?")[1] ?? "").get("period") ?? "90d",
+          });
           return;
         }
 

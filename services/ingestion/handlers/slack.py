@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import re
 import time
@@ -32,7 +31,6 @@ from lib.shared.errors import CompanyOSError, ValidationError
 
 from services.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
-    HandlerError,
     ObservationDraft,
     register,
 )

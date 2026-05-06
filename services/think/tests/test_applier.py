@@ -5,9 +5,7 @@ lock, cascade, anomalies) live in test_end_to_end.py.
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -18,7 +16,7 @@ from services.think.applier import (
     AlreadyAppliedError, apply_diff, hash_diff,
 )
 from services.think.diff_schema import (
-    ActOp, ClaimOp, ResourceOp, ValidatedDiff,
+    ClaimOp, ValidatedDiff,
 )
 
 

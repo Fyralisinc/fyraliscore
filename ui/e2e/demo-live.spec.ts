@@ -28,11 +28,11 @@ test("pick Truss → cockpit renders without errors", async ({ page }) => {
   });
 
   // 1. Picker page renders
-  await page.goto(`${BASE}/demo`);
+  await page.goto(`${BASE}/`);
   await expect(page.locator("h1.demo-picker-title")).toBeVisible({ timeout: 10000 });
 
   // 2. Wait for companies to load and the Start button to appear
-  const startBtn = page.getByTestId("start-truss");
+  const startBtn = page.getByTestId("start-pelago");
   await expect(startBtn).toBeVisible({ timeout: 10000 });
 
   // 3. Click Start

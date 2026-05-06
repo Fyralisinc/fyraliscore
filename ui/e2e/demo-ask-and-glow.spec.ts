@@ -3,10 +3,10 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://127.0.0.1:5173";
 
 test("inject-signals handle has glowing/animated styling", async ({ page }) => {
-  await page.goto(`${BASE}/demo`);
+  await page.goto(`${BASE}/`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.getByTestId("start-truss").click();
+  await page.getByTestId("start-pelago").click();
   await page.waitForURL(`${BASE}/`);
   await page.waitForTimeout(2000);
 
@@ -32,10 +32,10 @@ test("asking a question on a card produces an answer turn, NOT a card removal", 
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(`${e.name}: ${e.message}`));
 
-  await page.goto(`${BASE}/demo`);
+  await page.goto(`${BASE}/`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.getByTestId("start-truss").click();
+  await page.getByTestId("start-pelago").click();
   await page.waitForURL(`${BASE}/`);
   await page.waitForTimeout(3000);
 

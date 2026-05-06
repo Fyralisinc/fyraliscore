@@ -8,26 +8,36 @@ import { Chronicle } from "@/components/history/Chronicle";
 import { Predictions } from "@/components/history/Predictions";
 import { Arcs } from "@/components/history/Arcs";
 import { EventPanel } from "@/components/history/EventPanel";
-import {
-  ARCS_NARRATIVE_STATEMENT,
-  CHRONICLE_PERIOD_STATEMENT,
-  PREDICTIONS_NARRATIVE_STATEMENT,
-  SAMPLE_ARCS,
-  SAMPLE_CALIBRATION,
-  SAMPLE_EVENTS,
-  SAMPLE_LAYER_COUNTS,
-  SAMPLE_PREDICTIONS,
-} from "@/components/history/sample-data";
+import { useHistory } from "@/hooks/useHistory";
+import type { HistoryPeriod } from "@/api/history-client";
 import type {
+  Arc,
+  CalibrationSummary,
   EventType,
   HistoryEvent,
   HistoryFilters,
   HistoryLayerId,
+  LayerStripCounts,
   Prediction,
+  ShapeToken,
 } from "@/components/history/types";
+
+const EMPTY_LAYER_COUNTS: LayerStripCounts = {
+  chronicle: { events: 0, period_label: "this period" },
+  predictions: { calibration: 0, correct: 0, total: 0 },
+  arcs: { active: 0, resolved: 0 },
+};
+const EMPTY_CALIBRATION: CalibrationSummary = { overall: 0, domains: [] };
+const EMPTY_EVENTS: HistoryEvent[] = [];
+const EMPTY_PREDICTIONS: Prediction[] = [];
+const EMPTY_ARCS: Arc[] = [];
 
 // Driftwood — History page (DRIFTWOOD_HISTORY_SPEC.md).
 // Three layers: Chronicle (default), Predictions, Arcs.
+// Data is sourced from the gateway /v1/history endpoint
+// (services.history.aggregator) — events, predictions, arcs, calibration,
+// layer counts, and the narrative-band statements all derive from the
+// substrate.
 export default function History() {
   const navigate = useNavigate();
   const [layer, setLayer] = useState<HistoryLayerId>("chronicle");
@@ -47,26 +57,44 @@ export default function History() {
   const [selectedArcId, setSelectedArcId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const { history, loading, error, offline, setPeriod } = useHistory(
+    filters.period as HistoryPeriod
+  );
+
+  // Keep the backend period query in sync with the filters dropdown.
+  useEffect(() => {
+    setPeriod(filters.period as HistoryPeriod);
+  }, [filters.period, setPeriod]);
+
+  const events = history?.events ?? EMPTY_EVENTS;
+  const predictions = history?.predictions ?? EMPTY_PREDICTIONS;
+  const arcs = history?.arcs ?? EMPTY_ARCS;
+  const calibration = history?.calibration ?? EMPTY_CALIBRATION;
+  const layerCounts = history?.layer_counts ?? EMPTY_LAYER_COUNTS;
+  const chronicleStatement: ShapeToken[] = history?.chronicle_statement ?? [];
+  const predictionsStatement: ShapeToken[] = history?.predictions_statement ?? [];
+  const arcsStatement: ShapeToken[] = history?.arcs_statement ?? [];
+
   const selectedEvent = useMemo<HistoryEvent | null>(
     () =>
       selectedEventId
-        ? SAMPLE_EVENTS.find((e) => e.id === selectedEventId) ?? null
+        ? events.find((e) => e.id === selectedEventId) ?? null
         : null,
-    [selectedEventId]
+    [events, selectedEventId]
   );
   const selectedPrediction = useMemo<Prediction | null>(
     () =>
       selectedPredictionId
-        ? SAMPLE_PREDICTIONS.find((p) => p.id === selectedPredictionId) ?? null
+        ? predictions.find((p) => p.id === selectedPredictionId) ?? null
         : null,
-    [selectedPredictionId]
+    [predictions, selectedPredictionId]
   );
   const selection = selectedEvent
     ? {
         kind: "event" as const,
         event: selectedEvent,
         arc: selectedEvent.arc
-          ? SAMPLE_ARCS.find((a) => a.id === selectedEvent.arc)
+          ? arcs.find((a) => a.id === selectedEvent.arc)
           : undefined,
       }
     : selectedPrediction
@@ -204,7 +232,7 @@ export default function History() {
         <main className="structure-main history-main">
           <HistoryLayerStrip
             active={layer}
-            counts={SAMPLE_LAYER_COUNTS}
+            counts={layerCounts}
             onSwitch={onSwitchLayer}
             onShortcuts={() => setShortcutsOpen(true)}
           />
@@ -213,14 +241,14 @@ export default function History() {
             layer={layer}
             statement={
               layer === "chronicle"
-                ? CHRONICLE_PERIOD_STATEMENT
+                ? chronicleStatement
                 : layer === "predictions"
-                  ? PREDICTIONS_NARRATIVE_STATEMENT
-                  : ARCS_NARRATIVE_STATEMENT
+                  ? predictionsStatement
+                  : arcsStatement
             }
-            events={SAMPLE_EVENTS}
-            arcs={SAMPLE_ARCS}
-            calibration={SAMPLE_CALIBRATION}
+            events={events}
+            arcs={arcs}
+            calibration={calibration}
             onArcChip={handleArcChip}
             onRef={handleRef}
           />
@@ -234,10 +262,17 @@ export default function History() {
           ) : null}
 
           <div className="history-layer-content">
-            {layer === "chronicle" ? (
+            {loading && history === null ? (
+              <div className="history-state-msg">Loading history…</div>
+            ) : offline && history === null ? (
+              <div className="history-state-msg">
+                Couldn't reach the server.
+                {error ? <span className="history-state-detail"> {error}</span> : null}
+              </div>
+            ) : layer === "chronicle" ? (
               <Chronicle
-                events={SAMPLE_EVENTS}
-                arcs={SAMPLE_ARCS}
+                events={events}
+                arcs={arcs}
                 filters={filters}
                 onEventClick={(id) => {
                   setSelectedPredictionId(null);
@@ -250,8 +285,8 @@ export default function History() {
               />
             ) : layer === "predictions" ? (
               <Predictions
-                predictions={SAMPLE_PREDICTIONS}
-                calibration={SAMPLE_CALIBRATION}
+                predictions={predictions}
+                calibration={calibration}
                 onRowClick={(id) => {
                   setSelectedEventId(null);
                   setSelectedPredictionId(id);
@@ -259,8 +294,8 @@ export default function History() {
               />
             ) : (
               <Arcs
-                arcs={SAMPLE_ARCS}
-                events={SAMPLE_EVENTS}
+                arcs={arcs}
+                events={events}
                 selectedArcId={selectedArcId}
                 onSelect={setSelectedArcId}
                 onEventClick={(id) => {

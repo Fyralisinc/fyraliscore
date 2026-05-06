@@ -3,10 +3,10 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://127.0.0.1:5173";
 
 test("signal simulator starts collapsed and minimize button works", async ({ page }) => {
-  await page.goto(`${BASE}/demo`);
+  await page.goto(`${BASE}/`);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.getByTestId("start-truss").click();
+  await page.getByTestId("start-pelago").click();
   await page.waitForURL(`${BASE}/`);
   await page.waitForTimeout(2500);
 

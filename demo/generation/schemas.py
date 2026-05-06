@@ -197,6 +197,41 @@ class GeneratedModel(BaseModel):
 
 
 # ---------------------------------------------------------------------
+# Resources — capacity primitives (human pods, financial pools, technical
+# platforms). Customers are also resources at SQL emit time, but those
+# are derived from `GeneratedCustomer`; this type is for the capacity
+# class that feeds the Resource view in Structure.
+# ---------------------------------------------------------------------
+
+
+ResourceKind = Literal["human", "financial", "technical", "time"]
+ResourceUtilizationState = Literal["available", "deployed", "constrained"]
+ResourceControllability = Literal["owned", "shared", "leased"]
+ResourceTemporal = Literal["permanent", "time_limited", "ephemeral"]
+
+
+class GeneratedResource(BaseModel):
+    id: str
+    kind: ResourceKind
+    identity: str               # short canonical name e.g. "pod:engineering"
+    label: str                  # display label e.g. "Engineering pod"
+    description: str = ""
+    capacity: float             # numeric capacity in `unit`
+    unit: str                   # "FTE", "USD", "engineer-weeks", "GPU-hours"
+    utilization_state: ResourceUtilizationState = "available"
+    controllability: ResourceControllability = "owned"
+    temporal_character: ResourceTemporal = "permanent"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GeneratedResourceDeployment(BaseModel):
+    """Bridge row — a single commitment consuming a slice of a resource."""
+    resource_id: str
+    commitment_id: str
+    deployed_quantity: float    # in the resource's `unit`
+
+
+# ---------------------------------------------------------------------
 # Container — the validated bundle that sql_emit and validate operate on
 # ---------------------------------------------------------------------
 
@@ -214,6 +249,8 @@ class GeneratedBundle(BaseModel):
     signals: list[GeneratedSignal] = Field(default_factory=list)
     models: list[GeneratedModel] = Field(default_factory=list)
     recommendations: list[GeneratedRecommendation] = Field(default_factory=list)
+    resources: list[GeneratedResource] = Field(default_factory=list)
+    resource_deployments: list[GeneratedResourceDeployment] = Field(default_factory=list)
 
 
 __all__ = [
@@ -225,5 +262,6 @@ __all__ = [
     "GeneratedSignal", "SignalBatch", "EntityMention",
     "GeneratedModel", "ModelKind",
     "GeneratedRecommendation", "TargetActRef",
+    "GeneratedResource", "GeneratedResourceDeployment",
     "GeneratedBundle",
 ]

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://127.0.0.1:5173";
 
-for (const company of ["truss", "northwind", "meridian"] as const) {
+for (const company of ["pelago"] as const) {
   test(`pick ${company} → cockpit renders, signal injects, reset works`, async ({ page }) => {
     const errors: string[] = [];
     const failures: string[] = [];
@@ -13,7 +13,7 @@ for (const company of ["truss", "northwind", "meridian"] as const) {
     });
 
     // Clean any prior demo session
-    await page.goto(`${BASE}/demo`);
+    await page.goto(`${BASE}/`);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
 
