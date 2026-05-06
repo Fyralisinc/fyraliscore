@@ -21,6 +21,7 @@ dependencies = [
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)
     "anthropic>=0.34",
     "openai>=1.40",
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]
