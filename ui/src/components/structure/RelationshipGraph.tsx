@@ -1803,8 +1803,11 @@ function AggregateGraph({
 
   const cx = w / 2;
   const cy = h / 2;
-  // Goal nodes on two rings; outer ring pulled out enough that a busy
-  // goal's leaf orbit on either ring can't bleed into the other.
+  // Three concentric levels:
+  //   inner ring (innerR)  → strategic goals
+  //   outer ring (outerR)  → operational sub-goals, clustered angularly
+  //                          near their strategic parent
+  //   orbit around each op → commits as leaves
   const innerR = Math.min(w, h) * 0.20;
   const outerR = Math.min(w, h) * 0.46;
   // Cap leaves shown around each goal so high-count goals don't grow
@@ -1814,12 +1817,79 @@ function AggregateGraph({
 
   const strat = goals.filter((g) => g.altitude === "strategic");
   const op = goals.filter((g) => g.altitude === "operational");
-  const stratPos = ringPositions(cx, cy, innerR, strat.length, -Math.PI / 2);
-  const opPos = ringPositions(cx, cy, outerR, op.length, -Math.PI / 2 + 0.4);
+  const opByParent = new Map<string, GoalRef[]>();
+  const orphanOp: GoalRef[] = [];
+  for (const g of op) {
+    if (g.parent_goal_id && strat.some((s) => s.id === g.parent_goal_id)) {
+      const list = opByParent.get(g.parent_goal_id) ?? [];
+      list.push(g);
+      opByParent.set(g.parent_goal_id, list);
+    } else {
+      orphanOp.push(g);
+    }
+  }
 
   const goalCenter = new Map<string, { x: number; y: number }>();
-  strat.forEach((g, i) => goalCenter.set(g.id, stratPos[i]));
-  op.forEach((g, i) => goalCenter.set(g.id, opPos[i]));
+  const stratAngle = new Map<string, number>();
+
+  // Place strategic goals evenly on the inner ring.
+  if (strat.length > 0) {
+    const start = -Math.PI / 2;
+    strat.forEach((g, i) => {
+      const a = start + (i / strat.length) * Math.PI * 2;
+      stratAngle.set(g.id, a);
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * innerR,
+        y: cy + Math.sin(a) * innerR,
+      });
+    });
+  }
+
+  // For each strategic, fan its operational children on the outer ring
+  // across an angular slice around the strategic's own angle. Each
+  // strategic gets an equal slice of the full circle; orphan
+  // operationals share whatever remains.
+  const totalSlices = strat.length + (orphanOp.length > 0 ? 1 : 0);
+  const sliceSpan =
+    totalSlices > 0 ? (Math.PI * 2) / totalSlices : Math.PI * 2;
+  // Operational fans inside their parent's slice — leave a small gap
+  // at slice edges so neighboring fans don't visually collide.
+  const fanShrink = 0.85;
+
+  strat.forEach((s) => {
+    const parentAngle = stratAngle.get(s.id) ?? 0;
+    const children = opByParent.get(s.id) ?? [];
+    if (children.length === 0) return;
+    const span = sliceSpan * fanShrink;
+    children.forEach((g, i) => {
+      const offset =
+        children.length === 1
+          ? 0
+          : ((i / (children.length - 1)) - 0.5) * span;
+      const a = parentAngle + offset;
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * outerR,
+        y: cy + Math.sin(a) * outerR,
+      });
+    });
+  });
+
+  // Orphans land in their own slice at the bottom of the ring.
+  if (orphanOp.length > 0) {
+    const baseAngle = Math.PI / 2;       // bottom
+    const span = sliceSpan * fanShrink;
+    orphanOp.forEach((g, i) => {
+      const offset =
+        orphanOp.length === 1
+          ? 0
+          : ((i / (orphanOp.length - 1)) - 0.5) * span;
+      const a = baseAngle + offset;
+      goalCenter.set(g.id, {
+        x: cx + Math.cos(a) * outerR,
+        y: cy + Math.sin(a) * outerR,
+      });
+    });
+  }
 
   const byGoal = new Map<string, Commitment[]>();
   for (const c of commitments) {
@@ -1841,6 +1911,26 @@ function AggregateGraph({
       <text x={cx} y={cy + 26} textAnchor="middle" className="rg-agg-center-hint">
         click any node to drill in
       </text>
+
+      {/* Parent → child goal edges drawn first so they sit beneath leaves. */}
+      {strat.flatMap((s) => {
+        const sCenter = goalCenter.get(s.id);
+        if (!sCenter) return [];
+        return (opByParent.get(s.id) ?? []).map((c) => {
+          const cCenter = goalCenter.get(c.id);
+          if (!cCenter) return null;
+          return (
+            <line
+              key={"goal-edge-" + s.id + "-" + c.id}
+              className="rg-agg-goal-edge"
+              x1={sCenter.x}
+              y1={sCenter.y}
+              x2={cCenter.x}
+              y2={cCenter.y}
+            />
+          );
+        });
+      })}
 
       {[...byGoal.entries()].map(([gid, list]) => {
         if (gid === "__orphan__") return null;
@@ -1911,8 +2001,19 @@ function AggregateGraph({
       {goals.map((g) => {
         const p = goalCenter.get(g.id);
         if (!p) return null;
-        const cnt = counts.get(g.id) ?? 0;
-        const r = 14 + Math.min(28, cnt * 1.6);
+        // Strategic goals roll up their operational children's
+        // commitment counts so the parent node reflects total load.
+        let cnt = counts.get(g.id) ?? 0;
+        if (g.altitude === "strategic") {
+          for (const ch of opByParent.get(g.id) ?? []) {
+            cnt += counts.get(ch.id) ?? 0;
+          }
+        }
+        const isStrategic = g.altitude === "strategic";
+        const r =
+          isStrategic
+            ? 18 + Math.min(28, cnt * 0.8)
+            : 12 + Math.min(22, cnt * 1.2);
         return (
           <g
             key={"goal-" + g.id}
