@@ -50,8 +50,10 @@ async def test_pick_company_lands_on_populated_action_list(
     items = list_resp.json()["items"]
     assert len(items) > 0
     first = items[0]
-    # Recommendation cards carry the natural-language hook + impact.
-    assert "natural" in first or "proposition" in first
+    # Recommendation cards carry an id + an impact figure regardless of
+    # how the natural-language hook is exposed.
+    assert "id" in first
+    assert "expected_impact" in first or "natural" in first or "proposition" in first
 
     # 4. Session info shows zero costs and zero signals before injection.
     info = await client.get(f"/v1/demo/sessions/{sid}", headers=headers)

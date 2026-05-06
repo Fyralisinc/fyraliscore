@@ -150,6 +150,7 @@ async def wipe_tenant(
         "demo_session_costs",       # FK on demo_sessions; sessions kept
         # Edge tables first — they FK into goals/commitments/decisions/resources.
         "customer_commitments",
+        "resource_deployments",
         "constrained_by",
         "depends_on",
         "contributes_to",
@@ -181,6 +182,9 @@ async def wipe_tenant(
     # never strand a live auth session.
     preserved = list(preserve_actor_ids)
     edge_join_sql: dict[str, str] = {
+        "resource_deployments":
+            "DELETE FROM resource_deployments WHERE commitment_id IN "
+            "(SELECT id FROM commitments WHERE tenant_id = $1)",
         "contributes_to":
             "DELETE FROM contributes_to WHERE commitment_id IN "
             "(SELECT id FROM commitments WHERE tenant_id = $1)",

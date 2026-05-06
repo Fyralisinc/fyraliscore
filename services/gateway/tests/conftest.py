@@ -125,6 +125,9 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
+    # demo_configs is seeded only by migrations; truncating it leaves
+    # the table empty between tests because migrations don't re-run.
+    seed_only = ["demo_configs"]
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -132,7 +135,9 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-        """
+          AND c.relname <> ALL($1::text[])
+        """,
+        seed_only,
     )
     tables = [r["relname"] for r in rows]
     if not tables:
