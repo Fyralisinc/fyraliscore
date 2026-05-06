@@ -66,8 +66,8 @@ async def _register_codecs(conn: asyncpg.Connection) -> None:
         # (numpy array when codec is live, stringified for tests that
         # opt out). asyncpg.Connection uses __slots__, so we can't tag
         # the connection object directly.
-        from services.models.repo import _VECTOR_REGISTERED_IDS
-        _VECTOR_REGISTERED_IDS.add(id(conn))
+        from services.models.repo import PGVECTOR_REGISTERED_POOL_IDS
+        PGVECTOR_REGISTERED_POOL_IDS.add(id(conn))
     except Exception:
         # `vector` extension is optional in some test fixtures.
         pass

@@ -64,29 +64,15 @@ async def main(stages_filter: list[str] | None = None) -> int:
         print("DATABASE_URL not set", file=sys.stderr)
         return 2
 
-    # Register pgvector codec on every pooled connection. Production code
-    # paths (services/models/repo.py:189) call register_vector lazily on
-    # the connections they touch, which mutates the connection-level codec
-    # map. Without doing the same in setup, fixture writes that pass
-    # vectors as `'[…]'::vector` SQL casts collide with retrieval reads
-    # that expect a list/bytes. Setting it once on init eliminates that
-    # race entirely — every connection in the pool always expects a list.
-    from pgvector.asyncpg import register_vector
-    from services.models.repo import _VECTOR_REGISTERED_IDS
+    # Pool init callback registers pgvector codec on every connection
+    # the pool ever produces. See services/models/PGVECTOR_REGISTRY.md
+    # for the contract. Any new pool that reads via Pathway B (the
+    # gateway, the Think worker, this harness) must do this.
+    from services.models.repo import pgvector_pool_init
 
-    async def _init_conn(conn: asyncpg.Connection) -> None:
-        await register_vector(conn)
-        # Production code uses an id(conn)-keyed set to remember which
-        # connections have the codec; pathway B branches on this. Without
-        # the entry, retrieval thinks the codec is missing and reformats
-        # the vector as a string — which then fails because the codec
-        # *was* registered. Mirror what services/models/repo does.
-        _VECTOR_REGISTERED_IDS.add(id(conn))
-        inner = getattr(conn, "_con", None)
-        if inner is not None:
-            _VECTOR_REGISTERED_IDS.add(id(inner))
-
-    pool = await asyncpg.create_pool(dsn, min_size=2, max_size=20, init=_init_conn)
+    pool = await asyncpg.create_pool(
+        dsn, min_size=2, max_size=20, init=pgvector_pool_init,
+    )
     try:
         await _ensure_schema(pool)
         # Stage names → concurrency. LLM-using cases get lower concurrency

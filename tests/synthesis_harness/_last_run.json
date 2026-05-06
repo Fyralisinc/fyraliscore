@@ -4,17 +4,17 @@
     "name": "pathway_A_actor_scope",
     "intent": "T1 with scope_actor seeds pathway A and surfaces actor-scoped Models",
     "passed": true,
-    "elapsed_ms": 56,
+    "elapsed_ms": 55,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac",
-        "019dfe4f-1fc5-7000-b4a2-d0dd23868147"
+        "019dfe54-0a00-7000-a698-b7001c2c0842",
+        "019dfe54-0a15-7001-b507-5ca71e105ccf"
       ],
       "scores": {
-        "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac": 0.03268112109994712,
-        "019dfe4f-1fc5-7000-b4a2-d0dd23868147": 0.022686409307244845
+        "019dfe54-0a00-7000-a698-b7001c2c0842": 0.03278688524590164,
+        "019dfe54-0a15-7001-b507-5ca71e105ccf": 0.02258064516129032
       },
       "pathways_run": [
         "A",
@@ -23,8 +23,8 @@
       ]
     },
     "expected": {
-      "in_scope": "019dfe4f-1fb1-7000-aa6c-2dac1b0abaac",
-      "out_scope": "019dfe4f-1fc5-7000-b4a2-d0dd23868147"
+      "in_scope": "019dfe54-0a00-7000-a698-b7001c2c0842",
+      "out_scope": "019dfe54-0a15-7001-b507-5ca71e105ccf"
     }
   },
   {
@@ -32,17 +32,17 @@
     "name": "pathway_B_semantic_top1",
     "intent": "Pathway B ranks the cosine-nearest Model first",
     "passed": true,
-    "elapsed_ms": 55,
+    "elapsed_ms": 53,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe4f-1faf-7000-a93f-b616537be969",
-        "019dfe4f-1fc7-7000-bbc0-960254bc0ffa"
+        "019dfe54-09ff-7000-a133-97a445b83a17",
+        "019dfe54-0a15-7000-9b47-8e17edf0f28b"
       ]
     },
     "expected": {
-      "first_must_be": "019dfe4f-1faf-7000-a93f-b616537be969"
+      "first_must_be": "019dfe54-09ff-7000-a133-97a445b83a17"
     }
   },
   {
@@ -50,50 +50,50 @@
     "name": "pathway_C_temporal_window",
     "intent": "Pathway C surfaces in-window obs/models and excludes out-of-window",
     "passed": true,
-    "elapsed_ms": 73,
+    "elapsed_ms": 68,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe4f-1fb8-7000-9248-3d8763434325",
-        "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
+        "019dfe54-0a07-7000-81d3-3f8e05af15ca",
+        "019dfe54-0a19-7001-aa66-3bbe4fd349b8"
       ],
       "obs_ids": [
-        "019dfe4f-1fdc-7000-9e3a-e16c23706d90"
+        "019dfe54-0a28-7000-a9a9-a60819928fc0"
       ],
       "scores": {
-        "019dfe4f-1fb8-7000-9248-3d8763434325": 0.03278688524590164,
-        "019dfe4f-1fcd-7000-a8f0-d651188c22d1": 0.029032258064516127
+        "019dfe54-0a07-7000-81d3-3f8e05af15ca": 0.03268112109994712,
+        "019dfe54-0a19-7001-aa66-3bbe4fd349b8": 0.02913802221047065
       },
       "pathway_results": [
         {
           "name": "A",
           "model_ids": [
-            "019dfe4f-1fb8-7000-9248-3d8763434325",
-            "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
+            "019dfe54-0a07-7000-81d3-3f8e05af15ca",
+            "019dfe54-0a19-7001-aa66-3bbe4fd349b8"
           ]
         },
         {
           "name": "B",
           "model_ids": [
-            "019dfe4f-1fb8-7000-9248-3d8763434325",
-            "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
+            "019dfe54-0a19-7001-aa66-3bbe4fd349b8",
+            "019dfe54-0a07-7000-81d3-3f8e05af15ca"
           ]
         },
         {
           "name": "C",
           "model_ids": [
-            "019dfe4f-1fb8-7000-9248-3d8763434325"
+            "019dfe54-0a07-7000-81d3-3f8e05af15ca"
           ]
         }
       ]
     },
     "expected": {
       "must_include_obs": [
-        "019dfe4f-1fdc-7000-9e3a-e16c23706d90"
+        "019dfe54-0a28-7000-a9a9-a60819928fc0"
       ],
-      "must_include_model": "019dfe4f-1fb8-7000-9248-3d8763434325",
-      "out_win": "019dfe4f-1fcd-7000-a8f0-d651188c22d1"
+      "must_include_model": "019dfe54-0a07-7000-81d3-3f8e05af15ca",
+      "out_win": "019dfe54-0a19-7001-aa66-3bbe4fd349b8"
     }
   },
   {
@@ -101,22 +101,22 @@
     "name": "pathway_D_pattern_signature",
     "intent": "T4 with seed_signature returns matching pattern and its instances",
     "passed": true,
-    "elapsed_ms": 72,
+    "elapsed_ms": 64,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe4f-1fb7-7000-b713-6a08063861dc",
-        "019dfe4f-1fcb-7000-9008-3d840c60dc12"
+        "019dfe54-0a05-7000-a8fc-8d3df1fba5f7",
+        "019dfe54-0a17-7001-b841-d18fb4126f2a"
       ]
     },
     "expected": {
       "must_include": [
-        "019dfe4f-1fb7-7000-b713-6a08063861dc",
-        "019dfe4f-1fcb-7000-9008-3d840c60dc12"
+        "019dfe54-0a05-7000-a8fc-8d3df1fba5f7",
+        "019dfe54-0a17-7001-b841-d18fb4126f2a"
       ],
       "must_exclude": [
-        "019dfe4f-1fdb-7000-85cf-977fc54b7797"
+        "019dfe54-0a24-7000-96ed-35e63b490cc7"
       ]
     }
   },
@@ -125,22 +125,22 @@
     "name": "rrf_fusion_multipathway",
     "intent": "RRF fusion: A\u2229B model outranks B-only model with higher activation",
     "passed": true,
-    "elapsed_ms": 45,
+    "elapsed_ms": 42,
     "diff": "",
     "error": null,
     "actual": {
       "ids": [
-        "019dfe4f-1fe7-7000-9ecd-7ff44f497772",
-        "019dfe4f-1ff7-7000-b266-9eac5a79761c"
+        "019dfe54-0a34-7000-b22b-39abdb9612e9",
+        "019dfe54-0a42-7000-be82-74146e9e2e89"
       ],
       "scores": {
-        "019dfe4f-1fe7-7000-9ecd-7ff44f497772": 0.03265468006345849,
-        "019dfe4f-1ff7-7000-b266-9eac5a79761c": 0.022712850343733475
+        "019dfe54-0a34-7000-b22b-39abdb9612e9": 0.03265468006345849,
+        "019dfe54-0a42-7000-be82-74146e9e2e89": 0.022712850343733475
       }
     },
     "expected": {
-      "x_first": "019dfe4f-1fe7-7000-9ecd-7ff44f497772",
-      "y_present": "019dfe4f-1ff7-7000-b266-9eac5a79761c"
+      "x_first": "019dfe54-0a34-7000-b22b-39abdb9612e9",
+      "y_present": "019dfe54-0a42-7000-be82-74146e9e2e89"
     }
   },
   {
@@ -148,7 +148,7 @@
     "name": "second_pass_sparse_activation",
     "intent": "Sparse primary result triggers second-pass with reason 'sparse'",
     "passed": true,
-    "elapsed_ms": 44,
+    "elapsed_ms": 41,
     "diff": "",
     "error": null,
     "actual": {
@@ -173,13 +173,13 @@
     "actual": {
       "primary": [
         "commitment",
-        "019dfe4f-1ff4-7000-9877-a357710bbf28"
+        "019dfe54-0a3c-7000-8687-64b57d00f15a"
       ]
     },
     "expected": {
       "primary": [
         "commitment",
-        "019dfe4f-1ff4-7000-9877-a357710bbf28"
+        "019dfe54-0a3c-7000-8687-64b57d00f15a"
       ]
     }
   },
@@ -193,12 +193,12 @@
     "error": null,
     "actual": {
       "a": [
-        1170286978,
-        -1475915025
+        -1430765486,
+        1920351714
       ],
       "b": [
-        1170286978,
-        -1475915025
+        -1430765486,
+        1920351714
       ]
     },
     "expected": {
@@ -234,28 +234,28 @@
       "touched": [
         [
           "commitment",
-          "019dfe4f-1ff5-7001-a9da-51be1d62f0c5"
+          "019dfe54-0a3c-700d-a9f9-3946e3e507ff"
         ],
         [
           "commitment",
-          "019dfe4f-1ff5-7004-9c05-42d0ac027736"
+          "019dfe54-0a3c-7010-b5e5-a23aa129ac6c"
         ],
         [
           "goal",
-          "019dfe4f-1ff5-7002-9a08-ebd175144ff8"
+          "019dfe54-0a3c-700e-a55c-d3ada28d2470"
         ],
         [
           "model",
-          "019dfe4f-1ff5-7000-bdfc-72ff2a85cdd5"
+          "019dfe54-0a3c-700c-ae0d-110fdc44fa69"
         ],
         [
           "observation",
-          "019dfe4f-1ff5-7003-8098-2ab4817f2176"
+          "019dfe54-0a3c-700f-9469-d359f5c2b0e0"
         ]
       ]
     },
     "expected": {
-      "set": "{('model', '019dfe4f-1ff5-7000-bdfc-72ff2a85cdd5'), ('observation', '019dfe4f-1ff5-7003-8098-2ab4817f2176'), ('commitment', '019dfe4f-1ff5-7001-a9da-51be1d62f0c5'), ('commitment', '019dfe4f-1ff5-7004-9c05-42d0ac027736'), ('goal', '019dfe4f-1ff5-7002-9a08-ebd175144ff8')}"
+      "set": "{('observation', '019dfe54-0a3c-700f-9469-d359f5c2b0e0'), ('commitment', '019dfe54-0a3c-7010-b5e5-a23aa129ac6c'), ('commitment', '019dfe54-0a3c-700d-a9f9-3946e3e507ff'), ('model', '019dfe54-0a3c-700c-ae0d-110fdc44fa69'), ('goal', '019dfe54-0a3c-700e-a55c-d3ada28d2470')}"
     }
   },
   {
@@ -288,7 +288,7 @@
     "name": "primary_subject_belief_multiplier",
     "intent": "Belief contestation by primary subject (scope_actors[0]) \u2192 confidence \u00d7 0.3, floor 0.15",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 18,
     "diff": "",
     "error": null,
     "actual": {
@@ -331,7 +331,7 @@
     "name": "confidence_floor_clamp",
     "intent": "Confidence \u00d7 0.3 below 0.15 clamps to OVERRIDE_FLOOR",
     "passed": true,
-    "elapsed_ms": 22,
+    "elapsed_ms": 21,
     "diff": "",
     "error": null,
     "actual": {
@@ -346,7 +346,7 @@
     "name": "no_standing_raises",
     "intent": "Outsider with no scope/owner/contributor link \u2192 NoStandingError",
     "passed": true,
-    "elapsed_ms": 19,
+    "elapsed_ms": 18,
     "diff": "",
     "error": null,
     "actual": {
@@ -363,7 +363,7 @@
     "name": "standing_via_commitment_owner",
     "intent": "Actor who owns a commitment in scope_entities has standing with basis='owner'",
     "passed": true,
-    "elapsed_ms": 22,
+    "elapsed_ms": 21,
     "diff": "",
     "error": null,
     "actual": {
@@ -380,7 +380,7 @@
     "name": "standing_via_contributor",
     "intent": "Contributor on a scoped commitment has standing with basis='contributor'",
     "passed": true,
-    "elapsed_ms": 24,
+    "elapsed_ms": 23,
     "diff": "",
     "error": null,
     "actual": {
@@ -406,10 +406,10 @@
       "previous_confidence": 0.7,
       "signal_readings": [
         {
-          "actor_id": "019dfe4f-201d-7001-988a-5ee980e1e1a7",
+          "actor_id": "019dfe54-0a65-7002-8865-017ec2e9e342",
           "contested": true,
           "rationale": "my reading was not what I meant",
-          "contested_at": "2026-05-06T17:21:31.692909+00:00"
+          "contested_at": "2026-05-06T17:26:53.814061+00:00"
         }
       ],
       "db_confidence": 0.7
@@ -417,7 +417,7 @@
     "expected": {
       "override_applied": false,
       "confidence_unchanged": 0.7,
-      "actor_id_str": "019dfe4f-201d-7001-988a-5ee980e1e1a7"
+      "actor_id_str": "019dfe54-0a65-7002-8865-017ec2e9e342"
     }
   },
   {
@@ -475,7 +475,7 @@
     "name": "eval_observation_pattern_violated",
     "intent": "observation_pattern: matching obs in window \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 9,
+    "elapsed_ms": 8,
     "diff": "",
     "error": null,
     "actual": {
@@ -505,7 +505,7 @@
     "name": "eval_commitment_outcome_violated",
     "intent": "commitment_outcome: commit state == contradicting_state \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 6,
+    "elapsed_ms": 5,
     "diff": "",
     "error": null,
     "actual": {
@@ -715,7 +715,7 @@
     "name": "commitment_state_change_unblocks_dependent",
     "intent": "doneverified on dep with no other unsatisfied deps unblocks dependent \u2192 state=active",
     "passed": true,
-    "elapsed_ms": 32,
+    "elapsed_ms": 36,
     "diff": "",
     "error": null,
     "actual": {
@@ -739,7 +739,7 @@
     "name": "commitment_state_change_no_unblock_when_other_deps",
     "intent": "Dependent stays blocked when at least one other dependency unsatisfied",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 21,
     "diff": "",
     "error": null,
     "actual": {
@@ -765,11 +765,11 @@
         "commitment_flagged_for_review",
         "commitment_flagged_for_review"
       ],
-      "flagged_ids": "{'019dfe4f-2037-7001-8cac-5e5dd5834d88', '019dfe4f-203d-7000-b372-e2ebafd63722'}"
+      "flagged_ids": "{'019dfe54-0a81-7000-abc7-4ca86971f738', '019dfe54-0a85-7000-9945-7b0e29f72c99'}"
     },
     "expected": {
-      "must_flag": "{'019dfe4f-2037-7001-8cac-5e5dd5834d88', '019dfe4f-203d-7000-b372-e2ebafd63722'}",
-      "must_not_flag": "{'019dfe4f-2042-7001-a03b-fa3e2d0320bf'}"
+      "must_flag": "{'019dfe54-0a85-7000-9945-7b0e29f72c99', '019dfe54-0a81-7000-abc7-4ca86971f738'}",
+      "must_not_flag": "{'019dfe54-0a8a-7003-8b22-c81718e6f21c'}"
     }
   },
   {
@@ -794,7 +794,7 @@
     "name": "unknown_kind_halts_cleanly",
     "intent": "Unknown cascade kind returns no downstream and visited count=1",
     "passed": true,
-    "elapsed_ms": 0,
+    "elapsed_ms": 1,
     "diff": "",
     "error": null,
     "actual": {
@@ -813,7 +813,7 @@
     "name": "invariant_violation_surfaces_explicitly",
     "intent": "Orphan-commitment unblock rejection appears on CascadeResult and bumps metric (T1b)",
     "passed": true,
-    "elapsed_ms": 21,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -822,7 +822,7 @@
       "bound_violated": false,
       "violations_count": 1,
       "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019dfe4f-204b-7000-b46d-8a43e10d40db",
+      "violation_entity_id": "019dfe54-0a92-7001-aece-9ca99c970b0a",
       "violation_code": "C4",
       "metric_delta": 1
     },
@@ -831,7 +831,7 @@
       "bound_violated": false,
       "violations_count": 1,
       "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019dfe4f-204b-7000-b46d-8a43e10d40db"
+      "violation_entity_id": "019dfe54-0a92-7001-aece-9ca99c970b0a"
     }
   },
   {
@@ -873,7 +873,7 @@
     "name": "think_end_to_end_deepseek_smoke",
     "intent": "Real DeepSeek call: think() completes end-to-end, returns success or skipped",
     "passed": true,
-    "elapsed_ms": 9852,
+    "elapsed_ms": 9173,
     "diff": "",
     "error": null,
     "actual": {
@@ -881,9 +881,9 @@
       "status": "success",
       "ops_applied_count": 1,
       "llm_calls_count": 1,
-      "llm_input_tokens": 8503,
+      "llm_input_tokens": 8513,
       "model": "deepseek-chat",
-      "elapsed_ms": 9828.74295907095,
+      "elapsed_ms": 9145.50858316943,
       "error": null
     },
     "expected": {
@@ -895,7 +895,7 @@
     "name": "think_repeat_trigger_id_skipped_idempotent",
     "intent": "Calling think() twice with the same trigger_id \u2192 second run skipped_idempotent",
     "passed": true,
-    "elapsed_ms": 16786,
+    "elapsed_ms": 18160,
     "diff": "",
     "error": null,
     "actual": {

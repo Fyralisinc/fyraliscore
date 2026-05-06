@@ -645,13 +645,13 @@ def _conn_has_vector_codec(conn: asyncpg.Connection) -> bool:
     `_con` to the wrapped Connection, so we identify by that id.
     """
     try:
-        from services.models.repo import _VECTOR_REGISTERED_IDS
+        from services.models.repo import PGVECTOR_REGISTERED_POOL_IDS
     except Exception:
         return False
-    if id(conn) in _VECTOR_REGISTERED_IDS:
+    if id(conn) in PGVECTOR_REGISTERED_POOL_IDS:
         return True
     inner = getattr(conn, "_con", None)
-    if inner is not None and id(inner) in _VECTOR_REGISTERED_IDS:
+    if inner is not None and id(inner) in PGVECTOR_REGISTERED_POOL_IDS:
         return True
     return False
 

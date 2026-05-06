@@ -172,28 +172,138 @@ _SELECT_COLS = (
 _SELECT_COLS_SQL = ", ".join(_SELECT_COLS)
 
 
-# pgvector codec registration. We avoid WeakSet because asyncpg's
-# PoolConnectionProxy cannot be weak-referenced. Track registered
-# connection ids in a bounded LRU-like set; since asyncpg reuses
-# connections across tests, a simple set that's cleared on overflow
-# is fine for this purpose (double-registration is harmless at the
-# Postgres level).
-_VECTOR_REGISTERED_IDS: set[int] = set()
+# =====================================================================
+# PUBLIC API: pgvector pool-shared codec registry
+# =====================================================================
+#
+# `PGVECTOR_REGISTERED_POOL_IDS` is the process-wide set of asyncpg
+# connection object ids that have had the pgvector codec registered
+# via `pgvector.asyncpg.register_vector(conn)`. Any code that:
+#
+#   (a) shares an asyncpg pool with `ModelsRepo` (the gateway, the
+#       Think worker, the synthesis harness, any test suite), AND
+#   (b) wants retrieval Pathway B to bind seed vectors as numpy
+#       arrays (the fast path) rather than as `'[…]'::vector` text
+#       literals (the slow legacy path),
+#
+# MUST ensure every pooled connection has been added to this set
+# before retrieval reads run on it. The recommended way is to call
+# `register_pgvector_on_pool(pool)` once at startup, which hooks
+# `register_vector` into the pool's `init` callback and also adds
+# the connection's id to this set.
+#
+# Why a set of int ids and not a WeakSet:
+#   asyncpg `PoolConnectionProxy` objects cannot be weak-referenced
+#   (they have __slots__), and the set must survive across the
+#   `Connection`/`PoolConnectionProxy` boundary. We track raw `id()`
+#   values, accepting that the set may transiently retain ids past
+#   connection eviction; the bounded clear at 1000 entries handles
+#   long-running processes.
+#
+# Why pool-shared, not per-connection:
+#   The codec lives on the asyncpg connection's codec map. asyncpg
+#   pools reuse connections across acquisitions, so registering on
+#   first use of a connection persists for the connection's lifetime
+#   in that pool. Pathway B
+#   (services/retrieval/pathways.py:_conn_has_vector_codec) reads
+#   this set to decide whether to bind a list of floats (fast,
+#   binary) or a stringified `[…]` literal cast as `::vector` (slow,
+#   text). If the set says "registered" but the connection's codec
+#   was somehow not registered, asyncpg fails with a confusing
+#   `could not convert string to float` error — see
+#   tests/synthesis_harness/REPORT.md §8 for the full story.
+#
+# Treat this name as load-bearing. Any new pool that talks to the
+# Models surface MUST go through `register_pgvector_on_pool` (or
+# replicate its semantics — register the codec and add the
+# connection id to this set).
+# =====================================================================
+
+PGVECTOR_REGISTERED_POOL_IDS: set[int] = set()
+
+# Backwards-compat alias for callers that imported the old name. New
+# code should use the public name. The alias is the same set object,
+# so adding to either still tracks correctly.
+_VECTOR_REGISTERED_IDS = PGVECTOR_REGISTERED_POOL_IDS
 
 
 async def _ensure_vector_codec(conn: asyncpg.Connection) -> None:
+    """Lazily register the pgvector codec on `conn` and remember it.
+
+    Idempotent: a second call against the same connection is a
+    no-op. Used by ModelsRepo's per-call paths that don't go through
+    `register_pgvector_on_pool` (e.g. ad-hoc connections opened in
+    one-off scripts).
+    """
     key = id(conn)
-    if key in _VECTOR_REGISTERED_IDS:
+    if key in PGVECTOR_REGISTERED_POOL_IDS:
         return
     try:
         await register_vector(conn)
     except Exception:
         # Duplicate registration is safe; swallow.
         pass
-    _VECTOR_REGISTERED_IDS.add(key)
+    PGVECTOR_REGISTERED_POOL_IDS.add(key)
+    inner = getattr(conn, "_con", None)
+    if inner is not None:
+        PGVECTOR_REGISTERED_POOL_IDS.add(id(inner))
     # Bound the set so it doesn't grow unbounded in long-running procs.
-    if len(_VECTOR_REGISTERED_IDS) > 1000:
-        _VECTOR_REGISTERED_IDS.clear()
+    if len(PGVECTOR_REGISTERED_POOL_IDS) > 1000:
+        PGVECTOR_REGISTERED_POOL_IDS.clear()
+
+
+async def pgvector_pool_init(conn: asyncpg.Connection) -> None:
+    """asyncpg pool `init` callback that installs the pgvector codec.
+
+    Pass this as `init=pgvector_pool_init` to `asyncpg.create_pool(...)`.
+    asyncpg invokes it on every connection the pool produces — both
+    the initial `min_size` set and any later expansions up to
+    `max_size` — so all connections are uniformly registered.
+
+    Records the connection's id in `PGVECTOR_REGISTERED_POOL_IDS`
+    (and the inner connection's id, if `conn` is a proxy) so Pathway
+    B's `_conn_has_vector_codec` check returns True.
+
+    Idempotent: a duplicate `register_vector` call against the same
+    connection is a no-op at the Postgres level.
+    """
+    try:
+        await register_vector(conn)
+    except Exception:
+        # Duplicate registration or pgvector extension missing in a
+        # test sandbox — both safe to swallow.
+        pass
+    PGVECTOR_REGISTERED_POOL_IDS.add(id(conn))
+    inner = getattr(conn, "_con", None)
+    if inner is not None:
+        PGVECTOR_REGISTERED_POOL_IDS.add(id(inner))
+
+
+async def register_pgvector_on_pool(pool: asyncpg.Pool) -> None:
+    """Register the pgvector codec on every CURRENT connection in a pool.
+
+    Most callers should pass `init=pgvector_pool_init` to
+    `asyncpg.create_pool(...)` instead — that's the only way to
+    guarantee future-spawned connections also register. This helper
+    exists for the case where the pool is already constructed and
+    the caller cannot replace it.
+
+    Walks idle connections by acquiring them serially, registering
+    the codec, then releasing. Does NOT install an init callback,
+    so connections created later (when the pool grows under load)
+    will not be registered until they happen to be acquired by
+    code that goes through `_ensure_vector_codec`. Use the init
+    pattern instead when you can.
+    """
+    # Acquire min_size connections to ensure the initial set is
+    # registered. Iteratively to avoid holding more than one at a time.
+    seen: set[int] = set()
+    for _ in range(getattr(pool, "_minsize", 1)):
+        async with pool.acquire() as conn:
+            if id(conn) in seen:
+                break
+            seen.add(id(conn))
+            await pgvector_pool_init(conn)
 
 
 def _jsonb(value: Any) -> str:
