@@ -19,19 +19,30 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           script: |
-            set -e
+            set -euo pipefail
             cd ~/fyraliscore
+
+            PREV_SHA=$(git rev-parse HEAD)
+            echo "==> Previous SHA: ${PREV_SHA}"
 
             echo "==> Pulling latest code"
             git fetch origin production
             git reset --hard origin/production
 
+            NEW_SHA=$(git rev-parse HEAD)
+            echo "==> New SHA: ${NEW_SHA}"
+
             echo "==> Rebuilding and restarting containers"
-            docker compose pull
             docker compose up -d --build --remove-orphans
 
             echo "==> Waiting for gateway health check"
-            timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'
+            if ! timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'; then
+              echo "==> Health check FAILED — rolling back to ${PREV_SHA}"
+              git reset --hard "${PREV_SHA}"
+              docker compose up -d --build --remove-orphans
+              echo "==> Rolled back. Failing the job so the bad commit is visible."
+              exit 1
+            fi
 
-            echo "==> Deployment complete"
+            echo "==> Deployment complete (live SHA: ${NEW_SHA})"
             docker compose ps

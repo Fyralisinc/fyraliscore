@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+
+      # Conservative ruleset: catches real bugs (undefined names, syntax
+      # errors, unused imports) without enforcing style across the repo.
+      # Expand the --select list once the team agrees on a style baseline.
+      - name: Ruff check
+        run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
+
+  tests:
+    name: Tests (unit + integration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: company_os
+          POSTGRES_PASSWORD: company_os
+          POSTGRES_DB: company_os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U company_os -d company_os"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://company_os:company_os@localhost:5432/company_os
+      COMPANY_OS_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project (with dev extras)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      # Real-LLM tests are gated by RUN_REAL_LLM and DEEPSEEK_API_KEY (neither
+      # set here, so they're skipped). Ollama-marked tests are excluded
+      # because we don't spin up Ollama in PR CI — that runs nightly.
+      - name: Run unit + integration tests
+        run: |
+          .venv/bin/python -m pytest \
+            --ignore=tests/real_llm \
+            -m "not ollama and not real_llm" \
+            -v --tb=short

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/dogfood_logs.sh — tail every service log with a service-name prefix.
-LOGDIR=/tmp/company_os_logs
+LOGDIR=/tmp/fyralis_logs
 if command -v multitail >/dev/null 2>&1; then
   multitail -m 2000 \
     -l "tail -n 50 -f $LOGDIR/gateway.log" \

@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
-# scripts/dogfood_down.sh — stop every process started by dogfood_up.sh
+# scripts/dogfood_down.sh — thin wrapper around scripts/stop.sh.
+#
+# Historical name. stop.sh is the canonical shutdown script; it tears down
+# the same processes, with a fallback to pattern-matching when no PID file
+# is present (useful after a Ctrl-C'd start).
 set -uo pipefail
-
-PIDFILE=/tmp/company_os_dogfood.pids
-if [ ! -f "$PIDFILE" ]; then
-  echo "No PID file at $PIDFILE; stack may not be running."
-  exit 0
-fi
-
-while IFS= read -r pid; do
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    # Kill the whole process group — vite / uvicorn spawn children.
-    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  fi
-done < "$PIDFILE"
-
-sleep 2
-
-# Force-kill anything still hanging on.
-while IFS= read -r pid; do
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-done < "$PIDFILE"
-
-rm -f "$PIDFILE" /tmp/dogfood_ui.pid
-echo "Stack stopped."
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+echo "[dogfood_down] forwarding to scripts/stop.sh"
+exec "$ROOT/scripts/stop.sh" "$@"

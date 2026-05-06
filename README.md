@@ -22,7 +22,7 @@ codebase is developed against; minor patch differences are fine.
 | Docker + Compose v2 | recent             | Brings up Postgres (pgvector) and Ollama                |
 | Node.js             | 20+                | For the UI in [ui/](ui/)                                |
 | `psql` client       | any 14+            | Used to apply DB migrations                             |
-| `curl`              | any                | Used by `dogfood_up.sh` health checks                   |
+| `curl`              | any                | Used by `start.sh` health checks                        |
 
 macOS quick install:
 
@@ -55,7 +55,7 @@ Open `.env` and set, at minimum:
 
 Optional: create a second overlay file `.env.dogfood` for values that
 differ between your day-to-day env and the dogfood stack (model choices,
-worker poll intervals, the dev bearer token, etc.). `scripts/dogfood_up.sh`
+worker poll intervals, the dev bearer token, etc.). `scripts/start.sh`
 sources `.env` first and `.env.dogfood` last, so dogfood values win.
 Both files are gitignored.
 
@@ -170,27 +170,33 @@ cd ..
 
 ## 8. Bring up the full stack
 
-The dogfood script starts the gateway, the two workers, and the Vite
-dev server. It writes logs to `/tmp/company_os_logs/` and PIDs to
-`/tmp/company_os_dogfood.pids`.
+`scripts/start.sh` starts the gateway, the two workers, and the Vite
+dev server. It writes logs to `/tmp/fyralis_logs/` and PIDs to
+`/tmp/fyralis_stack.pids`.
 
 ```bash
-./scripts/dogfood_up.sh
+./scripts/start.sh
 ```
 
 You should see:
 
 ```
-=== Company OS dogfood stack up ===
-  Gateway:         http://localhost:8000
-  Main UI:         http://localhost:5173
-  Slack simulator: http://localhost:8000/simulation/slack_ui/
-  Healthz:         curl http://localhost:8000/healthz
+=== Fyralis stack up ===
+  Demo picker:   http://127.0.0.1:5173/demo
+  UI:            http://127.0.0.1:5173
+  Gateway:       http://127.0.0.1:8000
+  Healthz:       curl http://127.0.0.1:8000/healthz
 ```
 
-Open <http://localhost:5173> in a browser. The dev bearer token from
-`.env.dogfood` (`DEV_BEARER_TOKEN=dogfood-ceo-token`) is used by the UI
-to authenticate without an explicit `/auth/session` round-trip.
+The script will open the demo picker in your browser automatically.
+Pass `--no-browser` to skip. The dev bearer token from `.env.dogfood`
+(`DEV_BEARER_TOKEN=dogfood-ceo-token`) is used by the UI to authenticate
+without an explicit `/auth/session` round-trip.
+
+> If you're starting from a fresh clone, run `./scripts/setup.sh`
+> instead — it handles steps 2–7 interactively (provider/key prompt,
+> docker compose, venv, migrations, seed, npm install) and then hands
+> off to `start.sh`.
 
 To tail logs:
 
@@ -207,7 +213,7 @@ To inspect database state:
 To stop everything:
 
 ```bash
-./scripts/dogfood_down.sh
+./scripts/stop.sh
 ```
 
 ---

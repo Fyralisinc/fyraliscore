@@ -57,7 +57,13 @@ source .env
 [ -f .env.dogfood ] && source .env.dogfood
 set +a
 
-: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY not set in .env}"
+: "${LLM_PROVIDER:=deepseek}"
+case "$LLM_PROVIDER" in
+  openai)    : "${OPENAI_API_KEY:?OPENAI_API_KEY not set in .env (LLM_PROVIDER=openai)}" ;;
+  anthropic) : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set in .env (LLM_PROVIDER=anthropic)}" ;;
+  deepseek)  : "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY not set in .env (LLM_PROVIDER=deepseek)}" ;;
+  *) fail "Unknown LLM_PROVIDER: $LLM_PROVIDER (expected openai|anthropic|deepseek)" ;;
+esac
 : "${DATABASE_URL:?DATABASE_URL not set in .env}"
 : "${OLLAMA_URL:?OLLAMA_URL not set in .env}"
 GATEWAY_PORT="${GATEWAY_PORT:-8000}"
@@ -66,7 +72,8 @@ UI_PORT="${UI_PORT:-5173}"
 [ -d ".venv" ] || fail ".venv missing — create with: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
 [ -d "ui/node_modules" ] || { log "Installing UI deps…"; (cd ui && npm install --silent); }
 
-pg_isready -q || fail "Postgres not running (try: brew services start postgresql)"
+pg_isready -d "$DATABASE_URL" -q \
+  || fail "Postgres not reachable via DATABASE_URL (try: docker compose up -d postgres)"
 curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null 2>&1 \
   || fail "Ollama not reachable at ${OLLAMA_URL} (try: ollama serve)"
 

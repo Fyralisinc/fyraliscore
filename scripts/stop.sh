@@ -27,17 +27,19 @@ if [ -f "$PIDFILE" ]; then
   sleep 2
   while IFS= read -r pid; do force_pid "$pid"; done < "$PIDFILE"
   rm -f "$PIDFILE"
-else
-  # Fallback path: pattern-match the things start.sh launches.
-  pkill -TERM -f "uvicorn services.gateway.main:app" 2>/dev/null || true
-  pkill -TERM -f "scripts/run_think_worker.py"        2>/dev/null || true
-  pkill -TERM -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
-  pkill -TERM -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
-  sleep 2
-  pkill -KILL -f "uvicorn services.gateway.main:app" 2>/dev/null || true
-  pkill -KILL -f "scripts/run_think_worker.py"        2>/dev/null || true
-  pkill -KILL -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
-  pkill -KILL -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
 fi
+
+# Always pattern-match too: the UI is launched in a subshell so the recorded
+# PID is the subshell, not vite — when the subshell exits, npm/node/vite get
+# reparented to PID 1 and keep holding :5173. Same risk for uvicorn workers.
+pkill -TERM -f "uvicorn services.gateway.main:app" 2>/dev/null || true
+pkill -TERM -f "scripts/run_think_worker.py"        2>/dev/null || true
+pkill -TERM -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
+pkill -TERM -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
+sleep 2
+pkill -KILL -f "uvicorn services.gateway.main:app" 2>/dev/null || true
+pkill -KILL -f "scripts/run_think_worker.py"        2>/dev/null || true
+pkill -KILL -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
+pkill -KILL -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
 
 echo "Stack stopped."
