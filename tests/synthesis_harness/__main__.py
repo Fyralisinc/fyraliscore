@@ -4,6 +4,7 @@ Usage:
     python -m tests.synthesis_harness                     # run all stages
     python -m tests.synthesis_harness retrieval scope     # run subset
     HARNESS_SKIP_LLM=1 python -m tests.synthesis_harness  # skip LLM cases
+    python -m tests.synthesis_harness --calibration       # produce ECE table
 """
 from __future__ import annotations
 
@@ -41,7 +42,11 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
         await apply_migrations_dir(conn, MIGRATIONS_DIR, on_error="warn")
 
 
-async def main(stages_filter: list[str] | None = None) -> int:
+async def main(
+    stages_filter: list[str] | None = None,
+    *,
+    do_calibration: bool = False,
+) -> int:
     from tests.synthesis_harness._runner import render_report, run_cases
     from tests.synthesis_harness import cases_cascade  # noqa: WPS433
     from tests.synthesis_harness import cases_contest
@@ -103,13 +108,46 @@ async def main(stages_filter: list[str] | None = None) -> int:
             default=str,
         ))
         print(f"JSON: {outpath.relative_to(REPO_ROOT)}")
-        failed = sum(1 for r in results if not r.passed)
-        return 0 if failed == 0 else 1
+
+        # T4: optional calibration report.
+        rc = 0 if all(r.passed for r in results) else 1
+        if do_calibration:
+            from tests.synthesis_harness.calibration import (
+                compute_calibration,
+                diff_against_baseline,
+                render_calibration_table,
+                save_run_artifact,
+            )
+            cal_report = compute_calibration(results)
+            print()
+            print(render_calibration_table(cal_report))
+
+            runs_dir = pathlib.Path(__file__).parent / "runs"
+            artifact = save_run_artifact(cal_report, runs_dir)
+            print(f"\nCalibration artifact: {artifact.relative_to(REPO_ROOT)}")
+
+            baseline_path = (
+                pathlib.Path(__file__).parent
+                / "baselines"
+                / "calibration.json"
+            )
+            regressed, msg = diff_against_baseline(cal_report, baseline_path)
+            print(f"Baseline check: {msg}")
+            if regressed:
+                print(
+                    "REGRESSION: ECE rose by more than "
+                    f"{0.05:.2f} since baseline.",
+                    file=sys.stderr,
+                )
+                rc = max(rc, 1)
+        return rc
     finally:
         await pool.close()
 
 
 if __name__ == "__main__":
-    stages = sys.argv[1:] if len(sys.argv) > 1 else None
-    rc = asyncio.run(main(stages))
+    raw = sys.argv[1:]
+    do_calibration = "--calibration" in raw
+    stages = [a for a in raw if not a.startswith("--")] or None
+    rc = asyncio.run(main(stages, do_calibration=do_calibration))
     sys.exit(rc)

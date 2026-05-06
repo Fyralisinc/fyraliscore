@@ -259,6 +259,27 @@ async def _run_llm_smoke(pool: asyncpg.Pool, ctx: dict) -> dict:
         reason_for_trigger="user signal",
         trigger_kind_subkind="T1.event_arrival",
     )
+    # T4: pull the highest-confidence Model the engine inserted in
+    # this think run (if any) so calibration.py has something to
+    # bucket. We use MAX(confidence) as the representative value —
+    # it's a coarse proxy, but with one labeled scenario per run we
+    # don't need the per-Model granularity. If think didn't insert
+    # any Model, the field stays None and the case is skipped from
+    # calibration.
+    inserted_confidence: float | None = None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT MAX(confidence)::float8 AS c
+            FROM models
+            WHERE tenant_id = $1 AND status = 'active'
+              AND born_from_event_id = $2
+            """,
+            ctx["tenant"], ctx["obs"],
+        )
+        if row is not None and row["c"] is not None:
+            inserted_confidence = float(row["c"])
+
     return {
         "skipped": False,
         "status": outcome.status,
@@ -268,6 +289,7 @@ async def _run_llm_smoke(pool: asyncpg.Pool, ctx: dict) -> dict:
         "model": outcome.llm_model_name,
         "elapsed_ms": outcome.elapsed_ms,
         "error": outcome.error,
+        "inserted_confidence": inserted_confidence,
     }
 
 
@@ -286,6 +308,12 @@ def _assert_llm_smoke(actual: dict, expected: dict, _ctx: dict) -> tuple[bool, s
     return True, ""
 
 
+def _llm_smoke_extract_conf(actual: dict) -> float | None:
+    if actual.get("skipped"):
+        return None
+    return actual.get("inserted_confidence")
+
+
 CASE_LLM_SMOKE = Case(
     stage="reconciliation",
     name="think_end_to_end_deepseek_smoke",
@@ -294,6 +322,22 @@ CASE_LLM_SMOKE = Case(
     run=_run_llm_smoke,
     expected=_expected_llm_smoke,
     assertion=_assert_llm_smoke,
+    # T4: the fixture states "rate limiter is throwing false positives
+    # on 5% of legitimate traffic during peak hours" as an
+    # authoritative user signal. Whatever Model the LLM inserts to
+    # represent this state ought to be true (the user is reporting a
+    # real condition; the in-scope existing Model already corroborates
+    # it). Ground-truth label is True. The label is honest but the
+    # population is tiny (one labeled scenario) — see calibration.py
+    # docstring on why that's directional, not absolute.
+    expected_confidence_range=(0.5, 0.9),
+    ground_truth_correctness=True,
+    extract_confidence=_llm_smoke_extract_conf,
+    ground_truth_basis=(
+        "user signal carries authoritative trust tier and a corroborating "
+        "Model already exists in scope — the proposition is true by the "
+        "fixture's construction"
+    ),
 )
 
 

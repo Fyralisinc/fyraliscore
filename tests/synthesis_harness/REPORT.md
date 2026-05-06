@@ -1,7 +1,10 @@
 # Synthesis-layer harness — structural learnings
 
-37/37 synthetic cases pass. Total wall time 17s with concurrency=4
+42/42 synthetic cases pass. Total wall time 16s with concurrency=4
 (LLM cases dominate; non-LLM stages run in <0.5s in aggregate).
+The harness now also produces a calibration report under
+`--calibration` (T4) and gates regressions against
+`baselines/calibration.json`.
 
 The harness lives in [tests/synthesis_harness/](.) and runs end-to-end
 with `python -m tests.synthesis_harness`. It uses per-tenant
@@ -15,9 +18,24 @@ without colliding (every production query filters by `tenant_id`).
 | retrieval       | 6     | All 4 pathways (A/B/C/D), RRF multi-pathway fusion, second-pass sparse-result activation                   |
 | scope routing   | 5     | Entity precedence, lock-key permutation invariance, tenant isolation, `touched_entity_ids` aggregation     |
 | contestation    | 7     | Primary/secondary multipliers, floor clamp, no-standing rejection, owner & contributor standing, reading   |
-| falsifier       | 10    | Adequacy across kinds; live evaluators for `observation_pattern`, `commitment_outcome`, `explicit_contestation` |
-| cascade         | 5     | Unblock dependent, no-unblock when other deps unsatisfied, decision-revisited flags, depth bound, halt     |
+| falsifier       | 14    | Adequacy across kinds; live evaluators; ISO-8601 + human window parser; malformed-window rejection         |
+| cascade         | 6     | Unblock, no-unblock-when-other-deps, decision-revisited flags, depth bound, halt, invariant-violation surfacing |
 | reconciliation  | 4     | Applier-level idempotency + applied_triggers row; full Think loop via DeepSeek; idempotency via Think      |
+
+## Status of original findings
+
+| #  | Finding                                                       | Status |
+|----|---------------------------------------------------------------|--------|
+| 1  | No "reconciliation" component to test in isolation            | open — T5 design in flight |
+| 2  | Scope routing has 3 orthogonal concerns                       | resolved — independent test cases per concern |
+| 3  | Pathway B always pulls everything below k                     | open — known design choice; rank-based assertions used instead |
+| 4  | RRF rank-position-based, not score-additive                   | open — informational; assertion uses score ordering |
+| 5  | Falsifier evaluation has tight, undocumented vocabulary       | **resolved (T1a)** — parser accepts ISO-8601 + human; malformed raises `MalformedFalsifierError` |
+| 6  | Contestability has two paths that look one but aren't         | resolved — separate test cases for belief vs reading |
+| 7  | Cascade has hidden invariant coupling                         | **resolved (T1b)** — invariant violations surface on `CascadeResult.invariant_violations` + metric |
+| 8  | asyncpg + pgvector codec state is connection-sticky           | **resolved (T2)** — `pgvector_pool_init` + `PGVECTOR_REGISTERED_POOL_IDS` documented in `services/models/PGVECTOR_REGISTRY.md` |
+| 9  | Migrations are idempotent in spirit, not in transaction handling | **resolved (T3)** — `lib/shared/migrations.py` wraps each file in a transaction; production `psql --single-transaction` |
+| 10 | No automatic test for "Think produced a sensible Model"       | partly addressed (T4) — calibration measurement layer now tracks ECE drift over time; absolute calibration remains a future-work concern |
 
 ## Structural learnings — what the harness build process taught me
 

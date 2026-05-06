@@ -1,4 +1,22 @@
-"""Harness runner: case dataclass, parallel executor, report formatter."""
+"""Harness runner: case dataclass, parallel executor, report formatter.
+
+T4 (calibration): cases may optionally carry calibration metadata:
+
+  * `expected_confidence_range` — the stated-confidence bracket the
+    engine should fall in for this scenario (informational; not
+    enforced by the assertion).
+  * `ground_truth_correctness` — human label: is the proposition the
+    engine is asserting actually true in this scenario, independent
+    of the confidence it claimed? This is the calibration anchor.
+  * `extract_confidence(actual) -> float | None` — pulls the stated
+    confidence from the actual output. Different stages stash it in
+    different keys (`new_confidence`, `confidence`, etc.), so cases
+    declare their own extractor. Returning None excludes the scenario
+    from the calibration computation.
+
+Cases without calibration metadata are excluded from
+`harness/calibration.py`'s computation but still run normally.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +43,14 @@ class Case:
     assertion: Callable[[dict, dict, dict], tuple[bool, str]]
     # ↑ assertion(actual, expected, ctx) -> (passed, diff_str)
 
+    # T4: optional calibration metadata. See module docstring.
+    expected_confidence_range: tuple[float, float] | None = None
+    ground_truth_correctness: bool | None = None
+    extract_confidence: Callable[[dict], float | None] | None = None
+    # Free-form note on *why* this case has its ground-truth label.
+    # Surfaced in the calibration table so a future reader can audit.
+    ground_truth_basis: str | None = None
+
 
 @dataclass
 class CaseResult:
@@ -38,6 +64,12 @@ class CaseResult:
     expected: Any = None
     error: str | None = None
     learnings: list[str] = field(default_factory=list)
+    # T4: copied from the Case so calibration.py can read everything
+    # off the result list without re-walking the cases.
+    expected_confidence_range: tuple[float, float] | None = None
+    ground_truth_correctness: bool | None = None
+    stated_confidence: float | None = None
+    ground_truth_basis: str | None = None
 
 
 async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
@@ -47,6 +79,12 @@ async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
         actual = await case.run(pool, ctx)
         expected = case.expected(ctx)
         passed, diff = case.assertion(actual, expected, ctx)
+        stated_conf: float | None = None
+        if case.extract_confidence is not None:
+            try:
+                stated_conf = case.extract_confidence(actual)
+            except Exception:  # noqa: BLE001
+                stated_conf = None
         return CaseResult(
             stage=case.stage,
             name=case.name,
@@ -56,6 +94,10 @@ async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
             diff=diff,
             actual=_safe_json(actual),
             expected=_safe_json(expected),
+            expected_confidence_range=case.expected_confidence_range,
+            ground_truth_correctness=case.ground_truth_correctness,
+            stated_confidence=stated_conf,
+            ground_truth_basis=case.ground_truth_basis,
         )
     except Exception as exc:
         return CaseResult(
@@ -65,6 +107,9 @@ async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
             passed=False,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
             error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+            expected_confidence_range=case.expected_confidence_range,
+            ground_truth_correctness=case.ground_truth_correctness,
+            ground_truth_basis=case.ground_truth_basis,
         )
 
 

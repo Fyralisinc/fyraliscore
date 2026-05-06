@@ -4,17 +4,17 @@
     "name": "pathway_A_actor_scope",
     "intent": "T1 with scope_actor seeds pathway A and surfaces actor-scoped Models",
     "passed": true,
-    "elapsed_ms": 69,
+    "elapsed_ms": 81,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe59-87d1-7000-bd6c-f0cb12afbc4f",
-        "019dfe59-87eb-7000-a1b2-37b7add2276f"
+        "019dfe5f-661f-7000-8558-df92d45fbe76",
+        "019dfe5f-6641-7000-b4dd-6745edbface6"
       ],
       "scores": {
-        "019dfe59-87d1-7000-bd6c-f0cb12afbc4f": 0.03268112109994712,
-        "019dfe59-87eb-7000-a1b2-37b7add2276f": 0.022686409307244845
+        "019dfe5f-661f-7000-8558-df92d45fbe76": 0.03278688524590164,
+        "019dfe5f-6641-7000-b4dd-6745edbface6": 0.02258064516129032
       },
       "pathways_run": [
         "A",
@@ -23,8 +23,8 @@
       ]
     },
     "expected": {
-      "in_scope": "019dfe59-87d1-7000-bd6c-f0cb12afbc4f",
-      "out_scope": "019dfe59-87eb-7000-a1b2-37b7add2276f"
+      "in_scope": "019dfe5f-661f-7000-8558-df92d45fbe76",
+      "out_scope": "019dfe5f-6641-7000-b4dd-6745edbface6"
     }
   },
   {
@@ -32,17 +32,17 @@
     "name": "pathway_B_semantic_top1",
     "intent": "Pathway B ranks the cosine-nearest Model first",
     "passed": true,
-    "elapsed_ms": 66,
+    "elapsed_ms": 81,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe59-87cf-7000-abf1-faaf62cbc1a8",
-        "019dfe59-87eb-7001-a781-064ae95666ef"
+        "019dfe5f-661e-7000-bebe-01216c2d5979",
+        "019dfe5f-6641-7001-b51a-76201e3ce1a8"
       ]
     },
     "expected": {
-      "first_must_be": "019dfe59-87cf-7000-abf1-faaf62cbc1a8"
+      "first_must_be": "019dfe5f-661e-7000-bebe-01216c2d5979"
     }
   },
   {
@@ -50,50 +50,50 @@
     "name": "pathway_C_temporal_window",
     "intent": "Pathway C surfaces in-window obs/models and excludes out-of-window",
     "passed": true,
-    "elapsed_ms": 85,
+    "elapsed_ms": 81,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe59-87d9-7000-99f8-ce759d8e8d34",
-        "019dfe59-87f2-7000-84a3-acafffce33e6"
+        "019dfe5f-6629-7000-b934-b5bb62527c61",
+        "019dfe5f-6642-7001-8a97-652efe4cd70a"
       ],
       "obs_ids": [
-        "019dfe59-8804-7000-80e3-291c382c4b46"
+        "019dfe5f-6653-7000-a693-9191dd38cce3"
       ],
       "scores": {
-        "019dfe59-87d9-7000-99f8-ce759d8e8d34": 0.03278688524590164,
-        "019dfe59-87f2-7000-84a3-acafffce33e6": 0.029032258064516127
+        "019dfe5f-6629-7000-b934-b5bb62527c61": 0.03278688524590164,
+        "019dfe5f-6642-7001-8a97-652efe4cd70a": 0.029032258064516127
       },
       "pathway_results": [
         {
           "name": "A",
           "model_ids": [
-            "019dfe59-87d9-7000-99f8-ce759d8e8d34",
-            "019dfe59-87f2-7000-84a3-acafffce33e6"
+            "019dfe5f-6629-7000-b934-b5bb62527c61",
+            "019dfe5f-6642-7001-8a97-652efe4cd70a"
           ]
         },
         {
           "name": "B",
           "model_ids": [
-            "019dfe59-87d9-7000-99f8-ce759d8e8d34",
-            "019dfe59-87f2-7000-84a3-acafffce33e6"
+            "019dfe5f-6629-7000-b934-b5bb62527c61",
+            "019dfe5f-6642-7001-8a97-652efe4cd70a"
           ]
         },
         {
           "name": "C",
           "model_ids": [
-            "019dfe59-87d9-7000-99f8-ce759d8e8d34"
+            "019dfe5f-6629-7000-b934-b5bb62527c61"
           ]
         }
       ]
     },
     "expected": {
       "must_include_obs": [
-        "019dfe59-8804-7000-80e3-291c382c4b46"
+        "019dfe5f-6653-7000-a693-9191dd38cce3"
       ],
-      "must_include_model": "019dfe59-87d9-7000-99f8-ce759d8e8d34",
-      "out_win": "019dfe59-87f2-7000-84a3-acafffce33e6"
+      "must_include_model": "019dfe5f-6629-7000-b934-b5bb62527c61",
+      "out_win": "019dfe5f-6642-7001-8a97-652efe4cd70a"
     }
   },
   {
@@ -101,22 +101,22 @@
     "name": "pathway_D_pattern_signature",
     "intent": "T4 with seed_signature returns matching pattern and its instances",
     "passed": true,
-    "elapsed_ms": 83,
+    "elapsed_ms": 79,
     "diff": "",
     "error": null,
     "actual": {
       "model_ids": [
-        "019dfe59-87d8-7000-981b-effa89c668eb",
-        "019dfe59-87f0-7000-ad15-dc783fd138c2"
+        "019dfe5f-6627-7000-9725-f587b7ea01c9",
+        "019dfe5f-6642-7000-bb76-32f08e428e5f"
       ]
     },
     "expected": {
       "must_include": [
-        "019dfe59-87d8-7000-981b-effa89c668eb",
-        "019dfe59-87f0-7000-ad15-dc783fd138c2"
+        "019dfe5f-6627-7000-9725-f587b7ea01c9",
+        "019dfe5f-6642-7000-bb76-32f08e428e5f"
       ],
       "must_exclude": [
-        "019dfe59-8802-7000-8ea6-4c6477f467cc"
+        "019dfe5f-6651-7000-b036-9b8ff25e3b7f"
       ]
     }
   },
@@ -125,22 +125,22 @@
     "name": "rrf_fusion_multipathway",
     "intent": "RRF fusion: A\u2229B model outranks B-only model with higher activation",
     "passed": true,
-    "elapsed_ms": 50,
+    "elapsed_ms": 44,
     "diff": "",
     "error": null,
     "actual": {
       "ids": [
-        "019dfe59-8811-7002-97b4-ca87f4f925bc",
-        "019dfe59-8822-7000-ab0f-17076b66e2bf"
+        "019dfe5f-666e-7000-afa8-7d78f0d39963",
+        "019dfe5f-667b-7000-ad15-414ac94a8971"
       ],
       "scores": {
-        "019dfe59-8811-7002-97b4-ca87f4f925bc": 0.03265468006345849,
-        "019dfe59-8822-7000-ab0f-17076b66e2bf": 0.022712850343733475
+        "019dfe5f-666e-7000-afa8-7d78f0d39963": 0.03265468006345849,
+        "019dfe5f-667b-7000-ad15-414ac94a8971": 0.022712850343733475
       }
     },
     "expected": {
-      "x_first": "019dfe59-8811-7002-97b4-ca87f4f925bc",
-      "y_present": "019dfe59-8822-7000-ab0f-17076b66e2bf"
+      "x_first": "019dfe5f-666e-7000-afa8-7d78f0d39963",
+      "y_present": "019dfe5f-667b-7000-ad15-414ac94a8971"
     }
   },
   {
@@ -148,7 +148,7 @@
     "name": "second_pass_sparse_activation",
     "intent": "Sparse primary result triggers second-pass with reason 'sparse'",
     "passed": true,
-    "elapsed_ms": 47,
+    "elapsed_ms": 43,
     "diff": "",
     "error": null,
     "actual": {
@@ -173,13 +173,13 @@
     "actual": {
       "primary": [
         "commitment",
-        "019dfe59-881f-7000-bac6-a726836c3d60"
+        "019dfe5f-666c-7000-8801-4b002b1354a7"
       ]
     },
     "expected": {
       "primary": [
         "commitment",
-        "019dfe59-881f-7000-bac6-a726836c3d60"
+        "019dfe5f-666c-7000-8801-4b002b1354a7"
       ]
     }
   },
@@ -193,12 +193,12 @@
     "error": null,
     "actual": {
       "a": [
-        11672280,
-        -492390273
+        -177010912,
+        -309280852
       ],
       "b": [
-        11672280,
-        -492390273
+        -177010912,
+        -309280852
       ]
     },
     "expected": {
@@ -234,28 +234,28 @@
       "touched": [
         [
           "commitment",
-          "019dfe59-8820-7008-95d1-ddbe0d4dec74"
+          "019dfe5f-666d-7001-9396-192204e7edb4"
         ],
         [
           "commitment",
-          "019dfe59-8820-700b-a647-4ae4a6f7941a"
+          "019dfe5f-666d-7004-8071-8b9106faa755"
         ],
         [
           "goal",
-          "019dfe59-8820-7009-ab16-eeb113fbc9ad"
+          "019dfe5f-666d-7002-874b-4a3704f2edb1"
         ],
         [
           "model",
-          "019dfe59-8820-7007-b116-fffc97578717"
+          "019dfe5f-666d-7000-88b9-e3ef1583918b"
         ],
         [
           "observation",
-          "019dfe59-8820-700a-ad96-7daba2547fc0"
+          "019dfe5f-666d-7003-a056-4d86e17ba4c6"
         ]
       ]
     },
     "expected": {
-      "set": "{('goal', '019dfe59-8820-7009-ab16-eeb113fbc9ad'), ('commitment', '019dfe59-8820-700b-a647-4ae4a6f7941a'), ('commitment', '019dfe59-8820-7008-95d1-ddbe0d4dec74'), ('model', '019dfe59-8820-7007-b116-fffc97578717'), ('observation', '019dfe59-8820-700a-ad96-7daba2547fc0')}"
+      "set": "{('observation', '019dfe5f-666d-7003-a056-4d86e17ba4c6'), ('goal', '019dfe5f-666d-7002-874b-4a3704f2edb1'), ('commitment', '019dfe5f-666d-7004-8071-8b9106faa755'), ('commitment', '019dfe5f-666d-7001-9396-192204e7edb4'), ('model', '019dfe5f-666d-7000-88b9-e3ef1583918b')}"
     }
   },
   {
@@ -288,7 +288,7 @@
     "name": "primary_subject_belief_multiplier",
     "intent": "Belief contestation by primary subject (scope_actors[0]) \u2192 confidence \u00d7 0.3, floor 0.15",
     "passed": true,
-    "elapsed_ms": 23,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -312,7 +312,7 @@
     "name": "secondary_subject_belief_multiplier",
     "intent": "Belief contestation by secondary subject \u2192 confidence \u00d7 0.5",
     "passed": true,
-    "elapsed_ms": 22,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -331,7 +331,7 @@
     "name": "confidence_floor_clamp",
     "intent": "Confidence \u00d7 0.3 below 0.15 clamps to OVERRIDE_FLOOR",
     "passed": true,
-    "elapsed_ms": 23,
+    "elapsed_ms": 22,
     "diff": "",
     "error": null,
     "actual": {
@@ -346,7 +346,7 @@
     "name": "no_standing_raises",
     "intent": "Outsider with no scope/owner/contributor link \u2192 NoStandingError",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 19,
     "diff": "",
     "error": null,
     "actual": {
@@ -363,7 +363,7 @@
     "name": "standing_via_commitment_owner",
     "intent": "Actor who owns a commitment in scope_entities has standing with basis='owner'",
     "passed": true,
-    "elapsed_ms": 25,
+    "elapsed_ms": 21,
     "diff": "",
     "error": null,
     "actual": {
@@ -380,7 +380,7 @@
     "name": "standing_via_contributor",
     "intent": "Contributor on a scoped commitment has standing with basis='contributor'",
     "passed": true,
-    "elapsed_ms": 26,
+    "elapsed_ms": 23,
     "diff": "",
     "error": null,
     "actual": {
@@ -406,10 +406,10 @@
       "previous_confidence": 0.7,
       "signal_readings": [
         {
-          "actor_id": "019dfe59-884d-7002-b73b-6522314cfd22",
+          "actor_id": "019dfe5f-6697-7005-9767-9701ec97a219",
           "contested": true,
           "rationale": "my reading was not what I meant",
-          "contested_at": "2026-05-06T17:32:53.725693+00:00"
+          "contested_at": "2026-05-06T17:39:18.311820+00:00"
         }
       ],
       "db_confidence": 0.7
@@ -417,7 +417,7 @@
     "expected": {
       "override_applied": false,
       "confidence_unchanged": 0.7,
-      "actor_id_str": "019dfe59-884d-7002-b73b-6522314cfd22"
+      "actor_id_str": "019dfe5f-6697-7005-9767-9701ec97a219"
     }
   },
   {
@@ -490,7 +490,7 @@
     "name": "eval_observation_pattern_inconclusive",
     "intent": "observation_pattern: no matching obs in window \u2192 'inconclusive'",
     "passed": true,
-    "elapsed_ms": 9,
+    "elapsed_ms": 7,
     "diff": "",
     "error": null,
     "actual": {
@@ -505,7 +505,7 @@
     "name": "eval_commitment_outcome_violated",
     "intent": "commitment_outcome: commit state == contradicting_state \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 6,
+    "elapsed_ms": 7,
     "diff": "",
     "error": null,
     "actual": {
@@ -520,7 +520,7 @@
     "name": "eval_commitment_outcome_terminal_confirmed",
     "intent": "commitment_outcome: commit reached terminal state w/o contradiction \u2192 'confirmed'",
     "passed": true,
-    "elapsed_ms": 7,
+    "elapsed_ms": 9,
     "diff": "",
     "error": null,
     "actual": {
@@ -535,7 +535,7 @@
     "name": "eval_explicit_contestation_violated",
     "intent": "explicit_contestation: required actors contested in window \u2192 'violated'",
     "passed": true,
-    "elapsed_ms": 6,
+    "elapsed_ms": 3,
     "diff": "",
     "error": null,
     "actual": {
@@ -715,7 +715,7 @@
     "name": "commitment_state_change_unblocks_dependent",
     "intent": "doneverified on dep with no other unsatisfied deps unblocks dependent \u2192 state=active",
     "passed": true,
-    "elapsed_ms": 37,
+    "elapsed_ms": 38,
     "diff": "",
     "error": null,
     "actual": {
@@ -739,7 +739,7 @@
     "name": "commitment_state_change_no_unblock_when_other_deps",
     "intent": "Dependent stays blocked when at least one other dependency unsatisfied",
     "passed": true,
-    "elapsed_ms": 20,
+    "elapsed_ms": 22,
     "diff": "",
     "error": null,
     "actual": {
@@ -755,7 +755,7 @@
     "name": "decision_revisited_flags_constrained_commitments",
     "intent": "decision_revisited flags every non-terminal constrained_by commitment for review",
     "passed": true,
-    "elapsed_ms": 42,
+    "elapsed_ms": 43,
     "diff": "",
     "error": null,
     "actual": {
@@ -765,11 +765,11 @@
         "commitment_flagged_for_review",
         "commitment_flagged_for_review"
       ],
-      "flagged_ids": "{'019dfe59-886a-7000-9f77-7e38095efa20', '019dfe59-8870-7000-ba6d-16156555d1de'}"
+      "flagged_ids": "{'019dfe5f-66b9-7001-9a6f-36a4bee2419b', '019dfe5f-66c0-7002-8807-54979824926b'}"
     },
     "expected": {
-      "must_flag": "{'019dfe59-886a-7000-9f77-7e38095efa20', '019dfe59-8870-7000-ba6d-16156555d1de'}",
-      "must_not_flag": "{'019dfe59-8875-7002-9863-0521cea1f6e7'}"
+      "must_flag": "{'019dfe5f-66b9-7001-9a6f-36a4bee2419b', '019dfe5f-66c0-7002-8807-54979824926b'}",
+      "must_not_flag": "{'019dfe5f-66c5-7000-bf2e-984a4816e82c'}"
     }
   },
   {
@@ -822,7 +822,7 @@
       "bound_violated": false,
       "violations_count": 1,
       "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019dfe59-887e-7000-b1f2-79d5a8805f6b",
+      "violation_entity_id": "019dfe5f-66cb-7000-8415-270d3e38fb76",
       "violation_code": "C4",
       "metric_delta": 1
     },
@@ -831,7 +831,7 @@
       "bound_violated": false,
       "violations_count": 1,
       "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019dfe59-887e-7000-b1f2-79d5a8805f6b"
+      "violation_entity_id": "019dfe5f-66cb-7000-8415-270d3e38fb76"
     }
   },
   {
@@ -839,7 +839,7 @@
     "name": "applier_idempotency_per_trigger_id",
     "intent": "Re-applying a diff with same trigger_id raises AlreadyAppliedError",
     "passed": true,
-    "elapsed_ms": 10,
+    "elapsed_ms": 11,
     "diff": "",
     "error": null,
     "actual": {
@@ -873,7 +873,7 @@
     "name": "think_end_to_end_deepseek_smoke",
     "intent": "Real DeepSeek call: think() completes end-to-end, returns success or skipped",
     "passed": true,
-    "elapsed_ms": 8877,
+    "elapsed_ms": 8700,
     "diff": "",
     "error": null,
     "actual": {
@@ -881,10 +881,11 @@
       "status": "success",
       "ops_applied_count": 1,
       "llm_calls_count": 1,
-      "llm_input_tokens": 8488,
+      "llm_input_tokens": 8508,
       "model": "deepseek-chat",
-      "elapsed_ms": 8243.55558399111,
-      "error": null
+      "elapsed_ms": 8672.27308289148,
+      "error": null,
+      "inserted_confidence": 0.6768749999999999
     },
     "expected": {
       "acceptable_status": "{'success', 'skipped_idempotent'}"
@@ -895,7 +896,7 @@
     "name": "think_repeat_trigger_id_skipped_idempotent",
     "intent": "Calling think() twice with the same trigger_id \u2192 second run skipped_idempotent",
     "passed": true,
-    "elapsed_ms": 17058,
+    "elapsed_ms": 12115,
     "diff": "",
     "error": null,
     "actual": {

@@ -104,6 +104,27 @@ CASE_PRIMARY = Case(
     run=_run_primary,
     expected=_expected_primary,
     assertion=_assert_primary,
+    expected_confidence_range=(
+        max(OVERRIDE_FLOOR, 0.8 * PRIMARY_SUBJECT_MULTIPLIER) - 1e-6,
+        max(OVERRIDE_FLOOR, 0.8 * PRIMARY_SUBJECT_MULTIPLIER) + 1e-6,
+    ),
+    # T4: Ground truth here is mathematical: the override produces a
+    # confidence of 0.24 by the spec's 0.3× rule, and the underlying
+    # claim ("Primary is making slow progress") was contested as
+    # incorrect — so a confidence of 0.24 in a contested claim is
+    # deliberately *below* a "true" threshold. We label
+    # ground_truth_correctness=False so a calibrated engine should
+    # express low confidence in this proposition. The label is
+    # objective for this case (fixture is a contested claim) but
+    # the calibration measurement is structurally trivial — see
+    # the harness REPORT for the broader caveat.
+    ground_truth_correctness=False,
+    extract_confidence=lambda actual: actual.get("new_confidence"),
+    ground_truth_basis=(
+        "fixture is a contested claim; engine's post-override "
+        "confidence (0.24) is the engine's stated probability that "
+        "the claim is true"
+    ),
 )
 
 
@@ -177,6 +198,11 @@ CASE_SECONDARY = Case(
     run=_run_secondary,
     expected=_expected_secondary,
     assertion=_assert_secondary,
+    expected_confidence_range=(0.7 * SECONDARY_SUBJECT_MULTIPLIER - 1e-6,
+                                0.7 * SECONDARY_SUBJECT_MULTIPLIER + 1e-6),
+    ground_truth_correctness=False,
+    extract_confidence=lambda actual: actual.get("new_confidence"),
+    ground_truth_basis="fixture is a contested claim; same as primary case",
 )
 
 
@@ -233,6 +259,10 @@ CASE_FLOOR = Case(
     run=_run_floor,
     expected=_expected_floor,
     assertion=_assert_floor,
+    expected_confidence_range=(OVERRIDE_FLOOR - 1e-6, OVERRIDE_FLOOR + 1e-6),
+    ground_truth_correctness=False,
+    extract_confidence=lambda actual: actual.get("new_confidence"),
+    ground_truth_basis="contested claim with floor-clamped confidence",
 )
 
 
