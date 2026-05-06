@@ -461,7 +461,7 @@ class EntityAliasRow(_Strict):
 # demo sessions, per-call cost ledger.
 # =====================================================================
 
-DemoCompanyId = Literal["truss", "northwind", "meridian"]
+DemoCompanyId = Literal["truss", "northwind", "meridian", "pelago"]
 DemoSessionEndReason = Literal["user_ended", "inactivity", "cost_cap"]
 
 
