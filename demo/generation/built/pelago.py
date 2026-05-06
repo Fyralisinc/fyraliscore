@@ -36,6 +36,7 @@ from demo.generation.schemas import (
     GeneratedCustomer,
     GeneratedDecision,
     GeneratedGoal,
+    GeneratedModel,
     GeneratedRecommendation,
     GeneratedSignal,
     TargetActRef,
@@ -49,6 +50,7 @@ COMPANY = "pelago"
 SPEC_PATH = Path("demo/generation/specs/pelago.yaml")
 SHARDS_DIR = Path("corpora/pelago/shards")
 GT_DIR = Path("corpora/pelago/ground_truth")
+SYNTH_MODELS_PATH = Path("corpora/pelago/synthesis/models.json")
 DEFAULT_OUT = Path("demo/snapshots/pelago-v1.sql")
 SIGNAL_SAMPLE_TARGET = 250
 SIGNAL_SAMPLE_SEED = 17
@@ -337,6 +339,147 @@ def _signals_to_generated(
 
 
 # =====================================================================
+# Models — loaded from the synthesis store
+# =====================================================================
+
+# Sim entity ids (e.g. "cust-beacon", "C-sf-stabilize", "G-2-multi-crm",
+# "D-2-conv-ai-first") get remapped to demo UUIDs via did(). Actor ids
+# in the synthesis store are bare names ("diana", "maya") matching the
+# spec's actor_profiles[].actor_id, so the same did() call covers them.
+
+_VALID_MODEL_KINDS = {
+    "state", "relation", "prediction", "pattern", "pattern_instance",
+    "capability_assessment", "hypothesis", "concern",
+    "market_assessment", "environmental_trend",
+}
+
+
+def _remap_scope_entity(ent: dict[str, Any]) -> dict[str, Any] | None:
+    """Synth scope entity → demo scope entity (UUIDs).
+
+    Returns None if the entity references a sim id that doesn't exist
+    in the demo bundle (e.g., a rate-generated commitment we didn't
+    sample in)."""
+    t = ent.get("type")
+    sid = ent.get("id")
+    if not t or not sid:
+        return None
+    if t in ("commitment", "customer", "goal", "decision"):
+        return {"type": t, "id": did(COMPANY, t, sid)}
+    return None
+
+
+def _models_from_synthesis(
+    actors: list[GeneratedActor],
+    customers: list[GeneratedCustomer],
+    commitments: list[GeneratedCommitment],
+    goals: list[GeneratedGoal],
+    decisions: list[GeneratedDecision],
+    signals: list[GeneratedSignal],
+) -> list[GeneratedModel]:
+    """Load the curated synthesis store and remap to demo UUIDs."""
+    if not SYNTH_MODELS_PATH.is_file():
+        return []
+    raw = json.loads(SYNTH_MODELS_PATH.read_text()).get("models") or {}
+
+    actor_id_set = {a.id for a in actors}
+    commit_id_set = {c.id for c in commitments}
+    customer_id_set = {c.id for c in customers}
+    goal_id_set = {g.id for g in goals}
+    decision_id_set = {d.id for d in decisions}
+    bundle_entity_ids = (
+        commit_id_set | customer_id_set | goal_id_set | decision_id_set
+    )
+    # Map the corpus signal_id → bundle signal UUID, but only for the
+    # subset we sampled into the bundle.
+    signal_id_set = {s.id for s in signals}
+
+    # First pass: compute new model UUIDs so supporting_model_ids can be
+    # rewritten in the second pass.
+    new_model_id: dict[str, str] = {}
+    for orig_id, model in raw.items():
+        kind = model.get("kind")
+        if kind not in _VALID_MODEL_KINDS:
+            continue  # e.g. recommendation kind — handled by GeneratedRecommendation
+        new_model_id[orig_id] = did(COMPANY, "model", orig_id)
+
+    out: list[GeneratedModel] = []
+    for orig_id, model in raw.items():
+        kind = model.get("kind")
+        if kind not in _VALID_MODEL_KINDS:
+            continue
+        new_id = new_model_id[orig_id]
+
+        # Remap scope_actor_ids → demo UUIDs, drop unknown actors
+        actor_uuids = [
+            did(COMPANY, "actor", a) for a in model.get("scope_actor_ids") or []
+        ]
+        actor_uuids = [a for a in actor_uuids if a in actor_id_set]
+
+        # Remap scope_entities → demo {type,id}, drop entities not in bundle
+        scope_ents: list[dict[str, Any]] = []
+        for ent in model.get("scope_entities") or []:
+            mapped = _remap_scope_entity(ent)
+            if mapped and mapped["id"] in bundle_entity_ids:
+                scope_ents.append(mapped)
+
+        # An unscoped Model is invisible to the system — skip
+        if not actor_uuids and not scope_ents:
+            continue
+
+        # Remap supporting_observation_ids: only keep refs to sampled signals
+        supp_obs: list[str] = []
+        for sig_id in model.get("supporting_observation_ids") or []:
+            sig_uuid = did(COMPANY, "signal", sig_id)
+            if sig_uuid in signal_id_set:
+                supp_obs.append(sig_uuid)
+
+        # Remap supporting_model_ids: only keep refs to other emitted models
+        supp_models = [
+            new_model_id[m] for m in model.get("supporting_model_ids") or []
+            if m in new_model_id
+        ]
+
+        # Falsifier passthrough — synth store sometimes uses a string,
+        # sometimes a {condition, threshold, observable_via} dict. The
+        # GeneratedModel schema accepts a dict-or-None.
+        falsifier = model.get("falsifier")
+        if isinstance(falsifier, str):
+            falsifier = {"observable_via": falsifier}
+
+        # Confidence bounds [0.05, 0.95]
+        conf = float(model.get("confidence", 0.7))
+        conf = max(0.05, min(0.95, conf))
+
+        # Predictions must have evaluate_at. The synthesis store has it
+        # at top level on most, inside proposition on a few, missing on
+        # the rest — fall back to scope_temporal["as_of"] or a sentinel.
+        evaluate_at = model.get("evaluate_at")
+        prop = model.get("proposition") or {}
+        if not evaluate_at and isinstance(prop, dict):
+            evaluate_at = prop.get("evaluate_at")
+        if kind == "prediction" and not evaluate_at:
+            scope_t = model.get("scope_temporal") or {}
+            evaluate_at = scope_t.get("as_of") or "2026-12-31T00:00:00Z"
+
+        out.append(GeneratedModel(
+            id=new_id,
+            kind=kind,
+            natural=(model.get("natural") or "").strip()[:500] or "synthesized model",
+            proposition=prop,
+            confidence=conf,
+            scope_actor_ids=actor_uuids,
+            scope_entities=scope_ents,
+            scope_temporal=model.get("scope_temporal") or {"window": "current"},
+            falsifier=falsifier,
+            supporting_observation_ids=supp_obs,
+            supporting_model_ids=supp_models,
+            evaluate_at=evaluate_at,
+        ))
+    return out
+
+
+# =====================================================================
 # Recommendations
 # =====================================================================
 
@@ -421,6 +564,9 @@ def build_bundle() -> tuple[GeneratedBundle, dict[str, Any]]:
     recommendations = _recommendations_from_spec(
         extras, actors, commitments, goals, decisions, signals, sim_dict,
     )
+    models = _models_from_synthesis(
+        actors, customers, commitments, goals, decisions, signals,
+    )
 
     bundle = GeneratedBundle(
         company_id=COMPANY,
@@ -431,7 +577,7 @@ def build_bundle() -> tuple[GeneratedBundle, dict[str, Any]]:
         decisions=decisions,
         commitments=commitments,
         signals=signals,
-        models=[],
+        models=models,
         recommendations=recommendations,
     )
     # Pull validator-target counts from the extras for validate_bundle.
@@ -465,6 +611,7 @@ def main() -> int:
     print(f"  decisions:        {len(bundle.decisions)}")
     print(f"  commitments:      {len(bundle.commitments)}")
     print(f"  signals:          {len(bundle.signals)}")
+    print(f"  models:           {len(bundle.models)}")
     print(f"  recommendations:  {len(bundle.recommendations)}")
 
     print("Validating...")
