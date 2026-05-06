@@ -624,8 +624,10 @@ Not fully populated in MVP; core infrastructure in place for Wave 6+ evaluation 
 
 | Script | Purpose |
 |--------|---------|
-| `dogfood_up.sh` | Bring up: gateway (:8000), workers, UI (:5173) |
-| `dogfood_down.sh` | Graceful SIGTERM → SIGKILL shutdown |
+| `setup.sh` | Interactive bootstrap from fresh clone (provider/key prompt, docker compose, venv, migrations, seed, npm) → `start.sh` |
+| `start.sh` | Bring up: gateway (:8000), workers, UI (:5173). Canonical entry point. |
+| `stop.sh` | Graceful SIGTERM → SIGKILL shutdown |
+| `dogfood_up.sh` / `dogfood_down.sh` | Thin wrappers around `start.sh` / `stop.sh` (kept for muscle memory) |
 | `dogfood_logs.sh` | Interleaved tail of all service logs |
 | `dogfood_inspect.sh` | One-shot tenant state summary |
 | `reset_dogfood_tenant_data.sh` | Purge synthetic data (keep personas) |
@@ -1139,7 +1141,7 @@ tests/
   - Used for budget tracking and cost allocation
 
 - **Logs Output**:
-  - **`/tmp/company_os_logs/{gateway,think_worker,post_commit_worker,ui}.log`** (dogfood)
+  - **`/tmp/fyralis_logs/{gateway,think_worker,post_commit_worker,ui}.log`** (local stack)
   - Structured JSON lines; can be ingested into Datadog/Splunk
 
 ### **Error Handling**
