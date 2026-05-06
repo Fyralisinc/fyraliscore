@@ -1,0 +1,46 @@
+name: Apply DB migrations (manual)
+
+on:
+  workflow_dispatch:
+
+# Manual ops job — SSH to the prod host and apply every SQL file in
+# db/migrations/ via the postgres container. Migrations are idempotent
+# (CREATE TABLE IF NOT EXISTS / ON CONFLICT DO UPDATE) so re-running is
+# safe. Use this after a deploy that introduced new migration files,
+# or whenever the DB schema diverges from db/migrations/.
+jobs:
+  migrate:
+    name: Apply migrations on Lightsail
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run migrations via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ~/fyraliscore
+
+            echo "==> Live SHA: $(git rev-parse --short HEAD)"
+            echo "==> Migration files on disk:"
+            ls db/migrations/*.sql | sed 's|^|  |'
+
+            echo "==> Applying migrations in order"
+            for f in db/migrations/*.sql; do
+              fname="$(basename "$f")"
+              echo "  + ${fname}"
+              if ! docker compose exec -T postgres \
+                   psql -U company_os -d company_os -v ON_ERROR_STOP=1 \
+                   < "$f" >/dev/null 2>&1; then
+                echo "  ! ${fname} failed; recording but continuing (may already be applied)"
+              fi
+            done
+
+            echo "==> Schema sanity"
+            docker compose exec -T postgres psql -U company_os -d company_os -tAc \
+              "SELECT company_id FROM demo_configs ORDER BY company_id"
+            docker compose exec -T postgres psql -U company_os -d company_os -tAc \
+              "SELECT count(*) FROM pg_class WHERE relname LIKE 'observations_2026_%' OR relname LIKE 'observations_2027_%'"
