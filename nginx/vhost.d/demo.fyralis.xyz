@@ -7,6 +7,11 @@ add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" alway
 add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
 
+# Redirect bare root to /demo
+location = / {
+    return 301 /demo;
+}
+
 # FastAPI gateway — /api/ prefix (Vite proxy strips /api before forwarding)
 location /api/ {
     proxy_pass http://gateway:8000/;
