@@ -62,6 +62,7 @@ services:
     environment:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
       OLLAMA_URL: http://ollama:11434
+      PYTHONPATH: /app
     env_file: .env.production
 
   post_commit_worker:
@@ -74,6 +75,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      PYTHONPATH: /app
     env_file: .env.production
 
   ui:
