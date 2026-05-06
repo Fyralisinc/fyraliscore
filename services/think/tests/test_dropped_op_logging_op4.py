@@ -14,9 +14,8 @@ import uuid
 
 import pytest
 import pytest_asyncio
-import structlog
 
-from services.think.diff_schema import ActOp, ClaimOp, RawDiff, ResourceOp
+from services.think.diff_schema import ClaimOp, RawDiff, ResourceOp
 from services.think.observability import METRICS, log_dropped_op
 from services.think.validator import (
     _classify_act_drop_reason,

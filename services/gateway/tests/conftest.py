@@ -24,13 +24,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import pathlib
 import struct
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -47,7 +45,6 @@ from services.gateway.auth import create_session
 from services.gateway.db_bootstrap import _register_codecs
 from services.gateway.main import GatewayDeps, build_app
 from services.gateway.rate_limit import RateLimiter
-from services.ingestion.handlers.slack import verify_slack_signature
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]

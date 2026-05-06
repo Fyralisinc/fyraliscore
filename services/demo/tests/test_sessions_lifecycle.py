@@ -9,7 +9,6 @@ import pytest
 
 from lib.shared.ids import uuid7
 from services.demo.repo import (
-    get_active_session_for_tenant,
     get_demo_config_by_company,
     get_demo_session,
     insert_demo_session,

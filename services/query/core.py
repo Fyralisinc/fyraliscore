@@ -35,14 +35,12 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Literal, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional
 from uuid import UUID, uuid4
 
-import asyncpg
 
 from lib.shared.errors import ValidationError
 from services.retrieval.assembler import AccessContext, ContextBundle
-from services.retrieval.primary import RetrievalResult
 
 from .adapters import (
     CacheAdapter,

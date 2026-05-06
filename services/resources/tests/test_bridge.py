@@ -12,10 +12,8 @@ from lib.shared.db import transaction
 from services.resources import bridge, customer_commitments as cc, deployments, repo
 from services.resources.tests.conftest import (
     TENANT_A,
-    TENANT_B,
     make_commitment,
     make_decision,
-    make_goal,
     make_observation,
     set_commitment_state,
 )

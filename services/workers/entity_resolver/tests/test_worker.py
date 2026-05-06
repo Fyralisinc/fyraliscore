@@ -15,16 +15,12 @@ from uuid import UUID
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
-from lib.llm.provider import LLMConfig, LLMProvider, LLMParseError
+from lib.llm.provider import LLMConfig, LLMProvider
 from lib.shared.ids import uuid7
 from services.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
-    EntityResolution,
     EntityResolverWorker,
-    LLMRateLimitError,
-    LLMTimeoutError,
     ResolverLLMBudget,
 )
 

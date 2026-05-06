@@ -14,7 +14,6 @@ Skipped automatically when DATABASE_URL is absent (see conftest.py).
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 

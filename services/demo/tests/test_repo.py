@@ -6,7 +6,6 @@ matching the convention used by services/recommendations/tests.
 from __future__ import annotations
 
 from decimal import Decimal
-from uuid import UUID
 
 import asyncpg
 import pytest
@@ -16,7 +15,6 @@ from services.demo.repo import (
     end_demo_session,
     get_active_session_for_tenant,
     get_demo_config_by_company,
-    get_demo_config_by_id,
     get_demo_session,
     get_tenant,
     increment_signal_count,

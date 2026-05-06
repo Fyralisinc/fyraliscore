@@ -46,7 +46,6 @@ from services.workers.deadline_resolver.evaluators import (
     evaluate_falsifier,
 )
 from services.workers.deadline_resolver.worker import (
-    CycleResult,
     DEFAULT_POLL_INTERVAL_S,
     DeadlineResolver,
 )

@@ -37,7 +37,6 @@ End-to-end + property + false-positive (4):
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -53,8 +52,6 @@ from services.workers.anomaly_processor import (
 )
 from services.workers.anomaly_processor.debounce import (
     compute_region_hash,
-    decide_debounce,
-    most_recent_anomaly_in_region,
 )
 from services.workers.anomaly_processor.detectors import (
     AnomalyCandidate,
@@ -70,12 +67,7 @@ from services.workers.anomaly_processor.memory_fabric import (
     record_subthreshold_signal,
 )
 from services.workers.anomaly_processor.significance import (
-    SIGNIFICANCE_THRESHOLD,
     compute_significance,
-)
-from services.workers.anomaly_processor.worker import (
-    TenantRateLimiter,
-    enqueue_t3_trigger,
 )
 
 from .conftest import (
@@ -86,7 +78,6 @@ from .conftest import (
     insert_minimal_model,
     insert_observation,
     insert_resource,
-    insert_resource_deployment,
 )
 
 

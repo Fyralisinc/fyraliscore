@@ -15,14 +15,11 @@ be pure SQL queries against the passed-in connection — no pool lookups.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 from lib.shared.errors import InvariantViolation
-from lib.shared.types import CommitmentState
 
 
 # ---------------------------------------------------------------------

@@ -18,21 +18,18 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 import structlog
 
 from lib.llm.provider import (
-    LLMConfig,
     LLMError,
     LLMProvider,
     LLMUsage,
     LLMUsageAggregator,
     build_provider,
-    compute_cost_usd,
     using_usage_aggregator,
 )
 from lib.shared.errors import CompanyOSError

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext

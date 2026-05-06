@@ -7,17 +7,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
 
 import pytest
 
-from lib.shared.errors import (
-    FalsifierInadequateError, InvariantViolation, TrustTierError,
-)
 from lib.shared.ids import uuid7
 
 from services.retrieval.primary import RetrievalResult, TriggerContext
-from services.think.diff_schema import ActOp, ClaimOp, RawDiff, ResourceOp
+from services.think.diff_schema import ActOp, ClaimOp, RawDiff
 from services.think.validator import (
     OutOfRegionError, ValidationFailure, validate,
 )

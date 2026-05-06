@@ -68,7 +68,7 @@ import services.synthetic  # noqa: F401
 from services.synthetic.core import SyntheticSignal, inject
 
 from simulation.personas import get_persona
-from simulation.workers._common import WorkerContext, with_context
+from simulation.workers._common import with_context
 
 
 SCENARIOS_DIR = Path(__file__).parent

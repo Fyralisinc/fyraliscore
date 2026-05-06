@@ -55,7 +55,6 @@ from services.gateway.db_bootstrap import _register_codecs
 from services.synthetic.core import SyntheticSignal, inject
 
 from simulation.personas import (
-    Persona,
     get_persona,
     load_personas_cached,
     voice_hints_for,

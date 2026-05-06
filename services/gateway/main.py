@@ -37,7 +37,7 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -52,7 +52,6 @@ from services.gateway.auth import (
     validate_token,
 )
 from services.gateway.db_bootstrap import (
-    _register_codecs,
     close_gateway_pool,
     create_gateway_pool,
 )
@@ -64,7 +63,7 @@ from services.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
-from services.ingestion.handlers import CHANNEL_TRUST_MAP, HandlerNotFound
+from services.ingestion.handlers import HandlerNotFound
 from services.ingestion.handlers.slack import (
     SlackSignatureError,
     verify_slack_signature,
@@ -2162,7 +2161,6 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     stream_manager = ViewCeoStreamManager(token_map=token_map)
 
     # Tie stream → scheduler so cache writes publish to WS clients.
-    from dataclasses import dataclass as _dc
     scheduler.set_stream_publisher(
         type("_SP", (), {"publish": staticmethod(stream_manager.publish)})()
     )

@@ -3,11 +3,8 @@ Primary retrieve tests — trigger-specific weighting + reconsolidation.
 """
 from __future__ import annotations
 
-import asyncio
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from services.models.repo import ModelsRepo

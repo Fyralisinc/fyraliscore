@@ -26,7 +26,6 @@ step fails the whole run rolls back.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Iterable
 from uuid import UUID
 
@@ -35,8 +34,6 @@ import asyncpg
 from lib.shared.ids import uuid7
 
 from services.workers.calibration_updater.compute import (
-    COLD_START_BUCKET_HIGH,
-    COLD_START_BUCKET_LOW,
     OffsetRow,
     Stat,
     compute_offsets_for_tuple,

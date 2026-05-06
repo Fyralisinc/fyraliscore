@@ -6,9 +6,7 @@ free-form Ask path exercises the deterministic fallback.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 from uuid import UUID, uuid4
 
 import pytest

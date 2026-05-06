@@ -11,10 +11,9 @@ Auth + tenant come from the gateway BearerAuthMiddleware (request.state.auth).
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request
 
 from .handler import ProbeHandler, ProbeRequest as HandlerProbeRequest
 from .repo import ConversationRepo

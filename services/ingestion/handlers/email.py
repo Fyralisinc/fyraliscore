@@ -59,7 +59,6 @@ from typing import Any
 from lib.shared.errors import ValidationError
 
 from services.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     HandlerError,
     ObservationDraft,
     register,

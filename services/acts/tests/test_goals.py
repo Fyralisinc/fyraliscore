@@ -1,13 +1,12 @@
 """Integration tests for services/acts/goals.py — real Postgres."""
 from __future__ import annotations
 
-from uuid import UUID
 
 import pytest
 
 from lib.shared.errors import InvariantViolation, ValidationError
 from services.acts import goals, invariants as inv
-from services.acts.tests.conftest import TENANT_A, TENANT_B, make_actor, make_observation, future_due
+from services.acts.tests.conftest import TENANT_A, TENANT_B, make_observation, future_due
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]

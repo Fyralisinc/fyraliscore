@@ -11,7 +11,6 @@ Covers (from the BUILD-PLAN §5 Prompt 4.D test list):
 """
 from __future__ import annotations
 
-import json
 import math
 from datetime import datetime, timedelta, timezone
 from uuid import UUID

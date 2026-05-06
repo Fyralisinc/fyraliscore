@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from services.greeting.cache import CACHE_KEYS, CachedContent, ViewCeoCacheRepo
