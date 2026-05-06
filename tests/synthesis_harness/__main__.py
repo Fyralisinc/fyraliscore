@@ -52,6 +52,7 @@ async def main(
     from tests.synthesis_harness import cases_contest
     from tests.synthesis_harness import cases_falsifier
     from tests.synthesis_harness import cases_reconcile
+    from tests.synthesis_harness import cases_reconciliation
     from tests.synthesis_harness import cases_retrieval
     from tests.synthesis_harness import cases_scope
 
@@ -62,6 +63,7 @@ async def main(
         + cases_falsifier.CASES
         + cases_cascade.CASES
         + cases_reconcile.CASES
+        + cases_reconciliation.CASES
     )
     if stages_filter:
         all_cases = [c for c in all_cases if c.stage in stages_filter]

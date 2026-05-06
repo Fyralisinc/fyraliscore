@@ -84,6 +84,7 @@ async def apply_diff(
     trigger_cause_event_id: UUID | None = None,
     *,
     models_repo: ModelsRepo | None = None,
+    think_run_id: UUID | None = None,
 ) -> dict[str, Any]:
     """
     Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
@@ -138,11 +139,47 @@ async def apply_diff(
     # --- 1. claim_ops ---------------------------------------------
     _belief_updated_model_ids: list[UUID] = []
     _T2_BELIEF_KINDS = {"state", "concern", "expectation"}
-    for op in diff.claim_ops:
+    # T5: reconcile each claim_op.insert before applying. If the
+    # reconciler decides auto_merge, we substitute the replacement
+    # update op for the original insert. human_review and no_match
+    # both proceed with the original (auditing the decision in
+    # `reconciliation_events` is sufficient for those cases).
+    from .reconciler import reconcile_claim_op
+    reconcile_summary: dict[str, int] = {
+        "auto_merge": 0,
+        "human_review": 0,
+        "no_match": 0,
+        "skipped": 0,
+    }
+    for original_op in diff.claim_ops:
+        op = original_op
+        recon_result = None
+        if op.op == "insert":
+            recon_result = await reconcile_claim_op(
+                op, conn,
+                tenant_id=diff.tenant_id,
+                trigger_id=diff.trigger_ref,
+                think_run_id=think_run_id,
+            )
+            reconcile_summary[recon_result.decision] += 1
+            if recon_result.replacement_op is not None:
+                op = recon_result.replacement_op
         result = await _apply_claim_op(
             op, conn, models_repo, diff.tenant_id,
             cause_event_id=trigger_cause_event_id,
         )
+        # Annotate the per-op summary with reconcile context so callers
+        # and tests can see what the reconciler decided.
+        if recon_result is not None and recon_result.decision != "skipped":
+            result["summary"]["reconcile_decision"] = recon_result.decision
+            if recon_result.matched_model_id is not None:
+                result["summary"]["reconcile_matched_model_id"] = (
+                    str(recon_result.matched_model_id)
+                )
+            if recon_result.cosine_similarity is not None:
+                result["summary"]["reconcile_cosine"] = (
+                    recon_result.cosine_similarity
+                )
         ops_summary["claim_ops"].append(result["summary"])
         if result.get("model_id") is not None:
             applied_model_ids.append(result["model_id"])
@@ -152,6 +189,7 @@ async def apply_diff(
             ):
                 _belief_updated_model_ids.append(result["model_id"])
         state_changes_emitted += result.get("state_changes", 0)
+    ops_summary["reconcile_summary"] = reconcile_summary
 
     # --- 2. act_ops -----------------------------------------------
     for op in diff.act_ops:

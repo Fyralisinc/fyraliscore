@@ -1,6 +1,6 @@
 # Synthesis-layer harness — structural learnings
 
-42/42 synthetic cases pass. Total wall time 16s with concurrency=4
+52/52 synthetic cases pass. Total wall time 16s with concurrency=4
 (LLM cases dominate; non-LLM stages run in <0.5s in aggregate).
 The harness now also produces a calibration report under
 `--calibration` (T4) and gates regressions against
@@ -20,13 +20,13 @@ without colliding (every production query filters by `tenant_id`).
 | contestation    | 7     | Primary/secondary multipliers, floor clamp, no-standing rejection, owner & contributor standing, reading   |
 | falsifier       | 14    | Adequacy across kinds; live evaluators; ISO-8601 + human window parser; malformed-window rejection         |
 | cascade         | 6     | Unblock, no-unblock-when-other-deps, decision-revisited flags, depth bound, halt, invariant-violation surfacing |
-| reconciliation  | 4     | Applier-level idempotency + applied_triggers row; full Think loop via DeepSeek; idempotency via Think      |
+| reconciliation  | 14    | Applier idempotency, Think+DeepSeek E2E, plus the 10 T5 cases: auto-merge × 3, no-match × 3, human-review × 2, supersession boundary, kill switch |
 
 ## Status of original findings
 
 | #  | Finding                                                       | Status |
 |----|---------------------------------------------------------------|--------|
-| 1  | No "reconciliation" component to test in isolation            | open — T5 design in flight |
+| 1  | No "reconciliation" component to test in isolation            | **resolved (T5)** — `services/think/reconciler.py` runs between validate and apply on every `claim_op.insert`; four-signal match (cosine + scope + kind + recency); decisions audited in `reconciliation_events`; 10 harness scenarios cover the four behaviors |
 | 2  | Scope routing has 3 orthogonal concerns                       | resolved — independent test cases per concern |
 | 3  | Pathway B always pulls everything below k                     | open — known design choice; rank-based assertions used instead |
 | 4  | RRF rank-position-based, not score-additive                   | open — informational; assertion uses score ordering |
@@ -39,26 +39,37 @@ without colliding (every production query filters by `tenant_id`).
 
 ## Structural learnings — what the harness build process taught me
 
-### 1. There is no "reconciliation" component to test in isolation
+### 1. There is no "reconciliation" component to test in isolation — *resolved by T5*
 
-The label "reconciliation" suggests a service that detects duplicate
-or conflicting Models and merges them. There isn't one. What exists:
+The original observation: reconciliation existed only as
+per-trigger-id idempotency. Two semantically identical observations
+arriving via different `trigger_id`s produced two near-duplicate
+Models; the LLM was the only mechanism keeping the surface
+deduplicated.
 
-- **Idempotency** is enforced once, at apply time, via the
-  `applied_triggers` table keyed on `trigger_id`
-  ([applier.py:102-111](../../services/think/applier.py#L102)). Same
-  trigger twice → `AlreadyAppliedError` → outcome
-  `skipped_idempotent`. The harness exercises this both at the
-  `apply_diff` layer and at the full `think()` layer.
-- **Update / archive / supersede** are LLM-driven. The Think prompt
-  invites the model to emit `claim_op.update` or `claim_op.archive`
-  ops; the validator sanity-checks them; the applier applies them.
-  No automatic content-hash dedup, no automatic "this Model
-  contradicts that one" detection.
+**T5 fix:** `services/think/reconciler.py` runs between validate
+and apply on every `claim_op.insert`. It looks for an existing
+active Model in the same tenant matching on **all four** of:
+embedding cosine similarity, scope overlap, identical proposition
+kind, and recency. Three outcomes:
 
-This means the *only* deterministic reconciliation guarantees are
-the per-trigger-id idempotency and applied_triggers durability.
-Everything else is the LLM's judgment, gated by the validator.
+* `auto_merge` (cosine ≥ `RECONCILE_AUTO_MERGE_COSINE`, default
+  0.85) — convert insert into a confidence update against the
+  matched Model. One row, not two.
+* `human_review` (cosine in `[0.70, 0.85)`) — write to
+  `reconciliation_events` for triage; original insert proceeds.
+* `no_match` — pass through unchanged; audit row records the
+  near-miss for tuning data.
+
+The reconciler runs inside the apply transaction, never aborts
+apply on its own account, and is opt-out via `RECONCILE_ENABLED`.
+Per-trigger-id idempotency via `applied_triggers` is unchanged —
+T5 added a *content-level* dedup pass alongside it.
+
+See [services/think/RECONCILIATION_DESIGN.md](../../services/think/RECONCILIATION_DESIGN.md)
+for the design rationale and
+[services/think/RECONCILIATION_README.md](../../services/think/RECONCILIATION_README.md)
+for the operator guide.
 
 ### 2. Scope routing has three orthogonal concerns that are easy to conflate
 

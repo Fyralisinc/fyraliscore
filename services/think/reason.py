@@ -673,6 +673,7 @@ async def _run_once(
             validated, conn,
             trigger_kind=trigger_kind_full,
             trigger_cause_event_id=trigger.observation_id,
+            think_run_id=record.id,
         )
     except AlreadyAppliedError as e:
         await update_think_run(
