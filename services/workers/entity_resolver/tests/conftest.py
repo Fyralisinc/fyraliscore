@@ -112,8 +112,8 @@ async def resolver_db() -> AsyncGenerator[asyncpg.Pool, None]:
     # Run all migrations (idempotent) so the freshly-created test
     # tables exist.
     async with pool.acquire() as conn:
-        for path in sorted((REPO_ROOT / "db" / "migrations").glob("*.sql")):
-            await conn.execute(path.read_text())
+        from lib.shared.migrations import apply_migrations_dir
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:

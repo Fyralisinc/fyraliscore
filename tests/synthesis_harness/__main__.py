@@ -30,12 +30,15 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 
 
 async def _ensure_schema(pool: asyncpg.Pool) -> None:
+    # T3: each migration runs inside its own transaction so a single
+    # failure (typically "table already exists" against a long-lived
+    # dev DB) doesn't poison the connection for the next migration.
+    # `on_error="warn"` matches the harness's previous behavior of
+    # logging and continuing — fresh-DB bootstrap should use the
+    # default `on_error="stop"` instead.
+    from lib.shared.migrations import apply_migrations_dir
     async with pool.acquire() as conn:
-        for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-            try:
-                await conn.execute(path.read_text())
-            except Exception as exc:  # noqa: BLE001
-                print(f"  schema warn ({path.name}): {exc}", file=sys.stderr)
+        await apply_migrations_dir(conn, MIGRATIONS_DIR, on_error="warn")
 
 
 async def main(stages_filter: list[str] | None = None) -> int:

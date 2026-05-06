@@ -20,7 +20,12 @@ for f in db/migrations/*.sql; do
     continue
   fi
   echo "  + ${fname}"
-  if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; then
+  # T3: --single-transaction wraps the whole file in BEGIN…COMMIT so a
+  # failure on statement N rolls back statements 1..N-1 atomically and
+  # leaves the database clean rather than half-migrated. Without this
+  # flag, psql commits each statement as it runs, mirroring the bug
+  # the Python-side runner had via raw `conn.execute(file_text)`.
+  if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"; then
     echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
   fi
   psql -tAd "$DATABASE_URL" -c \
