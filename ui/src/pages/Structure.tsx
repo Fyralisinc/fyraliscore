@@ -31,6 +31,7 @@ import {
   getStructureRecent,
   type StructureOverlayCommitment,
   type StructureOverlayCustomer,
+  type StructureOverlayDecision,
   type StructureOverlayGoal,
   type StructureOverlayPerson,
   type StructureOverlayResponse,
@@ -47,20 +48,22 @@ type OverlayState = {
   goals: StructureOverlayGoal[];
   people: StructureOverlayPerson[];
   customers: StructureOverlayCustomer[];
+  decisions: StructureOverlayDecision[];
 };
 
 function emptyOverlayState(): OverlayState {
-  return { commitments: [], goals: [], people: [], customers: [] };
+  return { commitments: [], goals: [], people: [], customers: [], decisions: [] };
 }
 
 function mergeOverlayBundle(
   state: OverlayState,
-  bundle: { commitments: StructureOverlayCommitment[]; goals: StructureOverlayGoal[]; people: StructureOverlayPerson[]; customers: StructureOverlayCustomer[] }
+  bundle: { commitments: StructureOverlayCommitment[]; goals: StructureOverlayGoal[]; people: StructureOverlayPerson[]; customers: StructureOverlayCustomer[]; decisions?: StructureOverlayDecision[] }
 ): OverlayState {
   const cIds = new Set(state.commitments.map((c) => c.id));
   const gIds = new Set(state.goals.map((g) => g.id));
   const pIds = new Set(state.people.map((p) => p.id));
   const customerIds = new Set(state.customers.map((c) => c.id));
+  const decisionIds = new Set(state.decisions.map((d) => d.id));
   return {
     commitments: [
       ...bundle.commitments.filter((c) => !cIds.has(c.id)),
@@ -77,6 +80,10 @@ function mergeOverlayBundle(
     customers: [
       ...state.customers,
       ...bundle.customers.filter((c) => !customerIds.has(c.id)),
+    ],
+    decisions: [
+      ...state.decisions,
+      ...(bundle.decisions ?? []).filter((d) => !decisionIds.has(d.id)),
     ],
   };
 }
@@ -102,7 +109,7 @@ function adaptOverlayCommitment(
     stakeholder: c.customer ? "customer" : "internal",
     stakeholder_label: c.customer_label ?? customerLabel ?? "Internal",
     customer: c.customer ?? undefined,
-    traces_to: [],
+    traces_to: c.edges.constrained_by,
     related: [],
     edges: {
       contributes_to: c.edges.contributes_to,
@@ -110,13 +117,17 @@ function adaptOverlayCommitment(
       consumes: c.edges.consumes,
       contributors: c.edges.contributors,
     },
-    progress: "just created",
-    substrate_insight:
-      c.substrate_insight ??
-      "Created from a Today recommendation moments ago.",
+    progress: undefined,
+    substrate_insight: c.substrate_insight ?? undefined,
     activity: c.activity && c.activity.length > 0
       ? c.activity
-      : [{ date: todayIso, desc: "created from recommendation" }],
+      : [],
+    learnings: (c.learnings ?? []).map((p) => ({
+      id: p.id,
+      statement: p.statement,
+      strength: p.strength,
+      evidence: p.evidence.map((e) => ({ when: e.when, text: e.text })),
+    })),
   };
 }
 
@@ -179,6 +190,7 @@ export default function Structure() {
             goals: res.goals,
             people: res.people,
             customers: res.customers,
+            decisions: res.decisions,
           })
         );
       } catch {
@@ -227,6 +239,7 @@ export default function Structure() {
             goals: res.goals,
             people: res.people,
             customers: res.customers,
+            decisions: res.decisions,
           })
         );
         setOverlayError(null);
@@ -271,7 +284,19 @@ export default function Structure() {
     overlayCommitments.length > 0 ||
     overlayState.goals.length > 0 ||
     overlayState.people.length > 0 ||
-    overlayState.customers.length > 0;
+    overlayState.customers.length > 0 ||
+    overlayState.decisions.length > 0;
+
+  const allDecisions = useMemo(() => {
+    if (hasOverlayData) {
+      return overlayState.decisions.map((d) => ({
+        id: d.id,
+        label: d.label,
+        state: d.state,
+      }));
+    }
+    return SAMPLE_DECISIONS;
+  }, [hasOverlayData, overlayState.decisions]);
 
   const allCommitments = useMemo(() => {
     if (hasOverlayData) return overlayCommitments;
@@ -479,7 +504,7 @@ export default function Structure() {
             <RelationshipGraph
               commitments={visibleCommitments}
               goals={visibleGoals}
-              decisions={SAMPLE_DECISIONS}
+              decisions={allDecisions}
               resources={SAMPLE_RESOURCES}
               peopleIndex={allPeopleIndex}
               goalLearnings={SAMPLE_GOAL_LEARNINGS}

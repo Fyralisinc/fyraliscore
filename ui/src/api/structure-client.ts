@@ -30,6 +30,18 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
+export type StructureOverlayPatternEvidence = {
+  when: string;
+  text: string;
+};
+
+export type StructureOverlayPattern = {
+  id: string;
+  statement: string;
+  strength: number;
+  evidence: StructureOverlayPatternEvidence[];
+};
+
 export type StructureOverlayCommitment = {
   id: string;
   label: string;
@@ -48,6 +60,7 @@ export type StructureOverlayCommitment = {
   };
   substrate_insight?: string | null;
   activity?: { date: string; desc: string }[];
+  learnings?: StructureOverlayPattern[];
 };
 
 export type StructureOverlayGoal = {
@@ -67,11 +80,18 @@ export type StructureOverlayCustomer = {
   label: string;
 };
 
+export type StructureOverlayDecision = {
+  id: string;
+  label: string;
+  state: "in-force" | "drifting" | "revisited";
+};
+
 export type StructureOverlayResponse = {
   commitment: StructureOverlayCommitment;
   goals: StructureOverlayGoal[];
   people: StructureOverlayPerson[];
   customers: StructureOverlayCustomer[];
+  decisions?: StructureOverlayDecision[];
 };
 
 export type StructureRecentResponse = {
@@ -79,6 +99,7 @@ export type StructureRecentResponse = {
   goals: StructureOverlayGoal[];
   people: StructureOverlayPerson[];
   customers: StructureOverlayCustomer[];
+  decisions?: StructureOverlayDecision[];
 };
 
 export function getStructureOverlay(

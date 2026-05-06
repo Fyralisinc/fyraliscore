@@ -1345,6 +1345,7 @@ def _register_routes(app: FastAPI) -> None:
             goals_by_id: dict[str, dict[str, Any]] = {}
             people_by_id: dict[str, dict[str, Any]] = {}
             customers_by_id: dict[str, dict[str, Any]] = {}
+            decisions_by_id: dict[str, dict[str, Any]] = {}
 
             for r in rows:
                 cid = r["id"]
@@ -1360,6 +1361,8 @@ def _register_routes(app: FastAPI) -> None:
                     people_by_id.setdefault(p["id"], p)
                 for c in bundle["customers"]:
                     customers_by_id.setdefault(c["id"], c)
+                for d in bundle.get("decisions", []):
+                    decisions_by_id.setdefault(d["id"], d)
 
             # Always include the tenant's full active human roster so
             # the Structure Team section reflects real DB actors, not
@@ -1399,6 +1402,7 @@ def _register_routes(app: FastAPI) -> None:
                 "goals": list(goals_by_id.values()),
                 "people": list(people_by_id.values()),
                 "customers": list(customers_by_id.values()),
+                "decisions": list(decisions_by_id.values()),
             },
             status_code=200,
         )
@@ -2050,6 +2054,35 @@ async def _fetch_commitment_overlay(
         cid, tenant_id,
     )
 
+    decision_rows = await conn.fetch(
+        "SELECT d.id, d.title, d.decision_text, d.rationale, d.state "
+        "FROM decisions d "
+        "JOIN constrained_by cb ON cb.decision_id = d.id "
+        "WHERE cb.commitment_id = $1 AND d.tenant_id = $2",
+        cid, tenant_id,
+    )
+
+    # Models scoped to this commitment — surfaced as learned-pattern
+    # bundles on the commitment card. Filter by scope_entities @>
+    # [{type=commitment, id=cid}] using JSONB containment, then pick
+    # top 6 by confidence so the card stays scannable.
+    pattern_model_rows = await conn.fetch(
+        """
+        SELECT id, "natural", proposition, confidence, falsifier,
+               proposition_kind AS kind,
+               supporting_event_ids, evidential_weight,
+               created_at
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND scope_entities @> $2::jsonb
+        ORDER BY confidence DESC NULLS LAST, created_at DESC
+        LIMIT 6
+        """,
+        tenant_id,
+        json.dumps([{"type": "commitment", "id": str(cid)}]),
+    )
+
     # State-change history: most recent transition + the originating
     # signal that caused it. Used to render "why this is at risk" on
     # the Structure detail card.
@@ -2196,6 +2229,62 @@ async def _fetch_commitment_overlay(
             "label": customer_label,
         })
 
+    decisions_payload: list[dict[str, Any]] = []
+    for d in decision_rows:
+        decisions_payload.append({
+            "id": str(d["id"]),
+            "label": d["title"],
+            "state": d["state"] if d["state"] in (
+                "in-force", "drifting", "revisited",
+            ) else "in-force",
+        })
+
+    # Build LearnedPattern bundles from the scoped models. Each model's
+    # natural-language statement becomes the pattern statement;
+    # supporting_event_ids resolve to short evidence snippets via a
+    # bounded observation lookup (cap 3 per model so we don't blow up
+    # the response).
+    learnings_payload: list[dict[str, Any]] = []
+    for m in pattern_model_rows:
+        prop = m["proposition"]
+        if isinstance(prop, str):
+            try:
+                prop = json.loads(prop)
+            except json.JSONDecodeError:
+                prop = {}
+        if not isinstance(prop, dict):
+            prop = {}
+        statement = (m["natural"] or "").strip()
+        if not statement:
+            continue
+        evidence_payload: list[dict[str, Any]] = []
+        ev_ids = m["supporting_event_ids"] or []
+        # ev_ids is a list of UUIDs (or strings). Cap at 3.
+        ev_lookup_ids = [eid for eid in list(ev_ids)[:3]]
+        if ev_lookup_ids:
+            ev_rows = await conn.fetch(
+                "SELECT id, occurred_at, content_text FROM observations "
+                "WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                tenant_id, [
+                    UUID(str(x)) if not isinstance(x, UUID) else x
+                    for x in ev_lookup_ids
+                ],
+            )
+            for er in ev_rows:
+                t = (er["content_text"] or "").strip()
+                if not t:
+                    continue
+                evidence_payload.append({
+                    "when": er["occurred_at"].date().isoformat(),
+                    "text": t if len(t) <= 180 else t[:177] + "…",
+                })
+        learnings_payload.append({
+            "id": str(m["id"]),
+            "statement": statement if len(statement) <= 240 else statement[:237] + "…",
+            "strength": float(m["confidence"] or 0.5),
+            "evidence": evidence_payload,
+        })
+
     commitment_payload = {
         "id": str(crow["id"]),
         "label": crow["title"],
@@ -2215,12 +2304,13 @@ async def _fetch_commitment_overlay(
         "customer_label": customer_label,
         "edges": {
             "contributes_to": [str(g["id"]) for g in goal_rows],
-            "constrained_by": [],
-            "consumes": [],
+            "constrained_by": [str(d["id"]) for d in decision_rows],
+            "consumes": [],  # capacity resources — Pelago has none yet
             "contributors": [str(c["id"]) for c in contributor_rows],
         },
         "substrate_insight": substrate_insight,
         "activity": activity_payload,
+        "learnings": learnings_payload,
     }
 
     return {
@@ -2228,6 +2318,7 @@ async def _fetch_commitment_overlay(
         "goals": goals_payload,
         "people": people_payload,
         "customers": customers_payload,
+        "decisions": decisions_payload,
     }
 
 

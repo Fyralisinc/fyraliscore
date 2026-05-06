@@ -189,19 +189,88 @@ def _commitments_from_spec(sim_dict: dict[str, Any]) -> list[GeneratedCommitment
 # goal from a role-family heuristic, customer from the most-frequent
 # customer_ref in the commit's signals, decision from the implied goal.
 
-# Map (role_family or role) → display verb-phrase that prefixes a title
-_ROLE_FAMILY_TO_TITLE_VERB = {
-    "engineering": "Backend integration work",
-    "data_ml":     "Data pipeline / ML feature work",
-    "sales":       "Pipeline / deal-cycle thread",
-    "customer_success": "Customer-success engagement",
-    "product":     "Product roadmap thread",
-    "design":      "Design work",
-    "exec":        "Executive coordination thread",
-    "founder":     "Founder-driven thread",
-    "marketing":   "Marketing / launch thread",
-    "finance":     "Finance / ops thread",
-    "people":      "Recruiting thread",
+# Per-role-family pool of realistic-looking commit titles. The chosen
+# title is a deterministic pick keyed on commit_id hash so re-runs
+# produce the same bundle. None of these embed owner name or
+# complexity — that metadata lives on the actor / commit row.
+_ROLE_FAMILY_TITLE_POOL: dict[str, list[str]] = {
+    "engineering": [
+        "API surface refactor",
+        "Worker queue stabilization",
+        "Auth middleware rewrite",
+        "Backend service integration",
+        "Cron job hardening",
+        "Dependency graph cleanup",
+        "Internal SDK iteration",
+        "Rate-limit handler",
+        "Webhook dispatch hardening",
+        "Idempotency key rollout",
+    ],
+    "data_ml": [
+        "Ingestion connector iteration",
+        "Snowflake migration shard",
+        "BigQuery dual-write removal",
+        "Schema reconciliation pass",
+        "Data quality regression sweep",
+        "Forecast feature engineering",
+        "Conversation-AI training loop",
+        "ICP scoring feature spike",
+        "Per-tenant warehouse cutover",
+    ],
+    "sales": [
+        "Pipeline review and forecast update",
+        "Mid-market deal-cycle thread",
+        "QBR preparation",
+        "Outbound sequence iteration",
+        "Renewal pre-discussion",
+        "Annual contract negotiation",
+        "Procurement follow-up",
+    ],
+    "customer_success": [
+        "Account onboarding",
+        "Renewal preparation",
+        "Health-check cycle",
+        "Sync coordination",
+        "Save-play execution",
+        "Implementation handoff",
+        "Customer escalation triage",
+    ],
+    "product": [
+        "Roadmap thread",
+        "Customer requirements doc",
+        "Spec review and lock",
+        "Launch readiness checklist",
+    ],
+    "design": [
+        "Design system iteration",
+        "Dashboard mockup pass",
+        "User-testing notes synthesis",
+    ],
+    "exec": [
+        "Executive coordination thread",
+        "Cross-functional unblock",
+        "Board update preparation",
+    ],
+    "founder": [
+        "Founder-driven thread",
+        "Board update preparation",
+        "Strategic narrative draft",
+    ],
+    "marketing": [
+        "Launch coordination",
+        "Content calendar push",
+        "Campaign analytics review",
+    ],
+    "finance": [
+        "Burn forecast update",
+        "Vendor renewal cycle",
+        "Headcount plan refresh",
+    ],
+    "people": [
+        "Recruiting pipeline review",
+        "Closing-call coordination",
+        "Sourcing batch outreach",
+    ],
 }
 
 # Map (role_family) → primary goal_id (the simulator's seeded goal ids)
@@ -301,14 +370,16 @@ def _rate_generated_commitments_from_gt(
     enriched.sort(key=lambda pair: pair[1]["signal_count"], reverse=True)
 
     out: list[GeneratedCommitment] = []
+    # Track titles already used so the bundle doesn't end up with
+    # six identical "Snowflake migration shard" rows — we cycle through
+    # the pool deterministically.
+    title_use_count: dict[str, int] = {}
     for idx, (c, st) in enumerate(enriched):
         if len(out) >= target_count:
             break
         owner = c["owner"]
         owner_uuid = did(COMPANY, "actor", owner)
         owner_profile = actor_profile_by_id[owner]
-        owner_name = owner_profile["name"].split()[0]
-        role = owner_profile.get("role", "engineer")
         family = owner_profile.get("role_family", "engineering")
 
         # Most-referenced customer if signals overwhelmingly cite one
@@ -332,13 +403,19 @@ def _rate_generated_commitments_from_gt(
             for dk in _GOAL_TO_DECISIONS.get(goal_key, []):
                 decision_uuids.append(did(COMPANY, "decision", dk))
 
-        # Title: verb-phrase + (customer | owner) + complexity hint
-        verb = _ROLE_FAMILY_TO_TITLE_VERB.get(family, "Operational thread")
-        complexity = c.get("true_complexity") or "med"
+        # Title: pick from the role-family pool deterministically by
+        # commit_id hash. When the customer is clearly identified,
+        # prefix with the customer name. Owner name and complexity
+        # are NEVER in the title — they live as separate columns.
+        pool = _ROLE_FAMILY_TITLE_POOL.get(family) or ["Operational thread"]
+        # Deterministic stable pick (independent of iteration order)
+        title_idx = (sum(ord(c) for c in c["id"])) % len(pool)
+        base_title = pool[title_idx]
         if served_customer_label:
-            title = f"{verb} — {owner_name} ({served_customer_label.replace('cust-','').title()})"
+            customer_pretty = served_customer_label.replace("cust-", "").replace("_", " ").title()
+            title = f"{customer_pretty}: {base_title.lower()}"
         else:
-            title = f"{verb} — {owner_name} ({complexity}-complexity)"
+            title = base_title
 
         outcome = c.get("true_outcome")
         if outcome in ("succeeded", "slipped_but_completed"):

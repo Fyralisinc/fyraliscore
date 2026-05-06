@@ -1347,26 +1347,42 @@ function CenterArtifact({
 // ────────────────────────────────────────────────────────────────────
 
 function CenterCommitment({ c, cx, cy }: { c: Commitment; cx: number; cy: number }) {
-  const w = 240;
-  const h = 76;
+  // Vertical compartments — id row, label block (max 2 lines), meta row.
+  // Box grew from 76 → 96 so the 2-line label can't bleed into the meta
+  // row, which previously caused visual overlap.
+  const w = 260;
+  const h = 96;
+  const top = cy - h / 2;
+  const labelTop = top + 24;     // 24px reserved for id row
+  const labelHeight = 40;        // room for 2 lines at 14px / 1.3 lh
   return (
     <g className="rg-center" data-status={c.status}>
       <rect
         x={cx - w / 2}
-        y={cy - h / 2}
+        y={top}
         width={w}
         height={h}
         rx="10"
         ry="10"
         className="rg-center-bg"
       />
-      <text x={cx} y={cy - 14} textAnchor="middle" className="rg-center-id">
+      <text x={cx} y={top + 16} textAnchor="middle" className="rg-center-id">
         {c.id} · {c.status.replace("-", " ")}
       </text>
-      <foreignObject x={cx - w / 2 + 10} y={cy - 4} width={w - 20} height={32}>
+      <foreignObject
+        x={cx - w / 2 + 12}
+        y={labelTop}
+        width={w - 24}
+        height={labelHeight}
+      >
         <div className="rg-center-label">{c.label}</div>
       </foreignObject>
-      <text x={cx} y={cy + h / 2 - 8} textAnchor="middle" className="rg-center-meta">
+      <text
+        x={cx}
+        y={top + h - 10}
+        textAnchor="middle"
+        className="rg-center-meta"
+      >
         {c.owner_display} · due{" "}
         {new Date(c.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
       </text>
