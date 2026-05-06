@@ -191,7 +191,7 @@ async def valid_session_b(
 @pytest_asyncio.fixture
 async def dispatcher_app(
     realtime_pool: asyncpg.Pool,
-) -> AsyncGenerator[tuple[FastAPI, "services.realtime.dispatcher.Dispatcher"], None]:
+) -> AsyncGenerator[tuple[FastAPI, "services.realtime.dispatcher.Dispatcher"], None]:  # noqa: F821
     """Standalone FastAPI app with realtime mounted.
 
     Starts + stops the dispatcher around the yield.

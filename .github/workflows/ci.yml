@@ -25,11 +25,14 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.6.9
 
-      # Conservative ruleset: catches real bugs (undefined names, syntax
-      # errors, unused imports) without enforcing style across the repo.
-      # Expand the --select list once the team agrees on a style baseline.
+      # Minimal ruleset: catches real bugs (syntax errors, undefined names,
+      # invalid string formatting) without forcing a style cleanup of the
+      # existing codebase. F401 (unused imports) and F811 (redefinitions)
+      # are intentionally OFF for now — they fire ~440 pre-existing hits
+      # and false-positive on pytest fixture parameter shadowing. Add them
+      # back after the team agrees on a cleanup pass.
       - name: Ruff check
-        run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
+        run: ruff check --select E9,F63,F7,F82,F821 .
 
   tests:
     name: Tests (unit + integration)
