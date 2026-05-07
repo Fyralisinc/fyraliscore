@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import App from "@/App";
 import {
   DEMO_LS_KEYS,
   clearDemoSession,
   endDemoSession,
-  listDemoCompanies,
   resetDemoSession,
   saveDemoSession,
   startDemoSession,
-  type DemoCompany,
 } from "@/api/demo-picker-client";
 
-// Root route. With no active demo session, render the start-demo
-// picker; otherwise render the cockpit with the reset/end controls.
+// Pelago is the only company the demo currently ships with, so we
+// auto-start a Pelago session on first paint instead of presenting a
+// picker. If we ever onboard a second company, restore the picker
+// from git history (commit before this change).
+const DEFAULT_DEMO_COMPANY_ID = "pelago";
+
+// Root route. With no active demo session, kick off a Pelago demo
+// session in the background and render the loading state until it
+// resolves; otherwise render the cockpit with the reset/end controls.
 // /debug and direct API consumers are unaffected.
 export default function DemoLanding() {
   const [sessionId, setSessionId] = useState<string | null>(() =>
@@ -22,6 +27,12 @@ export default function DemoLanding() {
   );
   const [busy, setBusy] = useState<"reset" | "end" | null>(null);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+  // Guards against React 18 StrictMode double-invoking the effect in
+  // dev — without this, two sessions race to mint and one gets
+  // orphaned on the backend.
+  const startInFlight = useRef(false);
 
   const onReset = useCallback(async () => {
     if (!sessionId || busy) return;
@@ -45,16 +56,69 @@ export default function DemoLanding() {
     try {
       await endDemoSession(sessionId);
     } catch {
-      // proceed even if the call fails — wipe local state and bounce
-      // back to the picker
+      // proceed even if the call fails — wipe local state and let the
+      // root route re-mint a fresh session on the next render
     }
     clearDemoSession();
     setSessionId(null);
     setBusy(null);
   }, [sessionId, busy]);
 
+  // Auto-start the Pelago session whenever there's no active session.
+  // Re-runs on `retryToken` bumps so the user can recover from a
+  // transient backend failure without reloading the page.
+  useEffect(() => {
+    if (sessionId) return;
+    if (startInFlight.current) return;
+    let alive = true;
+    startInFlight.current = true;
+    setStartError(null);
+    (async () => {
+      try {
+        const session = await startDemoSession(DEFAULT_DEMO_COMPANY_ID);
+        if (!alive) return;
+        saveDemoSession(session);
+        setSessionId(session.session_id);
+      } catch (err) {
+        if (!alive) return;
+        setStartError(err instanceof Error ? err.message : "start failed");
+      } finally {
+        startInFlight.current = false;
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, retryToken]);
+
   if (!sessionId) {
-    return <DemoPicker onSessionStarted={(sid) => setSessionId(sid)} />;
+    return (
+      <div className="demo-picker-shell">
+        <div className="demo-picker-loading">
+          <div className="demo-picker-loading-pulse" aria-hidden />
+          <h1 className="demo-picker-loading-title">
+            Setting up your demo environment…
+          </h1>
+          <p className="demo-picker-loading-body">
+            Loading the company snapshot. This usually takes 5 to 15 seconds.
+          </p>
+          {startError ? (
+            <div className="demo-picker-error">
+              Could not start the demo — {startError}
+              <div>
+                <button
+                  type="button"
+                  className="demo-session-btn"
+                  onClick={() => setRetryToken((n) => n + 1)}
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -82,118 +146,5 @@ export default function DemoLanding() {
       </div>
       {resetMsg ? <div className="demo-session-toast">{resetMsg}</div> : null}
     </>
-  );
-}
-
-function DemoPicker({
-  onSessionStarted,
-}: {
-  onSessionStarted: (sessionId: string) => void;
-}) {
-  const [companies, setCompanies] = useState<DemoCompany[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [startingId, setStartingId] = useState<string | null>(null);
-  const [startError, setStartError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const items = await listDemoCompanies();
-        if (!alive) return;
-        setCompanies(items);
-      } catch (err) {
-        if (!alive) return;
-        setLoadError(err instanceof Error ? err.message : "load failed");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  async function onStart(companyId: string): Promise<void> {
-    setStartingId(companyId);
-    setStartError(null);
-    try {
-      const session = await startDemoSession(companyId);
-      saveDemoSession(session);
-      onSessionStarted(session.session_id);
-    } catch (err) {
-      setStartingId(null);
-      setStartError(err instanceof Error ? err.message : "start failed");
-    }
-  }
-
-  if (startingId) {
-    return (
-      <div className="demo-picker-shell">
-        <div className="demo-picker-loading">
-          <div className="demo-picker-loading-pulse" aria-hidden />
-          <h1 className="demo-picker-loading-title">
-            Setting up your demo environment…
-          </h1>
-          <p className="demo-picker-loading-body">
-            Loading the company snapshot. This usually takes 5 to 15 seconds.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="demo-picker-shell">
-      <header className="demo-picker-head">
-        <div className="demo-picker-mark" aria-hidden>D</div>
-        <h1 className="demo-picker-title">Fyralis demo</h1>
-        <p className="demo-picker-subtitle">
-          Start the demo to land in the action list as the CEO.
-        </p>
-      </header>
-
-      {loadError ? (
-        <div className="demo-picker-error">
-          Could not load demo companies — {loadError}
-        </div>
-      ) : null}
-
-      {startError ? (
-        <div className="demo-picker-error">
-          Could not start the demo — {startError}
-        </div>
-      ) : null}
-
-      <div className="demo-picker-grid">
-        {companies === null && !loadError ? (
-          <div className="demo-picker-skeleton" aria-busy="true">
-            Loading companies…
-          </div>
-        ) : null}
-
-        {companies?.map((c) => (
-          <article key={c.company_id} className="demo-picker-card">
-            <div>
-              <div className="demo-picker-card-tagline">{c.tagline}</div>
-              <h2 className="demo-picker-card-name">{c.name}</h2>
-              <p className="demo-picker-card-desc">{c.description}</p>
-            </div>
-            <div className="demo-picker-card-cta-wrap">
-              <button
-                type="button"
-                className="demo-picker-card-cta"
-                onClick={() => void onStart(c.company_id)}
-                data-testid={`start-${c.company_id}`}
-              >
-                Start demo
-              </button>
-              <p className="demo-picker-card-cta-hint">
-                Simulated company based on common organizational patterns.
-                You will land in the action list as the CEO.
-              </p>
-            </div>
-          </article>
-        ))}
-      </div>
-    </div>
   );
 }
