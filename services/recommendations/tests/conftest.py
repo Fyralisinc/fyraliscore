@@ -71,18 +71,26 @@ async def seed_commitment(
     born_from_event: UUID,
     state: str = "active",
     title: str = "Build rate limiter",
+    is_maintenance: bool = True,
 ) -> UUID:
+    # `is_maintenance` defaults to True so the commitment satisfies
+    # invariant C10 (active commitment must contribute to a goal OR be
+    # maintenance). Tests here exercise the recommendation/act plumbing,
+    # not strategic-alignment semantics — wiring contributes_to edges
+    # adds setup churn for no test-value gain. Tests that need to verify
+    # C10 behavior can pass is_maintenance=False explicitly.
     cid = uuid7()
     await pool.execute(
         """
         INSERT INTO commitments (
             id, tenant_id, title, description, state, owner_id,
-            created_by_event_id
+            created_by_event_id, is_maintenance
         ) VALUES (
-            $1, $2, $3, NULL, $4, $5, $6
+            $1, $2, $3, NULL, $4, $5, $6, $7
         )
         """,
         cid, tenant, title, state, owner_id, born_from_event,
+        is_maintenance,
     )
     return cid
 

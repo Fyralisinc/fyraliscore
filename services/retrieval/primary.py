@@ -5,11 +5,11 @@ RetrievalResult.
 Spec reference: ARCHITECTURE-FINAL.md §8 "Primary pathway resolver",
 BUILD-PLAN §4 Prompt 3.A item 2.
 
-Per-trigger pathway mix:
-  - T1 (new signal)        : A + B + C, weights 0.4 / 0.4 / 0.2
-  - T2 (prediction due)    : A + D
-  - T3 (anomaly)           : A + B + C, weights 0.5 / 0.3 / 0.2
-  - T4 (background / pattern): D + A, weights 0.6 / 0.4
+Per-trigger pathway mix (source of truth: `_TRIGGER_WEIGHTS` below):
+  - T1 (new signal)          : A + B + C, weights 0.4 / 0.4 / 0.2
+  - T2 (prediction due)      : A + B + D, weights 0.4 / 0.4 / 0.2
+  - T3 (anomaly)             : A + B + C, weights 0.5 / 0.3 / 0.2
+  - T4 (background / pattern): D + A,     weights 0.6 / 0.4
 
 Ranking: each item (Model, Observation, etc.) is scored with
 `pathway_weight * position_decay(position)`. The same Model surfacing

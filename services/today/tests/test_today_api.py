@@ -90,9 +90,9 @@ async def test_today_lists_recommendations_with_severity_and_card_shape(
             target_actor_id=seeded_actor,
             target_type="commitment",
             target_id=cid,
-            expected_impact=0.85,
+            expected_impact=0.95,
         ),
-        confidence=0.85,
+        confidence=0.95,
         natural="Pause the rate limiter — three weeks of slipping deliverables.",
     )
 
@@ -104,7 +104,8 @@ async def test_today_lists_recommendations_with_severity_and_card_shape(
     body = resp.json()
     assert len(body["cards"]) == 1
     card = body["cards"][0]
-    # Severity derived from impact * confidence (0.85 * 0.85 = 0.7225 → critical)
+    # Severity derived from impact * confidence (0.95 * 0.95 = 0.9025 → critical,
+    # bucket boundary: >= 0.80; see services/today/aggregator.py).
     assert card["severity"] == "critical"
     assert card["category"] in ("operational", "strategic")
     assert card["kind_label"]

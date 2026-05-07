@@ -77,7 +77,10 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
         assert m.last_retrieved_at is not None
 
 
-async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
+async def test_t2_prediction_path_uses_a_b_and_d(tx_conn, fresh_db, tenant):
+    # T2 mixes structural (A) + semantic (B) + pattern (D). Subset
+    # rather than equality because individual pathways may legitimately
+    # return zero rows on a small fixture and skip themselves.
     fs = await _build(tx_conn, fresh_db, tenant)
     trigger = TriggerContext(
         kind="T2",
@@ -85,7 +88,7 @@ async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):

@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # `production` is included so the deploy workflow can gate itself on
+    # a green CI run via `workflow_run` (see deploy-production.yml).
+    branches: [main, production]
 
 concurrency:
   group: ci-${{ github.ref }}

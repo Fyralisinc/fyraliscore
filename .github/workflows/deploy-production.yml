@@ -1,7 +1,14 @@
 name: Deploy to Production
 
+# Deploy is gated on a green CI run for the same SHA. The
+# `workflow_run` trigger fires after CI finishes on the production
+# branch; the `if:` below ensures we only deploy on success. Manual
+# `workflow_dispatch` skips the gate so operators can roll-forward
+# from a known-good commit even if CI is red on a later push.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [production]
   workflow_dispatch:
 
@@ -10,6 +17,9 @@ jobs:
     name: Deploy to AWS Lightsail
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Deploy via SSH

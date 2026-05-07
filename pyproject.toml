@@ -63,16 +63,8 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    # Remaining deselects: bucket 2/3 work in progress. Each entry has a
-    # tracking note in the CI cleanup PR. Empty list = full suite gates CI.
-    "--deselect=tests/integration/test_recommendation_flow.py::test_full_recommendation_flow_lists_acts_archives",
-    "--deselect=tests/integration/test_recommendation_flow.py::test_act_after_archive_returns_409",
-    "--deselect=services/recommendations/tests/test_api.py::test_act_transitions_target_commitment_and_archives",
-    "--deselect=services/recommendations/tests/test_api.py::test_act_twice_returns_409",
-    "--deselect=services/today/tests/test_today_api.py::test_today_lists_recommendations_with_severity_and_card_shape",
-    "--deselect=services/retrieval/tests/test_primary.py::test_t2_prediction_path_uses_a_and_d",
-    # Flaky in full-suite runs (pass in isolation). Likely shared-DB
-    # ordering / async teardown timing.
+    # Remaining deselects: bucket 3 (flaky in full-suite runs, pass in
+    # isolation). Likely shared-DB ordering / async teardown timing.
     "--deselect=services/realtime/tests/test_dispatcher.py::test_replay_since_sequence_num_ordered",
     "--deselect=services/today/tests/test_today_api.py::test_today_returns_full_payload_for_actor_with_no_recommendations",
 ]
