@@ -51,6 +51,26 @@ class Case:
     # Surfaced in the calibration table so a future reader can audit.
     ground_truth_basis: str | None = None
 
+    # Adversarial-suite metadata. Cases under tests/synthesis_harness/
+    # adversarial/ set these so TRIAGE.md can categorize findings:
+    #
+    #   * failure_mode_under_test — one-line statement of what the
+    #     scenario is *trying* to break (concrete, not the category).
+    #   * expected_behavior — "specified" if the right answer is
+    #     known and the assertion is sharp, or "underspecified" if
+    #     the scenario reveals an architectural question and the
+    #     assertion is intentionally soft (e.g. "did not crash").
+    #   * underspec_question — when expected_behavior="underspecified",
+    #     the design question the scenario surfaces. Goes verbatim
+    #     into TRIAGE.md.
+    #   * domain — which workplace domain the fixture is drawn from
+    #     (sales/eng/finance/hiring/cs/leadership/product) — used to
+    #     verify we're not over-indexing on one domain.
+    failure_mode_under_test: str | None = None
+    expected_behavior: str | None = None  # "specified" | "underspecified"
+    underspec_question: str | None = None
+    domain: str | None = None
+
 
 @dataclass
 class CaseResult:
@@ -70,6 +90,11 @@ class CaseResult:
     ground_truth_correctness: bool | None = None
     stated_confidence: float | None = None
     ground_truth_basis: str | None = None
+    # Copied from Case so triage.py can read everything off the result list.
+    failure_mode_under_test: str | None = None
+    expected_behavior: str | None = None
+    underspec_question: str | None = None
+    domain: str | None = None
 
 
 async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
@@ -98,6 +123,10 @@ async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
             ground_truth_correctness=case.ground_truth_correctness,
             stated_confidence=stated_conf,
             ground_truth_basis=case.ground_truth_basis,
+            failure_mode_under_test=case.failure_mode_under_test,
+            expected_behavior=case.expected_behavior,
+            underspec_question=case.underspec_question,
+            domain=case.domain,
         )
     except Exception as exc:
         return CaseResult(
@@ -110,6 +139,10 @@ async def _run_case(pool: asyncpg.Pool, case: Case) -> CaseResult:
             expected_confidence_range=case.expected_confidence_range,
             ground_truth_correctness=case.ground_truth_correctness,
             ground_truth_basis=case.ground_truth_basis,
+            failure_mode_under_test=case.failure_mode_under_test,
+            expected_behavior=case.expected_behavior,
+            underspec_question=case.underspec_question,
+            domain=case.domain,
         )
 
 
