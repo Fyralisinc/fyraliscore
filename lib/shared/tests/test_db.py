@@ -30,14 +30,21 @@ from lib.shared.ids import uuid7
 # =====================================================================
 
 async def test_get_pool_uninitialised_raises():
-    # Start clean — if a prior test left _pool set, clear it.
-    await close_pool()
+    # Bypass `close_pool()` and null the module-level ref directly. A
+    # prior integration test may have populated `_pool` with a pool
+    # whose event loop has since been torn down by pytest-asyncio's
+    # function-scoped loop; calling `await _pool.close()` on it raises
+    # "Event loop is closed". Nulling the ref is sufficient — the leaked
+    # pool's connections are already dead at that point.
+    import lib.shared.db as db_mod
+    db_mod._pool = None
     with pytest.raises(ConnectionPoolNotInitializedError):
         get_pool()
 
 
 async def test_init_pool_missing_dsn(monkeypatch):
-    await close_pool()
+    import lib.shared.db as db_mod
+    db_mod._pool = None
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(ConnectionPoolNotInitializedError):
         await init_pool()
