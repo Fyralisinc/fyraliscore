@@ -63,22 +63,14 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    # Known-broken tests already failing on origin/main when CI was
-    # introduced (PR #14). Tracked for follow-up; deselected here so
-    # CI can gate new work without rewriting unrelated suites.
+    # Remaining deselects: bucket 2/3 work in progress. Each entry has a
+    # tracking note in the CI cleanup PR. Empty list = full suite gates CI.
     "--deselect=tests/integration/test_recommendation_flow.py::test_full_recommendation_flow_lists_acts_archives",
     "--deselect=tests/integration/test_recommendation_flow.py::test_act_after_archive_returns_409",
     "--deselect=services/recommendations/tests/test_api.py::test_act_transitions_target_commitment_and_archives",
     "--deselect=services/recommendations/tests/test_api.py::test_act_twice_returns_409",
-    "--deselect=services/today/tests/test_derivations.py::test_derive_severity_buckets",
-    "--deselect=services/today/tests/test_derivations.py::test_derive_severity_uses_default_impact_when_missing",
-    "--deselect=services/today/tests/test_derivations.py::test_derive_category_operational_for_critical_transition",
     "--deselect=services/today/tests/test_today_api.py::test_today_lists_recommendations_with_severity_and_card_shape",
-    "--deselect=services/models/tests/test_recommendations.py::test_recommendation_rejects_missing_target_actor_id",
     "--deselect=services/retrieval/tests/test_primary.py::test_t2_prediction_path_uses_a_and_d",
-    "--deselect=lib/llm/tests/test_provider.py::test_config_from_env_defaults",
-    "--deselect=lib/shared/tests/test_db.py::test_get_pool_uninitialised_raises",
-    "--deselect=lib/shared/tests/test_db.py::test_init_pool_missing_dsn",
     # Flaky in full-suite runs (pass in isolation). Likely shared-DB
     # ordering / async teardown timing.
     "--deselect=services/realtime/tests/test_dispatcher.py::test_replay_since_sequence_num_ordered",

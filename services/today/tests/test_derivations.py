@@ -64,11 +64,14 @@ def _view(
 @pytest.mark.parametrize(
     "impact,conf,expected",
     [
-        (0.95, 0.85, "critical"),    # 0.8075
-        (0.70, 0.65, "strategic"),   # 0.455
-        (0.50, 0.55, "high"),        # 0.275
-        (0.30, 0.40, "med"),         # 0.12
-        (0.10, 0.50, "low"),         # 0.05
+        # Normalized regime — score = impact * confidence. Buckets match
+        # services/today/aggregator.py: critical >= 0.80, strategic >= 0.55,
+        # high >= 0.30, med >= 0.12, else low.
+        (0.95, 0.90, "critical"),    # 0.855
+        (0.80, 0.75, "strategic"),   # 0.600
+        (0.70, 0.50, "high"),        # 0.350
+        (0.30, 0.50, "med"),         # 0.150
+        (0.10, 0.50, "low"),         # 0.050
     ],
 )
 def test_derive_severity_buckets(impact, conf, expected):
@@ -78,14 +81,14 @@ def test_derive_severity_buckets(impact, conf, expected):
 def test_derive_severity_uses_default_impact_when_missing():
     # Falls back to 0.5 when expected_impact is None
     sev = _derive_severity(_view(confidence=0.9, expected_impact=None))
-    # 0.5 * 0.9 = 0.45 → strategic
-    assert sev == "strategic"
+    # 0.5 * 0.9 = 0.45 → high (>= 0.30, < 0.55)
+    assert sev == "high"
 
 
 def test_derive_category_operational_for_critical_transition():
     # Per spec §12 — Decision drift is critical severity but operational
     # category. Kind drives the category, not severity.
-    v = _view(confidence=0.85, expected_impact=0.85, operation="transition")
+    v = _view(confidence=0.95, expected_impact=0.95, operation="transition")
     assert _derive_severity(v) == "critical"
     assert _derive_category(v, _derive_severity(v)) == "operational"
 

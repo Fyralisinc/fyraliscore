@@ -65,13 +65,20 @@ def _valid_payload() -> str:
 # =====================================================================
 
 def test_config_from_env_defaults(monkeypatch):
+    # Repo conftest loads `.env` at import time, which can populate
+    # LLM_MODEL / LLM_TIMEOUT_SECONDS. Delete them so the from_env()
+    # defaults are exercised, not whatever the dev's .env happens to set.
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
     assert cfg.provider == "anthropic"
     assert cfg.api_key == "k"
     assert cfg.model == "claude-opus-4-7"
-    assert cfg.timeout_s == 30.0
+    # No explicit LLM_TIMEOUT_SECONDS → derive from per-model tier
+    # (TK-1, lib/llm/provider.py). claude-opus-4-7 sits in the 60s tier.
+    assert cfg.timeout_s == 60.0
 
 
 def test_config_from_env_openai(monkeypatch):

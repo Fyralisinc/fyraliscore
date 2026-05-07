@@ -108,13 +108,26 @@ def test_recommendation_accepts_qualitative_only_impact() -> None:
     assert parsed.kind == "recommendation"
 
 
-def test_recommendation_rejects_missing_target_actor_id() -> None:
+def test_recommendation_rejects_empty_target_actor_id() -> None:
+    # `target_actor_id` is Optional (recommendations can be unaddressed),
+    # but if provided it must be a non-empty UUID string. Empty string is
+    # the common bug — coerced from a missing DB column / null in JSON.
+    raw = _good_recommendation_proposition(
+        target_actor_id=str(uuid7()), commitment_id=str(uuid7()),
+    )
+    raw["target_actor_id"] = ""
+    with pytest.raises(ValidationError):
+        validate_proposition(raw)
+
+
+def test_recommendation_accepts_missing_target_actor_id() -> None:
     raw = _good_recommendation_proposition(
         target_actor_id=str(uuid7()), commitment_id=str(uuid7()),
     )
     del raw["target_actor_id"]
-    with pytest.raises(ValidationError):
-        validate_proposition(raw)
+    parsed = validate_proposition(raw)
+    assert parsed.kind == "recommendation"
+    assert parsed.target_actor_id is None
 
 
 # =====================================================================
