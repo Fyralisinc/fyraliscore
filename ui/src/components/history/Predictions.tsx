@@ -253,31 +253,39 @@ function SortableHeader({
 }
 
 function CalibrationSummaryBlock({ cal }: { cal: CalibrationSummary }) {
+  const hasResolved = cal.domains.length > 0;
   return (
     <section className="calibration-summary">
       <header>
         <h2>Calibration summary</h2>
         <span className="cal-overall">
-          Overall: <strong>{cal.overall.toFixed(2)}</strong>
+          Overall: <strong>{hasResolved ? cal.overall.toFixed(2) : "—"}</strong>
         </span>
       </header>
-      <div className="cal-domain-list">
-        {cal.domains.map((d) => (
-          <div className="cal-domain-row" key={d.name}>
-            <span className="cal-domain-label">{d.name}</span>
-            <div className="cal-bar-track">
-              <div
-                className="cal-bar-fill"
-                style={{ width: `${Math.round(d.score * 100)}%` }}
-              />
+      {hasResolved ? (
+        <div className="cal-domain-list">
+          {cal.domains.map((d) => (
+            <div className="cal-domain-row" key={d.name}>
+              <span className="cal-domain-label">{d.name}</span>
+              <div className="cal-bar-track">
+                <div
+                  className="cal-bar-fill"
+                  style={{ width: `${Math.round(d.score * 100)}%` }}
+                />
+              </div>
+              <span className="cal-fraction">
+                {d.correct} / {d.total}
+              </span>
+              <span className="cal-score">({d.score.toFixed(2)})</span>
             </div>
-            <span className="cal-fraction">
-              {d.correct} / {d.total}
-            </span>
-            <span className="cal-score">({d.score.toFixed(2)})</span>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <p className="cal-empty">
+          No predictions have resolved yet. Calibration scores appear here once
+          the first prediction is marked correct or wrong.
+        </p>
+      )}
       {cal.trend ? (
         <p className="cal-trend">
           Recent trend: <strong>{cal.trend.direction}</strong> (

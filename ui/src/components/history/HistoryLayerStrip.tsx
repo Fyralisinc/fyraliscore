@@ -24,8 +24,16 @@ export function HistoryLayerStrip({
     {
       id: "predictions" as const,
       label: "PREDICTIONS",
-      primary: `${counts.predictions.calibration.toFixed(2)} cal.`,
-      secondary: `${counts.predictions.correct}/${counts.predictions.total} right`,
+      // Render "—" when nothing has resolved yet — `0.00 cal.` reads
+      // like a meaningful score of zero and "0/0 right" looks broken.
+      primary:
+        counts.predictions.total > 0
+          ? `${counts.predictions.calibration.toFixed(2)} cal.`
+          : "— cal.",
+      secondary:
+        counts.predictions.total > 0
+          ? `${counts.predictions.correct}/${counts.predictions.total} right`
+          : "no resolved yet",
     },
     {
       id: "arcs" as const,

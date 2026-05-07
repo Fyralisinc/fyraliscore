@@ -110,22 +110,31 @@ function renderChronicleData(
 }
 
 function renderPredictionsData(c: CalibrationSummary) {
+  // `domains` is empty until at least one prediction resolves (correct
+  // or wrong). On a fresh demo session there are predictions but no
+  // resolutions yet, so we render an empty-state instead of crashing
+  // on `sorted[0].name`.
   const sorted = [...c.domains].sort((a, b) => b.score - a.score);
   const strongest = sorted[0];
-  const weakest = sorted[sorted.length - 1];
+  const weakest = sorted.length > 1 ? sorted[sorted.length - 1] : undefined;
+  const hasResolved = sorted.length > 0;
   return (
     <>
       <div className="shape-data-section">
         <span className="shape-data-label">Overall</span>
         <div className="event-breakdown">
-          <span className="event-count">{c.overall.toFixed(2)}</span>
+          <span className="event-count">
+            {hasResolved ? c.overall.toFixed(2) : "—"}
+          </span>
         </div>
       </div>
       <div className="shape-data-section">
         <span className="shape-data-label">Strongest domain</span>
         <div className="calibration-summary-inline">
           <span className="calibration-score">
-            {strongest.name} ({strongest.correct} of {strongest.total})
+            {strongest
+              ? `${strongest.name} (${strongest.correct} of ${strongest.total})`
+              : "no resolved predictions yet"}
           </span>
         </div>
       </div>
@@ -133,7 +142,9 @@ function renderPredictionsData(c: CalibrationSummary) {
         <span className="shape-data-label">Weakest domain</span>
         <div className="calibration-summary-inline">
           <span className="calibration-score">
-            {weakest.name} ({weakest.correct} of {weakest.total})
+            {weakest
+              ? `${weakest.name} (${weakest.correct} of ${weakest.total})`
+              : "—"}
           </span>
         </div>
       </div>
