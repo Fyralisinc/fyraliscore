@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from lib.shared.db import (
     ConnectionPoolNotInitializedError,
     RowHydrationError,
-    close_pool,
     execute,
     get_pool,
     init_pool,
