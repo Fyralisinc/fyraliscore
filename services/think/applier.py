@@ -518,6 +518,42 @@ async def _apply_claim_op(
             "model_id": op.model_id,
             "state_changes": 1,
         }
+    if op.op == "relocate":
+        # S4: deliberate topology repositioning. Routes through
+        # TopoRepo.relocate which writes the new topo_embedding,
+        # records a `topology_events` row (kind='relocate'), and
+        # enqueues a bounded cascade.
+        from lib.topology.relocate import parse_relocate_target
+        from services.topology.topo_repo import TopoRepo
+
+        if op.model_id is None:
+            raise ValidationError("apply_claim_op relocate: model_id required")
+        if not op.relocate_target:
+            raise ValidationError("apply_claim_op relocate: relocate_target required")
+        target = parse_relocate_target(op.relocate_target)
+        topo_repo = TopoRepo()
+        result = await topo_repo.relocate(
+            conn,
+            model_id=op.model_id,
+            tenant_id=tenant_id,
+            target=target,
+            reason=op.reason or "(no reason given)",
+            applied_by_diff_id=cause_event_id,
+        )
+        return {
+            "summary": {
+                "op": "relocate",
+                "model_id": str(op.model_id),
+                "target_kind": result["target_kind"],
+                "delta": float(result["delta"]),
+                "cascade_enqueued": int(result["cascade_enqueued"]),
+            },
+            "model_id": op.model_id,
+            # A relocate is a topology mutation; it does NOT emit a
+            # model state_change (no row in `state_changes`). The
+            # topology_events row is the audit primary key.
+            "state_changes": 0,
+        }
     raise ValidationError(f"unknown claim_op: {op.op!r}")
 
 

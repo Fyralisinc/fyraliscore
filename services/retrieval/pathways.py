@@ -52,7 +52,7 @@ from lib.shared.types import (
 # Constants + types
 # ---------------------------------------------------------------------
 
-PathwayName = Literal["A", "B", "C", "D"]
+PathwayName = Literal["A", "B", "C", "D", "F"]
 
 _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
@@ -60,6 +60,8 @@ _DEFAULT_STRUCTURAL_MAX_HOPS = 2
 _STRUCTURAL_MAX_MODELS = 200
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
+_DEFAULT_K_TOPOLOGICAL = 40
+_TOPOLOGICAL_MAX_NEIGHBORHOOD_EXPANSION = 30
 
 
 class RetrievalPathwayError(CompanyOSError):
@@ -1021,6 +1023,280 @@ async def pathway_d_pattern(
     )
 
 
+# =====================================================================
+# Pathway F — Topological proximity (HNSW over models.topo_embedding +
+#             materialized-neighborhood expansion)
+# =====================================================================
+#
+# Where Pathway B asks "what does this signal MEAN" (semantic content),
+# Pathway F asks "where does this signal LIVE" (positional arrangement
+# in the substrate's emergent topology). Two queries fold into one
+# PathwayResult:
+#
+#   1. HNSW cosine NN over `topo_embedding` (128d) — topo-nearest
+#      Models, regardless of which neighborhood they sit in. Catches
+#      Models that are positionally adjacent even when their content
+#      embedding diverges (a `state` and a `concern` both centered on
+#      a customer commitment may have low B-similarity but high F-
+#      similarity if the substrate has organized them into the same
+#      neighborhood).
+#
+#   2. Neighborhood expansion: for each Model already surfaced (by
+#      seed model_id, by topo-NN above, or by other pathways the
+#      caller folds in), look up its active neighborhood via
+#      `model_neighborhood_membership` and pull co-members ordered by
+#      centrality DESC. This is what makes Pathway F different from
+#      a parallel Pathway B over a different vector space — it
+#      surfaces the EMERGENT GROUPING, not just the geometric
+#      neighborhood.
+#
+# Seed resolution (in order of preference):
+#   - explicit `precomputed_topo_vector` (caller already projected)
+#   - explicit `seed_model_id` → fetch its topo + membership
+#   - `seed_natural_text` → embed via Ollama → content_anchor projection
+#
+# When no seed can be resolved, Pathway F returns an empty result
+# (notes['reason'] = 'empty_seed') and the caller's other pathways
+# carry the load. This matches Pathway B's contract.
+# =====================================================================
+
+
+async def pathway_f_topological(
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_natural_text: str | None = None,
+    seed_model_id: UUID | None = None,
+    precomputed_topo_vector: Sequence[float] | None = None,
+    embedder: Any | None = None,
+    k: int = _DEFAULT_K_TOPOLOGICAL,
+    expand_neighborhoods: bool = True,
+    max_neighborhood_members: int = _TOPOLOGICAL_MAX_NEIGHBORHOOD_EXPANSION,
+    hnsw_ef_search: int | None = None,
+) -> PathwayResult:
+    """HNSW over `models.topo_embedding` + neighborhood expansion.
+
+    Returns active Models near the seed in topology space PLUS the
+    co-members of any neighborhoods the surfaced Models belong to.
+    Co-members are ordered by centrality DESC inside each
+    neighborhood; ties on centrality break on join time.
+
+    Operating modes:
+      - precomputed_topo_vector + tenant_id   : pure HNSW
+      - seed_model_id + tenant_id             : HNSW from the model's
+                                                topo + neighborhood
+                                                expansion of that one
+                                                neighborhood
+      - seed_natural_text + embedder + tenant : embed → content_anchor
+                                                projection → HNSW
+
+    The hop_depth equivalent for topology is implicit: neighborhood
+    expansion = 1 hop over membership; the topo-NN query itself is
+    pure positional similarity (no traversal).
+    """
+    from lib.topology.embeddings import content_anchor as _content_anchor
+    from lib.shared.types import TOPO_EMBEDDING_DIM
+
+    notes: dict[str, Any] = {
+        "k_requested": k,
+        "vector_source": None,
+        "expand_neighborhoods": expand_neighborhoods,
+        "seed_model_id": str(seed_model_id) if seed_model_id else None,
+    }
+
+    # --- Resolve seed topo vector (in priority order) ----------------
+    seed_topo: list[float] | None = None
+    seed_membership_id: UUID | None = None
+
+    if precomputed_topo_vector is not None:
+        seed_topo = [float(x) for x in precomputed_topo_vector]
+        if len(seed_topo) != TOPO_EMBEDDING_DIM:
+            raise ValidationError(
+                f"pathway F precomputed_topo_vector dim "
+                f"{len(seed_topo)} != {TOPO_EMBEDDING_DIM}",
+            )
+        notes["vector_source"] = "precomputed"
+    elif seed_model_id is not None:
+        row = await conn.fetchrow(
+            """
+            SELECT m.topo_embedding,
+                   mm.neighborhood_id
+            FROM models m
+            LEFT JOIN model_neighborhood_membership mm
+              ON mm.model_id = m.id
+            WHERE m.id = $1 AND m.tenant_id = $2
+            """,
+            seed_model_id, tenant_id,
+        )
+        if row is None or row["topo_embedding"] is None:
+            return PathwayResult(
+                source_pathway="F",
+                notes={**notes, "reason": "seed_model_missing_topo"},
+            )
+        seed_topo = [float(x) for x in row["topo_embedding"]]
+        seed_membership_id = row["neighborhood_id"]
+        notes["vector_source"] = "seed_model"
+        notes["seed_neighborhood_id"] = (
+            str(seed_membership_id) if seed_membership_id else None
+        )
+    elif seed_natural_text:
+        if embedder is None:
+            raise RetrievalPathwayError(
+                "pathway F requires either a precomputed_topo_vector, a "
+                "seed_model_id, or (seed_natural_text + embedder); "
+                "none was supplied",
+            )
+        try:
+            content_vec = await embedder.embed(seed_natural_text)
+        except OllamaError as e:
+            raise RetrievalPathwayError(
+                f"ollama embedding failed for pathway F: {e}",
+                cause=str(e),
+            ) from e
+        if len(content_vec) != EMBEDDING_DIM:
+            raise ValidationError(
+                f"pathway F content embedding dim "
+                f"{len(content_vec)} != {EMBEDDING_DIM}",
+            )
+        seed_topo = _content_anchor(content_vec)
+        notes["vector_source"] = "ollama_then_anchor"
+    else:
+        return PathwayResult(
+            source_pathway="F",
+            notes={**notes, "reason": "empty_seed"},
+        )
+
+    # --- Optional HNSW ef_search bump --------------------------------
+    if hnsw_ef_search is not None and hnsw_ef_search > 0:
+        try:
+            await conn.execute(
+                f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}"
+            )
+            notes["hnsw_ef_search"] = int(hnsw_ef_search)
+        except asyncpg.PostgresError:
+            notes["hnsw_ef_search"] = None
+
+    # --- Build the HNSW query parameter -----------------------------
+    # Match Pathway B's bind format: numpy array when the codec is
+    # registered, stringified literal otherwise.
+    if _conn_has_vector_codec(conn):
+        import numpy as _np
+        vec_param: Any = _np.asarray(
+            [float(x) for x in seed_topo], dtype="float32"
+        )
+    else:
+        vec_param = (
+            "[" + ",".join(f"{float(x):.8f}" for x in seed_topo) + "]"
+        )
+
+    # --- HNSW NN over topo_embedding --------------------------------
+    nn_rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND topo_embedding IS NOT NULL
+          {"AND id != $4" if seed_model_id is not None else ""}
+        ORDER BY topo_embedding <=> $2::vector
+        LIMIT $3
+        """,
+        *(
+            [tenant_id, vec_param, k, seed_model_id]
+            if seed_model_id is not None
+            else [tenant_id, vec_param, k]
+        ),
+    )
+    nn_models = [_hydrate_model(r) for r in nn_rows]
+    notes["nn_returned"] = len(nn_models)
+
+    # --- Neighborhood expansion --------------------------------------
+    expansion_models: list[ModelRow] = []
+    expansion_neighborhood_ids: list[UUID] = []
+    if expand_neighborhoods:
+        # Collect candidate neighborhood ids: the seed's, plus each
+        # NN's. De-dup before fetching members.
+        candidate_neighborhood_ids: list[UUID] = []
+        if seed_membership_id is not None:
+            candidate_neighborhood_ids.append(seed_membership_id)
+
+        # Look up neighborhoods for the NN models in one batch.
+        if nn_models:
+            mem_rows = await conn.fetch(
+                """
+                SELECT DISTINCT neighborhood_id
+                FROM model_neighborhood_membership
+                WHERE tenant_id = $1
+                  AND model_id = ANY($2::uuid[])
+                """,
+                tenant_id,
+                [m.id for m in nn_models],
+            )
+            for mr in mem_rows:
+                nid = mr["neighborhood_id"]
+                if nid not in candidate_neighborhood_ids:
+                    candidate_neighborhood_ids.append(nid)
+
+        if candidate_neighborhood_ids:
+            # Fetch co-members ordered by centrality DESC, joined to
+            # the active neighborhood, only active Models, capped per
+            # neighborhood. We use a window function to keep the
+            # per-neighborhood cap deterministic.
+            already_seen_ids = (
+                {m.id for m in nn_models}
+                | ({seed_model_id} if seed_model_id else set())
+            )
+            exp_rows = await conn.fetch(
+                f"""
+                WITH ranked AS (
+                  SELECT
+                    m.*,
+                    mm.neighborhood_id AS _nh_id,
+                    mm.centrality AS _nh_centrality,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY mm.neighborhood_id
+                      ORDER BY mm.centrality DESC NULLS LAST,
+                               mm.joined_at ASC
+                    ) AS _nh_rnk
+                  FROM model_neighborhood_membership mm
+                  JOIN models m ON m.id = mm.model_id
+                  JOIN model_neighborhoods n
+                    ON n.id = mm.neighborhood_id AND n.status = 'active'
+                  WHERE mm.tenant_id = $1
+                    AND mm.neighborhood_id = ANY($2::uuid[])
+                    AND m.status = 'active'
+                )
+                SELECT {_MODEL_SELECT_SQL}
+                FROM ranked
+                WHERE _nh_rnk <= $3
+                ORDER BY _nh_id, _nh_rnk
+                """,
+                tenant_id,
+                candidate_neighborhood_ids,
+                max_neighborhood_members,
+            )
+            for r in exp_rows:
+                model = _hydrate_model(r)
+                if model.id in already_seen_ids:
+                    continue
+                already_seen_ids.add(model.id)
+                expansion_models.append(model)
+            expansion_neighborhood_ids = candidate_neighborhood_ids
+    notes["expansion_returned"] = len(expansion_models)
+    notes["neighborhoods_expanded"] = [
+        str(n) for n in expansion_neighborhood_ids
+    ]
+
+    return PathwayResult(
+        models=nn_models + expansion_models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="F",
+        notes=notes,
+    )
+
+
 __all__ = [
     "PathwayResult",
     "PathwayName",
@@ -1028,5 +1304,6 @@ __all__ = [
     "pathway_b_semantic",
     "pathway_c_temporal",
     "pathway_d_pattern",
+    "pathway_f_topological",
     "RetrievalPathwayError",
 ]

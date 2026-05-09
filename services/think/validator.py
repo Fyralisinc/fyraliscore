@@ -552,6 +552,23 @@ async def _validate_claim_op(
             raise ValidationError("claim_op archive requires reason")
         return op
 
+    if op.op == "relocate":
+        # S4: deliberate topology repositioning. Shape-only checks
+        # here; semantic checks (target exists in tenant, dim
+        # match, alpha range) live in `parse_relocate_target` and
+        # are run by the applier.
+        from lib.topology.relocate import parse_relocate_target
+
+        if op.model_id is None:
+            raise ValidationError("claim_op relocate requires model_id")
+        if not op.relocate_target:
+            raise ValidationError(
+                "claim_op relocate requires relocate_target dict",
+            )
+        # parse_relocate_target raises ValidationError on shape errors.
+        parse_relocate_target(op.relocate_target)
+        return op
+
     raise ValidationError(f"unknown claim_op: {op.op!r}")
 
 

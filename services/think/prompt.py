@@ -271,6 +271,18 @@ claim_ops.update entry shape:
 claim_ops.archive entry shape:
 { "op": "archive", "model_id": "<uuid>", "reason": "<brief>" }
 
+claim_ops.relocate entry shape (S4 — DELIBERATE TOPOLOGY REPOSITIONING):
+{ "op": "relocate", "model_id": "<uuid>", "reason": "<brief>",
+  "relocate_target": {
+    "kind": "model_id" | "vector" | "neighborhood_id",
+    "value": "<uuid>" | [<128 floats>] | "<uuid>",
+    "alpha": <float in (0, 1], default 1.0>
+  } }
+Use `relocate` SPARINGLY — only when reasoning explicitly concludes a Model belongs in a different region of the substrate's topology than where its current edge graph has placed it. Examples:
+- A `state` Model that the LLM realizes is structurally a member of a known neighborhood (target.kind="neighborhood_id") even though it has no direct edges to that cluster yet.
+- A `concern` Model that should sit positionally near a specific other Model (target.kind="model_id") because they describe related dynamics, even though the substrate hasn't connected them.
+NEVER emit relocate purely to "tidy up" topology — let the alpha-anchored update rule handle organic positioning. Only use it when the LLM has reasoning the substrate cannot derive from edges alone. Cap relocates at ONE per Think run unless multiple are explicitly required by reasoning.
+
 Do NOT:
 - Propose Commitment state transitions the owner didn't initiate.
 - Invent entities not in the retrieved context.
@@ -516,6 +528,46 @@ def _build_context_section(
         lines.append("    [no customer counterparty touched]")
     lines.append("  </bridge_context>")
 
+    # Topology context (S3) — surfaces the active neighborhoods the
+    # retrieved Models cluster into, plus recent phase events on the
+    # seed neighborhood for T6 triggers. Only rendered when the
+    # bundle has `topology_context`.
+    lines.append("  <topology_context>")
+    topo = bundle.topology_context
+    if topo and (topo.get("neighborhoods") or topo.get("recent_phase_events")):
+        seed_id = topo.get("seed_neighborhood_id")
+        if seed_id is not None:
+            lines.append(f"    seed_neighborhood_id: {seed_id}")
+        for n in topo.get("neighborhoods", []) or []:
+            density = n.get("density")
+            density_repr = (
+                f"{density:.2f}" if isinstance(density, float) else "n/a"
+            )
+            sig = n.get("named_signature") or "[unnamed]"
+            seed_marker = " (SEED)" if n.get("is_seed") else ""
+            lines.append(
+                f"    - neighborhood id={n.get('id')}{seed_marker} "
+                f"name={_trunc(str(sig), 100)} "
+                f"members={n.get('member_count')} "
+                f"matched_in_bundle={n.get('matched_in_bundle')} "
+                f"density={density_repr}"
+            )
+        evs = topo.get("recent_phase_events") or []
+        if evs:
+            lines.append("    recent_phase_events:")
+            for e in evs:
+                mag = e.get("magnitude")
+                mag_repr = f"{mag:.2f}" if isinstance(mag, float) else "n/a"
+                lines.append(
+                    f"      - kind={e.get('kind')} "
+                    f"at={e.get('occurred_at')} "
+                    f"name={_trunc(str(e.get('named_signature') or '[unnamed]'), 80)} "
+                    f"magnitude={mag_repr}"
+                )
+    else:
+        lines.append("    [no neighborhood context for this trigger]")
+    lines.append("  </topology_context>")
+
     lines.append("</retrieved_context>")
     return "\n".join(lines)
 
@@ -607,6 +659,52 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "re-evaluation. If the trigger carries a cause_model_id and "
             "cause_kind, update the dependent Model's confidence or "
             "archive it as appropriate."
+        )
+    elif trigger.kind == "T6":
+        # T6 is the topology phase-event trigger. The triggering "event"
+        # is structural (a neighborhood emerged / dissolved / split /
+        # merged / drifted). The LLM's job is to:
+        #   - Optionally NAME the neighborhood (overwrite the heuristic).
+        #   - Decide whether the structural shift warrants a CEO-facing
+        #     `recommendation` claim_op.
+        #   - Update confidence / status on Models that no longer fit
+        #     their (former) neighborhood, when warranted.
+        # See the <topology_context> section above for what changed.
+        body.append(
+            "This is a T6 trigger — a TOPOLOGY phase event. The "
+            "substrate's emergent neighborhood structure just shifted; "
+            "see <topology_context> above for details (kind, magnitude, "
+            "members, neighborhood lineage). The seed neighborhood, "
+            "predecessor neighborhoods, and member Model ids are all "
+            "in the trigger payload.\n"
+            "\n"
+            "Decide whether this structural shift warrants any of:\n"
+            "  • Naming the neighborhood — emit a `claim_op.update` on "
+            "    one of the member Models recording a `state` "
+            "    proposition that captures the cluster's theme. The "
+            "    heuristic name is in <topology_context>; if a more "
+            "    accurate human-readable description fits, write a "
+            "    state Model whose subject is the neighborhood theme.\n"
+            "  • Surfacing the shift to the CEO — when the event kind "
+            "    is `emergence`, `merge`, or a high-magnitude `split` "
+            "    (>= 0.5), the structural transition often deserves a "
+            "    CEO-facing `recommendation` Model. Use it to flag "
+            "    \"these Models are now clustering together, here's "
+            "    what that probably means for the org.\"\n"
+            "  • No-op — when the phase event is small or routine "
+            "    (low-magnitude drift, expected dissolution of stale "
+            "    Models), return an empty diff. Topology shifts that "
+            "    do not warrant human or epistemic action are valid.\n"
+            "\n"
+            "STRICT CONSTRAINTS:\n"
+            "  - Do NOT invent member Model ids — use only ids in "
+            "    <models> or in the trigger payload.\n"
+            "  - Do NOT emit cascade-y act_ops just because the "
+            "    cluster shape changed; act_ops require a signal "
+            "    asserting a state transition on a specific Act, not "
+            "    a topology shift.\n"
+            "  - Cap the diff at 2 claim_ops for T6 unless the event "
+            "    explicitly demands more (rarely)."
         )
     body.append("")
     body.append(

@@ -89,6 +89,15 @@ from lib.topology.embeddings import (
     content_anchor,
     delta_magnitude,
 )
+from lib.topology.relocate import (
+    RELOCATE_CASCADE_DAMPING,
+    RELOCATE_CASCADE_MAX_DEPTH,
+    RELOCATE_CASCADE_MAX_FANOUT,
+    RelocateTarget,
+    blend_topo,
+    damped_magnitude,
+    select_bounded_neighbors,
+)
 
 
 # Edge kinds that contribute to topology with POSITIVE weight (the
@@ -473,6 +482,303 @@ class TopoRepo:
             "delta": delta,
             "neighbor_count": len(neighbor_topos),
         }
+
+    # =================================================================
+    # S4 — relocate + bounded_cascade
+    # =================================================================
+    async def relocate(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        model_id: UUID,
+        tenant_id: UUID,
+        target: RelocateTarget,
+        reason: str,
+        applied_by_diff_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Deliberately reposition `model_id` toward the given target.
+
+        Steps (all in the caller's transaction):
+          1. Resolve the target into a 128-d topo vector. Three kinds:
+             - "vector"          : target.value is the vector itself
+             - "model_id"        : look up that Model's topo
+             - "neighborhood_id" : use the neighborhood's centroid
+          2. Read the Model's current topo.
+          3. Blend per `target.alpha` (1.0 = full snap).
+          4. Write the new topo + bump topo_updated_at.
+          5. Record a `topology_events` row with kind='relocate',
+             magnitude = L2 delta, payload = audit metadata.
+          6. Run a bounded cascade: enqueue top-K most-central
+             neighbors at hop_depth=1 (and recursively up to
+             RELOCATE_CASCADE_MAX_DEPTH) so the alpha-anchored
+             updater pulls them along — but capped to avoid a
+             tsunami.
+
+        Returns:
+          {model_id, prev_topo, new_topo, delta, target_kind,
+           cascade_enqueued, event_id}
+
+        Raises ValidationError on missing Model, missing target, or
+        dimension mismatch.
+        """
+        # 1 — resolve target topo.
+        target_topo = await self._resolve_relocate_target(
+            conn, target=target, tenant_id=tenant_id,
+        )
+
+        # 2 — current topo + content embedding (for audit).
+        row = await conn.fetchrow(
+            "SELECT topo_embedding FROM models WHERE id = $1 AND tenant_id = $2",
+            model_id, tenant_id,
+        )
+        if row is None:
+            raise ValidationError(
+                f"relocate: model {model_id} not in tenant {tenant_id}",
+            )
+        if row["topo_embedding"] is None:
+            raise ValidationError(
+                f"relocate: model {model_id} has no topo_embedding",
+            )
+        current_topo = [float(x) for x in row["topo_embedding"]]
+
+        # 3 — blend.
+        new_topo = blend_topo(current_topo, target_topo, target.alpha)
+        delta = delta_magnitude(current_topo, new_topo)
+
+        # 4 — write.
+        await conn.execute(
+            """
+            UPDATE models
+            SET topo_embedding = $1::vector,
+                topo_updated_at = now()
+            WHERE id = $2
+            """,
+            new_topo, model_id,
+        )
+
+        # 5 — record topology_events row (kind='relocate').
+        target_ref_str: str
+        if target.kind == "vector":
+            target_ref_str = (
+                "[" + ",".join(f"{float(x):.4f}" for x in target_topo[:5]) + ",...]"
+            )
+        else:
+            target_ref_str = str(target.value)
+
+        payload = {
+            "target_kind": target.kind,
+            "target_ref": target_ref_str,
+            "alpha": target.alpha,
+            "reason": reason,
+            "applied_by_diff_id": (
+                str(applied_by_diff_id) if applied_by_diff_id else None
+            ),
+        }
+        event_id = uuid7()
+        # delta_magnitude returns inf for None prev — never expected
+        # here (we read current_topo above) but guard anyway.
+        mag = delta if (delta == delta and delta != float("inf")) else None
+        await conn.execute(
+            """
+            INSERT INTO topology_events (
+              id, tenant_id, kind, neighborhood_id,
+              member_model_ids, magnitude, payload
+            )
+            VALUES (
+              $1, $2, 'relocate', NULL, $3, $4, $5::jsonb
+            )
+            """,
+            event_id, tenant_id, [model_id], mag, _jsonb(payload),
+        )
+
+        # 6 — bounded cascade. Only if the move was material.
+        cascade_enqueued = 0
+        if delta > DELTA_EPSILON:
+            cascade_enqueued = await self.bounded_cascade(
+                conn,
+                origin_model_id=model_id,
+                tenant_id=tenant_id,
+                base_delta=delta,
+            )
+
+        return {
+            "model_id": model_id,
+            "prev_topo": current_topo,
+            "new_topo": new_topo,
+            "delta": delta,
+            "target_kind": target.kind,
+            "cascade_enqueued": cascade_enqueued,
+            "event_id": event_id,
+        }
+
+    async def _resolve_relocate_target(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        target: RelocateTarget,
+        tenant_id: UUID,
+    ) -> list[float]:
+        """Translate the three RelocateTarget kinds into a single
+        128-d topo vector. The applier passes a parsed RelocateTarget;
+        the repo's job is just the lookup."""
+        if target.kind == "vector":
+            value = target.value
+            if not isinstance(value, list):
+                raise ValidationError(
+                    f"relocate target vector value is not a list",
+                )
+            if len(value) != TOPO_EMBEDDING_DIM:
+                raise ValidationError(
+                    f"relocate target vector dim "
+                    f"{len(value)} != {TOPO_EMBEDDING_DIM}",
+                )
+            return [float(x) for x in value]
+        if target.kind == "model_id":
+            row = await conn.fetchrow(
+                "SELECT topo_embedding FROM models "
+                "WHERE id = $1 AND tenant_id = $2",
+                target.value, tenant_id,
+            )
+            if row is None or row["topo_embedding"] is None:
+                raise ValidationError(
+                    f"relocate target model_id {target.value} not found "
+                    f"or has no topo_embedding",
+                )
+            return [float(x) for x in row["topo_embedding"]]
+        if target.kind == "neighborhood_id":
+            row = await conn.fetchrow(
+                "SELECT centroid_topo_embedding, status "
+                "FROM model_neighborhoods "
+                "WHERE id = $1 AND tenant_id = $2",
+                target.value, tenant_id,
+            )
+            if row is None:
+                raise ValidationError(
+                    f"relocate target neighborhood_id {target.value} not found",
+                )
+            if row["status"] != "active":
+                raise ValidationError(
+                    f"relocate target neighborhood {target.value} is not active "
+                    f"(status={row['status']})",
+                )
+            return [float(x) for x in row["centroid_topo_embedding"]]
+        raise ValidationError(
+            f"relocate target kind {target.kind!r} not recognized",
+        )
+
+    async def bounded_cascade(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        origin_model_id: UUID,
+        tenant_id: UUID,
+        base_delta: float,
+        max_depth: int = RELOCATE_CASCADE_MAX_DEPTH,
+        max_fanout: int = RELOCATE_CASCADE_MAX_FANOUT,
+        damping: float = RELOCATE_CASCADE_DAMPING,
+    ) -> int:
+        """BFS-bounded cascade. Walks the active edge graph from
+        origin out to max_depth hops; at each hop, picks the top-K
+        most-central neighbors and enqueues them in `topo_dirty_queue`
+        with a damped delta_magnitude (γ^depth · base_delta) so the
+        propagation worker can prioritize.
+
+        Returns the number of cascade rows enqueued.
+
+        Why this differs from `enqueue_neighbors`: the existing helper
+        enqueues EVERY neighbor without a fan-out cap — fine for
+        organic propagation triggered by the topology_updater (which
+        is bounded by the alpha-anchored update rule's natural
+        decay), but unsafe for an explicit relocate. A high-centrality
+        Model with 50 neighbors would otherwise enqueue 50+50²+...
+        rows for a single relocate.
+
+        Implementation: read membership-with-centrality for each
+        frontier model_id in one batched SELECT per hop. Enqueues
+        de-dupe via the topo_dirty_queue UNIQUE NULLS NOT DISTINCT
+        constraint.
+        """
+        if max_depth <= 0 or max_fanout <= 0 or base_delta <= 0:
+            return 0
+
+        enqueued = 0
+        visited: set[UUID] = {origin_model_id}
+        frontier: list[UUID] = [origin_model_id]
+        for hop in range(max_depth):
+            if not frontier:
+                break
+            # Read all neighbors of every frontier node in one query.
+            # Each row carries (frontier_node, neighbor, centrality).
+            # Centrality comes from `model_neighborhood_membership`
+            # joined on the neighbor_id; absent → NULL → treated as 0.
+            rows = await conn.fetch(
+                """
+                WITH frontier AS (
+                  SELECT unnest($1::uuid[]) AS node_id
+                )
+                SELECT DISTINCT
+                  f.node_id AS frontier_node,
+                  CASE
+                    WHEN e.source_model_id = f.node_id THEN e.target_model_id
+                    ELSE e.source_model_id
+                  END AS neighbor_id,
+                  mm.centrality AS centrality
+                FROM frontier f
+                JOIN model_edges e
+                  ON (e.source_model_id = f.node_id
+                      OR e.target_model_id = f.node_id)
+                LEFT JOIN model_neighborhood_membership mm
+                  ON mm.model_id = (
+                    CASE
+                      WHEN e.source_model_id = f.node_id THEN e.target_model_id
+                      ELSE e.source_model_id
+                    END
+                  )
+                  AND mm.tenant_id = $2
+                WHERE e.tenant_id = $2 AND e.status = 'active'
+                """,
+                frontier, tenant_id,
+            )
+            # Group by frontier node so we can pick top-K per origin.
+            per_origin: dict[UUID, list[tuple[UUID, float | None]]] = {}
+            for r in rows:
+                fn = r["frontier_node"]
+                nb = r["neighbor_id"]
+                if nb in visited:
+                    continue
+                per_origin.setdefault(fn, []).append((nb, r["centrality"]))
+
+            next_frontier: list[UUID] = []
+            damped = damped_magnitude(
+                base_delta, hop_depth=hop + 1, gamma=damping,
+            )
+            for fn, candidates in per_origin.items():
+                selected = select_bounded_neighbors(
+                    candidates,
+                    next_hop_depth=hop + 1,
+                    max_fanout=max_fanout,
+                )
+                for tgt in selected:
+                    if tgt.model_id in visited:
+                        continue
+                    visited.add(tgt.model_id)
+                    next_frontier.append(tgt.model_id)
+                    await self.enqueue(
+                        conn,
+                        model_id=tgt.model_id,
+                        tenant_id=tenant_id,
+                        cause_model_id=fn,
+                        hop_depth=tgt.hop_depth,
+                        delta_magnitude=damped,
+                    )
+                    enqueued += 1
+            frontier = next_frontier
+        return enqueued
+
+
+def _jsonb(value: dict | None) -> str:
+    import json
+    return json.dumps(value or {}, default=str, sort_keys=True)
 
 
 __all__ = [

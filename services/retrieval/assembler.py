@@ -318,6 +318,33 @@ class ContextBundle:
 
     `access_redactions` is the count of Models filtered out for
     visibility; the caller uses this for observability.
+
+    `topology_context` (S3) summarizes the active neighborhoods that
+    the retrieved Models belong to plus, when the trigger is T6 or
+    a Model id was supplied, the seed neighborhood's emergence /
+    drift history. Shape:
+
+      {
+        "neighborhoods": [
+          {
+            "id": "<uuid>",
+            "named_signature": "...",
+            "density": 0.42,
+            "member_count": 7,
+            "matched_in_bundle": 3,        # how many models in
+                                            # bundle.models are members
+            "centrality_top_member_id": "..." | None,
+          }, ...
+        ],
+        "seed_neighborhood_id": "<uuid>" | None,
+        "recent_phase_events": [
+          {"id": "...", "kind": "emergence", "occurred_at": "...",
+           "neighborhood_id": "...", "named_signature": "...",
+           "magnitude": 7.0}, ...
+        ],
+      }
+
+    None if no neighborhood data is available for any retrieved Model.
     """
 
     observations: list[ObservationRow] = field(default_factory=list)
@@ -327,6 +354,7 @@ class ContextBundle:
     )
     resources_summary: list[ResourceRow] = field(default_factory=list)
     bridge_context: dict[str, Any] | None = None
+    topology_context: dict[str, Any] | None = None
     access_redactions: int = 0
     notes: dict[str, Any] = field(default_factory=dict)
 
@@ -412,6 +440,150 @@ async def _filter_models_via_db(
 # ---------------------------------------------------------------------
 # Bridge traversal
 # ---------------------------------------------------------------------
+
+
+async def _compute_topology_context(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    models: list[ModelRow],
+    *,
+    seed_model_id: UUID | None = None,
+    seed_neighborhood_id: UUID | None = None,
+    max_neighborhoods: int = 5,
+    max_recent_events: int = 5,
+) -> dict[str, Any] | None:
+    """Build the topology summary for the LLM prompt.
+
+    Reads:
+      - model_neighborhood_membership for all bundle.models
+      - model_neighborhoods for the matched neighborhood ids (active
+        + dissolved both shown — a recently-dissolved neighborhood
+        is still relevant context for "why this Model used to cluster
+        with X")
+      - topology_events tail for recent phase events (one query per
+        seed neighborhood, capped — used by T6 dispatch to surface
+        what just changed)
+
+    Returns None when no Model in the bundle has any membership row.
+    Otherwise a dict shape documented on `ContextBundle.topology_context`.
+    """
+    if not models and seed_neighborhood_id is None:
+        return None
+
+    model_ids = [m.id for m in models]
+    if seed_model_id is not None and seed_model_id not in model_ids:
+        model_ids = [*model_ids, seed_model_id]
+
+    if not model_ids and seed_neighborhood_id is None:
+        return None
+
+    # Membership rows for everything in the bundle.
+    mem_rows = []
+    if model_ids:
+        mem_rows = await conn.fetch(
+            """
+            SELECT mm.model_id, mm.neighborhood_id, mm.centrality
+            FROM model_neighborhood_membership mm
+            JOIN model_neighborhoods n ON n.id = mm.neighborhood_id
+            WHERE mm.tenant_id = $1
+              AND mm.model_id = ANY($2::uuid[])
+              AND n.status = 'active'
+            """,
+            tenant_id, model_ids,
+        )
+    if not mem_rows and seed_neighborhood_id is None:
+        return None
+
+    # Tally how many bundle members fall into each neighborhood, and
+    # find the highest-centrality member per neighborhood.
+    nhood_to_members: dict[UUID, list[tuple[UUID, float | None]]] = {}
+    model_to_nhood: dict[UUID, UUID] = {}
+    for r in mem_rows:
+        nid = r["neighborhood_id"]
+        nhood_to_members.setdefault(nid, []).append(
+            (r["model_id"], r["centrality"])
+        )
+        model_to_nhood[r["model_id"]] = nid
+
+    # Resolve the seed neighborhood id when only seed_model_id is given.
+    if seed_neighborhood_id is None and seed_model_id is not None:
+        seed_neighborhood_id = model_to_nhood.get(seed_model_id)
+
+    candidate_nhood_ids = list(nhood_to_members.keys())
+    if seed_neighborhood_id is not None and seed_neighborhood_id not in candidate_nhood_ids:
+        candidate_nhood_ids.append(seed_neighborhood_id)
+    if not candidate_nhood_ids:
+        return None
+
+    # Read the neighborhood metadata in one fetch.
+    n_rows = await conn.fetch(
+        """
+        SELECT id, named_signature, density, member_model_ids, status,
+               last_recomputed_at
+        FROM model_neighborhoods
+        WHERE id = ANY($1::uuid[])
+        """,
+        candidate_nhood_ids,
+    )
+    n_by_id = {r["id"]: r for r in n_rows}
+
+    # Build per-neighborhood summaries; sort by intersection-size DESC
+    # (most-relevant first), then by total member count DESC.
+    summaries: list[dict[str, Any]] = []
+    for nid in candidate_nhood_ids:
+        meta = n_by_id.get(nid)
+        if meta is None:
+            continue
+        members = nhood_to_members.get(nid, [])
+        top_member = None
+        if members:
+            members.sort(
+                key=lambda t: (-(t[1] or 0.0), str(t[0])),
+            )
+            top_member = members[0][0]
+        summaries.append(
+            {
+                "id": nid,
+                "named_signature": meta["named_signature"],
+                "density": meta["density"],
+                "member_count": len(meta["member_model_ids"] or []),
+                "matched_in_bundle": len(members),
+                "centrality_top_member_id": top_member,
+                "status": meta["status"],
+                "last_recomputed_at": meta["last_recomputed_at"],
+                "is_seed": nid == seed_neighborhood_id,
+            }
+        )
+    summaries.sort(
+        key=lambda s: (
+            0 if s.get("is_seed") else 1,
+            -int(s["matched_in_bundle"] or 0),
+            -int(s["member_count"] or 0),
+        ),
+    )
+    summaries = summaries[:max_neighborhoods]
+
+    # Recent phase events touching the seed neighborhood.
+    recent_events: list[dict[str, Any]] = []
+    if seed_neighborhood_id is not None:
+        ev_rows = await conn.fetch(
+            """
+            SELECT id, kind, occurred_at, neighborhood_id, named_signature,
+                   magnitude
+            FROM topology_events
+            WHERE neighborhood_id = $1
+            ORDER BY occurred_at DESC
+            LIMIT $2
+            """,
+            seed_neighborhood_id, max_recent_events,
+        )
+        recent_events = [dict(r) for r in ev_rows]
+
+    return {
+        "neighborhoods": summaries,
+        "seed_neighborhood_id": seed_neighborhood_id,
+        "recent_phase_events": recent_events,
+    }
 
 
 async def _compute_bridge_context(
@@ -646,6 +818,27 @@ async def assemble_context(
         acts_cap["commitments"],
     )
 
+    # --- Topology context (S3) ---
+    # T6 carries an explicit neighborhood_id; T2/T6 carry a model_id
+    # whose membership we pivot on. T1/T3/T4 fall back to the
+    # bundle-wide membership intersection.
+    seed_model_id_for_topo = getattr(retrieval_result.trigger, "model_id", None)
+    seed_neighborhood_id_for_topo = getattr(
+        retrieval_result.trigger, "neighborhood_id", None,
+    )
+    try:
+        topology_context = await _compute_topology_context(
+            conn,
+            access_context.tenant_id,
+            models_cap,
+            seed_model_id=seed_model_id_for_topo,
+            seed_neighborhood_id=seed_neighborhood_id_for_topo,
+        )
+    except Exception:
+        # Topology data is best-effort: a missing migration in a dev
+        # environment shouldn't crash retrieval.
+        topology_context = None
+
     notes: dict[str, Any] = {
         "budgets": {
             "observations": budget_observations,
@@ -673,6 +866,7 @@ async def assemble_context(
         acts_summary=acts_cap,
         resources_summary=resources_cap,
         bridge_context=bridge_context,
+        topology_context=topology_context,
         access_redactions=redactions,
         notes=notes,
     )

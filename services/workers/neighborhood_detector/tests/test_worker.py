@@ -118,6 +118,8 @@ async def seeded_tenant(pool):
     finally:
         async with pool.acquire() as conn:
             for sql in (
+                "DELETE FROM topology_events WHERE tenant_id = $1",
+                "DELETE FROM think_trigger_queue WHERE tenant_id = $1",
                 "DELETE FROM model_neighborhood_membership WHERE tenant_id = $1",
                 "DELETE FROM model_neighborhoods WHERE tenant_id = $1",
                 "DELETE FROM topo_dirty_queue WHERE tenant_id = $1",
@@ -142,3 +144,51 @@ async def test_run_once_produces_neighborhood(pool, seeded_tenant):
     report = out[tenant]
     assert report.communities_after_prune == 1
     assert report.new_neighborhoods == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_run_once_emits_phase_events_and_t6_trigger(
+    pool, seeded_tenant,
+):
+    """First sweep over a brand-new connected pair should:
+      - emit one emergence phase event into topology_events
+      - enqueue exactly one T6 trigger into think_trigger_queue
+      - mark the event processed_at = now() in the same tx.
+    """
+    tenant, a, b = seeded_tenant
+    out = await run_once(pool, tenant_id=tenant)
+    report = out[tenant]
+    assert report.phase_events_emitted == 1
+    async with pool.acquire() as conn:
+        # T6 row exists with our tenant.
+        t6_row = await conn.fetchrow(
+            """
+            SELECT trigger_kind, trigger_subkind, payload
+            FROM think_trigger_queue
+            WHERE tenant_id = $1 AND trigger_kind = 'T6'
+            """,
+            tenant,
+        )
+        assert t6_row is not None
+        assert t6_row["trigger_subkind"] == "emergence"
+        # Event row marked processed.
+        ev_row = await conn.fetchrow(
+            """
+            SELECT processed_at
+            FROM topology_events
+            WHERE tenant_id = $1 AND kind = 'emergence'
+            """,
+            tenant,
+        )
+        assert ev_row is not None
+        assert ev_row["processed_at"] is not None
+    # Cleanup the T6 trigger we just enqueued, since the seeded_tenant
+    # fixture's teardown only removes topology + edge tables.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM think_trigger_queue WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM topology_events WHERE tenant_id = $1", tenant,
+        )

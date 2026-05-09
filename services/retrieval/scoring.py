@@ -69,6 +69,7 @@ DIMENSION_STRUCTURAL = "structural"
 DIMENSION_SEMANTIC = "semantic"
 DIMENSION_TEMPORAL = "temporal"
 DIMENSION_PATTERN = "pattern"
+DIMENSION_TOPOLOGICAL = "topological"  # S3 — Pathway F (positional)
 DIMENSION_ACTIVATION = "activation"
 DIMENSION_PROVENANCE = "provenance"  # merged trust_tier + source_boost
 
@@ -77,6 +78,11 @@ DIMENSION_WEIGHTS: dict[str, float] = {
     DIMENSION_SEMANTIC: 0.85,
     DIMENSION_TEMPORAL: 0.5,
     DIMENSION_PATTERN: 0.5,
+    # Topology dimension default weight is similar to semantic — both
+    # are vector-NN dimensions; topology should be slightly weaker
+    # than semantic until empirical A/B shows it pulls more relevant
+    # candidates than B alone. Operators can override per trigger.
+    DIMENSION_TOPOLOGICAL: 0.7,
     DIMENSION_ACTIVATION: 0.5,
     DIMENSION_PROVENANCE: 0.5,
 }
@@ -87,6 +93,7 @@ PATHWAY_TO_DIMENSION: dict[str, str] = {
     "B": DIMENSION_SEMANTIC,
     "C": DIMENSION_TEMPORAL,
     "D": DIMENSION_PATTERN,
+    "F": DIMENSION_TOPOLOGICAL,
 }
 
 
@@ -363,6 +370,7 @@ __all__ = [
     "DIMENSION_SEMANTIC",
     "DIMENSION_TEMPORAL",
     "DIMENSION_PATTERN",
+    "DIMENSION_TOPOLOGICAL",
     "DIMENSION_ACTIVATION",
     "DIMENSION_PROVENANCE",
     "DIMENSION_WEIGHTS",

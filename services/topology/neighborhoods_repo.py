@@ -71,6 +71,14 @@ from lib.topology.community import (
     match_communities,
     prune_singletons,
 )
+from lib.topology.naming import MemberSummary, derive_signature
+
+from .events_repo import (
+    PhaseEvent,
+    PrevSnapshot,
+    TopologyEventsRepo,
+    detect_phase_events,
+)
 
 
 class NeighborhoodsRepoError(CompanyOSError):
@@ -89,6 +97,12 @@ class RecomputeReport:
     new_neighborhoods: int = 0
     dissolved_neighborhoods: int = 0
     membership_rows_written: int = 0
+    # S3: phase events emitted by this recompute (emergence /
+    # dissolution / split / merge / drift). Counted per kind so the
+    # neighborhood_detector worker can decide how many T6 triggers to
+    # enqueue downstream.
+    phase_events_emitted: int = 0
+    phase_event_ids: list[UUID] = field(default_factory=list)
 
 
 class NeighborhoodsRepo:
@@ -106,11 +120,15 @@ class NeighborhoodsRepo:
     ) -> RecomputeReport:
         report = RecomputeReport(tenant_id=tenant_id)
 
-        # 1. Load active Models + topo_embeddings (we keep the whole
-        #    map for centroid computation and centrality).
+        # 1. Load active Models + topo_embeddings + the fields the
+        #    namer needs (proposition_kind, scope_actors,
+        #    scope_entities). Naming is deferred until we know which
+        #    Models belong to each community, but we read them up
+        #    front so a single fetch covers the recompute pass.
         model_rows = await conn.fetch(
             """
-            SELECT id, topo_embedding
+            SELECT id, topo_embedding, proposition_kind,
+                   scope_actors, scope_entities
             FROM models
             WHERE tenant_id = $1 AND status = 'active'
             """,
@@ -125,11 +143,38 @@ class NeighborhoodsRepo:
         # structure, not vector geometry, drives v1 detection) but
         # they don't contribute to centroid math.
         model_topos: dict[UUID, list[float] | None] = {}
+        member_summaries_by_id: dict[UUID, MemberSummary] = {}
         for r in model_rows:
             te = r["topo_embedding"]
             if te is not None:
                 te = [float(x) for x in te]
             model_topos[r["id"]] = te
+            # Build the namer-facing summary up front. We keep the
+            # full map so split / merge / drift events can name from
+            # any combination of members in O(1) lookup.
+            scope_entities_raw = r["scope_entities"]
+            if isinstance(scope_entities_raw, (bytes, bytearray)):
+                scope_entities_raw = scope_entities_raw.decode()
+            if isinstance(scope_entities_raw, str):
+                import json as _json
+                try:
+                    scope_entities_raw = _json.loads(scope_entities_raw)
+                except _json.JSONDecodeError:
+                    scope_entities_raw = []
+            ent_refs: list[tuple[str, str]] = []
+            for e in (scope_entities_raw or []):
+                if isinstance(e, dict):
+                    t = e.get("type")
+                    i = e.get("id")
+                    if t is not None and i is not None:
+                        ent_refs.append((str(t), str(i)))
+            actor_tuple = tuple(r["scope_actors"] or [])
+            member_summaries_by_id[r["id"]] = MemberSummary(
+                model_id=r["id"],
+                proposition_kind=r["proposition_kind"],
+                scope_actor_ids=actor_tuple,
+                scope_entity_refs=tuple(ent_refs),
+            )
         all_node_ids = set(model_topos.keys())
 
         # 2. Load active edges. Treat as undirected for community
@@ -189,23 +234,42 @@ class NeighborhoodsRepo:
         # 7 + 8. Upsert + dissolve.
         used_prev_ids: set[UUID] = set()
         new_membership_rows: list[tuple[UUID, UUID, UUID, float]] = []
+        # S3: track label -> neighborhood_id and label -> matched_prev
+        # so the phase-event detector can correlate new communities
+        # to prior neighborhoods after the upsert.
+        label_to_neighborhood_id: dict[int, UUID] = {}
+        matched_prev_ids_by_label: dict[int, UUID | None] = {}
         for new_label, members in new_communities.items():
             matched_prev_id = matches.get(new_label)
+            matched_prev_ids_by_label[new_label] = matched_prev_id
             centroid = _centroid([
                 model_topos[m]
                 for m in members
                 if model_topos.get(m) is not None
             ])
             density = compute_density(members, edges)
+            # Heuristic name for the neighborhood — written every
+            # recompute pass. The LLM may overwrite via T6 reasoning,
+            # but the heuristic is the always-on fallback.
+            signature = derive_signature([
+                member_summaries_by_id[m]
+                for m in members
+                if m in member_summaries_by_id
+            ])
             if matched_prev_id is not None:
                 used_prev_ids.add(matched_prev_id)
-                # UPDATE existing row.
+                # UPDATE existing row. Refresh named_signature only if
+                # currently NULL — the LLM-assigned name should not
+                # be silently clobbered. Operators wanting to refresh
+                # can NULL the column manually.
                 await conn.execute(
                     """
                     UPDATE model_neighborhoods
                     SET member_model_ids = $2,
                         centroid_topo_embedding = $3::vector,
                         density = $4,
+                        named_signature = COALESCE(named_signature, $5),
+                        named_at = COALESCE(named_at, now()),
                         last_recomputed_at = now()
                     WHERE id = $1
                     """,
@@ -213,6 +277,7 @@ class NeighborhoodsRepo:
                     list(members),
                     centroid,
                     density,
+                    signature,
                 )
                 neighborhood_id = matched_prev_id
                 report.matched_to_existing += 1
@@ -231,8 +296,9 @@ class NeighborhoodsRepo:
                     INSERT INTO model_neighborhoods
                       (id, tenant_id, centroid_topo_embedding,
                        member_model_ids, predecessor_neighborhood_ids,
-                       density, status)
-                    VALUES ($1, $2, $3::vector, $4, $5, $6, 'active')
+                       density, status, named_signature, named_at)
+                    VALUES ($1, $2, $3::vector, $4, $5, $6, 'active',
+                            $7, now())
                     """,
                     neighborhood_id,
                     tenant_id,
@@ -240,8 +306,10 @@ class NeighborhoodsRepo:
                     list(members),
                     predecessors if predecessors else None,
                     density,
+                    signature,
                 )
                 report.new_neighborhoods += 1
+            label_to_neighborhood_id[new_label] = neighborhood_id
 
             # Build membership rows with per-Model centrality.
             for m in members:
@@ -283,6 +351,30 @@ class NeighborhoodsRepo:
                 new_membership_rows,
             )
         report.membership_rows_written = len(new_membership_rows)
+
+        # 10. S3 — phase event detection. Compare prev snapshot to
+        #     newly-materialized communities and record any
+        #     emergence / dissolution / split / merge / drift events.
+        #     Lives in the same transaction as the upsert so a
+        #     rollback rolls back the events too.
+        prev_snapshots = [
+            PrevSnapshot(id=p.id, members=frozenset(p.members))
+            for p in prev_neighborhoods
+        ]
+        events = detect_phase_events(
+            tenant_id=tenant_id,
+            prev_neighborhoods=prev_snapshots,
+            new_communities=new_communities,
+            label_to_neighborhood_id=label_to_neighborhood_id,
+            matched_prev_ids_by_label=matched_prev_ids_by_label,
+            member_summaries_by_id=member_summaries_by_id,
+        )
+        if events:
+            events_repo = TopologyEventsRepo()
+            for ev in events:
+                ev_id = await events_repo.record(conn, event=ev)
+                report.phase_event_ids.append(ev_id)
+            report.phase_events_emitted = len(events)
 
         return report
 
