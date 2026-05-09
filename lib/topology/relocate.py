@@ -120,11 +120,20 @@ def parse_relocate_target(raw: dict) -> RelocateTarget:
                 f"{len(value)} != {TOPO_EMBEDDING_DIM}",
             )
         try:
-            parsed_value = [float(x) for x in value]
+            floats = [float(x) for x in value]
         except (TypeError, ValueError) as e:
             raise ValidationError(
                 f"relocate_target.value (vector) has non-float entries: {e}",
             ) from e
+        # Reject NaN / Inf early — pgvector rejects them on INSERT
+        # with an opaque error, so we surface a precise one here.
+        for i, x in enumerate(floats):
+            if x != x or x == float("inf") or x == float("-inf"):
+                raise ValidationError(
+                    f"relocate_target.value (vector) has non-finite "
+                    f"entry at index {i}: {x}",
+                )
+        parsed_value = floats
     else:
         # model_id / neighborhood_id
         if isinstance(value, UUID):
