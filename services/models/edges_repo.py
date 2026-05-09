@@ -85,6 +85,44 @@ from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.ids import uuid7
 
 
+# Edge-graph mutations affect the topology layer (S2): both
+# endpoints' positional embeddings need to be recomputed. We enqueue
+# rows in topo_dirty_queue here via raw SQL rather than importing
+# TopoRepo, to avoid a circular dependency
+# (services.topology.topo_repo imports nothing from services.models,
+# but adding the reverse direction would create a cycle when
+# ModelsRepo is loaded before TopoRepo). The SQL is identical to
+# TopoRepo.enqueue.
+async def _enqueue_topo_dirty(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    tenant_id: UUID,
+    cause_model_id: UUID | None = None,
+    hop_depth: int = 0,
+) -> None:
+    """Same shape as TopoRepo.enqueue. Inlined here to break the
+    services.models ↔ services.topology import cycle. The dedup
+    UNIQUE NULLS NOT DISTINCT collapses duplicates. delta_magnitude
+    NULL = "first-time / unknown magnitude" — worker treats this as
+    high priority."""
+    await conn.execute(
+        """
+        INSERT INTO topo_dirty_queue
+          (id, tenant_id, model_id, cause_model_id, hop_depth,
+           delta_magnitude)
+        VALUES ($1, $2, $3, $4, $5, NULL)
+        ON CONFLICT ON CONSTRAINT topo_dirty_queue_dedup
+        DO NOTHING
+        """,
+        uuid7(),
+        tenant_id,
+        model_id,
+        cause_model_id,
+        hop_depth,
+    )
+
+
 class EdgesRepoError(CompanyOSError):
     default_code = "edges_repo_error"
 
@@ -211,6 +249,25 @@ class EdgesRepo:
                 created_by_event_id=created_by_event_id,
             )
             ids.extend(mirror_ids)
+
+        # S2 topology: both endpoints' neighborhoods just changed →
+        # enqueue both for topo_embedding recompute. Inline helper
+        # to break the services.models ↔ services.topology import
+        # cycle. Idempotent on the dirty queue's dedup constraint.
+        await _enqueue_topo_dirty(
+            conn,
+            model_id=source,
+            tenant_id=tenant_id,
+            cause_model_id=target,
+            hop_depth=0,
+        )
+        await _enqueue_topo_dirty(
+            conn,
+            model_id=target,
+            tenant_id=tenant_id,
+            cause_model_id=source,
+            hop_depth=0,
+        )
         return ids
 
     async def _insert_one(
@@ -339,6 +396,23 @@ class EdgesRepo:
                 source,
                 target,
             )
+        if count and int(count) > 0:
+            # S2 topology: removing an edge changes both endpoints'
+            # positions; enqueue both for recompute.
+            await _enqueue_topo_dirty(
+                conn,
+                model_id=source,
+                tenant_id=tenant_id,
+                cause_model_id=target,
+                hop_depth=0,
+            )
+            await _enqueue_topo_dirty(
+                conn,
+                model_id=target,
+                tenant_id=tenant_id,
+                cause_model_id=source,
+                hop_depth=0,
+            )
         return int(count or 0)
 
     # =================================================================
@@ -430,6 +504,24 @@ class EdgesRepo:
             model_id,
             reason,
         )
+        # S2 topology: every neighbor of the archived Model just lost
+        # an active edge to it; enqueue each for topo recompute.
+        # Iterate the now-inert edges and enqueue the OTHER endpoint
+        # (the archived Model itself doesn't need a recompute — it's
+        # being archived).
+        for row in rows:
+            other = (
+                row["target_model_id"]
+                if row["source_model_id"] == model_id
+                else row["source_model_id"]
+            )
+            await _enqueue_topo_dirty(
+                conn,
+                model_id=other,
+                tenant_id=tenant_id,
+                cause_model_id=model_id,
+                hop_depth=0,
+            )
         return [_row_to_dict(r) for r in rows]
 
     # =================================================================

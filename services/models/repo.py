@@ -99,6 +99,7 @@ from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
 from services.models.recommendations import validate_recommendation
 from services.observations.state_change import emit_state_change
+from services.topology.topo_repo import TopoRepo
 # NOTE: audit module is imported lazily inside the methods that use it.
 # Importing services.think.audit at module-load time triggers
 # services/think/__init__.py, which imports reason.py → retrieval →
@@ -357,6 +358,10 @@ _EDGE_KIND_TO_ARRAY_COL: dict[str, str] = {
 # beyond an optional pool reference, which we don't use in conn-only
 # callers — every public ModelsRepo method takes `conn` and forwards.
 _EDGES = EdgesRepo()
+
+# Singleton TopoRepo for the S2 topology layer. Shares the same
+# pool-less / conn-only contract as _EDGES.
+_TOPO = TopoRepo()
 
 
 async def _check_no_support_cycle(
@@ -1089,6 +1094,29 @@ class ModelsRepo:
                 created_by_event_id=hydrated.born_from_event_id,
                 update_arrays=False,
             )
+
+        # 7c. S2 topology layer: synchronously initialize this Model's
+        # topo_embedding from its content (via content_anchor) so
+        # Pathway F (S3) can find it the moment it commits. The
+        # asynchronous topology_updater worker will refine the
+        # position once neighbors exist; the initial enqueue here
+        # ensures that happens.
+        try:
+            await _TOPO.set_initial_topo(
+                conn,
+                model_id=hydrated.id,
+                content_embedding=embedding,
+                tenant_id=hydrated.tenant_id,
+                enqueue_propagation=True,
+            )
+        except Exception:
+            # Topology is best-effort during S2 dual-write phase —
+            # if anything in the topology layer fails, the Model
+            # itself still inserts successfully. The drift between
+            # topo_embedding NULL and "should have been set" will
+            # be caught by the topology_updater on its next sweep
+            # (it picks up Models with NULL topo_embedding too).
+            pass
 
         # 8. Emit state_change in the same transaction.
         await emit_state_change(

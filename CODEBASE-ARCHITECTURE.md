@@ -129,6 +129,12 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 │  • Edge Drift Detector (S1): samples Models per tenant every       │
 │    30 min, verifies legacy arrays match typed model_edges; logs    │
 │    a metric per drifted kind so dual-write violations are visible  │
+│  • Topology Updater (S2): drains topo_dirty_queue every 60s;        │
+│    recomputes Model topo_embedding via the alpha-anchored rule;     │
+│    propagates significant deltas to neighbors with damping (γ=0.5)  │
+│  • Neighborhood Detector (S2): hourly; runs connected-components    │
+│    on the active edge graph per tenant, matches communities to      │
+│    prior neighborhoods for stable IDs, refreshes membership table   │
 │  • (Future) Entity Resolver: resolves actor/entity refs             │
 │  • (Future) Anomaly Processor: detects outliers                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -237,6 +243,7 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 | `lib/embeddings` | Vector embedding service | `ollama.py:1-80` — wraps Ollama HTTP; `tests/test_ollama.py` |
 | `lib/nexus` | Agent attestation stub | `client.py` — Phase 4 integration point (currently mock) |
 | `lib/shared` | Shared types, DB, errors | `types.py:1-150` — Pydantic models for all rows; `db.py` — asyncpg helpers; `errors.py` — domain exceptions; `ids.py` — UUID7 generation; `trust.py` — trust tier logic; `edge_registry.py` — declarative per-kind semantics for the Model-to-Model `model_edges` graph (S1) |
+| `lib/topology` | Positional-embedding math (S2) | `embeddings.py` — `content_anchor` (768→128 random projection), `compute_topo_embedding` (alpha-anchored neighbor-mean rule), `delta_magnitude`. Tunables: `TOPO_ALPHA` (0.3), `TOPO_DELTA_EPSILON` (0.05), `TOPO_DAMPING_GAMMA` (0.5). `community.py` — connected-components detection, greedy stable-ID matching by Jaccard, density + centrality |
 
 **Public API**:
 - `lib.llm.provider.build_provider(provider_name, api_key, model) → LLMProvider`
@@ -307,7 +314,8 @@ The system is organized as a single-process app with logical service boundaries.
     evaluate_at: datetime | None  # for predictions
   ```
 - **DB Table**: `models` (indexed on tenant_id, status, confidence, activation)
-- **Model-to-Model graph (S1, migration 0030)**: the seven pre-S1 connection mechanisms (two array columns, pattern back-link, supersession lifecycle flag, transient queue, two latent proposition-encoded edges) are unified into a single typed-edge primitive `model_edges` with a declarative registry at [lib/shared/edge_registry.py](lib/shared/edge_registry.py). Six edge_kinds in v1: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled producers), plus `contradicts` and `weakens` (reserved names). The registry owns per-kind invariants (DAG cycle scope, weight rules, archive cascade callbacks, mutually-exclusive-with). Dual-write phase: arrays remain authoritative; the chokepoint helper `_set_model_relations` writes both sides; the [edge_drift](services/workers/edge_drift/) worker verifies parity. New capability: O(log n) reverse traversal for every kind via `model_edges_target_idx`.
+- **Model-to-Model graph (S1, migration 0031)**: the seven pre-S1 connection mechanisms (two array columns, pattern back-link, supersession lifecycle flag, transient queue, two latent proposition-encoded edges) are unified into a single typed-edge primitive `model_edges` with a declarative registry at [lib/shared/edge_registry.py](lib/shared/edge_registry.py). Six edge_kinds in v1: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled producers), plus `contradicts` and `weakens` (reserved names). The registry owns per-kind invariants (DAG cycle scope, weight rules, archive cascade callbacks, mutually-exclusive-with). Dual-write phase: arrays remain authoritative; the chokepoint helper `_set_model_relations` writes both sides; the [edge_drift](services/workers/edge_drift/) worker verifies parity. New capability: O(log n) reverse traversal for every kind via `model_edges_target_idx`.
+- **Topology layer (S2, migration 0032)**: every Model carries a learned **positional embedding** (`topo_embedding VECTOR(128)`) — distinct from its content embedding (768d, semantic). The position is initialized from `content_anchor()` at insert (synchronous, inside `_insert_core`) and refined continuously by the [topology_updater worker](services/workers/topology_updater/) via the alpha-anchored neighbor-mean rule (α = 0.3 default; `topo(M) = (1-α)·weighted_mean(neighbor_topos) + α·content_anchor(M)`). Edge mutations enqueue both endpoints in `topo_dirty_queue`; archives enqueue every neighbor (`mark_inert` walks the inerted edges and enqueues the other endpoints). The [neighborhood_detector worker](services/workers/neighborhood_detector/) runs hourly community detection (connected-components on the active edge graph in v1; Louvain swap-out is a single function later) and materializes neighborhoods with stable IDs across re-clusterings via greedy Jaccard matching. **No retrieval changes yet** — topology is observable but not yet consequential. S3 (separate plan) introduces Pathway F (topological retrieval), prompt-level neighborhood context, and the `relocate` claim_op.
 
 #### **services/acts** (`/Users/rachinkalakheti/fyraliscore/services/acts/`)
 - **Purpose**: Executable declarations — Goals, Commitments, Decisions
@@ -364,6 +372,14 @@ The system is organized as a single-process app with logical service boundaries.
     amount: Decimal | None
     recorded_at: datetime
   ```
+
+#### **services/topology** ([services/topology/](services/topology/)) — S2
+- **Purpose**: Positional embedding layer + materialized neighborhoods. The substrate's emergent geometry, distinct from the relational store ([services/models/](services/models/)).
+- **Key Files**:
+  - `topo_repo.py` — `TopoRepo`. Methods: `set_initial_topo(content_emb)` — synchronous content_anchor at insert; `enqueue / enqueue_neighbors / dequeue_pending / mark_processed` — `topo_dirty_queue` mechanics; `recompute_topo(model_id)` — runs the alpha-anchored update rule for one Model (reads all active neighbors via any edge_kind, weights them per `_TOPO_EDGE_WEIGHTS`, blends with `content_anchor`, writes back). Callers always pass `conn` so writes participate in their transaction.
+  - `neighborhoods_repo.py` — `NeighborhoodsRepo.recompute_for_tenant(conn, tenant_id)` — single-pass detection: load Models + edges, run `detect_communities`, prune singletons, match to existing neighborhoods for stable IDs, upsert + dissolve unmatched, refresh membership table. Reports counts in `RecomputeReport`.
+- **Direction convention**: edges are treated as **undirected** for topology (arrangement is symmetric — if A is positionally near B, B is near A). Edge `weight` flows into `neighbor_weights`; future `contradicts` edges contribute NEGATIVE weight to push topo embeddings apart.
+- **Hooks back into models**: ModelsRepo.`_insert_core` calls `set_initial_topo` synchronously so a fresh Model has non-NULL `topo_embedding` at commit; EdgesRepo.`link / unlink / mark_inert` enqueues both endpoints in `topo_dirty_queue` (inline helper, not via `TopoRepo.enqueue`, to avoid a circular import — same SQL).
 
 #### **services/think** ([services/think/](services/think/))
 - **Purpose**: Cognitive engine — reasons about signals to generate Models / Acts / Recommendations; enforces V1 substrate semantics (audit chain, reconciliation, region locks)
@@ -643,7 +659,7 @@ The system is organized as a single-process app with logical service boundaries.
     );
     ```
 
-- **`db/migrations/0020_*.sql` through `0031_*.sql`** — V1 substrate, demo, audit, and self-organizing-substrate waves:
+- **`db/migrations/0020_*.sql` through `0032_*.sql`** — V1 substrate, demo, audit, and self-organizing-substrate waves:
   - **0020** `think_run_artifacts` — sidecar capture of each Think pipeline stage (trigger, retrieval, prompt, response, validation, apply, post_commit, cascade, error) for the debug UI
   - **0021** Review-1 remediation: `commitments.is_maintenance`, `anomaly_thresholds` (per-tenant P90/P95/P99 rolling stats), `dedup_keys_seen` (publisher debounce ledger)
   - **0022** Recommendations: `recommendations` table; `propositions.target_actor_id` generated column and `caused_act_change_id`; partial index for the CEO action-list ranker
@@ -654,6 +670,7 @@ The system is organized as a single-process app with logical service boundaries.
   - **0029** `reconciliation_events` — audit trail for reconciler decisions (`auto_merge`, `human_review`, `no_match`)
   - **0030** **Audit chain (Q5)**: per-Model `audit_events` table with state transitions, `changed_fields`, re-assertion tracking, and reconciliation-merge provenance
   - **0031** **Unified Model-to-Model edge primitive (S1)**: `model_edges` table — one row per typed edge (source, target, edge_kind, weight, metadata, status, detected_by, lifecycle audit) with 3 partial indexes (forward, backward, by-kind on `status='active'`). Also drops the `model_reeval_queue.cause_kind` CHECK so new edge_kinds can produce new cause_kinds via the registry's cascade callbacks. Dual-write phase: arrays on `models` remain authoritative; the chokepoint helper [_set_model_relations](services/models/repo.py) writes both sides; the [edge_drift worker](services/workers/edge_drift/) verifies parity. Six edge_kinds: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled), `contradicts`, `weakens` (reserved). Per-kind semantics declared in [lib/shared/edge_registry.py](lib/shared/edge_registry.py).
+  - **0032** **Topology layer (S2)**: adds `models.topo_embedding VECTOR(128)` and `models.topo_updated_at` (positional embedding maintained by the updater worker); `topo_dirty_queue` (propagation queue with NULLS-NOT-DISTINCT dedup, priority-ordered by delta_magnitude); `model_neighborhoods` (materialized communities with stable IDs across re-clusterings, centroid + density + lifecycle); `model_neighborhood_membership` (reverse lookup with per-Model centrality). HNSW index on `topo_embedding` partial WHERE `status='active' AND topo_embedding IS NOT NULL`, ready for S3's Pathway F. Algorithms in [lib/topology/](lib/topology/) (content_anchor random projection, alpha-anchored update rule, connected-components detection, greedy Jaccard matching). Repos in [services/topology/](services/topology/). Workers in [services/workers/topology_updater](services/workers/topology_updater/) and [services/workers/neighborhood_detector](services/workers/neighborhood_detector/). Topology is **observable but not yet consequential** — no retrieval changes; S3 makes it consequential.
   - 0025 / 0026 are intentionally absent (skipped numbers).
 
 - **`db/seed/`**:
@@ -1140,6 +1157,28 @@ CREATE TABLE actor_identity_mappings (
   - Edge kinds in v1: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled producers); `contradicts`, `weakens` (reserved names — repo refuses to insert until producers ship in later stages)
   - Single writer: [services/models/edges_repo.py](services/models/edges_repo.py) (`EdgesRepo.link / unlink / traverse_forward / traverse_backward / mark_inert / check_no_cycle`)
   - Dual-write chokepoint at [services/models/repo.py](services/models/repo.py) (`_set_model_relations`) keeps the legacy array columns (`supporting_model_ids`, `contributing_models`) in lockstep with `model_edges` rows. Drift detector worker at [services/workers/edge_drift/](services/workers/edge_drift/) samples every tenant on a 30-min cadence and emits a metric per drifted kind
+
+- **`models.topo_embedding`** + **`models.topo_updated_at`** (migration 0032, S2 topology layer columns)
+  - `VECTOR(128)`, NULL until first computed, indexed via partial HNSW (`models_topo_embedding_idx`) WHERE `status='active' AND topo_embedding IS NOT NULL`
+  - The Model's learned **positional vector**, distinct from the 768d content embedding. Initialized to `content_anchor()` (a fixed random projection of the content embedding, deterministic and L2-normalized) at INSERT inside `_insert_core`; refined continuously by the topology updater worker via the alpha-anchored neighbor-mean rule
+  - The HNSW index is in place now so it gets time to populate during the S2 soak window; S3's Pathway F will read it for topological retrieval
+
+- **`topo_dirty_queue`** (migration 0032, S2 propagation queue)
+  - `id, tenant_id, model_id, cause_model_id, hop_depth, delta_magnitude, enqueued_at, processed_at, attempts, last_error`
+  - Same dedup pattern as `model_reeval_queue`: UNIQUE NULLS NOT DISTINCT on `(tenant, model, processed_at)`. Pending rows ordered by `delta_magnitude DESC NULLS FIRST` so high-priority recomputes preempt routine ones
+  - Enqueued by: ModelsRepo.insert (initial topo computed synchronously, then enqueued for refinement); EdgesRepo.link / unlink / mark_inert (every endpoint affected by an edge change); the topology updater itself (when a recompute produces a significant delta, neighbors get enqueued at hop_depth + 1 with damped magnitude)
+  - Drained by [services/workers/topology_updater](services/workers/topology_updater/)
+
+- **`model_neighborhoods`** (migration 0032, S2 materialized communities)
+  - `id, tenant_id, centroid_topo_embedding VECTOR(128), member_model_ids UUID[], emergence_at, predecessor_neighborhood_ids UUID[], named_signature, named_at, density, status (active|dissolved|merged), status_changed_at, status_reason, last_recomputed_at`
+  - Detected by [services/workers/neighborhood_detector](services/workers/neighborhood_detector/) via connected-components on the active edge graph (Louvain swap-out is a single function later); communities below `MIN_COMMUNITY_SIZE` (2) pruned to drop isolated singletons
+  - Stable IDs across re-clusterings: greedy Jaccard matching against existing active neighborhoods, threshold 0.3 (configurable). New communities without a match get a fresh id + emit `predecessor_neighborhood_ids` for any prior overlap. Unmatched previous neighborhoods → `status='dissolved'` with `status_reason='no_match_in_recompute'`
+  - `named_signature` is set by S3's prompt extension (LLM-generated semantic label); unset in v1
+
+- **`model_neighborhood_membership`** (migration 0032, S2 reverse lookup)
+  - `tenant_id, model_id, neighborhood_id, centrality, joined_at`. PK `(model_id, neighborhood_id)`
+  - Per-Model centrality (degree centrality in v1, eigenvector / PageRank are stable swap-outs) for use by S3's neighborhood-summary in the LLM prompt
+  - Wholesale-refreshed by `recompute_for_tenant` — DELETE all + INSERT new is O(n) and cheaper than per-row diff tracking
 
 - **`tenants`**, **`demo_configs`**, **`demo_sessions`**, **`demo_session_costs`** (migration 0023)
   - Multi-tenant registry; per-tenant model routing + cost cap + determinism seed; per-session lifecycle and cost ledger

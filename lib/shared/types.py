@@ -165,6 +165,27 @@ EdgeKind = Literal[
 
 
 # ---------------------------------------------------------------------
+# Topology layer (S2, migration 0032). Positional embeddings,
+# materialized neighborhoods, propagation queue. The actual geometry
+# lives in vectors and join tables; these are just the lifecycle
+# enums + dimension constant.
+# ---------------------------------------------------------------------
+
+# Topology dimension. Smaller than content embedding (768d) because
+# topology is lower-dimensional than semantics — a substrate
+# organizes into a handful of dozens of communities; 128 dims has
+# more than enough capacity, and the smaller width keeps HNSW
+# maintenance cheap as the graph evolves.
+TOPO_EMBEDDING_DIM = 128
+
+# Lifecycle of a materialized neighborhood. 'merged' / 'dissolved'
+# are emitted by the matching algorithm during re-clustering when a
+# previously-active neighborhood is no longer a community in the
+# current graph (merged into another, or fragmented away).
+NeighborhoodStatus = Literal["active", "dissolved", "merged"]
+
+
+# ---------------------------------------------------------------------
 # Base model with strict v2 config.
 # ---------------------------------------------------------------------
 
