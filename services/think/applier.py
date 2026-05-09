@@ -435,6 +435,39 @@ async def _apply_claim_op(
                 f"WHERE id = ${i}"
             )
             await conn.execute(sql, *params)
+
+            # S1 dual-write: mirror array changes to typed edges via
+            # the chokepoint helper. update_arrays=False because the
+            # UPDATE above already set the array columns; we just
+            # need to converge the typed edges with the new state.
+            # `instance_of` is not exposed as an LLM-controlled column
+            # — pattern back-links go through promote_pattern_candidate
+            # — so we only sync supports / contributes_to_resolution.
+            if (
+                "supporting_model_ids" in changes
+                or "contributing_models" in changes
+            ):
+                from services.models.repo import _set_model_relations
+
+                await _set_model_relations(
+                    conn,
+                    model_id=op.model_id,
+                    tenant_id=tenant_id,
+                    detected_by="llm_explicit",
+                    supports=(
+                        list(changes["supporting_model_ids"])
+                        if "supporting_model_ids" in changes
+                        else None
+                    ),
+                    contributes_to=(
+                        list(changes["contributing_models"])
+                        if "contributing_models" in changes
+                        else None
+                    ),
+                    created_by_event_id=cause_event_id,
+                    update_arrays=False,
+                )
+
             await emit_state_change(
                 conn,
                 kind="model_updated",

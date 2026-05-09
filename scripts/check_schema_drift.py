@@ -468,7 +468,9 @@ EXPECTED_TABLES: dict[str, Table] = {
         # 0007_q4_q8_resolutions.sql — Q8 resolution. Dependent Models
         # waiting for re-evaluation after a supporting Model is
         # archived / deprecated / superseded / contested. Consumed by
-        # the cascade engine inside Think (Wave 3-B).
+        # the cascade engine inside Think (Wave 3-B). Migration 0031
+        # dropped the cause_kind CHECK because cause_kinds are now
+        # declarative (registry-owned).
         columns=dict([
             _col("id", UUID, False),
             _col("tenant_id", UUID, False),
@@ -485,6 +487,39 @@ EXPECTED_TABLES: dict[str, Table] = {
             "model_reeval_queue_dedup",
             "model_reeval_queue_pending_idx",
             "model_reeval_queue_model_idx",
+        },
+    ),
+    "model_edges": Table(
+        # 0031_model_edges.sql — S1 of the self-organizing-substrate
+        # plan. Unified Model-to-Model edge primitive. Replaces the
+        # seven ad-hoc connection mechanisms (supporting_model_ids
+        # array, contributing_models array, pattern back-link,
+        # archive_reason='superseded' lifecycle flag, latent
+        # proposition-encoded edges) with a single typed-edge table
+        # whose semantics are declared in lib/shared/edge_registry.py.
+        # Dual-write phase: arrays remain authoritative; drift
+        # detector verifies parity.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("source_model_id", UUID, False),
+            _col("target_model_id", UUID, False),
+            _col("edge_kind", TEXT, False),
+            _col("weight", FLOAT, True),
+            _col("metadata", JSONB, False, default=True),
+            _col("status", TEXT, False, default=True),
+            _col("detected_by", TEXT, False),
+            _col("created_at", TS, False, default=True),
+            _col("created_by_event_id", UUID, True),
+            _col("status_changed_at", TS, True),
+            _col("status_reason", TEXT, True),
+        ]),
+        indexes={
+            "model_edges_pkey",
+            "model_edges_unique",
+            "model_edges_source_idx",
+            "model_edges_target_idx",
+            "model_edges_kind_idx",
         },
     ),
     "think_region_lock_log": Table(

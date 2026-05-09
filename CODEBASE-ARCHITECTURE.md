@@ -126,6 +126,9 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 │  • Post-Commit Worker: persists model state changes                 │
 │  • Greeting Scheduler: refreshes CEO view cache every 15 min       │
 │  • Recommendation watchers: falsifier predicate firing              │
+│  • Edge Drift Detector (S1): samples Models per tenant every       │
+│    30 min, verifies legacy arrays match typed model_edges; logs    │
+│    a metric per drifted kind so dual-write violations are visible  │
 │  • (Future) Entity Resolver: resolves actor/entity refs             │
 │  • (Future) Anomaly Processor: detects outliers                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -233,7 +236,7 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 | `lib/llm` | LLM provider abstraction | `provider.py` — pluggable backend; **default Anthropic `claude-opus-4-7`**, plus OpenAI and DeepSeek (OpenAI-API-compatible w/ strict tool mode); per-tenant override via demo `model_routing`; cost ledger per model |
 | `lib/embeddings` | Vector embedding service | `ollama.py:1-80` — wraps Ollama HTTP; `tests/test_ollama.py` |
 | `lib/nexus` | Agent attestation stub | `client.py` — Phase 4 integration point (currently mock) |
-| `lib/shared` | Shared types, DB, errors | `types.py:1-150` — Pydantic models for all rows; `db.py` — asyncpg helpers; `errors.py` — domain exceptions; `ids.py` — UUID7 generation; `trust.py` — trust tier logic |
+| `lib/shared` | Shared types, DB, errors | `types.py:1-150` — Pydantic models for all rows; `db.py` — asyncpg helpers; `errors.py` — domain exceptions; `ids.py` — UUID7 generation; `trust.py` — trust tier logic; `edge_registry.py` — declarative per-kind semantics for the Model-to-Model `model_edges` graph (S1) |
 
 **Public API**:
 - `lib.llm.provider.build_provider(provider_name, api_key, model) → LLMProvider`
@@ -275,7 +278,8 @@ The system is organized as a single-process app with logical service boundaries.
 #### **services/models** (`/Users/rachinkalakheti/fyraliscore/services/models/`)
 - **Purpose**: Belief store — epistemic models about the organization
 - **Key Files**:
-  - `repo.py` — `ModelsRepo` class; methods: `insert(ModelCreate)`, `retrieve(ids, conn)` (activation bump), `get_by_id(id)`, `list_active_by_tenant(tenant_id)`, `update_status(..., reason)`
+  - `repo.py` — `ModelsRepo` class; methods: `insert(ModelCreate)`, `retrieve(ids, conn)` (activation bump), `get_by_id(id)`, `list_active_by_tenant(tenant_id)`, `update_status(..., reason)`. Also exports `_set_model_relations(...)` — the dual-write chokepoint that keeps `model_edges` in sync with the legacy array columns (S1).
+  - `edges_repo.py` — `EdgesRepo` for the unified Model-to-Model edge primitive (S1, migration 0030). Single writer for `model_edges`. Public methods: `link`, `unlink`, `traverse_forward`, `traverse_backward` (new bidirectional capability), `mark_inert`, `check_no_cycle`, `get_drift_sample`.
   - `propositions.py` — helpers for Model proposition schema validation
   - `calibration.py` — confidence calibration machinery
   - `decay.py` — time-based confidence decay (older Models lose confidence)
@@ -297,10 +301,13 @@ The system is organized as a single-process app with logical service boundaries.
     activation: float  # 0.0–1.0 (how recently retrieved)
     falsifier: dict | None  # condition that would flip status to 'contested_false'
     signal_readings: list[dict]  # supporting evidence
+    supporting_model_ids: list[UUID]  # legacy: ids that support this Model
+    contributing_models: list[UUID]   # legacy: ids that resolve this prediction
     status: ModelStatus  # 'active' | 'archived' | 'superseded' | 'contested_false'
     evaluate_at: datetime | None  # for predictions
   ```
 - **DB Table**: `models` (indexed on tenant_id, status, confidence, activation)
+- **Model-to-Model graph (S1, migration 0030)**: the seven pre-S1 connection mechanisms (two array columns, pattern back-link, supersession lifecycle flag, transient queue, two latent proposition-encoded edges) are unified into a single typed-edge primitive `model_edges` with a declarative registry at [lib/shared/edge_registry.py](lib/shared/edge_registry.py). Six edge_kinds in v1: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled producers), plus `contradicts` and `weakens` (reserved names). The registry owns per-kind invariants (DAG cycle scope, weight rules, archive cascade callbacks, mutually-exclusive-with). Dual-write phase: arrays remain authoritative; the chokepoint helper `_set_model_relations` writes both sides; the [edge_drift](services/workers/edge_drift/) worker verifies parity. New capability: O(log n) reverse traversal for every kind via `model_edges_target_idx`.
 
 #### **services/acts** (`/Users/rachinkalakheti/fyraliscore/services/acts/`)
 - **Purpose**: Executable declarations — Goals, Commitments, Decisions
@@ -636,7 +643,7 @@ The system is organized as a single-process app with logical service boundaries.
     );
     ```
 
-- **`db/migrations/0020_*.sql` through `0030_*.sql`** — V1 substrate, demo, and audit waves:
+- **`db/migrations/0020_*.sql` through `0031_*.sql`** — V1 substrate, demo, audit, and self-organizing-substrate waves:
   - **0020** `think_run_artifacts` — sidecar capture of each Think pipeline stage (trigger, retrieval, prompt, response, validation, apply, post_commit, cascade, error) for the debug UI
   - **0021** Review-1 remediation: `commitments.is_maintenance`, `anomaly_thresholds` (per-tenant P90/P95/P99 rolling stats), `dedup_keys_seen` (publisher debounce ledger)
   - **0022** Recommendations: `recommendations` table; `propositions.target_actor_id` generated column and `caused_act_change_id`; partial index for the CEO action-list ranker
@@ -646,6 +653,7 @@ The system is organized as a single-process app with logical service boundaries.
   - **0028** Pelago demo company registration (alongside Truss / Northwind / Meridian)
   - **0029** `reconciliation_events` — audit trail for reconciler decisions (`auto_merge`, `human_review`, `no_match`)
   - **0030** **Audit chain (Q5)**: per-Model `audit_events` table with state transitions, `changed_fields`, re-assertion tracking, and reconciliation-merge provenance
+  - **0031** **Unified Model-to-Model edge primitive (S1)**: `model_edges` table — one row per typed edge (source, target, edge_kind, weight, metadata, status, detected_by, lifecycle audit) with 3 partial indexes (forward, backward, by-kind on `status='active'`). Also drops the `model_reeval_queue.cause_kind` CHECK so new edge_kinds can produce new cause_kinds via the registry's cascade callbacks. Dual-write phase: arrays on `models` remain authoritative; the chokepoint helper [_set_model_relations](services/models/repo.py) writes both sides; the [edge_drift worker](services/workers/edge_drift/) verifies parity. Six edge_kinds: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled), `contradicts`, `weakens` (reserved). Per-kind semantics declared in [lib/shared/edge_registry.py](lib/shared/edge_registry.py).
   - 0025 / 0026 are intentionally absent (skipped numbers).
 
 - **`db/seed/`**:
@@ -1124,6 +1132,14 @@ CREATE TABLE actor_identity_mappings (
 - **`audit_events`** (migration 0030, Q5 audit chain)
   - Per-Model state transitions, `changed_fields`, re-assertion tracking, reconciliation-merge provenance
   - Written by `services/think/audit.py`; powers chain replay and contestability views
+
+- **`model_edges`** (migration 0031, S1 unified Model-to-Model edge primitive)
+  - `id, tenant_id, source_model_id, target_model_id, edge_kind, weight, metadata JSONB, status, detected_by, created_at, created_by_event_id, status_changed_at, status_reason`
+  - Three partial indexes on `status='active'` — forward (source, kind), backward (target, kind, **the new bidirectional capability**), and per-kind scan
+  - Replaces seven pre-S1 ad-hoc connection mechanisms (two array columns on `models`, pattern back-link, supersession lifecycle flag, transient queue, two latent proposition-encoded edges) with a single typed-edge table whose semantics are declared in [lib/shared/edge_registry.py](lib/shared/edge_registry.py) (per-kind: directed / symmetric, DAG cycle scope, weight rules, archive cascade callbacks, mutually-exclusive-with)
+  - Edge kinds in v1: `supports`, `contributes_to_resolution`, `instance_of`, `superseded_by` (enabled producers); `contradicts`, `weakens` (reserved names — repo refuses to insert until producers ship in later stages)
+  - Single writer: [services/models/edges_repo.py](services/models/edges_repo.py) (`EdgesRepo.link / unlink / traverse_forward / traverse_backward / mark_inert / check_no_cycle`)
+  - Dual-write chokepoint at [services/models/repo.py](services/models/repo.py) (`_set_model_relations`) keeps the legacy array columns (`supporting_model_ids`, `contributing_models`) in lockstep with `model_edges` rows. Drift detector worker at [services/workers/edge_drift/](services/workers/edge_drift/) samples every tenant on a 30-min cadence and emits a metric per drifted kind
 
 - **`tenants`**, **`demo_configs`**, **`demo_sessions`**, **`demo_session_costs`** (migration 0023)
   - Multi-tenant registry; per-tenant model routing + cost cap + determinism seed; per-session lifecycle and cost ledger

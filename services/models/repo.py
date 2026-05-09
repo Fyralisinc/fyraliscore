@@ -82,6 +82,7 @@ from lib.embeddings.ollama import (
     OllamaError,
 )
 from lib.shared.db import RowHydrationError
+from lib.shared.edge_registry import EDGE_REGISTRY, get_spec
 from lib.shared.errors import CompanyOSError, FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import (
@@ -93,6 +94,7 @@ from lib.shared.types import (
 )
 
 from services.models.calibration import apply_calibration
+from services.models.edges_repo import EdgesRepo
 from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
 from services.models.recommendations import validate_recommendation
@@ -325,23 +327,36 @@ def _clip_confidence(value: float) -> float:
     return float(value)
 
 
-# Map archive_reason → cause_kind for model_reeval_queue enqueue.
-# See BUILD-LOG.md "Wave 2→3 Q4/Q8 resolution" and SCHEMA-LOCK.md
-# "Post-Wave-2 amendments" for the five-value cause_kind taxonomy.
-_ARCHIVE_REASON_TO_CAUSE_KIND: dict[str, str] = {
-    "deprecated": "supporting_deprecated",
-    "superseded": "supporting_superseded",
-    "falsifier_triggered": "falsifier_triggered_upstream",
-    "contested_incorrect": "contested_cluster",
-    "contested_reading_incorrect": "contested_cluster",
+# S1 (migration 0031): cause_kind mapping moved to lib/shared/edge_registry.py
+# inside the supports cascade callback. The registry owns this mapping
+# now because cause_kind is a per-edge_kind concern, not a per-archive
+# concern. See _supports_on_source_archive in edge_registry.py.
+
+# Edge-kind → array column on `models` table. During the dual-write
+# phase, every typed-edge mutation also updates the legacy array so
+# pre-S1 consumers (cascade query in archive(), retrieval second-pass,
+# debug UI) keep working unchanged. The drift detector verifies these
+# stay in sync. Stage 2 (separate plan) cuts consumers to read edges
+# directly; Stage 3 drops the array columns.
+_EDGE_KIND_TO_ARRAY_COL: dict[str, str] = {
+    "supports": "supporting_model_ids",
+    "contributes_to_resolution": "contributing_models",
+    # `instance_of` shares the legacy supporting_model_ids array — pre-S1
+    # the pattern proposer appended the Pattern id to constituents'
+    # supporting_model_ids. We preserve that exact behavior during dual-
+    # write so retrieval expansion still surfaces the Pattern.
+    "instance_of": "supporting_model_ids",
+    # `superseded_by` has no legacy array column — supersession was
+    # encoded as `archive_reason='superseded'` only. Its edge is purely
+    # additive in S1.
 }
 
 
-def _archive_reason_to_cause_kind(reason: str) -> str:
-    # Any reason we don't specifically recognize is a generic
-    # "supporting_archived" — the dependent still needs re-eval, we
-    # just don't have a more specific classification.
-    return _ARCHIVE_REASON_TO_CAUSE_KIND.get(reason, "supporting_archived")
+# Singleton EdgesRepo. Lives at module scope so every method can route
+# through it without threading a repo arg. EdgesRepo holds no state
+# beyond an optional pool reference, which we don't use in conn-only
+# callers — every public ModelsRepo method takes `conn` and forwards.
+_EDGES = EdgesRepo()
 
 
 async def _check_no_support_cycle(
@@ -351,19 +366,24 @@ async def _check_no_support_cycle(
     new_supports: list[UUID],
 ) -> None:
     """
-    Invariant M3 (ARCHITECTURE-REVIEW-1 §C4): the `supporting_model_ids`
-    graph is a DAG. Reject the insert/update if adding edges
-    (new_model_id → s) for s in new_supports would create a cycle.
+    Invariant M3: the supporting-evidence DAG must remain acyclic.
 
-    A cycle would form iff `new_model_id` is already (transitively) in
-    the supporting-ancestor set of any `s`. That is, climbing from `s`
-    up the `supporting_model_ids` edges, we eventually reach
-    `new_model_id`.
+    Post-S1 (migration 0031): cycle scope is the registry's
+    cycle_scope for `supports`, which is `{supports, instance_of}` —
+    a Model cannot transitively support its own pattern via either
+    edge. Delegates to EdgesRepo.check_no_cycle which runs a
+    recursive CTE over `model_edges`.
+
+    During dual-write, the typed `supports` edges may not yet exist
+    for every Model (backfill is incremental). When that's the case,
+    falling back to the legacy array-based check ensures we don't
+    miss cycles formed against pre-S1 data. We run BOTH checks:
+
+      1. Edge-based check (authoritative going forward).
+      2. Legacy array-based check (catches pre-S1 cycles that
+         haven't been backfilled yet).
 
     Self-support is explicitly rejected.
-
-    Implementation: single recursive CTE. The hot path is the empty-supports
-    case (no edges to check, function returns immediately).
     """
     if not new_supports:
         return
@@ -375,6 +395,25 @@ async def _check_no_support_cycle(
             model_id=str(new_model_id),
         )
 
+    # Edge-based cycle check (registry-driven).
+    # We need tenant_id to scope the query; fetch it from the proposed
+    # model's existing row if it exists, or the targets' rows.
+    tenant_id = await conn.fetchval(
+        "SELECT tenant_id FROM models WHERE id = ANY($1::uuid[]) LIMIT 1",
+        new_supports,
+    )
+    if tenant_id is not None:
+        await _EDGES.check_no_cycle(
+            conn,
+            kind="supports",
+            source=new_model_id,
+            targets=new_supports,
+            tenant_id=tenant_id,
+        )
+
+    # Legacy array-based cycle check, retained during dual-write to
+    # catch cycles in pre-backfill data. Same recursive CTE shape as
+    # the pre-S1 version. Drop in Stage 3 once arrays go away.
     row = await conn.fetchrow(
         """
         WITH RECURSIVE support_ancestors AS (
@@ -397,6 +436,351 @@ async def _check_no_support_cycle(
             new_model_id=str(new_model_id),
             new_supports=[str(s) for s in new_supports],
         )
+
+
+# =====================================================================
+# _set_model_relations — THE CHOKEPOINT for dual-write (S1)
+# =====================================================================
+#
+# Every site that mutates a Model's relational state MUST go through
+# this helper. It computes the diff between the current state and the
+# desired state, writes both the typed `model_edges` rows AND the
+# legacy array columns inside the same transaction, runs the
+# generalized cycle check, and emits the cascade-prep work.
+#
+# Three call sites in S1:
+#   1. ModelsRepo._insert_core — INSERT path: writes initial edges
+#      from proposed.supporting_model_ids and proposed.contributing_models.
+#   2. _apply_claim_op (services/think/applier.py) — UPDATE path:
+#      when claim_op.changes touches an array column, route through here.
+#   3. promote_pattern_candidate (services/workers/precipitation/proposer.py)
+#      — appends `instance_of` edges + back-links via supporting_model_ids.
+#
+# The drift detector verifies arrays stay in sync; if any future code
+# bypasses this helper, the drift metric goes non-zero.
+async def _set_model_relations(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    tenant_id: UUID,
+    detected_by: str,
+    supports: list[UUID] | None = None,
+    contributes_to: list[UUID] | None = None,
+    instance_of: list[UUID] | None = None,
+    superseded_by: UUID | None = None,
+    created_by_event_id: UUID | None = None,
+    update_arrays: bool = True,
+) -> None:
+    """Synchronize typed edges + legacy arrays for a single Model.
+
+    Each named arg is the FULL desired list/value:
+      - supports / contributes_to: replace the array with this list,
+        diff against existing edges, INSERT/DELETE accordingly.
+      - instance_of: list of pattern Models this Model is an instance
+        of. Each gets an `instance_of` typed edge AND an append to
+        supporting_model_ids (legacy back-link preserved).
+      - superseded_by: a single replacement Model id; writes one
+        `superseded_by` typed edge. No legacy array; supersession was
+        previously implicit in archive_reason.
+      - update_arrays: if False, only the edge rows are written. Used
+        by the INSERT path because the INSERT statement itself sets
+        the array columns (we just need to mirror to edges).
+
+    None means "don't touch this kind"; pass [] to clear the kind
+    explicitly. supports/contributes_to/instance_of are unioned
+    against the supporting_model_ids array for the back-link
+    semantics.
+    """
+    # Direction matters per edge_kind:
+    #
+    #   - `supports`: list elements are the SUPPORTERS of model_id
+    #     (incoming). Edge direction: (supporter, model_id, 'supports').
+    #     This matches the legacy supporting_model_ids array semantics
+    #     ("A is in M's array iff A supports M").
+    #
+    #   - `contributes_to_resolution`: list elements are the
+    #     CONTRIBUTORS to model_id's prediction (incoming). Edge:
+    #     (contributor, model_id, 'contributes_to_resolution').
+    #     Matches legacy contributing_models array semantics.
+    #
+    #   - `instance_of`: list elements are the PATTERNS this model is
+    #     an instance of (outgoing). Edge: (model_id, pattern,
+    #     'instance_of'). Note this is OUTGOING from the perspective
+    #     of model_id — opposite direction from the two above. The
+    #     legacy back-link (pattern id appended to model's
+    #     supporting_model_ids array) is preserved by
+    #     _sync_array_columns; only the typed edge has the
+    #     semantically correct direction.
+    if supports is not None:
+        await _sync_incoming_kind(
+            conn,
+            kind="supports",
+            model_id=model_id,
+            tenant_id=tenant_id,
+            new_sources=supports,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+    if contributes_to is not None:
+        await _sync_incoming_kind(
+            conn,
+            kind="contributes_to_resolution",
+            model_id=model_id,
+            tenant_id=tenant_id,
+            new_sources=contributes_to,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+    if instance_of is not None:
+        await _sync_outgoing_kind(
+            conn,
+            kind="instance_of",
+            model_id=model_id,
+            tenant_id=tenant_id,
+            new_targets=instance_of,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+    if superseded_by is not None:
+        # Singleton edge; no array sync. Idempotent on UNIQUE.
+        await _EDGES.link(
+            conn,
+            source=model_id,
+            target=superseded_by,
+            kind="superseded_by",
+            tenant_id=tenant_id,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+
+    if update_arrays:
+        await _sync_array_columns(
+            conn,
+            model_id=model_id,
+            supports=supports,
+            contributes_to=contributes_to,
+            instance_of=instance_of,
+        )
+
+
+async def _sync_incoming_kind(
+    conn: asyncpg.Connection,
+    *,
+    kind: str,
+    model_id: UUID,
+    tenant_id: UUID,
+    new_sources: list[UUID],
+    detected_by: str,
+    created_by_event_id: UUID | None,
+) -> None:
+    """Diff incoming edges of `kind` to `model_id` against the
+    desired source list, INSERT/DELETE to converge.
+
+    Used for `supports` and `contributes_to_resolution`, where the
+    legacy array on the model lists the OTHER endpoints (supporters /
+    contributors) and the typed edge points FROM each of them TO
+    model_id.
+
+    Concretely: caller passes new_sources=[A, B] meaning A and B point
+    at model_id via this kind. Typed edges written: (A, model_id,
+    kind), (B, model_id, kind).
+    """
+    existing = await _EDGES.traverse_backward(
+        conn,
+        target=model_id,
+        kinds=[kind],
+        tenant_id=tenant_id,
+        status="active",
+    )
+    existing_sources = {e["source_model_id"] for e in existing}
+    desired_sources = set(new_sources)
+
+    to_add = desired_sources - existing_sources
+    to_remove = existing_sources - desired_sources
+
+    for source in to_add:
+        await _EDGES.link(
+            conn,
+            source=source,
+            target=model_id,
+            kind=kind,
+            tenant_id=tenant_id,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+    for source in to_remove:
+        await _EDGES.unlink(
+            conn,
+            source=source,
+            target=model_id,
+            kind=kind,
+            tenant_id=tenant_id,
+        )
+
+
+async def _sync_outgoing_kind(
+    conn: asyncpg.Connection,
+    *,
+    kind: str,
+    model_id: UUID,
+    tenant_id: UUID,
+    new_targets: list[UUID],
+    detected_by: str,
+    created_by_event_id: UUID | None,
+) -> None:
+    """Diff outgoing edges of `kind` from `model_id` against the
+    desired target list, INSERT/DELETE to converge.
+
+    Used for `instance_of`, where the typed edge points FROM
+    model_id TO each pattern. The legacy back-link (appending the
+    pattern id to model_id's supporting_model_ids array) is handled
+    separately by _sync_array_columns.
+
+    Concretely: caller passes new_targets=[P] meaning model_id is an
+    instance of P. Typed edge written: (model_id, P, 'instance_of').
+    """
+    existing = await _EDGES.traverse_forward(
+        conn,
+        source=model_id,
+        kinds=[kind],
+        tenant_id=tenant_id,
+        status="active",
+    )
+    existing_targets = {e["target_model_id"] for e in existing}
+    desired_targets = set(new_targets)
+
+    to_add = desired_targets - existing_targets
+    to_remove = existing_targets - desired_targets
+
+    for target in to_add:
+        await _EDGES.link(
+            conn,
+            source=model_id,
+            target=target,
+            kind=kind,
+            tenant_id=tenant_id,
+            detected_by=detected_by,
+            created_by_event_id=created_by_event_id,
+        )
+    for target in to_remove:
+        await _EDGES.unlink(
+            conn,
+            source=model_id,
+            target=target,
+            kind=kind,
+            tenant_id=tenant_id,
+        )
+
+
+async def _sync_array_columns(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    supports: list[UUID] | None,
+    contributes_to: list[UUID] | None,
+    instance_of: list[UUID] | None,
+) -> None:
+    """Update legacy array columns to mirror the desired edge state.
+
+    `supporting_model_ids` is the union of `supports` and
+    `instance_of` entries (matches pre-S1 pattern-promoter behavior
+    of appending pattern ids to supporting_model_ids).
+
+    `contributing_models` is `contributes_to` directly.
+
+    None args leave the corresponding column untouched.
+    """
+    if supports is None and instance_of is None and contributes_to is None:
+        return
+    # Read the current arrays so we can compute the right merge for
+    # supporting_model_ids when only one of (supports, instance_of) is
+    # supplied.
+    if supports is not None or instance_of is not None:
+        current = await conn.fetchrow(
+            "SELECT supporting_model_ids FROM models WHERE id = $1",
+            model_id,
+        )
+        if current is None:
+            # Model doesn't exist yet (called pre-INSERT). Skip; the
+            # INSERT itself will set the array.
+            return
+        existing_supporting = list(current["supporting_model_ids"] or [])
+        # Compute desired supporting_model_ids:
+        #   - If `supports` was supplied, replace its contribution.
+        #   - If `instance_of` was supplied, replace its contribution.
+        #   - For the unspecified dimension, retain what's already there
+        #     by reading current edges of the corresponding kind.
+        if supports is None:
+            sup_part = await _read_array_part(
+                conn, model_id, "supports"
+            )
+        else:
+            sup_part = list(supports)
+        if instance_of is None:
+            inst_part = await _read_array_part(
+                conn, model_id, "instance_of"
+            )
+        else:
+            inst_part = list(instance_of)
+        # Stable order: deduplicate while preserving first occurrence.
+        seen: set[UUID] = set()
+        merged: list[UUID] = []
+        for u in sup_part + inst_part:
+            if u not in seen:
+                seen.add(u)
+                merged.append(u)
+        if merged != existing_supporting:
+            await conn.execute(
+                "UPDATE models SET supporting_model_ids = $1::uuid[] WHERE id = $2",
+                merged,
+                model_id,
+            )
+    if contributes_to is not None:
+        await conn.execute(
+            "UPDATE models SET contributing_models = $1::uuid[] WHERE id = $2",
+            list(contributes_to),
+            model_id,
+        )
+
+
+async def _read_array_part(
+    conn: asyncpg.Connection,
+    model_id: UUID,
+    kind: str,
+) -> list[UUID]:
+    """Read the OTHER endpoint of edges of `kind` involving model_id.
+
+    Direction depends on kind:
+      - `supports`: incoming. Other endpoint = source (the supporter).
+      - `instance_of`: outgoing. Other endpoint = target (the pattern).
+
+    Used by _sync_array_columns to retain the un-touched dimension
+    when only one of (supports, instance_of) is being updated.
+    """
+    if kind == "supports":
+        rows = await conn.fetch(
+            """
+            SELECT source_model_id AS other FROM model_edges
+            WHERE target_model_id = $1
+              AND edge_kind = $2
+              AND status = 'active'
+            """,
+            model_id,
+            kind,
+        )
+    else:
+        # `instance_of` — outgoing
+        rows = await conn.fetch(
+            """
+            SELECT target_model_id AS other FROM model_edges
+            WHERE source_model_id = $1
+              AND edge_kind = $2
+              AND status = 'active'
+            """,
+            model_id,
+            kind,
+        )
+    return [r["other"] for r in rows]
 
 
 _AUTO_ACCEPT_MIN_CONFIDENCE = 0.55
@@ -687,6 +1071,25 @@ class ModelsRepo:
 
         hydrated = _hydrate_row(row)
 
+        # 7b. Dual-write typed edges to mirror the array columns just
+        # written. Goes through the chokepoint helper so the drift
+        # detector stays happy. update_arrays=False because the INSERT
+        # above already set the array columns.
+        if (
+            list(proposed.supporting_model_ids)
+            or list(proposed.contributing_models)
+        ):
+            await _set_model_relations(
+                conn,
+                model_id=hydrated.id,
+                tenant_id=hydrated.tenant_id,
+                detected_by="llm_explicit",
+                supports=list(proposed.supporting_model_ids),
+                contributes_to=list(proposed.contributing_models),
+                created_by_event_id=hydrated.born_from_event_id,
+                update_arrays=False,
+            )
+
         # 8. Emit state_change in the same transaction.
         await emit_state_change(
             conn,
@@ -899,14 +1302,70 @@ class ModelsRepo:
                 )
             hydrated = _hydrate_row(row)
 
-            # Dependent flagging — Q8 resolved: real table
-            # `model_reeval_queue` exists (migration 0007). Archive
-            # cascades by enqueueing every active dependent with the
-            # appropriate cause_kind derived from `reason`. Dedup is
-            # enforced by the UNIQUE NULLS NOT DISTINCT constraint on
-            # (tenant_id, model_id, cause_model_id, processed_at), so
-            # re-archiving the same model is idempotent against the
-            # unprocessed queue tail.
+            # S1 archive cascade: the registry's per-kind callbacks
+            # decide how each edge cascades. Behavior preserved for
+            # `supports` (cause_kind derived from archive_reason via
+            # the same five-value mapping the pre-S1 code used —
+            # owned by lib/shared/edge_registry.py). New cascades fire
+            # for `instance_of` and `contributes_to_resolution`.
+            #
+            # Dual-write safety net: we ALSO run the legacy array-based
+            # cascade for any dependent that has the archived Model in
+            # its supporting_model_ids but doesn't yet have a typed
+            # `supports` edge (pre-S1 data not yet backfilled). The
+            # registry callback dedups via the model_reeval_queue
+            # UNIQUE constraint, so running both is safe.
+            #
+            # 1. Edge-driven cascade. Walk forward edges (this Model
+            #    as source) and backward edges (this Model as target)
+            #    and dispatch to the appropriate registry callback.
+            edge_cascade_count = 0
+            forward_edges = await _EDGES.traverse_forward(
+                c,
+                source=model_id,
+                kinds=list(EDGE_REGISTRY.keys()),
+                tenant_id=hydrated.tenant_id,
+                status="active",
+            )
+            for edge in forward_edges:
+                spec = get_spec(edge["edge_kind"])
+                if spec.on_source_archive is not None:
+                    await spec.on_source_archive(
+                        c,
+                        model_id,                      # archived
+                        edge["target_model_id"],       # other endpoint
+                        edge,
+                        reason,
+                    )
+                    edge_cascade_count += 1
+            backward_edges = await _EDGES.traverse_backward(
+                c,
+                target=model_id,
+                kinds=list(EDGE_REGISTRY.keys()),
+                tenant_id=hydrated.tenant_id,
+                status="active",
+            )
+            for edge in backward_edges:
+                spec = get_spec(edge["edge_kind"])
+                if spec.on_target_archive is not None:
+                    await spec.on_target_archive(
+                        c,
+                        model_id,                      # archived
+                        edge["source_model_id"],       # other endpoint
+                        edge,
+                        reason,
+                    )
+                    edge_cascade_count += 1
+
+            # 2. Legacy array-based cascade safety net. Catches
+            #    dependents whose typed `supports` edge hasn't been
+            #    backfilled yet. Same SQL shape as pre-S1; same
+            #    cause_kind derivation, now sourced from the registry.
+            #    The model_reeval_queue UNIQUE NULLS NOT DISTINCT
+            #    constraint dedups against the rows the edge cascade
+            #    just inserted, so running both is safe.
+            from lib.shared.edge_registry import legacy_supports_cause_kind
+            legacy_cause_kind = legacy_supports_cause_kind(reason)
             deps = await c.fetch(
                 """
                 SELECT id FROM models
@@ -915,8 +1374,6 @@ class ModelsRepo:
                 model_id,
             )
             dep_ids = [r["id"] for r in deps]
-
-            cause_kind = _archive_reason_to_cause_kind(reason)
             for dep_id in dep_ids:
                 await c.execute(
                     """
@@ -930,8 +1387,18 @@ class ModelsRepo:
                     hydrated.tenant_id,
                     dep_id,
                     model_id,
-                    cause_kind,
+                    legacy_cause_kind,
                 )
+
+            # 3. Mark every edge touching this Model inert (same
+            #    transaction). Inert edges stay queryable for audit
+            #    but don't appear in active-only retrieval.
+            inerted = await _EDGES.mark_inert(
+                c,
+                model_id=model_id,
+                tenant_id=hydrated.tenant_id,
+                reason="endpoint_archived",
+            )
 
             await emit_state_change(
                 c,
@@ -943,7 +1410,9 @@ class ModelsRepo:
                 metadata={
                     "archive_reason": reason,
                     "dependent_count": len(dep_ids),
-                    "reeval_cause_kind": cause_kind,
+                    "reeval_cause_kind": legacy_cause_kind,
+                    "edge_cascades": edge_cascade_count,
+                    "edges_marked_inert": len(inerted),
                 },
             )
 

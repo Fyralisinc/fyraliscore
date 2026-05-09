@@ -262,19 +262,26 @@ async def promote_pattern_candidate(
     )
     inserted = await models_repo.insert(payload, conn=conn)
 
-    # Back-link: every constituent gains a supporting_model_ids pointer
-    # to the new Pattern (so retrieval walking `supporting_model_ids`
-    # sees the Pattern as a reason to pull this Model).
-    await conn.execute(
-        """
-        UPDATE models
-        SET supporting_model_ids = supporting_model_ids || ARRAY[$1]::uuid[]
-        WHERE id = ANY($2::uuid[])
-          AND NOT (supporting_model_ids @> ARRAY[$1]::uuid[])
-        """,
-        inserted.id,
-        list(cand["constituent_model_ids"]),
-    )
+    # S1 dual-write: every constituent gets a typed `instance_of`
+    # edge to the new Pattern AND its supporting_model_ids array
+    # gains the Pattern id (legacy back-link preserved). Goes through
+    # the chokepoint helper so the drift detector stays happy.
+    #
+    # Direction note: `instance_of` reads "constituent IS AN INSTANCE
+    # OF pattern" — so the typed edge is (constituent, pattern,
+    # 'instance_of'). The legacy supporting_model_ids on the
+    # constituent gets the pattern id appended (matches pre-S1
+    # behavior).
+    from services.models.repo import _set_model_relations  # local to avoid circular import
+    for constituent_id in cand["constituent_model_ids"]:
+        await _set_model_relations(
+            conn,
+            model_id=constituent_id,
+            tenant_id=cand["tenant_id"],
+            detected_by="precipitation",
+            instance_of=[inserted.id],
+            created_by_event_id=born_from_event_id,
+        )
 
     await conn.execute(
         """
