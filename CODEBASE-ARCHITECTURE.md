@@ -2,17 +2,19 @@
 
 ## Executive Summary
 
-**Company OS** is an organizational intelligence runtime designed to surface real-time insights to a founder/CEO by combining continuous signal ingestion, probabilistic reasoning (Models), executable commitments (Acts), and resource tracking (Resources). The system is single-tenant in the dogfood phase but architecturally multi-tenant ready. It consists of:
+**Company OS** is an organizational intelligence runtime designed to surface real-time insights to a founder/CEO by combining continuous signal ingestion, probabilistic reasoning (Models), executable commitments (Acts), and resource tracking (Resources). The system is multi-tenant capable and is currently deployed in two modes: a single-tenant dogfood and a public multi-tenant **demo** environment (`demo.fyralis.xyz`) running under Docker Compose with Nginx + Let's Encrypt. It consists of:
 
-- A **Python FastAPI gateway** (`services/gateway/main.py:8000`) that coordinates all backend services
-- A **React/Vite UI** (`ui/src/App.tsx`) running on port 5173
+- A **Python FastAPI gateway** ([services/gateway/main.py](services/gateway/main.py), port 8000) that coordinates all backend services
+- A **React/Vite UI** ([ui/src/App.tsx](ui/src/App.tsx)) running on port 5173, organized as a multi-surface cockpit (`/` Today, `/structure`, `/history`, `/mind`, `/demo`)
 - A **PostgreSQL 16** database with pgvector (vector search)
 - **Ollama** for local embeddings (`nomic-embed-text:v1.5`)
-- **DeepSeek LLM** for reasoning (Think) and rendering (Greeting/Query)
-- A **simulation harness** for authoring test scenarios
+- A **multi-provider LLM stack** (default **Anthropic `claude-opus-4-7`**, plus OpenAI and DeepSeek) for Think reasoning and Rendering
+- A **simulation harness** for authoring test scenarios, plus an in-UI **Signal Simulator** for multi-channel injection
+- A **demo company** subsystem (Pelago, Truss, Northwind, Meridian) with per-tenant model routing, budget caps, and live signal-injection sessions
 - An **LSOB benchmark suite** (Longitudinal Synthetic-Organization Benchmark) for evaluating reasoning quality
+- A **V1 substrate** track (audit chain, reconciliation, region locks, falsifier predicates) tracked in [services/think/SUBSTRATE_SEMANTICS.md](services/think/SUBSTRATE_SEMANTICS.md) and [V1_PR_PROMPTS.md](V1_PR_PROMPTS.md)
 
-The core workflow is: **Ingest signal → Create Observation → Trigger Think → Generate Models/Acts → Cache & Render → Display to CEO**
+The core workflow is: **Ingest signal → Create Observation → Trigger Think → Generate Models / Acts / Recommendations → Cache & Render → Display to CEO across Today / History / Structure surfaces**
 
 ---
 
@@ -51,18 +53,23 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       UI (React/Vite, :5173)                        │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ CEO View: Greeting | Query Grid | Cards | Close Line | Ask   │  │
-│  │ Subscribes to: /view/ceo/stream (WebSocket heartbeat)        │  │
+│  │ Multi-surface cockpit (react-router):                        │  │
+│  │   /          Today  — recommendations, cards, ground input   │  │
+│  │   /structure        — relationship graph, resources, commits │  │
+│  │   /history          — chronicle, arcs, predictions           │  │
+│  │   /mind             — loops, notes, reminders                │  │
+│  │   /demo             — DemoPicker → DemoLanding (VC pitch)    │  │
+│  │ Streams: WS /view/ceo/stream + SSE /v1/recommendations/stream│  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
-                            ↕ HTTP/WS
+                            ↕ HTTP / WS / SSE
 ┌─────────────────────────────────────────────────────────────────────┐
 │                 Gateway (FastAPI, :8000)                            │
-│  ┌─────────────┬──────────────┬──────────────┬──────────────┐      │
-│  │ /ingest/*   │ /view/ceo/*  │ /rendering/* │ /simulation/ │      │
-│  │ (Ingestion  │ (CEO view    │ (Internal    │ (Dev UI)     │      │
-│  │  handlers)  │  endpoints)  │  RND calls)  │              │      │
-│  └─────────────┴──────────────┴──────────────┴──────────────┘      │
+│  ┌──────────────┬──────────────┬──────────────┬──────────────┐     │
+│  │ /ingest/*    │ /view/ceo/*  │ /rendering/* │ /simulation/ │     │
+│  │ /v1/today    │ /v1/history  │ /v1/structure│ /v1/demo/*   │     │
+│  │ /v1/recommendations/*  /v1/cards/{id}/conversation         │     │
+│  └──────────────┴──────────────┴──────────────┴──────────────┘     │
 │                            ↓                                        │
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │ Service Layer (in-process)                                  │  │
@@ -70,8 +77,13 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 │  │  • Greeting (cache, scheduler, snapshot, rendering_adapter) │  │
 │  │  • Query (ask/answer, prefetch, strategies)                 │  │
 │  │  • Rendering (voice rules, prompts)                         │  │
-│  │  • Think (reason, applier, validator)                       │  │
-│  │  • Retrieval (primary, second-pass, maintenance)            │  │
+│  │  • Think (reason, applier, validator, audit, reconciler,    │  │
+│  │           cascade, region_locks)                            │  │
+│  │  • Retrieval (primary, second-pass, maintenance, pathways)  │  │
+│  │  • Recommendations (handlers, watchers, repo)               │  │
+│  │  • Conversations (per-card probe / dialogue)                │  │
+│  │  • Today / History (UI aggregators)                         │  │
+│  │  • Demo (sessions, budget, model routing, simulator, sse)   │  │
 │  │  • Models, Observations, Acts, Resources repos              │  │
 │  │  • Entity aliases, Actors                                   │  │
 │  └─────────────────────────────────────────────────────────────┘  │
@@ -79,14 +91,15 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 └─────────────────────────────────────────────────────────────────────┘
                             ↕
 ┌──────────────────────────────────────────────────────────────────────┐
-│           PostgreSQL 16 (Postgres.local:5432)                        │
+│           PostgreSQL 16 (pgvector/pg16)                              │
 │  ┌──────────────┬──────────────┬──────────────┬──────────────┐      │
 │  │ Observations │ Models       │ Acts         │ Resources    │      │
 │  │ (partitioned │ (indexed)    │ (Goals,      │ (tracked)    │      │
 │  │  by time)    │              │  Commits,    │              │      │
 │  │              │              │  Decisions)  │              │      │
-│  │ + Actors     │ + Proposals  │ + Triggers   │ + Xacts      │      │
-│  │ + Cache      │ + Readings   │ + Queue      │              │      │
+│  │ + Actors     │ + Audit chain│ + Triggers   │ + Xacts      │      │
+│  │ + Cache      │ + Watchers   │ + Queue      │              │      │
+│  │ + Recs       │ + Reconcile  │ + Artifacts  │ + Demo cfg   │      │
 │  └──────────────┴──────────────┴──────────────┴──────────────┘      │
 │  + pgvector (HNSW) for semantic search                              │
 │  + PARTITION BY occurred_at (quarterly)                             │
@@ -99,19 +112,30 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
         └─────────────────────────────────────┘
                             ↕
         ┌─────────────────────────────────────┐
-        │ DeepSeek LLM API                    │
-        │ deepseek-reasoner (Think)           │
-        │ deepseek-chat (Rendering)           │
+        │ LLM Providers (pluggable)           │
+        │ • Anthropic claude-opus-4-7 (default)│
+        │ • OpenAI gpt-4o                      │
+        │ • DeepSeek (reasoner / chat)         │
+        │ Per-tenant routing in demo mode      │
         └─────────────────────────────────────┘
 
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Background Workers (separate processes, polling Postgres)           │
-│  • Think Worker: drains think_trigger_queue (T1/T2/T3/T4 triggers)│
+│  • Think Worker: drains think_trigger_queue (T1/T2/T3/T4 triggers) │
 │  • Post-Commit Worker: persists model state changes                 │
 │  • Greeting Scheduler: refreshes CEO view cache every 15 min       │
+│  • Recommendation watchers: falsifier predicate firing              │
 │  • (Future) Entity Resolver: resolves actor/entity refs             │
 │  • (Future) Anomaly Processor: detects outliers                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ Production Deployment (demo.fyralis.xyz, AWS Lightsail)             │
+│  docker-compose.yml services:                                       │
+│   postgres (pgvector/pg16) │ ollama │ gateway │ think_worker        │
+│   post_commit_worker       │ ui (nginx) │ nginx-proxy │ acme-companion │
+│  TLS via Let's Encrypt (acme-companion); SPA cache in nginx-ui.conf │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -140,7 +164,7 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
        - **Pathway C** (temporal): find Models created in last 7 days with relevant scope
        - Merge results, rank by (pathway_weight × position_decay), return top 80 Models
    - **Reasoning** (`services/think/reason.py`):
-     - Pass observation + retrieved Models to DeepSeek-reasoner
+     - Pass observation + retrieved Models to the configured Think model (default `claude-opus-4-7`)
      - Model produces schema-validated JSON:
        ```python
        {
@@ -164,7 +188,7 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
      - Assemble `SubstrateSnapshot`: top active Models, active Commitments, resource health, recent state changes, top 3 anomalies, CEO conversation context
    - **Rendering** (RND via HTTP adapter):
      - Send `RenderGreetingRequest` to `POST /rendering/greeting`
-     - RND calls DeepSeek-chat with prose prompt: "Write a concise greeting for the CEO mentioning these situation Models..."
+     - RND calls the configured rendering model with prose prompt: "Write a concise greeting for the CEO mentioning these situation Models..."
      - Returns `RenderGreetingResponse` with `body_html`, cost attribution
    - **Cache** (`services/greeting/cache.py`):
      - Store in Postgres `view_ceo_cache` table with `cache_key='greeting'`, `cached_content={body_html, meta}`, `cached_at=now()`
@@ -206,7 +230,7 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 
 | Subdirectory | Purpose | Key Files |
 |---|---|---|
-| `lib/llm` | LLM provider abstraction | `provider.py:77-150` — pluggable backend (Anthropic/OpenAI/DeepSeek); `tests/test_provider.py` |
+| `lib/llm` | LLM provider abstraction | `provider.py` — pluggable backend; **default Anthropic `claude-opus-4-7`**, plus OpenAI and DeepSeek (OpenAI-API-compatible w/ strict tool mode); per-tenant override via demo `model_routing`; cost ledger per model |
 | `lib/embeddings` | Vector embedding service | `ollama.py:1-80` — wraps Ollama HTTP; `tests/test_ollama.py` |
 | `lib/nexus` | Agent attestation stub | `client.py` — Phase 4 integration point (currently mock) |
 | `lib/shared` | Shared types, DB, errors | `types.py:1-150` — Pydantic models for all rows; `db.py` — asyncpg helpers; `errors.py` — domain exceptions; `ids.py` — UUID7 generation; `trust.py` — trust tier logic |
@@ -334,12 +358,13 @@ The system is organized as a single-process app with logical service boundaries.
     recorded_at: datetime
   ```
 
-#### **services/think** (`/Users/rachinkalakheti/fyraliscore/services/think/`)
-- **Purpose**: Cognitive engine — reasons about signals to generate Models/Acts
+#### **services/think** ([services/think/](services/think/))
+- **Purpose**: Cognitive engine — reasons about signals to generate Models / Acts / Recommendations; enforces V1 substrate semantics (audit chain, reconciliation, region locks)
+- **Canonical spec**: [services/think/SUBSTRATE_SEMANTICS.md](services/think/SUBSTRATE_SEMANTICS.md) (V1 baseline)
 - **Key Files**:
-  - `worker.py:1-28` — main loop; polls `think_trigger_queue` with FOR UPDATE SKIP LOCKED; spawns `think()` calls
+  - `worker.py` — main loop; polls `think_trigger_queue` with FOR UPDATE SKIP LOCKED; spawns `think()` calls
   - `reason.py` — core reasoning logic; calls LLM with prompt template; parses response into schema
-  - `applier.py` — applies LLM output (inserts/updates Models, enqueues Acts)
+  - `applier.py` — applies LLM output (inserts/updates Models, enqueues Acts); enforces region lock and trigger-id uniqueness
   - `validator.py` — schema validation post-LLM
   - `llm_reason.py` — LLM call wrapper with retries, cost attribution
   - `prompt.py` — prompt engineering; templates for T1/T2/T3/T4
@@ -347,6 +372,15 @@ The system is organized as a single-process app with logical service boundaries.
   - `circuit_breaker.py` — fallback behavior if LLM is unavailable
   - `observability.py` — metrics (latency, cost, errors)
   - `post_commit.py` — post-commit side effects (cache invalidation, notification)
+  - **V1 substrate additions**:
+    - `audit.py` — Q5 audit chain: `emit_audit_event()`, `get_audit_chain()`, `emit_reconciliation_merge_audit()`; backed by `audit_events` table
+    - `region_locks.py` — W3.Q4 advisory-lock region serialization via `pg_advisory_xact_lock`
+    - `reconciler.py` — auto-merge / human-review flow for duplicate Models; emits `reconciliation_events`
+    - `cascade.py` — cascade operations and error handling for downstream Model updates
+    - `auto_create_commitment.py` — automatic commitment creation from Think output
+    - `strict_schema.py`, `diff_schema.py` — strict JSON schema validation and diff detection
+    - `thresholds.py`, `anomaly_integration.py` — per-tenant anomaly thresholds (P90/P95/P99) feeding T3 triggers
+    - `debug_capture.py` — sidecar capture into `think_run_artifacts` (debug UI)
 - **Trigger Types** (`ARCHITECTURE-FINAL.md §7`):
   - **T1** — New signal (observation): pathway mix A+B+C
   - **T2** — Prediction resolution due: pathways A+D
@@ -469,6 +503,7 @@ The system is organized as a single-process app with logical service boundaries.
     - `email.py` — email parsing
     - `linear.py` — Linear issue state extraction
     - `calendar.py` — calendar event extraction
+    - `system.py` — system-emitted observations (state changes from Recommendations/Acts handlers)
   - `handlers/__init__.py` — `CHANNEL_TRUST_MAP` (default trust tier per channel)
 - **Handler Contract** (`core.py:1-7`):
   ```python
@@ -482,10 +517,10 @@ The system is organized as a single-process app with logical service boundaries.
     entities_hint: list[str]  # ["rate limiter", "issue 2311"]
   ```
 
-#### **services/gateway** (`/Users/rachinkalakheti/fyraliscore/services/gateway/`)
-- **Purpose**: HTTP entry point; auth, rate limiting, request context
+#### **services/gateway** ([services/gateway/](services/gateway/))
+- **Purpose**: HTTP entry point; auth, rate limiting, request context; mounts all sub-routers
 - **Key Files**:
-  - `main.py:1-27` — FastAPI app builder; `build_app(pool, actor_repo, alias_repo, embedder, rate_limiter)` factory
+  - `main.py` — FastAPI app builder; `build_app(pool, actor_repo, alias_repo, embedder, rate_limiter)` factory
   - `auth.py` — `validate_token(token)`, `create_session(body)` helpers
   - `db_bootstrap.py` — pool creation, codec registration, schema validation
   - `logging_config.py` — structlog setup
@@ -494,6 +529,16 @@ The system is organized as a single-process app with logical service boundaries.
   - `BearerAuthMiddleware` — extracts `Authorization: Bearer <token>` or `X-Tenant-Id` header
   - `RateLimitMiddleware` — enforces per-tenant/actor quotas
   - `RequestContextMiddleware` — binds request_id, tenant_id to structlog context
+- **Mounted routers**:
+  - Rendering (RND) — `/rendering/*` via `include_router(rnd_router)`
+  - Greeting / CEO view (GRT) — `build_ceo_api_router()` + `build_ceo_stream_router()`
+  - Query (QRY) — `build_query_router()` (`/view/ceo/ask`, `/turn-action`)
+  - **Conversations** — `build_conversations_router()` (`/v1/cards/{id}/conversation`, `/probe`)
+  - **Recommendations** — `/v1/recommendations/*` plus `/stream` (SSE)
+  - **Today / History / Structure** — `/v1/today`, `/v1/history`, `/v1/structure`
+  - **Demo** — `/v1/demo/*` (gated on demo tenant config)
+  - Simulation — `/simulation/*` (when `GATEWAY_MOUNT_SIM=1`)
+  - Debug router — optional, gated on env
 
 #### **services/entity_aliases** (`/Users/rachinkalakheti/fyraliscore/services/entity_aliases/`)
 - **Purpose**: Map textual entity references to canonical entity IDs
@@ -506,6 +551,53 @@ The system is organized as a single-process app with logical service boundaries.
 - **Key Files**:
   - `repo.py` — `ActorRepo.resolve_by_source_actor_ref(channel, ref)` → UUID | None
   - Backing tables: `actors`, `actor_identity_mappings`
+
+#### **services/recommendations** ([services/recommendations/](services/recommendations/))
+- **Purpose**: First-class CEO action list — surfaces actionable Model-derived recommendations with archival, watch, and triage flows
+- **Key Files**:
+  - `repo.py` — `RecommendationsRepo`; backed by `recommendations` table (migration [0022](db/migrations/0022_recommendations.sql))
+  - `handlers.py` — wraps Acts/Resources mutation entry points; emits audit-trail `state_change` observations
+  - `watchers.py` — per-actor "watch for revision" subscriptions on recommendation cards via falsifier predicates (table `model_watchers`, migration [0027](db/migrations/0027_model_watchers.sql))
+- **FastAPI routes** (mounted in gateway):
+  - `GET /v1/recommendations` — list for actor
+  - `POST /v1/recommendations/{id}/act` — apply proposed change
+  - `POST /v1/recommendations/{id}/dismiss` — archive
+  - `POST/DELETE /v1/recommendations/{id}/watch` — falsifier subscription
+  - `POST /v1/recommendations/{id}/triage` — triage workflow
+  - `GET /v1/recommendations/stream` — **SSE** stream of created/updated events
+
+#### **services/conversations** ([services/conversations/](services/conversations/))
+- **Purpose**: Per-card conversation persistence — replaces static card detail sections with a probe-driven dialogue per the Driftwood revision
+- **Key Files**:
+  - `repo.py` — `card_conversations` and `card_exchanges` tables (migration [0024](db/migrations/0024_card_conversations.sql)); session-scoped dialogue state with probed phrases and used chip IDs
+  - `handler.py` — probe resolution: phrase/chip templates (cheap path) + free-form Ask routed through `QueryHandler` with card context
+  - `api.py` — routes mounted at `/v1/cards/{card_id}/conversation` and `/v1/cards/{card_id}/probe`
+
+#### **services/today** ([services/today/](services/today/))
+- **Purpose**: Read-only UI aggregator for the `/` Today page; derives severity/kind/tag/stats from Recommendations + Acts + Resources
+- **Key Files**:
+  - `aggregator.py` — severity formula (`expected_impact × confidence`) + proposition_kind classification
+  - `triage.py` — triage state aggregation
+- **Routes**: served by gateway at `GET /v1/today`; no DB tables of its own
+
+#### **services/history** ([services/history/](services/history/))
+- **Purpose**: Read-only UI aggregator for the `/history` page; reads observations/models/commitments/decisions chronologically
+- **Key Files**:
+  - `aggregator.py`
+- **Routes**: served by gateway at `GET /v1/history`; no DB tables of its own
+
+#### **services/demo** ([services/demo/](services/demo/))
+- **Purpose**: VC-pitch demo tenant infrastructure — multi-company demos (Pelago, Truss, Northwind, Meridian) with budget caps, per-tenant model routing, deterministic seeds, signal-injection sessions
+- **Key Files**:
+  - `repo.py` — backed by `tenants`, `demo_configs`, `demo_sessions`, `demo_session_costs` (migration [0023](db/migrations/0023_demo_infrastructure.sql))
+  - `sessions.py` — session lifecycle
+  - `budget.py` — per-session cost caps and enforcement
+  - `model_routing.py` — per-tenant LLM provider/model selection (overrides global default)
+  - `simulator.py` — signal-injection simulator for live VC walkthroughs
+  - `snapshot.py` — pre-baked substrate snapshots (see [demo/snapshots/](demo/snapshots/))
+  - `notifications.py`, `sse.py` — SSE plumbing for demo recommendation streams
+  - `router.py` — FastAPI routes under `/v1/demo/*`
+- **Corpora**: synthetic event streams in [corpora/pelago/](corpora/pelago/) (LSOB simulator + synthesis)
 
 #### **Other Services** (supporting)
 - **services/bridge** — external system integration stubs
@@ -528,7 +620,7 @@ The system is organized as a single-process app with logical service boundaries.
   - Indexes: HNSW on embeddings, GIN on JSON arrays, B-tree on common predicates
   - Partitions: observations by occurred_at (quarterly)
 
-- **`db/migrations/0002_*.sql` through `0019_*.sql`**:
+- **`db/migrations/0002_*.sql` through `0019_*.sql`** — early waves:
   - Actor sessions, Think trigger queue, entity review queue, relationship maintenance, calibration, access control, cost attribution, etc.
   - Example: `0004_think_trigger_queue.sql` creates:
     ```sql
@@ -544,6 +636,18 @@ The system is organized as a single-process app with logical service boundaries.
     );
     ```
 
+- **`db/migrations/0020_*.sql` through `0030_*.sql`** — V1 substrate, demo, and audit waves:
+  - **0020** `think_run_artifacts` — sidecar capture of each Think pipeline stage (trigger, retrieval, prompt, response, validation, apply, post_commit, cascade, error) for the debug UI
+  - **0021** Review-1 remediation: `commitments.is_maintenance`, `anomaly_thresholds` (per-tenant P90/P95/P99 rolling stats), `dedup_keys_seen` (publisher debounce ledger)
+  - **0022** Recommendations: `recommendations` table; `propositions.target_actor_id` generated column and `caused_act_change_id`; partial index for the CEO action-list ranker
+  - **0023** Demo infrastructure: `tenants` registry, `demo_configs` (model routing, cost cap, determinism seed), `demo_sessions`
+  - **0024** `card_conversations` — per-card conversation persistence with probed phrases and used chip IDs
+  - **0027** `model_watchers` — per-actor "watch for revision" subscriptions on recommendation cards with falsifier predicates
+  - **0028** Pelago demo company registration (alongside Truss / Northwind / Meridian)
+  - **0029** `reconciliation_events` — audit trail for reconciler decisions (`auto_merge`, `human_review`, `no_match`)
+  - **0030** **Audit chain (Q5)**: per-Model `audit_events` table with state transitions, `changed_fields`, re-assertion tracking, and reconciliation-merge provenance
+  - 0025 / 0026 are intentionally absent (skipped numbers).
+
 - **`db/seed/`**:
   - SQL and Python scripts to bootstrap test/demo data
   - `personas_seed.sql` — default personas for dogfood
@@ -557,29 +661,50 @@ The system is organized as a single-process app with logical service boundaries.
 - **Vite** 5.4.8 (dev server on :5173)
 - **TypeScript** 5.5.4
 - **TailwindCSS** 3.4.13 (styling)
+- **react-router-dom** 6.26.2 (multi-page routing)
+- **ws** 8.18.0 (WebSocket client; types via `@types/ws`)
 - **Playwright** 1.47.2 (e2e tests)
 - **Vitest** 2.1.2 (unit tests)
+- **autoprefixer**, **postcss** (CSS pipeline)
 
-**Key Components** (`ui/src/components/`):
-- **App.tsx:19-60** — root layout; lifts all state (active card, turns, input focus)
-- **TopBar.tsx** — navigation, logo, status indicator
-- **Greeting.tsx** — prose rendering of the greeting block
-- **QueryGrid.tsx** — query chip grid; each chip is a pre-loaded question
-- **Card.tsx** — card shell (observation, decision, or question kind)
+**Pages** ([ui/src/pages/](ui/src/pages/)):
+- `/` — **Today** (CEO cockpit; default surface)
+- `/structure` — **Structure** (relationship graph, resource aggregates, commitments)
+- `/history` — **History** (chronicle, arcs, predictions)
+- `/mind` — **MyMind** (loops, notes, reminders)
+- `/demo` — **DemoPicker** → **DemoLanding** (VC pitch entry)
+
+**Key Components** ([ui/src/components/](ui/src/components/)):
+- **App.tsx** — root layout; routes between Today/Structure/History/Mind/Demo via `react-router`; mounts global Sidebar, ShortcutsOverlay, TriageToast, ArtifactDrawer
+- **Sidebar.tsx** — left-rail nav across the five surfaces
+- **PageHeader.tsx**, **FilterBar.tsx**, **JustUpdated.tsx** — shared chrome
+- **RecCard.tsx** — recommendation/card shell (observation, decision, or question kind)
 - **CardExpanded.tsx** — expanded card with reasoning, evidence, action verbs
-- **GroundInput.tsx** — text input for CEO Ask; `/` shortcut to focus
-- **ConversationTurn.tsx** — rendered turn history from Ask/Answer pipeline
-- **CloseLine.tsx** — summary metrics (signal count, external moves, calibration)
-- **Icon.tsx** — Lucide icon wrapper with fallbacks
+- **AskZone.tsx** (formerly GroundInput) — text input for CEO Ask; `/` shortcut to focus
+- **Conversation.tsx**, **ConversationTurn.tsx**, **ThinkingTurn.tsx** — Ask/Answer dialogue rendering
+- **EmptyState.tsx**, **RoutedCoda.tsx**
+- **components/mind/** — `HoldPicker`, `LoopCard`, `NoteCard`, `ReminderCard`, `MindList`, `FilterPanel`, `MindLayerStrip`, `MindNarrativeBand`, `PromoteModal`
+- **components/history/** — `Chronicle`, `Arcs`, `EventPanel`, `Predictions`, `HistoryLayerStrip`, `HistoryNarrativeBand`
+- **components/structure/** — `RelationshipGraph`, `ResourceAggregateView`, `CommitmentList`, `MapControls`
+- **components/SignalSimulator/** — multi-tab in-UI signal injector (Email, GitHub, Calendar, Slack, Custom, Suggested)
 
-**Hooks** (`ui/src/hooks/`):
-- **useHome()** — fetches `GET /view/ceo/home`, subscribes to `WS /view/ceo/stream`
-- **useAsk()** — manages conversation turns; `ask(query)` → `POST /view/ceo/ask`
+**Hooks** ([ui/src/hooks/](ui/src/hooks/)):
+- `useToday()` — fetches `GET /v1/today`; subscribes to `WS /view/ceo/stream` and SSE updates (replaces the legacy `useHome`)
+- `useHistory()` — fetches `GET /v1/history`
+- `useMind()` — loops/notes/reminders state
+- `useConversation()` — per-card probe + dialogue state, posting to `/v1/cards/{id}/conversation` and `/probe`
+- `useRecommendationStream()` — **SSE** subscription to `/v1/recommendations/stream` for live recommendation events (used in demo mode)
+- `useAsk()` — Ask/Answer pipeline; `ask(query)` → `POST /view/ceo/ask`
 
-**API Layer** (`ui/src/api/`):
-- **types.ts** — TypeScript contracts (mirrors CONTRACTS.md)
-- **client.ts** — HTTP helpers with auth token injection
-- **websocket.ts** — WS subscription manager
+**API Layer** ([ui/src/api/](ui/src/api/)):
+- `types.ts`, `client.ts` — base contracts and HTTP client with auth-token injection
+- `stream.ts` — WebSocket subscription manager (`/view/ceo/stream`)
+- `today-types.ts`, `today-client.ts`, `today-mock.ts` — Today payloads
+- `history-client.ts`, `structure-client.ts` — page-specific clients
+- `recommendation-stream.ts` — **SSE** client for `/v1/recommendations/stream`
+- `demo-client.ts`, `demo-picker-client.ts` — demo session lifecycle
+- `auth.ts` — bearer / dev-token bootstrap
+- `mock-data.ts` — fixtures for offline UI dev
 
 **Styling**: Tailwind utility classes; custom variables for Company OS colors (serif font, highlight tint, citations).
 
@@ -973,6 +1098,37 @@ CREATE TABLE actor_identity_mappings (
 - **`entity_aliases`** and **`entity_review_queue`**
   - Entity resolution worker uses these (Wave 2-B, not fully deployed)
 
+- **`recommendations`** (migration 0022)
+  - `id, tenant_id, target_actor_id, kind, proposed_change JSONB, expected_impact, confidence, state, created_at, archived_at`
+  - Indexed for the CEO action-list ranker via `(tenant_id, target_actor_id, state)` partial index
+
+- **`model_watchers`** (migration 0027)
+  - `id, tenant_id, actor_id, model_id, falsifier_predicate JSONB, fired_at, cleared_at`
+  - Per-actor "watch for revision" subscriptions tied to recommendation cards
+
+- **`card_conversations`** + **`card_exchanges`** (migration 0024)
+  - Per-card dialogue state: `probed_phrases JSONB`, `used_chip_ids UUID[]`
+  - Backs `/v1/cards/{id}/conversation` and `/probe`
+
+- **`think_run_artifacts`** (migration 0020)
+  - Per-stage sidecar for each Think run (trigger, retrieval, prompt, response, validation, apply, post_commit, cascade, error)
+  - Powers the debug UI
+
+- **`anomaly_thresholds`**, **`dedup_keys_seen`** (migration 0021)
+  - Per-tenant P90/P95/P99 rolling stats (T3 anomaly trigger gating)
+  - Publisher debounce ledger to suppress redundant ingest
+
+- **`reconciliation_events`** (migration 0029)
+  - Audit trail for the reconciler: `auto_merge` / `human_review` / `no_match`, with matched-model tracking
+
+- **`audit_events`** (migration 0030, Q5 audit chain)
+  - Per-Model state transitions, `changed_fields`, re-assertion tracking, reconciliation-merge provenance
+  - Written by `services/think/audit.py`; powers chain replay and contestability views
+
+- **`tenants`**, **`demo_configs`**, **`demo_sessions`**, **`demo_session_costs`** (migration 0023)
+  - Multi-tenant registry; per-tenant model routing + cost cap + determinism seed; per-session lifecycle and cost ledger
+  - Backs the public demo at `demo.fyralis.xyz` (Pelago, Truss, Northwind, Meridian)
+
 ---
 
 ## 6. External Dependencies
@@ -1012,9 +1168,9 @@ From `pyproject.toml:12-24`:
 | `DATABASE_URL` | Postgres connection | `postgresql://company_os:company_os@localhost:5432/company_os` |
 | `OLLAMA_URL` | Embeddings service | `http://localhost:11434` |
 | `OLLAMA_EMBED_MODEL` | Embedding model name | `nomic-embed-text` |
-| `LLM_PROVIDER` | Active provider | `anthropic` \| `openai` |
+| `LLM_PROVIDER` | Active provider (default `anthropic`) | `anthropic` \| `openai` \| `deepseek` |
 | `LLM_API_KEY` | Provider secret | (from env, not in .env) |
-| `LLM_MODEL` | Model name | `claude-opus-4-7` |
+| `LLM_MODEL` | Model name (default `claude-opus-4-7`) | `claude-opus-4-7` |
 | `LLM_TIMEOUT_SECONDS` | Call timeout | 30 |
 | `NEXUS_URL` | Agent attestation (Phase 4) | `http://localhost:8090` |
 | `DEFAULT_TENANT_ID` | Fallback tenant (dev only) | UUID |
@@ -1022,6 +1178,7 @@ From `pyproject.toml:12-24`:
 | `SLACK_SIGNING_SECRET` | Slack webhook verification | (from Slack app settings) |
 | `AUTH_BOOTSTRAP_SECRET` | Bearer token verification | (optional; if unset, no auth) |
 | `GATEWAY_OWNS_POOL` | Gateway manages DB pool lifetime | `0` (tests inject) / `1` (long-running) |
+| `DEBUG_ARTIFACT_CAPTURE` | Write `think_run_artifacts` rows | `1` (dogfood) |
 
 ### **.env.dogfood** (`/Users/rachinkalakheti/fyraliscore/.env.dogfood`)
 
@@ -1040,6 +1197,56 @@ Overrides for the single-gateway dogfood topology:
 | `GREETING_REFRESH_INTERVAL_SECONDS` | 900 | Refresh every 15 min |
 | `GRT_RENDERING_BASE_URL` | `http://127.0.0.1:8000` | Self-call for RND in single-gateway |
 | `DEBUG_ARTIFACT_CAPTURE` | 1 | Enable think_run_artifacts logging |
+
+### **Demo deployment env**
+
+The public demo (`demo.fyralis.xyz`) layers additional config used by `services/demo` and the per-tenant model-routing path:
+
+| Variable | Purpose |
+|---|---|
+| `DEMO_DEFAULT_TENANT` | Tenant slug when `/demo` is opened with no selection |
+| `DEMO_BUDGET_USD_PER_SESSION` | Per-session cost cap enforced by `services/demo/budget.py` |
+| `DEMO_MODEL_ROUTING_*` | Per-tenant LLM provider/model overrides |
+| `DEMO_DETERMINISM_SEED` | Optional seed for reproducible demo runs |
+| `LETSENCRYPT_HOST`, `VIRTUAL_HOST`, `VIRTUAL_PORT` | Picked up by `nginx-proxy` + `acme-companion` containers |
+
+---
+
+## 7a. Deployment & Infrastructure
+
+The repo ships a full container topology for the public demo at **`demo.fyralis.xyz`** (AWS Lightsail, 4 GB).
+
+### **Docker images**
+- [Dockerfile](Dockerfile) — Python 3.11; runs `uvicorn services.gateway.main:app` on `:8000`. Same image is reused for `gateway`, `think_worker`, and `post_commit_worker` (entrypoint overridden).
+- [Dockerfile.ui](Dockerfile.ui) — multi-stage Node 20 build → Nginx Alpine static server; cache-busting headers for hashed assets, long-lived cache for static, no-cache for `index.html`.
+
+### **docker-compose.yml** ([docker-compose.yml](docker-compose.yml))
+Nine services:
+
+| Service | Image | Role |
+|---|---|---|
+| `postgres` | `pgvector/pgvector:pg16` | Primary DB; healthcheck-gated |
+| `ollama` | `ollama/ollama:latest` | Embeddings; auto-pulls `nomic-embed-text` on boot |
+| `gateway` | local `Dockerfile` | FastAPI app on `:8000` |
+| `think_worker` | local `Dockerfile` | Runs `scripts/run_think_worker.py` |
+| `post_commit_worker` | local `Dockerfile` | Runs `scripts/run_post_commit_worker.py` |
+| `ui` | local `Dockerfile.ui` | React SPA served via Nginx |
+| `nginx-proxy` | `nginxproxy/nginx-proxy` | Reverse proxy; reads `VIRTUAL_HOST` labels |
+| `acme-companion` | `nginxproxy/acme-companion` | Let's Encrypt TLS issuance/renewal |
+| (volumes) | — | `pg_data`, `ollama_models`, `acme_certs`, `acme_html`, `nginx_vhost` |
+
+### **Nginx**
+- [nginx-ui.conf](nginx-ui.conf) — SPA routing (`try_files → index.html`); 1-year cache for static assets, no-cache for `index.html`.
+- [nginx/](nginx/) — vhost-overrides directory mounted into `nginx-proxy` (currently empty placeholder).
+
+### **TLS**
+- `acme-companion` issues and renews Let's Encrypt certs for `demo.fyralis.xyz` based on `LETSENCRYPT_HOST` labels on the `ui` and `gateway` services.
+
+### **Demo & corpora artifacts**
+- [demo/](demo/) — `generation/` (model generation pipeline), `snapshots/` (pre-baked substrate snapshots loaded for VC pitches), `SPEAKER-NOTES.md`.
+- [corpora/](corpora/) — `pelago/` (LSOB-generated event corpus), `pelago.jsonl.zst` (compressed event stream).
+- [V1_PR_PROMPTS.md](V1_PR_PROMPTS.md) — sequenced prompt plan for the V1 substrate PRs (PR 0 audit → PR 1 audit chain → PR 2 confidence-as-strength → PR 3 preconditions → PR 4 LLM reconciliation → PR 5 entity hierarchy).
+- [truss_run/](truss_run/), [truss_run_2/](truss_run_2/) — adversarial harness execution artifacts (manifest, signals, snapshots, `model_events.jsonl`, `ground_truth.jsonl`, `final_substrate.json`, `summary_stats.json`, `errors.log`).
 
 ---
 
@@ -1080,19 +1287,21 @@ tests/
 
 ## 9. UI — Tech Stack & Pages
 
-### **Pages** (routes in `ui/src/App.tsx`):
-- **/** — CEO home view (main surface)
-  - Greeting (top)
-  - Query grid (chips)
-  - Cards (observations, decisions, questions)
-  - Close line (metrics)
-  - Conversation turns (from Ask/Answer)
-  - Ground input (CEO Ask field)
+### **Pages** (routes in [ui/src/App.tsx](ui/src/App.tsx) via `react-router`):
 
-### **WebSocket Connection** (`useHome()` hook):
-- **`WS /view/ceo/stream`** — subscribe to real-time updates
-- Receives messages: `{type: 'greeting_updated'}`, `{type: 'cards_updated'}`, `{type: 'query_grid_updated'}`, `{type: 'status_updated'}`
-- Heartbeat every 30s to detect disconnection
+| Route | Page | Surface |
+|---|---|---|
+| `/` | [Today](ui/src/pages/) (default) | CEO cockpit: recommendations, cards, AskZone, conversation turns |
+| `/structure` | [Structure](ui/src/pages/Structure.tsx) | Relationship graph, resource aggregates, commitments |
+| `/history` | [History](ui/src/pages/History.tsx) | Chronicle, arcs, event panel, predictions |
+| `/mind` | [MyMind](ui/src/pages/MyMind.tsx) | Loops, notes, reminders |
+| `/demo` | [DemoPicker](ui/src/pages/DemoPicker.tsx) → [DemoLanding](ui/src/pages/DemoLanding.tsx) | VC-pitch demo entry; selects company (Pelago/Truss/Northwind/Meridian), opens session |
+
+The legacy single-page "CEO home" surface has been split into Today (recommendations + ground input), Structure (the org graph), and History (the chronicle).
+
+### **Real-time Streams**:
+- **`WS /view/ceo/stream`** — view-cache updates (`greeting_updated`, `cards_updated`, `query_grid_updated`, `status_updated`); 30s heartbeat
+- **`SSE /v1/recommendations/stream`** — live recommendation `created` / `updated` events (preferred path in demo mode); managed by `useRecommendationStream()`
 
 ### **Styling**:
 - **Tailwind CSS** for utility classes
@@ -1104,13 +1313,15 @@ tests/
   - `.note` — secondary/parenthetical
 
 ### **Keyboard Shortcuts**:
-- **`/`** — focus ground input
+- **`/`** — focus AskZone
 - **`Esc`** — close expanded card
+- **`?`** — toggle ShortcutsOverlay
 
 ### **Error States**:
 - Missing cache keys → render partial with staleness warning
 - Offline mode → show cached state + "offline" indicator
 - Rendering failure → fallback prose + mock reasoning
+- Demo budget exhausted → banner + read-only fallback
 
 ---
 
@@ -1214,7 +1425,7 @@ Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
      - Recent state changes: all 7 observations
      - Active commitments: payment fix (due Monday), Acme followup (due Tuesday)
      - Anomalies: none (within expected variance)
-   - **Render greeting**: RND calls DeepSeek-chat
+   - **Render greeting**: RND calls the rendering model
      - Input: "Here are the key Models and recent signals. Write a concise greeting for the CEO."
      - Output: "Your Acme renewal is at risk due to payment service reliability concerns. Alice shipped the fix Monday morning; we're stabilizing. Decision call is Tuesday morning."
    - **Cache**: store in `view_ceo_cache` with cache_key='greeting'
@@ -1225,7 +1436,7 @@ Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
    - **Ask endpoint**: `POST /view/ceo/ask` with `{query: "what's our position on the Acme renewal?"}`
    - **Classify**: strategic query
    - **Retrieve**: second_pass context; re-rank Models with "Acme" in scope
-   - **Render**: RND calls DeepSeek-chat with Models, Commitments, Decisions about Acme
+   - **Render**: RND calls the rendering model with Models, Commitments, Decisions about Acme
    - **Response**: "Acme decision is this morning at 10 AM. As of Monday morning, payment infrastructure passed Alice's fix and is stabilizing. Sales (Tomas) is prepped with talking points. Priya's team monitors stability through the call."
    - **UI**: renders ConversationTurn with verbs: 'save', 'followup', 'done'
 
@@ -1272,7 +1483,7 @@ Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
 
 3. **Retrieval is Critical**: Four pathways (structural, semantic, temporal, pattern) ensure context diversity. Think receives the best-ranked Models from all paths merged and scored.
 
-4. **Rendering is Separate from Reasoning**: Think (DeepSeek-reasoner, complex reasoning) ≠ Rendering (DeepSeek-chat, prose generation). This separation allows:
+4. **Rendering is Separate from Reasoning**: Think (reasoning model, e.g. `claude-opus-4-7` or `deepseek-reasoner`) ≠ Rendering (chat model, e.g. `claude-sonnet-4-5` or `deepseek-chat`). This separation allows:
    - Fast iteration on voice/tone (Rendering)
    - Reuse of reasoning across multiple output formats
    - Cost optimization (reasoning is expensive, rendering is cheaper)
