@@ -1,1104 +1,5 @@
 [
   {
-    "stage": "retrieval",
-    "name": "pathway_A_actor_scope",
-    "intent": "T1 with scope_actor seeds pathway A and surfaces actor-scoped Models",
-    "passed": true,
-    "elapsed_ms": 115,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "model_ids": [
-        "019e0161-c152-7000-bd72-1cfdb845238c",
-        "019e0161-c18a-7000-acbf-dfd834f1a367"
-      ],
-      "scores": {
-        "019e0161-c152-7000-bd72-1cfdb845238c": 0.03278688524590164,
-        "019e0161-c18a-7000-acbf-dfd834f1a367": 0.02258064516129032
-      },
-      "pathways_run": [
-        "A",
-        "B",
-        "C"
-      ]
-    },
-    "expected": {
-      "in_scope": "019e0161-c152-7000-bd72-1cfdb845238c",
-      "out_scope": "019e0161-c18a-7000-acbf-dfd834f1a367"
-    }
-  },
-  {
-    "stage": "retrieval",
-    "name": "pathway_B_semantic_top1",
-    "intent": "Pathway B ranks the cosine-nearest Model first",
-    "passed": true,
-    "elapsed_ms": 110,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "model_ids": [
-        "019e0161-c151-7000-995b-a5b030fe0411",
-        "019e0161-c189-7003-823a-f040ea685c36"
-      ]
-    },
-    "expected": {
-      "first_must_be": "019e0161-c151-7000-995b-a5b030fe0411"
-    }
-  },
-  {
-    "stage": "retrieval",
-    "name": "pathway_C_temporal_window",
-    "intent": "Pathway C surfaces in-window obs/models and excludes out-of-window",
-    "passed": true,
-    "elapsed_ms": 127,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "model_ids": [
-        "019e0161-c15b-7000-ba54-a5b4879b2097",
-        "019e0161-c189-7002-8cba-6f879926a233"
-      ],
-      "obs_ids": [
-        "019e0161-c1a4-7000-99a2-36509efd2508"
-      ],
-      "scores": {
-        "019e0161-c15b-7000-ba54-a5b4879b2097": 0.03278688524590164,
-        "019e0161-c189-7002-8cba-6f879926a233": 0.029032258064516127
-      },
-      "pathway_results": [
-        {
-          "name": "A",
-          "model_ids": [
-            "019e0161-c15b-7000-ba54-a5b4879b2097",
-            "019e0161-c189-7002-8cba-6f879926a233"
-          ]
-        },
-        {
-          "name": "B",
-          "model_ids": [
-            "019e0161-c15b-7000-ba54-a5b4879b2097",
-            "019e0161-c189-7002-8cba-6f879926a233"
-          ]
-        },
-        {
-          "name": "C",
-          "model_ids": [
-            "019e0161-c15b-7000-ba54-a5b4879b2097"
-          ]
-        }
-      ]
-    },
-    "expected": {
-      "must_include_obs": [
-        "019e0161-c1a4-7000-99a2-36509efd2508"
-      ],
-      "must_include_model": "019e0161-c15b-7000-ba54-a5b4879b2097",
-      "out_win": "019e0161-c189-7002-8cba-6f879926a233"
-    }
-  },
-  {
-    "stage": "retrieval",
-    "name": "pathway_D_pattern_signature",
-    "intent": "T4 with seed_signature returns matching pattern and its instances",
-    "passed": true,
-    "elapsed_ms": 129,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "model_ids": [
-        "019e0161-c159-7000-bc36-62a3d745ba89",
-        "019e0161-c18b-7000-9587-1a9a6da74c0b"
-      ]
-    },
-    "expected": {
-      "must_include": [
-        "019e0161-c159-7000-bc36-62a3d745ba89",
-        "019e0161-c18b-7000-9587-1a9a6da74c0b"
-      ],
-      "must_exclude": [
-        "019e0161-c1a5-7000-908a-719018bd6c5a"
-      ]
-    }
-  },
-  {
-    "stage": "retrieval",
-    "name": "rrf_fusion_multipathway",
-    "intent": "RRF fusion: A\u2229B model outranks B-only model with higher activation",
-    "passed": true,
-    "elapsed_ms": 112,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ids": [
-        "019e0161-c15b-7001-9810-95037d7b497b",
-        "019e0161-c189-7001-b926-2120c4d6fcbb"
-      ],
-      "scores": {
-        "019e0161-c15b-7001-9810-95037d7b497b": 0.03265468006345849,
-        "019e0161-c189-7001-b926-2120c4d6fcbb": 0.022712850343733475
-      }
-    },
-    "expected": {
-      "x_first": "019e0161-c15b-7001-9810-95037d7b497b",
-      "y_present": "019e0161-c189-7001-b926-2120c4d6fcbb"
-    }
-  },
-  {
-    "stage": "retrieval",
-    "name": "second_pass_sparse_activation",
-    "intent": "Sparse primary result triggers second-pass with reason 'sparse'",
-    "passed": true,
-    "elapsed_ms": 113,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "n_primary_models": 2,
-      "should_run": true,
-      "trigger_condition": "sparse_primary"
-    },
-    "expected": {
-      "should_run": true,
-      "expected_condition_substring": "sparse",
-      "max_primary_models": 4
-    }
-  },
-  {
-    "stage": "scope",
-    "name": "primary_entity_precedence",
-    "intent": "Mixed entity list resolves to commitment via type precedence",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "primary": [
-        "commitment",
-        "019e0161-c14b-7000-8edb-ea0cd4ee1956"
-      ]
-    },
-    "expected": {
-      "primary": [
-        "commitment",
-        "019e0161-c14b-7000-8edb-ea0cd4ee1956"
-      ]
-    }
-  },
-  {
-    "stage": "scope",
-    "name": "region_lock_permutation_stable",
-    "intent": "region_lock_key is invariant under entity-list permutation",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "a": [
-        1779255519,
-        -1382612055
-      ],
-      "b": [
-        1779255519,
-        -1382612055
-      ]
-    },
-    "expected": {
-      "equal": true
-    }
-  },
-  {
-    "stage": "scope",
-    "name": "region_lock_tenant_isolation",
-    "intent": "Different tenants \u2192 different tenant_hash; same entities \u2192 same entity_hash",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "tenant_hashes_differ": true,
-      "entity_hashes_equal": true
-    },
-    "expected": {
-      "tenant_hashes_differ": true,
-      "entity_hashes_equal": true
-    }
-  },
-  {
-    "stage": "scope",
-    "name": "touched_entity_ids_aggregation",
-    "intent": "touched_entity_ids gathers Models (id+scope), Acts, trigger seeds, observation",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "touched": [
-        [
-          "commitment",
-          "019e0161-c14b-700d-af97-6cfe7d45cead"
-        ],
-        [
-          "commitment",
-          "019e0161-c14b-7010-8acf-e699a136c697"
-        ],
-        [
-          "goal",
-          "019e0161-c14b-700e-b23f-10f08de80b5f"
-        ],
-        [
-          "model",
-          "019e0161-c14b-700c-b6d9-23b0f220cb29"
-        ],
-        [
-          "observation",
-          "019e0161-c14b-700f-b764-5c0ad1c2e1e0"
-        ]
-      ]
-    },
-    "expected": {
-      "set": "{('model', '019e0161-c14b-700c-b6d9-23b0f220cb29'), ('commitment', '019e0161-c14b-700d-af97-6cfe7d45cead'), ('goal', '019e0161-c14b-700e-b23f-10f08de80b5f'), ('commitment', '019e0161-c14b-7010-8acf-e699a136c697'), ('observation', '019e0161-c14b-700f-b764-5c0ad1c2e1e0')}"
-    }
-  },
-  {
-    "stage": "scope",
-    "name": "primary_entity_tiebreak_id_asc",
-    "intent": "Same-tier ties resolve to lexicographically smallest id, regardless of input order",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "forward": [
-        "commitment",
-        "00000000-0000-0000-0000-000000000001"
-      ],
-      "backward": [
-        "commitment",
-        "00000000-0000-0000-0000-000000000001"
-      ]
-    },
-    "expected": {
-      "primary": [
-        "commitment",
-        "00000000-0000-0000-0000-000000000001"
-      ]
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "primary_subject_belief_multiplier",
-    "intent": "Belief contestation by primary subject (scope_actors[0]) \u2192 confidence \u00d7 0.3, floor 0.15",
-    "passed": true,
-    "elapsed_ms": 73,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "previous_confidence": 0.8,
-      "new_confidence": 0.24,
-      "standing_basis": "scope",
-      "override_applied": true,
-      "db_confidence": 0.24,
-      "contested_count": 1
-    },
-    "expected": {
-      "new_confidence": 0.24,
-      "previous_confidence": 0.8,
-      "override_applied": true,
-      "standing_basis": "scope",
-      "contested_count": 1
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "secondary_subject_belief_multiplier",
-    "intent": "Belief contestation by secondary subject \u2192 confidence \u00d7 0.5",
-    "passed": true,
-    "elapsed_ms": 71,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "new_confidence": 0.35,
-      "override_applied": true,
-      "standing_basis": "scope"
-    },
-    "expected": {
-      "new_confidence": 0.35,
-      "override_applied": true,
-      "standing_basis": "scope"
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "confidence_floor_clamp",
-    "intent": "Confidence \u00d7 0.3 below 0.15 clamps to OVERRIDE_FLOOR",
-    "passed": true,
-    "elapsed_ms": 32,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "new_confidence": 0.15
-    },
-    "expected": {
-      "new_confidence": 0.15
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "no_standing_raises",
-    "intent": "Outsider with no scope/owner/contributor link \u2192 NoStandingError",
-    "passed": true,
-    "elapsed_ms": 29,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "raised": true,
-      "err_class": "NoStandingError"
-    },
-    "expected": {
-      "raised": true,
-      "err_class": "NoStandingError"
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "standing_via_commitment_owner",
-    "intent": "Actor who owns a commitment in scope_entities has standing with basis='owner'",
-    "passed": true,
-    "elapsed_ms": 32,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "granted": true,
-      "basis": "owner"
-    },
-    "expected": {
-      "granted": true,
-      "basis": "owner"
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "standing_via_contributor",
-    "intent": "Contributor on a scoped commitment has standing with basis='contributor'",
-    "passed": true,
-    "elapsed_ms": 37,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "granted": true,
-      "basis": "contributor"
-    },
-    "expected": {
-      "granted": true,
-      "basis": "contributor"
-    }
-  },
-  {
-    "stage": "contestation",
-    "name": "reading_contestation_marks_entry",
-    "intent": "Reading contestation marks signal_readings entry without changing confidence",
-    "passed": true,
-    "elapsed_ms": 28,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "override_applied": false,
-      "new_confidence": 0.7,
-      "previous_confidence": 0.7,
-      "signal_readings": [
-        {
-          "actor_id": "019e0161-c1b7-7001-a530-c7a53006c52b",
-          "contested": true,
-          "rationale": "my reading was not what I meant",
-          "contested_at": "2026-05-07T07:40:44.367237+00:00"
-        }
-      ],
-      "db_confidence": 0.7
-    },
-    "expected": {
-      "override_applied": false,
-      "confidence_unchanged": 0.7,
-      "actor_id_str": "019e0161-c1b7-7001-a530-c7a53006c52b"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_observation_pattern_too_short",
-    "intent": "observation_pattern with pattern < 20 chars fails adequacy",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ok": false,
-      "reason": "pattern too vague"
-    },
-    "expected": {
-      "ok": false,
-      "reason_substring": "vague"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_observation_pattern_ok",
-    "intent": "Well-formed observation_pattern passes adequacy",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ok": true,
-      "reason": null
-    },
-    "expected": {
-      "ok": true
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_prediction_deadline_in_past",
-    "intent": "prediction_deadline.evaluate_at in past fails adequacy",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ok": false,
-      "reason": "evaluate_at in past"
-    },
-    "expected": {
-      "ok": false,
-      "reason_substring": "past"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "eval_observation_pattern_violated",
-    "intent": "observation_pattern: matching obs in window \u2192 'violated'",
-    "passed": true,
-    "elapsed_ms": 11,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "violated"
-    },
-    "expected": {
-      "outcome": "violated"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "eval_observation_pattern_inconclusive",
-    "intent": "observation_pattern: no matching obs in window \u2192 'inconclusive'",
-    "passed": true,
-    "elapsed_ms": 11,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "inconclusive"
-    },
-    "expected": {
-      "outcome": "inconclusive"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "eval_commitment_outcome_violated",
-    "intent": "commitment_outcome: commit state == contradicting_state \u2192 'violated'",
-    "passed": true,
-    "elapsed_ms": 9,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "violated"
-    },
-    "expected": {
-      "outcome": "violated"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "eval_commitment_outcome_terminal_confirmed",
-    "intent": "commitment_outcome: commit reached terminal state w/o contradiction \u2192 'confirmed'",
-    "passed": true,
-    "elapsed_ms": 9,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "confirmed"
-    },
-    "expected": {
-      "outcome": "confirmed"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "eval_explicit_contestation_violated",
-    "intent": "explicit_contestation: required actors contested in window \u2192 'violated'",
-    "passed": true,
-    "elapsed_ms": 8,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "violated"
-    },
-    "expected": {
-      "outcome": "violated"
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_explicit_contestation_empty",
-    "intent": "explicit_contestation with empty actors list fails adequacy",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ok": false,
-      "reason": "no contesting actors"
-    },
-    "expected": {
-      "ok": false
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_unknown_kind",
-    "intent": "Unknown falsifier kind fails adequacy",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "ok": false,
-      "reason": "unknown falsifier kind: made_up_kind"
-    },
-    "expected": {
-      "ok": false
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "window_parser_iso8601_forms",
-    "intent": "parse_within_window accepts 8 ISO-8601 duration forms with correct timedeltas",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "results": {
-        "P7D": [
-          604800.0,
-          604800.0
-        ],
-        "P1D": [
-          86400.0,
-          86400.0
-        ],
-        "PT4H": [
-          14400.0,
-          14400.0
-        ],
-        "PT30M": [
-          1800.0,
-          1800.0
-        ],
-        "P2W": [
-          1209600.0,
-          1209600.0
-        ],
-        "P1M": [
-          2592000.0,
-          2592000.0
-        ],
-        "P1Y": [
-          31536000.0,
-          31536000.0
-        ],
-        "P1DT12H": [
-          129600.0,
-          129600.0
-        ]
-      }
-    },
-    "expected": {}
-  },
-  {
-    "stage": "falsifier",
-    "name": "window_parser_human_readable_forms",
-    "intent": "parse_within_window accepts 8 human-readable duration forms with correct timedeltas",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "results": {
-        "7 days": [
-          604800.0,
-          604800.0
-        ],
-        "1 day": [
-          86400.0,
-          86400.0
-        ],
-        "4 hours": [
-          14400.0,
-          14400.0
-        ],
-        "30 minutes": [
-          1800.0,
-          1800.0
-        ],
-        "2 weeks": [
-          1209600.0,
-          1209600.0
-        ],
-        "1 month": [
-          2592000.0,
-          2592000.0
-        ],
-        "1 year": [
-          31536000.0,
-          31536000.0
-        ],
-        "any 4-week period": [
-          2419200.0,
-          2419200.0
-        ]
-      }
-    },
-    "expected": {}
-  },
-  {
-    "stage": "falsifier",
-    "name": "window_parser_malformed_raises_loudly",
-    "intent": "Malformed within_window strings raise MalformedFalsifierError (no silent None)",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "raised": {
-        "P-7D": "within_window",
-        "PXYZ": "within_window",
-        "4w": "within_window",
-        "seven days": "within_window",
-        "P": "within_window",
-        "P0D": "within_window",
-        "next tuesday": "within_window",
-        "P7DT": "within_window"
-      }
-    },
-    "expected": {
-      "all_raised": true
-    }
-  },
-  {
-    "stage": "falsifier",
-    "name": "adequacy_rejects_malformed_within_window",
-    "intent": "is_adequate_falsifier raises MalformedFalsifierError for unparseable window (not silent False)",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "raised": true,
-      "field": "within_window"
-    },
-    "expected": {
-      "raised": true,
-      "field": "within_window"
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "commitment_state_change_unblocks_dependent",
-    "intent": "doneverified on dep with no other unsatisfied deps unblocks dependent \u2192 state=active",
-    "passed": true,
-    "elapsed_ms": 49,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "events_visited": 2,
-      "depth_reached": 1,
-      "bound_violated": false,
-      "kinds": [
-        "commitment_state_change",
-        "commitment_state_change"
-      ],
-      "blocked_state": "active"
-    },
-    "expected": {
-      "blocked_state": "active",
-      "kind_present": "commitment_state_change",
-      "bound_violated": false
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "commitment_state_change_no_unblock_when_other_deps",
-    "intent": "Dependent stays blocked when at least one other dependency unsatisfied",
-    "passed": true,
-    "elapsed_ms": 28,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "blocked_state": "blocked",
-      "events_visited": 1
-    },
-    "expected": {
-      "blocked_state": "blocked"
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "decision_revisited_flags_constrained_commitments",
-    "intent": "decision_revisited flags every non-terminal constrained_by commitment for review",
-    "passed": true,
-    "elapsed_ms": 75,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "events_visited": 3,
-      "kinds": [
-        "decision_revisited",
-        "commitment_flagged_for_review",
-        "commitment_flagged_for_review"
-      ],
-      "flagged_ids": "{'019e0161-c1dd-7000-9a7f-4c2dd688a1ee', '019e0161-c1d5-7002-a1fc-13352aed809a'}"
-    },
-    "expected": {
-      "must_flag": "{'019e0161-c1d5-7002-a1fc-13352aed809a', '019e0161-c1dd-7000-9a7f-4c2dd688a1ee'}",
-      "must_not_flag": "{'019e0161-c1e5-7000-a704-e983b9dfa202'}"
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "bfs_depth_bound_logs_violation",
-    "intent": "max_depth=0 forces bound_violated=True without raising",
-    "passed": true,
-    "elapsed_ms": 17,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "bound_violated": true,
-      "depth_reached": 0
-    },
-    "expected": {
-      "bound_violated": true,
-      "depth_reached": 0
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "unknown_kind_halts_cleanly",
-    "intent": "Unknown cascade kind returns no downstream and visited count=1",
-    "passed": true,
-    "elapsed_ms": 1,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "events_visited": 1,
-      "bound_violated": false,
-      "depth_reached": 0
-    },
-    "expected": {
-      "events_visited": 1,
-      "bound_violated": false,
-      "depth_reached": 0
-    }
-  },
-  {
-    "stage": "cascade",
-    "name": "invariant_violation_surfaces_explicitly",
-    "intent": "Orphan-commitment unblock rejection appears on CascadeResult and bumps metric (T1b)",
-    "passed": true,
-    "elapsed_ms": 37,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "blocked_state": "blocked",
-      "events_visited": 1,
-      "bound_violated": false,
-      "violations_count": 1,
-      "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019e0161-c1e0-7003-9ea4-a1302cbf22d6",
-      "violation_code": "C4",
-      "metric_delta": 1
-    },
-    "expected": {
-      "blocked_state": "blocked",
-      "bound_violated": false,
-      "violations_count": 1,
-      "violation_branch": "commitment_unblock",
-      "violation_entity_id": "019e0161-c1e0-7003-9ea4-a1302cbf22d6"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "applier_idempotency_per_trigger_id",
-    "intent": "Re-applying a diff with same trigger_id raises AlreadyAppliedError",
-    "passed": true,
-    "elapsed_ms": 14,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "first_ok": true,
-      "second_skipped": true,
-      "err_class": "AlreadyAppliedError"
-    },
-    "expected": {
-      "first_ok": true,
-      "second_skipped": true,
-      "err_class": "AlreadyAppliedError"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "applied_triggers_outcome_success",
-    "intent": "Applier writes applied_triggers row with outcome='success'",
-    "passed": true,
-    "elapsed_ms": 16,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "outcome": "success"
-    },
-    "expected": {
-      "outcome": "success"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "think_end_to_end_deepseek_smoke",
-    "intent": "Real DeepSeek call: think() completes end-to-end, returns success or skipped",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "skipped (no LLM provider configured)",
-    "error": null,
-    "actual": {
-      "skipped": true
-    },
-    "expected": {
-      "acceptable_status": "{'skipped_idempotent', 'success'}"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "think_repeat_trigger_id_skipped_idempotent",
-    "intent": "Calling think() twice with the same trigger_id \u2192 second run skipped_idempotent",
-    "passed": true,
-    "elapsed_ms": 0,
-    "diff": "skipped (no LLM provider)",
-    "error": null,
-    "actual": {
-      "skipped": true
-    },
-    "expected": {
-      "second_status": "skipped_idempotent"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "auto_merge_state_kind",
-    "intent": "Identical text + actor scope + state kind + recent \u2192 auto_merge converts insert to update",
-    "passed": true,
-    "elapsed_ms": 56,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "claim_op_summaries": [
-        {
-          "op": "update",
-          "model_id": "019e0161-c1e0-7000-85a3-7e810063ef08",
-          "changed": [
-            "confidence"
-          ],
-          "reconcile_decision": "auto_merge",
-          "reconcile_matched_model_id": "019e0161-c1e0-7000-85a3-7e810063ef08",
-          "reconcile_cosine": 1.000000000000001
-        }
-      ],
-      "reconcile_summary": {
-        "auto_merge": 1,
-        "human_review": 0,
-        "no_match": 0,
-        "skipped": 0
-      },
-      "audit": {
-        "id": "019e0161-c1fe-7003-b49d-de38499c1586",
-        "decision": "auto_merge",
-        "matched_model_id": "019e0161-c1e0-7000-85a3-7e810063ef08",
-        "cosine_similarity": 1.000000000000001,
-        "proposition_kind": "state"
-      },
-      "model_count": 1
-    },
-    "expected": {
-      "decision": "auto_merge",
-      "model_count": 1,
-      "matched": "019e0161-c1e0-7000-85a3-7e810063ef08"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "auto_merge_concern_kind",
-    "intent": "Identical concern + commitment scope + recent \u2192 auto_merge",
-    "passed": true,
-    "elapsed_ms": 58,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "auto_merge",
-      "model_count": 1,
-      "summary": {
-        "auto_merge": 1,
-        "human_review": 0,
-        "no_match": 0,
-        "skipped": 0
-      }
-    },
-    "expected": {
-      "decision": "auto_merge",
-      "model_count": 1
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "auto_merge_raises_existing_confidence",
-    "intent": "Auto-merge takes max(existing_conf, new_conf): existing 0.4 \u2192 new 0.75 raises to 0.75",
-    "passed": true,
-    "elapsed_ms": 55,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "confidence": 0.75
-    },
-    "expected": {
-      "confidence_at_least": 0.7
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "no_match_when_scope_actors_differ",
-    "intent": "Same text + different scope_actors \u2192 no_match (both rows survive)",
-    "passed": true,
-    "elapsed_ms": 58,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "no_match",
-      "model_count": 2
-    },
-    "expected": {
-      "decision": "no_match",
-      "model_count": 2
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "no_match_when_proposition_kind_differs",
-    "intent": "Same text + same scope + different kind \u2192 no_match (state \u2260 concern)",
-    "passed": true,
-    "elapsed_ms": 58,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "no_match",
-      "model_count": 2
-    },
-    "expected": {
-      "decision": "no_match",
-      "model_count": 2
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "no_match_when_existing_is_stale",
-    "intent": "Same text+scope+kind but existing is older than recency window \u2192 no_match",
-    "passed": true,
-    "elapsed_ms": 68,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "no_match",
-      "model_count": 2
-    },
-    "expected": {
-      "decision": "no_match",
-      "model_count": 2
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "human_review_at_medium_cosine",
-    "intent": "Cosine in [0.70, 0.85) \u2192 human_review (audit row written, original insert proceeds)",
-    "passed": true,
-    "elapsed_ms": 66,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "human_review",
-      "cosine": 0.8125115160312162,
-      "model_count": 2
-    },
-    "expected": {
-      "decision": "human_review",
-      "model_count": 2
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "human_review_at_lower_band",
-    "intent": "Cosine just above 0.70 boundary \u2192 human_review",
-    "passed": true,
-    "elapsed_ms": 57,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "human_review",
-      "cosine": 0.7403507344895005,
-      "model_count": 2
-    },
-    "expected": {
-      "decision": "human_review",
-      "model_count": 2
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "supersession_does_not_auto_merge_contradiction",
-    "intent": "Contradicting state insert must NOT silently auto_merge into the existing claim",
-    "passed": true,
-    "elapsed_ms": 64,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "human_review",
-      "model_count": 2
-    },
-    "expected": {
-      "acceptable_decisions": "{'no_match', 'human_review'}"
-    }
-  },
-  {
-    "stage": "reconciliation",
-    "name": "kill_switch_disables_reconciler",
-    "intent": "ReconcilerConfig(enabled=False) \u2192 decision='skipped', no audit row",
-    "passed": true,
-    "elapsed_ms": 32,
-    "diff": "",
-    "error": null,
-    "actual": {
-      "decision": "skipped",
-      "audit_row_written": false
-    },
-    "expected": {
-      "decision": "skipped",
-      "audit_row_written": false
-    }
-  },
-  {
     "stage": "adversarial.linguistic",
     "name": "sarcasm_inverted_polarity",
     "intent": "Sarcastic 'they love us'-style phrasing with a negative event must produce a concern, not a positive-sentiment state",
@@ -1302,7 +203,7 @@
     "diff": "",
     "error": null,
     "actual": {
-      "obs_id": "019e0161-c226-7000-a684-b83f854a22ed",
+      "obs_id": "019e07cb-c0c3-7000-be0d-144354988dd7",
       "raised": false
     },
     "expected": {}
@@ -1312,11 +213,11 @@
     "name": "single_character_signal",
     "intent": "A '+1' signal must not crash ingestion; what it produces downstream is open",
     "passed": true,
-    "elapsed_ms": 15,
+    "elapsed_ms": 18,
     "diff": "",
     "error": null,
     "actual": {
-      "obs_id": "019e0161-c229-7001-9455-4309c4ef1e92",
+      "obs_id": "019e07cb-c0c4-7000-a311-f020aa641160",
       "ok": true
     },
     "expected": {}
@@ -1326,7 +227,7 @@
     "name": "huge_content_no_silent_truncation",
     "intent": "50KB content_text round-trips without truncation, OR is rejected at write time with a clear error",
     "passed": true,
-    "elapsed_ms": 23,
+    "elapsed_ms": 38,
     "diff": "",
     "error": null,
     "actual": {
@@ -1340,7 +241,7 @@
     "name": "zero_scope_zero_entities_insert",
     "intent": "A Model with no scope_actors and no scope_entities should either be rejected or be marked unreachable; not silently join the substrate",
     "passed": true,
-    "elapsed_ms": 33,
+    "elapsed_ms": 58,
     "diff": "",
     "error": null,
     "actual": {
@@ -1348,7 +249,7 @@
         "claim_ops": [
           {
             "op": "insert",
-            "model_id": "019e0161-c23d-7001-9dbc-28fff03315b7",
+            "model_id": "019e07cb-c0e6-7003-9366-db69bc8c5d1b",
             "confidence": 0.6,
             "proposition_kind": "state",
             "reconcile_decision": "no_match"
@@ -1356,7 +257,7 @@
         ],
         "act_ops": [],
         "resource_ops": [],
-        "diff_hash": "f35c774ab960ef54c146b9999687e0c5d4e7811ffa23faa246d392daabb3206f",
+        "diff_hash": "7058fffc29058ed54c9a5fceac820c330a40710ff84927879ac730bda09f72e1",
         "reconcile_summary": {
           "auto_merge": 0,
           "human_review": 0,
@@ -1364,7 +265,7 @@
           "skipped": 0
         },
         "applied_model_ids": [
-          "019e0161-c23d-7001-9dbc-28fff03315b7"
+          "019e07cb-c0e6-7003-9366-db69bc8c5d1b"
         ],
         "state_changes_emitted": 1,
         "reasoning_trace": "adversarial.boundary"
@@ -1378,7 +279,7 @@
     "name": "twentyfive_scope_actors",
     "intent": "25 scope_actors round-trip without truncation; the region lock acquires successfully",
     "passed": true,
-    "elapsed_ms": 44,
+    "elapsed_ms": 64,
     "diff": "",
     "error": null,
     "actual": {
@@ -1386,7 +287,7 @@
         "claim_ops": [
           {
             "op": "insert",
-            "model_id": "019e0161-c24c-7000-9de9-23da5b872b7c",
+            "model_id": "019e07cb-c0ee-7000-a604-9961f361a2bf",
             "confidence": 0.57,
             "proposition_kind": "state",
             "reconcile_decision": "no_match"
@@ -1394,7 +295,7 @@
         ],
         "act_ops": [],
         "resource_ops": [],
-        "diff_hash": "927335a32f6ba4071d7a8d99535f249eb054a50c422a37e793e4bc92d103d387",
+        "diff_hash": "ded4745baa4a91eaede30299b1e5f007ed8ee8ec594d7bf83cef666fcf434bca",
         "reconcile_summary": {
           "auto_merge": 0,
           "human_review": 0,
@@ -1402,7 +303,7 @@
           "skipped": 0
         },
         "applied_model_ids": [
-          "019e0161-c24c-7000-9de9-23da5b872b7c"
+          "019e07cb-c0ee-7000-a604-9961f361a2bf"
         ],
         "state_changes_emitted": 1,
         "reasoning_trace": "adversarial.boundary"
@@ -1416,12 +317,12 @@
     "name": "occurred_at_in_the_future",
     "intent": "An observation with occurred_at 7 days in the future is either rejected, normalized, or accepted; document which",
     "passed": true,
-    "elapsed_ms": 18,
+    "elapsed_ms": 36,
     "diff": "",
     "error": null,
     "actual": {
-      "occurred_at": "2026-05-14T07:40:44.474076+00:00",
-      "ingested_at": "2026-05-14T07:40:44.474076+00:00",
+      "occurred_at": "2026-05-15T13:34:14.218210+00:00",
+      "ingested_at": "2026-05-15T13:34:14.218210+00:00",
       "future_diff_seconds": 0.0
     },
     "expected": {}
@@ -1431,7 +332,7 @@
     "name": "update_against_nonexistent_model_id",
     "intent": "claim_op.update against a model_id that doesn't exist must raise loudly OR be a documented no-op; silent success is wrong",
     "passed": true,
-    "elapsed_ms": 21,
+    "elapsed_ms": 39,
     "diff": "",
     "error": null,
     "actual": {
@@ -1444,7 +345,7 @@
     "name": "falsifier_within_window_empty_string",
     "intent": "within_window='' is treated as 'missing' (returns None), not 'malformed' (raise) \u2014 and the surrounding adequacy check rejects it for kinds where window is required",
     "passed": true,
-    "elapsed_ms": 0,
+    "elapsed_ms": 13,
     "diff": "",
     "error": null,
     "actual": {
@@ -1458,7 +359,7 @@
     "name": "archive_already_archived_model",
     "intent": "claim_op.archive against an archived Model must be idempotent (no-op) or rejected; either is OK if documented",
     "passed": true,
-    "elapsed_ms": 57,
+    "elapsed_ms": 63,
     "diff": "",
     "error": null,
     "actual": {
@@ -1471,7 +372,7 @@
     "name": "confidence_clip_low_boundary",
     "intent": "confidence=0.0 must be clipped to \u22650.05 by the validator",
     "passed": true,
-    "elapsed_ms": 18,
+    "elapsed_ms": 24,
     "diff": "loud-raise on out-of-range confidence (acceptable)",
     "error": null,
     "actual": {
@@ -1486,7 +387,7 @@
     "name": "confidence_clip_high_boundary",
     "intent": "confidence=1.0 must be clipped to \u22640.95 by the validator",
     "passed": true,
-    "elapsed_ms": 17,
+    "elapsed_ms": 21,
     "diff": "loud-raise on out-of-range confidence (acceptable)",
     "error": null,
     "actual": {
@@ -1501,7 +402,7 @@
     "name": "negative_confidence_handling",
     "intent": "confidence=-0.4 must be clipped or rejected; stored negative confidence is broken arithmetic",
     "passed": true,
-    "elapsed_ms": 19,
+    "elapsed_ms": 20,
     "diff": "",
     "error": null,
     "actual": {
@@ -1515,7 +416,7 @@
     "name": "two_actors_same_display_name",
     "intent": "Two distinct actors both displayed as 'ACME' must round-trip without collision; downstream consumer disambiguates by id",
     "passed": true,
-    "elapsed_ms": 42,
+    "elapsed_ms": 46,
     "diff": "",
     "error": null,
     "actual": {
@@ -1537,7 +438,7 @@
         "claim_ops": [],
         "act_ops": [],
         "resource_ops": [],
-        "diff_hash": "56d3a7b4d2399d9b61b1558068e452e22ba7cefb1fb50f41aa3f7155065a75b8",
+        "diff_hash": "6121e12a3c63adec971f4d43364e1b354519606c2451d205bff973b29ace557f",
         "reconcile_summary": {
           "auto_merge": 0,
           "human_review": 0,
@@ -1556,7 +457,7 @@
     "name": "embedding_wrong_dimensionality",
     "intent": "An embedding of dim 128 (production is 768) must be rejected by pgvector dimension check at write time",
     "passed": true,
-    "elapsed_ms": 21,
+    "elapsed_ms": 22,
     "diff": "",
     "error": null,
     "actual": {
@@ -1585,14 +486,14 @@
     "name": "out_of_order_arrival_both_persist",
     "intent": "Two observations whose occurred_at order is REVERSE of their arrival order both persist as distinct Models",
     "passed": true,
-    "elapsed_ms": 81,
+    "elapsed_ms": 74,
     "diff": "",
     "error": null,
     "actual": {
       "model_count": 2,
       "obs_occurred_at": {
-        "019e0161-c261-7002-bd84-c4a07dcc3f6a": "2026-05-07T06:40:44.509685+00:00",
-        "019e0161-c26b-7000-a063-9d512055df2b": "2026-05-07T05:40:44.518689+00:00"
+        "019e07cb-c0f3-7001-98d4-a70d82907ec2": "2026-05-08T12:34:14.257727+00:00",
+        "019e07cb-c0f9-7004-8d33-f8b4f1c42ab4": "2026-05-08T11:34:14.262414+00:00"
       }
     },
     "expected": {}
@@ -1602,7 +503,7 @@
     "name": "rapid_fire_same_proposition_collapses",
     "intent": "5 successive identical-text inserts collapse to 1 Model via auto_merge (first is no_match, rest are auto_merge)",
     "passed": true,
-    "elapsed_ms": 162,
+    "elapsed_ms": 153,
     "diff": "",
     "error": null,
     "actual": {
@@ -1622,7 +523,7 @@
     "name": "insert_archive_reinsert_reversal",
     "intent": "Insert \u2192 archive \u2192 re-insert (negated text) leaves exactly 1 active and 1 archived Model",
     "passed": true,
-    "elapsed_ms": 106,
+    "elapsed_ms": 105,
     "diff": "",
     "error": null,
     "actual": {
@@ -1636,14 +537,14 @@
     "name": "reversal_of_reversal_audit_intact",
     "intent": "A \u2192 not-A \u2192 A produces 3 distinct Models all in active state (no auto-merge between contradictions)",
     "passed": true,
-    "elapsed_ms": 104,
+    "elapsed_ms": 100,
     "diff": "",
     "error": null,
     "actual": {
       "ids": [
-        "019e0161-c277-7004-96c6-4cbdff99860a",
-        "019e0161-c29b-7001-bdaa-dcad38a2b570",
-        "019e0161-c2bc-7000-9a73-e11821805de2"
+        "019e07cb-c113-7002-97d3-da0079b20422",
+        "019e07cb-c134-7001-832e-237439144dc1",
+        "019e07cb-c153-7000-a559-77ed3c2f670d"
       ],
       "active": 3
     },
@@ -1656,7 +557,7 @@
     "name": "ten_deep_supersession_chain",
     "intent": "10-deep insert+archive sequence ends with 1 active, 9 archived Models",
     "passed": true,
-    "elapsed_ms": 487,
+    "elapsed_ms": 466,
     "diff": "",
     "error": null,
     "actual": {
@@ -1673,7 +574,7 @@
     "name": "stale_signal_after_archival",
     "intent": "A backdated signal arriving after the matching Model was archived must NOT auto-merge into the archived Model (reconciler scopes to active rows only)",
     "passed": true,
-    "elapsed_ms": 107,
+    "elapsed_ms": 103,
     "diff": "",
     "error": null,
     "actual": {
@@ -1688,7 +589,7 @@
     "name": "interleaved_contradictions_in_one_diff",
     "intent": "Two contradictory inserts in one diff \u2014 both land (the engine emits, the validator doesn't deconflict)",
     "passed": true,
-    "elapsed_ms": 50,
+    "elapsed_ms": 48,
     "diff": "",
     "error": null,
     "actual": {
@@ -1701,7 +602,7 @@
     "name": "trigger_id_reuse_blocked",
     "intent": "Re-using trigger_id with a different diff raises AlreadyAppliedError; second diff's ops are NOT applied",
     "passed": true,
-    "elapsed_ms": 58,
+    "elapsed_ms": 43,
     "diff": "",
     "error": null,
     "actual": {
@@ -1716,7 +617,7 @@
     "name": "auto_merge_does_not_lower_confidence",
     "intent": "Auto-merge with lower-confidence new signal must NOT drop the existing higher confidence (max rule)",
     "passed": true,
-    "elapsed_ms": 70,
+    "elapsed_ms": 63,
     "diff": "",
     "error": null,
     "actual": {
@@ -1743,14 +644,14 @@
     "name": "model_lifecycle_insert_contest_archive",
     "intent": "A Model walks through insert \u2192 contest \u2192 archive with consistent state at each step",
     "passed": true,
-    "elapsed_ms": 71,
+    "elapsed_ms": 65,
     "diff": "",
     "error": null,
     "actual": {
       "status": "archived",
       "archive_reason": "manual",
       "confidence": 0.22499999999999998,
-      "contest_outcome": "ContestationResult(observation_id=UUID('019e0161-c2d3-7000-b40c-8baa884872c2'), trigger_id=UUID('019e0161-c2d8-7000-afa7-511786ca022a'), new_confidence=0.22499999999999998, previous_confidence=0.75, standing_basis='scope', override_applied=True)"
+      "contest_outcome": "ContestationResult(observation_id=UUID('019e07cb-c15d-7000-b68c-8db0666de005'), trigger_id=UUID('019e07cb-c160-7001-b807-93c82bf38d5b'), new_confidence=0.22499999999999998, previous_confidence=0.75, standing_basis='scope', override_applied=True)"
     },
     "expected": {}
   },
@@ -1781,11 +682,11 @@
     "error": null,
     "actual": {
       "actor_sequence": [
-        "019e0161-c2c8-7001-864a-60846aff4cc9",
-        "019e0161-c2c9-7000-95d2-1f41f5d5c22b",
-        "019e0161-c2c9-7001-b596-741c09e3f0a7",
-        "019e0161-c2c8-7001-864a-60846aff4cc9",
-        "019e0161-c2c9-7000-95d2-1f41f5d5c22b"
+        "019e07cb-c162-7003-90ca-47194f0fdc67",
+        "019e07cb-c163-7000-a184-df64a412d317",
+        "019e07cb-c163-7001-9f50-ab1580043d98",
+        "019e07cb-c162-7003-90ca-47194f0fdc67",
+        "019e07cb-c163-7000-a184-df64a412d317"
       ],
       "model_count": 5
     },
@@ -1798,7 +699,7 @@
     "name": "apply_summary_reconcile_breakdown",
     "intent": "apply_diff returns a reconcile_summary with per-decision counts; first apply records no_match, second records auto_merge",
     "passed": true,
-    "elapsed_ms": 63,
+    "elapsed_ms": 64,
     "diff": "",
     "error": null,
     "actual": {
@@ -1822,7 +723,7 @@
     "name": "three_deep_cascade_chain_stops_at_active",
     "intent": "Cascade walks A.done \u2192 unblock B \u2192 DOES NOT cascade further (B becomes 'active', not 'doneverified', so C stays blocked)",
     "passed": true,
-    "elapsed_ms": 58,
+    "elapsed_ms": 57,
     "diff": "",
     "error": null,
     "actual": {
@@ -1839,12 +740,12 @@
     "name": "paraphrase_same_proposition_different_words",
     "intent": "Two paraphrases of the same proposition: deterministic embeddings produce different vectors \u2192 no_match (current behavior); ideally human_review",
     "passed": true,
-    "elapsed_ms": 67,
+    "elapsed_ms": 56,
     "diff": "",
     "error": null,
     "actual": {
       "decision": "no_match",
-      "cosine": null,
+      "cosine": 0.023044356535409403,
       "active": 2
     },
     "expected": {}
@@ -1854,7 +755,7 @@
     "name": "scope_precision_mismatch",
     "intent": "Same vector but different scope precision (customer vs deal entity) \u2192 no_match (scope predicate filters out the candidate)",
     "passed": true,
-    "elapsed_ms": 57,
+    "elapsed_ms": 56,
     "diff": "",
     "error": null,
     "actual": {
@@ -1884,7 +785,7 @@
     "name": "partial_overlap_multi_entity_scope",
     "intent": "Auto-merge of [A] into existing [A,B] scope: scope of merged Model retains [A,B] (no information loss)",
     "passed": true,
-    "elapsed_ms": 59,
+    "elapsed_ms": 52,
     "diff": "",
     "error": null,
     "actual": {
@@ -1899,7 +800,7 @@
     "name": "hierarchical_entity_team_vs_leader",
     "intent": "Signal scoped to team-leader vs signal scoped to team itself \u2014 are these the same proposition?",
     "passed": true,
-    "elapsed_ms": 64,
+    "elapsed_ms": 56,
     "diff": "",
     "error": null,
     "actual": {
@@ -1913,12 +814,12 @@
     "name": "auto_merge_threshold_boundary_strict",
     "intent": "At cosine \u2248 0.85, the comparison must be strict (\u2265) \u2014 any drift in the comparator silently changes auto_merge rate",
     "passed": true,
-    "elapsed_ms": 53,
+    "elapsed_ms": 58,
     "diff": "",
     "error": null,
     "actual": {
       "decision": "auto_merge",
-      "cosine": 0.8532842777233204
+      "cosine": 0.8560963461865895
     },
     "expected": {}
   },
@@ -1927,7 +828,7 @@
     "name": "auto_merge_conflicting_falsifiers",
     "intent": "When auto-merging, the new falsifier is silently dropped because the UPDATE only sets confidence \u2014 known limitation",
     "passed": true,
-    "elapsed_ms": 57,
+    "elapsed_ms": 51,
     "diff": "",
     "error": null,
     "actual": {
@@ -1940,7 +841,7 @@
     "name": "three_identical_inserts_idempotent",
     "intent": "3 identical inserts \u2192 1 Model (1 no_match + 2 auto_merge)",
     "passed": true,
-    "elapsed_ms": 93,
+    "elapsed_ms": 88,
     "diff": "",
     "error": null,
     "actual": {
@@ -1973,7 +874,7 @@
     "name": "reconcile_non_insert_skips",
     "intent": "claim_op.update or .archive bypass reconcile entirely",
     "passed": true,
-    "elapsed_ms": 4,
+    "elapsed_ms": 3,
     "diff": "",
     "error": null,
     "actual": {
@@ -1988,7 +889,7 @@
     "name": "custom_high_auto_merge_threshold",
     "intent": "Setting auto_merge_cosine=0.999 forces near-identical vectors (cosine \u2248 1.0) to still auto_merge; tighter thresholds would route to human_review",
     "passed": true,
-    "elapsed_ms": 38,
+    "elapsed_ms": 34,
     "diff": "",
     "error": null,
     "actual": {
@@ -2007,7 +908,7 @@
     "error": null,
     "actual": {
       "crashed": true,
-      "error": "NotNullViolationError: null value in column \"embedding\" of relation \"models\" violates not-null constraint\nDETAIL:  Failing row contains (019e0161-c34a-7000-b3a6-aebf155e57f0, 019e0161-c344-7001-b95d-5715445a87f8, 019e0161-c34e-7001-b3f4-3939aabb5b02, {\"kind\": \"state\", \"subject\": \"null-emb canonical\"}, null-emb canonical, null, {019e0161-c344-7002-a778-c31b24064ccf}, [], {\"valid_from\": \"2026-05-07T07:40:44.754797+00:00\", \"valid_until\"..., 0.6, 0.5, null, [], t, {}, {}, 0.5, active, null, null, 2026-05-07 13:25:44.741296+05:45, null, 0, null, null, {}, t, state, 0, 0, null, 0.6, null, null, 1, null, null).",
+      "error": "NotNullViolationError: null value in column \"embedding\" of relation \"models\" violates not-null constraint\nDETAIL:  Failing row contains (019e07cb-c1d8-7000-975b-0936ec302295, 019e07cb-c1ce-7002-a967-21e312a79245, 019e07cb-c1da-7001-b42a-e3db6294cfa6, {\"kind\": \"state\", \"subject\": \"null-emb canonical\"}, null-emb canonical, null, {019e07cb-c1ce-7003-abb6-74aba3f34552}, [], {\"valid_from\": \"2026-05-08T13:34:14.494801+00:00\", \"valid_until\"..., 0.6, 0.5, null, [], t, {}, {}, 0.5, active, null, null, 2026-05-08 19:19:14.480878+05:45, null, 0, null, null, {}, t, state, 0, 0, null, 0.6, null, null, 1, null, null).",
       "error_type": "NotNullViolationError"
     },
     "expected": {}
@@ -2017,7 +918,7 @@
     "name": "shared_kind_different_content",
     "intent": "Two different state propositions on the same scope must both persist (no_match) \u2014 the kind-match alone is insufficient",
     "passed": true,
-    "elapsed_ms": 63,
+    "elapsed_ms": 58,
     "diff": "",
     "error": null,
     "actual": {
@@ -2049,7 +950,7 @@
     "name": "auto_merge_does_not_reset_activation",
     "intent": "auto_merge UPDATE only changes confidence; activation must NOT regress",
     "passed": true,
-    "elapsed_ms": 57,
+    "elapsed_ms": 53,
     "diff": "",
     "error": null,
     "actual": {
@@ -2062,7 +963,7 @@
     "name": "prediction_deadline_future_inconclusive",
     "intent": "prediction_deadline whose evaluate_at is in the future must evaluate to 'inconclusive' (the deadline hasn't fired)",
     "passed": true,
-    "elapsed_ms": 3,
+    "elapsed_ms": 4,
     "diff": "",
     "error": null,
     "actual": {
@@ -2111,7 +1012,7 @@
     "name": "observation_pattern_direction_confirms",
     "intent": "observation_pattern with direction='confirms' and a matching observation in window evaluates as 'confirmed' (not 'violated')",
     "passed": true,
-    "elapsed_ms": 15,
+    "elapsed_ms": 14,
     "diff": "",
     "error": null,
     "actual": {
@@ -2124,7 +1025,7 @@
     "name": "explicit_contestation_partial_match",
     "intent": "explicit_contestation with 2 required actors and only 1 actually contesting \u2014 should be 'inconclusive' (not yet violated; still possible the second actor will contest)",
     "passed": true,
-    "elapsed_ms": 4,
+    "elapsed_ms": 7,
     "diff": "",
     "error": null,
     "actual": {
@@ -2211,7 +1112,7 @@
     "name": "self_referential_commitment_outcome",
     "intent": "A Model whose commitment_outcome references its own commitment, with the commitment NOT in any contradicting state, evaluates as 'inconclusive' (the falsifier never actually fires)",
     "passed": true,
-    "elapsed_ms": 10,
+    "elapsed_ms": 15,
     "diff": "",
     "error": null,
     "actual": {
@@ -2244,7 +1145,7 @@
     "name": "wide_fanout_unblocks_20_dependents",
     "intent": "One doneverified commitment unblocks 20 dependents in single cascade walk; depth bound is not breached",
     "passed": true,
-    "elapsed_ms": 530,
+    "elapsed_ms": 586,
     "diff": "",
     "error": null,
     "actual": {
@@ -2260,7 +1161,7 @@
     "name": "long_dependency_chain_stops_at_unblock",
     "intent": "Deep depends-on chain where only the head is done: cascade unblocks chain[1] but stops there (active doesn't trigger further cascades)",
     "passed": true,
-    "elapsed_ms": 206,
+    "elapsed_ms": 177,
     "diff": "",
     "error": null,
     "actual": {
@@ -2287,7 +1188,7 @@
     "name": "dependency_cycle_terminates_via_visited_dedup",
     "intent": "A\u2194B mutual depends_on cycle: cascade terminates via visited dedup, not via depth bound",
     "passed": true,
-    "elapsed_ms": 47,
+    "elapsed_ms": 50,
     "diff": "",
     "error": null,
     "actual": {
@@ -2319,7 +1220,7 @@
     "name": "decision_revisit_then_commit_unblock",
     "intent": "A commitment that is both flagged-for-review (branch B) and an unblock target (branch A) reaches state='active' after the second cascade",
     "passed": true,
-    "elapsed_ms": 87,
+    "elapsed_ms": 91,
     "diff": "",
     "error": null,
     "actual": {
@@ -2336,7 +1237,7 @@
     "name": "cascade_noop_no_dependents",
     "intent": "A done commit with no dependents/no contributes_to to non-critical goals produces a 1-step cascade (just the seed)",
     "passed": true,
-    "elapsed_ms": 26,
+    "elapsed_ms": 25,
     "diff": "",
     "error": null,
     "actual": {
@@ -2350,7 +1251,7 @@
     "name": "critical_path_doneverify_recomputes_goal_health",
     "intent": "Commit doneverify on a critical-path edge triggers a goal_health recompute (branch A sub-task)",
     "passed": true,
-    "elapsed_ms": 34,
+    "elapsed_ms": 28,
     "diff": "",
     "error": null,
     "actual": {
@@ -2377,7 +1278,7 @@
     "name": "empty_scope_model_does_not_break_cascade",
     "intent": "A Model with no scope_actors/scope_entities does not interfere with cascade on unrelated entities",
     "passed": true,
-    "elapsed_ms": 62,
+    "elapsed_ms": 66,
     "diff": "",
     "error": null,
     "actual": {
@@ -2392,7 +1293,7 @@
     "name": "depth_bound_at_max_minus_one_no_violation",
     "intent": "With max_depth=MAX-1 on a chain that converges at depth 1, bound_violated stays False \u2014 bound check uses '>=' correctly",
     "passed": true,
-    "elapsed_ms": 393,
+    "elapsed_ms": 173,
     "diff": "",
     "error": null,
     "actual": {
@@ -2407,20 +1308,20 @@
     "stage": "adversarial.concurrency",
     "name": "five_parallel_identical_inserts_collapse_to_one",
     "intent": "5 coroutines firing identical inserts into one tenant + scope produce 1 Model (region lock + reconcile serialize)",
-    "passed": false,
-    "elapsed_ms": 103,
-    "diff": "5 identical inserts under contention should still collapse to 1 Model; got 5; decisions=['no_match', 'no_match', 'no_match', 'no_match', 'no_match']",
+    "passed": true,
+    "elapsed_ms": 482,
+    "diff": "",
     "error": null,
     "actual": {
       "successes": 5,
       "failures": [],
-      "active_models": 5,
+      "active_models": 1,
       "decisions": [
         "no_match",
-        "no_match",
-        "no_match",
-        "no_match",
-        "no_match"
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge"
       ]
     },
     "expected": {}
@@ -2430,7 +1331,7 @@
     "name": "ten_parallel_inserts_independent_actors",
     "intent": "10 inserts to 10 distinct actor scopes (no contention) all succeed and all 10 Models survive",
     "passed": true,
-    "elapsed_ms": 128,
+    "elapsed_ms": 109,
     "diff": "",
     "error": null,
     "actual": {
@@ -2447,7 +1348,7 @@
     "name": "overlapping_region_locks_serialize",
     "intent": "4 parallel inserts on overlapping scopes ([A], [A], [B], [A,B]) all succeed; region lock ordering doesn't deadlock",
     "passed": true,
-    "elapsed_ms": 135,
+    "elapsed_ms": 102,
     "diff": "",
     "error": null,
     "actual": {
@@ -2465,7 +1366,7 @@
     "name": "five_parallel_cascades_on_shared_goal",
     "intent": "5 cascades all touching the same goal complete without deadlock or duplicate goal-health updates",
     "passed": true,
-    "elapsed_ms": 318,
+    "elapsed_ms": 108,
     "diff": "",
     "error": null,
     "actual": {
@@ -2480,19 +1381,19 @@
     "stage": "adversarial.concurrency",
     "name": "parallel_reconcile_candidates_first_wins",
     "intent": "Of 5 parallel identical inserts, exactly 1 wins the no_match decision; the other 4 see auto_merge",
-    "passed": false,
-    "elapsed_ms": 189,
-    "diff": "decisions=['no_match', 'no_match', 'no_match', 'no_match', 'no_match'] active=5",
+    "passed": true,
+    "elapsed_ms": 381,
+    "diff": "",
     "error": null,
     "actual": {
       "successes": 5,
       "failures": [],
-      "active_models": 5,
+      "active_models": 1,
       "decisions": [
-        "no_match",
-        "no_match",
-        "no_match",
-        "no_match",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
         "no_match"
       ]
     },
@@ -2503,12 +1404,12 @@
     "name": "five_parallel_contestations_serialize",
     "intent": "5 actors contesting the same Model in parallel: all succeed, contested_count reflects the actual count",
     "passed": true,
-    "elapsed_ms": 237,
+    "elapsed_ms": 358,
     "diff": "",
     "error": null,
     "actual": {
       "successes": 5,
-      "final_confidence": 0.15,
+      "final_confidence": 0.45,
       "contested_count": 5
     },
     "expected": {}
@@ -2518,7 +1419,7 @@
     "name": "parallel_archives_idempotent",
     "intent": "5 parallel archive ops on the same Model: final status is archived; archive_reason is consistent",
     "passed": true,
-    "elapsed_ms": 292,
+    "elapsed_ms": 418,
     "diff": "",
     "error": null,
     "actual": {
@@ -2533,18 +1434,15 @@
     "stage": "adversarial.concurrency",
     "name": "parallel_trigger_id_idempotency",
     "intent": "5 parallel applies of the same trigger_id: exactly one wins, four raise AlreadyAppliedError",
-    "passed": false,
-    "elapsed_ms": 221,
-    "diff": "unexpected errors: 4",
+    "passed": true,
+    "elapsed_ms": 321,
+    "diff": "",
     "error": null,
     "actual": {
       "successes": 1,
-      "already_applied_count": 0,
-      "other_errors": 4,
-      "other_errors_sample": [
-        "UniqueViolationError: duplicate key value violates unique constraint \"applied_triggers_pkey\"\nDETAIL:  Key (trigger_id)=(019e0161-c44b-7000-86b6-a90f98bbdbde) already exists.",
-        "UniqueViolationError: duplicate key value violates unique constraint \"applied_triggers_pkey\"\nDETAIL:  Key (trigger_id)=(019e0161-c44b-7000-86b6-a90f98bbdbde) already exists."
-      ],
+      "already_applied_count": 4,
+      "other_errors": 0,
+      "other_errors_sample": [],
       "active": 1
     },
     "expected": {}
@@ -2554,7 +1452,7 @@
     "name": "pool_exhaustion_does_not_crash",
     "intent": "30 concurrent applies against a max-size-20 pool all complete (asyncpg queues acquires, no crash, no timeout)",
     "passed": true,
-    "elapsed_ms": 216,
+    "elapsed_ms": 744,
     "diff": "",
     "error": null,
     "actual": {
@@ -2569,15 +1467,15 @@
     "stage": "adversarial.concurrency",
     "name": "permuted_scope_holds_same_region_lock",
     "intent": "scope=[A,B] and scope=[B,A] hash to the same region lock; two parallel inserts of identical text fold to 1 Model",
-    "passed": false,
-    "elapsed_ms": 135,
-    "diff": "permuted-scope inserts should collapse to 1 Model; got 2; decisions=['no_match', 'no_match']",
+    "passed": true,
+    "elapsed_ms": 292,
+    "diff": "",
     "error": null,
     "actual": {
       "successes": 2,
-      "active": 2,
+      "active": 1,
       "decisions": [
-        "no_match",
+        "auto_merge",
         "no_match"
       ]
     },
@@ -2588,7 +1486,7 @@
     "name": "llm_timeout_fails_loudly",
     "intent": "A timeout raised by the LLM provider must NOT result in think() returning status='success' \u2014 fail loud or surface as failed status",
     "passed": true,
-    "elapsed_ms": 41,
+    "elapsed_ms": 88,
     "diff": "",
     "error": null,
     "actual": {
@@ -2604,7 +1502,7 @@
     "name": "llm_malformed_json_rejected",
     "intent": "LLM returns garbage JSON; think() does not crash and either retries or surfaces a validation failure status",
     "passed": true,
-    "elapsed_ms": 43,
+    "elapsed_ms": 68,
     "diff": "",
     "error": null,
     "actual": {
@@ -2620,7 +1518,7 @@
     "name": "llm_empty_response",
     "intent": "LLM returns '' \u2014 think() handles cleanly (retry, fail, or skip), does not produce phantom Models",
     "passed": true,
-    "elapsed_ms": 46,
+    "elapsed_ms": 68,
     "diff": "",
     "error": null,
     "actual": {
@@ -2636,7 +1534,7 @@
     "name": "llm_valid_json_wrong_schema",
     "intent": "LLM returns parseable JSON that doesn't match RawDiff schema; think() rejects loudly",
     "passed": true,
-    "elapsed_ms": 41,
+    "elapsed_ms": 77,
     "diff": "",
     "error": null,
     "actual": {
@@ -2652,7 +1550,7 @@
     "name": "llm_raises_handled_via_outcome",
     "intent": "LLM raises LLMError; think() returns failed-status outcome",
     "passed": true,
-    "elapsed_ms": 3050,
+    "elapsed_ms": 3073,
     "diff": "",
     "error": null,
     "actual": {
@@ -2668,7 +1566,7 @@
     "name": "apply_on_closed_connection_raises",
     "intent": "apply_diff on a closed connection raises (no silent no-op or hang)",
     "passed": true,
-    "elapsed_ms": 21,
+    "elapsed_ms": 34,
     "diff": "",
     "error": null,
     "actual": {
@@ -2684,7 +1582,7 @@
     "name": "apply_diff_all_ops_malformed",
     "intent": "A diff with three malformed ops either raises OR returns a summary indicating zero successful applies \u2014 never phantom-applies a malformed op",
     "passed": true,
-    "elapsed_ms": 18,
+    "elapsed_ms": 16,
     "diff": "",
     "error": null,
     "actual": {
@@ -2698,7 +1596,7 @@
     "name": "reconciler_degrades_to_skipped_on_failure",
     "intent": "Reconciler internal exception (closed conn) demotes to decision='skipped' \u2014 never aborts the apply",
     "passed": true,
-    "elapsed_ms": 24,
+    "elapsed_ms": 19,
     "diff": "",
     "error": null,
     "actual": {
@@ -2713,7 +1611,7 @@
     "name": "cross_tenant_no_reconcile_leak",
     "intent": "Tenant 2's insert must NOT merge into Tenant 1's existing Model even with identical embed_seed \u2014 tenant_id is a hard isolation boundary",
     "passed": true,
-    "elapsed_ms": 51,
+    "elapsed_ms": 67,
     "diff": "",
     "error": null,
     "actual": {
@@ -2730,7 +1628,7 @@
     "name": "insert_without_embedding",
     "intent": "Insert with no embedding key in entry: applier either rejects OR uses a placeholder; reconciler skips cleanly",
     "passed": true,
-    "elapsed_ms": 30,
+    "elapsed_ms": 27,
     "diff": "",
     "error": null,
     "actual": {
@@ -2743,12 +1641,12 @@
     "name": "same_actor_name_distinct_tenants_distinct_locks",
     "intent": "Two tenants both with an actor named 'ACME' produce distinct region-lock keys (tenant_id is mixed into the hash)",
     "passed": true,
-    "elapsed_ms": 3,
+    "elapsed_ms": 10,
     "diff": "",
     "error": null,
     "actual": {
-      "key1": "(-1974657579, 1257491474)",
-      "key2": "(1787575415, 1257491474)",
+      "key1": "(750612965, 1257491474)",
+      "key2": "(-1786740277, 1257491474)",
       "distinct": true
     },
     "expected": {
@@ -2760,7 +1658,7 @@
     "name": "shared_pool_codec_no_cross_tenant_leak",
     "intent": "A pool connection used by two tenants does not leak vector codec state \u2014 each tenant reads only their own rows",
     "passed": true,
-    "elapsed_ms": 42,
+    "elapsed_ms": 39,
     "diff": "",
     "error": null,
     "actual": {
@@ -2779,7 +1677,7 @@
     "name": "retrieval_does_not_leak_across_tenants",
     "intent": "A retrieval in tenant 2 with a vector matching tenant 1's Model returns ZERO leaked rows from tenant 1",
     "passed": true,
-    "elapsed_ms": 60,
+    "elapsed_ms": 43,
     "diff": "",
     "error": null,
     "actual": {
@@ -2795,7 +1693,7 @@
     "name": "reconciler_does_not_match_across_tenants",
     "intent": "A tenant 2 insert with tenant 1's embed_seed lands as a NEW tenant 2 Model (so t2_count = 2: pre-existing m2 + new); tenant 1's m1 is untouched (t1_count = 1)",
     "passed": true,
-    "elapsed_ms": 68,
+    "elapsed_ms": 77,
     "diff": "",
     "error": null,
     "actual": {
@@ -2812,7 +1710,7 @@
     "name": "tenant_cleanup_does_not_affect_other_tenants",
     "intent": "Archiving every Model in tenant 1 leaves tenant 2's Models intact",
     "passed": true,
-    "elapsed_ms": 48,
+    "elapsed_ms": 38,
     "diff": "",
     "error": null,
     "actual": {
@@ -2829,7 +1727,7 @@
     "name": "two_hundred_distinct_signals_invariant_audit",
     "intent": "200 distinct-topic inserts into one tenant produce a consistent substrate: no NULL embeddings, no scope-less Models, full audit trail",
     "passed": true,
-    "elapsed_ms": 4204,
+    "elapsed_ms": 4404,
     "diff": "",
     "error": null,
     "actual": {
@@ -2846,7 +1744,7 @@
     "name": "random_walk_lifecycle_audit_intact",
     "intent": "100 mixed insert/contest/archive ops leave the substrate consistent: no archived Models without reasons, error rate \u2264 5%",
     "passed": true,
-    "elapsed_ms": 1935,
+    "elapsed_ms": 1989,
     "diff": "",
     "error": null,
     "actual": {
@@ -2863,7 +1761,7 @@
     "name": "fifty_deep_supersession_chain",
     "intent": "50-deep supersession chain ends with 1 active + 49 archived, all with reason='superseded'",
     "passed": true,
-    "elapsed_ms": 1718,
+    "elapsed_ms": 1742,
     "diff": "",
     "error": null,
     "actual": {
@@ -2878,7 +1776,7 @@
     "name": "reconciliation_drift_100_identical_inserts",
     "intent": "100 identical inserts produce exactly 1 active Model (99 auto_merges + 1 no_match in the breakdown)",
     "passed": true,
-    "elapsed_ms": 1881,
+    "elapsed_ms": 1950,
     "diff": "",
     "error": null,
     "actual": {
@@ -2895,7 +1793,7 @@
     "name": "cascade_saturation_40_dependents",
     "intent": "A single doneverify cascade unblocks all 40 dependents without exceeding depth bound",
     "passed": true,
-    "elapsed_ms": 476,
+    "elapsed_ms": 487,
     "diff": "",
     "error": null,
     "actual": {

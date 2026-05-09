@@ -89,7 +89,13 @@ async def apply_diff(
     """
     Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
     have opened the transaction (typically via `async with
-    conn.transaction():`) and acquired the region lock already.
+    conn.transaction():`).
+
+    Region lock: acquired here, derived from the diff itself. Two diffs
+    that touch the same (tenant, scope) tuple serialize on the same
+    advisory lock. Re-entrant within a transaction, so the reason.py
+    path (which also acquires a broader retrieval-region lock) is
+    unaffected.
 
     Returns a summary dict used for observability:
       { "claim_ops": N, "act_ops": N, "resource_ops": N,
@@ -98,8 +104,20 @@ async def apply_diff(
 
     Idempotency: inserts into applied_triggers with outcome='pending'
     FIRST. Raises AlreadyAppliedError if the trigger_id already has a
-    row — the caller handles that path.
+    row — the caller handles that path. The INSERT is also guarded
+    against UniqueViolationError so that a race between the pre-check
+    and the insert (only possible when callers somehow bypass the region
+    lock) still surfaces as AlreadyAppliedError, not as a raw asyncpg
+    error.
     """
+    from .region_locks import (
+        acquire_region_lock as _acquire_region_lock,
+        touched_entity_ids_from_diff as _touched_from_diff,
+    )
+    _diff_entities = _touched_from_diff(diff)
+    if _diff_entities:
+        await _acquire_region_lock(conn, diff.tenant_id, _diff_entities)
+
     existing = await conn.fetchrow(
         "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
         diff.trigger_ref,
@@ -112,17 +130,24 @@ async def apply_diff(
         )
 
     diff_hash = hash_diff(diff)
-    await conn.execute(
-        """
-        INSERT INTO applied_triggers
-          (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
-        VALUES ($1, $2, now(), $3, $4, 'pending')
-        """,
-        diff.trigger_ref,
-        diff.tenant_id,
-        diff_hash,
-        trigger_kind,
-    )
+    try:
+        await conn.execute(
+            """
+            INSERT INTO applied_triggers
+              (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
+            VALUES ($1, $2, now(), $3, $4, 'pending')
+            """,
+            diff.trigger_ref,
+            diff.tenant_id,
+            diff_hash,
+            trigger_kind,
+        )
+    except asyncpg.exceptions.UniqueViolationError as exc:
+        raise AlreadyAppliedError(
+            "trigger already applied (race)",
+            trigger_id=str(diff.trigger_ref),
+            prior_outcome="unknown",
+        ) from exc
 
     applied_model_ids: list[UUID] = []
     state_changes_emitted = 0
