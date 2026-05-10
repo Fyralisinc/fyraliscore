@@ -124,6 +124,14 @@ async def tx_conn(fresh_db: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, 
         pass
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037 added FKs from every tenant_id column to tenants(id),
+    # DEFERRABLE INITIALLY IMMEDIATE. Existing tests generate tenant_id
+    # via uuid7() and never insert a tenants row; they rely on the
+    # transaction being rolled back at teardown. Defer FK checks to
+    # COMMIT — which never fires for a rollback — and the test sees no
+    # behavior change while production code keeps the immediate-check
+    # default.
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:

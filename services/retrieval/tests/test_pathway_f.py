@@ -48,6 +48,8 @@ async def tx_conn(db_pool):
         pass
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037 — tenant FKs deferred to commit.
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:

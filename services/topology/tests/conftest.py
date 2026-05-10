@@ -51,6 +51,10 @@ async def tx_conn(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, N
         pass
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037: defer tenant FK checks to commit (which never
+    # fires for the rollback teardown). Keeps existing tests working
+    # without forcing them to register a tenants row.
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:

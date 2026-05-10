@@ -894,6 +894,9 @@ async def test_property_observation_roundtrip(
             conn = await pool.acquire()
             tx = conn.transaction()
             await tx.start()
+            # Migration 0037: defer tenant FK so a hypothesis-generated
+            # tenant_id (no tenants row) survives until the rollback.
+            await conn.execute("SET CONSTRAINTS ALL DEFERRED")
             try:
                 tid = uuid7()
                 repo = ObservationRepository(conn, embedder=_NoopEmbedder())

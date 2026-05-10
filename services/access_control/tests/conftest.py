@@ -79,6 +79,9 @@ async def tx_conn(
         pass
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037: defer tenant FK to commit (which never fires for
+    # the rollback teardown).
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:
@@ -118,6 +121,18 @@ async def committed_conn(
 # ---------------------------------------------------------------------
 
 
+async def _ensure_tenant(conn: asyncpg.Connection, tenant: uuid.UUID) -> None:
+    """Migration 0037 added an FK from every tenant_id column to
+    tenants(id). Tests that COMMIT (committed_conn path) need a real
+    tenants row to satisfy the FK; tests that ROLLBACK (tx_conn) have
+    SET CONSTRAINTS ALL DEFERRED so this is a redundant no-op for them.
+    Idempotent via ON CONFLICT."""
+    await conn.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        tenant, f"test_tenant_{tenant}",
+    )
+
+
 async def insert_actor(
     conn: asyncpg.Connection,
     tenant: uuid.UUID,
@@ -128,6 +143,7 @@ async def insert_actor(
     metadata: dict | None = None,
     status: str = "active",
 ) -> uuid.UUID:
+    await _ensure_tenant(conn, tenant)
     aid = uuid7()
     nm = display_name or f"Actor-{str(aid)[:8]}"
     await conn.execute(
@@ -159,6 +175,7 @@ async def insert_observation(
     entities_mentioned: list[dict] | None = None,
     source_actor_ref: str | None = None,
 ) -> uuid.UUID:
+    await _ensure_tenant(conn, tenant)
     oid = uuid7()
     await conn.execute(
         """
@@ -382,6 +399,7 @@ async def insert_model(
     confidence: float = 0.6,
     status: str = "active",
 ) -> uuid.UUID:
+    await _ensure_tenant(conn, tenant)
     mid = uuid7()
     if embedding is None:
         embedding = make_embedding(natural)
@@ -410,7 +428,7 @@ async def insert_model(
         )
         """,
         mid, tenant, born_from_event_id,
-        json.dumps(proposition or {"kind": "claim", "text": natural}),
+        json.dumps(proposition or {"kind": "state", "subject": "test", "assertion": natural}),
         natural, embedding,
         scope_actors or [],
         json.dumps(scope_entities or []),

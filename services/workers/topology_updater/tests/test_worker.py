@@ -65,6 +65,14 @@ async def tenant_with_models(pool):
         except Exception:
             pass
         async with conn.transaction():
+            # Migration 0037: tenant_id FK to tenants(id). Commit-path
+            # tests must register the tenant before any tenant-scoped
+            # INSERT.
+            await conn.execute(
+                "INSERT INTO tenants (id, name) VALUES ($1, $2) "
+                "ON CONFLICT DO NOTHING",
+                tenant, f"topology_updater_{tenant}",
+            )
             await conn.execute(
                 """
                 INSERT INTO actors (

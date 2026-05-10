@@ -117,9 +117,18 @@ class _DeterministicEmbedder:
         return None
 
 
-@pytest.fixture
-def tenant_id() -> UUID:
-    return uuid7()
+@pytest_asyncio.fixture
+async def tenant_id(db_pool: asyncpg.Pool) -> UUID:
+    """Allocate a fresh tenant UUID and register it in `tenants` so
+    tenant-FK INSERTs (commit-path tests like test_notify_fires_after_commit
+    and the property test) succeed under migration 0037."""
+    tid = uuid7()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            tid, f"test_obs_{tid}",
+        )
+    return tid
 
 
 # Override both `db_pool` and `fresh_db` for this subtree.
@@ -209,6 +218,9 @@ async def tx_conn(fresh_db: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, 
     conn = await fresh_db.acquire()
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037: defer tenant FK to commit (rollback teardown
+    # never triggers the check).
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:

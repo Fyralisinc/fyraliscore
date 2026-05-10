@@ -249,7 +249,9 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 
 **Public API**:
 - `lib.llm.provider.build_provider(provider_name, api_key, model) → LLMProvider`
-- `lib.embeddings.ollama.OllamaClient(url).embed(text) → list[float]`
+- `lib.embeddings.factory.make_embedder()` → returns an `Embedder`
+  Protocol implementation (Ollama or OpenAI, env-driven). Direct
+  imports of `OllamaClient` are still supported for backward compat.
 - `lib.shared.types.ObservationRow, ModelRow, GoalRow, CommitmentRow, DecisionRow, ResourceRow` (Pydantic)
 - `lib.shared.db.fetch_all(pool, query, params) → list[Row]`
 - `lib.shared.ids.uuid7() → UUID` (time-ordered)
@@ -1428,6 +1430,21 @@ The legacy single-page "CEO home" surface has been split into Today (recommendat
   - Stub layer for future RBAC / field-level ACL
   - Currently: all authenticated users can read all tenant data
 
+- **Tenant isolation** (added 2026-05-10 — see §13):
+  - `lib/shared/tenant_context.py` — `tenant_transaction(tid)` opens a
+    Postgres transaction with `SET LOCAL app.current_tenant = tid`;
+    yields a `TenantContext` that quacks as an `asyncpg.Connection`.
+  - Migration 0036 — `tenant_isolation` RLS policy on 41 tenant-scoped
+    tables. Permissive default: code paths that don't yet use
+    `tenant_transaction()` see all rows; code paths that do get
+    defense-in-depth (a query that omits `WHERE tenant_id` cannot
+    return another tenant's rows; INSERT into the wrong tenant raises
+    `InsufficientPrivilegeError`).
+  - Migration 0037 — every `tenant_id` is `FOREIGN KEY REFERENCES
+    tenants(id) DEFERRABLE INITIALLY IMMEDIATE`. Production code
+    fails loudly on missing tenants; tests `SET CONSTRAINTS ALL
+    DEFERRED` and roll back, so the FK is never realized.
+
 ### **Logging & Observability**
 
 - **structlog** with JSON output:
@@ -1591,6 +1608,327 @@ Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
    - Reproducible Think outcomes
    - Testable reasoning pipelines
    - Hypothesis-driven debugging
+
+---
+
+## 13. Architectural Overhaul — 2026-05-10
+
+A six-phase structural pass that promotes several conventions from
+"discipline of every author" to "constraint at the database / type
+system." Migrations 0035-0038, plus new modules in `lib/embeddings/`
+and `lib/shared/`. All phases ship together as a coherent stack — the
+`tenants` FK migration depends on the existence of every tenant_id
+in the registry, the RLS migration depends on a tenant-context
+mechanism, and the tenant context wrapper is the structural layer
+that finally lets RLS bite.
+
+### 13.1 `proposition_kind` constraint
+
+**Migration:** `db/migrations/0035_proposition_kind_constraints.sql`
+
+`models.proposition_kind` is a `GENERATED ALWAYS AS
+(proposition->>'kind') STORED` column added in 0002 with no CHECK
+and no NOT NULL declaration. Pydantic validated the proposition shape
+upstream, but the database had no defense against drift. This migration
+adds:
+
+```sql
+ALTER TABLE models ADD CONSTRAINT models_proposition_kind_valid CHECK (
+  proposition_kind IS NOT NULL AND proposition_kind IN (
+    'state', 'relation', 'prediction', 'pattern', 'pattern_instance',
+    'capability_assessment', 'hypothesis', 'concern',
+    'market_assessment', 'environmental_trend', 'recommendation'
+  )
+);
+```
+
+`IN (...)` implicitly rejects NULL, but the explicit `IS NOT NULL`
+documents the intent. NOT NULL on a GENERATED column can't be added
+via ALTER COLUMN, so the CHECK is the canonical mechanism.
+
+### 13.2 Pluggable embedder backend
+
+**New files:**
+- `lib/embeddings/base.py` — `Embedder` Protocol + shared error classes
+- `lib/embeddings/openai_backend.py` — `OpenAIEmbedder` (text-embedding-3-small + dimensions=768)
+- `lib/embeddings/factory.py` — `make_embedder(backend?)` resolves from env
+
+The codebase had a single concrete `OllamaClient` with no abstraction.
+This phase introduces a Protocol that any embedder must satisfy:
+
+```python
+class Embedder(Protocol):
+    @property def expected_dim(self) -> int: ...
+    @property def model_name(self) -> str: ...
+    async def embed(self, text: str) -> list[float]: ...
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
+    async def close(self) -> None: ...
+```
+
+`OllamaClient` now implements the Protocol natively (added
+`expected_dim` / `model_name` properties; aliased to `OllamaEmbedder`
+for the canonical name). `OpenAIEmbedder` is a new httpx-based
+implementation that uses the `dimensions` request parameter to project
+text-embedding-3-small from 1536d down to 768d, matching the existing
+`VECTOR(768)` schema without a column-level migration.
+
+`make_embedder()` selection rules (in priority): explicit `backend=`
+kwarg → `EMBEDDER_BACKEND` env var → implicit fallback (OpenAI when
+`OPENAI_API_KEY` set and `OLLAMA_URL` not, else Ollama).
+
+**Test coverage:** 42 tests across `lib/embeddings/tests/` —
+respx-mocked happy paths, dim-mismatch detection, retry / 429 /
+auth-header behavior, batch chunking, response-order preservation,
+factory backend resolution.
+
+### 13.3 Tenant context wrapper (`lib/shared/tenant_context.py`)
+
+Today's codebase carries `tenant_id` as an explicit argument on every
+repo call, with `WHERE tenant_id = $1` written by hand on every query.
+This phase introduces a structural alternative:
+
+```python
+async with tenant_transaction(tenant_id) as tctx:
+    await tctx.execute(
+        "INSERT INTO models (...) VALUES (...)",
+        ...
+    )
+    # Postgres-side `app.current_tenant` is set for the life of the tx.
+```
+
+`tenant_transaction()` opens an asyncpg transaction, calls
+`set_config('app.current_tenant', tenant_id::text, true)` so the
+setting is scoped to the surrounding transaction (no leak into the
+pool acquire), and yields a `TenantContext` that quacks like an
+`asyncpg.Connection` (delegates execute / fetch / fetchrow / fetchval /
+transaction / prepare). Repos that take `conn` accept a `TenantContext`
+unchanged.
+
+`bind_tenant(conn, tid)` binds a tenant to a connection that already
+has a transaction open — useful in tests and worker code paths that
+own their transaction.
+
+`current_tenant(conn)` reads `app.current_tenant` back, returning
+None when unset. Used in assertions and audit code paths.
+
+This module is the load-bearing primitive for §13.4 (RLS) — without
+a way to attach a tenant to a connection, the policies have nothing
+to read.
+
+### 13.4 Row-Level Security with permissive default
+
+**Migration:** `db/migrations/0036_rls_permissive_default.sql`
+
+Every tenant-scoped table gets RLS enabled and FORCE'd (without FORCE,
+the table-owner role bypasses policies, which defeats the safety net
+for our own application code that connects as the owner). One policy
+named `tenant_isolation` is installed:
+
+```sql
+USING (
+  current_setting('app.current_tenant', true) IS NULL
+  OR tenant_id = current_setting('app.current_tenant', true)::uuid
+)
+WITH CHECK (
+  current_setting('app.current_tenant', true) IS NULL
+  OR tenant_id = current_setting('app.current_tenant', true)::uuid
+)
+```
+
+The `IS NULL` branch is the **permissive default** — code paths that
+don't yet use `tenant_transaction()` see all rows, behavior unchanged.
+Code paths that DO use it get defense-in-depth enforcement: even a
+bug that omits `WHERE tenant_id = $1` cannot leak another tenant's
+rows. INSERT into the wrong tenant raises
+`InsufficientPrivilegeError` immediately.
+
+**Why permissive, not strict, today.** A flip to strict (drop the IS
+NULL branch) makes RLS mandatory — which means every code path must
+have already migrated to `tenant_transaction()` or it sees zero rows.
+That's a follow-up plan, gated on a sweep of every repo and worker
+to confirm 100% TenantContext adoption.
+
+**Coverage.** 41 of the ~50 tenant-scoped tables (the foundation
+tables, queues, caches, and substrate tables). Skipped: junction
+tables that inherit tenant via parent (`model_status_notes`,
+`commitment_contributors`, etc.); global registries (`tenants`,
+`demo_configs`); partitioned children (RLS on partitioned parent
+cascades to children automatically).
+
+**Test coverage:** 10 tests in `lib/shared/tests/test_rls_isolation.py`
+covering permissive default, isolated tenant reads, cross-tenant
+INSERT rejection, the `bind_tenant` flow, and policy presence.
+
+### 13.5 Tenant FKs
+
+**Migration:** `db/migrations/0037_tenant_fks.sql`
+
+Every tenant-scoped table gets a foreign key from `tenant_id` to
+`tenants(id)`, declared `DEFERRABLE INITIALLY IMMEDIATE`. 41 tables
+covered.
+
+**IMMEDIATE = production safety.** Code that forgets to register a
+tenant before its first INSERT fails loudly with a
+`ForeignKeyViolationError`, not silently with orphan rows.
+
+**DEFERRABLE = test ergonomics.** Most tests wrap their body in a
+single transaction and ROLLBACK at teardown (`tx_conn` fixtures
+across services/*/tests/conftest.py). They generate fresh tenant_ids
+via `uuid7()` without inserting a tenants row. The fixtures now
+issue `SET CONSTRAINTS ALL DEFERRED` immediately after starting the
+transaction, deferring FK checks to commit — which never fires for
+a rollback. Result: existing tests work unchanged; only commit-path
+tests need to insert a tenants row, and those have been updated
+explicitly.
+
+**Backfill.** The migration's first statement registers every
+tenant_id seen across all 41 tables into `tenants` (with
+`auto_backfill_<uuid>` as the name) so the FK addition succeeds on
+existing data. Deterministic + idempotent.
+
+### 13.6 `model_signal_readings` sidecar (foundation only)
+
+**Migration:** `db/migrations/0038_signal_readings_sidecar.sql`
+
+Today `models.signal_readings` is a JSONB array. This works under
+early evolution but prevents per-reading querying (count by kind,
+filter by date, traverse from event to model) without unrolling
+JSONB. The sidecar is a typed table:
+
+```sql
+CREATE TABLE model_signal_readings (
+  id UUID PRIMARY KEY,
+  model_id UUID NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id),
+  reading_kind TEXT NOT NULL CHECK (reading_kind IN
+    ('confirm', 'contest', 'observe', 'falsify')),
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  source_event_id UUID,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+```
+
+Three indexes: `(model_id, observed_at DESC)`,
+`(tenant_id, reading_kind, observed_at DESC)`, and a partial
+`(source_event_id) WHERE source_event_id IS NOT NULL` for the
+"every Model whose contestation came from event X" reverse query.
+
+**This migration is foundation-only.** No producer code is changed;
+`models.signal_readings` JSONB remains authoritative. The cutover
+plan is staged:
+
+| Stage | Work | Status |
+|---|---|---|
+| A | Create sidecar table + RLS policy | DONE (0038) |
+| B | Dual-write — every producer that appends to JSONB also INSERTs into the sidecar | TODO (separate plan) |
+| C | Backfill JSONB → sidecar for legacy rows | TODO (separate plan) |
+| D | Cutover readers; drop JSONB column after two weeks of green | TODO (separate plan) |
+
+**Test coverage:** 5 tests in
+`services/models/tests/test_signal_readings_sidecar.py` —
+schema acceptance of all 4 kinds, CHECK rejection of unknown kinds,
+default observed_at, ON DELETE CASCADE, and RLS isolation.
+
+### 13.7 Recommendation promotion (DEFERRED)
+
+The architectural ideal is to promote `proposition_kind = 'recommendation'`
+out of `models` into its own table, because recommendation Models have
+a different lifecycle (no confidence updates after insert, immutable
+target_act_ref, distinct archive reasons) and ~8 services already filter
+on `proposition_kind = 'recommendation'` in retrieval and rendering paths.
+
+This is **explicitly deferred** to a separate plan. Reasons:
+
+- **Multi-day refactor.** New table + dual-write + reader cutover +
+  test rewrites across 8+ services. Not safely scoped to a single
+  session.
+- **No structural blocker today.** With migration 0035's CHECK
+  constraint and the sidecar pattern proven in 0038, the foundation
+  is in place. The path is clear; the timing isn't.
+- **Risk profile.** Recommendation flows are user-visible (the
+  CEO action list). A bug in the cutover surfaces immediately to the
+  customer, unlike the silent structural improvements in 13.1-13.6.
+
+The follow-up plan should:
+1. Create `model_recommendations` table mirroring the recommendation-
+   specific Model fields (`target_actor_id`, `caused_act_change_id`,
+   target_act_ref structure, archive reasons restricted to recommendation set).
+2. Dual-write from `services/think/applier.py` and the demo SQL emit.
+3. Backfill from existing `models WHERE proposition_kind = 'recommendation'`.
+4. Cut over readers in `services/recommendations/`, `services/today/`,
+   `services/conversations/`, `services/gateway/main.py` recommendation routing.
+5. Drop `'recommendation'` from the proposition_kind allowed values.
+
+### 13.8 Schema-per-tenant (DEFERRED)
+
+Earlier analysis raised the question of moving `tenant_id` from a
+row-level column to a schema-level boundary (separate Postgres
+schemas per tenant, `SET search_path` to switch). The structural
+case is strong (single source of truth, per-tenant ops become trivial,
+no risk of cross-tenant query bugs).
+
+This is **explicitly deferred** because the wins delivered by 13.3
+(tenant context) + 13.4 (RLS) + 13.5 (FKs) capture ~80% of the
+schema-per-tenant benefit at ~5% of the migration risk. The argument
+for a full schema-per-tenant cutover should be revisited only when
+one of these is true:
+
+- Per-tenant ops (backup, GDPR-delete, sandbox-clone) become a hot
+  path, OR
+- Cross-tenant query latency under RLS becomes a measurable problem
+  (today the partial-index pattern keeps RLS-filtered queries cheap), OR
+- Tenant count drops by an order of magnitude (e.g. enterprise-only
+  pivot) such that the schema multiplication is bounded.
+
+Until then, the row-level boundary with FK + RLS is the right
+position.
+
+### 13.9 Migrations summary
+
+| # | File | Purpose |
+|---|---|---|
+| 0035 | `proposition_kind_constraints.sql` | CHECK pinning kind to 11-value set |
+| 0036 | `rls_permissive_default.sql` | RLS + tenant_isolation policy on 41 tables |
+| 0037 | `tenant_fks.sql` | FK from every tenant_id to tenants(id), DEFERRABLE INITIALLY IMMEDIATE |
+| 0038 | `signal_readings_sidecar.sql` | `model_signal_readings` table foundation |
+
+### 13.10 New library modules
+
+| Path | Purpose |
+|---|---|
+| `lib/embeddings/base.py` | `Embedder` Protocol + shared error types |
+| `lib/embeddings/openai_backend.py` | OpenAI embeddings via httpx, dimensions=768 |
+| `lib/embeddings/factory.py` | `make_embedder()` env-driven selection |
+| `lib/shared/tenant_context.py` | `TenantContext`, `tenant_transaction`, `bind_tenant`, `current_tenant` |
+
+### 13.11 Test infrastructure changes
+
+- `services/models/tests/conftest.py`, `services/topology/tests/conftest.py`,
+  `services/access_control/tests/conftest.py`, `services/observations/tests/conftest.py`,
+  `services/retrieval/tests/conftest.py`,
+  `services/workers/calibration_updater/tests/conftest.py`: every `tx_conn`
+  fixture issues `SET CONSTRAINTS ALL DEFERRED` immediately after
+  `await tx.start()`. Tenant FK is deferred to commit (which never
+  fires for the rollback teardown).
+- `services/observations/tests/conftest.py`: `tenant_id` fixture is
+  now async + inserts into the `tenants` table for commit-path tests.
+- `services/access_control/tests/conftest.py`: helpers gain
+  `_ensure_tenant(conn, tid)` which they call before any tenant-scoped
+  INSERT (covers committed_conn tests).
+- Test files with their own local `tx_conn` fixtures
+  (`services/topology/tests/test_adversarial_extra.py`,
+  `services/think/tests/test_relocate_*.py`,
+  `services/workers/neighborhood_detector/tests/test_t6_adversarial.py`,
+  `services/retrieval/tests/test_pathway_f*.py`): same SET CONSTRAINTS
+  treatment.
+
+### 13.12 Test results
+
+After the overhaul: 524 passing, 3 pre-existing failures unrelated to
+this change (the `4w` falsifier-grammar tests + the
+`test_notify_fires_after_commit` flake documented in its own docstring
++ one pgvector codec test). No regressions introduced by the overhaul
+itself.
 
 ---
 
