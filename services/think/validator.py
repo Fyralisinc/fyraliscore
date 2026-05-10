@@ -52,6 +52,7 @@ from lib.shared.errors import (
     CompanyOSError,
     FalsifierInadequateError,
     InvariantViolation,
+    MalformedFalsifierError,
     TrustTierError,
     ValidationError,
 )
@@ -69,7 +70,12 @@ from .thresholds import compute_threshold
 def _classify_claim_drop_reason(exc: Exception) -> str:
     """Map a per-op exception to a short, stable `failure_reason`
     classification tag. Used by OP-4 dropped-op logging."""
-    from lib.shared.errors import FalsifierInadequateError  # local import
+    from lib.shared.errors import (  # local import
+        FalsifierInadequateError,
+        MalformedFalsifierError,
+    )
+    if isinstance(exc, MalformedFalsifierError):
+        return "malformed_falsifier"
     if isinstance(exc, FalsifierInadequateError):
         return "inadequate_falsifier"
     msg = str(getattr(exc, "message", exc)).lower()
@@ -338,7 +344,7 @@ async def validate(
             v_op = await _validate_claim_op(
                 op, retrieval_result, conn, tenant_id=diff.tenant_id
             )
-        except (FalsifierInadequateError, ValidationError) as e:
+        except (FalsifierInadequateError, MalformedFalsifierError, ValidationError) as e:
             reason = _classify_claim_drop_reason(e)
             errors.append(
                 f"claim_op {op.op}: {e.message if hasattr(e, 'message') else str(e)}"
@@ -544,6 +550,23 @@ async def _validate_claim_op(
             raise ValidationError("claim_op archive requires model_id")
         if not op.reason:
             raise ValidationError("claim_op archive requires reason")
+        return op
+
+    if op.op == "relocate":
+        # S4: deliberate topology repositioning. Shape-only checks
+        # here; semantic checks (target exists in tenant, dim
+        # match, alpha range) live in `parse_relocate_target` and
+        # are run by the applier.
+        from lib.topology.relocate import parse_relocate_target
+
+        if op.model_id is None:
+            raise ValidationError("claim_op relocate requires model_id")
+        if not op.relocate_target:
+            raise ValidationError(
+                "claim_op relocate requires relocate_target dict",
+            )
+        # parse_relocate_target raises ValidationError on shape errors.
+        parse_relocate_target(op.relocate_target)
         return op
 
     raise ValidationError(f"unknown claim_op: {op.op!r}")

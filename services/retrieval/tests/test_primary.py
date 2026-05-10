@@ -64,8 +64,12 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
     result = await primary_retrieve(trigger, tx_conn, models_repo=repo)
 
     assert isinstance(result, RetrievalResult)
-    # T1 runs A + B + C
-    assert set(result.notes["pathways_run"]) == {"A", "B", "C"}
+    # T1 runs A + B + C (S3: also F whenever it can produce a seed,
+    # but the test bundle has no topology so F skips with 'empty_seed'
+    # and still returns a PathwayResult — included in pathways_run).
+    run = set(result.notes["pathways_run"])
+    assert {"A", "B", "C"}.issubset(run)
+    assert run.issubset({"A", "B", "C", "F"})
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
@@ -88,7 +92,10 @@ async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D"})
+    # T2: A + B + D in the original spec, plus F (S3); F may
+    # short-circuit when no topology seed resolves but is still
+    # recorded in pathways_run.
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "F"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
@@ -104,8 +111,8 @@ async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
     )
     result = await primary_retrieve(trigger, tx_conn)
     assert "A" in result.notes["pathways_run"]
-    # Weights differ from T1 (0.5 / 0.3 / 0.2 vs 0.4 / 0.4 / 0.2)
-    assert result.notes["weights"]["A"] == 0.5
+    # Weights differ from T1: T3's A is heavier (0.4 vs 0.35 in S3).
+    assert result.notes["weights"]["A"] == 0.4
 
 
 async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
@@ -117,7 +124,8 @@ async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
         seed_signature={"regex": "^hotfix"},
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D"})
+    # T4: D + A, plus F (S3) — F often skips on empty seed.
+    assert set(result.notes["pathways_run"]).issubset({"A", "D", "F"})
 
 
 # =====================================================================

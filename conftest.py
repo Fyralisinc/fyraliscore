@@ -53,12 +53,11 @@ def _requires_db(request: pytest.FixtureRequest) -> str:
 
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
-    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    if not migration_files:
-        raise RuntimeError(f"No migrations found in {MIGRATIONS_DIR}")
-    for path in migration_files:
-        sql = path.read_text()
-        await conn.execute(sql)
+    # T3: each migration runs in its own transaction so partial
+    # failures roll back cleanly instead of poisoning the
+    # connection. See lib/shared/migrations.py.
+    from lib.shared.migrations import apply_migrations_dir
+    await apply_migrations_dir(conn, MIGRATIONS_DIR)
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:

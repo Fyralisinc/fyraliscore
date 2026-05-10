@@ -1,0 +1,1808 @@
+[
+  {
+    "stage": "adversarial.linguistic",
+    "name": "sarcasm_inverted_polarity",
+    "intent": "Sarcastic 'they love us'-style phrasing with a negative event must produce a concern, not a positive-sentiment state",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped (no LLM)",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "double_negation_does_not_flip_polarity",
+    "intent": "Double negation 'don't think we shouldn't ship' must NOT extract as a 'we will not ship' claim",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped (no LLM)",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "conditional_commitment_handling",
+    "intent": "A conditional commitment ('if X then we ship') should NOT be stored as an unconditional commitment Node",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "tense_ambiguity_present_continuous",
+    "intent": "'We're shipping X' is ambiguous: is it shipping now, or as part of normal work, or future-tense?",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "code_switched_english_spanish",
+    "intent": "Code-switched signal must extract critical facts (deadline, escalation threat) regardless of language interleave",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "typos_and_autocorrect_failures",
+    "intent": "Typos ('comitted', 'dadhboard', 'migartion') must not prevent extraction entirely",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "quoted_speech_attribution",
+    "intent": "Engine must distinguish 'John said X' from a first-person claim of X by the speaker",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "reported_decision_secondhand",
+    "intent": "Secondhand reported decision must NOT produce a high-confidence Decision/state Node",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "aspirational_versus_committed",
+    "intent": "'We'd love to ship by Q4' must NOT be extracted as a Q4 commitment with high confidence",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "threading_reply_no_context",
+    "intent": "A reply ('+1 to what Sarah said', 'should we kill it', 'agreed') without the parent message must NOT produce a confident decision",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "hedged_commitment_low_confidence",
+    "intent": "Stacked hedges ('I think', 'probably', 'eventually', 'maybe', 'no promises') must not produce a >=0.7 confidence Model",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "sarcastic_reversal_definitely",
+    "intent": "'Sure, that will definitely happen' followed by sarcastic context must produce a launch-risk concern, not a confident on-time prediction",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped (no LLM)",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "bot_system_actor_signal",
+    "intent": "Bot-authored signal (CI failure) \u2014 should this produce a Concern Node, an Observation only, or an Act-layer change?",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "ambiguous_entity_reference",
+    "intent": "Same string 'ACME' refers to two different entities; the substrate must not collapse them into one scope",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.linguistic",
+    "name": "compound_linguistic_pressure",
+    "intent": "Compound (sarcasm + double negation + conditional + aspirational) \u2014 engine should produce nothing high-confidence",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "skipped",
+    "error": null,
+    "actual": {
+      "skipped": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "empty_content_text_observation",
+    "intent": "Empty content_text observation either inserts cleanly OR is rejected at write time \u2014 both are defensible; silent corruption (e.g. NULL embedding row) is not",
+    "passed": true,
+    "elapsed_ms": 7,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "obs_id": "019e0ba0-4192-7000-b3f0-b4f663db35fb",
+      "raised": false
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "single_character_signal",
+    "intent": "A '+1' signal must not crash ingestion; what it produces downstream is open",
+    "passed": true,
+    "elapsed_ms": 12,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "obs_id": "019e0ba0-4192-7001-a90a-398ae3e0d3d7",
+      "ok": true
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "huge_content_no_silent_truncation",
+    "intent": "50KB content_text round-trips without truncation, OR is rejected at write time with a clear error",
+    "passed": true,
+    "elapsed_ms": 31,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "input_len": 54400,
+      "stored_len": 54400
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "zero_scope_zero_entities_insert",
+    "intent": "A Model with no scope_actors and no scope_entities should either be rejected or be marked unreachable; not silently join the substrate",
+    "passed": true,
+    "elapsed_ms": 41,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "summary": {
+        "claim_ops": [
+          {
+            "op": "insert",
+            "model_id": "019e0ba0-41a8-7001-84bb-edef6cdcd531",
+            "confidence": 0.6,
+            "proposition_kind": "state",
+            "reconcile_decision": "no_match"
+          }
+        ],
+        "act_ops": [],
+        "resource_ops": [],
+        "diff_hash": "8dae865295be75e3087cf092eefbe1136eb7297bd8cff971cbce34116163e48c",
+        "reconcile_summary": {
+          "auto_merge": 0,
+          "human_review": 0,
+          "no_match": 1,
+          "skipped": 0
+        },
+        "applied_model_ids": [
+          "019e0ba0-41a8-7001-84bb-edef6cdcd531"
+        ],
+        "state_changes_emitted": 1,
+        "reasoning_trace": "adversarial.boundary"
+      },
+      "model_count": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "twentyfive_scope_actors",
+    "intent": "25 scope_actors round-trip without truncation; the region lock acquires successfully",
+    "passed": true,
+    "elapsed_ms": 52,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "summary": {
+        "claim_ops": [
+          {
+            "op": "insert",
+            "model_id": "019e0ba0-41b3-7000-8238-720caf4210ac",
+            "confidence": 0.57,
+            "proposition_kind": "state",
+            "reconcile_decision": "no_match"
+          }
+        ],
+        "act_ops": [],
+        "resource_ops": [],
+        "diff_hash": "d0bc71811cd606f415a0ea321526d05ca5ca3781158a71608579a14522a417e5",
+        "reconcile_summary": {
+          "auto_merge": 0,
+          "human_review": 0,
+          "no_match": 1,
+          "skipped": 0
+        },
+        "applied_model_ids": [
+          "019e0ba0-41b3-7000-8238-720caf4210ac"
+        ],
+        "state_changes_emitted": 1,
+        "reasoning_trace": "adversarial.boundary"
+      },
+      "stored_actors": 25
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "occurred_at_in_the_future",
+    "intent": "An observation with occurred_at 7 days in the future is either rejected, normalized, or accepted; document which",
+    "passed": true,
+    "elapsed_ms": 32,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "occurred_at": "2026-05-16T07:25:12.470720+00:00",
+      "ingested_at": "2026-05-16T07:25:12.470720+00:00",
+      "future_diff_seconds": 0.0
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "update_against_nonexistent_model_id",
+    "intent": "claim_op.update against a model_id that doesn't exist must raise loudly OR be a documented no-op; silent success is wrong",
+    "passed": true,
+    "elapsed_ms": 29,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "falsifier_within_window_empty_string",
+    "intent": "within_window='' is treated as 'missing' (returns None), not 'malformed' (raise) \u2014 and the surrounding adequacy check rejects it for kinds where window is required",
+    "passed": true,
+    "elapsed_ms": 9,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "field": null
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "archive_already_archived_model",
+    "intent": "claim_op.archive against an archived Model must be idempotent (no-op) or rejected; either is OK if documented",
+    "passed": true,
+    "elapsed_ms": 52,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "confidence_clip_low_boundary",
+    "intent": "confidence=0.0 must be clipped to \u22650.05 by the validator",
+    "passed": true,
+    "elapsed_ms": 19,
+    "diff": "loud-raise on out-of-range confidence (acceptable)",
+    "error": null,
+    "actual": {
+      "crashed": true,
+      "error": "ValidationError: 2 validation errors for ModelCreate\nconfidence\n  Input should be greater than or equal to 0.05 [type=greater_than_equal, input_value=0.0, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal\nconfidence_at_assertion\n  Input should be greater than or equal to 0.05 [type=greater_than_equal, input_value=0.0, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal",
+      "error_type": "ValidationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "confidence_clip_high_boundary",
+    "intent": "confidence=1.0 must be clipped to \u22640.95 by the validator",
+    "passed": true,
+    "elapsed_ms": 17,
+    "diff": "loud-raise on out-of-range confidence (acceptable)",
+    "error": null,
+    "actual": {
+      "crashed": true,
+      "error": "ValidationError: 2 validation errors for ModelCreate\nconfidence\n  Input should be less than or equal to 0.95 [type=less_than_equal, input_value=1.0, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal\nconfidence_at_assertion\n  Input should be less than or equal to 0.95 [type=less_than_equal, input_value=1.0, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal",
+      "error_type": "ValidationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "negative_confidence_handling",
+    "intent": "confidence=-0.4 must be clipped or rejected; stored negative confidence is broken arithmetic",
+    "passed": true,
+    "elapsed_ms": 14,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "error_type": "ValidationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "two_actors_same_display_name",
+    "intent": "Two distinct actors both displayed as 'ACME' must round-trip without collision; downstream consumer disambiguates by id",
+    "passed": true,
+    "elapsed_ms": 32,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_count": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "apply_diff_zero_ops",
+    "intent": "apply_diff with no ops still records applied_triggers row and returns success \u2014 same as a no-op LLM extraction",
+    "passed": true,
+    "elapsed_ms": 9,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "success",
+      "summary": {
+        "claim_ops": [],
+        "act_ops": [],
+        "resource_ops": [],
+        "diff_hash": "89a6ce181ec250bd6d4742ad19682917e5bcd805088f9b5d1780e98e974289cf",
+        "reconcile_summary": {
+          "auto_merge": 0,
+          "human_review": 0,
+          "no_match": 0,
+          "skipped": 0
+        },
+        "applied_model_ids": [],
+        "state_changes_emitted": 0,
+        "reasoning_trace": "empty diff"
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "embedding_wrong_dimensionality",
+    "intent": "An embedding of dim 128 (production is 768) must be rejected by pgvector dimension check at write time",
+    "passed": true,
+    "elapsed_ms": 16,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "error_type": "ValidationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.boundary",
+    "name": "zero_vector_skip_reconciler",
+    "intent": "An all-zero embedding triggers the reconciler's documented skip path (no false-positive cosine collisions)",
+    "passed": true,
+    "elapsed_ms": 7,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "skipped"
+    },
+    "expected": {
+      "decision": "skipped"
+    }
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "out_of_order_arrival_both_persist",
+    "intent": "Two observations whose occurred_at order is REVERSE of their arrival order both persist as distinct Models",
+    "passed": true,
+    "elapsed_ms": 65,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_count": 2,
+      "obs_occurred_at": {
+        "019e0ba0-41ba-7000-88b8-cf8ab05cf828": "2026-05-09T06:25:12.504537+00:00",
+        "019e0ba0-41c1-7000-b33f-dddc1535c013": "2026-05-09T05:25:12.510039+00:00"
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "rapid_fire_same_proposition_collapses",
+    "intent": "5 successive identical-text inserts collapse to 1 Model via auto_merge (first is no_match, rest are auto_merge)",
+    "passed": true,
+    "elapsed_ms": 136,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decisions": [
+        "no_match",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge"
+      ],
+      "model_count": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "insert_archive_reinsert_reversal",
+    "intent": "Insert \u2192 archive \u2192 re-insert (negated text) leaves exactly 1 active and 1 archived Model",
+    "passed": true,
+    "elapsed_ms": 83,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 1,
+      "archived": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "reversal_of_reversal_audit_intact",
+    "intent": "A \u2192 not-A \u2192 A produces 3 distinct Models all in active state (no auto-merge between contradictions)",
+    "passed": true,
+    "elapsed_ms": 82,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "ids": [
+        "019e0ba0-41cc-7000-bedd-5dc2e7b93d1c",
+        "019e0ba0-41e7-7001-bb9b-1e9b820565ac",
+        "019e0ba0-4201-7001-99e3-892a77d923a5"
+      ],
+      "active": 3
+    },
+    "expected": {
+      "active": 3
+    }
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "ten_deep_supersession_chain",
+    "intent": "10-deep insert+archive sequence ends with 1 active, 9 archived Models",
+    "passed": true,
+    "elapsed_ms": 414,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 1,
+      "archived": 9
+    },
+    "expected": {
+      "active": 1,
+      "archived": 9
+    }
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "stale_signal_after_archival",
+    "intent": "A backdated signal arriving after the matching Model was archived must NOT auto-merge into the archived Model (reconciler scopes to active rows only)",
+    "passed": true,
+    "elapsed_ms": 89,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 1,
+      "archived": 1,
+      "decision": "no_match"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "interleaved_contradictions_in_one_diff",
+    "intent": "Two contradictory inserts in one diff \u2014 both land (the engine emits, the validator doesn't deconflict)",
+    "passed": true,
+    "elapsed_ms": 42,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 2
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "trigger_id_reuse_blocked",
+    "intent": "Re-using trigger_id with a different diff raises AlreadyAppliedError; second diff's ops are NOT applied",
+    "passed": true,
+    "elapsed_ms": 42,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "err": "AlreadyAppliedError",
+      "active": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "auto_merge_does_not_lower_confidence",
+    "intent": "Auto-merge with lower-confidence new signal must NOT drop the existing higher confidence (max rule)",
+    "passed": true,
+    "elapsed_ms": 56,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "final_confidence": 0.6174999999999999
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "stale_recency_window_boundary",
+    "intent": "Re-emitting same text 60 days later (past 30d recency) produces no_match \u2014 both Models survive",
+    "passed": true,
+    "elapsed_ms": 61,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match",
+      "active": 2
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "model_lifecycle_insert_contest_archive",
+    "intent": "A Model walks through insert \u2192 contest \u2192 archive with consistent state at each step",
+    "passed": true,
+    "elapsed_ms": 55,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "status": "archived",
+      "archive_reason": "manual",
+      "confidence": 0.22499999999999998,
+      "contest_outcome": "ContestationResult(observation_id=UUID('019e0ba0-4210-7000-86da-b732988be774'), trigger_id=UUID('019e0ba0-4213-7001-859b-f2fff7c0157c'), new_confidence=0.22499999999999998, previous_confidence=0.75, standing_basis='scope', override_applied=True)"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "reconciler_ignores_archived_candidates",
+    "intent": "Reconciler must not match against archived Models (its candidate query restricts to status='active')",
+    "passed": true,
+    "elapsed_ms": 49,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match",
+      "active": 1
+    },
+    "expected": {
+      "decision": "no_match",
+      "active": 1
+    }
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "five_signals_three_actors_interleaved",
+    "intent": "5 signals across 3 actors interleaved (a-b-c-a-b) all land in deterministic order",
+    "passed": true,
+    "elapsed_ms": 128,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "actor_sequence": [
+        "019e0ba0-420b-7003-ac58-db4768378db6",
+        "019e0ba0-420b-7005-9aa1-0d1493edd5a2",
+        "019e0ba0-420b-7006-bb53-22f21ac6f3e4",
+        "019e0ba0-420b-7003-ac58-db4768378db6",
+        "019e0ba0-420b-7005-9aa1-0d1493edd5a2"
+      ],
+      "model_count": 5
+    },
+    "expected": {
+      "model_count": 5
+    }
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "apply_summary_reconcile_breakdown",
+    "intent": "apply_diff returns a reconcile_summary with per-decision counts; first apply records no_match, second records auto_merge",
+    "passed": true,
+    "elapsed_ms": 57,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "first": {
+        "auto_merge": 0,
+        "human_review": 0,
+        "no_match": 1,
+        "skipped": 0
+      },
+      "second": {
+        "auto_merge": 1,
+        "human_review": 0,
+        "no_match": 0,
+        "skipped": 0
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.sequencing",
+    "name": "three_deep_cascade_chain_stops_at_active",
+    "intent": "Cascade walks A.done \u2192 unblock B \u2192 DOES NOT cascade further (B becomes 'active', not 'doneverified', so C stays blocked)",
+    "passed": true,
+    "elapsed_ms": 51,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 2,
+      "depth_reached": 1,
+      "bound_violated": false,
+      "b_state": "active",
+      "c_state": "blocked"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "paraphrase_same_proposition_different_words",
+    "intent": "Two paraphrases of the same proposition: deterministic embeddings produce different vectors \u2192 no_match (current behavior); ideally human_review",
+    "passed": true,
+    "elapsed_ms": 55,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match",
+      "cosine": null,
+      "active": 2
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "scope_precision_mismatch",
+    "intent": "Same vector but different scope precision (customer vs deal entity) \u2192 no_match (scope predicate filters out the candidate)",
+    "passed": true,
+    "elapsed_ms": 47,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match"
+    },
+    "expected": {
+      "decision": "no_match"
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "confidence_disagreement_max_rule",
+    "intent": "Existing 0.6 + new 0.85 \u2192 merged confidence is max (0.85)",
+    "passed": true,
+    "elapsed_ms": 50,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "merged_confidence": 0.85
+    },
+    "expected": {
+      "merged_confidence_at_least": 0.849999
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "partial_overlap_multi_entity_scope",
+    "intent": "Auto-merge of [A] into existing [A,B] scope: scope of merged Model retains [A,B] (no information loss)",
+    "passed": true,
+    "elapsed_ms": 46,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "auto_merge",
+      "scope_actors_count": 2,
+      "active": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "hierarchical_entity_team_vs_leader",
+    "intent": "Signal scoped to team-leader vs signal scoped to team itself \u2014 are these the same proposition?",
+    "passed": true,
+    "elapsed_ms": 48,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match",
+      "active": 2
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "auto_merge_threshold_boundary_strict",
+    "intent": "At cosine \u2248 0.85, the comparison must be strict (\u2265) \u2014 any drift in the comparator silently changes auto_merge rate",
+    "passed": true,
+    "elapsed_ms": 51,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "human_review",
+      "cosine": 0.8435231603036965
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "auto_merge_conflicting_falsifiers",
+    "intent": "When auto-merging, the new falsifier is silently dropped because the UPDATE only sets confidence \u2014 known limitation",
+    "passed": true,
+    "elapsed_ms": 47,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "retained_falsifier_kind": "observation_pattern"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "three_identical_inserts_idempotent",
+    "intent": "3 identical inserts \u2192 1 Model (1 no_match + 2 auto_merge)",
+    "passed": true,
+    "elapsed_ms": 74,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decisions": [
+        "no_match",
+        "auto_merge",
+        "auto_merge"
+      ],
+      "active": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "reconcile_missing_embedding_skips",
+    "intent": "A claim_op without an embedding short-circuits to decision='skipped' (no candidate query, no false match)",
+    "passed": true,
+    "elapsed_ms": 2,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "skipped"
+    },
+    "expected": {
+      "decision": "skipped"
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "reconcile_non_insert_skips",
+    "intent": "claim_op.update or .archive bypass reconcile entirely",
+    "passed": true,
+    "elapsed_ms": 2,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "skipped"
+    },
+    "expected": {
+      "decision": "skipped"
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "custom_high_auto_merge_threshold",
+    "intent": "Setting auto_merge_cosine=0.999 forces near-identical vectors (cosine \u2248 1.0) to still auto_merge; tighter thresholds would route to human_review",
+    "passed": true,
+    "elapsed_ms": 30,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "auto_merge",
+      "cosine": 0.9999999999999998
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "existing_model_null_embedding_blocked_by_schema",
+    "intent": "The schema's NOT NULL constraint on `embedding` blocks any path that would write a Model with no embedding \u2014 this scenario verifies the schema, not the reconciler",
+    "passed": true,
+    "elapsed_ms": 22,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "crashed": true,
+      "error": "NotNullViolationError: null value in column \"embedding\" of relation \"models\" violates not-null constraint\nDETAIL:  Failing row contains (019e0ba0-4279-7001-b8fd-d1f3ec7fbb11, 019e0ba0-4271-7003-9258-c9bb39381514, 019e0ba0-427d-7000-9e0c-9e5d93826ce1, {\"kind\": \"state\", \"subject\": \"null-emb canonical\"}, null-emb canonical, null, {019e0ba0-4271-7004-aa83-b263ac474ee4}, [], {\"valid_from\": \"2026-05-09T07:25:12.703986+00:00\", \"valid_until\"..., 0.6, 0.5, null, [], t, {}, {}, 0.5, active, null, null, 2026-05-09 13:10:12.692954+05:45, null, 0, null, null, {}, t, state, 0, 0, null, 0.6, null, null, 1, null, null).",
+      "error_type": "NotNullViolationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "shared_kind_different_content",
+    "intent": "Two different state propositions on the same scope must both persist (no_match) \u2014 the kind-match alone is insufficient",
+    "passed": true,
+    "elapsed_ms": 49,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "no_match",
+      "active": 2
+    },
+    "expected": {
+      "decision": "no_match",
+      "active": 2
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "no_match_audit_row_written",
+    "intent": "With log_no_match=True (default), a no_match decision still writes 1 audit row for tuning data",
+    "passed": true,
+    "elapsed_ms": 30,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "audit_rows": 1
+    },
+    "expected": {
+      "audit_rows": 1
+    }
+  },
+  {
+    "stage": "adversarial.reconciliation_pressure",
+    "name": "auto_merge_does_not_reset_activation",
+    "intent": "auto_merge UPDATE only changes confidence; activation must NOT regress",
+    "passed": true,
+    "elapsed_ms": 45,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "activation": 0.95
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "prediction_deadline_future_inconclusive",
+    "intent": "prediction_deadline whose evaluate_at is in the future must evaluate to 'inconclusive' (the deadline hasn't fired)",
+    "passed": true,
+    "elapsed_ms": 2,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "inconclusive"
+    },
+    "expected": {
+      "outcome": "inconclusive"
+    }
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "prediction_deadline_past_check_satisfied",
+    "intent": "A prediction_deadline past its evaluate_at, with the check satisfied, evaluates to 'confirmed'",
+    "passed": true,
+    "elapsed_ms": 11,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "confirmed"
+    },
+    "expected": {
+      "outcome": "confirmed"
+    }
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "resource_threshold_adequacy",
+    "intent": "resource_threshold passes adequacy with both ref+threshold; fails with either missing \u2014 kind not exercised by existing harness",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "good": true,
+      "bad_no_ref": false,
+      "bad_no_threshold": false
+    },
+    "expected": {
+      "good": true,
+      "bad_no_ref": false,
+      "bad_no_threshold": false
+    }
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "observation_pattern_direction_confirms",
+    "intent": "observation_pattern with direction='confirms' and a matching observation in window evaluates as 'confirmed' (not 'violated')",
+    "passed": true,
+    "elapsed_ms": 10,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "confirmed"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "explicit_contestation_partial_match",
+    "intent": "explicit_contestation with 2 required actors and only 1 actually contesting \u2014 should be 'inconclusive' (not yet violated; still possible the second actor will contest)",
+    "passed": true,
+    "elapsed_ms": 3,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "confirmed"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "weak_falsifier_passes_minimal_adequacy",
+    "intent": "A 21-char pattern + 1-year window passes adequacy but is weak \u2014 adequacy floor doesn't catch low-quality falsifiers",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "adequate": true,
+      "reason": null
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "parser_long_and_compound_windows",
+    "intent": "parse_within_window handles long horizons (10Y, P5Y) and compound forms (P1W2DT3H) \u2014 these are valid ISO-8601",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "cases": {
+        "P10Y": 315360000.0,
+        "10 years": 315360000.0,
+        "P5Y": 157680000.0,
+        "PT100H": 360000.0,
+        "P1W2DT3H": 788400.0
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "falsifier_kind_none_or_wrong_type",
+    "intent": "None / empty dict / non-dict input return (False, reason) with no exception",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "cases": {
+        "none": [
+          false,
+          "no falsifier specified"
+        ],
+        "empty_dict": [
+          false,
+          "falsifier missing 'kind' field"
+        ],
+        "wrong_type": [
+          false,
+          "falsifier must be dict; got str"
+        ]
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "multiple_kinds_in_one_falsifier",
+    "intent": "A falsifier whose kind is a list of two values must NOT pass adequacy; either clean reject or loud raise is OK",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "loud-raise on unhashable kind (acceptable)",
+    "error": null,
+    "actual": {
+      "crashed": true,
+      "error": "TypeError: cannot use 'list' as a set element (unhashable type: 'list')",
+      "error_type": "TypeError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "self_referential_commitment_outcome",
+    "intent": "A Model whose commitment_outcome references its own commitment, with the commitment NOT in any contradicting state, evaluates as 'inconclusive' (the falsifier never actually fires)",
+    "passed": true,
+    "elapsed_ms": 10,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "outcome": "inconclusive"
+    },
+    "expected": {
+      "outcome": "inconclusive"
+    }
+  },
+  {
+    "stage": "adversarial.falsifier",
+    "name": "negative_or_zero_window_rejected",
+    "intent": "P-1D, -7 days, P0Y0M0W0D all raise MalformedFalsifierError",
+    "passed": true,
+    "elapsed_ms": 0,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": {
+        "P-1D": "within_window",
+        "-7 days": "within_window",
+        "P0Y0M0W0D": "within_window",
+        "-10 minutes": "within_window"
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "wide_fanout_unblocks_20_dependents",
+    "intent": "One doneverified commitment unblocks 20 dependents in single cascade walk; depth bound is not breached",
+    "passed": true,
+    "elapsed_ms": 463,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 21,
+      "depth_reached": 1,
+      "bound_violated": false,
+      "unblocked": 20
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "long_dependency_chain_stops_at_unblock",
+    "intent": "Deep depends-on chain where only the head is done: cascade unblocks chain[1] but stops there (active doesn't trigger further cascades)",
+    "passed": true,
+    "elapsed_ms": 147,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 2,
+      "depth_reached": 1,
+      "bound_violated": false,
+      "states": [
+        "doneverified",
+        "active",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked"
+      ]
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "dependency_cycle_terminates_via_visited_dedup",
+    "intent": "A\u2194B mutual depends_on cycle: cascade terminates via visited dedup, not via depth bound",
+    "passed": true,
+    "elapsed_ms": 36,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 2,
+      "depth_reached": 1,
+      "bound_violated": false
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "cascade_against_missing_entity",
+    "intent": "Cascade seeded by a non-existent commitment id completes cleanly (no downstream, no crash)",
+    "passed": true,
+    "elapsed_ms": 6,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 1,
+      "bound_violated": false
+    },
+    "expected": {
+      "events_visited": 1,
+      "bound_violated": false
+    }
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "decision_revisit_then_commit_unblock",
+    "intent": "A commitment that is both flagged-for-review (branch B) and an unblock target (branch A) reaches state='active' after the second cascade",
+    "passed": true,
+    "elapsed_ms": 59,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision_walk": 2,
+      "commit_walk": 2,
+      "blocked_state": "active"
+    },
+    "expected": {
+      "blocked_state": "active"
+    }
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "cascade_noop_no_dependents",
+    "intent": "A done commit with no dependents/no contributes_to to non-critical goals produces a 1-step cascade (just the seed)",
+    "passed": true,
+    "elapsed_ms": 23,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 1,
+      "steps": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "critical_path_doneverify_recomputes_goal_health",
+    "intent": "Commit doneverify on a critical-path edge triggers a goal_health recompute (branch A sub-task)",
+    "passed": true,
+    "elapsed_ms": 30,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "goal_health": "healthy"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "decision_revisited_without_observation_id",
+    "intent": "decision_revisited with observation_id=None completes cleanly (the branch only flags; no transition is required)",
+    "passed": true,
+    "elapsed_ms": 17,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 2,
+      "violations": 0
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "empty_scope_model_does_not_break_cascade",
+    "intent": "A Model with no scope_actors/scope_entities does not interfere with cascade on unrelated entities",
+    "passed": true,
+    "elapsed_ms": 21,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 1
+    },
+    "expected": {
+      "events_visited": 1
+    }
+  },
+  {
+    "stage": "adversarial.cascade",
+    "name": "depth_bound_at_max_minus_one_no_violation",
+    "intent": "With max_depth=MAX-1 on a chain that converges at depth 1, bound_violated stays False \u2014 bound check uses '>=' correctly",
+    "passed": true,
+    "elapsed_ms": 135,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "depth_reached": 1,
+      "bound_violated": false
+    },
+    "expected": {
+      "bound_violated": false
+    }
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "five_parallel_identical_inserts_collapse_to_one",
+    "intent": "5 coroutines firing identical inserts into one tenant + scope produce 1 Model (region lock + reconcile serialize)",
+    "passed": true,
+    "elapsed_ms": 381,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 5,
+      "failures": [],
+      "active_models": 1,
+      "decisions": [
+        "no_match",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge"
+      ]
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "ten_parallel_inserts_independent_actors",
+    "intent": "10 inserts to 10 distinct actor scopes (no contention) all succeed and all 10 Models survive",
+    "passed": true,
+    "elapsed_ms": 89,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 10,
+      "active_models": 10
+    },
+    "expected": {
+      "successes": 10,
+      "active_models": 10
+    }
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "overlapping_region_locks_serialize",
+    "intent": "4 parallel inserts on overlapping scopes ([A], [A], [B], [A,B]) all succeed; region lock ordering doesn't deadlock",
+    "passed": true,
+    "elapsed_ms": 98,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 4,
+      "active_models": 4,
+      "failures": []
+    },
+    "expected": {
+      "successes": 4,
+      "active_models": 4
+    }
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "five_parallel_cascades_on_shared_goal",
+    "intent": "5 cascades all touching the same goal complete without deadlock or duplicate goal-health updates",
+    "passed": true,
+    "elapsed_ms": 115,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 5,
+      "errors": []
+    },
+    "expected": {
+      "successes": 5
+    }
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "parallel_reconcile_candidates_first_wins",
+    "intent": "Of 5 parallel identical inserts, exactly 1 wins the no_match decision; the other 4 see auto_merge",
+    "passed": true,
+    "elapsed_ms": 279,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 5,
+      "failures": [],
+      "active_models": 1,
+      "decisions": [
+        "no_match",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge",
+        "auto_merge"
+      ]
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "five_parallel_contestations_serialize",
+    "intent": "5 actors contesting the same Model in parallel: all succeed, contested_count reflects the actual count",
+    "passed": true,
+    "elapsed_ms": 268,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 5,
+      "final_confidence": 0.45,
+      "contested_count": 5
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "parallel_archives_idempotent",
+    "intent": "5 parallel archive ops on the same Model: final status is archived; archive_reason is consistent",
+    "passed": true,
+    "elapsed_ms": 264,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 5,
+      "errors": [],
+      "status": "archived",
+      "archive_reason": "manual"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "parallel_trigger_id_idempotency",
+    "intent": "5 parallel applies of the same trigger_id: exactly one wins, four raise AlreadyAppliedError",
+    "passed": true,
+    "elapsed_ms": 247,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 1,
+      "already_applied_count": 4,
+      "other_errors": 0,
+      "other_errors_sample": [],
+      "active": 1
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "pool_exhaustion_does_not_crash",
+    "intent": "30 concurrent applies against a max-size-20 pool all complete (asyncpg queues acquires, no crash, no timeout)",
+    "passed": true,
+    "elapsed_ms": 612,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 30,
+      "errors": []
+    },
+    "expected": {
+      "successes": 30
+    }
+  },
+  {
+    "stage": "adversarial.concurrency",
+    "name": "permuted_scope_holds_same_region_lock",
+    "intent": "scope=[A,B] and scope=[B,A] hash to the same region lock; two parallel inserts of identical text fold to 1 Model",
+    "passed": true,
+    "elapsed_ms": 239,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "successes": 2,
+      "active": 1,
+      "decisions": [
+        "auto_merge",
+        "no_match"
+      ]
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "llm_timeout_fails_loudly",
+    "intent": "A timeout raised by the LLM provider must NOT result in think() returning status='success' \u2014 fail loud or surface as failed status",
+    "passed": true,
+    "elapsed_ms": 52,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "status": "failed",
+      "ops_applied": 0,
+      "error": "ReasoningFailure: llm_reason exhausted 3 attempts: synthetic LLM timeout"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "llm_malformed_json_rejected",
+    "intent": "LLM returns garbage JSON; think() does not crash and either retries or surfaces a validation failure status",
+    "passed": true,
+    "elapsed_ms": 44,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "status": "failed",
+      "ops_applied": 0,
+      "error": "ReasoningFailure: LLM output failed to parse after provider retries: LLM output did not validate after 1 attempts: Expecting value: line 1 column 1 (char 0)"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "llm_empty_response",
+    "intent": "LLM returns '' \u2014 think() handles cleanly (retry, fail, or skip), does not produce phantom Models",
+    "passed": true,
+    "elapsed_ms": 43,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "status": "failed",
+      "ops_applied": 0,
+      "error": "ReasoningFailure: LLM output failed to parse after provider retries: LLM output did not validate after 1 attempts: Expecting value: line 1 column 1 (char 0)"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "llm_valid_json_wrong_schema",
+    "intent": "LLM returns parseable JSON that doesn't match RawDiff schema; think() rejects loudly",
+    "passed": true,
+    "elapsed_ms": 43,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "status": "failed",
+      "ops_applied": 0,
+      "error": "ReasoningFailure: LLM output failed to parse after provider retries: LLM output did not validate after 1 attempts: 4 validation errors for RawDiff\ntrigger_ref\n  Field required [type=missing, input_value={'foo': 'bar', 'baz': 42}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ntenant_id\n  Field required [type=missing, input_value={'foo': 'bar', 'baz': 42}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfoo\n  Extra inputs are not permitted [type=extra_forbidden, input_value='bar', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nbaz\n  Extra inputs are not permitted [type=extra_forbidden, input_value=42, input_type=int]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "llm_raises_handled_via_outcome",
+    "intent": "LLM raises LLMError; think() returns failed-status outcome",
+    "passed": true,
+    "elapsed_ms": 3053,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false,
+      "status": "failed",
+      "ops_applied": 0,
+      "error": "ReasoningFailure: llm_reason exhausted 3 attempts: synthetic LLM error"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "apply_on_closed_connection_raises",
+    "intent": "apply_diff on a closed connection raises (no silent no-op or hang)",
+    "passed": true,
+    "elapsed_ms": 35,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "error_type": "InterfaceError"
+    },
+    "expected": {
+      "raised": true
+    }
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "apply_diff_all_ops_malformed",
+    "intent": "A diff with three malformed ops either raises OR returns a summary indicating zero successful applies \u2014 never phantom-applies a malformed op",
+    "passed": true,
+    "elapsed_ms": 28,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": true,
+      "error_type": "ValidationError"
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "reconciler_degrades_to_skipped_on_failure",
+    "intent": "Reconciler internal exception (closed conn) demotes to decision='skipped' \u2014 never aborts the apply",
+    "passed": true,
+    "elapsed_ms": 17,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "decision": "skipped"
+    },
+    "expected": {
+      "decision": "skipped"
+    }
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "cross_tenant_no_reconcile_leak",
+    "intent": "Tenant 2's insert must NOT merge into Tenant 1's existing Model even with identical embed_seed \u2014 tenant_id is a hard isolation boundary",
+    "passed": true,
+    "elapsed_ms": 58,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "t1_count": 1,
+      "t2_count": 1
+    },
+    "expected": {
+      "t1_count": 1,
+      "t2_count": 1
+    }
+  },
+  {
+    "stage": "adversarial.failure_injection",
+    "name": "insert_without_embedding",
+    "intent": "Insert with no embedding key in entry: applier either rejects OR uses a placeholder; reconciler skips cleanly",
+    "passed": true,
+    "elapsed_ms": 35,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "raised": false
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.multitenant",
+    "name": "same_actor_name_distinct_tenants_distinct_locks",
+    "intent": "Two tenants both with an actor named 'ACME' produce distinct region-lock keys (tenant_id is mixed into the hash)",
+    "passed": true,
+    "elapsed_ms": 9,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "key1": "(-1362414057, 1257491474)",
+      "key2": "(-215288410, 1257491474)",
+      "distinct": true
+    },
+    "expected": {
+      "distinct": true
+    }
+  },
+  {
+    "stage": "adversarial.multitenant",
+    "name": "shared_pool_codec_no_cross_tenant_leak",
+    "intent": "A pool connection used by two tenants does not leak vector codec state \u2014 each tenant reads only their own rows",
+    "passed": true,
+    "elapsed_ms": 40,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "t1_count": 1,
+      "t2_count": 1,
+      "no_overlap": true
+    },
+    "expected": {
+      "t1_count": 1,
+      "t2_count": 1,
+      "no_overlap": true
+    }
+  },
+  {
+    "stage": "adversarial.multitenant",
+    "name": "retrieval_does_not_leak_across_tenants",
+    "intent": "A retrieval in tenant 2 with a vector matching tenant 1's Model returns ZERO leaked rows from tenant 1",
+    "passed": true,
+    "elapsed_ms": 46,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_count": 1,
+      "leaked_t1_model": false
+    },
+    "expected": {
+      "leaked_t1_model": false
+    }
+  },
+  {
+    "stage": "adversarial.multitenant",
+    "name": "reconciler_does_not_match_across_tenants",
+    "intent": "A tenant 2 insert with tenant 1's embed_seed lands as a NEW tenant 2 Model (so t2_count = 2: pre-existing m2 + new); tenant 1's m1 is untouched (t1_count = 1)",
+    "passed": true,
+    "elapsed_ms": 58,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "t1_count": 1,
+      "t2_count": 2
+    },
+    "expected": {
+      "t1_count": 1,
+      "t2_count": 2
+    }
+  },
+  {
+    "stage": "adversarial.multitenant",
+    "name": "tenant_cleanup_does_not_affect_other_tenants",
+    "intent": "Archiving every Model in tenant 1 leaves tenant 2's Models intact",
+    "passed": true,
+    "elapsed_ms": 35,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "t1_active": 0,
+      "t2_active": 1
+    },
+    "expected": {
+      "t1_active": 0,
+      "t2_active": 1
+    }
+  },
+  {
+    "stage": "adversarial.slow_burn",
+    "name": "two_hundred_distinct_signals_invariant_audit",
+    "intent": "200 distinct-topic inserts into one tenant produce a consistent substrate: no NULL embeddings, no scope-less Models, full audit trail",
+    "passed": true,
+    "elapsed_ms": 3195,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "n_inserts": 200,
+      "active": 200,
+      "null_embeds": 0,
+      "no_scope_count": 0,
+      "audit_rows": 200
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.slow_burn",
+    "name": "random_walk_lifecycle_audit_intact",
+    "intent": "100 mixed insert/contest/archive ops leave the substrate consistent: no archived Models without reasons, error rate \u2264 5%",
+    "passed": true,
+    "elapsed_ms": 1641,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "errors_count": 0,
+      "errors_first": [],
+      "archived_no_reason": 0,
+      "active": 50,
+      "archived": 11
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.slow_burn",
+    "name": "fifty_deep_supersession_chain",
+    "intent": "50-deep supersession chain ends with 1 active + 49 archived, all with reason='superseded'",
+    "passed": true,
+    "elapsed_ms": 1500,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 1,
+      "archived": 49,
+      "superseded": 49
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.slow_burn",
+    "name": "reconciliation_drift_100_identical_inserts",
+    "intent": "100 identical inserts produce exactly 1 active Model (99 auto_merges + 1 no_match in the breakdown)",
+    "passed": true,
+    "elapsed_ms": 1669,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "active": 1,
+      "decision_breakdown": {
+        "auto_merge": 99,
+        "no_match": 1
+      }
+    },
+    "expected": {}
+  },
+  {
+    "stage": "adversarial.slow_burn",
+    "name": "cascade_saturation_40_dependents",
+    "intent": "A single doneverify cascade unblocks all 40 dependents without exceeding depth bound",
+    "passed": true,
+    "elapsed_ms": 394,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "events_visited": 42,
+      "depth_reached": 1,
+      "bound_violated": false,
+      "unblocked": 40,
+      "expected_unblock": 40
+    },
+    "expected": {}
+  }
+]

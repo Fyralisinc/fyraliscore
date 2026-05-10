@@ -84,11 +84,18 @@ async def apply_diff(
     trigger_cause_event_id: UUID | None = None,
     *,
     models_repo: ModelsRepo | None = None,
+    think_run_id: UUID | None = None,
 ) -> dict[str, Any]:
     """
     Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
     have opened the transaction (typically via `async with
-    conn.transaction():`) and acquired the region lock already.
+    conn.transaction():`).
+
+    Region lock: acquired here, derived from the diff itself. Two diffs
+    that touch the same (tenant, scope) tuple serialize on the same
+    advisory lock. Re-entrant within a transaction, so the reason.py
+    path (which also acquires a broader retrieval-region lock) is
+    unaffected.
 
     Returns a summary dict used for observability:
       { "claim_ops": N, "act_ops": N, "resource_ops": N,
@@ -97,8 +104,20 @@ async def apply_diff(
 
     Idempotency: inserts into applied_triggers with outcome='pending'
     FIRST. Raises AlreadyAppliedError if the trigger_id already has a
-    row — the caller handles that path.
+    row — the caller handles that path. The INSERT is also guarded
+    against UniqueViolationError so that a race between the pre-check
+    and the insert (only possible when callers somehow bypass the region
+    lock) still surfaces as AlreadyAppliedError, not as a raw asyncpg
+    error.
     """
+    from .region_locks import (
+        acquire_region_lock as _acquire_region_lock,
+        touched_entity_ids_from_diff as _touched_from_diff,
+    )
+    _diff_entities = _touched_from_diff(diff)
+    if _diff_entities:
+        await _acquire_region_lock(conn, diff.tenant_id, _diff_entities)
+
     existing = await conn.fetchrow(
         "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
         diff.trigger_ref,
@@ -111,17 +130,24 @@ async def apply_diff(
         )
 
     diff_hash = hash_diff(diff)
-    await conn.execute(
-        """
-        INSERT INTO applied_triggers
-          (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
-        VALUES ($1, $2, now(), $3, $4, 'pending')
-        """,
-        diff.trigger_ref,
-        diff.tenant_id,
-        diff_hash,
-        trigger_kind,
-    )
+    try:
+        await conn.execute(
+            """
+            INSERT INTO applied_triggers
+              (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
+            VALUES ($1, $2, now(), $3, $4, 'pending')
+            """,
+            diff.trigger_ref,
+            diff.tenant_id,
+            diff_hash,
+            trigger_kind,
+        )
+    except asyncpg.exceptions.UniqueViolationError as exc:
+        raise AlreadyAppliedError(
+            "trigger already applied (race)",
+            trigger_id=str(diff.trigger_ref),
+            prior_outcome="unknown",
+        ) from exc
 
     applied_model_ids: list[UUID] = []
     state_changes_emitted = 0
@@ -138,11 +164,59 @@ async def apply_diff(
     # --- 1. claim_ops ---------------------------------------------
     _belief_updated_model_ids: list[UUID] = []
     _T2_BELIEF_KINDS = {"state", "concern", "expectation"}
-    for op in diff.claim_ops:
+    # T5: reconcile each claim_op.insert before applying. If the
+    # reconciler decides auto_merge, we substitute the replacement
+    # update op for the original insert. human_review and no_match
+    # both proceed with the original (auditing the decision in
+    # `reconciliation_events` is sufficient for those cases).
+    from .reconciler import reconcile_claim_op
+    reconcile_summary: dict[str, int] = {
+        "auto_merge": 0,
+        "human_review": 0,
+        "no_match": 0,
+        "skipped": 0,
+    }
+    for original_op in diff.claim_ops:
+        op = original_op
+        recon_result = None
+        if op.op == "insert":
+            recon_result = await reconcile_claim_op(
+                op, conn,
+                tenant_id=diff.tenant_id,
+                trigger_id=diff.trigger_ref,
+                think_run_id=think_run_id,
+            )
+            reconcile_summary[recon_result.decision] += 1
+            if recon_result.replacement_op is not None:
+                op = recon_result.replacement_op
+        # When the reconciler converted an insert into an update, the
+        # audit chain should record the transition as
+        # 'reconciliation_merge' rather than the default 'field_update'
+        # / 'confidence_update'. Thread the override down.
+        is_recon_merge = (
+            recon_result is not None
+            and recon_result.decision == "auto_merge"
+            and recon_result.replacement_op is not None
+        )
         result = await _apply_claim_op(
             op, conn, models_repo, diff.tenant_id,
             cause_event_id=trigger_cause_event_id,
+            audit_cause_override=(
+                "reconciliation_merge" if is_recon_merge else None
+            ),
         )
+        # Annotate the per-op summary with reconcile context so callers
+        # and tests can see what the reconciler decided.
+        if recon_result is not None and recon_result.decision != "skipped":
+            result["summary"]["reconcile_decision"] = recon_result.decision
+            if recon_result.matched_model_id is not None:
+                result["summary"]["reconcile_matched_model_id"] = (
+                    str(recon_result.matched_model_id)
+                )
+            if recon_result.cosine_similarity is not None:
+                result["summary"]["reconcile_cosine"] = (
+                    recon_result.cosine_similarity
+                )
         ops_summary["claim_ops"].append(result["summary"])
         if result.get("model_id") is not None:
             applied_model_ids.append(result["model_id"])
@@ -152,6 +226,7 @@ async def apply_diff(
             ):
                 _belief_updated_model_ids.append(result["model_id"])
         state_changes_emitted += result.get("state_changes", 0)
+    ops_summary["reconcile_summary"] = reconcile_summary
 
     # --- 2. act_ops -----------------------------------------------
     for op in diff.act_ops:
@@ -201,6 +276,26 @@ async def apply_diff(
 # ---------------------------------------------------------------------
 
 
+def _audit_jsonable(v: Any) -> Any:
+    """Coerce a Python value into something JSON/JSONB can store."""
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    if isinstance(v, UUID):
+        return str(v)
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, (list, tuple)):
+        return [_audit_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _audit_jsonable(x) for k, x in v.items()}
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            return json.loads(v.decode())
+        except (ValueError, UnicodeDecodeError):
+            return v.decode(errors="replace")
+    return str(v)
+
+
 _ALLOWED_MODEL_UPDATE_COLUMNS = {
     "confidence",
     "signal_readings",
@@ -224,6 +319,7 @@ async def _apply_claim_op(
     tenant_id: UUID,
     *,
     cause_event_id: UUID | None,
+    audit_cause_override: str | None = None,
 ) -> dict[str, Any]:
     if op.op == "insert":
         entry = dict(op.entry or {})
@@ -277,18 +373,41 @@ async def _apply_claim_op(
         if not changes:
             raise ValidationError("apply_claim_op update: no allowed columns")
         if "confidence" in changes:
-            # bulk path handles emit_state_change cleanly.
+            # bulk path handles emit_state_change + audit cleanly. Pass
+            # the audit override so a reconciler-substituted update is
+            # recorded as 'reconciliation_merge' rather than the default
+            # 'confidence_update'.
             await models_repo.bulk_confidence_update(
                 {op.model_id: float(changes["confidence"])},
                 cause_event_id=cause_event_id,
+                audit_cause_override=audit_cause_override,
                 conn=conn,
             )
             changes.pop("confidence")
             emitted = 1
         else:
             emitted = 0
-        # For remaining columns, build an UPDATE + emit a state_change.
+        # For remaining columns, build an UPDATE + emit a state_change
+        # + emit an audit_events row. We snapshot the touched columns
+        # before and after so the audit chain captures the diff.
         if changes:
+            from .audit import (
+                CAUSE_FIELD_UPDATE,
+                emit_audit_event,
+            )
+
+            # Snapshot pre-update values for the touched columns. None
+            # of the _ALLOWED_MODEL_UPDATE_COLUMNS are SQL-reserved.
+            cols_csv = ", ".join(changes.keys())
+            pre_snapshot: dict[str, Any] = {}
+            pre_row = await conn.fetchrow(
+                f"SELECT {cols_csv} FROM models WHERE id = $1",
+                op.model_id,
+            )
+            if pre_row is not None:
+                for k in changes.keys():
+                    pre_snapshot[k] = _audit_jsonable(pre_row[k])
+
             set_clauses = []
             params: list[Any] = []
             i = 1
@@ -316,6 +435,39 @@ async def _apply_claim_op(
                 f"WHERE id = ${i}"
             )
             await conn.execute(sql, *params)
+
+            # S1 dual-write: mirror array changes to typed edges via
+            # the chokepoint helper. update_arrays=False because the
+            # UPDATE above already set the array columns; we just
+            # need to converge the typed edges with the new state.
+            # `instance_of` is not exposed as an LLM-controlled column
+            # — pattern back-links go through promote_pattern_candidate
+            # — so we only sync supports / contributes_to_resolution.
+            if (
+                "supporting_model_ids" in changes
+                or "contributing_models" in changes
+            ):
+                from services.models.repo import _set_model_relations
+
+                await _set_model_relations(
+                    conn,
+                    model_id=op.model_id,
+                    tenant_id=tenant_id,
+                    detected_by="llm_explicit",
+                    supports=(
+                        list(changes["supporting_model_ids"])
+                        if "supporting_model_ids" in changes
+                        else None
+                    ),
+                    contributes_to=(
+                        list(changes["contributing_models"])
+                        if "contributing_models" in changes
+                        else None
+                    ),
+                    created_by_event_id=cause_event_id,
+                    update_arrays=False,
+                )
+
             await emit_state_change(
                 conn,
                 kind="model_updated",
@@ -324,6 +476,19 @@ async def _apply_claim_op(
                 cause_event_id=cause_event_id,
                 entity_kind="model",
                 metadata={"columns": sorted(list(changes.keys()))},
+            )
+
+            # Audit event: partial snapshots of just the touched fields.
+            new_state = {k: _audit_jsonable(v) for k, v in changes.items()}
+            await emit_audit_event(
+                conn,
+                model_id=op.model_id,
+                tenant_id=tenant_id,
+                cause_type=audit_cause_override or CAUSE_FIELD_UPDATE,
+                new_state=new_state,
+                previous_state=pre_snapshot or None,
+                cause_id=cause_event_id,
+                changed_fields=sorted(list(changes.keys())),
             )
             emitted += 1
         return {
@@ -352,6 +517,42 @@ async def _apply_claim_op(
             },
             "model_id": op.model_id,
             "state_changes": 1,
+        }
+    if op.op == "relocate":
+        # S4: deliberate topology repositioning. Routes through
+        # TopoRepo.relocate which writes the new topo_embedding,
+        # records a `topology_events` row (kind='relocate'), and
+        # enqueues a bounded cascade.
+        from lib.topology.relocate import parse_relocate_target
+        from services.topology.topo_repo import TopoRepo
+
+        if op.model_id is None:
+            raise ValidationError("apply_claim_op relocate: model_id required")
+        if not op.relocate_target:
+            raise ValidationError("apply_claim_op relocate: relocate_target required")
+        target = parse_relocate_target(op.relocate_target)
+        topo_repo = TopoRepo()
+        result = await topo_repo.relocate(
+            conn,
+            model_id=op.model_id,
+            tenant_id=tenant_id,
+            target=target,
+            reason=op.reason or "(no reason given)",
+            applied_by_diff_id=cause_event_id,
+        )
+        return {
+            "summary": {
+                "op": "relocate",
+                "model_id": str(op.model_id),
+                "target_kind": result["target_kind"],
+                "delta": float(result["delta"]),
+                "cascade_enqueued": int(result["cascade_enqueued"]),
+            },
+            "model_id": op.model_id,
+            # A relocate is a topology mutation; it does NOT emit a
+            # model state_change (no row in `state_changes`). The
+            # topology_events row is the audit primary key.
+            "state_changes": 0,
         }
     raise ValidationError(f"unknown claim_op: {op.op!r}")
 

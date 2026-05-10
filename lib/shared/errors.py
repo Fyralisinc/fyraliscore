@@ -127,6 +127,45 @@ class FalsifierInadequateError(CompanyOSError):
         self.falsifier = falsifier
 
 
+class MalformedFalsifierError(CompanyOSError):
+    """
+    A falsifier payload is structurally invalid — it has the right
+    `kind` but at least one field cannot be parsed (e.g.
+    `within_window` does not match either the ISO-8601 duration or
+    human-readable grammar; `evaluate_at` is not a parseable
+    timestamp; `check` does not match the prediction-deadline
+    grammar).
+
+    Distinct from `FalsifierInadequateError`, which signals a falsifier
+    that is well-formed but too vague (pattern < 20 chars, missing
+    `within_window`, etc.). Inadequate is a content-quality judgment;
+    malformed is a parser failure.
+
+    Surfacing this as a separate class lets the validator log a
+    distinct `failure_reason='malformed_falsifier'` for observability,
+    and lets call sites that want to repair the input (e.g. retry the
+    LLM with a remediation hint) branch on the type rather than
+    string-matching the message.
+    """
+    default_code = "falsifier_malformed"
+
+    def __init__(
+        self,
+        reason: str,
+        falsifier: Any | None = None,
+        field: str | None = None,
+        value: Any | None = None,
+        **context: Any,
+    ) -> None:
+        super().__init__(
+            reason, falsifier=falsifier, field=field, value=value, **context,
+        )
+        self.reason = reason
+        self.falsifier = falsifier
+        self.field = field
+        self.value = value
+
+
 class CalibrationMissingError(CompanyOSError):
     """
     A confidence adjustment was attempted but no calibration offset
@@ -159,5 +198,6 @@ __all__ = [
     "SchemaDriftError",
     "TrustTierError",
     "FalsifierInadequateError",
+    "MalformedFalsifierError",
     "CalibrationMissingError",
 ]

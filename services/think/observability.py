@@ -61,6 +61,18 @@ class Metrics:
     llm_calls_by_kind: dict[str, int] = field(default_factory=dict)
     input_tokens_by_kind: dict[str, int] = field(default_factory=dict)
     output_tokens_by_kind: dict[str, int] = field(default_factory=dict)
+    # T1b: cascade invariant violations keyed by branch identifier
+    # ("commitment_unblock", "goal_health", "resource_release", …). A
+    # cascade step that fails an Acts/Resources invariant (e.g. orphan
+    # commitment cannot transition to active) is informational, not
+    # fatal — the BFS keeps walking. Bumping a counter here turns those
+    # silent rejections into a metric trail callers can alert on.
+    cascade_invariant_violations: dict[str, int] = field(default_factory=dict)
+    # T5: reconciliation decision rate, keyed by decision tag
+    # ("auto_merge", "human_review", "no_match", "skipped"). The ratio
+    # of human_review to total tells operators how much volume the
+    # review queue is taking; the auto_merge rate is the dedup rate.
+    reconcile_decisions_total: dict[str, int] = field(default_factory=dict)
 
     def inc_run(self, trigger_kind: str) -> None:
         self.runs_total[trigger_kind] = self.runs_total.get(trigger_kind, 0) + 1
@@ -82,6 +94,29 @@ class Metrics:
 
     def set_queue_depth(self, tenant_id: UUID | str, depth: int) -> None:
         self.queue_depth[str(tenant_id)] = depth
+
+    def inc_reconcile_decision(self, decision: str, n: int = 1) -> None:
+        """`think.reconcile.decisions_total{decision}` counter.
+
+        Decision is one of `auto_merge`, `human_review`, `no_match`,
+        `skipped`. Bumped from `services.think.reconciler` on every
+        claim_op.insert decision.
+        """
+        self.reconcile_decisions_total[decision] = (
+            self.reconcile_decisions_total.get(decision, 0) + n
+        )
+
+    def inc_cascade_invariant_violation(self, branch: str, n: int = 1) -> None:
+        """`think.cascade.invariant_violations{branch}` counter.
+
+        Branch is one of the cascade-branch tags above; freeform string
+        otherwise. Use this whenever a cascade step is rejected because
+        the target entity violates an Acts / Resources invariant. The
+        cascade BFS continues past the rejection.
+        """
+        self.cascade_invariant_violations[branch] = (
+            self.cascade_invariant_violations.get(branch, 0) + n
+        )
 
     # --- OP-4 --------------------------------------------------------
     def inc_dropped_op(self, reason: str, op_type: str, n: int = 1) -> None:
@@ -135,6 +170,8 @@ class Metrics:
             "llm_calls_by_kind": dict(self.llm_calls_by_kind),
             "input_tokens_by_kind": dict(self.input_tokens_by_kind),
             "output_tokens_by_kind": dict(self.output_tokens_by_kind),
+            "cascade_invariant_violations": dict(self.cascade_invariant_violations),
+            "reconcile_decisions_total": dict(self.reconcile_decisions_total),
         }
 
     def reset(self) -> None:
@@ -150,6 +187,8 @@ class Metrics:
         self.llm_calls_by_kind.clear()
         self.input_tokens_by_kind.clear()
         self.output_tokens_by_kind.clear()
+        self.cascade_invariant_violations.clear()
+        self.reconcile_decisions_total.clear()
 
 
 METRICS = Metrics()

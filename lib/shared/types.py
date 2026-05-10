@@ -125,6 +125,67 @@ ActorStatus = Literal["active", "inactive", "departed"]
 
 
 # ---------------------------------------------------------------------
+# Model-edge enums (S1 of self-organizing-substrate plan, migration
+# 0031_model_edges.sql + lib/shared/edge_registry.py).
+# ---------------------------------------------------------------------
+
+# Edge lifecycle. Edges become 'inert' when either endpoint is
+# archived (set in the same transaction as the Model archive); they
+# stay queryable for audit but don't appear in active-only retrieval.
+# 'disputed' is reserved for future contradiction-resolution flows.
+EdgeStatus = Literal["active", "inert", "disputed"]
+
+# Provenance: who wrote the edge. New v1 producers populate the first
+# four; reconciler / falsifier_overlap / cascade are reserved for
+# follow-on stages and the contradicts producer.
+EdgeDetectedBy = Literal[
+    "llm_explicit",       # LLM emitted the edge in a claim_op
+    "precipitation",      # T4 pattern promotion produced an instance_of edge
+    "manual",             # operator / debug path
+    "backfill",           # one-shot scripts/backfill_model_edges.py
+    "reconciler",         # reserved (Stage 4: contradicts producer)
+    "falsifier_overlap",  # reserved (future)
+    "cascade",            # reserved (future: derived from another edge)
+]
+
+# Edge kind discriminator. The registry in lib/shared/edge_registry.py
+# is the single source of truth for per-kind semantics (DAG scope,
+# cascade callbacks, weight rules, mutually-exclusive-with). v1
+# enables writes for the first four; the rest are reserved names for
+# follow-on stages and rejected at the repo layer until a producer
+# ships.
+EdgeKind = Literal[
+    "supports",                   # source supports target (was supporting_model_ids)
+    "contributes_to_resolution",  # source's state resolves target prediction (was contributing_models)
+    "instance_of",                # source is an instance of target pattern (was pattern back-link)
+    "superseded_by",              # source was replaced by target (was archive_reason='superseded')
+    "contradicts",                # reserved: symmetric, polarity-inverted cascade
+    "weakens",                    # reserved: directed, partial counter-evidence
+]
+
+
+# ---------------------------------------------------------------------
+# Topology layer (S2, migration 0032). Positional embeddings,
+# materialized neighborhoods, propagation queue. The actual geometry
+# lives in vectors and join tables; these are just the lifecycle
+# enums + dimension constant.
+# ---------------------------------------------------------------------
+
+# Topology dimension. Smaller than content embedding (768d) because
+# topology is lower-dimensional than semantics — a substrate
+# organizes into a handful of dozens of communities; 128 dims has
+# more than enough capacity, and the smaller width keeps HNSW
+# maintenance cheap as the graph evolves.
+TOPO_EMBEDDING_DIM = 128
+
+# Lifecycle of a materialized neighborhood. 'merged' / 'dissolved'
+# are emitted by the matching algorithm during re-clustering when a
+# previously-active neighborhood is no longer a community in the
+# current graph (merged into another, or fragmented away).
+NeighborhoodStatus = Literal["active", "dissolved", "merged"]
+
+
+# ---------------------------------------------------------------------
 # Base model with strict v2 config.
 # ---------------------------------------------------------------------
 

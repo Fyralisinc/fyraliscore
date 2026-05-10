@@ -162,11 +162,32 @@ class CascadeEvent:
 
 
 @dataclass
+class InvariantViolationEvent:
+    """A cascade step that was rejected because the target entity
+    violated an Acts / Resources invariant.
+
+    Surfaced as a list on `CascadeResult` so callers (Think,
+    test harnesses, observability dashboards) can inspect the
+    rejection without scraping logs. The cascade BFS continues
+    past the rejection — see T1b in
+    tests/synthesis_harness/REPORT.md.
+    """
+    branch: str            # "commitment_unblock", "goal_health", ...
+    entity_kind: str       # "commitment", "goal", "resource"
+    entity_id: UUID
+    reason: str            # InvariantViolation.message
+    code: str | None = None  # e.g. "C2", "C4", "C8" when available
+
+
+@dataclass
 class CascadeResult:
     events_visited: int
     depth_reached: int
     bound_violated: bool
     steps: list[CascadeEvent] = field(default_factory=list)
+    invariant_violations: list[InvariantViolationEvent] = field(
+        default_factory=list,
+    )
 
 
 async def cascade(
@@ -191,6 +212,12 @@ async def cascade(
     steps: list[CascadeEvent] = [trigger_event]
     depth_reached = 0
     bound_violated = False
+    # T1b: branches append to this list when an Acts/Resources
+    # invariant rejects a cascade step. The BFS continues past
+    # the rejection — invariant rejections are informational, not
+    # fatal — but the rejection is recorded on the result and a
+    # metric is bumped.
+    invariant_violations: list[InvariantViolationEvent] = []
 
     while queue:
         event, depth = queue.pop(0)
@@ -219,7 +246,9 @@ async def cascade(
 
         depth_reached = max(depth_reached, depth)
 
-        downstream = await _compute_downstream(event, conn, tenant_id)
+        downstream = await _compute_downstream(
+            event, conn, tenant_id, invariant_violations,
+        )
         for follow in downstream:
             if follow.id in visited:
                 continue
@@ -232,6 +261,7 @@ async def cascade(
         depth_reached=depth_reached,
         bound_violated=bound_violated,
         steps=steps,
+        invariant_violations=invariant_violations,
     )
 
 
@@ -244,14 +274,19 @@ async def _compute_downstream(
     event: CascadeEvent,
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    invariant_violations: list[InvariantViolationEvent],
 ) -> list[CascadeEvent]:
     """
     Dispatch per `event.kind`. Each branch may call into repos (which
     themselves emit state_changes) and returns the resulting
-    CascadeEvents for BFS.
+    CascadeEvents for BFS. `invariant_violations` is appended to when
+    a step is rejected because the target entity violated an Acts /
+    Resources invariant — informational, BFS continues.
     """
     if event.kind == "commitment_state_change":
-        return await _branch_commitment_state(event, conn, tenant_id)
+        return await _branch_commitment_state(
+            event, conn, tenant_id, invariant_violations,
+        )
     if event.kind == "decision_revisited":
         return await _branch_decision_revisited(event, conn, tenant_id)
     if event.kind == "resource_terminal":
@@ -268,6 +303,7 @@ async def _branch_commitment_state(
     event: CascadeEvent,
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    invariant_violations: list[InvariantViolationEvent],
 ) -> list[CascadeEvent]:
     out: list[CascadeEvent] = []
     commitment_id = event.entity_id
@@ -336,10 +372,34 @@ async def _branch_commitment_state(
                 cascade_ev.observation_id = obs_id
                 out.append(cascade_ev)
             except InvariantViolation as e:
-                _log.info(
+                # T1b: Surface the rejection. Three signals, one for
+                # each consumer audience:
+                #   1. Structured CascadeResult.invariant_violations
+                #      entry (callers + harness can introspect).
+                #   2. Counter via Metrics so dashboards can alert
+                #      when the invariant-rejection rate spikes (e.g.
+                #      a flood of orphan commitments after a Goal
+                #      archive sweep).
+                #   3. Warning log retained for diagnostic context —
+                #      now at WARNING (was INFO) so the message
+                #      survives default log filters.
+                from .observability import METRICS as _METRICS
+                violation = InvariantViolationEvent(
+                    branch="commitment_unblock",
+                    entity_kind="commitment",
+                    entity_id=dep_id,
+                    reason=str(e.message),
+                    code=getattr(e, "invariant", None),
+                )
+                invariant_violations.append(violation)
+                _METRICS.inc_cascade_invariant_violation(
+                    "commitment_unblock",
+                )
+                _log.warning(
                     "cascade.unblock_rejected",
                     commitment_id=str(dep_id),
                     reason=str(e.message),
+                    invariant_code=getattr(e, "invariant", None),
                 )
 
     # (b) Goal cached_health recompute for critical-path contributes_to.

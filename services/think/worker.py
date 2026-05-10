@@ -110,6 +110,37 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
     if isinstance(region_spec, dict):
         trigger.region_spec = region_spec
 
+    # S3 — topology phase event (T6) payload fields. The
+    # neighborhood_detector worker writes these into the trigger
+    # payload (see services.workers.neighborhood_detector.worker).
+    tev_id = payload.get("topology_event_id")
+    if isinstance(tev_id, str):
+        try:
+            trigger.topology_event_id = UUID(tev_id)
+        except ValueError:
+            pass
+    tev_kind = payload.get("topology_event_kind")
+    if isinstance(tev_kind, str):
+        trigger.topology_event_kind = tev_kind
+    nh_id = payload.get("neighborhood_id")
+    if isinstance(nh_id, str):
+        try:
+            trigger.neighborhood_id = UUID(nh_id)
+        except ValueError:
+            pass
+    members = payload.get("member_model_ids")
+    if isinstance(members, list):
+        out = []
+        for m in members:
+            if isinstance(m, UUID):
+                out.append(m)
+            elif isinstance(m, str):
+                try:
+                    out.append(UUID(m))
+                except ValueError:
+                    continue
+        trigger.member_model_ids = out
+
 
 # ---------------------------------------------------------------------
 # Config

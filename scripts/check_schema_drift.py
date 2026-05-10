@@ -175,6 +175,9 @@ EXPECTED_TABLES: dict[str, Table] = {
             # Migration 0022 — recommendation proposition support.
             _col("target_actor_id", UUID, True),         # generated stored
             _col("caused_act_change_id", UUID, True),
+            # Migration 0032 — S2 topology layer.
+            _col("topo_embedding", VECTOR, True),
+            _col("topo_updated_at", TS, True),
         ]),
         indexes={
             "models_pkey",
@@ -188,6 +191,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             "models_activation_idx",
             "models_proposition_kind_idx",   # A2
             "recommendations_active_idx",    # 0022
+            "models_topo_embedding_idx",     # S2 / 0032
         },
     ),
     "model_status_notes": Table(
@@ -468,7 +472,9 @@ EXPECTED_TABLES: dict[str, Table] = {
         # 0007_q4_q8_resolutions.sql — Q8 resolution. Dependent Models
         # waiting for re-evaluation after a supporting Model is
         # archived / deprecated / superseded / contested. Consumed by
-        # the cascade engine inside Think (Wave 3-B).
+        # the cascade engine inside Think (Wave 3-B). Migration 0031
+        # dropped the cause_kind CHECK because cause_kinds are now
+        # declarative (registry-owned).
         columns=dict([
             _col("id", UUID, False),
             _col("tenant_id", UUID, False),
@@ -485,6 +491,105 @@ EXPECTED_TABLES: dict[str, Table] = {
             "model_reeval_queue_dedup",
             "model_reeval_queue_pending_idx",
             "model_reeval_queue_model_idx",
+        },
+    ),
+    "model_edges": Table(
+        # 0031_model_edges.sql — S1 of the self-organizing-substrate
+        # plan. Unified Model-to-Model edge primitive. Replaces the
+        # seven ad-hoc connection mechanisms (supporting_model_ids
+        # array, contributing_models array, pattern back-link,
+        # archive_reason='superseded' lifecycle flag, latent
+        # proposition-encoded edges) with a single typed-edge table
+        # whose semantics are declared in lib/shared/edge_registry.py.
+        # Dual-write phase: arrays remain authoritative; drift
+        # detector verifies parity.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("source_model_id", UUID, False),
+            _col("target_model_id", UUID, False),
+            _col("edge_kind", TEXT, False),
+            _col("weight", FLOAT, True),
+            _col("metadata", JSONB, False, default=True),
+            _col("status", TEXT, False, default=True),
+            _col("detected_by", TEXT, False),
+            _col("created_at", TS, False, default=True),
+            _col("created_by_event_id", UUID, True),
+            _col("status_changed_at", TS, True),
+            _col("status_reason", TEXT, True),
+        ]),
+        indexes={
+            "model_edges_pkey",
+            "model_edges_unique",
+            "model_edges_source_idx",
+            "model_edges_target_idx",
+            "model_edges_kind_idx",
+        },
+    ),
+    "topo_dirty_queue": Table(
+        # 0032_topology_layer.sql — S2 propagation queue. Drained by
+        # services.workers.topology_updater. NULLS NOT DISTINCT dedup
+        # collapses unprocessed duplicates the same way
+        # model_reeval_queue does.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("model_id", UUID, False),
+            _col("cause_model_id", UUID, True),
+            _col("hop_depth", INT, False, default=True),
+            _col("delta_magnitude", FLOAT, True),
+            _col("enqueued_at", TS, False, default=True),
+            _col("processed_at", TS, True),
+            _col("attempts", INT, False, default=True),
+            _col("last_error", TEXT, True),
+        ]),
+        indexes={
+            "topo_dirty_queue_pkey",
+            "topo_dirty_queue_dedup",
+            "topo_dirty_queue_pending_idx",
+            "topo_dirty_queue_model_idx",
+        },
+    ),
+    "model_neighborhoods": Table(
+        # 0032_topology_layer.sql — S2 materialized communities.
+        # Detected by services.workers.neighborhood_detector via
+        # connected-components on the active edge graph; matched to
+        # prior neighborhoods for stable IDs.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("centroid_topo_embedding", VECTOR, False),
+            _col("member_model_ids", ARRAY, False),
+            _col("emergence_at", TS, False, default=True),
+            _col("predecessor_neighborhood_ids", ARRAY, True),
+            _col("named_signature", TEXT, True),
+            _col("named_at", TS, True),
+            _col("density", FLOAT, True),
+            _col("status", TEXT, False, default=True),
+            _col("status_changed_at", TS, True),
+            _col("status_reason", TEXT, True),
+            _col("last_recomputed_at", TS, False, default=True),
+        ]),
+        indexes={
+            "model_neighborhoods_pkey",
+            "model_neighborhoods_active_idx",
+        },
+    ),
+    "model_neighborhood_membership": Table(
+        # 0032_topology_layer.sql — S2 reverse lookup
+        # (Model -> active neighborhood + per-Model centrality).
+        # Refreshed wholesale by recompute_for_tenant.
+        columns=dict([
+            _col("tenant_id", UUID, False),
+            _col("model_id", UUID, False),
+            _col("neighborhood_id", UUID, False),
+            _col("centrality", FLOAT, True),
+            _col("joined_at", TS, False, default=True),
+        ]),
+        indexes={
+            "model_neighborhood_membership_pkey",
+            "model_neighborhood_membership_neighborhood_idx",
+            "model_neighborhood_membership_tenant_model_idx",
         },
     ),
     "think_region_lock_log": Table(

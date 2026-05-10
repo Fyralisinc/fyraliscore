@@ -58,20 +58,25 @@ from .pathways import (
     pathway_b_semantic,
     pathway_c_temporal,
     pathway_d_pattern,
+    pathway_f_topological,
 )
 from .scoring import merge_and_rank_rrf
 
 
-TriggerKind = Literal["T1", "T2", "T3", "T4"]
+TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
 
-# Per-spec-§8 weighting mix. These are the fixed weights from
-# BUILD-PLAN §4 Prompt 3.A. If callers want different weights they
-# can call the individual pathways directly.
+# Per-spec-§8 weighting mix. T1-T4 are the original §8 mixes plus a
+# small Pathway F (topology) contribution to integrate the positional
+# layer non-disruptively (S3 default). T6 is the new topology-event
+# trigger and weights F + A heavily — the LLM is being asked about a
+# structural shift, so positional context dominates. Callers that
+# want different weights can call the individual pathways directly.
 _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
-    "T1": {"A": 0.4, "B": 0.4, "C": 0.2},
-    "T2": {"A": 0.4, "B": 0.4, "D": 0.2},
-    "T3": {"A": 0.5, "B": 0.3, "C": 0.2},
-    "T4": {"D": 0.6, "A": 0.4},
+    "T1": {"A": 0.35, "B": 0.35, "C": 0.15, "F": 0.15},
+    "T2": {"A": 0.35, "B": 0.35, "D": 0.15, "F": 0.15},
+    "T3": {"A": 0.4, "B": 0.25, "C": 0.2, "F": 0.15},
+    "T4": {"D": 0.5, "A": 0.35, "F": 0.15},
+    "T6": {"F": 0.5, "A": 0.3, "B": 0.2},
 }
 
 
@@ -117,8 +122,19 @@ class TriggerContext:
     subkind: str | None = None
     seed_signature: dict[str, Any] | None = None
 
+    # T6 — topology phase event (S3)
+    topology_event_id: UUID | None = None
+    topology_event_kind: str | None = None
+    neighborhood_id: UUID | None = None
+    member_model_ids: list[UUID] = field(default_factory=list)
+
     # Pre-computed embedding (optional; tests pass one to skip Ollama)
     precomputed_seed_vector: list[float] | None = None
+
+    # S3 — pre-computed topology vector for Pathway F. When set, F
+    # skips the Ollama embedding round-trip. T6 fills this from the
+    # neighborhood centroid; tests can pass any 128-d vector.
+    precomputed_topo_vector: list[float] | None = None
 
     # Hop cap for pathway A (2 is the spec default)
     max_hops: int = 2
@@ -128,6 +144,12 @@ class TriggerContext:
 
     # Pathway B k
     semantic_k: int = 40
+
+    # S3 — Pathway F k (topo-NN count) and whether to expand
+    # neighborhood co-members. Defaults preserve the F module's own
+    # defaults; trigger plumbing can override per-trigger.
+    topological_k: int = 40
+    topological_expand_neighborhoods: bool = True
 
 
 @dataclass
@@ -242,6 +264,7 @@ def _merge_and_rank_models_rrf(
         DIMENSION_SEMANTIC,
         DIMENSION_STRUCTURAL,
         DIMENSION_TEMPORAL,
+        DIMENSION_TOPOLOGICAL,
         DIMENSION_WEIGHTS,
     )
 
@@ -252,6 +275,7 @@ def _merge_and_rank_models_rrf(
         DIMENSION_SEMANTIC: weights.get("B", 0.0),
         DIMENSION_TEMPORAL: weights.get("C", 0.0),
         DIMENSION_PATTERN: weights.get("D", 0.0),
+        DIMENSION_TOPOLOGICAL: weights.get("F", 0.0),
         # Activation / provenance stay at the scoring module's defaults
         # so RRF's implicit priors don't vanish on 2-pathway triggers.
         DIMENSION_ACTIVATION: DIMENSION_WEIGHTS[DIMENSION_ACTIVATION],
@@ -484,6 +508,41 @@ async def primary_retrieve(
             notes["pathways_run"].append("D")
         except Exception as e:
             notes["pathways_skipped"].append({"pathway": "D", "reason": str(e)})
+
+    # ------ Pathway F (topological) ------
+    # Always attempted when F is in the trigger weights; the pathway
+    # itself returns an empty result on missing seed (notes
+    # 'reason': 'empty_seed') so unconfigured triggers degrade
+    # gracefully.
+    if "F" in weights:
+        try:
+            # T6 prefers neighborhood-centroid as the seed topo vector
+            # (it is what the LLM is being asked about). When F is
+            # called from T1-T4, seed_model_id is usually None and we
+            # fall back to seed_natural_text → content_anchor or to
+            # the precomputed topo vector. Pass model_id (T2's
+            # prediction Model) when set so T2 anchors on its own
+            # arrangement.
+            seed_model_for_f = (
+                trigger.model_id if trigger.kind in ("T2", "T6") else None
+            )
+            pr_f = await pathway_f_topological(
+                trigger.tenant_id,
+                conn,
+                seed_natural_text=trigger.seed_natural_text,
+                seed_model_id=seed_model_for_f,
+                precomputed_topo_vector=trigger.precomputed_topo_vector,
+                embedder=embedder,
+                k=trigger.topological_k,
+                expand_neighborhoods=trigger.topological_expand_neighborhoods,
+                hnsw_ef_search=cfg.semantic_hnsw_ef_search,
+            )
+            pathway_results.append(pr_f)
+            notes["pathways_run"].append("F")
+        except RetrievalPathwayError as e:
+            notes["pathways_skipped"].append({"pathway": "F", "reason": str(e)})
+        except Exception as e:
+            notes["pathways_skipped"].append({"pathway": "F", "reason": str(e)})
 
     # ------ Merge + rank ------
     models, scores = _merge_and_rank_models(
