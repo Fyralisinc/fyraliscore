@@ -19,9 +19,8 @@ export interface PlanEntry {
 }
 interface PlanNode {
   "Node Type"?: string;
-  "Plan"?: PlanNode;
-  Plans?: PlanNode[];
   Plan?: PlanNode;
+  Plans?: PlanNode[];
   [k: string]: unknown;
 }
 
