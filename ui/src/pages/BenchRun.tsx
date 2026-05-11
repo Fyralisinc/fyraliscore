@@ -9,6 +9,11 @@ import {
   type Verdict,
 } from "@/api/bench-client";
 import { useBenchRunStream } from "@/hooks/useBenchRunStream";
+import { LatencyChart } from "@/components/bench/LatencyChart";
+import { ThroughputChart } from "@/components/bench/ThroughputChart";
+import { RetrievalQualityChart } from "@/components/bench/RetrievalQualityChart";
+import { ReasoningQualityChart } from "@/components/bench/ReasoningQualityChart";
+import { CostChart } from "@/components/bench/CostChart";
 
 // /bench/runs/:runId — single-run page. Dual-mode:
 //   while status is queued/running, polls for live progress (WebSocket
@@ -337,53 +342,112 @@ function DimensionTable({
   dimension: string;
   metrics: BenchRunDetail["metrics"];
 }) {
+  const regressed = metrics.filter((m) => m.verdict === "regression").length;
+  const improved = metrics.filter((m) => m.verdict === "improvement").length;
+
   return (
-    <div>
-      <h3 className="text-sm font-semibold text-neutral-900 mb-2 capitalize">
-        {dimension.replace(/_/g, " ")}
-      </h3>
-      <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-        <table className="min-w-full text-sm">
-          <thead className="bg-neutral-50 text-neutral-600 text-xs uppercase tracking-wider">
-            <tr>
-              <th className="text-left px-4 py-2 font-medium">Metric</th>
-              <th className="text-right px-4 py-2 font-medium">Baseline</th>
-              <th className="text-right px-4 py-2 font-medium">Current</th>
-              <th className="text-right px-4 py-2 font-medium">Δ abs</th>
-              <th className="text-right px-4 py-2 font-medium">Δ %</th>
-              <th className="text-right px-4 py-2 font-medium">Threshold</th>
-              <th className="text-center px-4 py-2 font-medium">Verdict</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100">
-            {metrics.map((m, i) => (
-              <tr key={`${m.metric}-${i}`} className="hover:bg-neutral-50">
-                <td className="px-4 py-2 font-mono text-xs">{m.metric}</td>
-                <td className="px-4 py-2 text-right tabular-nums text-neutral-600">
-                  {fmt(m.baseline)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums font-medium">
-                  {fmt(m.value)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums text-xs">
-                  {fmt(m.delta_abs)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums text-xs">
-                  {fmtPct(m.delta_pct)}
-                </td>
-                <td className="px-4 py-2 text-right tabular-nums text-xs text-neutral-500">
-                  {fmt(m.threshold)}
-                </td>
-                <td className="px-4 py-2 text-center">
-                  <VerdictChip v={m.verdict} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="rounded-md border border-neutral-200 bg-white p-5">
+      <div className="flex items-baseline justify-between mb-4">
+        <h3 className="text-sm font-semibold text-neutral-900 capitalize">
+          {dimension.replace(/_/g, " ")}
+        </h3>
+        <div className="text-xs text-neutral-600">
+          {metrics.length} metrics
+          {regressed > 0 ? (
+            <span className="ml-2 text-red-700 font-medium">
+              · {regressed} regression{regressed === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {improved > 0 ? (
+            <span className="ml-2 text-emerald-700">
+              · {improved} improvement{improved === 1 ? "" : "s"}
+            </span>
+          ) : null}
+        </div>
       </div>
+      <div className="mb-2">
+        <DimensionChart dimension={dimension} metrics={metrics} />
+      </div>
+      <details className="mt-4 group">
+        <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-900 select-none">
+          Show raw metric table ▾
+        </summary>
+        <div className="mt-3 overflow-hidden rounded-md border border-neutral-100">
+          <table className="min-w-full text-sm">
+            <thead className="bg-neutral-50 text-neutral-600 text-xs uppercase tracking-wider">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium">Metric</th>
+                <th className="text-right px-4 py-2 font-medium">Baseline</th>
+                <th className="text-right px-4 py-2 font-medium">Current</th>
+                <th className="text-right px-4 py-2 font-medium">Δ abs</th>
+                <th className="text-right px-4 py-2 font-medium">Δ %</th>
+                <th className="text-right px-4 py-2 font-medium">Threshold</th>
+                <th className="text-center px-4 py-2 font-medium">Verdict</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-100">
+              {metrics.map((m, i) => (
+                <tr key={`${m.metric}-${i}`} className="hover:bg-neutral-50">
+                  <td className="px-4 py-2 font-mono text-xs">{m.metric}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-neutral-600">
+                    {fmt(m.baseline)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">
+                    {fmt(m.value)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-xs">
+                    {fmt(m.delta_abs)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-xs">
+                    {fmtPct(m.delta_pct)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-xs text-neutral-500">
+                    {fmt(m.threshold)}
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    <VerdictChip v={m.verdict} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   );
+}
+
+function DimensionChart({
+  dimension,
+  metrics,
+}: {
+  dimension: string;
+  metrics: BenchRunDetail["metrics"];
+}) {
+  if (metrics.length === 0)
+    return (
+      <div className="text-sm text-neutral-500 italic">
+        No metrics returned for this dimension.
+      </div>
+    );
+  switch (dimension) {
+    case "latency":
+      return <LatencyChart metrics={metrics} />;
+    case "throughput":
+      return <ThroughputChart metrics={metrics} />;
+    case "retrieval_quality":
+      return <RetrievalQualityChart metrics={metrics} />;
+    case "reasoning_quality":
+      return <ReasoningQualityChart metrics={metrics} />;
+    case "cost":
+      return <CostChart metrics={metrics} />;
+    default:
+      return (
+        <div className="text-sm text-neutral-500 italic">
+          No chart configured for "{dimension}".
+        </div>
+      );
+  }
 }
 
 function VerdictChip({ v }: { v: Verdict }) {
