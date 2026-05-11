@@ -1,0 +1,501 @@
+{
+  "top_allocators": [
+    {
+      "size": 25128,
+      "size_diff": 25128,
+      "count": 1047,
+      "count_diff": 1047,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/profiling/db.py\", line 105",
+        "    elapsed_ms = (record.elapsed or 0) * 1000.0"
+      ]
+    },
+    {
+      "size": 17020,
+      "size_diff": 17020,
+      "count": 300,
+      "count_diff": 300,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py\", line 118",
+        "    return self._loop.run_until_complete(task)"
+      ]
+    },
+    {
+      "size": 11991,
+      "size_diff": 11991,
+      "count": 196,
+      "count_diff": 196,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 481",
+        "    statement._init_codecs()"
+      ]
+    },
+    {
+      "size": 11248,
+      "size_diff": 11248,
+      "count": 42,
+      "count_diff": 42,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/profiling/db.py\", line 106",
+        "    self._samples[sql].append(elapsed_ms)"
+      ]
+    },
+    {
+      "size": 8251,
+      "size_diff": 8251,
+      "count": 2,
+      "count_diff": 2,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 2036",
+        "    result = await executor(stmt, timeout)"
+      ]
+    },
+    {
+      "size": 7888,
+      "size_diff": 7888,
+      "count": 73,
+      "count_diff": 73,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 2591",
+        "    entry._cleanup_cb = self._loop.call_later("
+      ]
+    },
+    {
+      "size": 6765,
+      "size_diff": 6765,
+      "count": 94,
+      "count_diff": 94,
+      "traceback": [
+        "  File \"<frozen abc>\", line 123"
+      ]
+    },
+    {
+      "size": 3744,
+      "size_diff": 3744,
+      "count": 40,
+      "count_diff": 40,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/pool.py\", line 282",
+        "    self._inactive_callback = self._pool._loop.call_later("
+      ]
+    },
+    {
+      "size": 3200,
+      "size_diff": 3200,
+      "count": 20,
+      "count_diff": 20,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 443",
+        "    statement = await self._protocol.prepare("
+      ]
+    },
+    {
+      "size": 2712,
+      "size_diff": 2712,
+      "count": 28,
+      "count_diff": 28,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 2563",
+        "    self._entries[query] = self._new_entry(query, statement)"
+      ]
+    },
+    {
+      "size": 2572,
+      "size_diff": 2572,
+      "count": 38,
+      "count_diff": 38,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/re/__init__.py\", line 186",
+        "    return _compile(pattern, flags).sub(repl, string, count)"
+      ]
+    },
+    {
+      "size": 1800,
+      "size_diff": 1800,
+      "count": 15,
+      "count_diff": 15,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/store.py\", line 147",
+        "    ("
+      ]
+    },
+    {
+      "size": 1693,
+      "size_diff": 1693,
+      "count": 11,
+      "count_diff": 11,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/profiling/db.py\", line 58",
+        "    return re.sub(r\"\\s+\", \" \", sql).strip()"
+      ]
+    },
+    {
+      "size": 1520,
+      "size_diff": 1520,
+      "count": 22,
+      "count_diff": 22,
+      "traceback": [
+        "  File \"<string>\", line 2"
+      ]
+    },
+    {
+      "size": 1466,
+      "size_diff": 1466,
+      "count": 24,
+      "count_diff": 24,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 1610",
+        "    return '__asyncpg_{}_{:x}__'.format(prefix, _uid)"
+      ]
+    },
+    {
+      "size": 1412,
+      "size_diff": 1412,
+      "count": 5,
+      "count_diff": 5,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py\", line 173",
+        "    self.parser.feed_data(data)"
+      ]
+    },
+    {
+      "size": 1280,
+      "size_diff": 1280,
+      "count": 20,
+      "count_diff": 20,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 2595",
+        "    entry = _StatementCacheEntry(self, query, statement)"
+      ]
+    },
+    {
+      "size": 1280,
+      "size_diff": 1280,
+      "count": 20,
+      "count_diff": 20,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 2592",
+        "    self._max_lifetime, self._on_entry_expired, entry)"
+      ]
+    },
+    {
+      "size": 906,
+      "size_diff": 906,
+      "count": 14,
+      "count_diff": 14,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/profiling/db.py\", line 103",
+        "    if any(up.startswith(pref) for pref in _SKIP_PREFIXES):"
+      ]
+    },
+    {
+      "size": 805,
+      "size_diff": 805,
+      "count": 12,
+      "count_diff": 12,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/pathlib.py\", line 404",
+        "    parsed = [sys.intern(str(x)) for x in rel.split(sep) if x and x != '.']"
+      ]
+    },
+    {
+      "size": 736,
+      "size_diff": 736,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/latency.py\", line 128",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 720,
+      "size_diff": 720,
+      "count": 11,
+      "count_diff": 11,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/pool.py\", line 61",
+        "    def call_con_method(self: Any, *args: Any, **kwargs: Any) -> Any:"
+      ]
+    },
+    {
+      "size": 704,
+      "size_diff": 704,
+      "count": 11,
+      "count_diff": 11,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 352",
+        "    result = await self._protocol.query(query, timeout)"
+      ]
+    },
+    {
+      "size": 704,
+      "size_diff": 704,
+      "count": 11,
+      "count_diff": 11,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py\", line 695",
+        "    return loop.create_task(coro_or_future)"
+      ]
+    },
+    {
+      "size": 666,
+      "size_diff": 666,
+      "count": 10,
+      "count_diff": 10,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py\", line 919",
+        "    outer.set_result(inner.result())"
+      ]
+    },
+    {
+      "size": 624,
+      "size_diff": 624,
+      "count": 10,
+      "count_diff": 10,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/pool.py\", line 852",
+        "    def acquire(self, *, timeout=None):"
+      ]
+    },
+    {
+      "size": 608,
+      "size_diff": 608,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/latency.py\", line 140",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 608,
+      "size_diff": 608,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/latency.py\", line 136",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 608,
+      "size_diff": 608,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/latency.py\", line 132",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 604,
+      "size_diff": 604,
+      "count": 7,
+      "count_diff": 7,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/store.py\", line 115",
+        "    sql = f\"UPDATE bench_runs SET {', '.join(set_clauses)} WHERE id = ${i}\""
+      ]
+    },
+    {
+      "size": 600,
+      "size_diff": 600,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"<string>\", line 1"
+      ]
+    },
+    {
+      "size": 600,
+      "size_diff": 600,
+      "count": 5,
+      "count_diff": 5,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/logging/__init__.py\", line 1962",
+        "    self.logger.log(level, msg, *args, **kwargs)"
+      ]
+    },
+    {
+      "size": 600,
+      "size_diff": 600,
+      "count": 5,
+      "count_diff": 5,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/logging/__init__.py\", line 1609",
+        "    self._log(level, msg, args, **kwargs)"
+      ]
+    },
+    {
+      "size": 596,
+      "size_diff": 596,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py\", line 147",
+        "    connection = [token.lower().strip() for token in value.split(b\",\")]"
+      ]
+    },
+    {
+      "size": 592,
+      "size_diff": 592,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/pool.py\", line 1059",
+        "    async def __aexit__("
+      ]
+    },
+    {
+      "size": 592,
+      "size_diff": 592,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/pool.py\", line 1053",
+        "    async def __aenter__(self):"
+      ]
+    },
+    {
+      "size": 592,
+      "size_diff": 592,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/typing.py\", line 2187",
+        "    def cast(typ, val):"
+      ]
+    },
+    {
+      "size": 592,
+      "size_diff": 592,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/locks.py\", line 181",
+        "    def set(self):"
+      ]
+    },
+    {
+      "size": 584,
+      "size_diff": 584,
+      "count": 7,
+      "count_diff": 7,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/throughput.py\", line 108",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 580,
+      "size_diff": 580,
+      "count": 6,
+      "count_diff": 6,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/structlog/_base.py\", line 168",
+        "    event_dict.update(**event_kw)"
+      ]
+    },
+    {
+      "size": 572,
+      "size_diff": 572,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/services/gateway/auth.py\", line 54",
+        "    return hashlib.sha256(token.encode(\"utf-8\")).hexdigest()"
+      ]
+    },
+    {
+      "size": 560,
+      "size_diff": 560,
+      "count": 7,
+      "count_diff": 7,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/runner.py\", line 185",
+        "    async def dim_progress_cb(stage: str, dim_pct: int) -> None:"
+      ]
+    },
+    {
+      "size": 537,
+      "size_diff": 537,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 1787",
+        "    list(itertools.chain.from_iterable(self._listeners.values())),"
+      ]
+    },
+    {
+      "size": 536,
+      "size_diff": 536,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/ipaddress.py\", line 1230",
+        "    if not (octet_str.isascii() and octet_str.isdigit()):"
+      ]
+    },
+    {
+      "size": 534,
+      "size_diff": 534,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/websockets/headers.py\", line 119",
+        "    return match.group(), match.end()"
+      ]
+    },
+    {
+      "size": 530,
+      "size_diff": 530,
+      "count": 9,
+      "count_diff": 9,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/email/utils.py\", line 278",
+        "    now = dt.timetuple()"
+      ]
+    },
+    {
+      "size": 528,
+      "size_diff": 528,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 1603",
+        "    def _check_open(self):"
+      ]
+    },
+    {
+      "size": 528,
+      "size_diff": 528,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/lib/python3.12/site-packages/asyncpg/connection.py\", line 314",
+        "    async def execute("
+      ]
+    },
+    {
+      "size": 520,
+      "size_diff": 520,
+      "count": 7,
+      "count_diff": 7,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/dimensions/throughput.py\", line 100",
+        "    metrics.append(Metric("
+      ]
+    },
+    {
+      "size": 518,
+      "size_diff": 518,
+      "count": 8,
+      "count_diff": 8,
+      "traceback": [
+        "  File \"/home/prajwal-adhikari/Desktop/v2/fyraliscore/bench/store.py\", line 94",
+        "    clamped = max(0, min(100, int(progress_pct)))"
+      ]
+    }
+  ]
+}
