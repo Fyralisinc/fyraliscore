@@ -5,6 +5,12 @@
 **Status**: Draft
 **Input**: Source description: `specs/IN-07-tenant-resolution-webhook-edge/source.md`
 
+## Clarifications
+
+### Session 2026-05-13
+
+- Q: Can `secret_ref` be updated on an existing `provider_installations` row, or is it write-once? → A: Updatable via a dedicated admin action — register / disable / re-enable / update-secret-ref are all supported, preserving the row's identity and `installed_at`.
+
 ## Context & Substrate Alignment
 
 This feature is **plumbing**, not substrate. The Universal Flow Rule
@@ -342,10 +348,15 @@ counting.
   interface (CLI **or** admin HTTP endpoint — the plan phase picks
   one) that registers a new `(provider, installation_id,
   tenant_id, secret_ref?)` tuple.
-- **FR-008**: The system MUST provide an administrator-callable
-  interface to disable (set `enabled=false`) an existing
-  installation. Enabling a previously-disabled installation is
-  also supported.
+- **FR-008**: The system MUST provide administrator-callable
+  interfaces to (a) disable an existing installation by setting
+  `enabled=false`, (b) re-enable a previously-disabled
+  installation, and (c) update the `secret_ref` pointer on an
+  existing installation without changing its identity or
+  `installed_at`. The update-secret-ref action MUST invalidate
+  the resolver cache entry for the affected installation per
+  FR-010 so that downstream consumers (signature verifiers)
+  re-read the pointer within the consistency window.
 - **FR-009**: The system MUST cache `(provider, installation_id) →
   tenant_id` lookups such that, after warmup, the hot path does
   not require a database round-trip on every webhook.
