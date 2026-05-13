@@ -10,6 +10,7 @@
 ### Session 2026-05-13
 
 - Q: Can `secret_ref` be updated on an existing `provider_installations` row, or is it write-once? → A: Updatable via a dedicated admin action — register / disable / re-enable / update-secret-ref are all supported, preserving the row's identity and `installed_at`.
+- Q: Which metrics MUST the resolver emit (to make SC-002, SC-004, SC-005 testable without leaking installation IDs)? → A: Two counters labeled by low-cardinality enums — `webhook_resolver_outcomes_total{provider,outcome}` and `webhook_resolver_cache_total{provider,result}` — plus a latency histogram `webhook_resolver_duration_seconds{provider}`. `outcome ∈ {resolved, unknown_installation, payload_missing}`; `result ∈ {hit, miss, bypass}`. No installation_id labels, ever.
 
 ## Context & Substrate Alignment
 
@@ -396,6 +397,22 @@ counting.
   authorization (the existing privileged-caller path used by other
   administrative endpoints). Self-serve tenant access to the
   installation table is out of scope and MUST be denied.
+- **FR-018**: The resolver MUST emit the following metrics on
+  every invocation (cardinality bounded by the 5-provider enum and
+  the small outcome/result enums; installation_id is NEVER a
+  label):
+    - Counter `webhook_resolver_outcomes_total{provider, outcome}`
+      where `outcome ∈ {resolved, unknown_installation,
+      payload_missing}`.
+    - Counter `webhook_resolver_cache_total{provider, result}`
+      where `result ∈ {hit, miss, bypass}` (`bypass` is emitted
+      when the cache backend is unavailable and FR-011's fallback
+      path is taken).
+    - Histogram `webhook_resolver_duration_seconds{provider}` for
+      the end-to-end resolution latency.
+  These metrics are the assertion surface for SC-002, SC-004,
+  SC-005, and SC-007. Tests query them directly rather than
+  parsing logs.
 
 ### Key Entities
 
