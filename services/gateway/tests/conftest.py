@@ -221,8 +221,19 @@ def tenant_id_b() -> UUID:
     return uuid7()
 
 
+async def _ensure_tenant(pool: asyncpg.Pool, tenant_id: UUID, name: str) -> None:
+    # Migration 0023 introduced FK actors.tenant_id -> tenants.id; tests
+    # must seed the parent row before inserting actors.
+    await pool.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        tenant_id,
+        name,
+    )
+
+
 @pytest_asyncio.fixture
 async def seeded_actor(gateway_pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
+    await _ensure_tenant(gateway_pool, tenant_id, "gateway-test-a")
     actor_id = uuid7()
     await gateway_pool.execute(
         """
@@ -239,6 +250,7 @@ async def seeded_actor(gateway_pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
 async def seeded_actor_b(
     gateway_pool: asyncpg.Pool, tenant_id_b: UUID
 ) -> UUID:
+    await _ensure_tenant(gateway_pool, tenant_id_b, "gateway-test-b")
     actor_id = uuid7()
     await gateway_pool.execute(
         """

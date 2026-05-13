@@ -124,6 +124,174 @@ async def test_ingest_malformed_json_returns_400(
         },
     )
     assert resp.status_code == 400
+    body = resp.json()
+    # IN-01: structured error includes the decoder reason in `detail`.
+    assert body["error"] == "invalid_json"
+    assert isinstance(body.get("detail"), str) and body["detail"]
+
+
+# ---------------------------------------------------------------------
+# IN-01 — body-size precheck via the FastAPI dependency
+# ---------------------------------------------------------------------
+
+
+async def _post_via_asgi(
+    app, *, path: str, headers: list[tuple[bytes, bytes]], body: bytes = b""
+) -> tuple[int, dict]:
+    """Drive the ASGI app directly so we can craft headers (e.g. an
+    oversize Content-Length or `Transfer-Encoding: chunked`) without
+    httpx normalising them. Returns (status_code, dict_body).
+    """
+    import json as _json
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("test", 0),
+        "server": ("testserver", 80),
+    }
+    body_sent = {"done": False}
+
+    async def receive():
+        if body_sent["done"]:
+            return {"type": "http.disconnect"}
+        body_sent["done"] = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    captured: dict = {"status": None, "chunks": bytearray()}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            captured["status"] = message["status"]
+        elif message["type"] == "http.response.body":
+            captured["chunks"].extend(message.get("body", b"") or b"")
+
+    await app(scope, receive, send)
+    try:
+        parsed = _json.loads(bytes(captured["chunks"]) or b"null")
+    except Exception:
+        parsed = {}
+    return captured["status"], parsed
+
+
+@pytest.mark.asyncio
+async def test_ingest_rejects_oversize_content_length(
+    client: httpx.AsyncClient, valid_session
+):
+    """A1/A2: header advertises >MAX even with an empty body — 413,
+    no body read."""
+    token, _ = valid_session
+    app = client._transport.app  # type: ignore[attr-defined]
+    headers = [
+        (b"authorization", f"Bearer {token}".encode()),
+        (b"content-type", b"application/json"),
+        (b"content-length", str(MAX_PAYLOAD_BYTES + 1).encode()),
+    ]
+    status_code, body = await _post_via_asgi(
+        app, path="/ingest/slack:message", headers=headers, body=b""
+    )
+    assert status_code == 413
+    assert body["error"] == "payload_too_large"
+    assert body["max_bytes"] == MAX_PAYLOAD_BYTES
+
+
+@pytest.mark.asyncio
+async def test_ingest_rejects_chunked_transfer_encoding(
+    client: httpx.AsyncClient, valid_session
+):
+    """A3: Transfer-Encoding: chunked is unsupported on ingest."""
+    token, _ = valid_session
+    app = client._transport.app  # type: ignore[attr-defined]
+    headers = [
+        (b"authorization", f"Bearer {token}".encode()),
+        (b"content-type", b"application/json"),
+        (b"transfer-encoding", b"chunked"),
+    ]
+    status_code, body = await _post_via_asgi(
+        app, path="/ingest/slack:message", headers=headers, body=b"{}"
+    )
+    assert status_code == 413
+    assert body["error"] == "payload_too_large"
+    assert body["reason"] == "chunked_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_ingest_streamed_body_exceeds_limit(
+    client: httpx.AsyncClient, valid_session
+):
+    """A4: no Content-Length header; streaming counter trips at the
+    same MAX_PAYLOAD_BYTES limit."""
+    token, _ = valid_session
+
+    async def _gen():
+        # Yield > MAX in two chunks; the dependency aborts mid-stream.
+        yield b"x" * MAX_PAYLOAD_BYTES
+        yield b"y" * 256
+
+    resp = await client.post(
+        "/ingest/slack:message",
+        content=_gen(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error"] == "payload_too_large"
+
+
+@pytest.mark.asyncio
+async def test_ingest_oversize_before_auth_still_401(
+    client: httpx.AsyncClient,
+):
+    """A8: middleware order — auth fires before the dependency, so an
+    unauthenticated oversize request returns 401, not 413."""
+    app = client._transport.app  # type: ignore[attr-defined]
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(MAX_PAYLOAD_BYTES + 1).encode()),
+    ]
+    status_code, body = await _post_via_asgi(
+        app, path="/ingest/slack:message", headers=headers, body=b""
+    )
+    assert status_code == 401
+    assert body["error"] == "unauthorized"
+    assert body["reason"] == "missing_bearer"
+
+
+@pytest.mark.asyncio
+async def test_ingest_slack_signature_validates_after_bounded_read(
+    client: httpx.AsyncClient,
+    valid_session,
+    build_slack_payload,
+    sign_slack,
+):
+    """A5: the dependency must hand the route the exact bytes Slack
+    signed — otherwise HMAC fails on a 500 KB payload."""
+    token, _ = valid_session
+    big_text = "x" * (500 * 1024)  # 500 KB body
+    payload = build_slack_payload(text=big_text)
+    body = json.dumps(payload).encode()
+    assert len(body) < MAX_PAYLOAD_BYTES  # sanity
+    sig_headers = sign_slack(body)
+    resp = await client.post(
+        "/ingest/slack:message",
+        content=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            **sig_headers,
+        },
+    )
+    assert resp.status_code in (200, 201), resp.text
 
 
 # build_slack_payload / sign_slack are plain module-level helpers.

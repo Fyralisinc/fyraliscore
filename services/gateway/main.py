@@ -37,7 +37,15 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -283,6 +291,85 @@ def _unauth(reason: str) -> Response:
 
 
 # ---------------------------------------------------------------------
+# Ingest body guard — IN-01
+# ---------------------------------------------------------------------
+
+
+class IngestSizeError(Exception):
+    """Raised by `ingest_body_bytes` when a request body is rejected
+    before (or during a bounded read of) ingest. The paired handler
+    `ingest_size_error_handler` renders `payload` verbatim so callers see
+    a flat `{"error": "...", ...}` body, matching pre-IN-01 shape rather
+    than FastAPI's `{"detail": {...}}` wrapping.
+    """
+
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        super().__init__(payload.get("error", "ingest_size_error"))
+        self.status_code = status_code
+        self.payload = payload
+
+
+async def ingest_size_error_handler(
+    request: Request, exc: IngestSizeError
+) -> JSONResponse:
+    return JSONResponse(exc.payload, status_code=exc.status_code)
+
+
+async def ingest_body_bytes(request: Request) -> bytes:
+    """FastAPI dependency for POST /ingest/* — enforces payload limits
+    before the body hits memory and returns the validated bytes.
+
+    Order matters:
+      1. Reject `Transfer-Encoding: chunked` (no streaming-ingest support
+         in Wave 2; a chunked sender bypasses Content-Length entirely).
+      2. Reject when `Content-Length` exceeds `MAX_PAYLOAD_BYTES` — this
+         is the OOM-amplification fix: no body byte is read.
+      3. Stream-read with a byte counter that trips at the same limit;
+         defense in depth when `Content-Length` is absent or lies.
+    """
+    te = request.headers.get("transfer-encoding", "").lower()
+    if "chunked" in te:
+        raise IngestSizeError(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            {
+                "error": "payload_too_large",
+                "reason": "chunked_unsupported",
+            },
+        )
+    cl_raw = request.headers.get("content-length")
+    if cl_raw is not None:
+        try:
+            cl = int(cl_raw)
+        except ValueError:
+            raise IngestSizeError(
+                status.HTTP_400_BAD_REQUEST,
+                {"error": "invalid_content_length"},
+            )
+        if cl < 0 or cl > MAX_PAYLOAD_BYTES:
+            raise IngestSizeError(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                {
+                    "error": "payload_too_large",
+                    "max_bytes": MAX_PAYLOAD_BYTES,
+                },
+            )
+    buf = bytearray()
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if len(buf) > MAX_PAYLOAD_BYTES:
+            raise IngestSizeError(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                {
+                    "error": "payload_too_large",
+                    "max_bytes": MAX_PAYLOAD_BYTES,
+                },
+            )
+    return bytes(buf)
+
+
+# ---------------------------------------------------------------------
 # Middleware — rate limiting
 # ---------------------------------------------------------------------
 
@@ -458,6 +545,8 @@ def build_app(
     app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
+    app.add_exception_handler(IngestSizeError, ingest_size_error_handler)
+
     _register_routes(app)
 
     # Wave 4-D: mount the realtime WS sub-router. When the caller pre-
@@ -571,21 +660,18 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/ingest/{channel:path}")
-    async def post_ingest(channel: str, request: Request) -> JSONResponse:
+    async def post_ingest(
+        channel: str,
+        request: Request,
+        raw: bytes = Depends(ingest_body_bytes),
+    ) -> JSONResponse:
         deps = _deps(request)
         auth: AuthContext | None = getattr(request.state, "auth", None)
         if auth is None:
             return _unauth("missing_bearer")
-        # Enforce payload size (Starlette doesn't enforce a default
-        # body limit; we check after reading).
-        raw = await request.body()
-        if len(raw) > MAX_PAYLOAD_BYTES:
-            return JSONResponse(
-                {"error": "payload_too_large", "max_bytes": MAX_PAYLOAD_BYTES},
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            )
         # Slack signature check — only for slack:message (the one
-        # signature-verified channel in Wave 2-A).
+        # signature-verified channel in Wave 2-A). Uses the same bytes
+        # the dependency assembled so the HMAC sees the wire payload.
         if channel == "slack:message":
             secret = deps.slack_signing_secret
             ts = request.headers.get("X-Slack-Request-Timestamp", "")
@@ -601,9 +687,10 @@ def _register_routes(app: FastAPI) -> None:
                 )
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             return JSONResponse(
-                {"error": "invalid_json"}, status_code=400
+                {"error": "invalid_json", "detail": e.msg},
+                status_code=400,
             )
         try:
             result: IngestResult = await ingest(
