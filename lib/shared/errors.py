@@ -269,8 +269,69 @@ class InstallationCollisionError(CompanyOSError):
     fails closed with HTTP 409 and the foreign tenant identity is
     NEVER disclosed across the boundary (no log line carries either
     `team_id` or the conflicting `tenant_id`).
+
+    Reused verbatim by IN-09 for Discord guild collisions.
     """
     default_code = "installation_collision"
+
+
+class DiscordOAuthError(CompanyOSError):
+    """
+    Discord OAuth install/callback failure surface (IN-09).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - discord_oauth_token_exchange_failed: POST /oauth2/token non-2xx
+      - discord_oauth_missing_guild: bot-scope response lacked guild.id
+      - discord_command_registration_failed: POST /applications/.../commands 4xx
+
+    `context` carries `{tenant_id, http_status?, discord_error_code?}`.
+    `guild_id` is intentionally elided from context per FR-005/SC-006.
+    """
+    default_code = "discord_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class DiscordApiError(CompanyOSError):
+    """
+    Outbound Discord REST call failure (IN-09).
+
+    Stable `code` values:
+      - discord_api_unauthorized: 401 (or 403 code=50001) — chokepoint already fired
+      - discord_api_rate_limited: retry budget exhausted (≤3 attempts / ≤30s wall)
+      - discord_secret_unavailable: bot token not in secret store (orphan installation)
+      - discord_api_error: other terminal 4xx/5xx
+
+    `context` carries `{tenant_id, http_status?, attempts?, total_wall_seconds?}`.
+    `guild_id` is intentionally elided from context per FR-005/SC-006.
+    """
+    default_code = "discord_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
 
 
 __all__ = [
@@ -288,4 +349,6 @@ __all__ = [
     "SecretNotFoundError",
     "StateTokenInvalidError",
     "InstallationCollisionError",
+    "DiscordOAuthError",
+    "DiscordApiError",
 ]

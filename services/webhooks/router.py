@@ -68,7 +68,7 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     "github": "github:webhook",
     "linear": "linear:webhook",
     "stripe": "stripe:webhook",
-    "discord": "discord:webhook",
+    "discord": "discord:interaction",
 }
 
 
@@ -410,6 +410,39 @@ def build_webhooks_router() -> APIRouter:
             return JSONResponse(
                 {"code": e.code, "message": e.message, "context": e.context},
                 status_code=400,
+            )
+
+        # Discord interactions require a specific response shape
+        # (https://discord.com/developers/docs/interactions/receiving-and-responding).
+        # The substrate's generic ingestion shape is invisible to Discord;
+        # without a recognised `type` field the client UI renders
+        # "The application didn't respond in time" even though we
+        # returned 200/201 within the deadline. For type=2
+        # ApplicationCommand we emit a CHANNEL_MESSAGE_WITH_SOURCE
+        # response with an ephemeral confirmation so the user sees an
+        # acknowledgement instead of an error. The real follow-up
+        # message with Fyralis content lands in IN-13.
+        # Headers expose the substrate metadata for tests / debugging
+        # without leaking it into Discord's channel.
+        substrate_headers = {
+            "X-Observation-Id": str(result.observation.id),
+            "X-Deduped": "true" if result.deduped else "false",
+            "X-Secret-Label": ctx.secret_label or "",
+        }
+        if result.trigger_queue_id is not None:
+            substrate_headers["X-Trigger-Queue-Id"] = str(result.trigger_queue_id)
+
+        if provider == "discord" and isinstance(payload, dict) and payload.get("type") == 2:
+            return JSONResponse(
+                {
+                    "type": 4,
+                    "data": {
+                        "content": "Got it — your question is recorded in Fyralis. (Follow-up content ships in IN-13.)",
+                        "flags": 64,  # EPHEMERAL — only the invoker sees this
+                    },
+                },
+                status_code=200,
+                headers=substrate_headers,
             )
 
         return JSONResponse(

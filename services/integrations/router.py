@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from services.integrations.discord import oauth as discord_oauth
 from services.integrations.slack import oauth as slack_oauth
 
 
@@ -33,6 +34,14 @@ def build_integrations_router() -> APIRouter:
     @router.get("/slack/callback")
     async def slack_callback(request: Request):
         return await slack_oauth.callback_handler(request)
+
+    @router.get("/discord/install")
+    async def discord_install(request: Request):
+        return await discord_oauth.install_handler(request)
+
+    @router.get("/discord/callback")
+    async def discord_callback(request: Request):
+        return await discord_oauth.callback_handler(request)
 
     return router
 

@@ -1976,6 +1976,81 @@ Slack workspaces:
 
 Spec: `specs/IN-08-slack-production-integration/`.
 
+## §15 — Discord Production Integration (IN-09)
+
+IN-09 extends the IN-08 substrate (`lib/shared/secrets`, `encrypted_secrets`,
+`oauth_install_states`, `installation_audit_log`, `provider_installations`)
+to Discord — the second OAuth-installing provider. **Zero new migrations**;
+the existing UNIQUE index `observations_source_channel_external_id_occurred_at_key`
+already enforces interaction-id idempotency, and label conventions
+`discord_bot_token:<gid>` / `discord_public_key:<gid>` are
+application-layer.
+
+Three Discord-vs-Slack distinctions are load-bearing:
+
+- **Signatures**: Ed25519 (not HMAC-SHA256), verified via PyNaCl in
+  `services/webhooks/signatures/discord.py`. Per-installation public
+  key in `encrypted_secrets`; `WEBHOOK_SECRET_DISCORD` env-var
+  fallback for the PING (type=1) handshake which precedes any install.
+- **OAuth scopes**: `applications.commands+bot` (slash commands +
+  bot install). Token exchange uses HTTP Basic with
+  `(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET)`.
+- **Uninstall detection**: NO webhook event. The outbound REST client
+  in `services/integrations/discord/client.py` is the single
+  chokepoint; on 401 (or 403 with Discord error code 50001) it calls
+  `_disable_and_zeroize_discord` — idempotent under concurrent races
+  per the spec's Clarifications Q1 (lock-free; UPDATE on already-
+  disabled row is no-op, SecretNotFoundError suppressed, ≤N audit
+  rows accepted under N concurrent observers).
+
+New package `services/integrations/discord/`:
+
+- **`oauth.py`** — `install_handler` (Bearer-authed; mints HMAC state
+  token from authenticated tenant_id) + `callback_handler` (public,
+  state-token-authed; exchanges code, encrypts bot token + mirrors
+  application public key per-installation, UPSERTs with cross-tenant
+  collision guard, registers the `/fyralis` slash command, audits,
+  302s to success). Re-installs reuse the same `provider_installations.id`
+  and invoke `_cleanup_prior_secrets` to delete orphaned
+  `encrypted_secrets` rows (SC-010).
+- **`commands.py`** — POST `/applications/{app_id}/commands` per
+  install (Clarifications Q2: POST upsert per name, NOT PUT bulk).
+  Failure does not block the install (FR-012); audit row carries
+  `status='error'` and the Discord error code.
+- **`client.py`** — `DiscordClient`: per-installation bot-token
+  resolution via secret store; `Retry-After` honored with ≤3 attempts
+  and ≤30s wall budget; 401/403-50001 fires the chokepoint then
+  raises `DiscordApiError(code='discord_api_unauthorized')`.
+  Structured logs use the *unsubstituted* endpoint template (e.g.,
+  `/guilds/{guild_id}/members/{user_id}`) so raw guild_id never
+  appears in logs (FR-005 / SC-006).
+- **`uninstall.py`** — `_disable_and_zeroize_discord` (the chokepoint
+  function, called from `client.py`).
+- **`metrics.py`** — `discord_install_outcomes_total{outcome}` /
+  `discord_uninstall_outcomes_total{outcome}` counters; bounded
+  cardinality (no `guild_id` / `tenant_id` as label values).
+
+Ingestion: `services/ingestion/handlers/discord.py` now uses
+`source_channel='discord:interaction'` (renamed from `discord:webhook`).
+`content.text` is the primary string option's value verbatim
+(Clarifications Q3 — `/fyralis ask "What's our churn rate?"` produces
+`content.text="What's our churn rate?"`, NOT `"fyralis ask: ..."`).
+The per-interaction `token` field is stripped from `content.metadata`
+before persistence — it is the credential for follow-up REST calls
+and must not land on a substrate row.
+
+Public-path allowlist additions in `services/gateway/main.py`:
+`/integrations/discord/callback` is an exact-match entry (NOT a
+prefix), same posture as IN-08's Slack callback.
+
+Gateway WebSocket ingest of every message (analogous to Slack's
+`message.channels`) is OUT OF SCOPE and deferred to IN-12 — it
+requires a third worker class, `MESSAGE_CONTENT` privileged intent
+(Discord manual verification once >100 guilds), reconnection /
+heartbeat logic, and gateway sharding.
+
+Spec: `specs/IN-09-discord-interactions-integration/`.
+
 ---
 
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.
