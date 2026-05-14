@@ -1,9 +1,12 @@
 """services/integrations/discord/client.py — outbound Discord REST client.
 
-Single chokepoint for every Discord API call. Resolves the per-installation
-bot token from `lib/shared/secrets`. Honors Discord's `Retry-After` and
-`X-RateLimit-Remaining` headers with a bounded retry budget (≤3 attempts,
-≤30s wall). Triggers the bot-kick chokepoint
+Single chokepoint for every Discord API call. Resolves the **app-level
+Bot Token** from `DISCORD_BOT_TOKEN` env var (NOT a per-installation
+OAuth Bearer — see commands.py docstring for the rationale; the OAuth
+`access_token` returned by `oauth.v2.access` is a user Bearer that
+cannot authorize bot-scope API calls). Honors Discord's `Retry-After`
+and `X-RateLimit-Remaining` headers with a bounded retry budget
+(≤3 attempts, ≤30s wall). Triggers the bot-kick chokepoint
 (`_disable_and_zeroize_discord`) on 401 / 403-with-code-50001.
 
 Phase 1 surface:
@@ -21,6 +24,7 @@ emits the raw `guild_id`. Operators correlate via `tenant_id` and
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 from uuid import UUID
@@ -29,7 +33,7 @@ import asyncpg
 import httpx
 import structlog
 
-from lib.shared.errors import DiscordApiError, SecretNotFoundError
+from lib.shared.errors import DiscordApiError
 from services.integrations.discord.uninstall import _disable_and_zeroize_discord
 
 
@@ -75,51 +79,28 @@ class DiscordClient:
         self._client: httpx.AsyncClient | None = http_client
 
     async def _resolve_bot_token(self) -> str:
-        """Lookup `discord_bot_token:<guild_id>` from encrypted_secrets.
-        Raises `DiscordApiError(code='discord_secret_unavailable')` if
-        the secret row is missing or unreadable."""
+        """Read the app-level Bot Token from `DISCORD_BOT_TOKEN` env.
+
+        Bot tokens are application-scoped (one per Discord app in the
+        Developer Portal), not per-installation — so env-var resolution
+        is the correct model. The per-guild `discord_bot_token:<gid>`
+        rows in encrypted_secrets hold the OAuth `access_token` (a user
+        Bearer) for future refresh-token flows; they are NOT what
+        authorizes bot-scope API calls.
+
+        Raises `DiscordApiError(code='discord_secret_unavailable')`
+        if the env var is unset or empty.
+        """
         if self._bot_token is not None:
             return self._bot_token
-        try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT id::text AS id
-                  FROM encrypted_secrets
-                 WHERE tenant_id = $1
-                   AND label = $2
-                 ORDER BY created_at DESC
-                 LIMIT 1
-                """,
-                self._tenant_id,
-                f"discord_bot_token:{self._guild_id}",
-            )
-        except Exception as exc:  # noqa: BLE001
+        token = os.environ.get("DISCORD_BOT_TOKEN", "")
+        if not token:
             raise DiscordApiError(
-                "secret store query failed",
-                code="discord_secret_unavailable",
-                context={"tenant_id": str(self._tenant_id)},
-            ) from exc
-
-        if row is None:
-            raise DiscordApiError(
-                "bot token not found for installation",
+                "DISCORD_BOT_TOKEN env var not configured",
                 code="discord_secret_unavailable",
                 context={"tenant_id": str(self._tenant_id)},
             )
-        try:
-            plaintext = await self._secret_store.get(
-                row["id"], tenant_id=self._tenant_id,
-            )
-        except SecretNotFoundError as exc:
-            raise DiscordApiError(
-                "bot token row exists but secret store cannot read it",
-                code="discord_secret_unavailable",
-                context={"tenant_id": str(self._tenant_id)},
-            ) from exc
-        self._bot_token = (
-            plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray))
-            else str(plaintext)
-        )
+        self._bot_token = token
         return self._bot_token
 
     def _httpx(self) -> httpx.AsyncClient:

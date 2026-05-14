@@ -1,7 +1,10 @@
 """IN-09 US5: outbound Discord REST client tests.
 
-Covers rate-limit budget, retry-after handling, orphan-secret error,
-and the no-guild_id-in-logs invariant (SC-006).
+Covers rate-limit budget, retry-after handling, missing-env-var error,
+the no-guild_id-in-logs invariant (SC-006), and — added post-IN-09 —
+verification that the app-level Bot Token from `DISCORD_BOT_TOKEN` env
+flows into the `Authorization: Bot …` header instead of the
+per-installation OAuth Bearer that used to live in encrypted_secrets.
 """
 from __future__ import annotations
 
@@ -26,11 +29,17 @@ pytestmark = pytest.mark.integration
 
 _GUILD_ID = "G_US5_700000000000000001"
 _USER_ID = "U_US5_700000000000000002"
+_BOT_TOKEN_ENV = "test-bot-token-env-not-the-oauth-bearer"
 
 
 @pytest.fixture(autouse=True)
 def _reset_metrics() -> None:
     discord_metrics.reset()
+
+
+@pytest.fixture(autouse=True)
+def _set_bot_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", _BOT_TOKEN_ENV)
 
 
 @pytest.fixture
@@ -129,21 +138,17 @@ async def test_budget_exhausted_raises_rate_limited(
         assert exc_info.value.context["attempts"] <= 3
 
 
-async def test_orphan_secret_ref_raises_discord_secret_unavailable(
-    fresh_db: asyncpg.Pool, _tenant: UUID,
+async def test_missing_bot_token_env_raises_discord_secret_unavailable(
+    fresh_db: asyncpg.Pool, _tenant: UUID, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The app-level Bot Token lives in `DISCORD_BOT_TOKEN`. If the env
+    var is unset or empty, `_resolve_bot_token` must fail fast with
+    `discord_secret_unavailable` — without falling back to the OAuth
+    Bearer in encrypted_secrets (which can't authorize bot-scope API
+    calls anyway)."""
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
-    # Seed install row but DO NOT seed the bot token row.
-    public_key_ref = await secret_store.put(
-        b"a" * 32, label=f"discord_public_key:{_GUILD_ID}", tenant_id=_tenant,
-    )
-    install_id = uuid7()
-    await fresh_db.execute(
-        "INSERT INTO provider_installations "
-        "(id, tenant_id, provider, installation_id, secret_ref, enabled) "
-        "VALUES ($1, $2, 'discord', $3, $4, TRUE)",
-        install_id, _tenant, _GUILD_ID, public_key_ref,
-    )
+    install_id = await _seed_install(fresh_db, _tenant, secret_store)
 
     client = DiscordClient(
         pool=fresh_db, secret_store=secret_store,
@@ -154,6 +159,62 @@ async def test_orphan_secret_ref_raises_discord_secret_unavailable(
         await client.get_guild_member(_USER_ID)
     await client.aclose()
     assert exc_info.value.code == "discord_secret_unavailable"
+
+
+async def test_env_bot_token_flows_to_authorization_header(
+    fresh_db: asyncpg.Pool, _tenant: UUID,
+) -> None:
+    """Integration check: the value of `DISCORD_BOT_TOKEN` env (set by
+    the autouse fixture to `_BOT_TOKEN_ENV`) must appear in the
+    outbound `Authorization: Bot <token>` header — NOT the OAuth
+    `access_token` stored per-guild in encrypted_secrets. Seed a
+    deliberately different per-guild bot-token row to prove the env
+    path wins."""
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    # Seed a per-guild secret with a value that MUST NOT appear in the header.
+    poisoned_oauth_bearer = "oauth-bearer-DO-NOT-USE"
+    public_key_ref = await secret_store.put(
+        b"a" * 32, label=f"discord_public_key:{_GUILD_ID}", tenant_id=_tenant,
+    )
+    await secret_store.put(
+        poisoned_oauth_bearer.encode("utf-8"),
+        label=f"discord_bot_token:{_GUILD_ID}",
+        tenant_id=_tenant,
+    )
+    install_id = uuid7()
+    await fresh_db.execute(
+        "INSERT INTO provider_installations "
+        "(id, tenant_id, provider, installation_id, secret_ref, enabled) "
+        "VALUES ($1, $2, 'discord', $3, $4, TRUE)",
+        install_id, _tenant, _GUILD_ID, public_key_ref,
+    )
+
+    captured_auth: dict[str, str] = {}
+
+    def _handler(request):
+        import httpx
+        captured_auth["value"] = request.headers.get("Authorization", "")
+        return httpx.Response(200, json={"user": {"id": _USER_ID}})
+
+    with respx.mock(base_url="https://discord.com") as router:
+        router.get(
+            f"/api/v10/guilds/{_GUILD_ID}/members/{_USER_ID}",
+        ).mock(side_effect=_handler)
+
+        client = DiscordClient(
+            pool=fresh_db, secret_store=secret_store,
+            tenant_id=_tenant, installation_row_id=install_id,
+            guild_id=_GUILD_ID,
+        )
+        await client.get_guild_member(_USER_ID)
+        await client.aclose()
+
+    assert captured_auth["value"] == f"Bot {_BOT_TOKEN_ENV}", (
+        f"expected env-var bot token, got {captured_auth['value']!r}"
+    )
+    assert poisoned_oauth_bearer not in captured_auth["value"], (
+        "OAuth Bearer from encrypted_secrets leaked into Authorization header"
+    )
 
 
 async def test_no_guild_id_in_structured_logs(
