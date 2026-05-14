@@ -1932,4 +1932,50 @@ itself.
 
 ---
 
+## 14. IN-08 — Slack Production Integration (added by IN-08)
+
+The Slack OAuth install flow ships customer self-serve onboarding for
+Slack workspaces:
+
+- **`services/integrations/router.py`** mounts `/integrations/slack/install`
+  (Bearer-authed) and `/integrations/slack/callback` (public,
+  state-token-authed). The gateway adds only `/integrations/slack/callback`
+  to `_PUBLIC_PATHS` — single-route, never blanket-public.
+- **`services/integrations/slack/oauth.py`** owns state-token issuance
+  + verification (HMAC over `{tenant_id, nonce, expires_at}` with the
+  nonce tracked single-use in `oauth_install_states`) and the callback
+  handler that exchanges the code, persists tokens, and upserts the
+  installation row.
+- **`services/integrations/slack/uninstall.py`** handles inbound
+  `app_uninstalled` / `tokens_revoked` events: disables the
+  installation row, zeroes the encrypted secrets, writes an audit row.
+- **`services/integrations/slack/client.py`** is a thin outbound
+  client for `chat.postMessage`, `users.info`, `conversations.info`
+  with 429 `Retry-After` backoff. Substrate for IN-10 Slack-outbound
+  Acts.
+- **`lib/shared/secrets/`** is a generic envelope-encrypted row store
+  (Fernet, `MASTER_KEK` env-injected). Slack tokens are its first
+  consumer; GitHub / Linear / Stripe (IN-09+) reuse without DDL.
+- **Three new tables** (migrations 0040 + 0041):
+    - `encrypted_secrets` — tenant-scoped Fernet ciphertext, RLS.
+    - `oauth_install_states` — single-use OAuth state nonce ledger.
+    - `installation_audit_log` — installation lifecycle audit
+      (install / uninstall / token_refresh / rejected_collision).
+      Distinct from §VII `audit_events`, which records Model state
+      transitions.
+- **Router cutover**: `services/webhooks/router.py` now resolves
+  tenants via `app.state.tenant_resolver` (the IN-07 DB-backed
+  resolver). The legacy `services/webhooks/tenant_resolution.py` is
+  retained for one staging-soak cycle and is scheduled for deletion.
+- **Env-var fallback gate**: `services/webhooks/secrets.py::load_secrets`
+  reads `provider_installations.secret_ref` via the secret store; the
+  legacy env-var path is reachable only when
+  `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1`. Production deployments must
+  not set this flag — `assert_prod_safety_invariants()` fails gateway
+  startup if `FYRALIS_ENV=prod` and the flag is on.
+
+Spec: `specs/IN-08-slack-production-integration/`.
+
+---
+
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.

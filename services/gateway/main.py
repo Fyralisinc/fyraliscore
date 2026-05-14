@@ -170,7 +170,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 # Paths that do not require authentication (e.g. health checks, the
 # session-minting endpoint itself uses a separate actor lookup).
-_PUBLIC_PATHS = frozenset({"/healthz", "/auth/session"})
+_PUBLIC_PATHS = frozenset({
+    "/healthz",
+    "/auth/session",
+    # IN-08: the OAuth callback is public (state-token-authed inside
+    # the handler). The /install route stays Bearer-required, so it is
+    # NOT in this allowlist. We deliberately do NOT add "/integrations/"
+    # as a prefix entry — single-route, not blanket public.
+    "/integrations/slack/callback",
+})
 
 # Path prefixes that bypass the gateway's bearer-session middleware.
 # Week-4 integration: the CEO-view sub-routers carry their own token
@@ -430,6 +438,44 @@ def build_app(
         # DB-backed TenantResolver. The webhook router and the new
         # integrations router both read these from `request.app.state`.
         _wire_in08_state(app_, pool)
+
+        # IN-08 T031: start the oauth_install_states sweep task. Runs
+        # every 5 min in the gateway process, deletes rows older than
+        # 1h (whether expired or consumed). Bounded by LIMIT 1000 so
+        # a sudden backlog can't lock the table.
+        import asyncio as _asyncio
+
+        async def _sweep_oauth_states() -> None:
+            while True:
+                try:
+                    await _asyncio.sleep(300)  # 5 min
+                    deleted = await pool.execute(
+                        """
+                        DELETE FROM oauth_install_states
+                         WHERE id IN (
+                            SELECT id FROM oauth_install_states
+                             WHERE expires_at < now() - INTERVAL '1 hour'
+                                OR (consumed_at IS NOT NULL
+                                    AND consumed_at < now() - INTERVAL '1 hour')
+                             LIMIT 1000
+                         )
+                        """,
+                    )
+                    log.info(
+                        "oauth_install_states_sweep",
+                        deleted_summary=deleted,
+                    )
+                except _asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "oauth_install_states_sweep_error",
+                        error_type=type(exc).__name__,
+                    )
+                    # Continue looping; transient DB hiccups should
+                    # not kill the sweep task.
+
+        app_.state.oauth_sweep_task = _asyncio.create_task(_sweep_oauth_states())
         # Wave 4-D: realtime wiring. Only configure if not already done
         # (tests path pre-wires before lifespan). Lazy import to avoid
         # a services.gateway ↔ services.realtime circular.
@@ -461,6 +507,14 @@ def build_app(
         try:
             yield
         finally:
+            # IN-08: cancel the oauth_install_states sweep task.
+            sweep_task = getattr(app_.state, "oauth_sweep_task", None)
+            if sweep_task is not None:
+                sweep_task.cancel()
+                try:
+                    await sweep_task
+                except (BaseException,):  # noqa: BLE001
+                    pass
             # Stop the dispatcher we started here (not the test-owned one).
             rt = getattr(app_.state, "realtime", None)
             if rt is not None:
@@ -549,6 +603,14 @@ def build_app(
     from services.webhooks.router import build_webhooks_router
 
     app.include_router(build_webhooks_router())
+
+    # IN-08: integrations router (Slack OAuth install + callback).
+    # Mounted at /integrations/{provider}/*. The /install route is
+    # Bearer-authed (standard middleware); only /callback is in the
+    # public-paths allowlist (exact match, no prefix exposure).
+    from services.integrations.router import build_integrations_router
+
+    app.include_router(build_integrations_router())
     return app
 
 
