@@ -47,6 +47,7 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "stripe:webhook": "authoritative",
     "discord:webhook": "attested_agent",
     "discord:interaction": "attested_agent",
+    "discord:message": "attested_agent",
     "journal:ui": "authoritative",
     "agent:attested": "attested_agent",
     "news:rss": "reputable",

@@ -1,30 +1,32 @@
-"""services/ingestion/handlers/discord.py — Discord interaction handler.
+"""services/ingestion/handlers/discord.py — Discord ingestion handlers.
 
-Discord delivers signed *interaction* payloads (slash commands,
-buttons, etc). The PING handshake (`type=1`) is handled by the
-webhook router itself before this handler ever sees the payload; this
-handler only runs on real interactions (`type>=2`).
+Two channels are registered here:
 
-Signature verification happens in the webhook router
-([services/webhooks/signatures/discord.py](../../webhooks/signatures/discord.py))
-using ed25519. This handler trusts the verified payload.
+  `discord:interaction` — slash commands / components / modals received
+    over the Interactions HTTP webhook (IN-09). Signature verification
+    happens upstream in `services/webhooks/signatures/discord.py`; this
+    handler trusts the verified payload.
 
-`external_id` is the Discord interaction `id` (snowflake), which
-Discord documents as globally unique — the canonical dedup key. The
-existing UNIQUE index `observations_source_channel_external_id_occurred_at_key`
-makes duplicate POSTs idempotent at the persistence layer (a Discord
-retry within ~3s arrives twice with the same `interaction.id` and
-produces exactly one Observation row).
+  `discord:message` — regular channel messages received via the
+    Gateway WSS worker (IN-12). The worker filters `author.bot` and
+    `webhook_id` at dispatch time before handing the payload here;
+    this handler treats the payload as a Discord MESSAGE_CREATE event.
 
-IN-09 contract (spec.md FR-001, Clarifications Q3):
-- `source_channel='discord:interaction'` (was 'discord:webhook' pre-IN-09)
+Both share `external_id = "discord:<snowflake>"` for dedup via the
+existing `(source_channel, external_id, occurred_at)` unique index on
+`observations`. The interaction handler's snowflake is the interaction
+id; the message handler's snowflake is the message id. Cross-channel
+collision is impossible because `source_channel` differs.
+
+IN-09 contract (spec.md FR-001, Clarifications Q3) for interactions:
 - `content_text` is the primary string option's value verbatim
-  (e.g. for `/fyralis ask "<query>"` it is `<query>`, NOT `"fyralis ask: <query>"`).
-  The command verb is structural noise once source_channel encodes it.
-- `content.metadata` carries the full interaction payload MINUS the
-  per-interaction `token` field (and defensive minus `member.user.token` /
-  `user.token` if those ever appear). The token is the credential for
-  follow-up calls and must not land on a substrate row.
+- `content.metadata` carries the full payload MINUS the per-interaction
+  `token` (credential-grade field; never persisted)
+
+IN-12 contract (spec.md FR-007) for messages:
+- `content_text` is `message.content` verbatim (no markdown strip)
+- `content.metadata` carries channel_id, short_guild_hash, mention_user_ids,
+  attachment_count — NEVER the raw guild_id (SC-006)
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ from services.ingestion.handlers import (
 
 
 _CHANNEL = "discord:interaction"
+_CHANNEL_MESSAGE = "discord:message"
 
 
 def _strip_credentials(payload: dict[str, Any]) -> dict[str, Any]:
@@ -155,4 +158,118 @@ async def handle_discord_webhook(
     )
 
 
-__all__ = ["handle_discord_webhook"]
+def _short_guild_hash(guild_id: str) -> str:
+    """8-byte BLAKE2b hex digest of guild_id. Stable, non-reversible.
+
+    Duplicated here (not imported from services/integrations/discord/
+    oauth.py) to keep the ingestion handlers package free of integration-
+    layer imports — this module must not back-depend on
+    services.integrations.*.
+    """
+    import hashlib
+    return hashlib.blake2b(guild_id.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _parse_discord_timestamp(raw: Any) -> datetime:
+    """Discord sends ISO-8601 timestamps with offset. Fall back to
+    now(UTC) if missing or unparseable so the observation still lands
+    (timestamp is metadata, not load-bearing for dedup)."""
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            pass
+    return datetime.now(tz=timezone.utc)
+
+
+def _message_actor_ref(payload: dict[str, Any]) -> str | None:
+    """For MESSAGE_CREATE the author lives in top-level `author`."""
+    author = payload.get("author")
+    if isinstance(author, dict) and author.get("id"):
+        return f"discord:{author['id']}"
+    return None
+
+
+def _message_entities_hint(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mentioned users, the channel, and the guild (as a hash so the
+    raw id doesn't land in entities — entity-alias resolution can use
+    the hash if needed). SC-006: no raw guild_id in any surface."""
+    hint: list[dict[str, Any]] = []
+    mentions = payload.get("mentions")
+    if isinstance(mentions, list):
+        for m in mentions:
+            if isinstance(m, dict) and m.get("id"):
+                hint.append({"type": "discord_user", "id": m["id"]})
+    channel_id = payload.get("channel_id")
+    if isinstance(channel_id, str):
+        hint.append({"type": "discord_channel", "id": channel_id})
+    return hint
+
+
+@register(_CHANNEL_MESSAGE)
+async def handle_discord_message(
+    payload: dict[str, Any], headers: dict[str, str]
+) -> ObservationDraft:
+    """MESSAGE_CREATE event from the Gateway worker (IN-12).
+
+    The Gateway worker pre-filters `author.bot=true` and `webhook_id`
+    before calling ingest(), so this handler trusts the payload as a
+    human-authored guild message. It does NOT re-apply those filters
+    (defense-in-depth would mask a worker bug rather than fix it).
+    """
+    if not isinstance(payload, dict):
+        raise ValidationError(
+            "discord MESSAGE_CREATE payload must be a JSON object",
+            channel=_CHANNEL_MESSAGE,
+        )
+
+    message_id = payload.get("id")
+    guild_id = payload.get("guild_id")
+    channel_id = payload.get("channel_id")
+    content = payload.get("content") or ""
+    attachments = payload.get("attachments") or []
+    mentions = payload.get("mentions") or []
+
+    if not isinstance(message_id, str):
+        raise ValidationError(
+            "discord MESSAGE_CREATE missing string `id`",
+            channel=_CHANNEL_MESSAGE,
+        )
+    if not isinstance(guild_id, str):
+        raise ValidationError(
+            "discord MESSAGE_CREATE missing string `guild_id` "
+            "(DM messages should be filtered upstream)",
+            channel=_CHANNEL_MESSAGE,
+        )
+
+    metadata: dict[str, Any] = {
+        "channel_id": channel_id if isinstance(channel_id, str) else None,
+        "short_guild_hash": _short_guild_hash(guild_id),
+        "mention_user_ids": [
+            m["id"] for m in mentions
+            if isinstance(m, dict) and isinstance(m.get("id"), str)
+        ],
+        "attachment_count": len(attachments) if isinstance(attachments, list) else 0,
+    }
+
+    return ObservationDraft(
+        source_channel=_CHANNEL_MESSAGE,
+        content_text=content if isinstance(content, str) else "",
+        content={
+            "text": content if isinstance(content, str) else "",
+            "metadata": metadata,
+        },
+        occurred_at=_parse_discord_timestamp(payload.get("timestamp")),
+        trust_tier=CHANNEL_TRUST_MAP[_CHANNEL_MESSAGE],  # type: ignore[arg-type]
+        kind="signal",
+        source_actor_ref=_message_actor_ref(payload),
+        external_id=f"discord:{message_id}",
+        entities_hint=_message_entities_hint(payload),
+        raw_payload=payload,
+    )
+
+
+__all__ = ["handle_discord_webhook", "handle_discord_message"]

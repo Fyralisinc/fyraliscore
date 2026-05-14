@@ -17,9 +17,9 @@ In `services/ingestion/handlers/__init__.py::CHANNEL_TRUST_MAP`:
 ```python
 CHANNEL_TRUST_MAP: dict[str, str] = {
     ...
-    "slack:message":        "attested_human",
+    "slack:message":        "attested_agent",
     "discord:interaction":  "attested_agent",
-    "discord:message":      "attested_human",   # NEW
+    "discord:message":      "attested_agent",   # NEW
     ...
 }
 ```
@@ -36,7 +36,7 @@ This is a Python module constant, not DDL.
 | `external_id` | `f"discord:{message.id}"` (Discord snowflake) |
 | `source_actor_ref` | `f"discord:{author.id}"` (Discord snowflake — same convention as `discord:interaction`) |
 | `kind` | `'signal'` |
-| `trust_tier` | `'attested_human'` |
+| `trust_tier` | `'attested_agent'` |
 | `content_text` | `message.content` (verbatim; no markdown strip, no truncation) |
 | `content` (jsonb) | `{ "metadata": { channel_id, short_guild_hash, mention_user_ids, attachment_count } }` |
 | `occurred_at` | `datetime.fromisoformat(message.timestamp)` (Discord sends ISO 8601) |

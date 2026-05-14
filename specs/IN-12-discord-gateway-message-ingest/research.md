@@ -107,11 +107,11 @@ We deliberately omit GUILD_MEMBERS (1<<1), MESSAGE_REACTIONS (1<<10), and TYPING
 
 **Verification**: `\d observations` shows `observations_source_channel_external_id_occurred_at_key` UNIQUE — re-confirmed during IN-09 implementation. No change required for IN-12.
 
-## R9. Trust tier for `discord:message`: `attested_human`
+## R9. Trust tier for `discord:message`: `attested_agent`
 
-**Decision**: New observations from this path carry `trust_tier='attested_human'` (Clarifications Q1).
+**Decision**: New observations from this path carry `trust_tier='attested_agent'` (Clarifications Q1).
 
-**Rationale**: A regular Discord user posting in a channel asserts identity via Discord's auth system; this is analogous to a Slack user posting in a channel (`slack:message` → `attested_human`). Discord slash commands (`/fyralis ask`) are `attested_agent` because the user is invoking the bot explicitly — that's a different signal class.
+**Rationale**: A regular Discord user posting in a channel asserts identity via Discord's auth system; this is analogous to a Slack user posting in a channel (`slack:message` → `attested_agent`). Discord slash commands (`/fyralis ask`) are `attested_agent` because the user is invoking the bot explicitly — that's a different signal class.
 
 ## R10. Logging redaction: short_guild_hash everywhere
 

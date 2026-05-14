@@ -16,6 +16,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "httpx>=0.27",
+    "websockets>=15.0",          # IN-12: Discord Gateway WSS worker
     "structlog>=24.1",
     "python-dotenv>=1.0",
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)

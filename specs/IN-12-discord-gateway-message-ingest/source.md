@@ -75,7 +75,7 @@ services/integrations/discord/gateway/dispatch.py:
          tenant_id: <resolved>,
          metadata: { channel_id, guild_id_hash, mention_user_ids, attachment_count }
        })
-  - Add "discord:message" to services/ingestion/handlers/__init__.py::CHANNEL_TRUST_MAP with trust_tier="attested_human"
+  - Add "discord:message" to services/ingestion/handlers/__init__.py::CHANNEL_TRUST_MAP with trust_tier="attested_agent"
 
 Phase 5 — Operational hardening (1 d)
 

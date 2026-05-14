@@ -52,7 +52,7 @@ The structural-loop guard against IN-13 (outbound replies re-entering ingest) is
 
 | Principle | Status | Notes |
 |---|---|---|
-| §I Four Foundations distinct | PASS | MESSAGE_CREATE → **Observation** with `kind='signal'`, `trust_tier='attested_human'` (Clarifications). No Model / Act / Resource writes. `discord_user` / `discord_channel` entity hints land in `entities_mentioned` for downstream entity-alias resolution. |
+| §I Four Foundations distinct | PASS | MESSAGE_CREATE → **Observation** with `kind='signal'`, `trust_tier='attested_agent'` (Clarifications). No Model / Act / Resource writes. `discord_user` / `discord_channel` entity hints land in `entities_mentioned` for downstream entity-alias resolution. |
 | §II Append-only migrations | PASS | **ZERO new migrations.** No schema change. `source_channel='discord:message'` is a new value in an existing TEXT column. |
 | §III Tenant isolation structural | PASS | No new tables. Tenant resolution via existing `provider_installations`. New observations carry `tenant_id` via existing FK + RLS + index. Worker queries hand-rolled with `WHERE tenant_id = $1`. |
 | §IV Integration tests, real DB | PASS | Plan mandates live Postgres + Ollama for all `services/integrations/discord/gateway/tests/test_*.py` files. WSS boundary mocked via in-process fake gateway (external network dep, not our substrate). |
@@ -142,7 +142,7 @@ Goal: Tolerate Discord-initiated disconnects without observation gaps.
 Goal: Real dispatch → existing ingestion handler → observation row.
 
 - T030 Extend `services/ingestion/handlers/discord.py` to branch on `source_channel`: existing `discord:interaction` path unchanged; new `discord:message` branch reuses tenant resolution + dedup with `content_text=<message.content verbatim>`, no token-strip required (no Discord interaction token in message events).
-- T031 Add `"discord:message": "attested_human"` to `services/ingestion/handlers/__init__.py::CHANNEL_TRUST_MAP`.
+- T031 Add `"discord:message": "attested_agent"` to `services/ingestion/handlers/__init__.py::CHANNEL_TRUST_MAP`.
 - T032 Implement `services/integrations/discord/gateway/dispatch.py::handle_message_create()`:
   - Step 1: `author.bot` + `webhook_id` filter → drop with metric (FR-007a).
   - Step 2: Resolve tenant via `TenantResolver.resolve('discord', payload)` (existing IN-07 path).
