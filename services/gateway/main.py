@@ -178,6 +178,8 @@ _PUBLIC_PATHS = frozenset({
     # NOT in this allowlist. We deliberately do NOT add "/integrations/"
     # as a prefix entry — single-route, not blanket public.
     "/integrations/slack/callback",
+    # IN-09: same posture for Discord. /install stays Bearer-required.
+    "/integrations/discord/callback",
 })
 
 # Path prefixes that bypass the gateway's bearer-session middleware.

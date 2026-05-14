@@ -289,6 +289,20 @@ class DiscordOAuthError(CompanyOSError):
     """
     default_code = "discord_oauth_error"
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
 
 class DiscordApiError(CompanyOSError):
     """
@@ -304,6 +318,20 @@ class DiscordApiError(CompanyOSError):
     `guild_id` is intentionally elided from context per FR-005/SC-006.
     """
     default_code = "discord_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
 
 
 __all__ = [
