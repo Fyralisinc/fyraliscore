@@ -1,0 +1,16 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 42,
+    "title": "fixture issue",
+    "user": {"login": "fixture-user"}
+  },
+  "repository": {
+    "full_name": "fixture-org/fixture-repo"
+  },
+  "sender": {"login": "fixture-user"},
+  "installation": {
+    "id": 4567890,
+    "node_id": "MDQ6Rml4dHVyZQ=="
+  }
+}

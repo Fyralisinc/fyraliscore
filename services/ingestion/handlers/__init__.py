@@ -45,6 +45,7 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "github:webhook": "authoritative",
     "calendar:sync": "authoritative",
     "stripe:webhook": "authoritative",
+    "discord:webhook": "attested_agent",
     "journal:ui": "authoritative",
     "agent:attested": "attested_agent",
     "news:rss": "reputable",
@@ -152,6 +153,10 @@ def _clear_registry_for_tests() -> None:
 # imports intentionally come after _HANDLERS is defined above.
 from services.ingestion.handlers import system  # noqa: E402,F401
 from services.ingestion.handlers import slack  # noqa: E402,F401
+from services.ingestion.handlers import github  # noqa: E402,F401
+from services.ingestion.handlers import linear  # noqa: E402,F401
+from services.ingestion.handlers import stripe  # noqa: E402,F401
+from services.ingestion.handlers import discord  # noqa: E402,F401
 
 
 __all__ = [

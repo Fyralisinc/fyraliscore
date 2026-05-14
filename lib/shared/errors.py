@@ -191,6 +191,30 @@ class CalibrationMissingError(CompanyOSError):
         self.proposition_kind = proposition_kind
 
 
+# ---------------------------------------------------------------------
+# Webhook tenant resolution (services/webhooks/tenant_resolver.py)
+# ---------------------------------------------------------------------
+
+class InstallationConflictError(CompanyOSError):
+    """
+    Admin attempted to register a (provider, installation_id) pair
+    that already exists. Uniqueness is enforced by the UNIQUE
+    constraint on provider_installations; this is the structured
+    surface for the asyncpg.UniqueViolationError that bubbles up.
+    """
+    default_code = "installation_conflict"
+
+
+class InstallationNotFoundError(CompanyOSError):
+    """
+    Admin attempted to disable / re-enable / update-secret-ref an
+    installation row by id and the row did not exist. Distinct from
+    the resolver's UnknownInstallation outcome (which deliberately
+    does not leak existence).
+    """
+    default_code = "installation_not_found"
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -200,4 +224,6 @@ __all__ = [
     "FalsifierInadequateError",
     "MalformedFalsifierError",
     "CalibrationMissingError",
+    "InstallationConflictError",
+    "InstallationNotFoundError",
 ]

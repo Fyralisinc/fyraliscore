@@ -197,6 +197,11 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # /sessions/start endpoint mints the auth token for everything else.
     "/v1/demo/companies",
     "/v1/demo/sessions/start",
+    # IN-06: webhook ingress. Authentication is the per-provider
+    # cryptographic signature check inside services.webhooks.router —
+    # NOT a Bearer token. The Bearer middleware MUST skip this prefix
+    # or every webhook becomes a 401 with `missing_bearer`.
+    "/webhooks/",
 )
 
 
@@ -570,6 +575,13 @@ def build_app(
     from services.demo.router import demo_router as _demo_router
 
     app.include_router(_demo_router)
+
+    # IN-06: webhook gateway router. Mounted at /webhooks/{provider}/...
+    # Bearer middleware is configured to skip this prefix (see
+    # `_PUBLIC_PATH_PREFIXES`). Verification is per-provider signature.
+    from services.webhooks.router import build_webhooks_router
+
+    app.include_router(build_webhooks_router())
     return app
 
 

@@ -21,6 +21,7 @@ dependencies = [
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)
     "anthropic>=0.34",
     "openai>=1.40",
+    "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
 ]
 
 [project.optional-dependencies]

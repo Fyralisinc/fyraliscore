@@ -1,0 +1,12 @@
+{
+  "action": "create",
+  "type": "Issue",
+  "data": {
+    "id": "fixture-issue-uuid",
+    "title": "fixture issue",
+    "state": {"name": "Todo"}
+  },
+  "createdAt": "2026-05-13T00:00:00.000Z",
+  "organizationId": "ORG_FIXTURE_UUID",
+  "webhookId": "wh_fixture"
+}

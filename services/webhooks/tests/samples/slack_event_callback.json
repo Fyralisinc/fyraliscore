@@ -1,0 +1,16 @@
+{
+  "token": "verification_token_fixture",
+  "team_id": "T_ACME_FIXTURE",
+  "api_app_id": "A_FIXTURE",
+  "event": {
+    "type": "message",
+    "user": "U_FIXTURE",
+    "text": "hello world",
+    "ts": "1736900000.000100",
+    "channel": "C_FIXTURE",
+    "event_ts": "1736900000.000100"
+  },
+  "type": "event_callback",
+  "event_id": "Ev_FIXTURE",
+  "event_time": 1736900000
+}
