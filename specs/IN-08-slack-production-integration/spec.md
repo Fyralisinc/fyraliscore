@@ -9,6 +9,12 @@
 
 Today, Fyralis can *receive* Slack webhooks (IN-06 verifies HMAC, runs the `slack:message` ingestion handler) and IN-07 shipped a DB-backed `TenantResolver` that maps `team_id → tenant_id` via the `provider_installations` registry. But the `TenantResolver` is unwired, signing secrets still live in environment variables, and a customer onboarding requires a Fyralis operator to hand-insert a `provider_installations` row and set a tenant-prefixed env var. This feature closes that gap: a Slack workspace admin clicks "Add to Fyralis", completes OAuth, and within seconds their messages land as `Observations` under the correct `tenant_id` — no operator touch, no plaintext secrets, and uninstalls correctly disable the row.
 
+## Clarifications
+
+### Session 2026-05-14
+
+- Q: Token storage shape (FR-022 placeholder `location TBD by plan`) → A: Generic tenant-scoped `encrypted_secrets` table backing the `lib/shared/secrets` store; rows hold ciphertext, `secret_ref` resolves to a row UUID. Slack tokens are its first consumer; future providers (GitHub, Linear, Stripe) reuse the same table without per-provider DDL. The migration filename remains `NNNN_slack_installation_tokens.sql` (per ClickUp `Files relevant`), but the table it creates is `encrypted_secrets`, not a Slack-specific table.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Production-Grade Per-Installation Secret Storage (Priority: P1)
@@ -167,7 +173,7 @@ As the Slack ingestion handler, I need a thin async client that performs `chat.p
 **Security and audit invariants (cross-cutting)**
 
 - **FR-021**: `installation_audit_log` MUST be tenant-scoped: `tenant_id UUID NOT NULL REFERENCES tenants(id)`, RLS enabled with the `tenant_isolation` policy, and indexes prefixed with `tenant_id` for all common predicates (Constitution §III).
-- **FR-022**: Any token-storage table introduced under `lib/shared/secrets/` (or its companion migration) MUST be tenant-scoped to the same standard as FR-021, OR MUST encode `tenant_id` in the row that *references* it (i.e., `provider_installations`) and provide tenant-prefixed lookup paths.
+- **FR-022**: The new `encrypted_secrets` backing table (created by `NNNN_slack_installation_tokens.sql`) MUST be tenant-scoped to the same standard as FR-021: `tenant_id UUID NOT NULL REFERENCES tenants(id) DEFERRABLE INITIALLY IMMEDIATE`, ENABLE + FORCE RLS with the `tenant_isolation` policy, and at least one tenant-prefixed index on the lookup predicate. `secret_ref` MUST resolve to a row UUID (allocated via `uuid7()`). The table MUST be provider-agnostic (no `provider` discriminator column required at MVP — the column may exist as a label only) so that IN-09/IN-11 reuse it without further DDL.
 - **FR-023**: No webhook code path may log the offending `team_id` (or any plaintext secret) when rejecting with `unknown_installation`; IN-07 SC-008 remains the controlling rule.
 - **FR-024**: Substrate row IDs (any new `installation_audit_log` row, any new token-store row) MUST be allocated with `lib.shared.ids.uuid7()`; `uuid.uuid4()` is prohibited per Constitution §VII.
 - **FR-025**: All new migrations MUST be additive (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, idempotent `DO` blocks) and MUST be numbered as the next free slot after `0039_provider_installations.sql` (Constitution §II).
@@ -176,7 +182,7 @@ As the Slack ingestion handler, I need a thin async client that performs `chat.p
 
 - **`provider_installations` (existing, IN-07)**: Registry mapping `(provider, installation_id)` → `tenant_id`. After this feature, `secret_ref` becomes a typed pointer into the secret store; `enabled` controls whether webhooks route. NOT a Foundation — it is a per-tenant config registry, a permitted "side table for cross-cutting concerns" (Constitution §I).
 - **`installation_audit_log` (new)**: Per-installation lifecycle audit trail (`install`, `uninstall`, future `token_refresh`). Tenant-scoped, RLS-enabled. NOT a Foundation — it is a side table for cross-cutting auditing concerns (Constitution §I explicitly permits this category). Distinct from `audit_events`, which captures Model state transitions (Constitution §VII).
-- **Slack-installation token storage (new, location TBD by plan)**: Stores envelope-encrypted bot tokens, user tokens, signing secrets, and any future refresh metadata. Either a dedicated tenant-scoped table or a typed-row encoding inside the secret store. Tenant linkage is via `provider_installations.secret_ref` plus the tenant FK on `provider_installations`.
+- **`encrypted_secrets` (new, backing table for `lib/shared/secrets`)**: Generic tenant-scoped row store for envelope-encrypted secret material (bot tokens, user tokens, signing secrets, future refresh metadata). Slack's install flow is the first consumer; the table is intentionally provider-agnostic so IN-09/IN-11 reuse it. Row PK is a `uuid7()` UUID; `provider_installations.secret_ref` resolves to this UUID. Tenant linkage is structural (`tenant_id` FK + RLS + tenant-prefixed index on the lookup predicate). NOT a Foundation — it is a cross-cutting credential side store (Constitution §I permits this category).
 - **State token (new, ephemeral)**: HMAC-signed payload `{tenant_id, nonce, expiry_ts}` used as the *only* authentication on the OAuth callback. Not a substrate row; ephemeral in transit.
 - **`Observation` (existing Foundation)**: The eventual downstream output of any inbound Slack message *after* this feature's plumbing succeeds. The install flow itself does NOT produce `Observations`; subsequent `slack:message` webhooks (per IN-06) do. This preserves the Universal Flow Rule (`input → Observation → Think → …`).
 
