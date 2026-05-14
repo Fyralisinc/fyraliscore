@@ -341,6 +341,11 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
     secret store and the tenant resolver are required by the webhook
     router cutover in IN-08, so they're wired together here.
 
+    Also pins `app_.state.pool` (some legacy code reads it from
+    `app_.state.deps.pool` only; the new secret-resolution path reads
+    it directly off `app_.state` for simpler call sites) and asserts
+    the prod-safety invariants exactly once at startup.
+
     Defers imports to function scope to avoid pulling lib.shared.secrets
     and services.webhooks.tenant_resolver into the module-load graph
     when tests don't need them.
@@ -348,12 +353,20 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
     import time
 
     from lib.shared.secrets import build_secret_store
+    from services.webhooks.secrets import assert_prod_safety_invariants
     from services.webhooks.tenant_resolver import (
         InstallationCache,
         TenantResolverDeps,
         build_tenant_resolver,
         default_metrics,
     )
+
+    # IN-08 SC-002: refuse to start if prod has the env-var fallback on.
+    assert_prod_safety_invariants()
+
+    # Pin pool on app.state for the new code paths.
+    if getattr(app_.state, "pool", None) is None:
+        app_.state.pool = pool
 
     if getattr(app_.state, "secret_store", None) is None:
         app_.state.secret_store = build_secret_store(pool)

@@ -170,8 +170,12 @@ def build_webhooks_router() -> APIRouter:
 
         # Step 5: load secrets. The verifier itself raises
         # `secret_not_configured` when the list is empty, which keeps
-        # the rejection reason consistent.
-        secrets = load_secrets(provider, tenant_id_uuid)
+        # the rejection reason consistent. IN-08: load_secrets is now
+        # async and resolves from provider_installations.secret_ref via
+        # the secret store; env-var fallback is dev-only.
+        secrets = await load_secrets(
+            provider, tenant_id_uuid, app_state=request.app.state,
+        )
 
         # Step 6: verify.
         try:
