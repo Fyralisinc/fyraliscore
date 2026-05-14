@@ -30,6 +30,31 @@ def _reset_metrics() -> None:
     metrics.reset()
 
 
+@pytest.fixture(autouse=True)
+def _enable_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """IN-08: the env-var-based signing-secret path is dev-only and
+    gated. Legacy webhooks tests configure their secrets via
+    `WEBHOOK_SECRET_<PROVIDER>` env vars (the IN-06 contract); they
+    must explicitly opt into the dev fallback so the IN-08-aware
+    `load_secrets` reaches that path. Tests that exercise the
+    DB-backed path (test_secrets_db_backed.py) override this with
+    their own monkeypatch.
+
+    Also sets a deterministic `MASTER_KEK` so the secret-store
+    factory does not emit its dev-mode warning under the project's
+    `filterwarnings = error` policy.
+    """
+    monkeypatch.setenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", "1")
+    # Stable test Fernet key (URL-safe-base64-encoded 32 bytes,
+    # generated once via `cryptography.fernet.Fernet.generate_key()`)
+    # so the secret store has a deterministic envelope and
+    # `build_secret_store` never falls into the dev-warning branch
+    # during tests.
+    monkeypatch.setenv(
+        "MASTER_KEK", "KuT6Cixjs4991zhixcpj1QAFbiQj3b9N8meZV2AJJyw=",
+    )
+
+
 @pytest.fixture
 def now() -> float:
     """Stable 'now' for replay-window math. Tests inject this into the

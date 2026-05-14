@@ -22,6 +22,7 @@ dependencies = [
     "anthropic>=0.34",
     "openai>=1.40",
     "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
+    "cryptography>=42.0",        # IN-08: Fernet envelope-encrypted secret store
 ]
 
 [project.optional-dependencies]

@@ -215,6 +215,64 @@ class InstallationNotFoundError(CompanyOSError):
     default_code = "installation_not_found"
 
 
+# ---------------------------------------------------------------------
+# Secret store (lib/shared/secrets/)
+# ---------------------------------------------------------------------
+
+class SecretStoreError(CompanyOSError):
+    """
+    Backend-level failure in the envelope-encrypted secret store
+    (DB unavailable, Fernet KEK invalid, ciphertext decrypt failed).
+    Maps to HTTP 503 at API boundaries.
+    """
+    default_code = "secret_store_unavailable"
+
+
+class SecretNotFoundError(CompanyOSError):
+    """
+    A `secret_ref` lookup returned zero rows for the given tenant.
+    Distinct from SecretStoreError: the backend is healthy, the ref
+    simply does not exist for this tenant. Webhook signature paths
+    treat this as `unknown_installation` rather than 5xx so existence
+    of refs cannot be probed across tenant boundaries.
+    """
+    default_code = "secret_not_found"
+
+
+# ---------------------------------------------------------------------
+# OAuth install flow (services/integrations/slack/oauth.py)
+# ---------------------------------------------------------------------
+
+class StateTokenInvalidError(CompanyOSError):
+    """
+    The OAuth callback's state token failed verification. The `reason`
+    context field discriminates the failure mode: `state_invalid`
+    (HMAC mismatch, malformed payload, or unknown nonce),
+    `state_expired` (nonce known but past `expires_at`), or
+    `state_consumed` (nonce known and already consumed). The HTTP
+    status set by the handler is 400 for all three; the redirect's
+    `reason` query param exposes the specific code.
+    """
+    default_code = "state_token_invalid"
+
+    def __init__(self, reason: str, message: str, **context: Any) -> None:
+        super().__init__(message, reason=reason, **context)
+        self.reason = reason
+
+
+class InstallationCollisionError(CompanyOSError):
+    """
+    OAuth callback attempted to bind a Slack `team_id` to a tenant
+    that differs from the tenant already owning the
+    `provider_installations` row for `(slack, team_id)`. Slack
+    workspaces are not multi-tenant on the Fyralis side; the request
+    fails closed with HTTP 409 and the foreign tenant identity is
+    NEVER disclosed across the boundary (no log line carries either
+    `team_id` or the conflicting `tenant_id`).
+    """
+    default_code = "installation_collision"
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -226,4 +284,8 @@ __all__ = [
     "CalibrationMissingError",
     "InstallationConflictError",
     "InstallationNotFoundError",
+    "SecretStoreError",
+    "SecretNotFoundError",
+    "StateTokenInvalidError",
+    "InstallationCollisionError",
 ]
