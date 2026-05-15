@@ -196,6 +196,11 @@ _PUBLIC_PATHS = frozenset({
     "/integrations/discord/install-error",
     "/integrations/slack/installed",
     "/integrations/slack/install-error",
+    # IN-13: GitHub App callback + redirect targets. /install stays
+    # Bearer-required like Slack/Discord.
+    "/integrations/github/callback",
+    "/integrations/github/installed",
+    "/integrations/github/install-error",
 })
 
 # Path prefixes that bypass the gateway's bearer-session middleware.
@@ -485,6 +490,21 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
                 metrics=default_metrics(),
             )
         )
+
+    # IN-13: GitHub App outbound client (single instance per pod;
+    # owns the installation-access-token cache) and replay LRU
+    # (in-process; FR-014 — defense-in-depth, not correctness gate).
+    if getattr(app_.state, "github_client", None) is None:
+        from services.integrations.github.client import GithubClient
+        app_.state.github_client = GithubClient(
+            pool=pool,
+            tenant_resolver=app_.state.tenant_resolver,
+        )
+    if getattr(app_.state, "github_replay_cache", None) is None:
+        from services.integrations.github.replay_cache import (
+            make_replay_cache,
+        )
+        app_.state.github_replay_cache = make_replay_cache()
 
 
 def build_app(

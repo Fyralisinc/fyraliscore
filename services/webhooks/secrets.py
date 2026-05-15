@@ -216,15 +216,26 @@ async def load_secrets(
     """Return the active signing secret(s) for `(provider, tenant_id)`.
 
     Resolution order (see module docstring):
-      1. DB ref via secret store (when `app_state` and `tenant_id`
-         are provided).
-      2. Env-var fallback (when DB lookup yielded nothing AND the
+      1. GitHub special-case (IN-13): App-level secret, never
+         per-tenant. Reads from `WEBHOOK_SECRET_GITHUB` env var
+         (operator-supplied; matches the App's developer-settings
+         webhook secret). Optional rotation overlap via
+         `WEBHOOK_SECRET_GITHUB_PREV`. The env-var path is allowed for
+         GitHub in prod WITHOUT the `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW`
+         flag because the secret is App-level (single value across the
+         whole deployment), not tenant-scoped — see Clarifications Q1.
+      2. DB ref via secret store (when `app_state` and `tenant_id`
+         are provided; for slack / discord / linear / stripe).
+      3. Env-var fallback (when DB lookup yielded nothing AND the
          fallback flag is on, OR when `app_state` is absent).
 
     Returns an empty sequence when no secret is configured — the
     verifier raises `secret_not_configured` in that case so the
     operator sees a distinct dashboard signal vs. signature mismatch.
     """
+    if provider == "github":
+        return _load_github_app_secrets()
+
     if app_state is not None and tenant_id is not None:
         db_secrets = await _load_from_db(provider, tenant_id, app_state)
         if db_secrets:
@@ -234,6 +245,39 @@ async def load_secrets(
             return []
     # Legacy / fallback path.
     return _load_from_env(provider, tenant_id)
+
+
+def _load_github_app_secrets() -> list[Secret]:
+    """IN-13: load the GitHub App-level webhook secret + optional
+    previous secret (rotation overlap window).
+
+    Env vars:
+      - WEBHOOK_SECRET_GITHUB       — current App-level secret (required)
+      - WEBHOOK_SECRET_GITHUB_PREV  — previous secret during rotation
+                                      (optional)
+    """
+    current = os.environ.get("WEBHOOK_SECRET_GITHUB", "").strip()
+    previous = os.environ.get("WEBHOOK_SECRET_GITHUB_PREV", "").strip()
+    out: list[Secret] = []
+    if current:
+        out.append(
+            Secret(
+                provider="github",
+                value=current,
+                tenant_id=None,
+                label="app:current",
+            )
+        )
+    if previous:
+        out.append(
+            Secret(
+                provider="github",
+                value=previous,
+                tenant_id=None,
+                label="app:previous",
+            )
+        )
+    return out
 
 
 __all__ = [

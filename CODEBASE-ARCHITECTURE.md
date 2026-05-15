@@ -2097,4 +2097,68 @@ Spec: `specs/IN-12-discord-gateway-message-ingest/`.
 
 ---
 
+## §17 IN-13 — GitHub App production integration
+
+**Scope.** Self-serve GitHub App install (`/integrations/github/install` →
+`/callback`), inbound webhook ingest for `pull_request`, `push`,
+`issues`, `issue_comment`, `pull_request_review`, `check_run`,
+installation-lifecycle handling, and dual-signal uninstall (inbound
+`installation.deleted` webhook + outbound 404/401 chokepoint). The
+existing GitHub signature verifier (IN-06) and event shapers
+(`services/ingestion/handlers/github.py`) are consumed unchanged.
+
+### Files
+
+```
+services/integrations/github/
+├── __init__.py
+├── jwt.py            # mint_app_jwt — RS256 from GITHUB_APP_PRIVATE_KEY env
+├── client.py         # GithubClient — installation-access-token cache + chokepoint
+├── oauth.py          # /install + /callback handlers; UPSERT + seed selected_repositories
+├── uninstall.py      # _disable_installation_github (no secret deletion — App-level)
+├── lifecycle.py      # installation.* + installation_repositories.* dispatch
+├── replay_cache.py   # in-process LRU keyed on (installation_id, X-GitHub-Delivery)
+└── metrics.py        # aggregate-only counters
+```
+
+Wired into `services/integrations/router.py` (new install + callback
+routes), `services/gateway/main.py` (public-paths allowlist; lifespan
+init of `app.state.github_client` + `app.state.github_replay_cache`),
+and `services/webhooks/router.py` (ping short-circuit, replay-cache
+check, lifecycle dispatch branch, repo-filter check).
+
+### Migrations
+
+- `0042_provider_installations_selected_repositories.sql` — adds the
+  nullable JSONB column `selected_repositories`. NULL = all-repositories
+  mode; JSONB array = explicit selection.
+- `0043_widen_installation_audit_log_actions.sql` — widens the
+  `installation_audit_log.action` CHECK to cover GitHub-specific
+  transitions (`reinstall`, `update`, `suspend`, `unsuspend`,
+  `repo_change`, `installation_created_noop`, `repository_fetch_failed`).
+
+### Key invariants
+
+1. **Single App-level webhook secret** (Clarifications Q1, FR-007). GitHub
+   Apps publish exactly one webhook secret in developer settings; per-
+   tenant isolation is structural via the `installation.id`-based
+   tenant resolver. The env-var path is permitted in prod for GitHub
+   WITHOUT `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW` because the secret is
+   deployment-wide, not tenant-scoped.
+2. **App private key from env** (Clarifications Q3). Re-read on every
+   JWT mint; rotation is a no-op deploy.
+3. **No secret deletion on uninstall** (FR-012). The chokepoint
+   disables the row and invalidates the cached installation access
+   token; no encrypted_secrets row is touched.
+4. **No raw `installation_id` in logs** (FR-016 / SC-008).
+5. **Replay-cache is in-process, not durable** (FR-014). Defense-in-
+   depth; observation-layer dedup is the correctness backstop.
+6. **Lifecycle events intercept at the router**, NOT the ingestion
+   handler. `installation.*` and `installation_repositories.*` produce
+   audit rows and state changes; they do NOT create observations.
+
+Spec: `specs/IN-13-github-integration/`.
+
+---
+
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.

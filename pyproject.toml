@@ -24,6 +24,7 @@ dependencies = [
     "openai>=1.40",
     "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
     "cryptography>=42.0",        # IN-08: Fernet envelope-encrypted secret store
+    "pyjwt[crypto]>=2.8",        # IN-13: GitHub App JWT (RS256) minting
 ]
 
 [project.optional-dependencies]

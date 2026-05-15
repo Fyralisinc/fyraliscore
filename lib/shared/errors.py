@@ -334,6 +334,85 @@ class DiscordApiError(CompanyOSError):
             self._code = code
 
 
+class GithubJWTError(CompanyOSError):
+    """
+    Failure to mint a GitHub App JWT (IN-13).
+
+    Stable `reason` values carried on `context`:
+      - no_app_id: GITHUB_APP_ID env var missing
+      - no_private_key: neither GITHUB_APP_PRIVATE_KEY nor
+        GITHUB_APP_PRIVATE_KEY_PATH is set
+      - conflicting_keys: both env vars set (operator misconfig)
+      - malformed_key: PEM parse failure
+      - io_error: GITHUB_APP_PRIVATE_KEY_PATH cannot be read
+    """
+    default_code = "github_jwt_error"
+
+    def __init__(self, reason: str, message: str, **context: Any) -> None:
+        super().__init__(message, reason=reason, **context)
+        self.reason = reason
+
+
+class GithubOAuthError(CompanyOSError):
+    """
+    GitHub App OAuth install/callback failure surface (IN-13).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - github_oauth_token_mint_failed: POST /app/installations/.../access_tokens non-2xx
+      - github_oauth_missing_installation_id: callback query lacked installation_id
+      - github_oauth_repository_fetch_failed: GET /installation/repositories returned non-2xx
+
+    `context` carries `{tenant_id, http_status?, github_error_code?}`.
+    `installation_id` is hashed via `installation_id_hash` per FR-016.
+    """
+    default_code = "github_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class GithubApiError(CompanyOSError):
+    """
+    Outbound GitHub REST call failure (IN-13).
+
+    Stable `code` values:
+      - github_api_unauthorized: 401 Bad credentials — chokepoint already fired
+      - github_api_not_found: 404 with apps-not-found doc_url — chokepoint already fired
+      - github_api_rate_limited: 429 with retry budget exhausted
+      - github_api_error: other terminal 4xx/5xx
+      - github_jwt_unavailable: App JWT could not be minted (delegated GithubJWTError)
+
+    `context` carries `{tenant_id, http_status?, attempts?, installation_id_hash?}`.
+    Raw `installation_id` is NEVER placed on context (FR-016 / SC-008).
+    """
+    default_code = "github_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -351,4 +430,7 @@ __all__ = [
     "InstallationCollisionError",
     "DiscordOAuthError",
     "DiscordApiError",
+    "GithubJWTError",
+    "GithubOAuthError",
+    "GithubApiError",
 ]

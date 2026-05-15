@@ -108,6 +108,92 @@ def _is_discord_ping(payload: Mapping[str, Any] | None) -> bool:
     return isinstance(payload, dict) and payload.get("type") == 1
 
 
+def _is_github_ping(headers: Mapping[str, str]) -> bool:
+    """IN-13: Detect GitHub's `ping` event. The event type is in the
+    `X-GitHub-Event` header (not the body), so we check headers."""
+    event = headers.get("X-GitHub-Event") or headers.get("x-github-event")
+    return event == "ping"
+
+
+def _github_event_type(headers: Mapping[str, str]) -> str | None:
+    return headers.get("X-GitHub-Event") or headers.get("x-github-event")
+
+
+def _github_delivery_id(headers: Mapping[str, str]) -> str | None:
+    return (
+        headers.get("X-GitHub-Delivery")
+        or headers.get("x-github-delivery")
+    )
+
+
+def _github_installation_id_from_payload(
+    payload: Mapping[str, Any] | None,
+) -> str | None:
+    """Mirror of tenant_resolver._extract_github: read `installation.id`."""
+    if not isinstance(payload, dict):
+        return None
+    inst = payload.get("installation")
+    if not isinstance(inst, Mapping):
+        return None
+    iid = inst.get("id")
+    if iid is None:
+        return None
+    if isinstance(iid, bool):
+        return None
+    if isinstance(iid, (int, str)):
+        s = str(iid).strip()
+        return s or None
+    return None
+
+
+def _github_repo_full_name(payload: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    repo = payload.get("repository")
+    if isinstance(repo, Mapping):
+        full = repo.get("full_name")
+        if isinstance(full, str) and full:
+            return full
+    return None
+
+
+async def _load_github_selected_repositories(
+    pool: Any, installation_row_id: Any,
+) -> list[str] | None:
+    """Read `selected_repositories` for an installation. Returns:
+      - list[str]: explicit selection (delivery must match)
+      - None:       all-repositories mode (no filter)
+      - []:         empty selection (every delivery is filtered out)
+    """
+    if pool is None or installation_row_id is None:
+        return None
+    row = await pool.fetchrow(
+        """
+        SELECT selected_repositories
+          FROM provider_installations
+         WHERE id = $1
+        """,
+        installation_row_id,
+    )
+    if row is None:
+        return None
+    raw = row["selected_repositories"]
+    if raw is None:
+        return None
+    # asyncpg may return JSONB as already-decoded list or as a JSON
+    # string depending on codec registration.
+    if isinstance(raw, list):
+        return [str(x) for x in raw if isinstance(x, str)]
+    try:
+        import json as _json
+        parsed = _json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(parsed, list):
+        return [str(x) for x in parsed if isinstance(x, str)]
+    return None
+
+
 def _slack_lifecycle_event(payload: Mapping[str, Any] | None) -> str | None:
     """Detect Slack installation-lifecycle events. Returns the event
     type string when matched (`'app_uninstalled'` | `'tokens_revoked'`),
@@ -121,6 +207,64 @@ def _slack_lifecycle_event(payload: Mapping[str, Any] | None) -> str | None:
         if t in ("app_uninstalled", "tokens_revoked"):
             return t
     return None
+
+
+async def _handle_github_lifecycle(
+    *,
+    request: Request,
+    outcome: Any,
+    payload: Mapping[str, Any],
+    event_type: str,
+    installation_id: str | None,
+) -> JSONResponse:
+    """IN-13: dispatch a verified, tenant-resolved GitHub lifecycle
+    event (installation, installation_repositories) to
+    `services.integrations.github.lifecycle.dispatch` and return its
+    JSON body with HTTP 200.
+    """
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None or installation_id is None:
+        log.error(
+            "github_lifecycle_deps_missing",
+            has_pool=pool is not None,
+            has_installation_id=installation_id is not None,
+        )
+        return JSONResponse({"handled": event_type}, status_code=200)
+
+    github_client = getattr(request.app.state, "github_client", None)
+    cache_dict = None
+    if github_client is not None:
+        cache_dict = getattr(github_client, "_installation_tokens", None)
+
+    tenant_resolver = getattr(request.app.state, "tenant_resolver", None)
+
+    try:
+        from services.integrations.github.lifecycle import dispatch
+        from lib.shared.errors import ValidationError as _ValidationError
+        body = await dispatch(
+            event_type=event_type,
+            payload=payload,
+            tenant_id=outcome.tenant_id,
+            installation_row_id=outcome.installation_row_id,
+            installation_id=installation_id,
+            pool=pool,
+            installation_token_cache=cache_dict,
+            tenant_resolver=tenant_resolver,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Don't 500 on lifecycle dispatch failure; GitHub will retry.
+        # Log loud and return a 200 so the retry budget closes out.
+        log.error(
+            "github_lifecycle_dispatch_failed",
+            event_type=event_type,
+            error_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            {"handled": event_type, "error": "dispatch_failed"},
+            status_code=200,
+        )
+
+    return JSONResponse(body, status_code=200)
 
 
 async def _handle_slack_lifecycle(
@@ -303,6 +447,54 @@ def build_webhooks_router() -> APIRouter:
             return JSONResponse({"challenge": challenge}, status_code=200)
         if provider == "discord" and _is_discord_ping(payload):
             return JSONResponse({"type": 1}, status_code=200)
+        # IN-13 FR-022: GitHub `ping` event. Handled BEFORE unknown-
+        # installation enforcement because the bootstrap ping may
+        # arrive before any customer has installed.
+        if provider == "github" and _is_github_ping(request.headers):
+            try:
+                from services.integrations.github import metrics as gh_metrics
+                gh_metrics.record_webhook_verified(result="ok")
+            except Exception:  # noqa: BLE001
+                pass
+            log.info(
+                "github_webhook_ping",
+                event_type="ping",
+                delivery_id=_github_delivery_id(request.headers),
+            )
+            return JSONResponse({"handled": "ping"}, status_code=200)
+
+        # IN-13 FR-008b + Clarifications Q4: replay-cache check runs
+        # AFTER signature verification AND BEFORE tenant-resolution
+        # outcome enforcement. Defense-in-depth — observation-layer
+        # dedup is the correctness backstop.
+        if provider == "github":
+            replay_cache = getattr(
+                request.app.state, "github_replay_cache", None,
+            )
+            github_installation_id = _github_installation_id_from_payload(
+                payload,
+            )
+            delivery_id = _github_delivery_id(request.headers)
+            if (
+                replay_cache is not None
+                and github_installation_id is not None
+                and delivery_id is not None
+            ):
+                if replay_cache.seen(github_installation_id, delivery_id):
+                    try:
+                        from services.integrations.github import (
+                            metrics as gh_metrics,
+                        )
+                        gh_metrics.record_replay_dropped()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    log.info(
+                        "github_webhook_replay_dropped",
+                        delivery_id=delivery_id,
+                    )
+                    return JSONResponse(
+                        {"handled": "replay"}, status_code=200,
+                    )
 
         # Step 8b: enforce resolver outcome — deferred until AFTER
         # signature verification so an attacker probing tenant ids
@@ -353,6 +545,50 @@ def build_webhooks_router() -> APIRouter:
                     payload,
                     slack_lifecycle,
                 )
+
+        # IN-13 US4 + US5: dispatch GitHub lifecycle events
+        # (installation, installation_repositories) BEFORE ingestion;
+        # then enforce per-installation `selected_repositories` allowlist
+        # for non-lifecycle events.
+        if provider == "github":
+            event_type = _github_event_type(request.headers)
+            github_installation_id = _github_installation_id_from_payload(
+                payload,
+            )
+
+            if event_type in ("installation", "installation_repositories"):
+                return await _handle_github_lifecycle(
+                    request=request,
+                    outcome=outcome,
+                    payload=payload or {},
+                    event_type=event_type,
+                    installation_id=github_installation_id,
+                )
+
+            # Repo filter: only applies when the installation pinned an
+            # explicit list. NULL = "all repositories" (no filter).
+            pool = getattr(request.app.state, "pool", None)
+            selected = await _load_github_selected_repositories(
+                pool, outcome.installation_row_id,
+            )
+            if selected is not None:
+                repo_full = _github_repo_full_name(payload)
+                if repo_full is None or repo_full not in selected:
+                    try:
+                        from services.integrations.github import (
+                            metrics as gh_metrics,
+                        )
+                        gh_metrics.record_filtered_repo(reason="not_selected")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    log.info(
+                        "github_webhook_filtered_repo",
+                        event_type=event_type,
+                        repo_full_name=repo_full,
+                    )
+                    return JSONResponse(
+                        {"handled": "filtered_repo"}, status_code=200,
+                    )
 
         # Step 9: ingest. Use the already-parsed payload when possible
         # to save a re-decode; fall back to re-parse for paths where
