@@ -565,7 +565,7 @@ Recording rather than asking now — these become tradeoff calls in the low-leve
 3. **Multiprocessing normalizer pool sizing.** Per-core defaults work for steady-state; backfill bursts may justify a scale-out signal (lag on `ingestion.raw` > 60 s → spawn N more pods). LLD picks the auto-scaler.
 4. **Whether to keep the existing `embedding_pending` column** OR replace it with a "no embedding" signal via column NULLability alone. The column is cheap; recommend keeping for read-side filter compatibility.
 5. **Whether reconciliation should compare `observations_count` against a cached per-shard count** or re-aggregate at reconciliation time. Cached is faster but races; re-aggregate is slower but accurate. LLD picks re-aggregate (the latency is bounded; correctness wins).
-6. **Whether the Gmail thread canonicalization happens in the normalizer or the observation writer.** Currently in the observation writer (via `dispatch_gmail_message_resource`); the canonical_id UPDATE after INSERT is non-atomic. LLD will move canonicalization into the normalizer so the writer can do a single atomic INSERT with `thread_canonical_id` already set.
+6. **Whether Gmail thread canonicalization happens inside the observation writer's transaction** (single atomic INSERT with `thread_canonical_id` already set), or as a separate UPDATE after INSERT (current non-atomic shape). Path B (per Database Connection Topology section) puts all DB enrichment in the writer; the question is whether canonicalization joins that batch or remains a follow-up step. LLD picks the unified-transaction approach if the existing `dispatch_gmail_message_resource` logic can be refactored to fit inside the writer's batch txn without breaking other Gmail-only assumptions.
 
 ---
 
