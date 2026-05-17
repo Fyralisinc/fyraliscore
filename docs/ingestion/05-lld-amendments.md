@@ -123,6 +123,46 @@ exact failure mode this tracker exists to prevent.
   correct). The M3 prompt will be updated separately before M3.2's
   next iteration so the discrepancy is closed at the source.
 
+### A5 — Failure-kind-specific replay anchors
+
+- **Status:** Open (M3.4 documents the LLD edit).
+- **LLD section:** §1.3 (`ingestion_failures` schema) and §8 (failure
+  mode catalog).
+- **Implementation surface:**
+  [docs/ingestion/03-low-level-design.md:239](03-low-level-design.md#L239)
+  ("Some failures have no upstream S3 reference" — the existing
+  nullability rationale) and the four wire failure kinds shipped
+  through M3.2.
+- **What the LLD says today:** §1.3 says `raw_s3_key` is nullable
+  "because some failures (rate-limit-exhausted-pre-fetch, fetcher-
+  terminal-before-any-page) have no raw body. The replay tool checks
+  for NULL before attempting to re-publish." It explains the
+  *nullability* but not the *alternative anchor pattern* — i.e. what
+  the replay tool reads from `error_context` instead.
+- **What's actually true:** Each failure kind needs its own replay
+  anchor, and that anchor lives in `error_context` when it isn't
+  `raw_s3_key`. The current set:
+    - `normalizer.parse_failure`, `normalizer.invariant_failure`,
+      `writer.invariant_failure` → `raw_s3_key` is the anchor;
+      replay re-publishes the raw envelope referenced by the S3
+      object.
+    - `embedding.ollama_failure` → `error_context.observation_id`
+      is the anchor; replay re-attempts Ollama on the observation
+      row (the raw bytes are not the relevant input — the
+      already-normalized `content_text` column is). `raw_s3_key` is
+      NULL on these DLQ rows by design.
+  Future failure kinds (reconciliation gaps, fetcher terminal
+  errors, the §8 catalog rows 12–17) MUST declare their own anchor
+  by populating either `raw_s3_key` or a documented key inside
+  `error_context`. Replay tooling needs the convention to be
+  enumerable; otherwise every new failure kind silently breaks
+  replay.
+- **LLD edit pending in M3.4:** rewrite §1.3 column-justification
+  for `raw_s3_key` to introduce the anchor-pattern explicitly;
+  extend §8's failure mode catalog with a "replay anchor" column
+  listing the relevant key per row; cross-reference from §5.5 (DLQ
+  writer) so future implementers see the contract.
+
 ### A4 — §12.1 "one-shot script" → long-running rate-limited service
 
 - **Status:** Open (M3.3 will implement; M3.4 documents the LLD edit).
