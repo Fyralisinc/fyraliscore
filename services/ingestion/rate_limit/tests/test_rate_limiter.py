@@ -182,6 +182,67 @@ async def test_rate_limiter_concurrent_acquires_serialize(limiter: RateLimiter):
 # different tenant/source pairs don't share tokens.
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# refill_per_sec=0 sentinel — `acquire.lua` returns retry_after_ms=-1
+# when the bucket has insufficient tokens and refill is zero. Tests
+# both the sentinel emission and the report_retry_after clearance
+# path that callers must use to recover.
+# ---------------------------------------------------------------------
+
+async def test_lua_acquire_zero_refill_denies_with_sentinel(limiter: RateLimiter):
+    """Drain a bucket configured with refill=0, then assert the next
+    acquire returns the indefinite-lockout sentinel (retry_after_ms=-1)
+    rather than a positive ms count or, worse, math.huge.
+    """
+    key = "rate:t1:zero:m"
+    # Drain capacity.
+    for _ in range(2):
+        ok = await limiter.acquire(key, capacity=2, refill_per_sec=0.0)
+        assert ok.granted is True
+
+    denied = await limiter.acquire(key, capacity=2, refill_per_sec=0.0)
+    assert denied.granted is False
+    assert denied.retry_after_ms == -1, (
+        "Zero-refill empty bucket must return the indefinite-lockout "
+        f"sentinel -1, not {denied.retry_after_ms}. See acquire.lua "
+        "header for sentinel semantics."
+    )
+
+
+async def test_lua_zero_refill_cleared_by_report_retry_after(
+    limiter: RateLimiter,
+):
+    """The sentinel says 'never recovers on its own'. Callers can
+    still bound the lockout by calling report_retry_after with a
+    finite duration. After that call, acquire must reflect the
+    finite window (a positive retry_after_ms), NOT the -1 sentinel.
+    """
+    key = "rate:t1:zero_recover:m"
+    # Drain to the sentinel state.
+    for _ in range(2):
+        await limiter.acquire(key, capacity=2, refill_per_sec=0.0)
+    denied = await limiter.acquire(key, capacity=2, refill_per_sec=0.0)
+    assert denied.retry_after_ms == -1
+
+    # Caller imposes a finite lockout. report_retry_after.lua's HMSET
+    # of lockout_until_ms takes precedence over the token-math branch
+    # (acquire.lua step 1: lockout check runs before the refill==0
+    # branch).
+    await limiter.report_retry_after(key, retry_after_ms=500)
+
+    bounded = await limiter.acquire(key, capacity=2, refill_per_sec=0.0)
+    assert bounded.granted is False
+    assert bounded.retry_after_ms > 0, (
+        "After report_retry_after with a finite duration, the lockout "
+        "must dominate the zero-refill sentinel. Got "
+        f"retry_after_ms={bounded.retry_after_ms}."
+    )
+    assert bounded.retry_after_ms <= 500, (
+        "Bounded by the supplied retry_after_ms (500). Got "
+        f"{bounded.retry_after_ms}."
+    )
+
+
 async def test_buckets_isolated_by_key(limiter: RateLimiter):
     # Drain tenant A's bucket.
     for _ in range(2):
