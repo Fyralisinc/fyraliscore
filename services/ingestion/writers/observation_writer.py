@@ -51,6 +51,8 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 
+from services.ingestion.dlq.publish import publish_dlq
+from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.normalizer.models import NormalizedEnvelope
 
 
@@ -66,6 +68,10 @@ _metrics: dict[str, float] = {
     "writer.messages_consumed": 0.0,
     "writer.shadow_write_events": 0.0,
     "writer.parse_failure": 0.0,
+    # M3.1 — DLQ publish metrics.
+    "writer.dlq_publish.success": 0.0,
+    "writer.dlq_publish.failure": 0.0,
+    "writer.dlq_publish.skipped": 0.0,
 }
 
 
@@ -165,13 +171,19 @@ class WriterConfig:
     consumer_group: str = _WRITER_GROUP
     # Stop after N events (test mode). Production = None.
     stop_after: int | None = None
+    # M3.1 — producer config for DLQ publishes. Defaults are
+    # LLD §5.2 (idempotent, zstd, acks=all).
+    dlq_producer_config: ProducerConfig | None = None
 
 
 async def run_writer(config: WriterConfig) -> dict[str, int]:
     """Writer's main loop. Returns a stats dict for tests.
 
-    Path B: no asyncpg, no DB pool. Logs to stdout + the in-process
-    shadow log, commits the Kafka offset, moves on.
+    Path B preserved (NO Postgres pool here). M3.1 adds a Kafka
+    producer for DLQ publishes — still Path B; the failure
+    persistence is done by the separate DLQ writer process which IS
+    Path A. This split is intentional (PRIME DIRECTIVE: failure-
+    handling on the hot path must not introduce DB latency).
     """
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
@@ -179,6 +191,14 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
+    # M3.1 — producer for DLQ publishes.
+    dlq_producer_cfg = config.dlq_producer_config or ProducerConfig(
+        bootstrap_servers=config.bootstrap_servers,
+        client_id=f"observation-writer-dlq-{id(config)}",
+    )
+    dlq_producer = IdempotentProducer(dlq_producer_cfg)
+
+    await dlq_producer.start()
     await consumer.start()
     consumer.subscribe([_NORMALIZED_TOPIC])
 
@@ -204,8 +224,25 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                         "error": str(exc)[:200],
                     },
                 )
-                # No DLQ in M2 (Path B); M3 adds the
-                # ingestion_failures insert.
+                # M3.1 — publish to ingestion.dlq with
+                # failure_kind="writer.invariant_failure". The
+                # writer's invariant in M2 is "the message must
+                # parse as a NormalizedEnvelope"; future M3+
+                # writers may add invariant checks for downstream
+                # writability (e.g. content_text non-empty for
+                # the embedding worker). PRIME DIRECTIVE: a DLQ
+                # publish failure here MUST NOT crash the worker.
+                await publish_dlq(
+                    producer=dlq_producer,
+                    failure_kind="writer.invariant_failure",
+                    error_summary=(
+                        f"{type(exc).__name__}: {str(exc)[:200]}"
+                    ),
+                    msg_bytes=msg.value,
+                    on_success=lambda: _bump("writer.dlq_publish.success"),
+                    on_failure=lambda: _bump("writer.dlq_publish.failure"),
+                    on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+                )
             await consumer.commit()
             if (
                 config.stop_after is not None
@@ -214,6 +251,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 break
     finally:
         await consumer.stop()
+        await dlq_producer.stop()
 
     return {"consumed": consumed}
 

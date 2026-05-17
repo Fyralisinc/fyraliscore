@@ -21,8 +21,23 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 CREATE_TOPICS = REPO_ROOT / "scripts" / "dev" / "create-kafka-topics.sh"
-EXPECTED_TOPICS = ["ingestion.raw", "ingestion.normalized"]
+# M3.1 added `ingestion.dlq`; M3.2 added `ingestion.embedding`.
+# Per-topic retention introduced here: raw + normalized + embedding
+# stay at 7 days (LLD §10), dlq is 30 days because ops triage windows
+# can run longer than a week (LLD §1.3).
+EXPECTED_TOPICS = [
+    "ingestion.raw",
+    "ingestion.normalized",
+    "ingestion.dlq",
+    "ingestion.embedding",
+]
 EXPECTED_PARTITIONS_DEV = 4
+EXPECTED_RETENTION_BY_TOPIC = {
+    "ingestion.raw":         7 * 24 * 60 * 60 * 1000,  # 7 days
+    "ingestion.normalized":  7 * 24 * 60 * 60 * 1000,  # 7 days
+    "ingestion.dlq":        30 * 24 * 60 * 60 * 1000,  # 30 days
+    "ingestion.embedding":   7 * 24 * 60 * 60 * 1000,  # 7 days
+}
 KAFKA_CONTAINER = "fyralis_dev_kafka"
 
 
@@ -121,14 +136,11 @@ def test_kafka_topics_exist_after_setup_script():
 
 # ---------------------------------------------------------------------
 # Test 2: topic configuration matches the spec — partition count,
-# compression type, and retention. Per the M2.0 work order:
-# "retention 7 days, compression zstd" for ingestion.raw, and the same
-# settings for ingestion.normalized. The 7-day retention is the dev
-# stack's contract, NOT the broker default — bind the assertion to
-# the promise, not to behaviour that happens to coincide.
+# compression type, and retention. Per the M2.0 + M3.1 work orders.
+# The dev stack's retention is the contract, NOT the broker default —
+# bind the assertion to the promise, not to behaviour that happens to
+# coincide.
 # ---------------------------------------------------------------------
-
-EXPECTED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
 
 
 def _topic_config(topic: str) -> dict[str, str]:
@@ -166,9 +178,10 @@ def _topic_config(topic: str) -> dict[str, str]:
 
 
 def test_kafka_topic_config_matches_spec():
-    """Per M2.0 work-order spec:
-      - ingestion.raw         : 4 partitions, retention 7 days, zstd.
-      - ingestion.normalized  : same settings as ingestion.raw.
+    """Per M2.0 + M3.1 work-order spec:
+      - ingestion.raw         : 4 partitions, 7-day retention,  zstd.
+      - ingestion.normalized  : 4 partitions, 7-day retention,  zstd.
+      - ingestion.dlq         : 4 partitions, 30-day retention, zstd.
 
     Three assertions per topic (partition count, retention.ms,
     compression.type). All three bind to what the dev stack promises,
@@ -187,19 +200,20 @@ def test_kafka_topic_config_matches_spec():
                         break
         assert partition_count == EXPECTED_PARTITIONS_DEV, (
             f"{topic} has {partition_count} partitions; expected "
-            f"{EXPECTED_PARTITIONS_DEV} per M2.0 dev spec. Describe "
+            f"{EXPECTED_PARTITIONS_DEV} per dev spec. Describe "
             f"output:\n{desc}"
         )
 
         # ---- per-topic config overrides (compression, retention) ----
         cfg = _topic_config(topic)
         assert cfg.get("compression.type") == "zstd", (
-            f"{topic} compression.type must be 'zstd' per M2.0 dev "
-            f"spec; got {cfg.get('compression.type')!r}. Full config: {cfg}"
+            f"{topic} compression.type must be 'zstd' per dev spec; "
+            f"got {cfg.get('compression.type')!r}. Full config: {cfg}"
         )
+        expected_retention = EXPECTED_RETENTION_BY_TOPIC[topic]
         retention_ms = int(cfg.get("retention.ms", "0"))
-        assert retention_ms == EXPECTED_RETENTION_MS, (
-            f"{topic} retention must be {EXPECTED_RETENTION_MS}ms "
-            f"(7 days) per M2.0 work-order spec; got {retention_ms}ms. "
-            f"Bind to what we promise, not what the broker defaults to."
+        assert retention_ms == expected_retention, (
+            f"{topic} retention must be {expected_retention}ms per "
+            f"work-order spec; got {retention_ms}ms. Bind to what we "
+            f"promise, not what the broker defaults to."
         )

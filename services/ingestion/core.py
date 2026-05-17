@@ -130,6 +130,7 @@ async def ingest(
     embedder: OllamaClient | None = None,
     request_headers: dict[str, str] | None = None,
     enqueue_trigger: bool = True,
+    embedding_producer: Any | None = None,
 ) -> IngestResult:
     """Run the UniformIngestPath for `channel` + `raw_payload`.
 
@@ -143,6 +144,14 @@ async def ingest(
 
     Idempotent: two calls with the same (source_channel, external_id)
     return the same observation row, `deduped=True` on the second call.
+
+    M3.2: when `embedding_producer` is provided AND the inline
+    embedding step left the row at `embedding_pending=TRUE`, publishes
+    an envelope to `ingestion.embedding` so the M3.2 embedding worker
+    can retry the Ollama call asynchronously. The publish is
+    best-effort and CANNOT fail the ingest — if Kafka is down, the
+    M3.3 backlog drainer (which scans Postgres directly for
+    `embedding_pending=TRUE`) will eventually pick up the row.
     """
     if not isinstance(raw_payload, dict):
         raise ValidationError("raw_payload must be a JSON object")
@@ -340,6 +349,32 @@ async def ingest(
         # Transaction committed — flush NOTIFY.
         if scope.events:
             await emit_pending_notifications(pool, scope.events)
+
+    # M3.2: publish embedding-needed signal if inline embedding
+    # didn't land. The publish is post-commit (the observation is
+    # durable) and best-effort (failure is logged but never raised
+    # — backlog drainer is the safety net for Kafka outages).
+    #
+    # Source-family extraction: source_channel is granular
+    # ("slack:message", "github:pr", "internal:state_change"); the
+    # embedding envelope's source enum is the four-source family
+    # (LLD §1). Non-source-family channels (e.g. internal:*) skip
+    # the publish — they have no embedding worker contract.
+    if (
+        embedding_producer is not None
+        and row.embedding_pending
+    ):
+        from services.ingestion.embedding.publish import (
+            publish_embedding_request,
+        )
+        family = draft.source_channel.split(":", 1)[0]
+        if family in ("slack", "github", "discord", "gmail"):
+            await publish_embedding_request(
+                producer=embedding_producer,
+                tenant_id=tenant_id,
+                source=family,
+                observation_id=row.id,
+            )
 
     return IngestResult(observation=row, deduped=False, trigger_queue_id=trigger_queue_id)
 
