@@ -1,0 +1,1 @@
+"""Postgres write workers (M5). Per LLD §5.2-§5.4. observation_writer.py (batched INSERT from ingestion.normalized), embedding_worker.py (Ollama + UPDATE), dlq_writer.py (UPSERTs ingestion_failures)."""
