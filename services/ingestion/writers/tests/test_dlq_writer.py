@@ -301,7 +301,89 @@ async def test_dlq_writer_respects_rls(fresh_db: asyncpg.Pool):
 
 
 # =====================================================================
-# 4. DB error → worker continues to next message.
+# 4. Concurrent UPSERTs collapse via the DB UNIQUE index (migration 0051).
+# =====================================================================
+# LOAD-BEARING (M3.1 refinement): the prior implementation used a
+# SELECT-then-INSERT/UPDATE pattern at READ COMMITTED, which races
+# under concurrent producers — two callers can both SELECT-miss and
+# both INSERT, producing duplicate rows for the same logical failure.
+# Migration 0051 added a UNIQUE index on (tenant_id, source,
+# raw_s3_key, failure_kind), and `upsert_failure` now uses
+# `INSERT ... ON CONFLICT DO UPDATE` against that index, so the DB
+# serialises concurrent writers. This test fires N concurrent
+# UPSERTs of the same envelope from separate asyncpg connections
+# (one per task) and asserts exactly one row exists with
+# attempt_count == N.
+
+@pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")
+async def test_dlq_writer_handles_concurrent_inserts_via_unique_constraint(
+    fresh_db: asyncpg.Pool,
+):
+    """Fire 10 concurrent UPSERTs of the same logical failure from
+    separate connections. The DB UNIQUE index (migration 0051) must
+    collapse them into exactly one row with attempt_count == 10."""
+    from services.ingestion.dlq.models import DLQEnvelope
+    from services.ingestion.writers.dlq_writer import upsert_failure
+
+    tid = await _seed_tenant(fresh_db)
+    raw_key = f"dev/slack/{tid}/2026-05/cc/" + "c" * 40 + ".json"
+
+    # Same logical failure — identical 4-tuple (tenant_id, source,
+    # raw_s3_key, failure_kind).
+    def _make_env(i: int) -> DLQEnvelope:
+        return DLQEnvelope(
+            envelope_version=1,
+            tenant_id=tid,
+            source="slack",
+            failure_kind="normalizer.parse_failure",
+            raw_s3_key=raw_key,
+            error_summary=f"concurrent attempt {i}",
+            error_context={"attempt": i},
+            failed_at=_NOW,
+        )
+
+    N_CONCURRENT = 10
+
+    async def _one_upsert(i: int) -> None:
+        # Acquire a SEPARATE connection per task so concurrent
+        # transactions race for real. Per-task transaction scope so
+        # each ON CONFLICT runs in its own committed unit.
+        async with fresh_db.acquire() as conn:
+            async with conn.transaction():
+                await upsert_failure(conn, _make_env(i))
+
+    # asyncio.gather + N tasks → N coroutines that race against the
+    # DB's lock manager. With the UNIQUE index this MUST converge to
+    # one row, attempt_count == N.
+    await asyncio.gather(*(_one_upsert(i) for i in range(N_CONCURRENT)))
+
+    async with fresh_db.acquire() as conn:
+        await conn.execute("SET LOCAL row_security = off")
+        rows = await conn.fetch(
+            "SELECT id, attempt_count, error_summary, error_context "
+            "FROM ingestion_failures "
+            "WHERE tenant_id = $1 AND source = $2 "
+            "  AND raw_s3_key = $3 AND failure_kind = $4",
+            tid, "slack", raw_key, "normalizer_parse_error",
+        )
+
+    # ===== LOAD-BEARING ASSERTIONS =====
+    # 1. Exactly one row — the UNIQUE index collapsed 10 races into 1.
+    assert len(rows) == 1, (
+        f"UNIQUE index (tenant_id, source, raw_s3_key, failure_kind) "
+        f"did not serialise concurrent UPSERTs — got {len(rows)} rows, "
+        f"expected 1. Migration 0051 broken or not applied."
+    )
+    # 2. attempt_count incremented for EVERY race — 1 from the
+    # winning INSERT + (N-1) from the ON CONFLICT DO UPDATE bumps.
+    assert rows[0]["attempt_count"] == N_CONCURRENT, (
+        f"attempt_count={rows[0]['attempt_count']}, expected "
+        f"{N_CONCURRENT}. Some races did not bump."
+    )
+
+
+# =====================================================================
+# 5. DB error → worker continues to next message.
 # =====================================================================
 
 @pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")

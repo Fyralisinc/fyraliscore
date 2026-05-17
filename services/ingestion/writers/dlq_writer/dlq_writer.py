@@ -21,9 +21,15 @@ The Kafka envelope's failure_kind is producer-namespaced (e.g.
 === UPSERT key ===
 Per LLD §5.5: `(tenant_id, source, raw_s3_key, failure_kind)`.
 Re-published failures bump `attempt_count` and update `last_seen_at`
-rather than creating duplicate rows. raw_s3_key may be NULL for
-failures that have no upstream S3 body (e.g. byte garbage on Kafka)
-— the partial unique index handles both NULL and non-NULL cases.
+rather than creating duplicate rows. Migration 0051 added the
+DB-enforced UNIQUE index on this 4-tuple, so the writer uses
+`INSERT ... ON CONFLICT DO UPDATE` and the DB serialises concurrent
+publishes of the same logical failure. raw_s3_key may be NULL for
+failures that have no upstream S3 body (e.g. byte garbage on Kafka);
+Postgres treats NULLs as DISTINCT in unique indexes, so those rows
+genuinely-distinct-occurrence per LLD §1.3 and the UPSERT does not
+collapse them (this is intentional — separate rate-limit episodes
+ARE separate failures).
 
 === Failure handling ===
 A transient Postgres error on one batch must NOT crash the consumer
@@ -97,44 +103,34 @@ def _bump(key: str, by: float = 1.0) -> None:
     _metrics[key] = _metrics.get(key, 0.0) + by
 
 
-# The UPSERT — explicit partial-unique handling for raw_s3_key NULL.
-# Per Postgres semantics, two NULLs are NOT equal in unique indexes,
-# so a (NULL raw_s3_key) row would create duplicates on every retry.
-# We disambiguate by treating NULL as a specific token at the
-# application level — translating to a UNIQUE on the four columns
-# would require a coalesce in the index, which migration 0046 does
-# not provide. Workaround: M3.1 dedups on the four-tuple at app level
-# via a SELECT-then-INSERT/UPDATE pattern (a single tenant-bound
-# transaction so concurrent writers serialise).
+# Single-statement UPSERT per LLD §5.5 / migration 0051.
 #
-# This is an acknowledged limitation; M3.4 surfaces it as an LLD
-# amendment candidate (the 0046 migration's index does not enforce
-# the UPSERT key the LLD describes).
-_SELECT_EXISTING_SQL = """
-SELECT id, attempt_count
-FROM ingestion_failures
-WHERE tenant_id = $1
-  AND source = $2
-  AND failure_kind = $3
-  AND ((raw_s3_key IS NULL AND $4::text IS NULL) OR raw_s3_key = $4)
-LIMIT 1
-"""
-
-_UPDATE_EXISTING_SQL = """
-UPDATE ingestion_failures
-   SET attempt_count = attempt_count + 1,
-       last_seen_at  = $2,
-       error_summary = $3,
-       error_context = $4
- WHERE id = $1
-"""
-
-_INSERT_NEW_SQL = """
+# Conflict target = the 4-tuple UNIQUE index from migration 0051.
+# Postgres treats two NULL raw_s3_keys as DISTINCT, so a row with
+# raw_s3_key IS NULL will never match the conflict target and will
+# always INSERT a fresh row — that is the intended behaviour for the
+# genuinely-distinct-occurrence cases (rate_limit_exhausted,
+# reconciliation_gap_unresolved) the LLD §1.3 carve-out names.
+#
+# On conflict (the common case — same envelope re-published or two
+# concurrent producers racing on the same logical failure) we bump
+# attempt_count, push last_seen_at forward, and refresh error_summary
+# and error_context with the latest values. The DB takes the row
+# lock, so concurrent writers serialise without app-level
+# coordination — this is what closes the race the app-dedup pattern
+# from M3.1's initial implementation had under READ COMMITTED.
+_UPSERT_SQL = """
 INSERT INTO ingestion_failures
     (id, tenant_id, source, failure_kind, raw_s3_key,
      error_summary, error_context,
      attempt_count, first_seen_at, last_seen_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8)
+ON CONFLICT (tenant_id, source, raw_s3_key, failure_kind)
+DO UPDATE SET
+    attempt_count = ingestion_failures.attempt_count + 1,
+    last_seen_at  = EXCLUDED.last_seen_at,
+    error_summary = EXCLUDED.error_summary,
+    error_context = EXCLUDED.error_context
 """
 
 
@@ -145,12 +141,10 @@ async def upsert_failure(
     """Tenant-bound UPSERT of one envelope. Caller holds the conn
     (so RLS context can be set per-tenant). Per LLD §5.5.
 
-    Steps:
-      1. SET LOCAL app.current_tenant = $1 (RLS context).
-      2. SELECT existing row by (tenant_id, source, failure_kind,
-         raw_s3_key).
-      3. If found: UPDATE attempt_count + last_seen_at.
-         Else:     INSERT new row.
+    Single statement: `INSERT ... ON CONFLICT DO UPDATE` against the
+    UNIQUE index from migration 0051. DB serialises concurrent
+    publishes of the same logical failure (same 4-tuple); each one
+    increments attempt_count by exactly 1.
     """
     db_failure_kind = _WIRE_TO_DB_FAILURE_KIND.get(env.failure_kind)
     if db_failure_kind is None:
@@ -168,33 +162,17 @@ async def upsert_failure(
         str(env.tenant_id),
     )
 
-    existing = await conn.fetchrow(
-        _SELECT_EXISTING_SQL,
-        env.tenant_id, env.source, db_failure_kind, env.raw_s3_key,
+    await conn.execute(
+        _UPSERT_SQL,
+        uuid7(),
+        env.tenant_id,
+        env.source,
+        db_failure_kind,
+        env.raw_s3_key,
+        env.error_summary,
+        json.dumps(env.error_context),
+        env.failed_at,
     )
-
-    error_context_json = json.dumps(env.error_context)
-
-    if existing is not None:
-        await conn.execute(
-            _UPDATE_EXISTING_SQL,
-            existing["id"],
-            env.failed_at,
-            env.error_summary,
-            error_context_json,
-        )
-    else:
-        await conn.execute(
-            _INSERT_NEW_SQL,
-            uuid7(),
-            env.tenant_id,
-            env.source,
-            db_failure_kind,
-            env.raw_s3_key,
-            env.error_summary,
-            error_context_json,
-            env.failed_at,
-        )
     _bump("dlq_writer.upserts")
 
 
