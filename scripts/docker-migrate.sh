@@ -25,8 +25,23 @@ for f in db/migrations/*.sql; do
   # leaves the database clean rather than half-migrated. Without this
   # flag, psql commits each statement as it runs, mirroring the bug
   # the Python-side runner had via raw `conn.execute(file_text)`.
-  if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"; then
-    echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
+  #
+  # Ingestion LLD §1.6: CREATE INDEX CONCURRENTLY cannot run inside an
+  # explicit transaction. Files containing the keyword CONCURRENTLY
+  # (excluding -- line comments) OR an opt-in `-- migration:no-transaction`
+  # directive are run WITHOUT --single-transaction. Such files lose the
+  # atomic-rollback guarantee and should contain a single CONCURRENTLY
+  # statement. The grep matches token-level CONCURRENTLY only after
+  # stripping line comments via sed.
+  if sed 's|--.*$||' "$f" | grep -qiE '\bCONCURRENTLY\b' \
+       || grep -qiE '^[[:space:]]*--[[:space:]]*migration:no-transaction\b' "$f"; then
+    if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; then
+      echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
+    fi
+  else
+    if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"; then
+      echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
+    fi
   fi
   psql -tAd "$DATABASE_URL" -c \
     "INSERT INTO schema_migrations(filename) VALUES('${fname}') ON CONFLICT DO NOTHING" >/dev/null
