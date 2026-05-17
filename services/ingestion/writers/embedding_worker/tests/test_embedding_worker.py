@@ -231,6 +231,14 @@ def _publish_envelope(
 
 
 def _drain_dlq(bootstrap: str, expected: int, timeout_s: float = 15.0) -> list[dict]:
+    """Blocking read of up to `expected` messages from ingestion.dlq.
+
+    Raises TimeoutError with diagnostic info if `expected` messages
+    don't arrive within `timeout_s`. Surfacing the timeout loudly (vs.
+    returning a short list and letting `assert len == expected` fail
+    with "0 == 1") makes Kafka-flakiness investigation a one-line
+    test-log read instead of a re-run-with-prints exercise.
+    """
     from confluent_kafka import Consumer as RawConsumer
     c = RawConsumer({
         "bootstrap.servers": bootstrap,
@@ -241,16 +249,25 @@ def _drain_dlq(bootstrap: str, expected: int, timeout_s: float = 15.0) -> list[d
     c.subscribe(["ingestion.dlq"])
     out: list[dict] = []
     deadline = asyncio.get_event_loop().time() + timeout_s
-    while len(out) < expected:
-        msg = c.poll(1.0)
-        if msg is None:
-            if asyncio.get_event_loop().time() > deadline:
-                break
-            continue
-        if msg.error():
-            continue
-        out.append(orjson.loads(msg.value()))
-    c.close()
+    try:
+        while len(out) < expected:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"_drain_dlq: expected {expected} message(s) on "
+                    f"ingestion.dlq within {timeout_s}s; got {len(out)}. "
+                    f"This usually means the producer didn't actually "
+                    f"publish (check on_failure metric / error log) "
+                    f"or the broker rejected the publish."
+                )
+            msg = c.poll(min(1.0, remaining))
+            if msg is None:
+                continue
+            if msg.error():
+                continue
+            out.append(orjson.loads(msg.value()))
+    finally:
+        c.close()
     return out
 
 
