@@ -89,30 +89,39 @@ exact failure mode this tracker exists to prevent.
 
 ### A3 — Embedding worker UPDATE guard wording
 
-- **Status:** Open (M3.2 will implement; M3.4 documents the LLD edit).
+- **Status:** Resolved (prompt superseded by LLD wording).
 - **LLD section:** §5.4 (Embedding worker pool — `embed_and_update`).
 - **Implementation surface:**
   [docs/ingestion/03-low-level-design.md:1737-1743](03-low-level-design.md#L1737-L1743)
   (current LLD pseudocode) vs. the actual
   `observations` schema's `embedding_pending BOOLEAN` column.
-- **What the LLD says today:** §5.4's `embed_and_update` pseudocode
-  uses `WHERE id = $2 AND embedding_pending = TRUE` — which IS the
-  correct guard. The M3 prompt restated this as
-  `WHERE id = $2 AND embedding IS NULL`, which would race with the
-  inline ingestion path if both writers try to claim the same row
-  during the coexistence window (the inline path sets
-  `embedding_pending = FALSE` and `embedding != NULL` atomically,
-  while the worker would see `embedding IS NULL` as still-claimable).
-- **What's actually true:** `embedding_pending = TRUE` is the
-  load-bearing guard; `embedding IS NULL` is wrong for the M3.2
-  coexistence model. The discrepancy lives in the prompt-vs-LLD
-  delta, not the LLD itself — but M3.2 implementation MUST track the
-  LLD wording, and the prompt's deviation should be explicitly noted
-  in the worker docstring so a future reader doesn't "fix" it back.
+- **What the LLD says:** §5.4's `embed_and_update` pseudocode uses
+  `WHERE id = $2 AND embedding_pending = TRUE` — the correct guard.
+- **What the M3 prompt said (incorrect):** `WHERE id = $2 AND
+  embedding IS NULL`.
+- **Why the two are NOT equivalent:** the LLD wording supports
+  re-embedding (operator sets `embedding_pending = TRUE` on a row
+  with an existing embedding to force a re-compute — the LLD form
+  succeeds because the guard only checks the flag; the prompt form
+  silently fails because `embedding IS NULL` is false). The prompt
+  wording also races with the inline ingestion path during the
+  coexistence window (inline sets `embedding_pending = FALSE` and
+  `embedding != NULL` atomically; the worker checking `embedding IS
+  NULL` would still see the row as claimable until inline's commit
+  is visible).
+- **Resolution:** M3.2 implementation follows LLD wording; M3 prompt
+  wording is incorrect and superseded. The LLD §5.4 form is
+  load-bearing for both race-safety AND re-embed support. M3.2 ships
+  two tests against this property:
+  - `test_embedding_worker_concurrent_with_inline_safe` — race-safety
+    under concurrent inline + worker writes.
+  - `test_embedding_worker_supports_reembed_with_existing_embedding`
+    — operator-driven re-embed: insert with `embedding=<old_vector>`
+    and `embedding_pending=TRUE`, run worker, assert
+    `embedding=<new_vector>` and `embedding_pending=FALSE`.
 - **LLD edit pending in M3.4:** none in the LLD itself (it's already
-  correct). M3.2 PR description must call out that the prompt's
-  `WHERE embedding IS NULL` was rejected in favour of the LLD's
-  `WHERE embedding_pending = TRUE`, with the race rationale.
+  correct). The M3 prompt will be updated separately before M3.2's
+  next iteration so the discrepancy is closed at the source.
 
 ### A4 — §12.1 "one-shot script" → long-running rate-limited service
 

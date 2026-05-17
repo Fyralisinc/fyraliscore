@@ -1,6 +1,7 @@
 -- =====================================================================
 -- 0051_ingestion_failures_upsert_key.sql
 --   Ingestion LLD §1.3 / §5.5 — fix UPSERT key + add embedding kind.
+--   Requires PostgreSQL 15+ (NULLS DISTINCT support).
 -- =====================================================================
 -- Two related changes to `ingestion_failures` (migration 0046):
 --
