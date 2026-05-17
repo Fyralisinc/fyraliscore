@@ -34,13 +34,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from services.ingestion.raw_tier.envelope import SourceLiteral
 
 
-# Wire-side failure kinds. M3.1 ships three; M3.2 will extend with
-# `embedding.ollama_failure` and add the corresponding migration to
-# the DB CHECK constraint.
+# Wire-side failure kinds. M3.1 shipped three; M3.2 adds the fourth
+# (`embedding.ollama_failure`). The DB CHECK enum was already extended
+# in migration 0051 with the corresponding bucket name
+# `embedding_ollama_failure`, so M3.2 needs no DB migration of its own.
 WireFailureKind = Literal[
     "normalizer.parse_failure",     # Pydantic / orjson decode failure on RawEnvelope
     "normalizer.invariant_failure", # EnvelopeInvariantError (M2.4)
     "writer.invariant_failure",     # NormalizedEnvelope rejected by writer
+    "embedding.ollama_failure",     # OllamaError after client-level retries (M3.2)
 ]
 
 

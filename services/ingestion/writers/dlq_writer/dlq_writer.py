@@ -66,9 +66,10 @@ _CONSUMER_GROUP = "ingestion.dlq.writer"
 
 
 # Wire failure_kind → DB failure_kind (per LLD §1.3 CHECK constraint).
-# M3.1 ships three; M3.2 will extend with "embedding.ollama_failure"
-# alongside a migration that adds "embedding_ollama_failure" to the
-# CHECK enum.
+# Wire form is dot-separated producer-namespaced; DB form is the
+# underscore-separated bucket from migration 0046 + 0051. The bridge
+# is intentional: producers get fine-grained kinds for alerting; ops
+# queries get stable buckets that don't churn each release.
 _WIRE_TO_DB_FAILURE_KIND: dict[str, str] = {
     "normalizer.parse_failure":     "normalizer_parse_error",
     # invariant failures are pre-validation rejections — same bucket
@@ -77,6 +78,11 @@ _WIRE_TO_DB_FAILURE_KIND: dict[str, str] = {
     # writer invariant failures happen at the observation-insert
     # stage (LLD §5.2 writer pool); the bucket name reflects that.
     "writer.invariant_failure":     "observation_insert_error",
+    # M3.2: OllamaError after the OllamaClient's internal retry loop
+    # (default 3 attempts with exponential backoff). The bucket
+    # `embedding_ollama_failure` was added to the CHECK enum by
+    # migration 0051.
+    "embedding.ollama_failure":     "embedding_ollama_failure",
 }
 
 

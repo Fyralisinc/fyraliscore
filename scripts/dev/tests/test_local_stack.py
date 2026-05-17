@@ -21,15 +21,22 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.dev.yml"
 CREATE_TOPICS = REPO_ROOT / "scripts" / "dev" / "create-kafka-topics.sh"
-# M3.1 added `ingestion.dlq`. Per-topic retention introduced here:
-# raw + normalized stay at 7 days (LLD §10), dlq is 30 days because
-# ops triage windows can run longer than a week (LLD §1.3).
-EXPECTED_TOPICS = ["ingestion.raw", "ingestion.normalized", "ingestion.dlq"]
+# M3.1 added `ingestion.dlq`; M3.2 added `ingestion.embedding`.
+# Per-topic retention introduced here: raw + normalized + embedding
+# stay at 7 days (LLD §10), dlq is 30 days because ops triage windows
+# can run longer than a week (LLD §1.3).
+EXPECTED_TOPICS = [
+    "ingestion.raw",
+    "ingestion.normalized",
+    "ingestion.dlq",
+    "ingestion.embedding",
+]
 EXPECTED_PARTITIONS_DEV = 4
 EXPECTED_RETENTION_BY_TOPIC = {
-    "ingestion.raw":        7 * 24 * 60 * 60 * 1000,   # 7 days
-    "ingestion.normalized": 7 * 24 * 60 * 60 * 1000,   # 7 days
-    "ingestion.dlq":       30 * 24 * 60 * 60 * 1000,   # 30 days
+    "ingestion.raw":         7 * 24 * 60 * 60 * 1000,  # 7 days
+    "ingestion.normalized":  7 * 24 * 60 * 60 * 1000,  # 7 days
+    "ingestion.dlq":        30 * 24 * 60 * 60 * 1000,  # 30 days
+    "ingestion.embedding":   7 * 24 * 60 * 60 * 1000,  # 7 days
 }
 KAFKA_CONTAINER = "fyralis_dev_kafka"
 
