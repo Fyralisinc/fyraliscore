@@ -12,6 +12,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.dev.yml}"
+# Partition this dev stack from the deployed `docker-compose.yml`
+# (whose default project name is `fyraliscore`, the directory
+# basename). Without this, both compose files share a project name
+# and `docker compose` warns about orphan containers belonging to
+# services not defined in the currently-loaded file.
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fyralis_dev}"
 
 echo "==> Starting M2 dev stack ($COMPOSE_FILE)..."
 docker compose -f "$COMPOSE_FILE" up -d

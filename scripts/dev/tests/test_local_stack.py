@@ -120,27 +120,66 @@ def test_kafka_topics_exist_after_setup_script():
 
 
 # ---------------------------------------------------------------------
-# Test 2: topic configuration matches the spec (4 partitions dev /
-# zstd compression / 7-day retention). Uses kafka-topics.sh --describe
-# for partition count and kafka-configs.sh for the per-topic config
-# overrides (retention.ms, compression.type). Per the M2.0 work order.
+# Test 2: topic configuration matches the spec — partition count,
+# compression type, and retention. Per the M2.0 work order:
+# "retention 7 days, compression zstd" for ingestion.raw, and the same
+# settings for ingestion.normalized. The 7-day retention is the dev
+# stack's contract, NOT the broker default — bind the assertion to
+# the promise, not to behaviour that happens to coincide.
 # ---------------------------------------------------------------------
 
+EXPECTED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
+
+
+def _topic_config(topic: str) -> dict[str, str]:
+    """Return the key/value config overrides set on `topic`.
+
+    `kafka-configs.sh --describe` emits lines like:
+        Dynamic configs for topic ingestion.raw are:
+          retention.ms=604800000 sensitive=false synonyms={...}
+          compression.type=zstd sensitive=false synonyms={...}
+    We strip everything after the first whitespace per line and parse
+    the `key=value` head.
+    """
+    out = subprocess.run(
+        [
+            "docker", "exec", KAFKA_CONTAINER,
+            "/opt/kafka/bin/kafka-configs.sh",
+            "--bootstrap-server", "localhost:9092",
+            "--describe", "--entity-type", "topics",
+            "--entity-name", topic,
+        ],
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    cfg: dict[str, str] = {}
+    for raw_line in out.stdout.splitlines():
+        line = raw_line.strip()
+        if "=" not in line:
+            continue
+        # Take the leading `key=value` token; ignore trailing metadata
+        # ("sensitive=false synonyms={...}") which follows whitespace.
+        head = line.split()[0]
+        key, _, value = head.partition("=")
+        if key and value:
+            cfg[key] = value
+    return cfg
+
+
 def test_kafka_topic_config_matches_spec():
-    """Per M2.0: ingestion.raw and ingestion.normalized must each have
-    4 partitions in dev. retention.ms and compression.type are set on
-    create; verifying compression.type is enough (retention default
-    is 7 days anyway, so a stricter check buys little).
+    """Per M2.0 work-order spec:
+      - ingestion.raw         : 4 partitions, retention 7 days, zstd.
+      - ingestion.normalized  : same settings as ingestion.raw.
+
+    Three assertions per topic (partition count, retention.ms,
+    compression.type). All three bind to what the dev stack promises,
+    not to broker defaults.
     """
     for topic in EXPECTED_TOPICS:
+        # ---- partition count ----
         desc = _describe_topic(topic)
-        # Output shape:
-        #   Topic: ingestion.raw  TopicId: ...  PartitionCount: 4 ...
         partition_count: int | None = None
         for line in desc.splitlines():
             if "PartitionCount:" in line:
-                # Split on whitespace; PartitionCount appears as a
-                # key:value pair surrounded by other key:value pairs.
                 parts = line.split()
                 for i, tok in enumerate(parts):
                     if tok == "PartitionCount:" and i + 1 < len(parts):
@@ -152,18 +191,15 @@ def test_kafka_topic_config_matches_spec():
             f"output:\n{desc}"
         )
 
-    # Per-topic config — verify compression.type=zstd was applied.
-    cfg = subprocess.run(
-        [
-            "docker", "exec", KAFKA_CONTAINER,
-            "/opt/kafka/bin/kafka-configs.sh",
-            "--bootstrap-server", "localhost:9092",
-            "--describe", "--entity-type", "topics",
-            "--entity-name", "ingestion.raw",
-        ],
-        check=True, capture_output=True, text=True, timeout=15,
-    )
-    assert "compression.type=zstd" in cfg.stdout, (
-        "compression.type=zstd not present on ingestion.raw. "
-        f"--describe output:\n{cfg.stdout}"
-    )
+        # ---- per-topic config overrides (compression, retention) ----
+        cfg = _topic_config(topic)
+        assert cfg.get("compression.type") == "zstd", (
+            f"{topic} compression.type must be 'zstd' per M2.0 dev "
+            f"spec; got {cfg.get('compression.type')!r}. Full config: {cfg}"
+        )
+        retention_ms = int(cfg.get("retention.ms", "0"))
+        assert retention_ms == EXPECTED_RETENTION_MS, (
+            f"{topic} retention must be {EXPECTED_RETENTION_MS}ms "
+            f"(7 days) per M2.0 work-order spec; got {retention_ms}ms. "
+            f"Bind to what we promise, not what the broker defaults to."
+        )
