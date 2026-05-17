@@ -295,6 +295,147 @@ FOR UPDATE SKIP LOCKED;
 
 The `FOR UPDATE SKIP LOCKED` is critical for multi-pod safety; the `last_attempt_at` guard prevents tight retry on a failing trigger (10s backoff between attempts).
 
+#### 1.4.1 OAuth callback worked example — Slack (Phase 3 review hand-wave 8)
+
+The new shape for [services/integrations/slack/oauth.py:512-633](services/integrations/slack/oauth.py#L512-L633). Phase 2.1 Q E1 verified that today's callback runs install UPSERT + audit + (no outbox) as three separate transactions; this rewrite unifies them.
+
+```python
+async def callback_handler(request: Request) -> Any:
+    # ... (existing) state-token verify, code exchange with Slack, secrets persist ...
+    # All steps prior to the DB write block are unchanged.
+
+    pool = request.app.state.pool
+    secret_store = request.app.state.secret_store
+
+    async with tenant_transaction(tenant_id) as tctx:
+        # === Single transaction: install row + audit + outbox ===
+        # Step A: UPSERT provider_installations.
+        # (Cross-tenant collision guard unchanged from existing code; the
+        # ON CONFLICT clause now lives inside this transaction.)
+        install_row = await tctx.fetchrow(
+            """
+            INSERT INTO provider_installations (
+                id, tenant_id, provider, installation_id, secret_ref, enabled
+            ) VALUES ($1, $2, 'slack', $3, $4, TRUE)
+            ON CONFLICT (provider, installation_id) DO UPDATE
+              SET tenant_id = EXCLUDED.tenant_id,
+                  secret_ref = EXCLUDED.secret_ref,
+                  enabled = TRUE
+              WHERE provider_installations.tenant_id = EXCLUDED.tenant_id
+                 OR provider_installations.tenant_id IS NULL
+            RETURNING id, (xmax = 0) AS was_inserted
+            """,
+            uuid7(), tenant_id, team_id, secret_ref,
+        )
+        if install_row is None:
+            # ON CONFLICT WHERE clause failed → cross-tenant collision.
+            # Existing handling unchanged; raises and skips the outbox row.
+            raise InstallationCollisionError(...)
+        installation_row_id = install_row["id"]
+        was_inserted = install_row["was_inserted"]
+
+        # Step B: re-install cleanup (delete orphan token rows) — existing logic
+        # called via tctx instead of a fresh pool acquire. Pre-cutover audit:
+        # confirm the existing helpers accept a TenantContext-or-Connection
+        # parameter; small refactor if not.
+        if not was_inserted:
+            await _delete_orphan_tokens(tctx, tenant_id, team_id)
+
+        # Step C: audit row, in the same transaction.
+        await _write_audit(
+            tctx,  # was: pool (separate connection)
+            tenant_id, installation_row_id, "install", "ok",
+            {
+                "was_reinstall": not was_inserted,
+                "scopes_count": len(scopes),
+                "app_id": slack_response.get("app_id"),
+            },
+        )
+
+        # Step D: NEW — outbox row in the same transaction.
+        # If the outbox INSERT fails, the install + audit roll back together.
+        # If the commit succeeds, the outbox row IS durable; the
+        # OnboardingTriggerPollerWorkflow will see it on its next 5s tick.
+        await tctx.execute(
+            """
+            INSERT INTO onboarding_triggers (
+                id, tenant_id, source, trigger_kind,
+                installation_row_id, gmail_installation_id, payload
+            ) VALUES ($1, $2, 'slack', $3, $4, NULL, $5::jsonb)
+            """,
+            uuid7(), tenant_id,
+            'reinstall' if not was_inserted else 'install',
+            installation_row_id,
+            json.dumps({"team_id": team_id, "app_id": slack_response.get("app_id")}),
+        )
+        # === Transaction commits here ===
+
+    # Post-transaction: side effects that are intentionally outside the txn
+    # (cache invalidation, metrics, redirect). These are non-transactional
+    # because their failure must NOT roll back the install — the user has
+    # successfully authorised, and the trigger is durably written.
+    _invalidate_resolver_cache(request, team_id)
+    metrics.record_install_outcome("success")
+    metrics.observe_install_duration(time.monotonic() - started_at)
+    return RedirectResponse(
+        url=f"{_SUCCESS_REDIRECT}?team={short_team_hash(team_id)}",
+        status_code=302,
+    )
+```
+
+**What changes in helper functions:**
+
+- `_write_audit` ([slack/oauth.py:614-623](services/integrations/slack/oauth.py#L614-L623)) currently accepts a `pool` and opens its own connection. The refactor changes its first parameter to `TenantContext | Connection` so it can be called inside an existing transaction. Same change applies to GitHub (`_audit` at [github/oauth.py:282-300](services/integrations/github/oauth.py#L282-L300)), Discord (`_write_audit` at [discord/oauth.py:560-565](services/integrations/discord/oauth.py#L560-L565)). One helper signature change touches all four callbacks; the cross-cutting refactor is bounded.
+- `_delete_orphan_tokens` similarly accepts `TenantContext | Connection`.
+
+**Gmail variant** (worked example at [gmail/oauth.py:151-218](services/integrations/gmail/oauth.py#L151-L218)):
+
+```python
+async def connect_finalize(request: Request) -> JSONResponse:
+    # ... existing parsing, DWD minter setup ...
+    async with tenant_transaction(tenant_id) as tctx:
+        # Existing: UPSERT gmail_installations + write_install_audit (already
+        # in the same txn at [gmail/oauth.py:172-198]).
+        install_id = await _upsert_gmail_installation(tctx, ...)
+        await write_install_audit(tctx, gmail_installation_id=install_id, ...)
+
+        # NEW: outbox row, replacing the asyncio.create_task(_provision_install).
+        await tctx.execute(
+            """
+            INSERT INTO onboarding_triggers (
+                id, tenant_id, source, trigger_kind,
+                installation_row_id, gmail_installation_id, payload
+            ) VALUES ($1, $2, 'gmail', 'install', NULL, $3, $4::jsonb)
+            """,
+            uuid7(), tenant_id, install_id,
+            json.dumps({
+                "admin_email": admin_email,
+                "scope_alias": scope_alias,
+                "workspace_domain": workspace_domain,
+            }),
+        )
+
+    # Removed: asyncio.create_task(_provision_install(...))
+    # The TenantOnboardingWorkflow that the poller starts will run
+    # _provision_install (or its workflow-activity equivalent) as
+    # part of Gmail's plan_shards_gmail activity (§3.4) — same code,
+    # called from Temporal instead of fire-and-forget asyncio.
+
+    return JSONResponse(content={
+        "ok": True,
+        "installation_id": str(install_id),
+        "scope": scope_alias,
+        "provisioning": "queued",  # was: "started"
+    })
+```
+
+**The Gmail change is the bigger user-visible delta:** the response shape changes from `"provisioning": "started"` to `"provisioning": "queued"`. Frontend code consuming this string must be updated (or accept both during cutover). Out of scope for ingestion; flag for the frontend team's awareness.
+
+**Failure modes:**
+
+- Outbox INSERT fails (constraint violation, DB unavailable mid-transaction): the entire transaction rolls back. The user sees a 5xx response. The install never lands. They retry the OAuth flow. **Acceptable** because we want install + workflow-trigger to be atomic.
+- Outbox INSERT succeeds but poller never picks it up (e.g., Temporal is down for days): the row stays unconsumed. The diagnostic query is `SELECT count(*) FROM onboarding_triggers WHERE consumed_at IS NULL AND created_at < now() - interval '1 hour'`. Alert at >5 such rows.
+
 ### 1.5 `gateway_session_state` (Discord)
 
 Replaces in-memory `session_id` / `last_seq` storage. UPSERT on every dispatched frame (Phase 2.1 risk #3 fix).
@@ -465,9 +606,14 @@ class OnboardingTriggerPollerWorkflow:
                 )
                 consumed += 1
             except workflow.WorkflowAlreadyStartedError:
-                # Idempotent: another poller pod claimed the same row in a race.
-                # FOR UPDATE SKIP LOCKED makes this rare but not impossible
-                # if the poller's claim activity timed out.
+                # The only realistic path here: this poller previously executed
+                # `start_child_workflow` for this outbox row but crashed before
+                # `mark_trigger_consumed`. On restart, `claim_unconsumed_triggers`
+                # returned the still-unconsumed row, and the deterministic
+                # `child_wf_id` from `created_at_ms` collides with the prior run.
+                # Cross-pod claim races are NOT a source: `FOR UPDATE SKIP LOCKED`
+                # in the claim query serialises pollers at the SQL layer.
+                # Treat as already-claimed-success and mark consumed.
                 await workflow.execute_activity(mark_trigger_consumed, …)
                 consumed += 1
             except Exception as exc:
@@ -541,8 +687,11 @@ class TenantOnboardingWorkflow:
         )
 
         # Step 3: spawn the per-source workflow as a child (ABANDON close policy).
+        # Use `start_child_workflow` (returns a handle after the child is STARTED)
+        # not `execute_child_workflow` (which awaits child completion). We do NOT
+        # await the handle's result — the child is fire-and-forget under ABANDON.
         source_wf_id = f"ten-{args.tenant_id}-{args.source}-{workflow.info().workflow_id}"
-        await workflow.execute_child_workflow(
+        _handle = await workflow.start_child_workflow(
             SourceOnboardingWorkflow.run,
             SourceOnboardingArgs(
                 tenant_id=args.tenant_id,
@@ -555,8 +704,9 @@ class TenantOnboardingWorkflow:
             task_queue=f"{args.source}",
             parent_close_policy=workflow.ParentClosePolicy.ABANDON,
         )
-        # Note: ABANDON means we do not await the child; the child manages its own
-        # completion event. Tenant workflow exits once the child is launched.
+        # The await above blocks only until the child is registered with Temporal,
+        # not until it completes. ABANDON means parent exit does not cancel the
+        # child. Tenant workflow returns immediately after this.
 
         return TenantOnboardingResult(run_id=run_id, source_workflow_id=source_wf_id)
 ```
@@ -605,8 +755,16 @@ class SourceOnboardingWorkflow:
         # Step 2: spawn ShardFetchWorkflows with concurrency cap.
         # The Semaphore caps THIS workflow's in-flight shards. Cross-tenant
         # contention on the task queue is FIFO (HLD §Failure Isolation).
+        #
+        # **asyncio primitives in workflows:** the Temporal Python SDK runs
+        # workflow code under a deterministic asyncio scheduler within the
+        # workflow sandbox; `asyncio.Semaphore`, `asyncio.create_task`, and
+        # `asyncio.gather` are explicitly supported (Temporal Python SDK docs:
+        # "Workflow features — asyncio", https://python.temporal.io/temporalio.workflow.html
+        # and the sandbox docs at https://docs.temporal.io/develop/python/python-sdk-sandbox).
+        # Tests must assert deterministic replay via Temporal's `time-skipping
+        # test framework` before this code ships.
         semaphore = asyncio.Semaphore(CONCURRENCY_CAP[args.source])
-        feels_onboarded_signaled = False
 
         async def run_one_shard(shard_id: UUID) -> None:
             async with semaphore:
@@ -624,42 +782,24 @@ class SourceOnboardingWorkflow:
             for sid in shard_manifest.shard_ids_recency_ordered
         ]
 
-        # Step 3: poll for feels_onboarded condition in parallel with shard execution.
-        async def check_feels_onboarded() -> None:
-            nonlocal feels_onboarded_signaled
-            while not feels_onboarded_signaled:
-                await asyncio.sleep(30)  # check every 30s
-                gap = await workflow.execute_activity(
-                    measure_recency_gap,
-                    MeasureGapArgs(
-                        tenant_id=args.tenant_id,
-                        source=args.source,
-                        window_start=workflow.now() - timedelta(days=7),
-                        window_end=workflow.now(),
-                    ),
-                    start_to_close_timeout=timedelta(seconds=30),
-                )
-                if gap.below_threshold:
-                    await workflow.execute_activity(
-                        publish_progress_event,
-                        ProgressEvent(
-                            kind="source.onboarding.feels_onboarded",
-                            tenant_id=args.tenant_id,
-                            body={
-                                "source": args.source,
-                                "observations_count": gap.observation_count,
-                                "recency_window_days": 7,
-                            },
-                        ),
-                        start_to_close_timeout=timedelta(seconds=5),
-                    )
-                    feels_onboarded_signaled = True
-
-        feels_task = asyncio.create_task(check_feels_onboarded())
+        # Step 3: NO in-workflow feels_onboarded polling. The condition is
+        # checked by a separate `FeelsOnboardedMonitorWorkflow` running on a
+        # Temporal Schedule (see §2.6). That workflow scans all running
+        # SourceOnboardingWorkflows, measures the gap, and emits the
+        # progress event when met. It also updates
+        # `onboarding_runs.feels_onboarded_at`. No signal back to this
+        # workflow is needed — feels_onboarded is a Bridge-layer event,
+        # not a workflow-control event.
+        #
+        # Rationale (Phase 3 review push 5): a 30s in-workflow poll over
+        # an 8-hour backfill adds ~960 activity invocations × ~4 events
+        # each = ~3840 events to workflow history per source. For a tenant
+        # with 4 sources, that's ~15K events just for polling — non-trivial
+        # against the 50K mandatory continue-as-new threshold. Externalising
+        # the poll keeps source workflow history bounded by shard count.
 
         # Step 4: wait for all shards to complete (or fail).
         await asyncio.gather(*shard_tasks, return_exceptions=True)
-        feels_task.cancel()
 
         # Step 5: reconciliation pass.
         reconciliation_result = await workflow.execute_activity(
@@ -699,10 +839,16 @@ class SourceOnboardingWorkflow:
         )
 
 CONCURRENCY_CAP: dict[str, int] = {
-    "slack": 10,    # 50 channels typical; 10 in-flight keeps rate budget consumed
-    "github": 8,    # 5000/hr REST limit / 90s avg per shard = generous headroom
-    "discord": 6,   # similar reasoning
-    "gmail": 20,    # per-user API quota is generous; many mailboxes per install
+    # NOTE (Phase 3 review push 6): these caps bound activity slots in flight,
+    # NOT sustained API throughput. Sustained throughput is governed by the
+    # rate-limiter buckets. The cap controls burst (initial first-page coverage)
+    # and worker-slot consumption while shards wait for tokens. See §3.1 for the
+    # full burst-vs-sustained discussion using Slack as the worked example;
+    # GitHub/Discord/Gmail follow the same shape.
+    "slack": 10,    # burst across 10 channels at start; sustained = 40/min bucket-bound
+    "github": 8,    # burst across 8 repo-kinds; sustained = 4000/hr bucket-bound
+    "discord": 6,   # burst across 6 channels; sustained = ~5/sec bucket-bound
+    "gmail": 20,    # burst across 20 mailboxes; sustained = 200/sec per-user (cap is binding here, not bucket)
 }
 ```
 
@@ -816,6 +962,83 @@ class ShardFetchWorkflow:
 - `InstallationDisabledError`: thrown if `provider_installations.enabled=false` is detected mid-run (operator action).
 - `TerminalSourceError`: a 4xx that the source documents as permanent (e.g., GitHub 410 "issue deleted" for an entity-specific fetch).
 
+### 2.6 `FeelsOnboardedMonitorWorkflow` (added per Phase-3 review push 5)
+
+Out-of-workflow polling for the `source.onboarding.feels_onboarded` condition. Externalised from `SourceOnboardingWorkflow` to keep that workflow's history bounded by shard count, not by elapsed wall time.
+
+```python
+# services/ingestion/workflows/feels_onboarded_monitor.py
+@workflow.defn
+class FeelsOnboardedMonitorWorkflow:
+    @workflow.run
+    async def run(self) -> MonitorResult:
+        """Single-tick monitor. Triggered every 30s by a Temporal Schedule.
+        Each invocation is short (a few activities); history is bounded.
+        """
+        runs = await workflow.execute_activity(
+            load_active_onboarding_runs,
+            start_to_close_timeout=timedelta(seconds=10),
+        )
+        emitted = 0
+        for run in runs:
+            for source in run.sources_enabled:
+                # Skip sources that already emitted feels_onboarded for this run.
+                if await workflow.execute_activity(
+                    feels_onboarded_already_emitted,
+                    FeelsCheckArgs(run_id=run.id, source=source),
+                    start_to_close_timeout=timedelta(seconds=5),
+                ):
+                    continue
+                gap = await workflow.execute_activity(
+                    measure_recency_gap,
+                    MeasureGapArgs(
+                        tenant_id=run.tenant_id,
+                        source=source,
+                        window_start=workflow.now() - timedelta(days=7),
+                        window_end=workflow.now(),
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                if gap.below_threshold:
+                    await workflow.execute_activity(
+                        emit_feels_onboarded_and_stamp_run,
+                        EmitFeelsArgs(
+                            run_id=run.id,
+                            tenant_id=run.tenant_id,
+                            source=source,
+                            observations_count=gap.observation_count,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=10),
+                    )
+                    emitted += 1
+        return MonitorResult(runs_scanned=len(runs), emitted=emitted)
+```
+
+The `emit_feels_onboarded_and_stamp_run` activity is a single transaction:
+1. `UPDATE onboarding_runs SET feels_onboarded_at = now() WHERE id = $1 AND feels_onboarded_at IS NULL` — atomic, idempotent.
+2. Only if the UPDATE affected 1 row, publish the `source.onboarding.feels_onboarded` event to Kafka.
+
+The UPDATE guard means concurrent monitor invocations are safe (cluster-of-pods scenario), and re-firing the same condition is a no-op.
+
+**Schedule definition** (registered at worker startup):
+
+```python
+await client.create_schedule(
+    "feels-onboarded-monitor",
+    Schedule(
+        action=ScheduleActionStartWorkflow(
+            FeelsOnboardedMonitorWorkflow.run,
+            id="feels-onboarded-monitor",
+            task_queue="onboarding-monitor",
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
+        policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
+    ),
+)
+```
+
+**Counter-argument the review asked for (push 5):** the in-workflow polling has one benefit — when the condition fires, the source workflow could react (e.g., reduce concurrency to free rate budget for steady-state). The externalised monitor cannot trigger such reactions without a Temporal Signal back to the source workflow. **The current design does not need such reactions** (feels_onboarded is a Bridge-layer event only), so the externalised shape is strictly better. If a future feature needs source-workflow reactivity, add a Signal at that point; do not pre-build it.
+
 ---
 
 ## 3. Per-source planner logic
@@ -869,7 +1092,17 @@ async def plan_shards_slack(args: PlanShardsArgs) -> ShardManifest:
 
 **Rate-limit buckets:** `(tenant, 'slack', 'conversations.list')` and `(tenant, 'slack', 'conversations.history')` separately. Slack's published rate is Tier 3 (50/min for these methods); the bucket caps at 40/min.
 
-**Concurrency cap:** 10 (per `CONCURRENCY_CAP['slack']`). With 50-channel typical install, full backfill saturates the cap.
+**Concurrency cap:** 10 (per `CONCURRENCY_CAP['slack']`). **Important burst-vs-sustained distinction** (Phase 3 review push 6): the cap governs activity concurrency, not sustained API throughput. Math:
+
+- Bucket capacity 40, refill 0.67/sec → sustained throughput is 0.67 calls/sec **shared across all in-flight shards** regardless of cap.
+- With cap=10: initial 10 shards consume 10 tokens in ~1 second (burst), then serialize at 0.67/sec total. Per-shard sustained rate ≈ 0.067 calls/sec.
+- With cap=4: initial 4 shards consume 4 tokens immediately, then same 0.67/sec sustained. Per-shard sustained rate ≈ 0.17 calls/sec.
+
+Sustained total throughput is the same either way; the cap only affects burst behavior at workflow start. Setting cap=10 gives faster first-page coverage across more channels concurrently (relevant for the feels_onboarded window), at the cost of more activity slots held while waiting for tokens. Setting cap=4 better matches sustained throughput and wastes fewer worker slots in the bucket-wait state.
+
+**Future refinement (deferred):** instead of the FetchPage activity sleeping in the bucket-wait, raise `RateLimited(retry_after_ms)` and let Temporal's retry policy schedule the retry without holding an activity slot. This eliminates the worker-utilisation cost of cap=10 and lets us safely raise the cap further. The infrastructure is in place (`RateLimited` exception type is in §4.2); the FetchPage step 1 change is mechanical. Not in cutover scope.
+
+**Why not lower cap=10 to cap=4 now:** the burst benefit at workflow start is real for the feels_onboarded window — having 10 channels' first pages land in the first second produces a "data appearing" UX moment immediately rather than 1.5s later. Keep cap=10 with documented burst-vs-sustained behavior; revisit when the no-block-in-bucket refinement ships.
 
 ### 3.2 GitHub planner
 
@@ -1078,7 +1311,7 @@ sequenceDiagram
     FP->>S3: PutObject(key, body, IfNoneMatch="*")
     Note right of S3: 412 PreconditionFailed = duplicate; treated as success
     Note over FP: Step 5: Kafka publish (idempotent producer)
-    FP->>K: produce(envelope, key=tenant_id, transactional_id=shard_id)
+    FP->>K: produce(envelope, key=tenant_id, enable_idempotence=True)
     Note over FP: Step 6: extract next cursor
     FP->>FP: next_cursor = parse_cursor(body, headers)
     FP-->>W: PageResult(next_cursor, page_size, retry_after_ms=0)
@@ -1267,11 +1500,17 @@ async def _main(worker_index: int) -> None:
         max_poll_records=100,
         max_poll_interval_ms=300_000,  # 5 min — bound by transform time
     )
+    # at-least-once + idempotent (per-producer-session dedup). NOT transactional —
+    # we don't have begin/commit_transaction calls. `transactional_id` would opt
+    # into Kafka exactly-once semantics requiring transaction lifecycle code we
+    # don't run; setting it without those calls either silently per-message-
+    # transacts or fails init (aiokafka version dependent). Plain idempotence
+    # gives us "no duplicates within a producer session"; observation UNIQUE is
+    # the correctness gate for cross-session duplicates.
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
         enable_idempotence=True,
         acks="all",
-        transactional_id=f"normalizer-{worker_index}-{os.getpid()}",
     )
     s3 = S3Client(...)  # boto3 client; no shared DB connection in this process
 
@@ -1374,12 +1613,27 @@ async def write_batch(
             ]
             alias_map = await alias_repo.find_by_aliases(tctx, all_phrases, tenant_id)
 
-            # Step 3: Gmail thread canonicalization (interim shape — see §12 for the
-            # post-cutover unified-txn refactor). For now, canonicalize OUTSIDE the
-            # main txn per existing dispatch_gmail_message_resource logic.
+            # Step 3: Gmail thread canonicalization, INSIDE the writer transaction
+            # so the observation INSERT in step 5 carries thread_canonical_id
+            # already populated. This replaces the existing three-transaction shape
+            # (separate canonicalize txn + observation insert + post-insert UPDATE)
+            # which Phase 1 identified as non-atomic. See §5.6 for the algorithm.
             gmail_records = [r for r in group if r.draft.source_channel == "gmail:"]
+            canonical_id_by_record: dict[int, UUID] = {}
             if gmail_records:
-                await canonicalize_threads_batch(tctx, gmail_records)
+                canonical_id_by_record = await canonicalize_gmail_batch_in_txn(
+                    tctx, gmail_records,
+                )
+                # Stamp the resolved canonical_id back on the draft's content dict
+                # so step 4's build_observation_create includes it in the INSERT.
+                for idx, r in enumerate(gmail_records):
+                    if idx in canonical_id_by_record:
+                        r.draft.content["_gmail_thread_canonical_id"] = str(
+                            canonical_id_by_record[idx]
+                        )
+                        # Also surface as a writer-side annotation so step 4 can
+                        # populate the observations.thread_canonical_id column.
+                        r._resolved_thread_canonical_id = canonical_id_by_record[idx]
 
             # Step 4: build ObservationCreate per record using the resolved maps.
             obs_creates = [
@@ -1504,6 +1758,156 @@ async def write_batch(...):
 ```
 
 The SETNX is defense-in-depth (saves DB cycles) not correctness (the UNIQUE is the correctness gate). Failure of Redis is degraded performance, not data loss; `SET … NX` failing closed (returning false) just means we attempt the INSERT and trust ON CONFLICT.
+
+### 5.6 Gmail thread canonicalization in the writer transaction (Phase 3 review hand-wave 7)
+
+Replaces the existing three-transaction shape from [services/ingestion/handlers/gmail.py:259-329](services/ingestion/handlers/gmail.py#L259-L329) with a single-transaction implementation called from `write_batch` step 3.
+
+**Algorithm:**
+
+```python
+async def canonicalize_gmail_batch_in_txn(
+    tctx: TenantContext,
+    records: list[NormalizedRecord],
+) -> dict[int, UUID]:
+    """Resolve thread_canonical_id for every Gmail record in the batch.
+    Runs inside the writer's tenant_transaction; all writes (gmail_threads_canonical
+    INSERTs, gmail_thread_members INSERTs) commit atomically with the observation
+    INSERTs in the same transaction.
+
+    Returns: index-in-records → canonical_id mapping.
+    """
+    # Step A: sort records by occurred_at ascending. This matters: a message
+    # earlier in time may root a thread that a later message in the same batch
+    # references. Processing in time order lets us build up an in-batch lookup
+    # map that subsequent messages can use without DB round-trips.
+    indexed = sorted(
+        enumerate(records),
+        key=lambda ir: ir[1].draft.occurred_at,
+    )
+
+    # Step B: collect all RFC 5322 Message-IDs referenced (own message-id +
+    # In-Reply-To + References chain) for one batched DB lookup against
+    # gmail_thread_members. This is the only DB-read step for the batch.
+    all_referenced_message_ids: set[str] = set()
+    per_record_message_ids: list[GmailMsgIds] = []
+    install_id = records[0].draft.content.get("gmail_installation_id")
+    for _, r in indexed:
+        ids = extract_gmail_message_ids(r.draft.content)  # {own, parents: [...]}
+        per_record_message_ids.append(ids)
+        all_referenced_message_ids.update(ids.parents)
+
+    # One SELECT for all parent lookups across the batch.
+    existing_members = await tctx.fetch(
+        """
+        SELECT message_id, thread_canonical_id
+        FROM gmail_thread_members
+        WHERE gmail_installation_id = $1
+          AND message_id = ANY($2::text[])
+        """,
+        install_id, list(all_referenced_message_ids),
+    )
+    member_map: dict[str, UUID] = {
+        row["message_id"]: row["thread_canonical_id"]
+        for row in existing_members
+    }
+
+    # Step C: process records in time order. For each:
+    #   - if own message_id already in member_map (or in_batch_map): adopt that thread.
+    #   - else walk parent chain (In-Reply-To, then References last-to-first)
+    #     against member_map ∪ in_batch_map; first hit wins.
+    #   - else create a new canonical thread (INSERT into gmail_threads_canonical).
+    #   - INSERT this message into gmail_thread_members.
+    in_batch_map: dict[str, UUID] = {}
+    canonical_id_by_record: dict[int, UUID] = {}
+    new_canonical_rows: list[tuple] = []
+    new_member_rows: list[tuple] = []
+    thread_metadata_deltas: dict[UUID, dict] = {}  # canonical_id → {count_delta, participants_delta}
+
+    for (orig_idx, r), ids in zip(indexed, per_record_message_ids):
+        canonical_id: UUID | None = None
+        # Own message_id seen before? (Most common case under reprocessing.)
+        canonical_id = member_map.get(ids.own) or in_batch_map.get(ids.own)
+        if canonical_id is None:
+            # Walk parent chain.
+            for parent_id in ids.parents:
+                canonical_id = member_map.get(parent_id) or in_batch_map.get(parent_id)
+                if canonical_id is not None:
+                    break
+        if canonical_id is None:
+            # New thread; root is this message.
+            canonical_id = uuid7()
+            new_canonical_rows.append((
+                canonical_id, install_id, ids.own,
+                r.draft.occurred_at,  # last_seen_at initial
+                1,                    # message_count
+                ids.participants,     # JSONB array
+            ))
+        else:
+            thread_metadata_deltas.setdefault(canonical_id, {
+                "count_delta": 0, "participants_delta": set(),
+            })
+            thread_metadata_deltas[canonical_id]["count_delta"] += 1
+            thread_metadata_deltas[canonical_id]["participants_delta"].update(ids.participants)
+
+        in_batch_map[ids.own] = canonical_id
+        new_member_rows.append((install_id, ids.own, canonical_id))
+        canonical_id_by_record[orig_idx] = canonical_id
+
+    # Step D: batched INSERT into gmail_threads_canonical (new threads only).
+    if new_canonical_rows:
+        await tctx.executemany(
+            """
+            INSERT INTO gmail_threads_canonical (
+                id, gmail_installation_id, canonical_message_id,
+                last_seen_at, message_count, participant_emails
+            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            ON CONFLICT (gmail_installation_id, canonical_message_id) DO NOTHING
+            """,
+            new_canonical_rows,
+        )
+
+    # Step E: batched INSERT into gmail_thread_members.
+    await tctx.executemany(
+        """
+        INSERT INTO gmail_thread_members (gmail_installation_id, message_id, thread_canonical_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (gmail_installation_id, message_id) DO NOTHING
+        """,
+        new_member_rows,
+    )
+
+    # Step F: batched UPDATE of thread metadata (last_seen, count, participants)
+    # for existing threads that gained new members in this batch.
+    for canonical_id, deltas in thread_metadata_deltas.items():
+        await tctx.execute(
+            """
+            UPDATE gmail_threads_canonical
+            SET last_seen_at = now(),
+                message_count = message_count + $2,
+                participant_emails = (
+                    SELECT jsonb_agg(DISTINCT v)
+                    FROM jsonb_array_elements_text(participant_emails || $3::jsonb) AS v
+                )
+            WHERE id = $1
+            """,
+            canonical_id, deltas["count_delta"],
+            json.dumps(list(deltas["participants_delta"])),
+        )
+
+    return canonical_id_by_record
+```
+
+**Why this is correct:**
+
+- All canonicalization writes are in the same transaction as the observation INSERTs (step 5 of `write_batch`). A crash anywhere before commit rolls back the whole batch; on retry, the same algorithm produces the same canonical_ids (deterministic given the same input order; the in_batch_map building is order-dependent but the order is stable: sort by occurred_at ascending).
+- `ON CONFLICT DO NOTHING` on `gmail_threads_canonical` handles the race where two concurrent writer batches both try to create the same canonical thread (one wins, the other re-reads via the member-map lookup on next batch — no data loss).
+- The single SELECT in step B replaces ~N round-trips from the existing per-message canonicalize. For a 500-record batch with 30% Gmail records, this is one query instead of ~450.
+- The thread_metadata UPDATE in step F is still N queries (one per affected thread); batching this as a CTE is possible but adds complexity for marginal win — thread counts are bounded per batch.
+
+**Orphan / out-of-order arrival** (per [services/integrations/gmail/threading.py:32-36](services/integrations/gmail/threading.py#L32-L36)): if a child arrives before its parent, the child becomes its own root. When the parent arrives later, it lands in a separate batch, walks its own parent chain (finds nothing), and becomes another root. The two are not retroactively merged. **This is unchanged behavior** — the post-cutover refactor preserves the orphan semantics; the §12.4 NULL-`thread_canonical_id` scanner handles failure-mode-induced orphans, not algorithmic ones.
+
+**Migration sequencing:** the unified-transaction shape ships AFTER the cutover milestone, per Phase 2.1 Q2 decision. During the interim, the legacy `dispatch_gmail_message_resource` path stays in place; `canonicalize_gmail_batch_in_txn` is shipped behind a feature flag (`gmail.unified_canonicalization_enabled`) and enabled per-tenant once observed correctness matches.
 
 ---
 
@@ -2119,11 +2523,12 @@ class IngestionCircuitBreakerWorkflow:
             return CircuitBreakerResult(action='none', breached_count=0)
 
         # Step 3: for each breached partition, identify tenants whose messages
-        # are in that partition (the message key is tenant_id; lag tells us
-        # which partition is slow). Sample the head of the lagging partition
-        # to read tenant_ids.
+        # are in that partition. See §11.3 for the dedicated
+        # `ingestion.tenant_traffic_signal` topic mechanism (added per Phase 3
+        # review hand-wave 9). The sampling activity reads from that topic, not
+        # from ingestion.raw directly.
         tenant_ids = await workflow.execute_activity(
-            sample_breached_tenants,
+            sample_breached_tenants_from_signal_topic,
             SampleArgs(partitions=[p.partition for p in breached], sample_size=50),
             start_to_close_timeout=timedelta(seconds=30),
         )
@@ -2169,6 +2574,108 @@ class IngestionCircuitBreakerWorkflow:
 2. **Partial rollback per-tenant**: same flag, set per-tenant.
 3. **Draining behavior**: post-rollback, the normalizer pool continues consuming `ingestion.raw` until empty; no need to drain Kafka topics manually.
 4. **Double-ingestion risk**: bounded — observation UNIQUE constraint rejects duplicates from the inline path that also got through Kafka. Bounded by the observation table's transaction throughput; no application-level dedup needed.
+
+### 11.3 Tenant traffic signal topic (Phase 3 review hand-wave 9)
+
+Sampling the head of `ingestion.raw` directly to identify breached tenants is awkward: a second consumer group on the production topic competes for fetch budget and risks subtle behavior changes in the primary group. A dedicated **signal topic** at ~1% sampling decouples the circuit-breaker's correctness from production topic mechanics.
+
+**Topic config:**
+
+```yaml
+topic: ingestion.tenant_traffic_signal
+partitions: 16
+replication: 3
+retention: 1h                    # short — circuit breaker reads recent only
+cleanup_policy: delete
+key: tenant_id
+```
+
+**Producer (in the webhook router and FetchPage activity):**
+
+```python
+# services/ingestion/feature_flags/traffic_signal.py
+import hashlib
+
+async def maybe_emit_traffic_signal(
+    tenant_id: UUID, source: str, ingress_kind: str,
+    raw_partition: int,
+    producer: AIOKafkaProducer,
+) -> None:
+    """Emit a signal sample with ~1% probability. Cheap; non-blocking.
+
+    Sampling is deterministic per (tenant_id, message_ordinal) to avoid
+    uneven sampling across tenants — uses blake2b hash of the message
+    envelope's content_hash modulo 100 < 1.
+    """
+    # In practice this is called from the producer side of ingestion.raw;
+    # we pass the already-computed content_hash. The 1% threshold is
+    # adjustable via env (INGESTION_TRAFFIC_SIGNAL_SAMPLE_PCT).
+    if hash_to_unit(content_hash) >= SAMPLE_PCT / 100.0:
+        return
+    await producer.send(
+        "ingestion.tenant_traffic_signal",
+        value=orjson.dumps({
+            "tenant_id": str(tenant_id),
+            "source": source,
+            "ingress_kind": ingress_kind,
+            "raw_partition": raw_partition,
+            "emitted_at_ms": int(time.time() * 1000),
+        }),
+        key=str(tenant_id).encode(),
+    )
+```
+
+Called from:
+- The webhook router right after the `ingestion.raw` publish.
+- The FetchPage activity right after step 5 (Kafka publish).
+
+Both producers are already in the hot path; the signal emit is a non-blocking `send` (not `send_and_wait`) with at-most-once semantics — losing 0.5% of 1% samples is irrelevant for the breach-detection use case.
+
+**Consumer (the circuit-breaker activity):**
+
+```python
+@activity.defn
+async def sample_breached_tenants_from_signal_topic(
+    args: SampleArgs,
+) -> list[UUID]:
+    """Read the last 60s of the signal topic; filter to messages
+    whose raw_partition is in args.partitions. Return distinct tenant_ids.
+    """
+    consumer = AIOKafkaConsumer(
+        "ingestion.tenant_traffic_signal",
+        bootstrap_servers=KAFKA_BOOTSTRAP,
+        group_id=f"circuit-breaker-{args.run_id}",   # ephemeral group; offset reset earliest
+        auto_offset_reset="latest",
+        enable_auto_commit=False,
+        consumer_timeout_ms=5000,
+    )
+    await consumer.start()
+    seen: set[UUID] = set()
+    try:
+        # Read messages newer than 60s ago.
+        cutoff_ms = int(time.time() * 1000) - 60_000
+        async for msg in consumer:
+            payload = orjson.loads(msg.value)
+            if payload["emitted_at_ms"] < cutoff_ms:
+                continue
+            if payload["raw_partition"] not in args.partitions:
+                continue
+            seen.add(UUID(payload["tenant_id"]))
+            if len(seen) >= args.sample_size:
+                break
+    finally:
+        await consumer.stop()
+    return list(seen)
+```
+
+**Why this design:**
+
+- **No interference with production consumers.** The signal topic has its own consumer; the `ingestion.raw` consumer group is untouched.
+- **1% sampling is cheap.** At 1000 webhooks/sec sustained, the signal topic sees 10 msg/sec. At burst (10k/sec), 100 msg/sec. The circuit breaker reads 60s of history → 600-6000 messages per tick. Trivial.
+- **Correctness scales with breach severity.** A tenant flooding their partition produces proportionally more signal samples. Mild breaches may not produce enough samples to identify the tenant — that's acceptable; mild breaches don't trigger the breaker anyway (5-minute sustained > 60s lag threshold).
+- **Schema is stable.** Adding fields to the signal payload is additive; old consumers ignore unknown keys (Python `orjson.loads` doesn't validate schema).
+
+**Failure mode:** the signal-topic producer fails (`producer.send` raises). Caught and logged; signal sample is lost. Breach detection degrades to "won't identify the breaching tenant"; circuit breaker doesn't fire. **Acceptable** — the alternative is making the signal emit blocking, which adds latency to the hot path for a feature that's purely observability.
 
 ---
 
