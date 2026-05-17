@@ -13,6 +13,24 @@ exact failure mode this tracker exists to prevent.
 
 ---
 
+## Coherence pass status
+
+**M3.4 (this milestone):** A1, A2, A3, A4, A5 folded into the LLD prose.
+Edits live in [03-low-level-design.md](03-low-level-design.md) §1.3, §5.2,
+§5.4, §5.5, §8, §12.1, and §13. The entries below stay in this file as
+audit history; future readers should treat the LLD prose as authoritative.
+
+**M1+M2 amendments tracker:** there is a separate
+[../decisions/lld-amendments-pending.md](../decisions/lld-amendments-pending.md)
+with six M1+M2 findings. M3.4 folded the three LLD-resident items
+(§1.6 BEGIN/COMMIT, §5.2 Path B handler discipline + cooperative-sticky
+note, §13 zero-refill sentinel). The remaining three (shadow-write
+ordering — HLD, parsed-dict surfaces — new LLD subsection, infrastructure
+deps — non-amendment) need a separate coherence pass and have not been
+removed from that file.
+
+---
+
 ## Open amendments
 
 ### A1 — `ingestion_failures` UPSERT key needs DB enforcement, not app-level

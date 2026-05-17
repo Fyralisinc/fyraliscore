@@ -235,9 +235,9 @@ COMMIT;
 
 **Column justifications:**
 
-- The CHECK on `failure_kind` is the enumeration that the failure-mode catalog (§8) writes to. New kinds require both a migration (alter the CHECK) and a catalog entry. Deliberate friction to keep the kinds finite.
-- `raw_s3_key` is nullable because some failures (rate-limit-exhausted-pre-fetch, fetcher-terminal-before-any-page) have no raw body. The replay tool checks for NULL before attempting to re-publish.
-- `attempt_count` enables UPSERT-on-failure semantics: instead of one row per occurrence, one row per `(tenant_id, source, raw_s3_key, failure_kind)` tuple with a counter. The UPSERT key is enforced by application code (UNIQUE constraint would be too restrictive for the genuinely-distinct-occurrence cases like `reconciliation_gap_unresolved` which has no raw_s3_key).
+- The CHECK on `failure_kind` is the enumeration that the failure-mode catalog (§8) writes to. New kinds require both a migration (alter the CHECK) and a catalog entry. Deliberate friction to keep the kinds finite. Current enum (as of migration 0051): `normalizer_parse_error`, `observation_insert_error`, `rate_limit_exhausted`, `s3_put_failure`, `kafka_publish_failure`, `fetcher_terminal_error`, `reconciliation_gap_unresolved`, `oauth_revoked_mid_run`, `embedding_ollama_failure`.
+- `raw_s3_key` is nullable because some failures have no upstream S3 body (rate-limit-exhausted-pre-fetch, fetcher-terminal-before-any-page, embedding failures that operate on already-normalized observations). When `raw_s3_key` is NULL, the replay anchor lives in `error_context` under a failure-kind-specific key — see the "Replay anchor" column in §8.
+- `attempt_count` enables UPSERT-on-failure semantics: one row per `(tenant_id, source, raw_s3_key, failure_kind)` tuple with a counter. **DB-enforced** via the UNIQUE index `ingestion_failures_upsert_key_idx` added in migration 0051. NULL `raw_s3_key` rows remain distinct under Postgres `NULLS DISTINCT` semantics (Postgres 15+), preserving the genuinely-distinct-occurrence carve-out (e.g. repeated `reconciliation_gap_unresolved` episodes per tenant per source are intentionally separate rows). The DLQ writer (§5.5) uses `INSERT ... ON CONFLICT DO UPDATE` against this index; concurrent publishes of the same logical failure serialise correctly.
 
 ### 1.4 `onboarding_triggers` (OAuth outbox)
 
@@ -485,8 +485,7 @@ Required for the batched alias lookups to perform. Per the user's confirmation: 
 
 ```sql
 -- db/migrations/0049_entity_aliases_normalized_index.sql
-BEGIN;
-
+-- migration:no-transaction
 CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_aliases_normalized_idx
     ON entity_aliases (
         tenant_id,
@@ -499,13 +498,11 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_aliases_normalized_idx
 -- to use index lookups for each element of the array (via the planner's
 -- ANY-to-IN rewrite). The existing aliases_text_idx on (tenant_id, alias_text)
 -- stays — it serves the by-raw-text retrieval path.
-
-COMMIT;
 ```
 
 **Notes:**
 
-- `CONCURRENTLY` is mandatory; the table may be large in some tenants and the migration must not block writers. `CONCURRENTLY` cannot run inside a transaction block, so this migration uses `BEGIN`/`COMMIT` for the file structure only — the migration runner must detect `CONCURRENTLY` and dispatch outside a transaction (per the project's existing migration runner convention; verify before deploying).
+- `CONCURRENTLY` is mandatory; the table may be large in some tenants and the migration must not block writers. `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block (SQLSTATE 25001), so the migration file omits `BEGIN/COMMIT` entirely — an inline explicit `BEGIN` would reintroduce the txn that CONCURRENTLY forbids regardless of the runner's wrapper. The `-- migration:no-transaction` marker (explicit, preferred) signals the runner; CONCURRENTLY keyword detection is a fallback. See `lib/shared/migrations.py:_needs_no_transaction`.
 - The expression must match the application's `normalize_phrase()` exactly. Mismatch produces a silent table-scan fallback. The LLD pairs this migration with a test that asserts `EXPLAIN (FORMAT JSON) … ANY(…)` shows `Index Scan using entity_aliases_normalized_idx`.
 
 ### 1.7 Cutover feature flag
@@ -1557,7 +1554,11 @@ async def transform_one(envelope: dict, s3: S3Client) -> NormalizedRecord | DLQR
         )
 ```
 
-**DLQ:** parse failures publish to `ingestion.dlq` (separate Kafka producer; non-transactional is fine — at-least-once is acceptable). A DLQ consumer writes to `ingestion_failures` (UPSERT on `(tenant_id, source, raw_s3_key, failure_kind)`).
+**DLQ:** parse failures publish to `ingestion.dlq` (separate Kafka producer; non-transactional is fine — at-least-once is acceptable). A DLQ consumer writes to `ingestion_failures` via `INSERT ... ON CONFLICT (tenant_id, source, raw_s3_key, failure_kind) DO UPDATE SET attempt_count = attempt_count + 1, last_seen_at = EXCLUDED.last_seen_at, error_summary = EXCLUDED.error_summary` against the UNIQUE index from migration 0051. Concurrent producers of the same logical failure serialise at the DB lock manager; no app-level dedup needed.
+
+**Path B import discipline (normalizer pool):** every handler module registered with `@register(channel)` MUST keep its module-level import graph free of DB-touching modules (`asyncpg`, `lib.shared.tenant_context`, `services.ingestion.core`, `services.observations.repo`, transitively-DB modules). Handlers that expose inline-path dispatchers (e.g. `services/ingestion/handlers/gmail.py`'s `dispatch_gmail_message_resource`) MUST lazy-import the DB modules inside the dispatcher function body. The normalizer worker imports the handler registry to obtain pure-transform handlers; a top-level DB import in any handler module propagates into the normalizer process and breaks the Path B contract. Two tests enforce this: `test_worker_import_graph_contains_no_db_modules` (static, subprocess + `sys.modules` inspection) and `test_worker_normalize_does_not_touch_asyncpg_under_load` (runtime tripwire with `MagicMock(side_effect=raise)` on `asyncpg.connect` / `asyncpg.create_pool`).
+
+**Cooperative-sticky rebalance — implementation note:** the LLD's "cooperative-sticky" name refers to the JOINT behaviour of (a) the client-side `StickyPartitionAssignor` and (b) the broker-side incremental-cooperative rebalance protocol introduced in Kafka 2.4. aiokafka has no separate `CooperativeStickyAssignor` class — the production deployment passes `partition_assignment_strategy=(StickyPartitionAssignor,)` and the cooperative protocol is negotiated with the broker. Confirmed in `services/ingestion/normalizer/tests/test_worker_cooperative_sticky_rebalance.py` (real testcontainers Kafka; asserts ≥2 rebalance events during a 2-worker JOIN+LEAVE sequence and every revoked partition is re-assigned).
 
 ### 5.2 Observation writer pool
 
@@ -1743,7 +1744,14 @@ async def embed_and_update(record, ollama, pool):
     )
 ```
 
-The backlog of pre-existing `embedding_pending=TRUE` rows is handled by a **separate one-shot script**, not via the Kafka topic. See §12.
+The `WHERE id = $2 AND embedding_pending = TRUE` guard is load-bearing for **two** properties:
+
+  1. **Coexistence with inline path.** Inline `services.ingestion.core.ingest` and this worker can both target the same observation during the cutover window. The flag-only guard makes the second writer a no-op — exactly one writer wins. The alternative `WHERE embedding IS NULL` would race: the inline path sets `embedding` and clears `embedding_pending` atomically, but a worker checking `embedding IS NULL` could still see the row as claimable across snapshot boundaries.
+  2. **Operator-driven re-embed.** Operators force a re-compute by setting `embedding_pending = TRUE` on a row that already has an embedding. The flag-only guard succeeds; an `IS NULL` guard would silently no-op.
+
+Retry semantics: `OllamaClient` retries internally on transient errors (5xx, connection, timeout) — default 3 attempts with exponential backoff. After that loop, `OllamaError` is **terminal**: the worker publishes a DLQ envelope with `failure_kind="embedding.ollama_failure"` and commits the Kafka offset. The worker does NOT add Kafka-level redelivery on top — re-delivering would just pound an already-failing Ollama with more requests. The "N retries before DLQ" in earlier draft text refers to the OllamaClient's max_retries, NOT a Kafka re-delivery count.
+
+The backlog of pre-existing `embedding_pending=TRUE` rows is handled by a **long-running rate-limited service** (NOT a one-shot script — see §12.1 and amendment A4). The service scans observations directly from Postgres (not via Kafka, to avoid starving steady-state), drains in cursor order, persists its position in `embedding_backlog_state`, and is governed by the M1.3 Lua bucket so the operator can throttle or pause via `BACKFILL_OLLAMA_QPS`.
 
 ### 5.5 Redis SETNX dedup (short-window safety net)
 
@@ -2145,26 +2153,28 @@ async def reconcile_discord(args: ReconcileArgs) -> ReconcileResult:
 
 ## 8. Failure mode catalog
 
-| # | Failure | Where surfaced | Handler | User-visible behavior |
-|---|---|---|---|---|
-| 1 | Network blip (transient TCP/TLS error) | FetchPage activity | `TransientSourceError` → Temporal retries with exponential backoff (max 5 attempts) | None unless retries exhausted; then DLQ entry + workflow `status='partial'` |
-| 2 | Source 429 with `Retry-After` | FetchPage step 3 | `RateLimited(retry_after_ms)` → workflow sleeps then retries; bucket updated via `report_retry_after` | None — invisible to user |
-| 3 | Source 5xx transient | FetchPage step 3 | `TransientSourceError` → Temporal retries | None unless persistent across attempts |
-| 4 | OAuth token revoked mid-run | FetchPage step 3 (401/403) | `OAuthRevokedError` (non-retryable) → existing chokepoint disables install; workflow exits `status='failed'`; `oauth_revoked_mid_run` row in `ingestion_failures` | "Connection lost — reconnect in Settings"; in-flight backfill stops |
-| 5 | S3 PutObject timeout | FetchPage step 4 | `S3PutError` → Temporal retries; if persistent, DLQ entry | None unless persistent |
-| 6 | S3 PutObject 412 PreconditionFailed (content hash collision) | FetchPage step 4 | Treated as success (idempotent write) | None — by design |
-| 7 | Kafka publish failure (broker down) | FetchPage step 5 | `KafkaPublishError` → Temporal retries; if persistent, activity fails and shard restarts from last cursor | None unless persistent |
-| 8 | Normalizer parse exception (handler `ValidationError`) | Normalizer transform | `DLQRecord` → `ingestion.dlq` → `ingestion_failures` row with `failure_kind='normalizer_parse_error'` and `raw_s3_key` pointer | None at user level; ops sees the row, may replay after fix |
-| 9 | Observation INSERT UNIQUE-violation | Writer step 5 | ON CONFLICT DO NOTHING → row not returned; no error; not double-counted | None — intentional dedup |
-| 10 | Observation INSERT other PG error (deadlock, serialization) | Writer step 5 | Transaction rolls back; Kafka commit not called; messages redelivered; retried | None unless persistent |
-| 11 | Temporal worker crash mid-activity | Temporal infrastructure | Heartbeat timeout → activity rescheduled; FetchPage retries from same cursor; S3+Kafka+observation dedup absorbs the duplicate work | None — invisible |
-| 12 | Source quota exceeded (Gmail/GitHub daily) | FetchPage step 3 | Specific subclass of `RateLimited` with `retry_after_ms` = hours; workflow sleeps until quota resets | "Backfill paused until daily quota resets" surfaced via `tenant.onboarding.behind_schedule` |
-| 13 | Reconciliation gap unresolved (after re-shard) | Reconciler activity (2nd pass) | `reconciliation_gap_unresolved` row in `ingestion_failures`; workflow completes `status='partial'` | `source.onboarding.complete` body indicates `coverage_confidence != 'exact'`; UI surfaces "Partial coverage — some history may be missing" |
-| 14 | Gmail Pub/Sub historyId stale (404) | Existing `push_handler` | Pub/Sub gets 200, workflow logs warning, scheduled poller picks up; if stale across pollers, `watch_scheduler` renews | None unless watch renewal also fails |
-| 15 | Discord Gateway disconnect | Gateway worker | Per existing close-code mapping: resume if possible, IDENTIFY if not, exit if fatal; new leader (Redis lock holder on restart) reads `gateway_session_state` for `session_id`/`seq` | None during transient; "Discord connection lost, reconnecting" for sustained outage |
-| 16 | Outbox poller fails to start workflow | `OnboardingTriggerPollerWorkflow` | `record_trigger_failure` updates outbox row with `last_error`; row remains unconsumed; next 5s tick retries | "Setup in progress" — invisible unless `consume_attempts > 5` (ops alerted) |
-| 17 | Cutover circuit breaker fires | Lag monitor (separate Temporal Schedule) | Flips `ingestion.kafka_path_enabled=false` for affected tenant; webhook router reads flag on next request | None — webhook path reverts to inline |
-| 18 | Embedding worker can't reach Ollama | Embedding worker | Message redelivered; after N retries → DLQ entry with `failure_kind='ollama_unavailable'` (new kind); observation stays `embedding_pending=TRUE` | Retrieval skips this row until embedding completes; no user-visible error |
+The "Replay anchor" column names the field a replay tool reads to drive recovery for each kind. Per amendment A5: anchors live in `raw_s3_key` when the failure operates on raw bytes, OR in `error_context.<key>` when the failure operates on post-normalization state. New failure kinds MUST declare their anchor.
+
+| # | Failure | Where surfaced | Handler | User-visible behavior | Replay anchor |
+|---|---|---|---|---|---|
+| 1 | Network blip (transient TCP/TLS error) | FetchPage activity | `TransientSourceError` → Temporal retries with exponential backoff (max 5 attempts) | None unless retries exhausted; then DLQ entry + workflow `status='partial'` | `error_context.shard_id` + cursor (Temporal retries from same shard cursor) |
+| 2 | Source 429 with `Retry-After` | FetchPage step 3 | `RateLimited(retry_after_ms)` → workflow sleeps then retries; bucket updated via `report_retry_after` | None — invisible to user | n/a (auto-recovered) |
+| 3 | Source 5xx transient | FetchPage step 3 | `TransientSourceError` → Temporal retries | None unless persistent across attempts | `error_context.shard_id` |
+| 4 | OAuth token revoked mid-run | FetchPage step 3 (401/403) | `OAuthRevokedError` (non-retryable) → existing chokepoint disables install; workflow exits `status='failed'`; `oauth_revoked_mid_run` row in `ingestion_failures` | "Connection lost — reconnect in Settings"; in-flight backfill stops | `error_context.installation_id` (operator re-enables after user reconnect) |
+| 5 | S3 PutObject timeout | FetchPage step 4 | `S3PutError` → Temporal retries; if persistent, DLQ entry | None unless persistent | `raw_s3_key` (key was assigned before the PUT; replay re-PUTs the same key) |
+| 6 | S3 PutObject 412 PreconditionFailed (content hash collision) | FetchPage step 4 | Treated as success (idempotent write) | None — by design | n/a |
+| 7 | Kafka publish failure (broker down) | FetchPage step 5 | `KafkaPublishError` → Temporal retries; if persistent, activity fails and shard restarts from last cursor | None unless persistent | `raw_s3_key` (re-publishes the existing S3 object) |
+| 8 | Normalizer parse exception (handler `ValidationError`) | Normalizer transform | `DLQRecord` → `ingestion.dlq` → `ingestion_failures` row with `failure_kind='normalizer_parse_error'` and `raw_s3_key` pointer | None at user level; ops sees the row, may replay after fix | `raw_s3_key` |
+| 9 | Observation INSERT UNIQUE-violation | Writer step 5 | ON CONFLICT DO NOTHING → row not returned; no error; not double-counted | None — intentional dedup | n/a |
+| 10 | Observation INSERT other PG error (deadlock, serialization) | Writer step 5 | Transaction rolls back; Kafka commit not called; messages redelivered; retried | None unless persistent | `raw_s3_key` (re-consume from raw → re-normalize → re-INSERT) |
+| 11 | Temporal worker crash mid-activity | Temporal infrastructure | Heartbeat timeout → activity rescheduled; FetchPage retries from same cursor; S3+Kafka+observation dedup absorbs the duplicate work | None — invisible | n/a |
+| 12 | Source quota exceeded (Gmail/GitHub daily) | FetchPage step 3 | Specific subclass of `RateLimited` with `retry_after_ms` = hours; workflow sleeps until quota resets | "Backfill paused until daily quota resets" surfaced via `tenant.onboarding.behind_schedule` | n/a (auto-recovered) |
+| 13 | Reconciliation gap unresolved (after re-shard) | Reconciler activity (2nd pass) | `reconciliation_gap_unresolved` row in `ingestion_failures`; workflow completes `status='partial'` | `source.onboarding.complete` body indicates `coverage_confidence != 'exact'`; UI surfaces "Partial coverage — some history may be missing" | `error_context.shard_id` + gap window (operator-driven re-shard) |
+| 14 | Gmail Pub/Sub historyId stale (404) | Existing `push_handler` | Pub/Sub gets 200, workflow logs warning, scheduled poller picks up; if stale across pollers, `watch_scheduler` renews | None unless watch renewal also fails | n/a (auto-recovered) |
+| 15 | Discord Gateway disconnect | Gateway worker | Per existing close-code mapping: resume if possible, IDENTIFY if not, exit if fatal; new leader (Redis lock holder on restart) reads `gateway_session_state` for `session_id`/`seq` | None during transient; "Discord connection lost, reconnecting" for sustained outage | n/a (auto-recovered) |
+| 16 | Outbox poller fails to start workflow | `OnboardingTriggerPollerWorkflow` | `record_trigger_failure` updates outbox row with `last_error`; row remains unconsumed; next 5s tick retries | "Setup in progress" — invisible unless `consume_attempts > 5` (ops alerted) | `error_context.outbox_id` |
+| 17 | Cutover circuit breaker fires | Lag monitor (separate Temporal Schedule) | Flips `ingestion.kafka_path_enabled=false` for affected tenant; webhook router reads flag on next request | None — webhook path reverts to inline | n/a |
+| 18 | Embedding worker can't reach Ollama | Embedding worker / backlog drainer | After OllamaClient internal retries (3x), `OllamaError` is terminal: DLQ envelope with `failure_kind='embedding_ollama_failure'` (NOT `ollama_unavailable` — name corrected per amendment A2); observation stays `embedding_pending=TRUE` | Retrieval skips this row until embedding completes; no user-visible error | `error_context.observation_id` (replay re-attempts Ollama for that specific observation; `raw_s3_key` is NULL — raw bytes aren't the input, `content_text` is) |
 
 ### 8.1 Replay surface
 
@@ -2687,9 +2697,22 @@ async def sample_breached_tenants_from_signal_topic(
 
 Per Phase 2.1 Block 3 additions.
 
-### 12.1 Embedding backlog backfill (Q3)
+### 12.1 Embedding backlog drainer (Q3)
 
-Reads `embedding_pending=TRUE` rows directly from Postgres (NOT through Kafka, to avoid starving steady-state). Rate-limited.
+**Amendment A4 (M3.3):** reshaped from "one-shot script" to **long-running rate-limited service**. The original §12.1 pseudocode (preserved below for reference) was sized for "a small known backlog: run once, finish, exit." Production backlog at design-time is unknown — sizing range 10 to 10M+ rows. A one-shot exit-on-drain shape requires a retrofit if new rows keep arriving faster than the drainer processes them. M3.3 ships the service shape that scales from N=10 to N=10M+ without code changes.
+
+**Service contract (M3.3 implementation):**
+
+- Lives at [services/ingestion/recovery/embedding_backlog/](../../services/ingestion/recovery/embedding_backlog/).
+- Scans `observations WHERE embedding_pending = TRUE` in `(ingested_at, id)` order, cursored by table `embedding_backlog_state` (migration 0052, singleton row per `instance_name`). Cursor persists after every advance — SIGTERM mid-flight resumes from the same row.
+- Rate-limited via the **M1.3 Lua bucket** at key `rate:*system:ollama:embed`. Service code MUST NOT introduce a parallel rate-limit surface (no `asyncio.Semaphore`, no token-bucket reimplementation, no sleep loop). The bucket is the single source of truth.
+- `BACKFILL_OLLAMA_QPS` env var sets `refill_per_sec`. `QPS=0` maps to `capacity=0 + refill_per_sec=0`, which produces the `-1` sentinel from `acquire.lua` on every acquire — operator pause switch. Service polls the bucket at `SENTINEL_RECHECK_SEC=1s` so a QPS-raise takes effect within seconds, not minutes.
+- On scan exhaustion, cursor resets to `(NULL, NULL)` so late-arriving rows with `ingested_at < previous cursor` are caught on the next pass.
+- Terminal `OllamaError` (after the client's internal retry loop) → DLQ publish with `failure_kind="embedding.ollama_failure"`, cursor advances past the row. Recovery is via the replay tool, not in-place retry.
+
+**CLI:** `python -m services.ingestion.recovery.embedding_backlog`. Env vars in [services/ingestion/recovery/embedding_backlog/__main__.py](../../services/ingestion/recovery/embedding_backlog/__main__.py).
+
+Reference pseudocode (the original one-shot shape — kept as a doc reference; **do not implement against this**):
 
 ```python
 # services/ingestion/recovery/embedding_backlog.py
@@ -2888,13 +2911,27 @@ Idempotent (matches the existing UPDATE guard at [handlers/gmail.py:312-321](ser
 --
 -- Returns table: { granted (0 or 1), tokens_remaining, retry_after_ms }
 --
+-- retry_after_ms semantics:
+--   = 0   on grant.
+--   > 0   on deny; milliseconds until the bucket can serve `cost` tokens
+--         (or remaining lockout window, whichever applies).
+--   = -1  SENTINEL: indefinite lockout. Returned ONLY when
+--         refill_per_sec == 0 and tokens < cost. With zero refill, the
+--         deficit / refill_per_sec * 1000 math is +infinity (math.huge),
+--         which Redis cannot serialise as an integer. The sentinel tells
+--         callers "this bucket will never recover on its own; clear it
+--         via report_retry_after.lua or wait for a configuration change."
+--         Callers MUST handle -1 explicitly; treating it as a sleep
+--         duration would be wrong both in semantics and in code.
+--
 -- Behavior:
 --   1. If a lockout is set (set by report_retry_after.lua), and we are
 --      within the lockout window, deny with retry_after = remaining lockout.
 --   2. Otherwise compute current token level = min(capacity, last_tokens
 --      + (now - last_updated) * refill_per_sec / 1000).
 --   3. If tokens >= cost, deduct and grant.
---   4. Else compute retry_after = ceil((cost - tokens) / refill_per_sec * 1000).
+--   4. Else if refill_per_sec == 0, return the -1 sentinel.
+--   5. Else compute retry_after = ceil((cost - tokens) / refill_per_sec * 1000).
 
 local now_ms = tonumber(ARGV[1])
 local capacity = tonumber(ARGV[2])
@@ -2931,6 +2968,16 @@ if tokens >= cost then
     return {1, tokens, 0}
 end
 
+-- Refill==0 + insufficient tokens → indefinite lockout (sentinel -1).
+-- Persist state without consuming; the bucket can be cleared only by
+-- report_retry_after.lua or by a config change that raises refill.
+if refill_per_sec == 0 then
+    redis.call('HMSET', KEYS[1],
+        'tokens', tokens, 'updated_at_ms', now_ms)
+    redis.call('PEXPIRE', KEYS[1], 86400000)
+    return {0, tokens, -1}
+end
+
 local deficit = cost - tokens
 local retry_after_ms = math.ceil(deficit / refill_per_sec * 1000)
 -- Persist current state without consuming.
@@ -2939,6 +2986,8 @@ redis.call('HMSET', KEYS[1],
 redis.call('PEXPIRE', KEYS[1], 86400000)
 return {0, tokens, retry_after_ms}
 ```
+
+**Python client contract (per the -1 sentinel):** `AcquireResult.retry_after_ms` may be `-1`, meaning indefinite lockout. Callers MUST branch on it; do NOT pass it to `asyncio.sleep` (negative argument would raise). The M3.3 backlog drainer is the first caller to depend on this sentinel as the operator pause switch (`BACKFILL_OLLAMA_QPS=0` → `refill_per_sec=0` → sentinel on every acquire). The contract is locked by two tests: `test_lua_acquire_zero_refill_denies_with_sentinel` and `test_lua_zero_refill_cleared_by_report_retry_after`.
 
 ```lua
 -- services/ingestion/rate_limit/scripts/report_retry_after.lua
