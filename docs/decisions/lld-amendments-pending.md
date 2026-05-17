@@ -203,7 +203,92 @@ implicit.
 
 ---
 
+## 5. Handler-registry import graph must be DB-free (M2.3 prerequisite)
+
+**Current spec state:** The LLD describes the normalizer as Path B
+("pure transform, no DB access") and lists the handler registry as
+its dispatch substrate. What the LLD does NOT say is that the
+handler MODULES themselves must not perform DB-touching imports at
+module level — i.e. the registry's import graph must be Path B-clean.
+
+**What broke (and why the M2.3 work order forced us to fix it):**
+
+Before M2.3, `services/ingestion/handlers/gmail.py` imported, at
+module top level:
+
+  - `lib.shared.tenant_context` (which imports asyncpg)
+  - `services.ingestion.core` (which imports asyncpg)
+  - `services.integrations.gmail.threading` (which imports
+    tenant_context)
+
+These imports were only USED by `dispatch_gmail_message_resource`
+(the inline-path dispatcher invoked by push_handler /
+history_poller), NOT by the registered `@register("gmail:")`
+handler. But Python evaluates module-level imports eagerly, so
+importing the handler registry pulled asyncpg + tenant_context
+into every consumer of the registry — including the M2.3
+normalizer worker, which MUST be DB-free per the load-bearing
+Path B invariant.
+
+**What we changed (M2.3):**
+
+`services/ingestion/handlers/gmail.py` now imports those modules
+LAZILY (inside the dispatcher function that needs them). The
+registered handler function's import graph is unchanged. The dead
+import of `bind_tenant` was also removed.
+
+After the change, `import services.ingestion.normalizer.worker`
+loads zero DB-related modules. The static proof
+(`test_worker_import_graph_contains_no_db_modules`) asserts this
+via a subprocess + `sys.modules` inspection.
+
+**Proposed amendment to LLD §5 (Handler Registry section) — new
+paragraph "Path B import discipline":**
+
+> Every handler module registered with `@register(channel)` MUST
+> keep its module-level import graph free of DB-touching modules
+> (asyncpg, `lib.shared.tenant_context`, `services.ingestion.core`,
+> `services.observations.repo`, and any module that transitively
+> imports them). Handlers that ALSO expose inline-path dispatchers
+> (e.g. `gmail.py`'s `dispatch_gmail_message_resource`) must
+> lazy-import the DB modules inside the dispatcher function body.
+>
+> Rationale: the normalizer worker imports the handler registry to
+> obtain pure-transform handlers. A top-level DB import in any
+> handler module propagates into the normalizer process and breaks
+> the Path B contract (LLD §5.2). The contract is enforced by two
+> tests in
+> `services/ingestion/normalizer/tests/test_worker_no_db_access.py`:
+>
+>   - `test_worker_import_graph_contains_no_db_modules` — static.
+>   - `test_worker_normalize_does_not_touch_asyncpg_under_load`
+>     — runtime tripwire.
+
+**Also for M2.3 specifically — testing infrastructure additions:**
+
+  - `testcontainers[kafka]>=4.0` added to dev deps. Drives the
+    cooperative-sticky rebalance test (`test_worker_cooperative_
+    sticky_rebalance.py`) against a real Kafka broker.
+  - `cramjam>=2.8` added to runtime deps. aiokafka's zstd / lz4
+    decompression codecs require it. Without this, the normalizer
+    consumer raises `UnsupportedCodecError` on the first
+    zstd-compressed batch from the shadow path's producer (which
+    writes `compression.type=zstd` per LLD §5.2).
+
+**aiokafka assignor strategy note:** LLD §5.2 specifies
+"cooperative-sticky" rebalance. aiokafka 0.14.x does NOT expose a
+separate `CooperativeStickyAssignor` class; its
+`StickyPartitionAssignor` is the nearest equivalent and is what the
+worker uses (`services/ingestion/normalizer/worker.py:WorkerConfig.
+partition_assignment_strategy`). The LLD should clarify the
+class name when it does the next coherence pass, or state explicitly
+that aiokafka's Sticky is the implementation choice and the
+cooperative semantics come from the broker-side rebalance protocol
+(Kafka 2.4+).
+
+---
+
 ## Tracking
 
-When the next coherence audit runs, apply all four amendments and
+When the next coherence audit runs, apply all five amendments and
 remove this file. No other items pending as of 2026-05-17.

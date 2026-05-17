@@ -32,6 +32,12 @@ dependencies = [
     "temporalio>=1.5",                          # Temporal Python SDK
     "confluent-kafka>=2.3",                     # idempotent producer
     "aiokafka>=0.10",                           # consumer
+    # M2.3: aiokafka's zstd / lz4 codecs require cramjam at runtime.
+    # The shadow-path producer (M2.1) writes zstd-compressed batches;
+    # the normalizer's aiokafka consumer must be able to decompress
+    # them. Without this dep the consumer raises
+    # UnsupportedCodecError on the first compressed batch.
+    "cramjam>=2.8",                             # aiokafka zstd/lz4 codec backend
     "aioboto3>=12.0",                           # S3 / R2 client
     # M2.2: pinned minor — canonical JSON via OPT_SORT_KEYS is the
     # raw-body bytes for the Discord Gateway shadow path. content_hash
@@ -60,6 +66,11 @@ dev = [
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
     "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
     "moto[s3]>=5.0",            # M1.4: in-process S3 mock for raw_tier tests
+    # M2.3: real-broker Kafka tests (cooperative-sticky rebalance) require
+    # an actual Kafka cluster. `testcontainers[kafka]` spins one up per
+    # test; the test asserts `@pytest.mark.requires_docker` and skips
+    # cleanly when Docker isn't available.
+    "testcontainers[kafka]>=4.0",
 ]
 
 [tool.setuptools.packages.find]
