@@ -59,6 +59,10 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingestion.normalizer.invariants import (
+    EnvelopeInvariantError,
+    assert_envelope_invariants,
+)
 from services.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingestion.raw_tier.s3 import S3Client
@@ -78,6 +82,7 @@ _metrics: dict[str, float] = {
     "normalizer.messages_consumed": 0.0,
     "normalizer.messages_produced": 0.0,
     "normalizer.parse_failure": 0.0,
+    "normalizer.invariant_failure": 0.0,
     "normalizer.unsupported_combination": 0.0,
     "normalizer.transform_duration_ms_sum": 0.0,
     "normalizer.transform_duration_ms_count": 0.0,
@@ -208,6 +213,22 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 if produced_one:
                     produced += 1
                     _bump("normalizer.messages_produced")
+            except EnvelopeInvariantError as exc:
+                # M2.4 PRIME DIRECTIVE: invariant failures are parse-
+                # failure-class. Log + metric + COMMIT (below) +
+                # CONTINUE. Never propagate — that would deadline-
+                # loop the consumer on a single bad envelope.
+                _bump("normalizer.invariant_failure")
+                _bump("normalizer.parse_failure")
+                log.warning(
+                    "normalizer.invariant_failure",
+                    extra={
+                        "topic": msg.topic,
+                        "partition": msg.partition,
+                        "offset": msg.offset,
+                        "error": str(exc)[:200],
+                    },
+                )
             except Exception as exc:  # noqa: BLE001 — record + skip
                 _bump("normalizer.parse_failure")
                 log.warning(
@@ -260,6 +281,11 @@ async def _normalize_one(
     Pure transform — no database. Path B.
     """
     envelope = RawEnvelope.model_validate(orjson.loads(envelope_bytes))
+
+    # M2.4 — post-validation cross-field invariants. Raises
+    # EnvelopeInvariantError (ValueError subclass) which the outer
+    # loop catches, logs, metrics, and commits (PRIME DIRECTIVE).
+    assert_envelope_invariants(envelope)
 
     channel = resolve_channel(envelope.source, envelope.ingress_kind)
     if channel is None:

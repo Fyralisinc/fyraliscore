@@ -165,7 +165,9 @@ def _build_envelope_bytes(payload: dict, *, source: str, ingress_kind: str):
     raw_body = orjson.dumps(payload)
     content_hash = f"{abs(hash(orjson.dumps(payload))):040x}"[:40]
     s3_key = (
-        f"dev/{source}/{tenant}/2026-05/aa/{content_hash}.json"
+        # Prefix segment must equal content_hash[:2] per the M2.4
+        # invariant in services/ingestion/normalizer/invariants.py.
+        f"dev/{source}/{tenant}/2026-05/{content_hash[:2]}/{content_hash}.json"
     )
     env = RawEnvelope(
         source=source,

@@ -53,7 +53,8 @@ def _envelope_for(
     """
     raw_body = orjson.dumps(payload)
     content_hash = "a" * 40
-    s3_key = f"dev/{source}/{tenant}/2026-05/aa/{content_hash}.json"
+    # Prefix segment must equal content_hash[:2] per the M2.4 invariant.
+    s3_key = f"dev/{source}/{tenant}/2026-05/{content_hash[:2]}/{content_hash}.json"
     envelope = RawEnvelope(
         source=source,
         tenant_id=tenant,
