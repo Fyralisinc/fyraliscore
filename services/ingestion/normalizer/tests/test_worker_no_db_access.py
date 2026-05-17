@@ -190,32 +190,37 @@ def _reset_metrics():
 async def test_worker_normalize_does_not_touch_asyncpg_under_load(
     monkeypatch,
 ):
-    """Synthetic load: 100 envelopes through `_normalize_one`. asyncpg's
-    user-facing API is tripwired. If ANY dispatched handler opens a
-    connection, this test fails.
+    """Synthetic load: 100 valid envelopes through `_normalize_one`.
+
+    Two layers of tripwire on asyncpg's user-facing factory functions:
+      1. `side_effect` raises `_NoDBAccessError` — fail loudly the
+         instant any handler attempts to open a connection.
+      2. `call_count == 0` post-assertion — the LOAD-BEARING claim
+         (visible in the test, not paraphrased).
 
     Why 100 envelopes (not 1):
       - one happy path doesn't catch a handler that only touches the
-        DB on a rare branch (e.g. unknown-actor-ref). A spread of
-        100 with varied content covers more branches.
+        DB on a rare branch. A spread of 100 covers more branches.
       - the cost is ~50ms on a laptop; cheap insurance.
     """
     import asyncpg
 
-    def _tripwire(*args: Any, **kwargs: Any) -> Any:
+    def _raise(*args: Any, **kwargs: Any) -> Any:
         raise _NoDBAccessError(
             "normalizer attempted to open a DB connection — "
             "Path B violation. Inspect the handler the worker "
             "dispatched into."
         )
 
-    # Tripwire the user-facing factory functions. asyncpg.Pool /
-    # asyncpg.Connection objects are constructed via these.
-    monkeypatch.setattr(asyncpg, "connect", _tripwire)
-    monkeypatch.setattr(asyncpg, "create_pool", _tripwire)
+    # Tripwire #1: raise immediately on invocation (loud failure).
+    # Tripwire #2: MagicMock wrappers so call_count is observable
+    # after the run — the assertion form the M2 work order asks for.
+    mock_connect = MagicMock(side_effect=_raise)
+    mock_create_pool = MagicMock(side_effect=_raise)
+    monkeypatch.setattr(asyncpg, "connect", mock_connect)
+    monkeypatch.setattr(asyncpg, "create_pool", mock_create_pool)
 
-    # S3 stub: returns the pre-loaded body for whatever key the
-    # envelope requests.
+    # S3 stub.
     storage: dict[str, bytes] = {}
     s3 = MagicMock()
 
@@ -227,9 +232,6 @@ async def test_worker_normalize_does_not_touch_asyncpg_under_load(
     producer = MagicMock()
     producer.produce = AsyncMock(return_value=None)
 
-    # Build 100 Slack envelopes (the only currently-supported
-    # ingress in M2; gmail/pubsub would short-circuit before
-    # dispatching anyway).
     envelope_byte_list: list[bytes] = []
     for i in range(100):
         raw_body, env_bytes, s3_key = _build_envelope_bytes(
@@ -242,7 +244,16 @@ async def test_worker_normalize_does_not_touch_asyncpg_under_load(
         produced = await worker_module._normalize_one(env_bytes, s3, producer)
         assert produced is True
 
-    # If we got here, the tripwires never fired. Path B holds.
+    # === LOAD-BEARING ASSERTIONS — Path B holds ===
+    assert mock_connect.call_count == 0, (
+        f"asyncpg.connect invoked {mock_connect.call_count} times "
+        f"during 100-envelope normalize run — Path B violation."
+    )
+    assert mock_create_pool.call_count == 0, (
+        f"asyncpg.create_pool invoked {mock_create_pool.call_count} times "
+        f"during 100-envelope normalize run — Path B violation."
+    )
+    # Sanity: the workload actually ran (didn't short-circuit).
     assert producer.produce.await_count == 100
 
     metrics = worker_module.get_metrics()
@@ -252,19 +263,21 @@ async def test_worker_normalize_does_not_touch_asyncpg_under_load(
 async def test_worker_normalize_does_not_touch_asyncpg_on_handler_failure(
     monkeypatch,
 ):
-    """Same tripwire, but every envelope's payload is invalid for the
-    handler. The handler raises ValidationError; the loop records
-    parse_failure. asyncpg MUST STILL not be touched — error paths
-    are the most common place to silently introduce DB writes
-    ('let's persist the failure for triage…').
+    """Same tripwires, error path. Every payload is invalid; handler
+    raises ValidationError; the loop records parse_failure. asyncpg
+    MUST STILL not be touched — error paths are the most common place
+    to silently introduce DB writes ('let's persist the failure for
+    triage…').
     """
     import asyncpg
 
-    def _tripwire(*args: Any, **kwargs: Any) -> Any:
+    def _raise(*args: Any, **kwargs: Any) -> Any:
         raise _NoDBAccessError("DB access on parse_failure path")
 
-    monkeypatch.setattr(asyncpg, "connect", _tripwire)
-    monkeypatch.setattr(asyncpg, "create_pool", _tripwire)
+    mock_connect = MagicMock(side_effect=_raise)
+    mock_create_pool = MagicMock(side_effect=_raise)
+    monkeypatch.setattr(asyncpg, "connect", mock_connect)
+    monkeypatch.setattr(asyncpg, "create_pool", mock_create_pool)
 
     storage: dict[str, bytes] = {}
     s3 = MagicMock()
@@ -277,7 +290,6 @@ async def test_worker_normalize_does_not_touch_asyncpg_on_handler_failure(
     producer = MagicMock()
     producer.produce = AsyncMock(return_value=None)
 
-    # Slack payload missing `event.text` → handler raises ValidationError.
     bad_payload = {
         "event": {
             "type": "message",
@@ -295,6 +307,14 @@ async def test_worker_normalize_does_not_touch_asyncpg_on_handler_failure(
         with pytest.raises(Exception):
             await worker_module._normalize_one(env_bytes, s3, producer)
 
-    # Tripwires never fired even though the handler failed every time.
+    # === LOAD-BEARING ASSERTIONS — Path B holds even on the error path ===
+    assert mock_connect.call_count == 0, (
+        f"asyncpg.connect invoked {mock_connect.call_count} times "
+        f"on the parse_failure path — Path B violation."
+    )
+    assert mock_create_pool.call_count == 0, (
+        f"asyncpg.create_pool invoked {mock_create_pool.call_count} times "
+        f"on the parse_failure path — Path B violation."
+    )
     # No Kafka produce on failure either.
     assert producer.produce.await_count == 0

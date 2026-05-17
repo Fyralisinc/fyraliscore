@@ -39,17 +39,27 @@ def test_gmail_pubsub_intentionally_unmapped():
     assert resolve_channel("gmail", "pubsub") is None
 
 
-def test_resolved_channels_all_have_registered_handlers():
-    """Belt-and-braces: every mapping value must point at a channel
-    that actually has a handler. A typo in the mapping ('discord:msg')
-    would lock 100% of Discord gateway traffic out of normalization."""
-    from services.ingestion.normalizer.channel_mapping import _CHANNEL_MAP
-    from services.ingestion.handlers import handler_channels
+def test_resolved_channels_all_have_callable_handlers():
+    """Belt-and-braces: every mapping value must resolve to a
+    callable handler via the registry. A typo in the mapping
+    ('discord:msg' instead of 'discord:message') would lock 100% of
+    Discord-gateway traffic out of normalization.
 
-    registered = set(handler_channels())
+    Two assertions per entry:
+      (i) `get_handler(channel)` returns without raising
+         `HandlerNotFound` — equivalent to membership in
+         `handler_channels()` but exercises the actual lookup
+         path the normalizer uses.
+      (ii) the returned value is `callable()` — guards against a
+         hypothetical regression where the registry holds a
+         non-function placeholder.
+    """
+    from services.ingestion.normalizer.channel_mapping import _CHANNEL_MAP
+    from services.ingestion.handlers import get_handler
+
     for (source, ingress_kind), channel in _CHANNEL_MAP.items():
-        assert channel in registered, (
+        handler = get_handler(channel)  # raises HandlerNotFound on miss
+        assert callable(handler), (
             f"channel_mapping has {(source, ingress_kind)} -> {channel!r}, "
-            f"but no handler is registered for {channel!r}. "
-            f"Registered: {sorted(registered)}"
+            f"and the registry returned a non-callable: {handler!r}"
         )

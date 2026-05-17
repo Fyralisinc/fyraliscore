@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import orjson
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
 from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
     StickyPartitionAssignor,
 )
@@ -121,6 +121,11 @@ class WorkerConfig:
     # (aiokafka 0.14.x exposes Sticky; not a separate CooperativeSticky
     # class.) Tests can override.
     partition_assignment_strategy: tuple = (StickyPartitionAssignor,)
+    # Optional rebalance listener. The cooperative-sticky rebalance
+    # test passes a recorder so it can assert rebalance events
+    # actually fired during the workload (not just that the workload
+    # finished). Production leaves this None — aiokafka logs at INFO.
+    rebalance_listener: ConsumerRebalanceListener | None = None
 
 
 async def run_worker(config: WorkerConfig) -> dict[str, int]:
@@ -134,8 +139,10 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
     This function NEVER touches asyncpg / a Postgres pool. Path B.
     """
+    # Construct WITHOUT topic so we can call subscribe(...) below
+    # with an optional listener. Constructor-subscription doesn't
+    # support listeners (the listener arg lives on subscribe()).
     consumer = AIOKafkaConsumer(
-        _RAW_TOPIC,
         bootstrap_servers=config.bootstrap_servers,
         group_id=config.consumer_group,
         auto_offset_reset="earliest",
@@ -156,6 +163,12 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
     await producer.start()
     await consumer.start()
+    # Subscribe AFTER start(); listener (if any) records rebalance
+    # events for the cooperative-sticky test.
+    if config.rebalance_listener is not None:
+        consumer.subscribe([_RAW_TOPIC], listener=config.rebalance_listener)
+    else:
+        consumer.subscribe([_RAW_TOPIC])
     await s3.connect()
 
     consumed = 0

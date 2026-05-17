@@ -239,13 +239,27 @@ async def test_normalize_discord_gateway_routes_to_message_handler(
 async def test_normalize_envelope_byte_stable_for_equal_input(
     _producer_stub, _s3_stub,
 ):
+    """N2 (replay-from-raw) requires: two normalizations of a
+    byte-equal raw envelope produce byte-equal normalized envelopes
+    on the wire, modulo the `normalized_at` wall-clock stamp.
+
+    Tested in TWO forms:
+
+      1. Byte-equality of `orjson.dumps(model_dump_after_strip)`
+         — the load-bearing N2 contract: the bytes the writer (M2.4+)
+         consumes from `ingestion.normalized` are byte-identical
+         across replays.
+
+      2. Dict-equality of the parsed envelopes (informational; if (1)
+         passes, (2) follows by construction, but the dict form
+         localises the failure mode if they ever diverge).
+    """
     tenant = uuid4()
     raw_body, envelope_bytes, s3_key = _envelope_for(
         _slack_payload(text="stable"), tenant=tenant,
     )
     _s3_stub._storage[s3_key] = raw_body
 
-    # Two normalize calls on the SAME envelope.
     await worker_module._normalize_one(
         envelope_bytes, _s3_stub, _producer_stub,
     )
@@ -254,13 +268,26 @@ async def test_normalize_envelope_byte_stable_for_equal_input(
     )
 
     assert _producer_stub.produce.await_count == 2
-    first = json.loads(_producer_stub.produce.await_args_list[0][1]["value"])
-    second = json.loads(_producer_stub.produce.await_args_list[1][1]["value"])
+    first_bytes = _producer_stub.produce.await_args_list[0][1]["value"]
+    second_bytes = _producer_stub.produce.await_args_list[1][1]["value"]
+    assert isinstance(first_bytes, bytes)
+    assert isinstance(second_bytes, bytes)
 
-    # `normalized_at` is wall-clock and will differ; strip it.
-    first.pop("normalized_at")
-    second.pop("normalized_at")
-    assert first == second, (
-        "two normalizations of byte-equal envelopes must produce "
-        "byte-equal normalized envelopes (modulo `normalized_at`)"
+    # Strip the wall-clock stamp then re-serialise via the SAME
+    # canonical orjson form the writer uses; assert byte equality.
+    first_dict = json.loads(first_bytes)
+    second_dict = json.loads(second_bytes)
+    first_dict.pop("normalized_at")
+    second_dict.pop("normalized_at")
+
+    first_canonical = orjson.dumps(first_dict, option=orjson.OPT_SORT_KEYS)
+    second_canonical = orjson.dumps(second_dict, option=orjson.OPT_SORT_KEYS)
+    assert first_canonical == second_canonical, (
+        "BYTE equality required for N2 replay-from-raw: two "
+        "normalizations of the same raw envelope must produce "
+        "byte-identical canonical JSON (sans normalized_at). "
+        "If this fires, a non-deterministic field crept into the "
+        "normalization path."
     )
+    # Dict-equality follows but is asserted for failure-mode clarity.
+    assert first_dict == second_dict

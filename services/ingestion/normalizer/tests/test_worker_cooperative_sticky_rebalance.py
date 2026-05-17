@@ -2,24 +2,36 @@
 
 Per M2 work-order §M2.3: the normalizer consumer pool uses
 cooperative-sticky assignment so the pool can scale (add/remove
-workers) without losing messages or producing duplicates during
-the rebalance.
+workers) without losing messages or producing duplicates DURING
+the rebalance event itself.
 
 This test is INTENTIONALLY not mocked. Mocking the rebalance defeats
 the point — the value of the test is that aiokafka + librdkafka +
-the cooperative-sticky strategy actually behave as advertised against
-a real broker. Per the M2.3 work-order: "testcontainers, not mocks."
+the sticky strategy + broker-side rebalance protocol actually behave
+as advertised against a real broker. Per the M2.3 work-order:
+"testcontainers, not mocks."
 
-The test:
+What the test exercises:
   1. Spins a fresh Kafka via testcontainers.
   2. Creates `ingestion.raw` with 4 partitions so two workers can
-     share the load.
+     share the load (a 1-partition topic would not exercise sticky).
   3. Pre-publishes 40 raw envelopes.
-  4. Starts worker 1; lets it consume a few messages.
-  5. Starts worker 2 (same consumer group); waits for rebalance.
-  6. Both workers run to completion (stop_after each).
-  7. Asserts every envelope was consumed exactly once across both
-     workers — no losses, no duplicates.
+  4. Worker A starts; claims all 4 partitions (sole member).
+  5. Worker B joins the SAME consumer group ~3s later — triggers
+     REBALANCE #1 (JOIN): broker splits partitions across A + B.
+  6. Worker A reaches its stop_after limit and exits — triggers
+     REBALANCE #2 (LEAVE): broker reassigns A's partitions to B.
+  7. Worker B drains the remainder and exits.
+
+What the test asserts (load-bearing):
+  - At least 2 rebalance events fired (one for each membership
+    change) — assertion on the `RecordingListener` events.
+  - Every revoked partition was later re-assigned to a remaining
+    member — no orphan partitions.
+  - Combined produced count == 40 (no loss).
+  - 40 unique tenant_id keys on `ingestion.normalized` (no
+    duplicate normalization).
+  - Both workers did real work (neither starved).
 
 If testcontainers / Docker is genuinely unavailable, the test
 SKIPS cleanly via the `requires_docker` marker. Per M2 work-order:
@@ -38,6 +50,7 @@ from uuid import uuid4
 
 import orjson
 import pytest
+from aiokafka import ConsumerRebalanceListener
 
 # Testcontainers + Docker are dev-only; skip if not available so the
 # test suite still passes in environments without Docker (CI nodes
@@ -94,6 +107,31 @@ class _InMemoryS3:
 
     async def get(self, key: str) -> bytes:
         return self._store[key]
+
+
+class _RecordingListener(ConsumerRebalanceListener):
+    """Records every rebalance event so the test can assert the
+    rebalance protocol actually fired.
+
+    Pattern: aiokafka invokes on_partitions_revoked BEFORE the
+    rebalance and on_partitions_assigned AFTER. Recording both
+    lets the test prove the continuity property (every revoked
+    partition was reassigned somewhere).
+    """
+
+    def __init__(self, worker_label: str, log: list) -> None:
+        self.worker_label = worker_label
+        self.log = log
+
+    async def on_partitions_revoked(self, revoked) -> None:  # type: ignore[override]
+        self.log.append(
+            ("revoked", self.worker_label, sorted(str(p) for p in revoked))
+        )
+
+    async def on_partitions_assigned(self, assigned) -> None:  # type: ignore[override]
+        self.log.append(
+            ("assigned", self.worker_label, sorted(str(p) for p in assigned))
+        )
 
 
 class _CaptureProducer:
@@ -246,23 +284,31 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
             run_worker,
         )
 
+        # Shared rebalance event log — both workers' listeners append
+        # here so the test can reason about the full sequence.
+        rebalance_log: list = []
+
         async def _run_worker_a():
             # Worker A handles the first wave; stops after 15 messages.
+            # Its exit triggers REBALANCE #2 (LEAVE) — B picks up A's
+            # partitions.
             cfg = WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-rebalance-test",
                 stop_after=15,
+                rebalance_listener=_RecordingListener("A", rebalance_log),
             )
             return await run_worker(cfg)
 
         async def _run_worker_b():
-            # Worker B starts a few seconds later (after A has
-            # claimed partitions) and drains the rest.
+            # Worker B joins ~3s after A has claimed partitions.
+            # Its join triggers REBALANCE #1 (JOIN) — partitions split.
             await asyncio.sleep(3.0)
             cfg = WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-rebalance-test",
                 stop_after=25,
+                rebalance_listener=_RecordingListener("B", rebalance_log),
             )
             return await run_worker(cfg)
 
@@ -272,29 +318,64 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
             _run_worker_b(),
         )
 
-        # ---- Assertions ----
-        # 1. Combined produced count == 40 (every envelope normalized).
+        # =================================================================
+        # REBALANCE-EVENT ASSERTIONS (load-bearing per M2 work-order §M2.3)
+        # =================================================================
+
+        # 1. At least two rebalance events fired during the workload.
+        # One for B's JOIN; one for A's LEAVE. Anything below 2 means
+        # the test passed by accident (single-worker steady-state) and
+        # is NOT actually exercising the rebalance protocol.
+        rebalance_events = [e for e in rebalance_log if e[0] in (
+            "revoked", "assigned",
+        )]
+        assert len(rebalance_events) >= 2, (
+            f"expected >=2 rebalance events (JOIN + LEAVE), got "
+            f"{len(rebalance_events)}: {rebalance_log}"
+        )
+
+        # 2. Every revoked partition was later re-assigned to some
+        # remaining member. (Sticky's continuity property — orphan
+        # partitions would mean lost messages.)
+        revoked_partitions: set[str] = set()
+        assigned_partitions: set[str] = set()
+        for event_type, _label, parts in rebalance_log:
+            if event_type == "revoked":
+                revoked_partitions.update(parts)
+            elif event_type == "assigned":
+                assigned_partitions.update(parts)
+        assert revoked_partitions <= assigned_partitions, (
+            f"orphan partitions after rebalance: "
+            f"{revoked_partitions - assigned_partitions}\n"
+            f"full log: {rebalance_log}"
+        )
+
+        # =================================================================
+        # NO-LOSS / NO-DUPLICATE ASSERTIONS (correctness across rebalance)
+        # =================================================================
+
+        # 3. Combined produced count == 40 (every envelope normalized).
         total_produced = a_result["produced"] + b_result["produced"]
         assert total_produced == 40, (
             f"expected 40 produced across both workers, got "
             f"{total_produced} (A={a_result}, B={b_result})"
         )
 
-        # 2. Each worker did real work (not one starved).
+        # 4. Each worker did real work (not one starved — which would
+        # mean the rebalance happened but didn't redistribute load).
         assert a_result["consumed"] >= 1, a_result
         assert b_result["consumed"] >= 1, b_result
 
-        # 3. No duplicates — exactly 40 unique payloads on
-        # `ingestion.normalized`.
+        # 5. No duplicates — exactly 40 unique tenant_id keys on
+        # `ingestion.normalized`. Each envelope had a fresh UUID,
+        # so duplicate normalization would show as a repeated key.
         seen_keys = [k for (_, _, k) in capture_producer.published]
         assert len(seen_keys) == 40, len(seen_keys)
-        # The normalized envelope's key is the upstream tenant_id;
-        # each envelope had a fresh UUID so all 40 keys distinct.
         assert len(set(seen_keys)) == 40, (
             f"duplicates detected — got {len(set(seen_keys))} unique "
             f"keys out of {len(seen_keys)} published"
         )
 
-        # 4. Topic was published to is ingestion.normalized.
+        # 6. Topic was published to is ingestion.normalized.
         topics = {t for (t, _, _) in capture_producer.published}
         assert topics == {"ingestion.normalized"}, topics

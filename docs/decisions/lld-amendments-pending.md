@@ -203,92 +203,171 @@ implicit.
 
 ---
 
-## 5. Handler-registry import graph must be DB-free (M2.3 prerequisite)
+## 5. Handler-registry import discipline — Path B contract (M2.3)
 
 **Current spec state:** The LLD describes the normalizer as Path B
 ("pure transform, no DB access") and lists the handler registry as
 its dispatch substrate. What the LLD does NOT say is that the
 handler MODULES themselves must not perform DB-touching imports at
-module level — i.e. the registry's import graph must be Path B-clean.
+module level — i.e. the registry's import graph must be Path B-clean
+for the entire registry, not just any one handler.
 
-**What broke (and why the M2.3 work order forced us to fix it):**
+**The general contract (broader than gmail.py — applies to every
+handler):**
 
-Before M2.3, `services/ingestion/handlers/gmail.py` imported, at
-module top level:
+Every handler module registered with `@register(channel)` MUST
+keep its module-level import graph free of:
 
-  - `lib.shared.tenant_context` (which imports asyncpg)
-  - `services.ingestion.core` (which imports asyncpg)
-  - `services.integrations.gmail.threading` (which imports
-    tenant_context)
+  - `asyncpg` and any `asyncpg.*`
+  - `lib.shared.tenant_context`
+  - `services.ingestion.core` (imports asyncpg)
+  - `services.observations.repo` (imports asyncpg)
+  - `services.integrations.*.threading` modules that import
+    tenant_context
+  - any module that transitively imports any of the above
 
-These imports were only USED by `dispatch_gmail_message_resource`
-(the inline-path dispatcher invoked by push_handler /
-history_poller), NOT by the registered `@register("gmail:")`
-handler. But Python evaluates module-level imports eagerly, so
-importing the handler registry pulled asyncpg + tenant_context
-into every consumer of the registry — including the M2.3
-normalizer worker, which MUST be DB-free per the load-bearing
-Path B invariant.
+Handlers that ALSO expose inline-path dispatchers (e.g. `gmail.py`'s
+`dispatch_gmail_message_resource`, future channels that may add
+similar two-path shapes) MUST lazy-import the DB modules inside
+the dispatcher function body. The pattern is documented at
+[services/ingestion/handlers/gmail.py:38-50](services/ingestion/handlers/gmail.py#L38-L50)
+and the dispatcher function body at [lines 292-296](services/ingestion/handlers/gmail.py#L292-L296).
 
-**What we changed (M2.3):**
+**Why broader than gmail.py:** the failure mode is structural, not
+gmail-specific. Any future handler that follows the "registered
+handler + inline-path dispatcher" pattern would re-introduce the
+same leak unless this contract is documented. Slack and Discord
+currently follow the discipline trivially (no DB-touching imports
+at all). The contract makes the discipline explicit for new
+handlers.
 
-`services/ingestion/handlers/gmail.py` now imports those modules
-LAZILY (inside the dispatcher function that needs them). The
-registered handler function's import graph is unchanged. The dead
-import of `bind_tenant` was also removed.
+**What we changed (M2.3 to land the contract):**
+
+`services/ingestion/handlers/gmail.py` was the only existing
+violator. Its top-level imports of `lib.shared.tenant_context`,
+`services.ingestion.core`, and
+`services.integrations.gmail.threading` were moved inside
+`dispatch_gmail_message_resource`. The dead import of `bind_tenant`
+was also removed. The registered `@register("gmail:")` handler's
+behaviour is unchanged.
 
 After the change, `import services.ingestion.normalizer.worker`
-loads zero DB-related modules. The static proof
-(`test_worker_import_graph_contains_no_db_modules`) asserts this
-via a subprocess + `sys.modules` inspection.
+loads zero DB-related modules. The contract is enforced by two
+tests in
+`services/ingestion/normalizer/tests/test_worker_no_db_access.py`:
+
+  - `test_worker_import_graph_contains_no_db_modules` — static
+    (subprocess + `sys.modules` inspection).
+  - `test_worker_normalize_does_not_touch_asyncpg_under_load` —
+    runtime tripwire with `MagicMock(side_effect=raise)` on
+    `asyncpg.connect` / `asyncpg.create_pool`, with explicit
+    `call_count == 0` assertions after 100 valid + 30 invalid
+    envelopes through `_normalize_one`.
 
 **Proposed amendment to LLD §5 (Handler Registry section) — new
-paragraph "Path B import discipline":**
+sub-section "Path B import discipline":**
 
 > Every handler module registered with `@register(channel)` MUST
 > keep its module-level import graph free of DB-touching modules
 > (asyncpg, `lib.shared.tenant_context`, `services.ingestion.core`,
-> `services.observations.repo`, and any module that transitively
-> imports them). Handlers that ALSO expose inline-path dispatchers
-> (e.g. `gmail.py`'s `dispatch_gmail_message_resource`) must
-> lazy-import the DB modules inside the dispatcher function body.
+> `services.observations.repo`, transitively-DB modules). Handlers
+> that expose inline-path dispatchers MUST lazy-import the DB
+> modules inside the dispatcher function body.
 >
-> Rationale: the normalizer worker imports the handler registry to
-> obtain pure-transform handlers. A top-level DB import in any
-> handler module propagates into the normalizer process and breaks
-> the Path B contract (LLD §5.2). The contract is enforced by two
-> tests in
-> `services/ingestion/normalizer/tests/test_worker_no_db_access.py`:
->
->   - `test_worker_import_graph_contains_no_db_modules` — static.
->   - `test_worker_normalize_does_not_touch_asyncpg_under_load`
->     — runtime tripwire.
+> Rationale: the normalizer worker (Path B per §5.2) imports the
+> handler registry to obtain pure-transform handlers. A top-level
+> DB import in any handler module propagates into the normalizer
+> process. Two tests enforce the contract; see Path B notes above.
 
-**Also for M2.3 specifically — testing infrastructure additions:**
+---
 
-  - `testcontainers[kafka]>=4.0` added to dev deps. Drives the
-    cooperative-sticky rebalance test (`test_worker_cooperative_
-    sticky_rebalance.py`) against a real Kafka broker.
-  - `cramjam>=2.8` added to runtime deps. aiokafka's zstd / lz4
-    decompression codecs require it. Without this, the normalizer
+## 6. aiokafka assignor naming — "cooperative-sticky" ≠ a class name (M2.3)
+
+**Current LLD text (§5.2):** the normalizer pool uses
+"cooperative-sticky" rebalance.
+
+**What broke during M2.3 implementation:** aiokafka 0.14.x does
+NOT export a class named `CooperativeStickyAssignor`. Its
+`partition_assignment_strategy` parameter accepts a tuple of
+`AbstractPartitionAssignor` subclasses; the available classes are:
+
+  - `RangePartitionAssignor` (aiokafka default)
+  - `RoundRobinPartitionAssignor`
+  - `StickyPartitionAssignor` (closest to "cooperative-sticky")
+
+Initial M2.3 worker code passed the string `"cooperative-sticky"`
+to the `partition_assignment_strategy` kwarg; aiokafka accepted
+the value at construction time then crashed with
+`AttributeError: 'str' object has no attribute 'metadata'` during
+the first group-join attempt. The fix was to pass the class
+(`StickyPartitionAssignor`) instead.
+
+**Why this is more than a typo:** the cooperative-rebalance
+semantics specified by LLD §5.2 come from TWO layers:
+
+  1. The CLIENT-SIDE assignor strategy (here: Sticky). Sticky's
+     property is that it minimises partition movement during
+     rebalances — preserved partitions stay with their owner
+     across membership changes.
+  2. The BROKER-SIDE rebalance protocol (Kafka 2.4+ "incremental
+     cooperative rebalance"). This is the "cooperative" part —
+     partitions move incrementally rather than via stop-the-world
+     "eager" reassignment.
+
+The aiokafka client doesn't expose a separate class for the
+cooperative protocol; the protocol is negotiated with the broker
+based on the assignor's `name` field and the broker version. As
+long as the broker is Kafka 2.4+ (our M2 dev image
+`apache/kafka:4.0.2` and testcontainers `confluentinc/cp-kafka:7.6.0`
+are both well above this threshold), Sticky + the cooperative
+protocol gives the LLD's "cooperative-sticky" behaviour.
+
+**Proposed amendment to LLD §5.2 (Normalizer Pool subsection):**
+
+> The normalizer pool's aiokafka consumer uses the
+> `StickyPartitionAssignor` (aiokafka has no separate
+> `CooperativeStickyAssignor` class). The cooperative-rebalance
+> semantics come from the broker-side incremental-cooperative
+> protocol introduced in Kafka 2.4. The combination — Sticky
+> assignor + Kafka 2.4+ broker — IS the "cooperative-sticky"
+> rebalance behaviour the LLD specifies; the LLD's name refers to
+> the joint behaviour, not a class name. See worker.py:WorkerConfig.
+> partition_assignment_strategy and the rebalance proof in
+> services/ingestion/normalizer/tests/test_worker_cooperative_sticky_rebalance.py
+> (which asserts ≥2 rebalance events fire during a 2-worker
+> JOIN+LEAVE sequence, and that every revoked partition is later
+> re-assigned).
+
+**Also note:** for an M3+ migration to `confluent-kafka-python`
+consumer (which DOES expose `partition.assignment.strategy="cooperative-sticky"`
+as a string config), the LLD should specify which client library
+the production deployment uses. M2.3 stays with aiokafka because
+the M1.4 deps already include it; M3+ may revisit if benchmarks
+favour the C client.
+
+---
+
+## M2.3 — Additional infrastructure findings
+
+For traceability, two non-amendment-grade infrastructure findings
+surfaced during M2.3 implementation. They live here for context
+when the next coherence pass touches the LLD's testing-stack /
+dependency sections:
+
+  - **`testcontainers[kafka]>=4.0`** added to dev deps. Drives the
+    cooperative-sticky rebalance test (
+    `test_worker_cooperative_sticky_rebalance.py`) against a real
+    Kafka broker. Per the M2.3 work order: real-broker tests over
+    mocks for rebalance-correctness claims.
+  - **`cramjam>=2.8`** added to RUNTIME deps. aiokafka's zstd / lz4
+    decompression codecs require it; without this, the normalizer
     consumer raises `UnsupportedCodecError` on the first
     zstd-compressed batch from the shadow path's producer (which
     writes `compression.type=zstd` per LLD §5.2).
-
-**aiokafka assignor strategy note:** LLD §5.2 specifies
-"cooperative-sticky" rebalance. aiokafka 0.14.x does NOT expose a
-separate `CooperativeStickyAssignor` class; its
-`StickyPartitionAssignor` is the nearest equivalent and is what the
-worker uses (`services/ingestion/normalizer/worker.py:WorkerConfig.
-partition_assignment_strategy`). The LLD should clarify the
-class name when it does the next coherence pass, or state explicitly
-that aiokafka's Sticky is the implementation choice and the
-cooperative semantics come from the broker-side rebalance protocol
-(Kafka 2.4+).
 
 ---
 
 ## Tracking
 
-When the next coherence audit runs, apply all five amendments and
+When the next coherence audit runs, apply all six amendments and
 remove this file. No other items pending as of 2026-05-17.
