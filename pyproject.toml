@@ -74,4 +74,5 @@ markers = [
     "ollama: requires live Ollama (OLLAMA_URL)",
     "slow: slow test (> 1s)",
     "real_llm: real-LLM test (requires DEEPSEEK_API_KEY, runs only with RUN_REAL_LLM=1 or -m real_llm)",
+    "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
 ]
