@@ -231,13 +231,27 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
 
         # 2. Only ONE normalized envelope was published — the valid
         # one. Three malformed messages produced nothing on the
-        # downstream topic.
+        # downstream NORMALIZED topic. M3.1 added DLQ publish for
+        # invariant-failure messages with full envelope fields, so
+        # message (c)'s DLQ publish ALSO appears in `capture.published`.
         assert result["produced"] == 1, (
             f"expected 1 produced (only the valid envelope), got "
             f"{result['produced']}"
         )
-        assert len(capture.published) == 1
-        assert capture.published[0][0] == "ingestion.normalized"
+        # Topics broken down:
+        #   - ingestion.normalized × 1 (message d, valid envelope)
+        #   - ingestion.dlq        × 1 (message c, invariant failure
+        #                               — full envelope so best-effort
+        #                               extract succeeds)
+        # Messages (a) (byte garbage) and (b) (no tenant_id) skip the
+        # DLQ publish because best-effort extraction can't pull a
+        # valid (tenant_id, source) pair.
+        topic_counts = {t: 0 for t in {"ingestion.normalized", "ingestion.dlq"}}
+        for (topic, _, _) in capture.published:
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+        assert topic_counts["ingestion.normalized"] == 1, topic_counts
+        assert topic_counts["ingestion.dlq"] == 1, topic_counts
+        assert len(capture.published) == 2
 
         # 3. Failure metrics incremented correctly.
         m = worker_module.get_metrics()
@@ -250,3 +264,8 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
         assert m["normalizer.parse_failure"] == 3, m
         assert m["normalizer.messages_consumed"] == 4
         assert m["normalizer.messages_produced"] == 1
+        # M3.1 — DLQ publish telemetry. (c) succeeds; (a) and (b) skip
+        # because best-effort extract can't recover the required
+        # (tenant_id, source) pair.
+        assert m["normalizer.dlq_publish.success"] == 1, m
+        assert m["normalizer.dlq_publish.skipped"] == 2, m

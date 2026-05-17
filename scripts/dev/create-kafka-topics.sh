@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 # scripts/dev/create-kafka-topics.sh — idempotent topic provisioning
-# for the M2 shadow-path dev stack.
+# for the ingestion dev stack.
 #
 # Per ingestion LLD §10 (production uses 64 partitions; dev uses 4 —
 # enough for cooperative-sticky rebalancing tests without long startup
-# costs). Retention 7 days, compression zstd.
+# costs). Retention varies per topic.
 #
-# M2 surfaces only:
-#   ingestion.raw         — Kafka envelope (small JSON pointer)
-#   ingestion.normalized  — ObservationDraft JSON
+# Surfaces:
+#   ingestion.raw         — M2: Kafka envelope (raw bytes pointer)        [7 day retention]
+#   ingestion.normalized  — M2: ObservationDraft JSON                     [7 day retention]
+#   ingestion.dlq         — M3.1: DLQ envelope → ingestion_failures       [30 day retention]
 #
-# M3+ will add ingestion.dlq and ingestion.embedding. Do NOT create
-# them here.
+# Why per-topic retention: LLD §1.3 — DLQ retention must outlive ops's
+# typical triage window (incidents are flagged within hours but full
+# RCA + replay decisions may take days). 30 days is the smallest
+# retention that survives a long weekend + a sick operator without
+# the source bytes evaporating.
 #
-# Idempotent via `--if-not-exists`. Safe to run as part of
-# `scripts/dev/m2-up.sh` after compose comes up.
+# Idempotent via `--if-not-exists`. Safe to run repeatedly.
 set -euo pipefail
 
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-fyralis_dev_kafka}"
 BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:9092}"
 PARTITIONS_DEV="${PARTITIONS_DEV:-4}"
-RETENTION_MS="${RETENTION_MS:-604800000}"   # 7 days
+
+# Per-topic retention (milliseconds).
+RETENTION_7D_MS="${RETENTION_7D_MS:-604800000}"     # 7 days
+RETENTION_30D_MS="${RETENTION_30D_MS:-2592000000}"  # 30 days
 
 if ! docker ps --format '{{.Names}}' | grep -q "^${KAFKA_CONTAINER}$"; then
   echo "ERROR: kafka container '${KAFKA_CONTAINER}' is not running."
@@ -28,20 +34,24 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${KAFKA_CONTAINER}$"; then
   exit 1
 fi
 
-declare -a TOPICS=(
-  "ingestion.raw"
-  "ingestion.normalized"
+# Topic table: name|retention_ms.
+declare -a TOPIC_SPECS=(
+  "ingestion.raw|${RETENTION_7D_MS}"
+  "ingestion.normalized|${RETENTION_7D_MS}"
+  "ingestion.dlq|${RETENTION_30D_MS}"
 )
 
-for topic in "${TOPICS[@]}"; do
-  echo "  + ${topic}"
+for spec in "${TOPIC_SPECS[@]}"; do
+  topic="${spec%%|*}"
+  retention="${spec##*|}"
+  echo "  + ${topic} (retention ${retention}ms)"
   docker exec "${KAFKA_CONTAINER}" /opt/kafka/bin/kafka-topics.sh \
     --bootstrap-server "${BOOTSTRAP}" \
     --create --if-not-exists \
     --topic "${topic}" \
     --partitions "${PARTITIONS_DEV}" \
     --replication-factor 1 \
-    --config "retention.ms=${RETENTION_MS}" \
+    --config "retention.ms=${retention}" \
     --config "compression.type=zstd" \
     >/dev/null
 done

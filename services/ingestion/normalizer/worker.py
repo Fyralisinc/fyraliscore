@@ -49,6 +49,7 @@ import signal
 import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import orjson
 from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
@@ -56,6 +57,7 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
     StickyPartitionAssignor,
 )
 
+from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.normalizer.channel_mapping import resolve_channel
@@ -73,6 +75,7 @@ log = logging.getLogger(__name__)
 
 _RAW_TOPIC = "ingestion.raw"
 _NORMALIZED_TOPIC = "ingestion.normalized"
+_DLQ_TOPIC = "ingestion.dlq"
 _CONSUMER_GROUP = "normalizer"
 
 
@@ -87,6 +90,12 @@ _metrics: dict[str, float] = {
     "normalizer.transform_duration_ms_sum": 0.0,
     "normalizer.transform_duration_ms_count": 0.0,
     "normalizer.consumer_lag_seconds_last": 0.0,
+    # M3.1 — DLQ publish metrics. Failures here MUST NOT crash the
+    # worker (PRIME DIRECTIVE preserved); they're tracked for ops
+    # to detect a broken DLQ path.
+    "normalizer.dlq_publish.success": 0.0,
+    "normalizer.dlq_publish.failure": 0.0,
+    "normalizer.dlq_publish.skipped":  0.0,
 }
 
 
@@ -176,6 +185,12 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
         consumer.subscribe([_RAW_TOPIC])
     await s3.connect()
 
+    # Snapshot the producer + envelope-bytes context the DLQ publish
+    # helpers close over. Captured at start-of-loop so the helper
+    # functions stay pure-ish (no consumer state in their signatures).
+    _last_envelope: RawEnvelope | None = None
+    _last_msg_bytes: bytes = b""
+
     consumed = 0
     produced = 0
     stop = False
@@ -208,16 +223,26 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 _metrics["normalizer.consumer_lag_seconds_last"] = lag_s
 
             t0 = time.monotonic()
+            _last_envelope = None
+            _last_msg_bytes = msg.value
             try:
-                produced_one = await _normalize_one(msg.value, s3, producer)
+                # Refactored: _normalize_one parses envelope FIRST so
+                # the outer loop can hand it to the DLQ publish helper
+                # on invariant failure (where envelope IS available).
+                # Parse failures (no envelope) fall through to the
+                # best-effort partial-extract path below.
+                envelope_or_none, produced_one = await _normalize_one_with_envelope(
+                    msg.value, s3, producer,
+                )
+                _last_envelope = envelope_or_none
                 if produced_one:
                     produced += 1
                     _bump("normalizer.messages_produced")
             except EnvelopeInvariantError as exc:
                 # M2.4 PRIME DIRECTIVE: invariant failures are parse-
-                # failure-class. Log + metric + COMMIT (below) +
-                # CONTINUE. Never propagate — that would deadline-
-                # loop the consumer on a single bad envelope.
+                # failure-class. Log + metric + COMMIT + CONTINUE.
+                # Never propagate — that would deadline-loop the
+                # consumer on a single bad envelope.
                 _bump("normalizer.invariant_failure")
                 _bump("normalizer.parse_failure")
                 log.warning(
@@ -228,6 +253,22 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                         "offset": msg.offset,
                         "error": str(exc)[:200],
                     },
+                )
+                # M3.1 — DLQ publish from the parsed envelope (the
+                # invariant check runs AFTER model_validate, so the
+                # envelope object is available via exc context).
+                _env = getattr(exc, "envelope", None) or _last_envelope
+                await publish_dlq(
+                    producer=producer,
+                    failure_kind="normalizer.invariant_failure",
+                    error_summary=str(exc)[:500],
+                    tenant_id=(_env.tenant_id if _env is not None else None),
+                    source=(_env.source if _env is not None else None),
+                    raw_s3_key=(_env.raw_s3_key if _env is not None else None),
+                    msg_bytes=_last_msg_bytes,
+                    on_success=lambda: _bump("normalizer.dlq_publish.success"),
+                    on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
+                    on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
                 )
             except Exception as exc:  # noqa: BLE001 — record + skip
                 _bump("normalizer.parse_failure")
@@ -241,10 +282,33 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                         "error": str(exc)[:200],
                     },
                 )
-                # NOTE: M2.3 does NOT write to ingestion_failures.
-                # The DLQ writer needs a Postgres pool which is Path A
-                # territory; lands in M3. Per M2 work-order
-                # "What is NOT done" §M2.3.
+                # M3.1 — best-effort DLQ publish. If the envelope was
+                # JSON-decodable far enough to extract tenant_id +
+                # source, we publish. If not (byte garbage), we skip
+                # the DLQ publish and just log — no source field
+                # means no ingestion_failures row would satisfy the
+                # CHECK constraint anyway.
+                await publish_dlq(
+                    producer=producer,
+                    failure_kind="normalizer.parse_failure",
+                    error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+                    tenant_id=(
+                        _last_envelope.tenant_id
+                        if _last_envelope is not None else None
+                    ),
+                    source=(
+                        _last_envelope.source
+                        if _last_envelope is not None else None
+                    ),
+                    raw_s3_key=(
+                        _last_envelope.raw_s3_key
+                        if _last_envelope is not None else None
+                    ),
+                    msg_bytes=_last_msg_bytes,
+                    on_success=lambda: _bump("normalizer.dlq_publish.success"),
+                    on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
+                    on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
+                )
             finally:
                 duration_ms = (time.monotonic() - t0) * 1000.0
                 _bump("normalizer.transform_duration_ms_sum", duration_ms)
@@ -273,10 +337,33 @@ async def _normalize_one(
     s3: S3Client,
     producer: IdempotentProducer,
 ) -> bool:
-    """Process one raw envelope. Returns True if a normalized envelope
-    was produced; False if the (source, ingress_kind) was unsupported
-    (out-of-scope for M2). Raises on any other error; the caller
-    catches + records `parse_failure`.
+    """Backwards-compatible wrapper around `_normalize_one_with_envelope`.
+
+    Kept for tests that depend on the single-return shape — internally
+    delegates to the two-tuple variant which the outer loop uses.
+    """
+    _envelope, produced = await _normalize_one_with_envelope(
+        envelope_bytes, s3, producer,
+    )
+    return produced
+
+
+async def _normalize_one_with_envelope(
+    envelope_bytes: bytes,
+    s3: S3Client,
+    producer: IdempotentProducer,
+) -> tuple[RawEnvelope | None, bool]:
+    """Process one raw envelope. Returns (envelope, produced):
+
+      - envelope: the parsed RawEnvelope, IF parse succeeded (so the
+        outer loop's DLQ publish on invariant failure has the full
+        fields). Never raises with `envelope` populated unless the
+        invariant check failed.
+      - produced: True if a normalized envelope was published; False
+        if the (source, ingress_kind) was unsupported.
+
+    Raises on any other error; the caller catches + records
+    `parse_failure` AND publishes a best-effort DLQ envelope.
 
     Pure transform — no database. Path B.
     """
@@ -285,7 +372,14 @@ async def _normalize_one(
     # M2.4 — post-validation cross-field invariants. Raises
     # EnvelopeInvariantError (ValueError subclass) which the outer
     # loop catches, logs, metrics, and commits (PRIME DIRECTIVE).
-    assert_envelope_invariants(envelope)
+    # M3.1 — on raise, the outer loop also publishes a DLQ envelope.
+    # We attach the parsed envelope to the exception so the helper
+    # can construct the DLQ envelope without re-parsing.
+    try:
+        assert_envelope_invariants(envelope)
+    except EnvelopeInvariantError as exc:
+        exc.envelope = envelope  # type: ignore[attr-defined]
+        raise
 
     channel = resolve_channel(envelope.source, envelope.ingress_kind)
     if channel is None:
@@ -299,7 +393,7 @@ async def _normalize_one(
                 "raw_s3_key": envelope.raw_s3_key,
             },
         )
-        return False
+        return envelope, False
 
     # Fetch the raw body from S3 (the only network call in this hot
     # path besides Kafka).
@@ -339,7 +433,13 @@ async def _normalize_one(
         value=orjson.dumps(normalized.model_dump(mode="json")),
         key=str(envelope.tenant_id).encode("utf-8"),
     )
-    return True
+    return envelope, True
+
+
+# DLQ publish lives in services.ingestion.dlq.publish (shared with
+# the no-op writer). Per M3.1 — the helper preserves the PRIME
+# DIRECTIVE: a Kafka publish failure on the DLQ topic must NOT crash
+# the worker; failures surface via `normalizer.dlq_publish.failure`.
 
 
 def main() -> None:
