@@ -1,9 +1,9 @@
 # LLD Amendments Pending Next Coherence Audit
 
-Findings surfaced during M1 implementation that require small
-corrections to `docs/ingestion/03-low-level-design.md`. Neither is
-urgent enough to amend the LLD now; both should land in the next
-coherence pass.
+Findings surfaced during M1 + M2 implementation that require small
+corrections / additions to `docs/ingestion/03-low-level-design.md`
+or its sibling docs. None is urgent enough to amend the LLD now;
+all should land in the next coherence pass.
 
 ---
 
@@ -97,7 +97,44 @@ must handle it.
 
 ---
 
+## 3. Shadow-write ordering relative to inline `ingest()` (M2.1)
+
+**Current spec state:** neither the LLD nor the HLD specifies an
+ordering between the shadow write (S3 PUT + Kafka publish) and
+the inline `ingest()` call. HLD "Migration Path" step 2 (line
+510 of `02-high-level-design.md`) says the router does both "in
+addition to" each other, but is silent on order. LLD §5.4 is the
+embedding worker pool and is unrelated. M2.1 had to choose; the
+choice + reasoning is documented at
+[services/webhooks/router.py:741-771](services/webhooks/router.py#L741-L771).
+
+**Decision:** shadow write runs AFTER successful inline `ingest()`,
+not before, not in parallel.
+
+**Rationale (verbatim from the code comment):**
+1. Inline is the source of truth during M2. Anything that risks
+   inline correctness is wrong.
+2. Skips wasted shadow writes when inline rejected the payload
+   (`PayloadTooLarge` / `ValidationError` / `HandlerNotFound` — all
+   caught above and returned as 4xx before reaching the shadow
+   block).
+3. The observable divergence shape becomes "inline observation
+   exists, shadow record missing" — M2.4's E2E test asserts
+   against this direction and ops can detect cleanly via count
+   comparison. The opposite ordering (shadow first) would let
+   transient inline crashes leave orphan shadow records.
+
+**Proposed amendment:** add one paragraph under HLD "Migration
+Path" step 2 (or wherever the shadow-path narrative consolidates)
+stating: "The shadow write runs after the inline `ingest()`
+returns successfully, before the HTTP 200/201 response. Reason:
+preserve inline as the source of truth; constrain the observable
+divergence shape to 'inline exists, shadow missing' which the E2E
+test (M2.4) asserts against."
+
+---
+
 ## Tracking
 
-When the next coherence audit runs, apply both amendments and remove
-this file. No other items pending as of 2026-05-17.
+When the next coherence audit runs, apply all three amendments and
+remove this file. No other items pending as of 2026-05-17.
