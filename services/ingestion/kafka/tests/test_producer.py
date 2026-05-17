@@ -15,14 +15,19 @@ from services.ingestion.kafka import IdempotentProducer, ProducerConfig
 
 
 def test_producer_config_idempotence_defaults_match_lld() -> None:
-    """Per LLD §5.2: `enable.idempotence=true`, `acks=all`,
-    `max.in.flight.requests.per.connection<=5`, `compression.type=zstd`.
+    """Per LLD §5.2 + M2.1 work order: `enable.idempotence=true`,
+    `acks='all'`, `max.in.flight.requests.per.connection=5`,
+    `compression.type='zstd'`. Tightened to exact equality (per M2.1
+    review): catches "we forgot to enable idempotence" regressions
+    AND the off-by-one variants (e.g. accidentally setting
+    `max.in.flight=1` for a stricter ordering guarantee at the cost
+    of throughput, or dropping `acks='all'` to `acks='1'`).
     """
     cfg = ProducerConfig()
     d = cfg.to_confluent_dict()
     assert d["enable.idempotence"] is True
     assert d["acks"] == "all"
-    assert d["max.in.flight.requests.per.connection"] <= 5
+    assert d["max.in.flight.requests.per.connection"] == 5
     assert d["compression.type"] == "zstd"
 
 

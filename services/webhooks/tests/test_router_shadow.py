@@ -16,6 +16,7 @@ test that exercises real Kafka + moto S3 lives in M2.4
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -27,6 +28,11 @@ import pytest
 
 from lib.shared.ids import uuid7
 from services.ingestion import shadow_write as shadow_write_module
+from services.ingestion.feature_flags import (
+    SHADOW_WRITE_ENABLED,
+    FlagCache,
+    TenantFlags,
+)
 from services.webhooks.tenant_resolver import Resolved
 from services.webhooks.tests.conftest import slack_sign
 
@@ -283,6 +289,116 @@ async def test_shadow_path_disabled_by_flag(_shadow_app, _stub_ingest):
 # expected source / content_hash. Inspects the bytes handed to the
 # Kafka producer.
 # ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# 6. TTL cache flip-flop at the router level. Per M2.1 review (c):
+# the previous 4 tests use `_StubFlags` which bypasses the real cache.
+# This test wires the REAL `TenantFlags` against a controllable
+# fetchrow mock and proves end-to-end that:
+#   - the cache holds a TRUE value until TTL elapses,
+#   - after TTL, the new FALSE value takes effect,
+#   - shadow writes follow the cache state.
+#
+# Uses a 50ms TTL + real sleep, NOT freezegun — freezegun patches
+# time.time / datetime but the cache uses time.monotonic, and the
+# project's existing freezegun usage doesn't extend to monotonic
+# patching. A real-time 50ms window is reliable in unit-test scope
+# and keeps the test runtime under 200ms total.
+# ---------------------------------------------------------------------
+
+async def test_flag_cache_picks_up_change_within_ttl(_patch_secrets, _stub_ingest):
+    """End-to-end flag flip across the cache boundary.
+
+    Step 1: flag value=True (default-on; pool returns no row). Shadow
+            fires.
+    Step 2: change pool to return flag_value=False. WITHIN TTL: cache
+            still says True; shadow STILL fires (this proves the
+            cache is actually caching, not pass-through).
+    Step 3: sleep past TTL. Cache invalidates; next request re-reads;
+            pool returns False; shadow does NOT fire.
+    """
+    from fastapi import FastAPI
+
+    from services.webhooks.router import build_webhooks_router
+
+    app = FastAPI()
+    app.include_router(build_webhooks_router())
+
+    deps = MagicMock()
+    deps.pool = MagicMock()
+    deps.actor_repo = None
+    deps.alias_repo = None
+    deps.embedder = None
+    app.state.deps = deps
+    app.state.tenant_resolver = _StubResolver()
+
+    s3 = MagicMock()
+    s3.put_if_absent = AsyncMock(return_value=None)
+    app.state.s3_raw_client = s3
+
+    kafka = MagicMock()
+    kafka.produce = AsyncMock(return_value=None)
+    kafka.flush = AsyncMock(return_value=0)
+    app.state.kafka_producer = kafka
+
+    # REAL TenantFlags + controllable pool. fetchrow returns whatever
+    # `pool_state["row"]` says at call time, so the test mutates the
+    # state between requests.
+    pool_state: dict[str, Any] = {"row": None}  # no row → default True
+    flag_pool = AsyncMock()
+    async def _fetchrow(_sql, _tenant_id, _flag_name):
+        return pool_state["row"]
+    flag_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+    # Short TTL so the test runs fast. Cache behaviour is identical
+    # to the 30s production TTL — `time.monotonic` comparison is the
+    # same logic in both.
+    cache = FlagCache(ttl_seconds=0.05)
+    app.state.tenant_flags = TenantFlags(flag_pool, cache=cache)
+
+    shadow_write_module.reset_metrics()
+    body = _slack_body()
+
+    # ---- Step 1: default True (no row) → shadow fires ----
+    r1 = await _post_slack(app, body)
+    assert r1.status_code in (200, 201)
+    assert s3.put_if_absent.await_count == 1, "step1: shadow must fire when flag is True"
+    assert kafka.produce.await_count == 1
+    # Pool was consulted once (cache miss).
+    assert flag_pool.fetchrow.await_count == 1
+
+    # ---- Step 2: flip pool to False, but stay WITHIN TTL ----
+    # Cache should still say True; shadow should STILL fire.
+    pool_state["row"] = {"flag_value": False}
+    r2 = await _post_slack(app, body)
+    assert r2.status_code in (200, 201)
+    assert s3.put_if_absent.await_count == 2, (
+        "step2: cache must hold the prior True value within TTL; "
+        "shadow must still fire. If this fails, the cache isn't "
+        "caching (every request hits the DB)."
+    )
+    # And the pool was NOT consulted again (cache hit).
+    assert flag_pool.fetchrow.await_count == 1, (
+        "step2: cache hit must avoid the pool read"
+    )
+
+    # ---- Step 3: sleep past TTL; cache invalidates ----
+    await asyncio.sleep(0.08)  # 80ms > 50ms TTL
+    r3 = await _post_slack(app, body)
+    assert r3.status_code in (200, 201)
+    # Shadow did NOT fire — flag is now False.
+    assert s3.put_if_absent.await_count == 2, (
+        "step3: after TTL expires, cache must re-read; the new "
+        "False value must suppress the shadow write. If this fails, "
+        "the TTL boundary isn't actually expiring."
+    )
+    assert kafka.produce.await_count == 2  # only step1 + step2
+    # And the pool WAS consulted a second time.
+    assert flag_pool.fetchrow.await_count == 2
+
+    # Inline path ran for all three requests regardless of flag state.
+    assert _stub_ingest.await_count == 3
+
 
 async def test_envelope_includes_ingress_kind_webhook(_shadow_app, _stub_ingest):
     body = _slack_body()

@@ -759,11 +759,39 @@ def build_webhooks_router() -> APIRouter:
             )
 
         # ---- M2.1 Shadow path ----
-        # After successful inline ingest(), before the 200/201 response.
-        # Best-effort; failures are caught inside the helper and logged.
-        # PRIME DIRECTIVE (M2 work order §M2.1): never propagate — the
-        # inline `ingest()` already succeeded and the user-visible
-        # response must not be reordered or blocked by Kafka/S3 issues.
+        # Ordering: AFTER successful inline ingest(), BEFORE the
+        # 200/201 response. Not before, not in parallel.
+        #
+        # Spec context: HLD "Migration Path" step 2 (line 510) says
+        # "webhook router writes to S3 + publishes to Kafka *in
+        # addition to* calling ingest() inline" — it does NOT
+        # mandate a relative order. No LLD section pins this either
+        # (LLD §5.4 is the embedding worker pool, unrelated). The
+        # choice below is M2.1's, documented here so reviewers and
+        # future readers can audit the reasoning.
+        #
+        # Why AFTER inline ingest():
+        #   (1) Inline is the source of truth during M2. Anything
+        #       that risks inline correctness is wrong. By running
+        #       shadow AFTER inline returns, no failure mode of the
+        #       shadow path can disturb the inline write — the DB
+        #       commit and post-commit triggers have already happened.
+        #   (2) Skips wasted shadow writes when inline rejected the
+        #       payload (PayloadTooLarge / ValidationError /
+        #       HandlerNotFound — all caught above this point and
+        #       returned as 4xx before reaching here).
+        #   (3) The observable divergence shape becomes "inline
+        #       observation exists, shadow record missing" — a
+        #       direction that M2.4's E2E test asserts against and
+        #       that an ops-side count comparison can detect cleanly.
+        #       The opposite ordering (shadow first) would let
+        #       transient inline crashes leave orphan shadow records
+        #       with no inline counterpart, which is harder to
+        #       reconcile.
+        #
+        # Best-effort; failures caught inside the helper (try/except)
+        # and logged. PRIME DIRECTIVE (M2 work-order §M2.1): never
+        # propagate to the inline response.
         await _maybe_shadow_write_webhook(
             request,
             provider=provider,
