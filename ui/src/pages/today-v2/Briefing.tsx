@@ -5,7 +5,7 @@
 // Cards expand in place rather than navigating away, so the user's
 // scroll position and mental anchor never reset.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { AppShell } from "@/shell/AppShell";
@@ -59,6 +59,24 @@ export default function TodayBriefing() {
   >({});
   const [evidenceDelta, setEvidenceDelta] = useState<DecisionDelta | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
+
+  // Ordered queue for "Reviewing N of M" — primary first, others after.
+  const orderedQueue = useMemo<DecisionDelta[]>(() => {
+    if (!data) return [];
+    const list: DecisionDelta[] = [];
+    if (data.primaryJudgment) list.push(data.primaryJudgment);
+    list.push(...data.otherChanges);
+    return list;
+  }, [data]);
+
+  const positionOf = useCallback(
+    (id: string): { index: number; total: number } | null => {
+      const idx = orderedQueue.findIndex((d) => d.id === id);
+      if (idx < 0) return null;
+      return { index: idx, total: orderedQueue.length };
+    },
+    [orderedQueue],
+  );
 
   // Deep-link support: ?expand=<deltaId> auto-opens that card.
   useEffect(() => {
@@ -254,6 +272,7 @@ export default function TodayBriefing() {
                         delta={data.primaryJudgment}
                         applying={applyingId === data.primaryJudgment.id}
                         expanded={primaryExpanded}
+                        position={positionOf(data.primaryJudgment.id) ?? undefined}
                         onToggleExpand={() => setPrimaryExpanded((v) => !v)}
                         onOpenEvidence={() =>
                           void openEvidence(data.primaryJudgment!)
@@ -273,6 +292,7 @@ export default function TodayBriefing() {
                       items={data.otherChanges}
                       expandedId={expandedId}
                       applyingId={applyingId}
+                      positionOf={positionOf}
                       onToggle={handleToggleOther}
                       onAccept={handleAccept}
                       onDelegate={(d) => setDelegateTarget(d)}

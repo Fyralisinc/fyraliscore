@@ -1,9 +1,13 @@
-// Primary Judgment card — spec §5.3. The hero of Briefing Mode.
-// Shows: type label, status chip, title, summaryLine + keyMetrics,
-// whyThisMatters block, mini-diff, impactIfAccepted checklist,
-// and an actions row. An inline expansion reveals the full evidence
-// quality breakdown, missing context, and related model links so the
-// user never has to leave the page to drill in.
+// Primary judgment card — spec §5.4 + §7. The hero of Briefing Mode.
+//
+// Default state (collapsed): partial expansion — label, status, title,
+// summary line, key impact chips, short Why, mini-diff, impact list,
+// action bar. Less detail than a full focused review (§5.4).
+//
+// Expanded state: clicking the title swaps in the §7 anatomy in the
+// same slot — header strip (Reviewing N of M, Collapse review),
+// identity, chips, deep review body via InlineDetail, sticky action
+// bar. No navigation; surrounding compact cards stay visible (§6.3).
 
 import type { DecisionDelta } from "@/api/today-page-types";
 import { StatusChip } from "./StatusChip";
@@ -19,6 +23,9 @@ interface Props {
   onToggleExpand: () => void;
   expanded: boolean;
   applying?: boolean;
+  // Position of this card within the full Today queue (primary +
+  // others). Used to render "Reviewing N of M" in expanded mode.
+  position?: { index: number; total: number };
 }
 
 export function PrimaryJudgmentCard({
@@ -30,127 +37,157 @@ export function PrimaryJudgmentCard({
   onToggleExpand,
   expanded,
   applying = false,
+  position,
 }: Props) {
-  // Primary action varies by status (spec §5.3). Monitoring & delegated
-  // can't be "accepted" in the user sense; respect the available action
-  // list.
   const canAccept = delta.availableActions.includes("accept");
   const canDelegate = delta.availableActions.includes("delegate");
+  const canCorrect = delta.availableActions.includes("report_correction");
   const isDelegatable = delta.status === "delegatable";
   const isMonitoring = delta.status === "monitoring";
+  const isContested =
+    delta.status === "contested" || delta.status === "correction_submitted";
 
   const cardClass = [
     "tdv2-primary",
     expanded ? "tdv2-primary--expanded" : "",
     isDelegatable ? "tdv2-primary--delegatable" : "",
     isMonitoring ? "tdv2-primary--monitoring" : "",
-    delta.status === "contested" || delta.status === "correction_submitted"
-      ? "tdv2-primary--contested"
-      : "",
+    isContested ? "tdv2-primary--contested" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
     <section className={cardClass} data-testid="primary-judgment">
-      <div className="tdv2-label-row">
-        <div className="tdv2-label">Primary judgment</div>
-        <StatusChip status={delta.status} />
+      {expanded ? (
+        <header className="tdv2-review-card__head">
+          {position ? (
+            <span className="tdv2-review-card__position">
+              Reviewing {position.index + 1} of {position.total}
+            </span>
+          ) : (
+            <span className="tdv2-label">Primary judgment</span>
+          )}
+          <button
+            type="button"
+            className="tdv2-review-card__collapse"
+            onClick={onToggleExpand}
+            data-testid="primary-collapse"
+          >
+            Collapse review
+          </button>
+        </header>
+      ) : (
+        <div className="tdv2-label-row">
+          <div className="tdv2-label">Primary judgment</div>
+          <StatusChip status={delta.status} />
+        </div>
+      )}
+
+      <div className="tdv2-review-card__identity">
+        {expanded ? (
+          <div className="tdv2-label-row">
+            <div className="tdv2-label">Proposed change</div>
+            <StatusChip status={delta.status} />
+          </div>
+        ) : null}
+        {expanded ? (
+          <h2 className="tdv2-review-card__title">{delta.title}</h2>
+        ) : (
+          <button
+            type="button"
+            className="tdv2-primary__title-btn"
+            onClick={onToggleExpand}
+            aria-expanded={expanded}
+            aria-controls={`primary-detail-${delta.id}`}
+            data-testid="primary-judgment-open"
+          >
+            <h2 className="tdv2-primary__title">{delta.title}</h2>
+          </button>
+        )}
+
+        {delta.summaryLine ? (
+          <p
+            className={
+              expanded ? "tdv2-review-card__summary" : "tdv2-primary__summary"
+            }
+          >
+            {delta.summaryLine}
+          </p>
+        ) : null}
+
+        {delta.keyMetrics.length > 0 ? (
+          <div className="tdv2-metrics" data-testid="key-metrics">
+            {delta.keyMetrics.slice(0, 4).map((m, i) => (
+              <span
+                key={i}
+                className={`tdv2-metric${
+                  m.severity === "critical"
+                    ? " tdv2-metric--critical"
+                    : m.severity === "high"
+                      ? " tdv2-metric--high"
+                      : ""
+                }`}
+              >
+                {m.label}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
 
-      <button
-        type="button"
-        className="tdv2-primary__title-btn"
-        onClick={onToggleExpand}
-        aria-expanded={expanded}
-        aria-controls={`primary-detail-${delta.id}`}
-        style={{
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          textAlign: "left",
-          cursor: "pointer",
-          color: "inherit",
-        }}
-        data-testid="primary-judgment-open"
-      >
-        <h2 className="tdv2-primary__title">{delta.title}</h2>
-      </button>
+      {!expanded ? (
+        <>
+          {delta.whyThisMatters ? (
+            <div className="tdv2-why">
+              <p className="tdv2-why__label">Why this matters</p>
+              <p className="tdv2-why__body">{delta.whyThisMatters}</p>
+            </div>
+          ) : null}
 
-      {delta.summaryLine ? (
-        <p className="tdv2-primary__summary">{delta.summaryLine}</p>
-      ) : null}
-
-      {delta.keyMetrics.length > 0 ? (
-        <div className="tdv2-metrics" data-testid="key-metrics">
-          {delta.keyMetrics.map((m, i) => (
-            <span
-              key={i}
-              className={`tdv2-metric${
-                m.severity === "critical"
-                  ? " tdv2-metric--critical"
-                  : m.severity === "high"
-                    ? " tdv2-metric--high"
-                    : ""
-              }`}
-            >
-              {m.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {delta.whyThisMatters ? (
-        <div className="tdv2-why">
-          <p className="tdv2-why__label">Why this matters</p>
-          <p className="tdv2-why__body">{delta.whyThisMatters}</p>
-        </div>
-      ) : null}
-
-      <MiniDiff
-        current={delta.currentState}
-        proposed={delta.proposedState}
-        maxRows={3}
-      />
-
-      {delta.impactIfAccepted.length > 0 ? (
-        <div className="tdv2-impact">
-          <p className="tdv2-impact__label">If you accept</p>
-          <ul className="tdv2-impact__list">
-            {delta.impactIfAccepted.slice(0, 5).map((i) => (
-              <li key={i.id} className="tdv2-impact__item">
-                <span className="tdv2-impact__check" aria-hidden="true">
-                  <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                    <path
-                      d="M1.5 4.2L3 5.7l3.5-3.5"
-                      stroke="currentColor"
-                      strokeWidth="1.3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </span>
-                <span>{i.text}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {expanded ? (
-        <div
-          id={`primary-detail-${delta.id}`}
-          className="tdv2-primary__details"
-        >
-          <InlineDetail
-            delta={delta}
-            onOpenEvidence={onOpenEvidence}
-            hideDiff
+          <MiniDiff
+            current={delta.currentState}
+            proposed={delta.proposedState}
+            maxRows={3}
           />
-        </div>
-      ) : null}
 
-      <div className="tdv2-actions">
+          {delta.impactIfAccepted.length > 0 ? (
+            <div className="tdv2-impact">
+              <p className="tdv2-impact__label">If you accept</p>
+              <ul className="tdv2-impact__list">
+                {delta.impactIfAccepted.slice(0, 5).map((i) => (
+                  <li key={i.id} className="tdv2-impact__item">
+                    <span className="tdv2-impact__check" aria-hidden="true">
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path
+                          d="M1.5 4.2L3 5.7l3.5-3.5"
+                          stroke="currentColor"
+                          strokeWidth="1.3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                    <span>{i.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div id={`primary-detail-${delta.id}`}>
+          <InlineDetail delta={delta} onOpenEvidence={onOpenEvidence} />
+        </div>
+      )}
+
+      <div
+        className={
+          expanded
+            ? "tdv2-review-card__action-bar"
+            : "tdv2-actions"
+        }
+      >
         {isDelegatable ? (
           <>
             {canDelegate ? (
@@ -203,21 +240,12 @@ export function PrimaryJudgmentCard({
         <button
           type="button"
           className="tdv2-btn tdv2-btn--tertiary"
-          onClick={onToggleExpand}
-          aria-expanded={expanded}
-          data-testid="primary-review"
-        >
-          {expanded ? "Show less" : "Show more detail"}
-        </button>
-        <button
-          type="button"
-          className="tdv2-btn tdv2-btn--tertiary"
           onClick={onOpenEvidence}
           data-testid="primary-review-evidence"
         >
           Review evidence
         </button>
-        {delta.availableActions.includes("report_correction") ? (
+        {canCorrect ? (
           <button
             type="button"
             className="tdv2-btn tdv2-btn--correction"

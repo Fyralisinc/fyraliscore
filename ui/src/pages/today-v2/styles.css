@@ -519,49 +519,9 @@
 }
 
 /* =================================================================== */
-/* Focused Review Mode                                                  */
+/* Focused-review section shared bits                                   */
+/* (label + grid helpers reused inside the in-place expansion)          */
 /* =================================================================== */
-
-.tdv2-focused {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-panel);
-  padding: var(--space-8);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-}
-.tdv2-focused__head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-4);
-}
-.tdv2-focused__nav { display: flex; gap: var(--space-2); align-items: center; }
-.tdv2-focused__nav-btn {
-  background: transparent;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  width: 32px; height: 32px;
-  display: inline-flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  color: var(--text-primary);
-}
-.tdv2-focused__nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.tdv2-focused__type-label {
-  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--text-muted); font-weight: 600;
-}
-.tdv2-focused__title {
-  font-family: var(--font-serif-v2);
-  font-size: 32px;
-  margin: 6px 0 4px 0;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
-}
-.tdv2-focused__meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  display: flex; gap: var(--space-3);
-}
 
 .tdv2-focused__section { display: flex; flex-direction: column; gap: var(--space-3); }
 .tdv2-focused__section-label {
@@ -574,8 +534,18 @@
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-5);
 }
+.tdv2-focused__grid--two { grid-template-columns: 1fr 1fr; }
 @media (max-width: 980px) {
-  .tdv2-focused__grid { grid-template-columns: 1fr; }
+  .tdv2-focused__grid,
+  .tdv2-focused__grid--two { grid-template-columns: 1fr; }
+}
+
+.tdv2-evidence-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  font-style: italic;
 }
 
 .tdv2-evidence-list { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -628,27 +598,218 @@
 }
 .tdv2-related a:hover { background: rgba(49, 90, 122, 0.14); }
 
-/* Other Changes rail (focused review) ------------------------------ */
+/* =================================================================== */
+/* In-place Focused Review card (spec §6 + §7)                          */
+/*                                                                      */
+/* Used inside OtherJudgmentList when a row is selected (replaces the   */
+/* compact row) and inside PrimaryJudgmentCard when expanded. Designed  */
+/* to dominate the visible viewport without breaking page scroll.       */
+/* =================================================================== */
 
-.tdv2-rail {
-  display: flex; gap: var(--space-3); overflow-x: auto;
-  padding: var(--space-2) 0;
-}
-.tdv2-rail__item {
-  flex: 0 0 280px;
+.tdv2-review-card {
   background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-card);
-  padding: var(--space-4);
-  cursor: pointer;
-  text-align: left;
-  font-family: inherit;
-  transition: border-color 0.15s ease;
+  border: 1px solid var(--accent-trust);
+  border-radius: var(--radius-panel);
+  padding: var(--space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  position: relative;
+  box-shadow: 0 12px 32px rgba(7, 23, 19, 0.10);
+  scroll-margin-top: var(--space-6);
 }
-.tdv2-rail__item:hover { border-color: var(--accent-trust); }
-.tdv2-rail__item-status { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-.tdv2-rail__item-title { font-size: 14px; font-weight: 500; margin: 6px 0 4px 0; line-height: 1.3; }
-.tdv2-rail__item-summary { font-size: 12px; color: var(--text-muted); }
+.tdv2-review-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  background: var(--accent-critical);
+}
+.tdv2-review-card--delegatable::before { background: var(--accent-authority, var(--color-antique-gold)); }
+.tdv2-review-card--monitoring::before { background: var(--accent-trust); }
+.tdv2-review-card--contested::before { background: var(--accent-forecast); }
+
+.tdv2-review-card__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.tdv2-review-card__position {
+  font-size: 12px; letter-spacing: 0.04em;
+  color: var(--text-muted); font-weight: 500;
+}
+.tdv2-review-card__collapse {
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.tdv2-review-card__collapse:hover {
+  border-color: var(--accent-trust);
+  background: rgba(79, 138, 106, 0.06);
+}
+
+.tdv2-review-card__identity {
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.tdv2-review-card__title {
+  font-family: var(--font-serif-v2);
+  font-size: 30px;
+  line-height: 1.12;
+  margin: 0;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.tdv2-review-card__summary {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  max-width: 64ch;
+}
+
+.tdv2-review-card__action-bar {
+  display: flex; flex-wrap: wrap; gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  margin: var(--space-2) calc(var(--space-7) * -1) calc(var(--space-7) * -1);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border-default);
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  box-shadow: 0 -6px 16px rgba(7, 23, 19, 0.04);
+}
+
+@media (max-width: 1100px) {
+  .tdv2-review-card { padding: var(--space-5); }
+  .tdv2-review-card__action-bar {
+    margin: var(--space-2) calc(var(--space-5) * -1) calc(var(--space-5) * -1);
+  }
+  .tdv2-review-card__title { font-size: 24px; }
+}
+
+/* =================================================================== */
+/* Ask Fyralis contextual strip (spec §7.8 + §13)                       */
+/* =================================================================== */
+
+.tdv2-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-moon-paper);
+  border-left: 3px solid var(--accent-evidence);
+}
+.tdv2-ask__label {
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 600;
+}
+.tdv2-ask__form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+}
+.tdv2-ask__input {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+}
+.tdv2-ask__input:focus { outline: 2px solid var(--accent-evidence); outline-offset: 1px; }
+.tdv2-ask__suggestions {
+  display: flex; flex-wrap: wrap; gap: var(--space-2);
+}
+.tdv2-ask__chip {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.tdv2-ask__chip:hover:not(:disabled) {
+  border-color: var(--accent-evidence);
+  background: rgba(49, 90, 122, 0.06);
+}
+.tdv2-ask__chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.tdv2-ask__answer {
+  border-top: 1px solid var(--border-default);
+  padding-top: var(--space-3);
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.tdv2-ask__question {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tdv2-ask__question-label {
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 600;
+}
+.tdv2-ask__question-text {
+  font-size: 13px; color: var(--text-primary); font-style: italic;
+}
+.tdv2-ask__answer-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.005em;
+}
+.tdv2-ask__answer-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+.tdv2-ask__meta {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.tdv2-ask__meta-label {
+  margin: 0;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 600;
+}
+.tdv2-ask__meta-list {
+  margin: 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.tdv2-ask__meta-list li {
+  font-size: 13px; color: var(--text-primary);
+}
+.tdv2-ask__meta-list li::before {
+  content: "·";
+  color: var(--text-muted); font-weight: 700; margin-right: 6px;
+}
+.tdv2-ask__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.tdv2-ask__action {
+  display: inline-flex; align-items: center;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--accent-evidence);
+  background: rgba(49, 90, 122, 0.08);
+  border: 1px solid rgba(49, 90, 122, 0.18);
+}
 
 /* =================================================================== */
 /* Drawers / sheets                                                     */

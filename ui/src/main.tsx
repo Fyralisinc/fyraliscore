@@ -1,9 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useParams,
+} from "react-router-dom";
 
 import TodayBriefing from "./pages/today-v2/Briefing";
-import TodayFocusedReview from "./pages/today-v2/FocusedReview";
 import ModelPageV2 from "./pages/model-v2/ModelPage";
 import ForecastsSpec from "./pages/forecasts/ForecastsSpec";
 import LedgerSpec from "./pages/ledger/LedgerSpec";
@@ -37,13 +42,10 @@ ReactDOM.createRoot(root).render(
             </AutoDemoSession>
           }
         />
+        {/* Legacy focused-review deep link → in-place expansion. */}
         <Route
           path="/today/review/:deltaId"
-          element={
-            <AutoDemoSession>
-              <TodayFocusedReview />
-            </AutoDemoSession>
-          }
+          element={<TodayReviewRedirect />}
         />
         <Route
           path="/model"
@@ -104,3 +106,13 @@ ReactDOM.createRoot(root).render(
     </BrowserRouter>
   </React.StrictMode>
 );
+
+// Legacy URL: /today/review/:deltaId → /today?expand=:deltaId.
+// Spec §6.2 retires the dedicated focused-review route in favor of an
+// in-place expansion on Today. Existing links (Slack messages,
+// bookmarks) shouldn't 404.
+function TodayReviewRedirect() {
+  const { deltaId } = useParams<{ deltaId: string }>();
+  const target = deltaId ? `/today?expand=${encodeURIComponent(deltaId)}` : "/today";
+  return <Navigate to={target} replace />;
+}
