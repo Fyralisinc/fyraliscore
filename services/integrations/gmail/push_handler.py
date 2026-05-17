@@ -102,13 +102,23 @@ async def handle_push(
     tenant_id: UUID = topic_row["tenant_id"]
     gmail_installation_id: UUID = topic_row["gmail_installation_id"]
 
+    # Per M2.2 work order: the Gmail Pub/Sub endpoint needs the
+    # resolved tenant_id to fire the shadow write of the *notification
+    # payload* (not the fetched messages — that's M6's scope). The
+    # subscription→tenant lookup above is the cheapest place to
+    # surface it; we attach it to every post-resolved return path
+    # so the endpoint can do `result.get("tenant_id")` without a
+    # second DB query.
     try:
-        return await _drain_history(
+        inner = await _drain_history(
             pool=pool,
             tenant_id=tenant_id,
             gmail_installation_id=gmail_installation_id,
             email_address=email_address.lower(),
         )
+        # _drain_history returns its own status dict; augment with
+        # tenant_id without overwriting any existing key.
+        return {**inner, "tenant_id": str(tenant_id)}
     except GoogleRateLimited as exc:
         # Return 200 — Pub/Sub will redeliver eventually; the poller is
         # the safety net. Avoid a retry storm.
@@ -117,10 +127,10 @@ async def handle_push(
             email=email_address,
             retry_after_s=getattr(exc, "kwargs", {}).get("retry_after_s"),
         )
-        return {"status": "rate_limited"}
+        return {"status": "rate_limited", "tenant_id": str(tenant_id)}
     except GoogleApiError as exc:
         log.warning("gmail.push.google_error", email=email_address, error=str(exc)[:200])
-        return {"status": "google_error"}
+        return {"status": "google_error", "tenant_id": str(tenant_id)}
 
 
 async def _drain_history(

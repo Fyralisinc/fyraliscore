@@ -45,7 +45,9 @@ from services.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
+from services.ingestion.feature_flags import SHADOW_WRITE_ENABLED
 from services.ingestion.handlers import HandlerNotFound
+from services.ingestion.shadow_write import shadow_write_raw
 from services.webhooks import metrics
 from services.webhooks.signatures import VERIFIERS
 from services.webhooks.secrets import load_secrets
@@ -58,6 +60,114 @@ from services.webhooks.verifier import WebhookVerificationError
 
 
 log = structlog.get_logger("webhooks.router")
+
+
+# Providers whose webhook bodies belong on the new ingestion data
+# plane. linear/stripe ingestion stays inline-only — they're not in
+# the source enum (LLD §1 / RawEnvelope: slack|github|discord|gmail).
+# Gmail enters via Pub/Sub, not this webhook router (see M2.2).
+_PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
+    "slack": "slack",
+    "github": "github",
+    "discord": "discord",
+}
+
+
+async def _maybe_shadow_write_webhook(
+    request: Request,
+    *,
+    provider: str,
+    tenant_id: Any,
+    raw_body: bytes,
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Shadow-write helper for the webhook router. PRIME DIRECTIVE
+    (M2 work order): a failure here MUST NOT propagate.
+
+    Caller guarantees: tenant is resolved, signature verified, inline
+    ingest() succeeded. Any exception thrown by S3 / Kafka / flag-read
+    is caught and logged inline; the caller's 200/201 response is
+    unaffected.
+
+    No-ops cleanly when:
+      - provider is not in the shadow-source map (linear/stripe).
+      - app.state.kafka_producer or app.state.s3_raw_client is unset
+        (gateway-config: the lifespan handler hasn't wired the
+        shadow deps; pre-M2 deployments).
+      - app.state.tenant_flags reports
+        ingestion.shadow_write_enabled=False for this tenant.
+
+    Per LLD §11 (per-tenant flag) + M2 §M2.1.
+    """
+    try:
+        source = _PROVIDER_TO_SHADOW_SOURCE.get(provider)
+        if source is None:
+            return  # linear / stripe / future providers — not in scope
+
+        kafka_producer = getattr(request.app.state, "kafka_producer", None)
+        s3_client = getattr(request.app.state, "s3_raw_client", None)
+        tenant_flags = getattr(request.app.state, "tenant_flags", None)
+
+        if kafka_producer is None or s3_client is None:
+            # Shadow deps not wired — silent skip. Pre-M2 deployments
+            # and unit tests that don't exercise shadow path hit this.
+            return
+
+        if tenant_flags is not None:
+            enabled = await tenant_flags.get_bool(
+                tenant_id, SHADOW_WRITE_ENABLED, default=True,
+            )
+            if not enabled:
+                return
+
+        # Per-provider hints — populated lazily to keep the unwired
+        # paths cheap. The hints are best-effort; the normalizer
+        # treats them as advisory.
+        ingress_metadata: dict[str, Any] = {"event_type": _event_type_for(provider, request, payload)}
+        if provider == "github":
+            delivery_id = _github_delivery_id(request.headers)
+            if delivery_id:
+                ingress_metadata["delivery_id"] = delivery_id
+
+        await shadow_write_raw(
+            tenant_id=tenant_id,
+            source=source,  # type: ignore[arg-type]  — runtime checked
+            ingress_kind="webhook",
+            raw_body=raw_body,
+            s3_client=s3_client,
+            kafka_producer=kafka_producer,
+            ingress_metadata=ingress_metadata,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # M2 prime directive: never propagate. log + metric and return.
+        log.warning(
+            "shadow_path.failure",
+            provider=provider,
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+
+
+def _event_type_for(
+    provider: str,
+    request: Request,
+    payload: Mapping[str, Any] | None,
+) -> str:
+    """Best-effort event-type extraction for shadow ingress_metadata."""
+    if provider == "github":
+        return _github_event_type(request.headers) or "unknown"
+    if provider == "slack" and isinstance(payload, dict):
+        event = payload.get("event")
+        if isinstance(event, dict):
+            etype = event.get("type")
+            if isinstance(etype, str):
+                return etype
+    if provider == "discord" and isinstance(payload, dict):
+        # Discord interaction type is an int per their docs.
+        itype = payload.get("type")
+        if isinstance(itype, int):
+            return f"interaction:{itype}"
+    return "unknown"
 
 
 # Channels in CHANNEL_TRUST_MAP are keyed differently per provider; the
@@ -647,6 +757,48 @@ def build_webhooks_router() -> APIRouter:
                 {"code": e.code, "message": e.message, "context": e.context},
                 status_code=400,
             )
+
+        # ---- M2.1 Shadow path ----
+        # Ordering: AFTER successful inline ingest(), BEFORE the
+        # 200/201 response. Not before, not in parallel.
+        #
+        # Spec context: HLD "Migration Path" step 2 (line 510) says
+        # "webhook router writes to S3 + publishes to Kafka *in
+        # addition to* calling ingest() inline" — it does NOT
+        # mandate a relative order. No LLD section pins this either
+        # (LLD §5.4 is the embedding worker pool, unrelated). The
+        # choice below is M2.1's, documented here so reviewers and
+        # future readers can audit the reasoning.
+        #
+        # Why AFTER inline ingest():
+        #   (1) Inline is the source of truth during M2. Anything
+        #       that risks inline correctness is wrong. By running
+        #       shadow AFTER inline returns, no failure mode of the
+        #       shadow path can disturb the inline write — the DB
+        #       commit and post-commit triggers have already happened.
+        #   (2) Skips wasted shadow writes when inline rejected the
+        #       payload (PayloadTooLarge / ValidationError /
+        #       HandlerNotFound — all caught above this point and
+        #       returned as 4xx before reaching here).
+        #   (3) The observable divergence shape becomes "inline
+        #       observation exists, shadow record missing" — a
+        #       direction that M2.4's E2E test asserts against and
+        #       that an ops-side count comparison can detect cleanly.
+        #       The opposite ordering (shadow first) would let
+        #       transient inline crashes leave orphan shadow records
+        #       with no inline counterpart, which is harder to
+        #       reconcile.
+        #
+        # Best-effort; failures caught inside the helper (try/except)
+        # and logged. PRIME DIRECTIVE (M2 work-order §M2.1): never
+        # propagate to the inline response.
+        await _maybe_shadow_write_webhook(
+            request,
+            provider=provider,
+            tenant_id=tenant_id_uuid,
+            raw_body=raw,
+            payload=payload,
+        )
 
         # Discord interactions require a specific response shape
         # (https://discord.com/developers/docs/interactions/receiving-and-responding).

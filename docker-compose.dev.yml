@@ -1,0 +1,109 @@
+# M2.0 dev-only stack for the ingestion shadow path.
+#
+# Why a separate compose file:
+#   `docker-compose.yml` is the deployed-stack file (gateway+ui+nginx+postgres
+#   for the production-ish dogfood). It is NOT suitable for the iterative
+#   dev loop M2-M6 needs. This file holds only the new infrastructure
+#   M2 introduces — Kafka and an S3 mock — leaving Postgres/Ollama/Redis
+#   to whatever the developer already has running (e.g. the local
+#   `company_os_postgres` container the team uses for tests, the
+#   project's Ollama install, etc.).
+#
+# Per ingestion LLD §5.1 (raw tier) + §5.2 (normalizer pool consumes
+# ingestion.raw). Per M2 work-order §M2.0.
+#
+# Service contracts:
+#   kafka   — KRaft mode (combined controller+broker), single broker,
+#             reachable from host at 127.0.0.1:9092. No Zookeeper.
+#   moto-s3 — in-process S3 mock for local end-to-end runs. Reachable
+#             at http://127.0.0.1:5001 (the host port is shifted from
+#             5000 to avoid clashing with the macOS AirPlay receiver
+#             and with anything else that grabs :5000 by default).
+#
+# Networking: default bridge. Compose mints a network named after the
+# file (`fyraliscore_default`). Containers reach each other via service
+# name; the host reaches services via the published ports above.
+
+services:
+  kafka:
+    # Per M2.0 gate review: apache/kafka:4.0.2 is the latest GA tag and
+    # is already pulled on the dev image set (see `docker images`). This
+    # is the official Apache image with KRaft baked in — no Zookeeper,
+    # no Bitnami-specific config wrappers.
+    image: apache/kafka:4.0.2
+    container_name: fyralis_dev_kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"   # PLAINTEXT broker port (clients)
+      - "9093:9093"   # KRaft controller port (internal — published for
+                      # diagnostics; tests typically don't touch it)
+    environment:
+      # ---- KRaft (single combined controller+broker) ----
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # ---- Advertised listeners ----
+      # Use plain `localhost` so clients running on the host reach the
+      # broker without DNS games. Workers running inside another
+      # container on the same compose network would need
+      # `PLAINTEXT://kafka:9092` instead — flag in the runbook.
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      # ---- Storage ----
+      # Fixed cluster id so a `down -v` + `up -d` cycle starts clean
+      # without metadata mismatch. Generate once with
+      # `bin/kafka-storage random-uuid` — committed value below is fine
+      # for dev (not production).
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      # ---- Single-broker dev defaults: rep=1, ISR=1 ----
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      # Allow `--if-not-exists` and easy CLI work from inside the
+      # container; this is dev only.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # `kafka-topics.sh --list` exits 0 only when the controller is
+      # actually serving metadata. Cheaper signal than the broker port
+      # being open (which lights up before the controller is ready).
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  moto-s3:
+    # In-process S3 mock. Used by services run locally (not by unit
+    # tests — unit tests use the moto Python library directly via
+    # `@mock_aws` or patching at the aioboto3 client layer; this
+    # container is for `python -m services.ingestion.normalizer` style
+    # local runs).
+    image: motoserver/moto:latest
+    container_name: fyralis_dev_moto_s3
+    restart: unless-stopped
+    ports:
+      # 5001 on host to avoid the very common :5000 clash (AirPlay,
+      # Flask defaults, etc.). Workers point at http://localhost:5001.
+      - "5001:5000"
+    environment:
+      MOTO_PORT: "5000"
+      MOTO_SERVICE: "s3"
+    healthcheck:
+      # The motoserver image ships curl + Python but no BusyBox wget;
+      # curl is the simplest probe. /moto-api/ returns 200 once the
+      # Flask app is serving.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/moto-api/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  kafka-data:

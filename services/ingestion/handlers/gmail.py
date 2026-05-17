@@ -37,11 +37,21 @@ from uuid import UUID
 import structlog
 
 from lib.shared.errors import ValidationError
-from lib.shared.tenant_context import bind_tenant, tenant_transaction
 
-from services.ingestion.core import ingest as _ingest_core
 from services.ingestion.handlers import ObservationDraft, register
-from services.integrations.gmail.threading import canonicalize_thread
+
+# Note: the following modules are DB-touching and used ONLY by
+# `dispatch_gmail_message_resource` (the inline-path dispatcher used
+# by push_handler / history_poller):
+#   - `services.integrations.gmail.threading` (imports tenant_context)
+#   - `lib.shared.tenant_context` (imports asyncpg)
+#   - `services.ingestion.core` (imports asyncpg)
+# They are deliberately NOT imported at module level — see M2.3
+# Path B: the normalizer worker imports the handler registry, which
+# imports every handler module. A top-level DB import here would
+# propagate into the normalizer's process and break the static "no
+# asyncpg in the worker's import graph" proof. Imported lazily
+# inside the dispatcher function below.
 
 
 log = structlog.get_logger("ingestion.handlers.gmail")
@@ -278,6 +288,12 @@ async def dispatch_gmail_message_resource(
         + _split_addrs(headers.get("to"))
         + _split_addrs(headers.get("cc"))
     )
+
+    # Lazy import — DB-touching modules MUST stay out of this module's
+    # top-level import graph (see header note + M2.3 Path B proof).
+    from lib.shared.tenant_context import tenant_transaction
+    from services.ingestion.core import ingest as _ingest_core
+    from services.integrations.gmail.threading import canonicalize_thread
 
     # --- step 1: canonicalize (its own tenant txn).
     async with tenant_transaction(tenant_id) as tctx:

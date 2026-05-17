@@ -32,8 +32,20 @@ dependencies = [
     "temporalio>=1.5",                          # Temporal Python SDK
     "confluent-kafka>=2.3",                     # idempotent producer
     "aiokafka>=0.10",                           # consumer
+    # M2.3: aiokafka's zstd / lz4 codecs require cramjam at runtime.
+    # The shadow-path producer (M2.1) writes zstd-compressed batches;
+    # the normalizer's aiokafka consumer must be able to decompress
+    # them. Without this dep the consumer raises
+    # UnsupportedCodecError on the first compressed batch.
+    "cramjam>=2.8",                             # aiokafka zstd/lz4 codec backend
     "aioboto3>=12.0",                           # S3 / R2 client
-    "orjson>=3.9",                              # normalizer hot path
+    # M2.2: pinned minor — canonical JSON via OPT_SORT_KEYS is the
+    # raw-body bytes for the Discord Gateway shadow path. content_hash
+    # dedup + N2 replay-from-raw both require byte-equal serialization
+    # across deployments. Patch updates are allowed; major/minor bumps
+    # require re-verifying the round-trip test in
+    # services/integrations/discord/gateway/tests/test_dispatch_shadow.py.
+    "orjson>=3.11,<3.12",                       # normalizer hot path + Gateway shadow canonical bytes
     "opentelemetry-api>=1.20",                  # tracing
     "opentelemetry-sdk>=1.20",
     "opentelemetry-instrumentation-asyncpg>=0.40b0",
@@ -54,6 +66,11 @@ dev = [
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
     "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
     "moto[s3]>=5.0",            # M1.4: in-process S3 mock for raw_tier tests
+    # M2.3: real-broker Kafka tests (cooperative-sticky rebalance) require
+    # an actual Kafka cluster. `testcontainers[kafka]` spins one up per
+    # test; the test asserts `@pytest.mark.requires_docker` and skips
+    # cleanly when Docker isn't available.
+    "testcontainers[kafka]>=4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -64,7 +81,7 @@ namespaces = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "lib", "services"]
+testpaths = ["tests", "lib", "services", "scripts"]
 python_files = ["test_*.py", "*_test.py"]
 timeout = 30
 filterwarnings = [
@@ -88,4 +105,5 @@ markers = [
     "slow: slow test (> 1s)",
     "real_llm: real-LLM test (requires DEEPSEEK_API_KEY, runs only with RUN_REAL_LLM=1 or -m real_llm)",
     "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
+    "requires_docker: requires a running Docker daemon and (typically) the M2 dev compose stack (docker-compose.dev.yml — Kafka, moto-s3). Skipped cleanly when Docker isn't available.",
 ]
