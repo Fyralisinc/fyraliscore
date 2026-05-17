@@ -99,6 +99,12 @@ must handle it.
 
 ## 3. Shadow-write ordering relative to inline `ingest()` (M2.1)
 
+**Status (M3.4):** DEFERRED to coherence-audit milestone — requires
+HLD edit ("Migration Path" step 2 in `02-high-level-design.md`),
+not just LLD prose. The coherence-audit milestone is its own
+focused work-unit between M3 and M4; do not smuggle HLD edits into
+M3 close.
+
 **Current spec state:** neither the LLD nor the HLD specifies an
 ordering between the shadow write (S3 PUT + Kafka publish) and
 the inline `ingest()` call. HLD "Migration Path" step 2 (line
@@ -135,6 +141,12 @@ test (M2.4) asserts against."
 ---
 
 ## 4. Parsed-dict surface → raw bytes contract (M2.2, Discord Gateway)
+
+**Status (M3.4):** DEFERRED to coherence-audit milestone — requires
+a new LLD subsection in §5 (Raw Tier — "Parsed-dict surfaces") plus
+a paired HLD note on the orjson minor-pin contract. Not an in-place
+prose edit. The coherence-audit milestone is its own focused
+work-unit between M3 and M4.
 
 **Current spec state:** the LLD/HLD describes the shadow path in terms
 of "raw body bytes" as if every surface has a wire-level byte stream
@@ -349,6 +361,12 @@ favour the C client.
 
 ## M2.3 — Additional infrastructure findings
 
+**Status (M3.4):** DEFERRED to coherence-audit milestone — these
+are dependency/infrastructure notes, not LLD prose corrections.
+Belong in the coherence-audit milestone alongside the LLD's
+testing-stack / dependency sections (or in a separate
+operations-deps changelog if one is added).
+
 For traceability, two non-amendment-grade infrastructure findings
 surfaced during M2.3 implementation. They live here for context
 when the next coherence pass touches the LLD's testing-stack /
@@ -369,5 +387,20 @@ dependency sections:
 
 ## Tracking
 
-When the next coherence audit runs, apply all six amendments and
-remove this file. No other items pending as of 2026-05-17.
+**Update (M3.4 coherence pass, 2026-05-17):** three of the six
+amendments were folded into the LLD in this pass:
+
+  - §1.6 BEGIN/COMMIT correction (item 1) → folded.
+  - §13 `-1` zero-refill sentinel (item 2) → folded.
+  - §5.2 Path B handler import discipline + cooperative-sticky
+    note (items 5 + 6) → folded.
+
+The remaining three (items 3, 4, M2.3 infrastructure findings)
+require HLD edits or new LLD subsections — they are deferred to
+the dedicated coherence-audit milestone between M3 and M4. Each
+remaining entry now carries an explicit "Status (M3.4): DEFERRED"
+header.
+
+When the coherence-audit milestone runs, apply the remaining three
+amendments and remove this file. No other items pending as of
+2026-05-17.
