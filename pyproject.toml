@@ -27,6 +27,17 @@ dependencies = [
     "pyjwt[crypto]>=2.8",        # IN-13: GitHub App JWT (RS256) minting
     "zstandard>=0.22",           # Gmail/general payload compression
     "google-auth>=2.29",         # IN-Gmail: Google OAuth/OIDC verification
+    "redis>=5.0",                # M1.3: rate limiter (Lua EVALSHA on Redis); LLD §13
+    # --- Ingestion M1.4 (LLD §9 dependency adds) ---
+    "temporalio>=1.5",                          # Temporal Python SDK
+    "confluent-kafka>=2.3",                     # idempotent producer
+    "aiokafka>=0.10",                           # consumer
+    "aioboto3>=12.0",                           # S3 / R2 client
+    "orjson>=3.9",                              # normalizer hot path
+    "opentelemetry-api>=1.20",                  # tracing
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-instrumentation-asyncpg>=0.40b0",
+    "opentelemetry-instrumentation-aiokafka>=0.40b0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +52,8 @@ dev = [
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
     "numpy>=2.0",               # transitive; model-embedding stacking
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
+    "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
+    "moto[s3]>=5.0",            # M1.4: in-process S3 mock for raw_tier tests
 ]
 
 [tool.setuptools.packages.find]
@@ -74,4 +87,5 @@ markers = [
     "ollama: requires live Ollama (OLLAMA_URL)",
     "slow: slow test (> 1s)",
     "real_llm: real-LLM test (requires DEEPSEEK_API_KEY, runs only with RUN_REAL_LLM=1 or -m real_llm)",
+    "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
 ]

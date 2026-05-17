@@ -1,0 +1,1 @@
+"""Temporal activity implementations for ingestion (M2+). Per LLD §9. Will contain: outbox.py (claim_unconsumed_triggers, mark_trigger_consumed), runs.py (create_or_get_onboarding_run, publish_completion_events), shards.py (load_shard, mark_shard_*, advance_shard_cursor), progress.py (publish_progress_event, measure_recency_gap)."""

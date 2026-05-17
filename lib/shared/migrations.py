@@ -20,11 +20,30 @@ Use this from every test conftest, every harness bootstrap, and any
 new migration tooling. The production shell-side runner
 (`scripts/docker-migrate.sh`) gets the same guarantee via psql's
 `--single-transaction` flag — see that script for details.
+
+Non-transactional migrations (CONCURRENTLY) — added for ingestion LLD §1.6.
+Postgres forbids `CREATE INDEX CONCURRENTLY` (and similar
+`ALTER INDEX … CONCURRENTLY`, `REINDEX CONCURRENTLY`, `DROP INDEX
+CONCURRENTLY`) inside an explicit transaction block. The migration
+runner detects these files and runs them OUTSIDE the transaction
+wrapper. Two opt-in signals are honoured:
+
+  1. The SQL text contains the keyword `CONCURRENTLY` (word-boundary,
+     case-insensitive, ignoring `-- …` line comments).
+  2. The file contains a directive line `-- migration:no-transaction`
+     anywhere in its body.
+
+Files that match either signal lose the atomic-rollback guarantee
+above — Postgres commits each statement individually. This is the
+expected trade-off for non-blocking index builds; callers should
+ensure such files contain a single statement so a mid-file failure
+doesn't leave a half-built artifact.
 """
 from __future__ import annotations
 
 import logging
 import pathlib
+import re
 from collections.abc import Iterable
 
 import asyncpg
@@ -51,24 +70,58 @@ class MigrationError(Exception):
         self.cause = cause
 
 
+# Strip `-- …` line comments before scanning for keywords. SQL block
+# comments (`/* … */`) are not used in this project's migrations; if
+# that changes the regex below needs widening.
+_LINE_COMMENT_RE = re.compile(r"--[^\n]*", flags=re.ASCII)
+_CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b", flags=re.IGNORECASE)
+_NO_TXN_DIRECTIVE_RE = re.compile(
+    r"^\s*--\s*migration:no-transaction\s*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _needs_no_transaction(sql_text: str) -> bool:
+    """True iff this migration must run outside a transaction.
+
+    See module docstring; for ingestion LLD §1.6 (0049 entity_aliases
+    functional index).
+    """
+    if _NO_TXN_DIRECTIVE_RE.search(sql_text) is not None:
+        return True
+    stripped = _LINE_COMMENT_RE.sub("", sql_text)
+    return _CONCURRENTLY_RE.search(stripped) is not None
+
+
 async def apply_migration(
     conn: asyncpg.Connection,
     sql_text: str,
     *,
     name: str,
 ) -> None:
-    """Apply a single migration's SQL inside a transaction.
+    """Apply a single migration's SQL.
 
-    Any error inside the migration rolls the whole file back. The
-    caller's connection is guaranteed clean afterwards — no aborted
-    transaction state to worry about on the next call.
+    Default path — wraps in `async with conn.transaction():`. Any
+    error rolls the whole file back; the caller's connection is
+    guaranteed clean afterwards.
+
+    Non-transactional path — if the SQL contains `CONCURRENTLY` or a
+    `-- migration:no-transaction` directive, the wrapper is skipped
+    and each statement commits individually. Used for
+    `CREATE INDEX CONCURRENTLY` builds that Postgres forbids inside
+    an explicit transaction (ingestion LLD §1.6).
 
     Raises `MigrationError` wrapping the original exception with the
     migration's name attached, so callers can tell which file broke.
     """
     try:
-        async with conn.transaction():
+        if _needs_no_transaction(sql_text):
+            # No txn wrapper. Mid-file failure may leave partial state;
+            # such files should contain a single CONCURRENTLY statement.
             await conn.execute(sql_text)
+        else:
+            async with conn.transaction():
+                await conn.execute(sql_text)
     except Exception as exc:  # noqa: BLE001
         raise MigrationError(name, exc) from exc
 
