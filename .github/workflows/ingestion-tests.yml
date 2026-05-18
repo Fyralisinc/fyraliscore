@@ -16,7 +16,11 @@ name: ingestion-tests
 
 on:
   push:
-    branches: [integration/ingestion-hardening, main]
+    # `fix/test-ingest-core-ci` is included temporarily so the very
+    # first run of this workflow can be verified against a real CI
+    # before #31 merges. The next commit removes it. See the gate
+    # summary in docs/decisions/ticket-31-diagnosis.md.
+    branches: [integration/ingestion-hardening, main, fix/test-ingest-core-ci]
   pull_request:
     branches: [integration/ingestion-hardening, main]
   workflow_dispatch:
