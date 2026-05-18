@@ -40,6 +40,7 @@ from services.ingestion.feature_flags.circuit_breaker import (
     _process_tick,
     _TenantBreachState,
     _load_state,
+    get_metrics,
     make_breaker_pool,
     reset_metrics,
     run_circuit_breaker,
@@ -397,7 +398,159 @@ async def test_breaker_tripped_state_freezes_counter(
 
 
 # =====================================================================
-# 7. State survives a real subprocess SIGTERM + restart.
+# 7. Non-cutover filter: tenants with flag=FALSE are skipped.
+# =====================================================================
+
+async def test_breaker_skips_tenants_with_flag_already_disabled(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A tenant whose ingestion.kafka_path_enabled is already FALSE
+    (e.g. pre-cutover or operator-disabled) must NOT be tracked by the
+    breaker — no state row created, no flag re-write, no alert.
+
+    Re-writing FALSE-on-FALSE would clobber the existing set_by audit
+    (e.g. an "operator:alice" flip becoming "auto:circuit_breaker").
+    """
+    tenant_disabled = await _seed_tenant(fresh_db, "tenant-disabled")
+    flags = TenantFlags(fresh_db)
+    alerts, alert_fn = _make_alert_recorder()
+    config = _config()
+    state: dict[UUID, _TenantBreachState] = {}
+
+    # Operator (or earlier op) set the flag FALSE with an audit field
+    # we want to PRESERVE across breaker ticks.
+    await flags.set_bool(
+        tenant_disabled, KAFKA_PATH_ENABLED, False,
+        set_by="operator:alice", note="pre-cutover hold",
+    )
+
+    lag_fn = _make_lag_fn({0: 120.0})
+    active_fn = _make_active_fn({tenant_disabled: 0})
+
+    for _ in range(10):  # well past the 5-tick window
+        await _process_tick(
+            config=config, pool=fresh_db, tenant_flags=flags,
+            state=state, measure_lag_fn=lag_fn,
+            active_tenants_fn=active_fn, alert_fn=alert_fn,
+        )
+
+    # ---- Audit row preserved: set_by is still operator:alice ----
+    row = await fresh_db.fetchrow(
+        "SELECT flag_value, set_by FROM tenant_flags "
+        "WHERE tenant_id = $1 AND flag_name = $2",
+        tenant_disabled, KAFKA_PATH_ENABLED,
+    )
+    assert row["flag_value"] is False
+    assert row["set_by"] == "operator:alice", (
+        f"Breaker overwrote operator audit field: set_by is {row['set_by']!r}; "
+        f"expected 'operator:alice'. The flag-disabled filter is missing."
+    )
+
+    # ---- No state row created — tenant was filtered out ----
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert tenant_disabled not in loaded, (
+        f"Breaker created state row for a flag-disabled tenant: "
+        f"{loaded.get(tenant_disabled)}. Non-cutover filter is missing."
+    )
+    # No alert.
+    assert len(alerts) == 0
+    # Metric counted the skip.
+    assert get_metrics()["breaker.skipped_flag_disabled"] >= 1
+
+
+# =====================================================================
+# 8. Operator re-enable auto-resets breaker bookkeeping.
+# =====================================================================
+
+async def test_breaker_resets_bookkeeping_on_operator_reenable(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """After a trip, an operator manually flips the flag back to TRUE.
+    On the next breaker tick, the state row's tripped/counter must
+    reset so a future sustained breach can re-trip — without this,
+    a forgotten state-row cleanup leaves the breaker blind to the
+    tenant forever.
+
+    Behaviour under test (option 2 of the M5.1 verification):
+      1. Trip via 5 breached ticks.
+      2. Operator flips flag back to TRUE (set_by="operator:bob").
+      3. Run one tick with lag healthy. Breaker observes flag=TRUE +
+         existing tripped state → resets bookkeeping. Tenant traffic
+         is healthy so no re-trip on this tick.
+      4. Run 5 more breached ticks. Breaker re-trips (counter was 0).
+    """
+    tenant_a = await _seed_tenant(fresh_db, "tenant-reenable")
+    flags = TenantFlags(fresh_db)
+    alerts, alert_fn = _make_alert_recorder()
+    config = _config()
+    state: dict[UUID, _TenantBreachState] = {}
+
+    breach_fn = _make_lag_fn({0: 120.0})
+    healthy_fn = _make_lag_fn({0: 5.0})
+    active_fn = _make_active_fn({tenant_a: 0})
+
+    # ---- Step 1: trip the breaker. ----
+    for _ in range(5):
+        await _process_tick(
+            config=config, pool=fresh_db, tenant_flags=flags,
+            state=state, measure_lag_fn=breach_fn,
+            active_tenants_fn=active_fn, alert_fn=alert_fn,
+        )
+    assert await _read_flag(fresh_db, tenant_a) is False
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_a].tripped is True
+    assert len(alerts) == 1
+
+    # ---- Step 2: operator manually re-enables. ----
+    await flags.set_bool(
+        tenant_a, KAFKA_PATH_ENABLED, True,
+        set_by="operator:bob", note="recovered, re-enabling",
+    )
+
+    # ---- Step 3: one healthy tick. Breaker resets bookkeeping. ----
+    await _process_tick(
+        config=config, pool=fresh_db, tenant_flags=flags,
+        state=state, measure_lag_fn=healthy_fn,
+        active_tenants_fn=active_fn, alert_fn=alert_fn,
+    )
+
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_a].tripped is False, (
+        f"Operator re-enabled flag but breaker still says tripped=True: "
+        f"{loaded[tenant_a]}. Auto-reset on operator re-enable is missing."
+    )
+    assert loaded[tenant_a].consecutive_breach_ticks == 0
+    assert loaded[tenant_a].tripped_at is None
+    # Metric counted the reset.
+    assert get_metrics()["breaker.bookkeeping_reset_on_operator_reenable"] == 1
+    # Flag must still reflect the operator's TRUE flip — breaker did
+    # NOT touch the flag during the reset.
+    row = await fresh_db.fetchrow(
+        "SELECT flag_value, set_by FROM tenant_flags "
+        "WHERE tenant_id = $1 AND flag_name = $2",
+        tenant_a, KAFKA_PATH_ENABLED,
+    )
+    assert row["flag_value"] is True
+    assert row["set_by"] == "operator:bob"
+
+    # ---- Step 4: 5 more breached ticks → breaker re-trips. ----
+    for _ in range(5):
+        await _process_tick(
+            config=config, pool=fresh_db, tenant_flags=flags,
+            state=state, measure_lag_fn=breach_fn,
+            active_tenants_fn=active_fn, alert_fn=alert_fn,
+        )
+    assert await _read_flag(fresh_db, tenant_a) is False, (
+        "Breaker did not re-trip after operator re-enable + sustained "
+        "breach. Bookkeeping reset may be incomplete (counter not at 0)."
+    )
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_a].tripped is True
+    assert len(alerts) == 2  # original trip + re-trip
+
+
+# =====================================================================
+# 9. State survives a real subprocess SIGTERM + restart.
 #    LOAD-BEARING — mirrors M3.3's test_backlog_service_resumes_from_cursor.
 # =====================================================================
 

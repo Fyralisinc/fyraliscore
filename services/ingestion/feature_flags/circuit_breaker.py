@@ -24,7 +24,7 @@ Long-running asyncio service. Every `tick_interval_sec` (default 60s):
        b. Mark tenant tripped in `circuit_breaker_state`.
        c. Emit `circuit_breaker.tripped` ops alert.
 
-=== Auto-recovery is DISABLED ===
+=== Auto-recovery is DISABLED — flag flips are operator-driven ===
 
 Once a tenant is tripped, this service does NOT auto-flip the flag
 back. Auto-recovery during an incident produces flapping — the broker
@@ -34,11 +34,19 @@ re-fails, ad nauseam. Operator must:
   1. Investigate the underlying broker health.
   2. Manually re-enable with an explicit
      `TenantFlags.set_bool(value=True, set_by="operator:<id>")` call.
-  3. Optionally clear the `circuit_breaker_state.tripped` flag.
 
-Until the operator clears `tripped`, this service skips that tenant
-in step 4 above (the row is "frozen" — counter not updated, no
-re-trip can fire).
+Step 2 is the entire operator procedure. On the breaker's next tick
+after the flip, it observes `kafka_path_enabled=TRUE` for a tenant
+whose state row says `tripped=TRUE` and auto-resets its own
+bookkeeping (counter→0, tripped→FALSE). This is auto-reset of
+BREAKER STATE, not auto-recovery of the FLAG: the flag flip is
+operator-controlled, but breaker bookkeeping does not require a
+second manual step.
+
+Tenants whose flag is already FALSE (pre-cutover or operator-disabled)
+are skipped entirely in step 4 above — the breaker has nothing to
+flip for them, and re-flipping FALSE-on-FALSE would clobber the
+`set_by` audit trail.
 
 === Service shape — matches M3.3's embedding backlog drainer ===
 
@@ -104,6 +112,8 @@ _metrics: dict[str, float] = {
     "breaker.recovery_resets":        0.0,
     "breaker.trips":                  0.0,
     "breaker.skipped_already_tripped": 0.0,
+    "breaker.skipped_flag_disabled":  0.0,
+    "breaker.bookkeeping_reset_on_operator_reenable": 0.0,
     "breaker.lag_measurement_failures": 0.0,
     "breaker.signal_read_failures":   0.0,
 }
@@ -352,7 +362,54 @@ async def _process_tick(
 
     # Step 3 + 4: update per-tenant breach state.
     for tenant_id, partition in active.items():
+        # Read the current cutover flag. Drives two behaviours:
+        #   (1) Filtering: tenants whose flag is already FALSE are not
+        #       candidates for breach detection — there's nothing to
+        #       flip, and re-flipping FALSE-on-FALSE would overwrite
+        #       the operator's audit field on set_by.
+        #   (2) Auto-reset on operator re-enable: if our state row says
+        #       tripped=TRUE but the flag is now TRUE, an operator must
+        #       have manually re-enabled the tenant. We reset our
+        #       bookkeeping (counter=0, tripped=FALSE) so the next sustained
+        #       breach can trip again — without this, a forgotten state-row
+        #       cleanup leaves the breaker permanently blind to the tenant.
+        flag_value = await tenant_flags.get_bool(
+            tenant_id, KAFKA_PATH_ENABLED, default=True,
+        )
         entry = state.get(tenant_id)
+
+        if flag_value is False:
+            if entry is not None and entry.tripped:
+                # Already tripped by this breaker; remain frozen. Keep
+                # last_tick_at fresh so stale-state GC doesn't drop the
+                # row while traffic is still flowing.
+                _bump("breaker.skipped_already_tripped")
+                entry.last_tick_at = now
+                await _persist_state(pool, config.instance_name, entry)
+            else:
+                # Non-cutover tenant (pre-cutover or operator-disabled).
+                # Nothing to flip; do not create a state row.
+                _bump("breaker.skipped_flag_disabled")
+            continue
+
+        # flag_value is True from here on.
+        if entry is not None and entry.tripped:
+            # Operator re-enabled the flag manually. Auto-reset our
+            # bookkeeping so future breaches can re-trip. This is
+            # auto-reset of BREAKER STATE, not auto-recovery of the
+            # FLAG (which remains operator-driven).
+            _bump("breaker.bookkeeping_reset_on_operator_reenable")
+            entry.consecutive_breach_ticks = 0
+            entry.tripped = False
+            entry.tripped_at = None
+            log.info(
+                "circuit_breaker.bookkeeping_reset_on_operator_reenable",
+                extra={
+                    "tenant_id": str(tenant_id),
+                    "instance_name": config.instance_name,
+                },
+            )
+
         if entry is None:
             entry = _TenantBreachState(
                 tenant_id=tenant_id,
@@ -362,17 +419,6 @@ async def _process_tick(
                 last_tick_at=now,
             )
             state[tenant_id] = entry
-
-        # Tripped tenants are FROZEN — auto-recovery is disabled
-        # per the module docstring. The counter stays at the
-        # tripped value; the row's last_tick_at is still updated
-        # so the GC heuristic (>1h stale) doesn't drop it
-        # prematurely while it's still receiving traffic.
-        if entry.tripped:
-            _bump("breaker.skipped_already_tripped")
-            entry.last_tick_at = now
-            await _persist_state(pool, config.instance_name, entry)
-            continue
 
         partition_lag = lag_per_partition.get(partition, 0.0)
         breached = partition_lag > config.breach_threshold_sec
