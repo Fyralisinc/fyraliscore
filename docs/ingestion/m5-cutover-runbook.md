@@ -439,6 +439,224 @@ M6 owner) inherits the open work.
 
 ---
 
+## 6.A. M6.1 services (OAuth poller + TenantOnboarding orchestrator) — operator section
+
+**Scope.** M6.1 is the OAuth-callback-to-tenant-onboarding handoff. Two
+long-running asyncio services compose the chain. Added to this runbook
+because the on-call operator for the M5 cutover is the same person who
+will operate M6.1 services in the post-cutover ramp, and the diagnostic
+muscle memory (Postgres-state-as-checkpoint, structlog grep targets,
+`workflow_states` introspection) carries over from M5.
+
+The end-to-end-shaping test is
+[test_oauth_to_tenant_completion_end_to_end.py](../../services/ingestion/workflows/tests/test_oauth_to_tenant_completion_end_to_end.py)
+— it runs both services as real subprocesses and verifies the full
+trigger-to-Bridge-signal chain. If this test ever fails in CI, the
+operator-side procedures below cannot be trusted; treat M6.1 as not
+shippable.
+
+### 6.A.1. Architecture summary
+
+```
++----------------------+    onboarding_run_   +-------------------------+
+|  oauth_poller        |    created signal    | tenant_onboarding       |
+|  (asyncio service)   |--------------------->|  orchestrator           |
+|                      |  inbox=(tenant_      |  (asyncio service)      |
+|  reads:              |    onboarding,       |                         |
+|    onboarding_       |    tenant_           |  reads inbox:           |
+|    triggers          |    onboarding)       |    (tenant_onboarding,  |
+|  writes:             |                      |     tenant_onboarding)  |
+|    onboarding_runs   |                      |  writes:                |
+|    workflow_signals  |                      |    source_onboarding_   |
++----------------------+                      |    runs                 |
+                                              |  emits:                 |
+                                              |    source_onboarding_   |
+                                              |    requested → M6.2     |
+                                              |    tenant_onboarding_   |
+                                              |    completed → Bridge   |
+                                              +-------------------------+
+```
+
+Both services are LongRunningService subclasses (per
+[runtime.py](../../services/ingestion/workflows/runtime.py)). Each tick
+runs one Postgres transaction per work-item (one trigger for the
+poller; one signal for the orchestrator). The transactional invariant
+(claim + writes + signal-emit commit-or-rollback as a unit) is the
+load-bearing M6.1 property.
+
+### 6.A.2. Start procedures
+
+The two services run as **independent processes**. Either can be the
+first one started; until the orchestrator runs, signals accumulate in
+its inbox harmlessly.
+
+```bash
+# Service 1: OAuth poller.
+DATABASE_URL="postgres://..." \
+  OAUTH_POLLER_TICK_SEC=5.0 \
+  OAUTH_POLLER_BATCH=50 \
+  OAUTH_POLLER_INSTANCE=prod-01 \
+  WORKFLOWS_LOG_LEVEL=INFO \
+  python -m services.ingestion.workflows.oauth_poller
+
+# Service 2: TenantOnboarding orchestrator.
+DATABASE_URL="postgres://..." \
+  ORCHESTRATOR_TICK_SEC=10.0 \
+  ORCHESTRATOR_BATCH=50 \
+  ORCHESTRATOR_INSTANCE=prod-01 \
+  WORKFLOWS_LOG_LEVEL=INFO \
+  python -m services.ingestion.workflows.tenant_onboarding
+```
+
+The same env-var-driven dispatcher
+[services/ingestion/workflows/__main__.py](../../services/ingestion/workflows/__main__.py)
+also works: set `WORKFLOW_SERVICE=oauth_poller` or
+`WORKFLOW_SERVICE=tenant_onboarding` and invoke
+`python -m services.ingestion.workflows`. Either form is supported;
+prefer the per-module CLI for production (one container image, one
+entrypoint per service) and the dispatcher for tests / local
+development.
+
+**Env vars (poller):**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — (required) | Postgres DSN. |
+| `OAUTH_POLLER_TICK_SEC` | `5.0` | Tick interval. Lower = faster install-to-onboarding handoff (operator UX). Each tick processes up to `BATCH` triggers. |
+| `OAUTH_POLLER_BATCH` | `50` | Max triggers per tick. Each trigger gets its own transaction; soft cap. |
+| `OAUTH_POLLER_INSTANCE` | `default` | Instance name. Diagnostic only — written to `workflow_states.workflow_id`. Per-replica unique recommended. |
+| `WORKFLOWS_LOG_LEVEL` | `INFO` | Standard. |
+
+**Env vars (orchestrator):**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — (required) | Postgres DSN. |
+| `ORCHESTRATOR_TICK_SEC` | `10.0` | Tick interval. The orchestrator drains a batch of signals per tick; lower = faster fan-out + completion latency. |
+| `ORCHESTRATOR_BATCH` | `50` | Max signals drained per tick. Each signal gets its own transaction. |
+| `ORCHESTRATOR_INSTANCE` | `default` | Instance name. The same `(workflow_kind, workflow_id)` inbox is consumed by every replica regardless of `INSTANCE` — instance is for `workflow_states` audit only, NOT inbox sharding (per [05-lld-amendments.md A13](05-lld-amendments.md)). |
+| `WORKFLOWS_LOG_LEVEL` | `INFO` | Standard. |
+
+**Replication model.** Both services support multiple replicas safely
+without coordination — the poller uses `FOR UPDATE SKIP LOCKED` on
+`onboarding_triggers`; the orchestrator uses `FOR UPDATE SKIP LOCKED`
+inside `claim_signals`. Replica count is a horizontal-scale knob; no
+leader election is needed. The M6.1 stress test
+`test_poller_and_orchestrator_run_concurrently_without_deadlock` in
+[test_tenant_onboarding.py](../../services/ingestion/workflows/tests/test_tenant_onboarding.py)
+verifies a 2-poller + 1-orchestrator topology drains 20 triggers
+without deadlock.
+
+### 6.A.3. Diagnostic queries (read-only)
+
+Per-tick heartbeat:
+
+```sql
+-- Last tick from each service replica. Stale = service down or stuck.
+SELECT workflow_kind, workflow_id AS instance,
+       last_advanced_at,
+       state_data ->> 'last_tick_at' AS last_tick_iso,
+       state_data ->> 'lifetime_triggers_claimed' AS lifetime_triggers,
+       state_data ->> 'lifetime_signals_processed' AS lifetime_signals
+  FROM workflow_states
+ WHERE workflow_kind IN ('oauth_poller', 'tenant_onboarding')
+ ORDER BY workflow_kind, workflow_id;
+```
+
+Unconsumed triggers (poller backlog):
+
+```sql
+SELECT count(*) FILTER (WHERE consumed_at IS NULL)        AS pending,
+       count(*) FILTER (WHERE consumed_at IS NOT NULL)    AS done,
+       max(now() - created_at) FILTER (WHERE consumed_at IS NULL)
+                                                          AS oldest_pending_age
+  FROM onboarding_triggers;
+```
+
+Unconsumed signals in each inbox (orchestrator backlog + Bridge
+backlog):
+
+```sql
+SELECT workflow_kind, workflow_id, signal_kind,
+       count(*) FILTER (WHERE consumed_at IS NULL)  AS pending,
+       max(now() - created_at) FILTER (WHERE consumed_at IS NULL)
+                                                    AS oldest_pending_age
+  FROM workflow_signals
+ WHERE workflow_kind IN ('tenant_onboarding', 'source_onboarding', 'bridge')
+ GROUP BY workflow_kind, workflow_id, signal_kind
+ ORDER BY workflow_kind, signal_kind;
+```
+
+Per-tenant fan-out status (audit one tenant's full chain):
+
+```sql
+SELECT r.id AS run_id, r.status AS run_status, r.started_at, r.completed_at,
+       sor.source, sor.status AS source_status, sor.completed_at AS source_completed_at,
+       sor.failure_reason
+  FROM onboarding_runs r
+  LEFT JOIN source_onboarding_runs sor ON sor.onboarding_run_id = r.id
+ WHERE r.tenant_id = '<tenant_uuid>'
+ ORDER BY r.started_at DESC, sor.source;
+```
+
+### 6.A.4. Failure-mode catalog
+
+| Symptom | Likely cause | Diagnosis | Recovery |
+|---|---|---|---|
+| **A. Trigger row stuck with `consumed_at IS NULL`** | Poller down OR poller crashed mid-transaction (txn rolled back, row remains claimable) | `workflow_states` heartbeat for `oauth_poller` is stale; check service logs at logger `services.ingestion.workflows.oauth_poller`. | Restart the poller service. Per the load-bearing rollback property (`test_oauth_poller_idempotent_across_restart`), the row will be re-claimed cleanly with no duplicate downstream effect. |
+| **B. `onboarding_runs` row in `'failed'` status with `error_summary = 'No active installs for tenant at orchestrator tick-time.'`** | **Phase 2 Decision 3.** The trigger fired (OAuth callback completed), but by the time the orchestrator picked up the resulting `onboarding_run_created` signal, the tenant had zero active rows in either `provider_installations` (enabled=TRUE) or `gmail_installations` (disabled_at IS NULL). Race conditions: (a) install enabled→disabled flip between trigger-fire and tick; (b) the trigger row references an install that was deleted; (c) test fixture bug. | `SELECT * FROM provider_installations WHERE tenant_id=$1; SELECT * FROM gmail_installations WHERE tenant_id=$1;` — if both empty, the cause is real (no installs at tick-time). If one is non-empty but `enabled=FALSE`/`disabled_at IS NOT NULL`, the install was disabled between trigger and tick. | Investigate WHY the install is inactive. If legitimate (user uninstalled before onboarding completed), the failure is correct behaviour — no action needed. If accidental (test fixture bug, manual SQL flip), re-enable the install row and re-emit an `onboarding_run_created` signal manually (rare; document the manual UPDATE in an incident note). |
+| **C. `onboarding_run_created` signal with `consumed_at IS NOT NULL` but NO `source_onboarding_runs` row exists** | Should be impossible per the orchestrator's per-signal atomic transaction. If observed, the transaction rollback contract was violated — orchestrator crashed AFTER the signal-mark-consumed but BEFORE the source-row insert was committed (which the substrate guarantees is impossible if `claim_signals(conn)` is in the same `conn.transaction()` block). | Diagnostic query: `SELECT consumed_at, consumed_by FROM workflow_signals WHERE signal_kind='onboarding_run_created' AND idempotency_key=$1;` cross-checked against `SELECT count(*) FROM source_onboarding_runs WHERE onboarding_run_id=$1;`. | Page on-call P0. The atomic transaction is broken — file a bug against the substrate. Manual recovery: re-emit the signal with a new idempotency_key OR insert the source rows by hand from the run row's `tenant_id`. |
+| **D. `source_onboarding_requested` signal in inbox `(source_onboarding, source_onboarding)` with `consumed_at IS NULL` for > 5 min** | M6.2's SourceOnboarding service is down or has never been deployed (M6.2 is the next milestone after M6.1; until it ships, this signal will accumulate by design). | `SELECT workflow_kind, workflow_id, signal_kind, count(*) FROM workflow_signals WHERE consumed_at IS NULL GROUP BY 1,2,3;` — if `source_onboarding` is the only un-drained inbox, M6.2 is not running. | Pre-M6.2: this is **expected**. The `source_onboarding_requested` signals accumulate harmlessly until M6.2 ships. The orchestrator's `source_onboarding_runs` row stays in `pending`; the parent run stays in `running`; no observable to the user. Post-M6.2: investigate the M6.2 service health. |
+| **E. Parent `onboarding_runs` row stuck in `'running'` status forever** | One or more `source_onboarding_runs` rows are still `pending`/`in_progress` AND no `source_onboarding_completed` signal has arrived for them. Two causes: (a) M6.2 hasn't shipped yet (see D above); (b) M6.2 shipped but a specific per-source backfill (M6.3-M6.6) is failing silently. | The fan-out audit query above (`6.A.3` per-tenant). If `source_status='pending'` for source X, check M6.3-M6.6's service-specific runbook (M6.4 GitHub fetcher, etc.). | Post-M6.2: investigate the specific source's service. If the source backfill is truly stuck, an operator can inject a manual `source_onboarding_completed` signal (with `failure_reason` set) to advance the parent run — but ONLY after confirming the source state is reconciled. Don't do this without an incident-review-grade reason. |
+| **F. `onboarding_runs` row with `status='failed'` and `error_summary IS NULL`** | The orchestrator marked the run failed but the `_MARK_RUN_FAILED_SQL` path that supplies `error_summary` was NOT followed — should be impossible per current code paths, both of which (`_handle_run_created` zero-installs branch, `_handle_source_completed` failure branch) populate `error_summary`. If observed: orchestrator crashed AFTER a partial run-mark-failed UPDATE (rare; the txn rollback should prevent this). | `SELECT status, error_summary, completed_at FROM onboarding_runs WHERE id=$1;` | Page on-call P0. File a bug against the orchestrator's transaction discipline. The empty `error_summary` makes the failure mode invisible — investigate by cross-referencing the orchestrator's structured logs around `completed_at` for the run. |
+| **G. `tenant_onboarding_completed` signal in Bridge inbox NOT consumed for > 30 min** | Bridge consumer not yet deployed (Bridge is out of M6.1 scope; the signal is the producer-side handoff). Until Bridge ships, these signals accumulate by design. | Same drain-query as D, filtered to `workflow_kind='bridge'`. | Pre-Bridge: this is **expected**. The signals are durable; Bridge will drain them on startup via the substrate's standard claim semantics. Post-Bridge: investigate Bridge's health. |
+
+**Operational note on inbox-sentinel addressing (A13).** Every signal
+in `workflow_signals` whose `workflow_kind='tenant_onboarding'` has
+`workflow_id='tenant_onboarding'`. Per-run identity lives in
+`idempotency_key` (carries the run_id) and `signal_data` (carries the
+full payload). An operator filtering by `workflow_id='<some_run_id>'`
+will find zero rows — that's not a missing row, that's correct
+addressing. See
+[05-lld-amendments.md A13](05-lld-amendments.md#a13--signal-addressing-is-a-routing-partition-key-not-a-workflow-instance-identifier)
+for the rationale.
+
+### 6.A.5. When-to-investigate (alert thresholds)
+
+| Threshold | Severity | Action |
+|---|---|---|
+| `workflow_states.last_advanced_at` for either service older than `2 × tick_interval` | **Info** | Likely transient (pod restart, DB blip). Check next tick. |
+| `workflow_states.last_advanced_at` older than `10 × tick_interval` | **Warn** | Page on-call. Service is stuck (deadlock, infinite loop, or dead). Investigate logs at the service's structlog logger. |
+| `onboarding_triggers` pending count growing for > 10 min OR oldest pending > 5 min | **Warn** | Poller capacity or correctness issue. Could be a sudden trigger spike or a poller that's crashing on a poison-pill trigger row. Inspect logs. |
+| Single `onboarding_runs` row in `'running'` for > 1 h | **Info** | Normal for slow per-source backfills (gmail history can take hours). If the source row count is also growing → fine. If `source_onboarding_runs` are stuck at `pending` → see failure-mode E. |
+| `onboarding_runs.status='failed'` rate increases beyond baseline | **Warn** | Check `error_summary` clustering. Zero-installs failures (failure-mode B) might point to install-side flakiness; per-source failures point to M6.2-M6.6 service issues. |
+
+### 6.A.6. Pre-M6.2 expected state
+
+Until M6.2's SourceOnboarding service ships, the M6.1 chain
+terminates at the `source_onboarding_requested` signal emit. The
+expected steady-state observation:
+
+- `onboarding_triggers` drains to zero (poller works).
+- `onboarding_runs` rows exist with `status='running'` (orchestrator
+  fanned out).
+- `source_onboarding_runs` rows exist with `status='pending'`
+  (orchestrator created them; M6.2 hasn't picked them up).
+- `workflow_signals` with `workflow_kind='source_onboarding'` and
+  `consumed_at IS NULL` accumulates by design.
+- `workflow_signals` with `signal_kind='tenant_onboarding_completed'`
+  is empty (no run can reach completion until M6.2 + completion
+  signals exist).
+
+This is NOT a degraded state — it's the M6.1 deliverable. The end-to-
+end integration test
+[test_oauth_to_tenant_completion_end_to_end.py](../../services/ingestion/workflows/tests/test_oauth_to_tenant_completion_end_to_end.py)
+injects synthetic `source_onboarding_completed` signals to validate
+the completion-roll-up path; in production, this path activates only
+once M6.2 ships.
+
+---
+
 ## 7. References
 
 - **Code:**

@@ -49,9 +49,19 @@ from services.ingestion.workflows.feels_onboarded_monitor import (
     FeelsMonitorConfig,
     FeelsOnboardedMonitor,
 )
+from services.ingestion.workflows.oauth_poller import (
+    OAuthPoller,
+    OAuthPollerConfig,
+    WORKFLOW_ID_DEFAULT as OAUTH_POLLER_INSTANCE_DEFAULT,
+)
 from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
+)
+from services.ingestion.workflows.tenant_onboarding import (
+    TenantOnboardingConfig,
+    TenantOnboardingOrchestrator,
+    WORKFLOW_ID_DEFAULT as ORCHESTRATOR_INSTANCE_DEFAULT,
 )
 
 
@@ -88,10 +98,43 @@ async def _run_service(name: str) -> None:
             pool, producer,
             config=_build_feels_monitor_config(),
         )
+    elif name == "oauth_poller":
+        service = OAuthPoller(
+            pool,
+            config=OAuthPollerConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("OAUTH_POLLER_TICK_SEC", "5.0"),
+                ),
+                max_triggers_per_tick=int(
+                    os.environ.get("OAUTH_POLLER_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "OAUTH_POLLER_INSTANCE",
+                    OAUTH_POLLER_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
+    elif name == "tenant_onboarding":
+        service = TenantOnboardingOrchestrator(
+            pool,
+            config=TenantOnboardingConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("ORCHESTRATOR_TICK_SEC", "10.0"),
+                ),
+                max_signals_per_tick=int(
+                    os.environ.get("ORCHESTRATOR_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "ORCHESTRATOR_INSTANCE",
+                    ORCHESTRATOR_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
     else:
         raise SystemExit(
             f"WORKFLOW_SERVICE={name!r} not recognized. "
-            f"Known: feels_onboarded_monitor."
+            f"Known: feels_onboarded_monitor, oauth_poller, "
+            f"tenant_onboarding."
         )
 
     stop_event = asyncio.Event()
