@@ -33,7 +33,9 @@ export function HorizonMatrix({ data, selectedId, onSelect }: HorizonMatrixProps
 
       <div
         className="fc-horizon__grid"
-        style={{ gridTemplateColumns: `148px repeat(${data.horizons.length}, minmax(180px, 1fr))` }}
+        style={{
+          gridTemplateColumns: `132px repeat(${data.horizons.length}, minmax(0, 1fr))`,
+        }}
         role="grid"
       >
         <div className="fc-horizon__corner" role="presentation" />

@@ -21,6 +21,9 @@
   min-height: 100vh;
   color: var(--text-primary);
   font-family: var(--font-sans-v2);
+  /* Page itself must never horizontally scroll. Child grids handle their
+   * own shrinking via min-width: 0 / minmax(0, ...) below. */
+  overflow-x: hidden;
 }
 
 .fc-main {
@@ -30,6 +33,10 @@
   display: flex;
   flex-direction: column;
   gap: 28px;
+  /* Inside the AppShell's flex column. min-width:0 lets long descendants
+   * shrink instead of pushing the column wider than the available
+   * track. */
+  min-width: 0;
 }
 
 .fc-micro-label {
@@ -73,11 +80,12 @@
 
 .fc-header {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 24px;
   align-items: end;
   padding-bottom: 4px;
 }
+.fc-header__lede { min-width: 0; }
 
 .fc-header__title {
   font-family: var(--font-serif-v2);
@@ -119,7 +127,8 @@
   align-items: center;
   gap: 10px;
   height: 40px;
-  min-width: 320px;
+  min-width: 0;
+  max-width: 360px;
   padding: 0 18px;
   border-radius: var(--radius-pill);
   background: var(--bg-elevated);
@@ -129,6 +138,12 @@
   font-size: 14px;
   cursor: pointer;
   text-align: left;
+  overflow: hidden;
+}
+.fc-header__ask > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .fc-header__ask:hover {
   border-color: var(--accent-trust);
@@ -182,10 +197,15 @@
 }
 .fc-brief__inner {
   display: grid;
-  grid-template-columns: 1.2fr 0.9fr 0.9fr 0.95fr;
-  gap: 32px;
-  padding: 24px 32px 24px 36px;
+  grid-template-columns:
+    minmax(0, 1.3fr)
+    minmax(0, 0.9fr)
+    minmax(0, 0.9fr)
+    minmax(0, 0.95fr);
+  gap: 24px;
+  padding: 24px 28px 24px 32px;
 }
+.fc-brief__col { min-width: 0; }
 .fc-brief__statement-block {
   display: flex;
   flex-direction: column;
@@ -276,16 +296,24 @@
 
 .fc-workspace {
   display: grid;
-  grid-template-columns: minmax(620px, 1.05fr) minmax(460px, 0.95fr);
-  gap: 28px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 24px;
   align-items: start;
 }
 .fc-workspace__left {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
+  /* Crucial — without this the matrix's children (cards with long
+   * statements) push the grid column wider than its track and the
+   * inspector overlaps the right column. */
+  min-width: 0;
 }
-.fc-workspace__right { position: sticky; top: 24px; }
+.fc-workspace__right {
+  position: sticky;
+  top: 24px;
+  min-width: 0;
+}
 
 /* --------------------------------------------------------------------
  * Horizon matrix
@@ -337,6 +365,9 @@
   gap: 8px;
   padding: 8px 4px;
   min-height: 110px;
+  /* Grid cells default to min-content. Allow shrinking so the card
+   * inside wraps text instead of expanding the column. */
+  min-width: 0;
 }
 .fc-horizon__cell-empty {
   color: var(--text-muted);
@@ -368,12 +399,21 @@
   border-radius: var(--fc-radius-md);
   padding: 12px 14px;
   min-height: 96px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 6px;
   cursor: pointer;
   transition: border-color 120ms ease, box-shadow 120ms ease;
   font: inherit;
+  overflow: hidden;
+}
+.fc-card__statement,
+.fc-card__driver,
+.fc-card__resolution {
+  overflow-wrap: anywhere;
 }
 .fc-card:hover { border-color: var(--accent-trust); }
 .fc-card:focus-visible {
@@ -468,7 +508,12 @@
   display: flex;
   flex-direction: column;
   gap: 22px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
+.fc-inspector__title,
+.fc-inspector__why { overflow-wrap: anywhere; }
 .fc-inspector[data-severity="critical"] {
   border-top: 3px solid var(--accent-critical);
 }
@@ -1346,13 +1391,19 @@
  * Responsive
  * -------------------------------------------------------------------- */
 
-@media (max-width: 1280px) {
+@media (max-width: 1440px) {
   .fc-workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .fc-workspace__right { position: static; }
-  .fc-brief__inner { grid-template-columns: 1fr 1fr; }
-  .fc-patterns__layout { grid-template-columns: 1fr; }
+  .fc-brief__inner {
+    grid-template-columns:
+      minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .fc-patterns__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fc-header__ask { max-width: 280px; }
 }
 
 @media (max-width: 900px) {
