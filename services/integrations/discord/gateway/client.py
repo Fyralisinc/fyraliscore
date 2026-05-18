@@ -138,12 +138,31 @@ class DiscordGatewayClient:
         http_client: httpx.AsyncClient | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        # M4.2 — when provided, the client seeds its in-memory state
+        # from `initial_state` and (on the first reconnect attempt) tries
+        # RESUME instead of fresh IDENTIFY. The worker layer is
+        # responsible for deciding RESUME-vs-IDENTIFY based on the
+        # persisted state's staleness (LLD §1.5, STALENESS_THRESHOLD).
+        initial_state: "GatewaySessionState | None" = None,
+        # M4.2 — fire-and-forget save hook. Called AFTER each
+        # `dispatch_handler` returns durably for an op-0 DISPATCH frame
+        # carrying a `seq` (s != None). See module docstring + LLD §1.5
+        # for the save-after-handle ordering rationale.
+        on_dispatched: "Callable[[GatewaySessionState], Awaitable[None]] | None" = None,
     ) -> None:
         if not bot_token:
             raise ValueError("bot_token is required")
         self._bot_token = bot_token
         self._dispatch_handler = dispatch_handler
-        self._state = GatewaySessionState(application_id=application_id)
+        if initial_state is not None:
+            # Seed from the persisted snapshot. application_id from the
+            # constructor wins only if the persisted state didn't carry
+            # one (defensive — should never happen in production).
+            self._state = initial_state
+            if not self._state.application_id and application_id:
+                self._state.application_id = application_id
+        else:
+            self._state = GatewaySessionState(application_id=application_id)
         self._ws_module = ws_module
         self._owns_http = http_client is None
         self._http = http_client or httpx.AsyncClient(timeout=15.0)
@@ -152,6 +171,7 @@ class DiscordGatewayClient:
         self._ws: Any = None  # websockets.WebSocketClientProtocol
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._shutdown = asyncio.Event()
+        self._on_dispatched = on_dispatched
 
     async def aclose(self) -> None:
         if self._heartbeat_task is not None:
@@ -396,6 +416,44 @@ class DiscordGatewayClient:
                         "discord_gateway_dispatch_handler_error",
                         event=event_name,
                     )
+                # M4.2 — SAVE-AFTER-HANDLE call site. AFTER the
+                # dispatch handler returned (success OR caught
+                # exception above; both branches reach here), fire the
+                # session-state save. Fire-and-forget: the save's
+                # latency must NOT block frame ingestion (the next
+                # frame's save will catch up the last_seq; losing one
+                # save means re-processing one frame, safe under M2
+                # content_hash dedup). Saving BEFORE the dispatch
+                # would risk RESUMing past a frame that was never
+                # handled — silent N1 breach. See session_state.py
+                # module docstring "Save-after-handle ordering."
+                if self._on_dispatched is not None and frame.get("s") is not None:
+                    # Capture a snapshot — _state is mutated by the
+                    # next frame's seq update, and a queued save task
+                    # could otherwise persist a future seq value.
+                    snapshot = GatewaySessionState(
+                        session_id=self._state.session_id,
+                        resume_gateway_url=self._state.resume_gateway_url,
+                        last_seq=self._state.last_seq,
+                        heartbeat_interval_ms=self._state.heartbeat_interval_ms,
+                        last_heartbeat_ack=self._state.last_heartbeat_ack,
+                        application_id=self._state.application_id,
+                    )
+                    asyncio.create_task(self._safe_save(snapshot))
+
+    async def _safe_save(self, state: "GatewaySessionState") -> None:
+        """Wrap the on_dispatched hook in exception logging so a save
+        failure does not crash the gateway worker (per M4.2 PRIME
+        DIRECTIVE)."""
+        if self._on_dispatched is None:
+            return
+        try:
+            await self._on_dispatched(state)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "discord_gateway_session_save_failed",
+                seq=state.last_seq,
+            )
 
 
 def _random_jitter(scale: float) -> float:

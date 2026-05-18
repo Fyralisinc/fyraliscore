@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import signal
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import structlog
 
@@ -24,6 +24,7 @@ from services.integrations.discord.gateway import metrics
 from services.integrations.discord.gateway.client import (
     DiscordGatewayClient,
     FatalGatewayError,
+    GatewaySessionState,
 )
 from services.integrations.discord.gateway.dispatch import (
     DispatchDeps,
@@ -66,6 +67,14 @@ class GatewayWorker:
         bot_token: str,
         deps: DispatchDeps,
         shutdown_grace_s: float = 5.0,
+        # M4.3 — wiring for lease + persisted state. Both default to
+        # None so existing call sites + tests continue to work without
+        # the M4 surface; the M4 production entrypoint constructs both
+        # via services/integrations/discord/gateway/lifecycle.py.
+        initial_state: GatewaySessionState | None = None,
+        on_dispatched: (
+            "Callable[[GatewaySessionState], Awaitable[None]] | None"
+        ) = None,
     ) -> None:
         if not bot_token:
             raise ValueError("bot_token is required")
@@ -74,6 +83,8 @@ class GatewayWorker:
         self._shutdown_grace_s = shutdown_grace_s
         self._shutdown_requested = asyncio.Event()
         self._current_client: DiscordGatewayClient | None = None
+        self._initial_state = initial_state
+        self._on_dispatched = on_dispatched
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -109,11 +120,20 @@ class GatewayWorker:
         attempt = 0
         try:
             while not self._shutdown_requested.is_set():
+                # M4.3 — pass initial state + on_dispatched hook to the
+                # client. `initial_state` is consumed only on the first
+                # iteration (after a reconnect the client's in-memory
+                # state carries the latest session_id/last_seq); we
+                # null it after first use so a re-IDENTIFY path doesn't
+                # incorrectly re-seed from a stale snapshot.
                 client = DiscordGatewayClient(
                     bot_token=self._bot_token,
                     dispatch_handler=self._dispatch,
                     application_id=self._deps.application_id,
+                    initial_state=self._initial_state,
+                    on_dispatched=self._on_dispatched,
                 )
+                self._initial_state = None
                 self._current_client = client
                 try:
                     await client.run()
