@@ -53,7 +53,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.shadow_write import shadow_write_raw
-from services.integrations.discord.gateway.client import pre_save_flush
+from services.integrations.discord.gateway._durability import pre_save_flush
 from services.integrations.discord.gateway.leader_lock import LeaderLock
 from services.integrations.discord.gateway.session_state import (
     load_session_state,
@@ -178,13 +178,16 @@ async def _main() -> int:
                 },
             )
 
-            # A6 — broker-ack durability barrier. Uses the extracted
-            # `pre_save_flush` from production code; this is the same
+            # A6 — broker-ack durability barrier. Uses the production
+            # `pre_save_flush` from `..._durability`; this is the same
             # function `DiscordGatewayClient._pre_save_flush` calls.
             # Refactored in A6 Phase 3 to make this load-bearing test
             # actually exercise production code (previously this site
             # had a parallel manual flush that masked the absence of
-            # production-code coverage at the simulation surface).
+            # production-code coverage at the simulation surface). The
+            # function lives in `_durability.py` rather than `client.py`
+            # so the subprocess does not pull httpx + websockets into
+            # its import graph just to access this one function.
             # timeout_seconds matches the production value at
             # client.py::_dispatch_loop.
             await pre_save_flush(kafka_producer, timeout_seconds=2.0)

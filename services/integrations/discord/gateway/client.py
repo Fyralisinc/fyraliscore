@@ -36,6 +36,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from services.integrations.discord.gateway import metrics
+from services.integrations.discord.gateway._durability import pre_save_flush
 
 
 log = structlog.get_logger("integrations.discord.gateway.client")
@@ -518,54 +519,6 @@ class DiscordGatewayClient:
         )
 
 
-# ---------------------------------------------------------------------
-# A6 — broker-ack durability barrier (free function).
-# ---------------------------------------------------------------------
-async def pre_save_flush(
-    kafka_producer: Any,
-    *,
-    timeout_seconds: float,
-) -> None:
-    """Flush the Kafka producer so the broker has acked all in-flight
-    shadow-write messages before the caller advances the persisted
-    `last_seq`. Raises `TimeoutError` when the flush returns with
-    messages still in queue (timeout exhausted); raises whatever the
-    producer raises on broker errors. The caller decides what to do
-    on failure (production client: skip save + increment failure
-    metric; test simulation: let exception propagate to fail the test
-    loudly).
-
-    No-op when `kafka_producer` is None — used by tests that don't
-    wire the shadow producer.
-
-    See:
-      - docs/ingestion/05-lld-amendments.md §A6 (the finding)
-      - docs/decisions/a6-resolution.md (Phase 1 decision + Phase 3
-        refactor note)
-      - DiscordGatewayClient._dispatch_loop (production call site)
-      - services/integrations/discord/gateway/tests/_subprocess_entrypoint.py
-        (test simulation call site — uses the same function, no
-        independent re-implementation)
-
-    A6 Phase 3 refactor: this was originally a method on
-    `DiscordGatewayClient`. It was extracted to a free function so
-    the load-bearing `test_no_frames_lost_across_sigkill` test
-    (which simulates the dispatch loop in a subprocess that does
-    NOT instantiate `DiscordGatewayClient`) actually exercises the
-    production code path. Previously the subprocess had a manual
-    workaround flush; the workaround masked the fact that no test
-    proved the production fix at the simulation surface.
-    """
-    if kafka_producer is None:
-        return
-    remaining = await kafka_producer.flush(timeout_seconds)
-    if remaining > 0:
-        raise TimeoutError(
-            f"Kafka flush returned with {remaining} message(s) still "
-            f"in queue after {timeout_seconds}s timeout"
-        )
-
-
 def _random_jitter(scale: float) -> float:
     """Public for tests."""
     return scale * (0.75 + 0.5 * random.random())
@@ -577,7 +530,6 @@ __all__ = [
     "ReconnectAction",
     "FatalGatewayError",
     "classify_close_code",
-    "pre_save_flush",
     "INTENTS",
     "_random_jitter",
 ]

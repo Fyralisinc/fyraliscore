@@ -292,12 +292,29 @@ exercised the production fix at the simulation surface.
 
 **Resolution (Phase 3, Option A from the gate review):** extracted the
 durability-barrier flush from `DiscordGatewayClient._pre_save_flush`
-to a module-level free function `client.pre_save_flush(producer, *,
+to a module-level free function `pre_save_flush(producer, *,
 timeout_seconds)`. The method became a thin wrapper bound to the
 client's producer. The subprocess entrypoint now imports and calls
 the same free function with the same `timeout_seconds=2.0` as
 production. Result: the load-bearing test now exercises production
 code, and "two parallel implementations" became one.
+
+**Phase 3 follow-up — module location revised after import-graph audit.**
+First placed the free function in `client.py` (locality argument: the
+three-place documentation pattern lives there). Post-Phase-3 audit
+measured the subprocess's transitive import delta: +68 modules
+(`httpx`, `websockets`, `idna`, `click`, `pygments` — none of which
+the subprocess uses) and +19 ms import time. The subprocess
+hand-rolls a dispatch-loop simulation without HTTP or WSS; pulling
+those libraries in to access one function is the wrong trade-off.
+Moved `pre_save_flush` to a dedicated
+[`_durability.py`](../../services/integrations/discord/gateway/_durability.py)
+(one function, ~30 lines). `client.py` re-imports it for the method
+wrapper. New subprocess import delta over M4.3 baseline: **+1
+module, +0.1 ms.** Locality lost, but the three-place documentation
+pattern is preserved (module + function docstring in `_durability.py`;
+call site comment in `client.py`'s dispatch loop; subprocess call
+site comment points back at both).
 
 **Deferred follow-up (Option B from the Phase 3 review):** rewrite
 `_subprocess_entrypoint.py` to instantiate `DiscordGatewayClient`
