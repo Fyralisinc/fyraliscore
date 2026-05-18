@@ -1,1 +1,7 @@
-"""Bridge progress contract (M2+). Per LLD §10. publisher.py emits onboarding.progress events; events.py owns the Pydantic models."""
+"""Bridge progress contract.
+
+Per ingestion LLD §6 (Bridge contract):
+  - `events.py` — Pydantic models for every `onboarding.progress` event.
+  - `publisher.py` — `publish_progress_event(producer, event)` thin
+    wrapper that owns topic name + per-tenant key derivation.
+"""

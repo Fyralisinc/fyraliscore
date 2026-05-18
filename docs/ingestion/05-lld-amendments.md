@@ -299,6 +299,73 @@ removed from that file.
   listing the relevant key per row; cross-reference from §5.5 (DLQ
   writer) so future implementers see the contract.
 
+### A7 — Discord webhook cutover deferred (synchronous-response constraint)
+
+- **Status:** Open. Surfaced during M5.3. Resolution requires a Discord-response-shape decision (see "What's required" below).
+- **LLD section:** §11 (cutover feature flag) and §11.3 (traffic signal — currently named "webhook router + FetchPage activity" producer wiring; the prose implies uniform per-provider behaviour that the M5.3 implementation does not deliver).
+- **Implementation surface:** [services/webhooks/router.py:79-83](../../services/webhooks/router.py#L79-L83) (`_CUTOVER_ENABLED_PROVIDERS` = {"slack": "slack", "github": "github"}; discord intentionally excluded) and [m5-cutover-runbook.md §2](m5-cutover-runbook.md) (per-source cutover semantics table).
+- **What the LLD says today:** §11 enumerates `ingestion.kafka_path_enabled` as a per-tenant flag whose TRUE value routes "the webhook" to the Kafka path. The prose is silent on per-provider semantics — implicit claim is uniform behaviour across slack/github/discord.
+- **What's actually true:** Discord interactions (slash commands) require a synchronous response with shape `{"type": 4, "data": {"content": "..."}}` (CHANNEL_MESSAGE_WITH_SOURCE) within Discord's ~3-second deadline, or the Discord client UI displays "The application didn't respond in time." The M5.3 cutover contract returns 202 with `{"status": "accepted"}` — incompatible. M5.3 enforces this by excluding discord from `_CUTOVER_ENABLED_PROVIDERS`; discord webhooks remain on the inline path regardless of the flag value.
+- **What's required to resolve:** decide between (a) keeping discord interactions on inline indefinitely (operationally fine; documented today), (b) synthesizing the CHANNEL_MESSAGE_WITH_SOURCE response inside the cutover branch BEFORE returning, with the observation arriving asynchronously via the writer pool (operationally feasible; requires the bot to acknowledge "Got it" and post the real follow-up message later via Discord's webhook-token follow-up API), or (c) deferring discord cutover until a Discord-specific Temporal workflow lands in M6/M7. Decision: defer to post-M5.
+- **LLD edit pending:** §11 prose must explicitly enumerate per-provider cutover semantics (matches the runbook §2 table). The implicit "uniform" framing should not survive.
+
+### A8 — Kafka partition stand-in is approximate (`_kafka_partition_for_tenant`)
+
+- **Status:** Open. M-Temporal will resolve.
+- **LLD section:** §11.3 (traffic signal — "raw_partition: the partition the just-published envelope landed on").
+- **Implementation surface:** [services/webhooks/router.py::_kafka_partition_for_tenant](../../services/webhooks/router.py) (blake2b-based deterministic hash, num_partitions=32 default) and [services/ingestion/feature_flags/traffic_signal.py::maybe_emit_traffic_signal](../../services/ingestion/feature_flags/traffic_signal.py).
+- **What the LLD says today:** §11.3 specifies that the signal record carries `raw_partition` so the breaker can correlate tenant → partition. Implicit assumption: the producer knows the partition synchronously at publish time.
+- **What's actually true:** `IdempotentProducer.produce` enqueues to librdkafka's local queue; the REAL partition is determined asynchronously by librdkafka's murmur2_random partitioner. The producer's `produce()` return value is `None`; partition is only available via an `on_delivery` callback. M5.3 ships a blake2b deterministic stand-in (same key → same partition, NOT bit-equivalent to murmur2_random) that gives a stable per-tenant value but mis-attributes lag if the cluster has a different partition count or the partitioner differs from the default.
+- **Operational impact today:** zero. The breaker's lag readers raise `NotImplementedError` until M-Temporal wires real implementations (see A9), so no production code consumes `raw_partition` for actual lag attribution yet.
+- **What's required to resolve:** M-Temporal must either (a) augment `IdempotentProducer.produce` to accept an `on_delivery` callback that records partition into a tenant→partition table the breaker reads from, or (b) compute the partition deterministically using `mmh3` (or an equivalent murmur2 implementation) that matches librdkafka's algorithm bit-for-bit. Option (a) is more correct under partition-count changes; option (b) is simpler if num_partitions is fixed.
+- **LLD edit pending:** §11.3 must acknowledge the partition-prediction-vs-on-delivery question explicitly; the current text presumes synchronous partition knowledge that the librdkafka contract doesn't provide.
+
+### A9 — Default circuit-breaker Kafka readers raise `NotImplementedError` (fail-loud, intentional)
+
+- **Status:** Open. M-Temporal will inject real implementations.
+- **LLD section:** §11.2 (Cutover circuit breaker) — the LLD describes lag measurement + active-tenants sampling as concrete capabilities of the breaker.
+- **Implementation surface:** [services/ingestion/feature_flags/circuit_breaker.py::_measure_kafka_lag_default](../../services/ingestion/feature_flags/circuit_breaker.py) and `_sample_active_tenants_default` — both raise `NotImplementedError` with a message naming M-Temporal as the resolution path. Tests inject mocks via the same function-pointer kwargs.
+- **What the LLD says today:** §11.2 enumerates the breaker's responsibilities including "measure consumer-group lag on `ingestion.raw` per partition" and "sample active tenants from the signal topic," implying production-ready implementations.
+- **What's actually true:** M5.1 ships the breaker as an asyncio service per the Phase 0 finding (Option B; Temporal infrastructure absent at M5.1 time). The state-machine logic, persistence, alert path, and operator re-enable handling are all production-ready. The Kafka readers are NOT — they raise loudly if called in production-without-injection so a misconfigured deployment fails at startup rather than silently no-op'ing.
+- **Design rationale:** fail-loud is intentional. A silent no-op default would let an operator deploy the breaker, observe no trips, and (incorrectly) conclude the cutover is healthy. Raising `NotImplementedError` makes the missing infrastructure obvious. Test injection via kwargs preserves unit-test ergonomics.
+- **What's required to resolve:** M-Temporal must implement `_measure_kafka_lag_default` (via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, OR Burrow integration if operationally cheaper) and `_sample_active_tenants_default` (consumer-group reading the last `signal_lookback_sec` of `ingestion.tenant_traffic_signal`, keyed by tenant_id, returning `{tenant_id: partition}`).
+- **LLD edit pending:** §11.2 must acknowledge the two-stage delivery — state machine in M5.1, Kafka readers in M-Temporal — or the LLD should be edited to forward-reference the M-Temporal section once that section is written.
+
+### A11 — Temporal deferred indefinitely; M6 ships as asyncio with pattern-alignment
+
+- **Status:** Open. Re-evaluated under the trigger conditions below.
+- **LLD section:** §2 (Workflow orchestration via Temporal) and §11.2 (Cutover circuit breaker via Temporal Schedule). Both prescribe Temporal as the runtime; the production reality through M5.4 + M6 is asyncio services following M3.3's cursor-persistence pattern.
+- **Implementation surface:** [services/ingestion/feature_flags/circuit_breaker.py](../../services/ingestion/feature_flags/circuit_breaker.py) (M5.1; asyncio); the M6.0–M6.6 services that will land under [04-implementation-plan.md §M6](04-implementation-plan.md#m6--backfill-rollout-per-source-asyncio-services-temporal-aligned) (all asyncio per the M6 restructure).
+- **What the LLD says today:** §2 enumerates `OnboardingTriggerPollerWorkflow`, `TenantOnboardingWorkflow`, `SourceOnboardingWorkflow`, `ShardFetchWorkflow`, `FeelsOnboardedMonitorWorkflow`, `IngestionCircuitBreakerWorkflow` as Temporal workflows. §11.2 specifies the breaker as a Temporal Schedule.
+- **What's actually true:** M5.1 ships the breaker as an asyncio service per the Phase 0 finding (Temporal infra absent, Option B chosen). M6 ships every workflow as an asyncio service per [04-implementation-plan.md §M6 pattern-alignment requirements](04-implementation-plan.md#pattern-alignment-requirements-load-bearing-for-the-seven-sub-blocks). Pattern-alignment makes a later Temporal port mechanical (workflow body ↔ asyncio main loop; activity ↔ named side-effect function; signal_workflow ↔ Postgres signal table; retry policy ↔ named retry helper; workflow state ↔ Postgres state row), but the port itself does not happen until one of the trigger conditions fires.
+
+- **Trigger conditions for revisiting (any ONE flips the cost-benefit calculation):**
+
+  1. **First crash-recovery failure.** An asyncio service crashes and Postgres-state reconstruction either fails to restore correctly OR loses work that Temporal's history-as-source-of-truth would have preserved. Diagnostic: an incident postmortem identifies "Temporal would have retained the prior decision tree; the asyncio service had only the latest state row."
+  2. **First significant operator-tooling friction.** An incident where debugging the orchestration takes substantially longer than it would have with Temporal's workflow-history + replay tooling. "Substantially" = >2× the time of a comparable Temporal investigation. Diagnostic: an operator's incident-review explicitly names "no introspectable history of decisions" as the slowdown.
+  3. **First multi-day debugging session.** An investigation that consumes >2 working days where the bisected root cause is "asyncio service had no introspectable history of its decisions." Single instance — not a pattern of three; the threshold is one instance because multi-day debugging sessions are themselves uncommon enough to be a load-bearing signal.
+
+  These are NOT thresholds for cosmetic preferences ("Temporal would be nicer to read"); they are thresholds where the asyncio shape has demonstrably cost more engineering or operations time than the Temporal infrastructure investment would have. Document the incident, name the trigger condition met, then reopen [04-implementation-plan.md §M-Temporal](04-implementation-plan.md#m-temporal--temporal-infrastructure-deferred-indefinitely).
+
+- **Why deferred (rationale):** standing up Temporal adds operational surface (cluster ops, SDK learning curve, deployment story) for benefits that are currently theoretical (no production traffic exists; no incident has surfaced where Temporal's replay would have shortened recovery). M3.3's cursor-style asyncio pattern demonstrated viability when state lives in Postgres and the service is single-purpose. Pattern-alignment ensures the deferral is reversible at low cost; the trigger conditions make the reversal criterion measurable rather than aesthetic.
+
+- **What does NOT block on this deferral:** production execution of M5 cutover (gated on M-Load); M6 backfill rollout (gated on M-Load + M6.0 substrate); circuit breaker functionality (already shipping as asyncio).
+
+- **LLD edits pending:** §2 prose must be rewritten from "Temporal workflows" to "long-running asyncio services per the pattern-alignment requirements in [04-implementation-plan.md §M6](04-implementation-plan.md#m6--backfill-rollout-per-source-asyncio-services-temporal-aligned), portable to Temporal under [05-lld-amendments.md A11](05-lld-amendments.md) trigger conditions." §11.2 prose for the breaker similarly. The Temporal-workflow code shapes in §2 stay as REFERENCE for the future port (they describe the destination, not the current code).
+
+### A10 — Mode B writer collapses under Finding 4 (single mode ships)
+
+- **Status:** Open. Tied to §6 Q4 (WS-latency product decision).
+- **LLD section:** §5.3 (Dual-mode writer config — Phase 2.1 Q4 WS latency).
+- **Implementation surface:** [services/ingestion/writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py) (single per-envelope path via `_full_mode_write` → `ingest_from_draft`; no `max_poll_records` knob, no per-tenant Mode A vs Mode B selection).
+- **What the LLD says today:** §5.3 specifies two writer modes selectable per tenant via `ingestion.writer_mode_low_latency`:
+    - Mode A — Batched (default; ~500 records/poll; ~1000 obs/sec/process; ~500ms batch-wait latency).
+    - Mode B — Low-latency (max_poll_records=1; ~50 obs/sec/process; ~50ms per-row latency).
+- **What's actually true:** M5 Phase 0 Finding 4 chose per-envelope `ingest_from_draft` calls (not batched-transaction) to avoid an `ingest()` refactor that would have introduced an optional `conn` parameter shared across multiple envelopes. The accepted floor of ~50 obs/sec/process matches Mode B's profile, not Mode A's. The shipping writer is effectively Mode B; "Mode A" is a separate code path that would require either (a) a batched-transaction `ingest()` refactor or (b) a parallel batched writer that bypasses `ingest()` and writes observations directly (the N1 cutover-safety divergence risk that drove Finding 4 in the first place).
+- **Operational implication:** until §6 Q4 (WS-latency tolerance) is answered, the writer ships one mode that matches Mode B's latency profile (~50ms per row) at Mode B's throughput (~50 obs/sec/process). If Q4 answers "YES, 1-5s is fine for everyone": delete the LLD §5.3 dual-mode prose; the single mode is permanent. If "NO, low-latency required for WS-sensitive tenants": Mode A would require a new work-unit ("M-Throughput") that refactors `ingest()` to accept an optional shared connection per Kafka poll, which Finding 4 explicitly defers.
+- **What's required to resolve:** §6 Q4 product call. The architecture branches: Mode A is the deferred work-unit; Mode B is the current ship.
+- **LLD edit pending:** §5.3 must be rewritten to either (a) describe the single-mode ship + delete the dual-mode prose, or (b) restate Mode A's throughput requirement and reference the M-Throughput follow-up work-unit. Pick once Q4 answers.
+
 ### A4 — §12.1 "one-shot script" → long-running rate-limited service
 
 - **Status:** Open (M3.3 will implement; M3.4 documents the LLD edit).

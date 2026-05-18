@@ -159,6 +159,40 @@ class TenantFlags:
             self._cache._store(key, value)
             return value
 
+    async def set_bool(
+        self,
+        tenant_id: UUID,
+        flag_name: str,
+        value: bool,
+        *,
+        set_by: str,
+        note: str | None = None,
+    ) -> None:
+        """UPSERT a tenant flag and invalidate the local cache.
+
+        Per LLD §11 (cutover flag write-side) — first activated by
+        M5.1's circuit breaker, which sets `set_by="auto:circuit_breaker"`.
+        Operator-driven flips set `set_by="operator:<id>"`.
+
+        Cache invalidation is local-only: other processes' caches
+        won't observe the change until their TTL expires. The 30-second
+        TTL is the bound on cutover-propagation latency.
+        """
+        await self._pool.execute(
+            """
+            INSERT INTO tenant_flags
+                (tenant_id, flag_name, flag_value, set_by, note, set_at)
+            VALUES ($1, $2, $3, $4, $5, now())
+            ON CONFLICT (tenant_id, flag_name) DO UPDATE SET
+                flag_value = EXCLUDED.flag_value,
+                set_by     = EXCLUDED.set_by,
+                note       = EXCLUDED.note,
+                set_at     = now()
+            """,
+            tenant_id, flag_name, value, set_by, note,
+        )
+        self._cache.invalidate(tenant_id, flag_name)
+
 
 __all__ = [
     "KAFKA_PATH_ENABLED",

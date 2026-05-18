@@ -30,6 +30,7 @@ Request flow:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any, Mapping
@@ -45,8 +46,15 @@ from services.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
-from services.ingestion.feature_flags import SHADOW_WRITE_ENABLED
+from services.ingestion.feature_flags import (
+    KAFKA_PATH_ENABLED,
+    SHADOW_WRITE_ENABLED,
+)
+from services.ingestion.feature_flags.traffic_signal import (
+    maybe_emit_traffic_signal,
+)
 from services.ingestion.handlers import HandlerNotFound
+from services.ingestion.raw_tier.s3 import compute_content_hash
 from services.ingestion.shadow_write import shadow_write_raw
 from services.webhooks import metrics
 from services.webhooks.signatures import VERIFIERS
@@ -71,6 +79,119 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     "github": "github",
     "discord": "discord",
 }
+
+# M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
+# the cutover (skip inline `ingest()`, publish to Kafka, return 202).
+# Discord interactions require a specific synchronous response shape
+# (CHANNEL_MESSAGE_WITH_SOURCE; see the discord type-2 branch below);
+# the 202 contract doesn't fit that shape, so discord webhooks stay
+# on the inline path regardless of the flag. M5.4 documents this as
+# a deferral — a future work-unit can wire discord cutover once the
+# response-shape question is resolved.
+_CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
+    "slack": "slack",
+    "github": "github",
+}
+
+
+def _kafka_partition_for_tenant(
+    tenant_id: Any, *, num_partitions: int = 32,
+) -> int:
+    """Deterministic stand-in for the partition librdkafka would assign
+    for `key=tenant_id` on the `ingestion.raw` topic.
+
+    The REAL partition is opaque without an `on_delivery` callback; the
+    M5.3 traffic-signal hook needs SOMETHING to feed
+    `maybe_emit_traffic_signal(raw_partition=...)` so the breaker has
+    a tenant→partition map. This blake2b-based hash gives a stable
+    per-tenant value but is NOT bit-equivalent to librdkafka's
+    murmur2_random partitioner — M-Temporal must refine via real
+    delivery-report correlation when the breaker is wired against
+    production Kafka. Surfaced as an LLD-amendments item in M5.4.
+    """
+    h = hashlib.blake2b(str(tenant_id).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(h, "big") % num_partitions
+
+
+async def _attempt_kafka_path(
+    request: Request,
+    *,
+    provider: str,
+    source: str,
+    tenant_id: Any,
+    raw_body: bytes,
+    payload: Mapping[str, Any] | None,
+) -> bool:
+    """M5.3 cutover try: S3 PutIfAbsent → publish to `ingestion.raw` →
+    emit 1% traffic signal (LLD §11.3). Returns True on full success,
+    False on any failure (caller MUST fall back to inline `ingest()`).
+
+    Three-place documentation for the fallback semantic (per the
+    M5.3 reminder pattern):
+      [1] This function's docstring (the contract).
+      [2] The call site in `build_webhooks_router` (where the
+          fallback decision is made + the metric is incremented).
+      [3] `services/webhooks/metrics.py::_kafka_path_outcomes` (the
+          operator-visible counter with the smoke-detector semantic).
+
+    Graceful degradation, NOT gate-relaxation: when the cutover path
+    fails, the user-visible response is still 200/201 from inline
+    ingest(). The customer never sees the Kafka outage; the
+    `fallback` metric is the only signal an operator sees that
+    cutover connectivity is degraded.
+    """
+    kafka_producer = getattr(request.app.state, "kafka_producer", None)
+    s3_client = getattr(request.app.state, "s3_raw_client", None)
+    if kafka_producer is None or s3_client is None:
+        # Cutover requires both S3 + Kafka wired. A missing dep at
+        # this point is a deployment misconfiguration (the flag
+        # being TRUE without the deps wired). Loud log + fall back
+        # to inline so the customer is not impacted; operator sees
+        # the failure via the fallback metric.
+        log.error(
+            "router.cutover_deps_missing",
+            provider=provider,
+            has_kafka=kafka_producer is not None,
+            has_s3=s3_client is not None,
+        )
+        return False
+    try:
+        ingress_metadata: dict[str, Any] = {
+            "event_type": _event_type_for(provider, request, payload),
+        }
+        if provider == "github":
+            delivery_id = _github_delivery_id(request.headers)
+            if delivery_id:
+                ingress_metadata["delivery_id"] = delivery_id
+
+        await shadow_write_raw(
+            tenant_id=tenant_id,
+            source=source,  # type: ignore[arg-type]  — runtime checked
+            ingress_kind="webhook",
+            raw_body=raw_body,
+            s3_client=s3_client,
+            kafka_producer=kafka_producer,
+            ingress_metadata=ingress_metadata,
+        )
+        # 1% deterministic-hash traffic signal (LLD §11.3). Never
+        # propagates per its own prime directive (`traffic_signal.py`).
+        await maybe_emit_traffic_signal(
+            tenant_id=tenant_id,
+            source=source,
+            ingress_kind="webhook",
+            raw_partition=_kafka_partition_for_tenant(tenant_id),
+            content_hash=compute_content_hash(raw_body).encode("ascii"),
+            kafka_producer=kafka_producer,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "router.kafka_path_failed",
+            provider=provider,
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+        return False
 
 
 async def _maybe_shadow_write_webhook(
@@ -700,6 +821,73 @@ def build_webhooks_router() -> APIRouter:
                         {"handled": "filtered_repo"}, status_code=200,
                     )
 
+        # ---- M5.3 cutover branch ---------------------------------
+        # Read `ingestion.kafka_path_enabled` for the resolved tenant.
+        # default=False per LLD §11 — pre-cutover tenants stay on the
+        # inline path. This default is the load-bearing N1 invariant:
+        # missing flag rows MUST NOT activate cutover for tenants who
+        # were never explicitly enabled.
+        #
+        # `flag_enabled` is also consulted below to skip the M2
+        # shadow-write-after-inline when the cutover path failed
+        # (graceful degradation; see _attempt_kafka_path docstring).
+        flag_enabled = False
+        cutover_source = _CUTOVER_ENABLED_PROVIDERS.get(provider)
+        if cutover_source is not None:
+            tenant_flags = getattr(
+                request.app.state, "tenant_flags", None,
+            )
+            if tenant_flags is not None:
+                flag_enabled = await tenant_flags.get_bool(
+                    tenant_id_uuid, KAFKA_PATH_ENABLED, default=False,
+                )
+
+        if flag_enabled and cutover_source is not None:
+            # Cutover path: publish to Kafka, return 202. Inline
+            # `ingest()` is SKIPPED — the writer pool picks up the
+            # published envelope and produces the observation via
+            # M5.2's full-mode path.
+            succeeded = await _attempt_kafka_path(
+                request,
+                provider=provider,
+                source=cutover_source,
+                tenant_id=tenant_id_uuid,
+                raw_body=raw,
+                payload=payload,
+            )
+            if succeeded:
+                metrics.record_kafka_path_outcome(provider, "success")
+                return JSONResponse(
+                    {
+                        "status": "accepted",
+                        "secret_label": ctx.secret_label,
+                    },
+                    status_code=202,
+                    headers={
+                        "X-Secret-Label": ctx.secret_label or "",
+                    },
+                )
+            # Graceful-degradation fallback. The Kafka path just
+            # failed; falling through to inline ingest() preserves
+            # the user-visible 200/201 contract. This is NOT
+            # gate-relaxation — the cutover flag stays TRUE; the
+            # `fallback` metric is what tells the operator that
+            # cutover connectivity needs investigation. See three-
+            # place documentation:
+            #   [1] _attempt_kafka_path docstring (above).
+            #   [2] this comment (call-site decision).
+            #   [3] services/webhooks/metrics.py::_kafka_path_outcomes.
+            metrics.record_kafka_path_outcome(provider, "fallback")
+            log.warning(
+                "router.kafka_path_fallback_to_inline",
+                provider=provider,
+                tenant_id=str(tenant_id_uuid),
+            )
+            # Fall through to inline. The post-inline M2 shadow-write
+            # block is suppressed via `flag_enabled` below — retrying
+            # the same Kafka publish would almost certainly fail
+            # again.
+
         # Step 9: ingest. Use the already-parsed payload when possible
         # to save a re-decode; fall back to re-parse for paths where
         # the payload didn't reach JSON earlier (shouldn't happen now).
@@ -792,13 +980,21 @@ def build_webhooks_router() -> APIRouter:
         # Best-effort; failures caught inside the helper (try/except)
         # and logged. PRIME DIRECTIVE (M2 work-order §M2.1): never
         # propagate to the inline response.
-        await _maybe_shadow_write_webhook(
-            request,
-            provider=provider,
-            tenant_id=tenant_id_uuid,
-            raw_body=raw,
-            payload=payload,
-        )
+        #
+        # M5.3: skip when `flag_enabled` is TRUE — that branch means
+        # we either succeeded on the Kafka path (early-returned above
+        # with 202) or just failed the cutover and fell through here.
+        # In the failure case, retrying the same Kafka publish via
+        # `_maybe_shadow_write_webhook` would almost certainly fail
+        # again. The next webhook re-tests Kafka path freshness.
+        if not flag_enabled:
+            await _maybe_shadow_write_webhook(
+                request,
+                provider=provider,
+                tenant_id=tenant_id_uuid,
+                raw_body=raw,
+                payload=payload,
+            )
 
         # Discord interactions require a specific response shape
         # (https://discord.com/developers/docs/interactions/receiving-and-responding).

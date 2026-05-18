@@ -1,24 +1,26 @@
-"""M2.4 — observation_writer unit tests.
+"""observation_writer unit tests — M2.4 shadow-log path.
+
+These tests cover the writer's M2 shadow-log behaviour, which is
+PRESERVED for tenants whose `ingestion.kafka_path_enabled` is FALSE
+(default; pre-cutover tenants). The M5.2 full-mode tests live in
+`test_observation_writer_m5.py`.
 
 Covers:
-  - Happy path: a valid NormalizedEnvelope on the wire results in
-    a ShadowWriteEvent in the in-process log.
+  - Happy path: a valid NormalizedEnvelope produces a ShadowWriteEvent.
   - Parse-failure: malformed message bumps `writer.parse_failure`,
     no event recorded.
-  - Path B static proof: writer's import graph is DB-free.
 
-The full end-to-end test (real Kafka + real DB + normalizer +
-writer + 100 webhooks) lives in
-`services/ingestion/tests/test_e2e_shadow.py`.
+The end-to-end shadow test (real Kafka + DB + normalizer + writer +
+100 webhooks) lives in `services/ingestion/tests/test_e2e_shadow.py`.
+
+M2.4's Path-B import-graph test is INTENTIONALLY REMOVED in M5.2 —
+the writer is now Path A (holds an asyncpg pool) when wired with
+DB deps. See the module docstring of `observation_writer.py`.
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
 from uuid import uuid4
 
 import orjson
@@ -28,7 +30,6 @@ from services.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingestion.writers import observation_writer as writer_module
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
 _NOW = dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
@@ -73,7 +74,7 @@ async def test_record_event_appends_to_shadow_log():
     env = NormalizedEnvelope.model_validate(
         json.loads(_normalized_envelope_bytes())
     )
-    await writer_module._record_event(env)
+    await writer_module._record_shadow_event(env)
 
     log_entries = writer_module.get_shadow_log()
     assert len(log_entries) == 1
@@ -106,41 +107,5 @@ async def test_malformed_envelope_does_not_record_event():
         NormalizedEnvelope.model_validate(bad_payload)
 
     # The run_writer loop's except clause does bump + log + continue.
-    # No event was recorded because _record_event was never reached.
+    # No event was recorded because _record_shadow_event was never reached.
     assert writer_module.get_shadow_log() == []
-
-
-# ---------------------------------------------------------------------
-# 3. Path B static proof — writer's import graph is DB-free.
-# Per M2 work-order §M2.4: the no-op writer stays Path B in M2; M3
-# adds a separate Path A writer.
-# ---------------------------------------------------------------------
-
-def test_writer_import_graph_contains_no_db_modules():
-    script = textwrap.dedent("""
-        import sys
-        import services.ingestion.writers.observation_writer  # noqa: F401
-        violations = sorted(
-            m for m in sys.modules
-            if m == "asyncpg"
-            or m.startswith("asyncpg.")
-            or m == "lib.shared.tenant_context"
-        )
-        print("VIOLATIONS:" + ",".join(violations))
-    """)
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=_REPO_ROOT,
-    )
-    last_line = proc.stdout.strip().splitlines()[-1]
-    violations_raw = last_line.removeprefix("VIOLATIONS:")
-    violations = [v for v in violations_raw.split(",") if v]
-    assert violations == [], (
-        "observation_writer.py transitively imports DB modules: "
-        + ",".join(violations)
-        + " — M2.4 writer is Path B; M3's Path A writer is a "
-        "DIFFERENT module."
-    )

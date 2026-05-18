@@ -36,6 +36,25 @@ _resolver_samples: dict[str, list[float]] = {}
 # 1024-sample window is the assertion API the integration test uses.
 _RESOLVER_SAMPLE_CAP = 1024
 
+# ---------------------------------------------------------------------
+# M5.3 cutover metrics — `webhook_router_kafka_path_total{provider, outcome}`.
+#
+# outcome ∈ {success, fallback}.
+#   success  → flag=TRUE, Kafka publish succeeded, response is 202.
+#   fallback → flag=TRUE, Kafka publish failed; router fell back to
+#              inline ingest() and returned 200/201. This is graceful
+#              degradation: user-visible behaviour is preserved under
+#              shadow-path outage. Sustained increment of `fallback`
+#              is the operator's smoke detector — the cutover path
+#              has connectivity problems that need investigation, but
+#              the customer experience stays uninterrupted.
+#
+# Not labeled with tenant_id (high-cardinality). The cutover flag
+# itself is per-tenant, so the operator drills down via the database
+# / runbook procedure documented in M5.4.
+# ---------------------------------------------------------------------
+_kafka_path_outcomes: dict[tuple[str, str], int] = {}
+
 
 def record_failure(provider: str, reason: str) -> None:
     """Increment the (provider, reason) failure counter by 1."""
@@ -62,6 +81,26 @@ def reset() -> None:
         _resolver_outcomes.clear()
         _resolver_cache.clear()
         _resolver_samples.clear()
+        _kafka_path_outcomes.clear()
+
+
+def record_kafka_path_outcome(provider: str, outcome: str) -> None:
+    """Increment `webhook_router_kafka_path_total{provider, outcome}`.
+
+    See the module-level comment on `_kafka_path_outcomes` for the
+    full semantic of each outcome value. Two valid outcomes:
+      - "success"  : the cutover path produced a 202 response.
+      - "fallback" : the cutover path failed and the router fell
+        back to inline ingest() — graceful degradation, not a 4xx.
+    """
+    with _lock:
+        key = (provider, outcome)
+        _kafka_path_outcomes[key] = _kafka_path_outcomes.get(key, 0) + 1
+
+
+def get_kafka_path_count(provider: str, outcome: str) -> int:
+    with _lock:
+        return _kafka_path_outcomes.get((provider, outcome), 0)
 
 
 # ---------------------------------------------------------------------
@@ -156,4 +195,6 @@ __all__ = [
     "get_resolver_cache_count",
     "resolver_duration_p95",
     "snapshot_resolver",
+    "record_kafka_path_outcome",
+    "get_kafka_path_count",
 ]
