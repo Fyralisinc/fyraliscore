@@ -42,6 +42,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from services.integrations.discord.gateway import metrics as gateway_metrics
 from services.integrations.discord.gateway.client import (
     DiscordGatewayClient,
     GatewaySessionState,
@@ -461,3 +462,116 @@ async def test_flush_failure_does_not_save_state(
         f"Expected flush to be attempted exactly once; got "
         f"{len(fake_producer.flush_calls)} attempts"
     )
+
+
+# =====================================================================
+# Test 4 — Broad-scope failure metric: any flush exception, not just
+#           TimeoutError, increments the failure metric AND skips save.
+# =====================================================================
+
+async def test_flush_broker_disconnect_increments_failure_metric_and_skips_save(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """The metric `discord_gateway_pre_save_flush_failures_total` MUST
+    increment for any flush failure — TimeoutError, ConnectionError,
+    or any other Exception subclass — because operators care about
+    "frame durability uncertain" as a class, not just "flush timed out
+    specifically." Narrow-scoping the metric to TimeoutError would
+    mask broker disconnects, serialization errors, and other recovery
+    signals.
+
+    This test injects a broker-side disconnect (modeled as a
+    `BrokerNotAvailableError`-style exception, NOT a TimeoutError)
+    and asserts:
+
+      A. Counter `discord_gateway_pre_save_flush_failures_total` == 1.
+      B. Postgres `last_seq` UNCHANGED from pre-seed (observable
+         behavior: save was skipped).
+
+    The call-site catch in client.py is `except Exception` (broad).
+    If a future refactor narrows it to `except TimeoutError`, this
+    test fires.
+
+    Companion to `test_flush_failure_does_not_save_state` — that
+    test verifies the save-skip behavior with the SAME injected
+    exception type (ConnectionError); this test specifically
+    verifies the failure metric for the broad-scope class.
+    """
+    app_id = f"a6-broad-metric-{uuid4().hex[:8]}"
+    await _seed_initial_state(fresh_db, app_id, last_seq=7)
+    assert await _read_last_seq(fresh_db, app_id) == 7
+
+    # The autouse `_reset_gateway_metrics` fixture in conftest.py
+    # already clears the counter to 0; defensive re-read:
+    assert gateway_metrics.get(
+        "discord_gateway_pre_save_flush_failures_total"
+    ) == 0
+
+    # A non-TimeoutError exception modeling a broker disconnect. The
+    # exact class doesn't matter — the broad-scope catch should fire
+    # for any Exception subclass.
+    class BrokerDisconnectError(ConnectionError):
+        """Stand-in for confluent_kafka.KafkaException with
+        BROKER_NOT_AVAILABLE state."""
+
+    save_calls = 0
+
+    async def _save_counter(state: GatewaySessionState) -> None:
+        nonlocal save_calls
+        save_calls += 1
+        # If the save IS called by a regression, also write Postgres
+        # so the observable-state assertion catches it too.
+        await save_session_state(
+            fresh_db,
+            application_id=app_id,
+            shard_id=0,
+            session_id=state.session_id,
+            resume_gateway_url=state.resume_gateway_url,
+            last_seq=state.last_seq,
+            heartbeat_interval_ms=state.heartbeat_interval_ms or None,
+        )
+
+    fake_producer = _FakeKafkaProducer(
+        raise_on_flush=BrokerDisconnectError(
+            "broker disconnected mid-flush (A6 broad-scope test)"
+        ),
+    )
+    client = DiscordGatewayClient(
+        bot_token="test",
+        dispatch_handler=_noop_dispatch,
+        on_dispatched=_save_counter,
+        kafka_producer=fake_producer,
+    )
+
+    await _drive_one_frame(
+        client=client,
+        frame=_make_dispatch_frame(seq=99, message_id="msg-99"),
+        initial_session_id="seed-session",
+        initial_last_seq=98,
+    )
+
+    # ===== Assertion A — metric incremented for non-TimeoutError ====
+    failure_count = gateway_metrics.get(
+        "discord_gateway_pre_save_flush_failures_total"
+    )
+    assert failure_count == 1, (
+        f"Failure metric was {failure_count}; expected 1. The broad-"
+        f"scope exception handler at client.py's _pre_save_flush call "
+        f"site is not firing for non-TimeoutError exceptions. "
+        f"Operators will miss broker-disconnect signals because the "
+        f"metric narrowed silently."
+    )
+
+    # ===== Assertion B — observable state unchanged ====
+    last_seq_after = await _read_last_seq(fresh_db, app_id)
+    assert last_seq_after == 7, (
+        f"After a broker-disconnect flush failure, Postgres last_seq "
+        f"is {last_seq_after}; expected 7 (pre-seed, unchanged). The "
+        f"save fired despite a non-TimeoutError flush failure — "
+        f"broad-scope save-skip behavior is broken."
+    )
+    assert save_calls == 0, (
+        f"on_dispatched was called {save_calls} time(s) after a "
+        f"non-TimeoutError flush failure; expected 0."
+    )
+    assert len(fake_producer.flush_calls) == 1
