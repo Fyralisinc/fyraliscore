@@ -32,12 +32,11 @@ from typing import Any
 import asyncpg
 import pytest
 import pytest_asyncio
-from pgvector.asyncpg import register_vector
 
 from lib.llm.provider import LLMConfig, LLMProvider
 from lib.shared.ids import uuid7
 
-from services.models.repo import ModelsRepo
+from services.models.repo import ModelsRepo, pgvector_pool_init
 
 
 pytestmark = pytest.mark.integration
@@ -110,10 +109,7 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
-    try:
-        await register_vector(conn)
-    except Exception:
-        pass
+    await pgvector_pool_init(conn)
 
 
 @pytest_asyncio.fixture
@@ -122,14 +118,37 @@ async def fresh_db(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Pool, None]:
     yield db_pool
 
 
-@pytest.fixture
-def tenant() -> uuid.UUID:
-    return uuid7()
+async def _insert_test_tenant(
+    conn: asyncpg.Connection,
+    tenant_id: uuid.UUID,
+    *,
+    name: str = "think test tenant",
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO tenants (id, name, is_demo)
+        VALUES ($1, $2, FALSE)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        tenant_id,
+        name,
+    )
 
 
-@pytest.fixture
-def other_tenant() -> uuid.UUID:
-    return uuid7()
+@pytest_asyncio.fixture
+async def tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
+    tenant_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        await _insert_test_tenant(conn, tenant_id)
+    return tenant_id
+
+
+@pytest_asyncio.fixture
+async def other_tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
+    tenant_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        await _insert_test_tenant(conn, tenant_id, name="think other test tenant")
+    return tenant_id
 
 
 @pytest_asyncio.fixture
@@ -149,6 +168,18 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         # Delete in dep order (child tables first).
         await conn.execute(
             "DELETE FROM think_anomalies_raw WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM pending_post_commit_actions WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM reconciliation_events WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM audit_events WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM model_edges WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
             "DELETE FROM applied_triggers WHERE tenant_id = $1", tenant,
@@ -268,6 +299,7 @@ async def _insert_actor(
     type_: str = "human_internal",
 ) -> uuid.UUID:
     aid = uuid7()
+    await _insert_test_tenant(conn, tenant_id)
     await conn.execute(
         """
         INSERT INTO actors (id, tenant_id, type, display_name, status, created_at)

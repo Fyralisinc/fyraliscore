@@ -1,10 +1,11 @@
-// Ask Fyralis contextual strip — spec §7.8 + §13.
-// Lives inside the expanded Focused Review card so the user can ask
-// grounded follow-up questions without leaving Today. The strip uses
-// the selected proposed change as automatic context (§13.3).
+// Ask Fyralis contextual strip — appears inside the focused review.
 //
-// Backend is stubbed (api/ask-client.ts). When the real /api/ask
-// endpoint lands the call swap is the only change required.
+//   ASK FYRALIS ABOUT THIS CHANGE
+//   [Why now?] [What if I wait?] [Who should own?] [What's weakest?] [What if we escalate?]
+//   ┌────────────────────────────────────────────────────────────────┐
+//   │ Ask a question or request...                              [ ↗ ] │
+//   └────────────────────────────────────────────────────────────────┘
+//   Fyralis uses your company model and connected sources.   View conversation history
 
 import { useEffect, useRef, useState } from "react";
 
@@ -62,49 +63,55 @@ export function AskFyralisStrip({ delta }: Props) {
       data-testid={`ask-strip-${delta.id}`}
       aria-label="Ask Fyralis about this proposed change"
     >
-      <div className="tdv2-ask__label">Ask Fyralis about this change</div>
-      <div className="tdv2-ask__row">
-        <div className="tdv2-ask__suggestions">
-          {suggestions.map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              className="tdv2-ask__chip"
-              onClick={() => void submit(s.label)}
-              disabled={loading}
-              data-testid={`ask-suggestion-${s.key}`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-        <form
-          className="tdv2-ask__form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit(prompt);
-          }}
-        >
-          <input
-            type="text"
-            className="tdv2-ask__input"
-            placeholder="Ask anything about this change…"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            disabled={loading}
-            data-testid={`ask-input-${delta.id}`}
-            aria-label="Ask Fyralis about this proposed change"
-          />
+      <h3 className="tdv2-ask__heading">Ask Fyralis about this change</h3>
+      <div className="tdv2-ask__chips">
+        {suggestions.map((s) => (
           <button
-            type="submit"
-            className="tdv2-ask__submit"
-            disabled={loading || prompt.trim().length === 0}
-            data-testid={`ask-submit-${delta.id}`}
-            aria-label="Send question"
+            key={s.key}
+            type="button"
+            className="tdv2-ask__chip"
+            onClick={() => void submit(s.label)}
+            disabled={loading}
+            data-testid={`ask-suggestion-${s.key}`}
           >
-            <SendIcon />
+            {s.label}
           </button>
-        </form>
+        ))}
+      </div>
+      <form
+        className="tdv2-ask__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(prompt);
+        }}
+      >
+        <input
+          type="text"
+          className="tdv2-ask__input"
+          placeholder="Ask a question or request..."
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          disabled={loading}
+          data-testid={`ask-input-${delta.id}`}
+          aria-label="Ask Fyralis about this proposed change"
+        />
+        <button
+          type="submit"
+          className="tdv2-ask__submit"
+          disabled={loading || prompt.trim().length === 0}
+          data-testid={`ask-submit-${delta.id}`}
+          aria-label="Send question"
+        >
+          <SendArrow />
+        </button>
+      </form>
+      <div className="tdv2-ask__foot">
+        <span className="tdv2-ask__foot-copy">
+          Fyralis uses your company model and connected sources to answer.
+        </span>
+        <a className="tdv2-ask__foot-link" href="#ask-history">
+          View conversation history
+        </a>
       </div>
       {answer ? (
         <article
@@ -152,7 +159,8 @@ export function AskFyralisStrip({ delta }: Props) {
   );
 }
 
-function SendIcon() {
+function SendArrow() {
+  // Up-right arrow — the screenshot's send glyph.
   return (
     <svg
       width="14"
@@ -160,12 +168,13 @@ function SendIcon() {
       viewBox="0 0 14 14"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.5"
+      strokeWidth="1.6"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M2 12L12 7 2 2v4l6 1-6 1z" />
+      <path d="M3.5 10.5L10.5 3.5" />
+      <path d="M4.5 3.5h6v6" />
     </svg>
   );
 }

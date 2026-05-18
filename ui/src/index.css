@@ -9613,17 +9613,6 @@ body[data-sidebar-collapsed="true"] .cockpit-3col {
   color: var(--text-on-dark);
   display: flex;
   flex-direction: column;
-  transition: flex-basis 280ms cubic-bezier(0.16, 1, 0.3, 1),
-    width 280ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Review-mode icon rail. The flex item shrinks to 72px so the page
- * gets back its reading width; the inner nav also collapses to 72px
- * but expands to 260px as an overlay on hover/focus (see below). */
-.fy-shell__sidebar--collapsed {
-  flex: 0 0 72px;
-  width: 72px;
-  z-index: 35;
 }
 
 .fy-shell__main {

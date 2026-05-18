@@ -1,30 +1,50 @@
-// Focused review card — spec §9 + §10. The expanded judgment surface.
+// Focused review sheet — the editorial review surface.
 //
-// Anatomy, top to bottom:
-//   1. Utility row              — "Reviewing N of M" / "Collapse review"
-//   2. Header                   — object-type label, status badge, title, subtitle, meta strip, grounded line
-//   3. Current vs. proposed     — two panels joined by a quiet center axis
-//   4. Review body (3 columns)  — Why this matters / Evidence / What may be missing
-//   5. If accepted              — operational consequences
-//   6. Ask Fyralis              — contextual reasoning strip
-//   7. Action bar               — Accept · Delegate · Review evidence · Report correction
+//   Reviewing 1 of N  ‹ ›                              Collapse · Needs your authority
+//
+//   PROPOSED CHANGE
+//   Escalate customer risk for Salesforce sync instability
+//   At watch → Critical
+//   [78% confidence]
+//   From Customers & Revenue · Proposed by Fyralis · Created May 17, 9:22 AM   View in Model →
+//
+//   WHY THIS MATTERS                                    POTENTIAL IMPACT
+//   Three anchor customers are experiencing recurring   $2.04M at risk in renewal pipeline
+//   sync failures. Renewal exposure is increasing.
+//
+//   CURRENT → PROPOSED
+//   Risk level    At watch    →    Critical
+//   Owner         Unassigned  →    VP Engineering
+//   ...
+//
+//   EVIDENCE (4)                          WHAT MAY BE MISSING
+//   ✓ 5 sync failure alerts in last 7d    ⚠ No RCA provided by Engineering yet
+//   ✓ 3 support tickets from anchor ...   ⚠ No customer call transcripts this week
+//   ...
+//
+//   WHAT HAPPENS IF ACCEPTED
+//   [Create escalation] → [Notify VP Eng] → [Link 3 commitments] → [Re-evaluate 48h]
+//
+//   ASK FYRALIS ABOUT THIS CHANGE
+//   [Why now?] [What if I wait?] [Who should own?] [What's weakest?] [What if we escalate?]
+//   [Ask a question or request...                                            ↗]
+//   Fyralis uses your company model and connected sources.   View conversation history
 
-import type { DecisionDelta } from "@/api/today-page-types";
-import { ChangeDiff } from "./ChangeDiff";
+import type {
+  DecisionDelta,
+  ImpactItem,
+  ModelCategoryKey,
+} from "@/api/today-page-types";
 import { AskFyralisStrip } from "./AskFyralisStrip";
 
 interface Props {
   delta: DecisionDelta;
   position?: { index: number; total: number } | null;
   applying?: boolean;
-  onCollapse: () => void;
-  onAccept: () => void;
-  onDelegate: () => void;
-  onCorrect: () => void;
   onOpenEvidence: () => void;
 }
 
-const CATEGORY_LABELS: Record<DecisionDelta["sourceCategory"], string> = {
+const CATEGORY_LABELS: Record<ModelCategoryKey, string> = {
   goals_priorities: "Goals & Priorities",
   commitments: "Commitments",
   decisions: "Decisions",
@@ -50,17 +70,18 @@ const STATUS_BADGES: Record<
   failed_apply: { label: "Apply failed", tone: "contest" },
 };
 
-function relativeTime(iso: string): string {
-  const created = new Date(iso).getTime();
-  if (Number.isNaN(created)) return iso;
-  const delta = Date.now() - created;
-  const minutes = Math.floor(delta / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+function formatStamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
 
 function proposedByLabel(p: DecisionDelta["proposedBy"]): string {
@@ -69,36 +90,20 @@ function proposedByLabel(p: DecisionDelta["proposedBy"]): string {
   return "system";
 }
 
-function confidenceLabel(c?: number | null): {
-  text: string;
-  band: "low" | "moderate" | "high";
-} | null {
+function confLabel(
+  c?: number | null,
+): { pct: string; band: "low" | "moderate" | "high" } | null {
   if (c == null) return null;
   const pct = Math.round(c * 100);
   let band: "low" | "moderate" | "high" = "moderate";
   if (pct >= 75) band = "high";
   else if (pct < 55) band = "low";
-  const word = band === "high" ? "High" : band === "low" ? "Low" : "Moderate";
-  return { text: `${word} confidence`, band };
+  return { pct: `${pct}% confidence`, band };
 }
 
-export function FocusedReviewCard({
-  delta,
-  position,
-  applying = false,
-  onCollapse,
-  onAccept,
-  onDelegate,
-  onCorrect,
-  onOpenEvidence,
-}: Props) {
+export function FocusedReviewCard({ delta, position, onOpenEvidence }: Props) {
   const badge = STATUS_BADGES[delta.status];
-  const conf = confidenceLabel(delta.confidence);
-  const zeroEvidence = delta.evidenceSummary.totalSignals === 0;
-  const canAccept = delta.availableActions.includes("accept");
-  const canDelegate = delta.availableActions.includes("delegate");
-  const canCorrect = delta.availableActions.includes("report_correction");
-  const isDelegatable = delta.status === "delegatable";
+  const conf = confLabel(delta.confidence);
 
   return (
     <article
@@ -111,341 +116,423 @@ export function FocusedReviewCard({
       <div className="tdv2-review__utility">
         {position ? (
           <span className="tdv2-review__position">
-            Reviewing {position.index + 1} of {position.total}
+            Reviewing <strong>{position.index + 1} of {position.total}</strong>
+            <span className="tdv2-review__nav" aria-hidden="true">
+              <button type="button" className="tdv2-review__nav-btn" disabled>
+                <ChevLeft />
+              </button>
+              <button type="button" className="tdv2-review__nav-btn" disabled>
+                <ChevRight />
+              </button>
+            </span>
           </span>
         ) : (
           <span />
         )}
-        <button
-          type="button"
-          className="tdv2-review__collapse"
-          onClick={onCollapse}
-          data-testid={`focused-collapse-${delta.id}`}
-        >
-          <span>Collapse review</span>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-            <path
-              d="M3 7.5L6 4.5L9 7.5"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      </div>
-
-      <header className="tdv2-review__header">
-        <div className="tdv2-review__header-top">
-          <span className="tdv2-review__kind">Proposed change</span>
+        <span className="tdv2-review__util-right">
           <span className={`tdv2-badge tdv2-badge--${badge.tone}`}>
             <span className="tdv2-badge__dot" aria-hidden="true" />
             {badge.label}
           </span>
-        </div>
-        <h2 className="tdv2-review__title">{delta.title}</h2>
+        </span>
+      </div>
+
+      <header className="tdv2-review__header">
+        <span className="tdv2-review__kind">PROPOSED CHANGE</span>
+        <h2
+          className="tdv2-review__title"
+          tabIndex={-1}
+        >
+          {delta.title}
+        </h2>
         {delta.summaryLine ? (
           <p className="tdv2-review__subtitle">{delta.summaryLine}</p>
         ) : null}
-        <p className="tdv2-review__meta">
+        {conf ? (
+          <span className={`tdv2-confidence tdv2-confidence--${conf.band}`}>
+            {conf.pct}
+          </span>
+        ) : null}
+        <div className="tdv2-review__meta">
           <span className="tdv2-review__meta-item">
-            <CategoryIcon />
             From {CATEGORY_LABELS[delta.sourceCategory] ?? delta.sourceCategory}
           </span>
-          <span className="tdv2-review__meta-sep" aria-hidden="true">·</span>
+          <Sep />
           <span className="tdv2-review__meta-item">
             Proposed by {proposedByLabel(delta.proposedBy)}
           </span>
-          <span className="tdv2-review__meta-sep" aria-hidden="true">·</span>
+          <Sep />
           <span className="tdv2-review__meta-item">
-            Created {relativeTime(delta.createdAt)}
+            Created {formatStamp(delta.createdAt)}
           </span>
-          {conf ? (
-            <>
-              <span className="tdv2-review__meta-sep" aria-hidden="true">·</span>
-              <span className={`tdv2-confidence tdv2-confidence--${conf.band}`}>
-                {conf.text}
-              </span>
-            </>
-          ) : null}
-        </p>
-        <p className="tdv2-review__grounded">
-          <ShieldIcon />
-          Grounded in existing model items
-        </p>
-      </header>
-
-      <ChangeDiff current={delta.currentState} proposed={delta.proposedState} />
-
-      <div className="tdv2-review__body">
-        <section className="tdv2-section">
-          <h3 className="tdv2-section__heading">Why this matters</h3>
-          <p className="tdv2-section__body">{delta.whyThisMatters}</p>
-          {delta.relatedModelLinks.length > 0 ? (
+          {delta.relatedModelLinks[0] ? (
             <a
-              className="tdv2-section__link"
+              className="tdv2-review__meta-link"
               href={delta.relatedModelLinks[0].href}
             >
-              Learn more →
+              View in Model →
             </a>
           ) : null}
-        </section>
-
-        <section className="tdv2-section">
-          <h3 className="tdv2-section__heading">Evidence</h3>
-          {zeroEvidence ? (
-            <p className="tdv2-section__body tdv2-section__body--muted">
-              No new signals since the last evaluation. This proposed change
-              is grounded in existing model items and historical context.
-            </p>
-          ) : (
-            <>
-              <p className="tdv2-section__lede">
-                Grounded in existing model items and recent updates.
-              </p>
-              <ul className="tdv2-evidence">
-                {delta.evidenceSummary.groups.map((g) => (
-                  <li key={g.id} className="tdv2-evidence__row">
-                    <span className="tdv2-evidence__label">{g.label}</span>
-                    <span className="tdv2-evidence__count">{g.count}</span>
-                    <span
-                      className={`tdv2-evidence__dot tdv2-evidence__dot--${g.quality}`}
-                      aria-hidden="true"
-                    />
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          <button
-            type="button"
-            className="tdv2-section__link"
-            onClick={onOpenEvidence}
-            data-testid={`focused-review-evidence-link-${delta.id}`}
-          >
-            Review all evidence →
-          </button>
-        </section>
-
-        <div className="tdv2-review__col-stack">
-          <section className="tdv2-section">
-            <h3 className="tdv2-section__heading">What may be missing</h3>
-            {delta.missingContext.length > 0 ? (
-              <ul className="tdv2-bullets">
-                {delta.missingContext.map((m) => (
-                  <li key={m.id}>{m.text}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="tdv2-section__body tdv2-section__body--muted">
-                No major context gaps identified from connected sources.
-              </p>
-            )}
-          </section>
-
-          {delta.impactIfAccepted.length > 0 ? (
-            <section className="tdv2-section">
-              <h3 className="tdv2-section__heading">If accepted</h3>
-              <ul className="tdv2-bullets tdv2-bullets--check">
-                {delta.impactIfAccepted.slice(0, 6).map((i) => (
-                  <li key={i.id}>
-                    <CheckIcon />
-                    <span>{i.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
         </div>
+      </header>
+
+      <WhyThisMatters delta={delta} />
+
+      <CurrentProposedTable delta={delta} />
+
+      <div className="tdv2-review__pair">
+        <EvidenceSection delta={delta} onReview={onOpenEvidence} />
+        <MissingSection delta={delta} />
       </div>
+
+      <WhatHappensIfAccepted items={delta.impactIfAccepted} />
 
       <AskFyralisStrip delta={delta} />
-
-      <div className="tdv2-review__actions" data-testid={`action-bar-${delta.id}`}>
-        {canAccept ? (
-          <button
-            type="button"
-            className="tdv2-act tdv2-act--primary"
-            onClick={onAccept}
-            disabled={applying}
-            data-testid={`focused-accept-${delta.id}`}
-            aria-label="Accept change"
-          >
-            <CheckCircleIcon />
-            <span>{applying ? "Applying..." : "Accept change"}</span>
-          </button>
-        ) : null}
-        {canDelegate ? (
-          <button
-            type="button"
-            className={`tdv2-act tdv2-act--secondary${
-              isDelegatable && canAccept ? " tdv2-act--emphasis" : ""
-            }`}
-            onClick={onDelegate}
-            data-testid={`focused-delegate-${delta.id}`}
-            aria-label="Delegate"
-          >
-            <UsersIcon />
-            <span>Delegate</span>
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="tdv2-act tdv2-act--secondary"
-          onClick={onOpenEvidence}
-          data-testid={`focused-review-evidence-${delta.id}`}
-          aria-label="Review evidence"
-        >
-          <DocIcon />
-          <span>Review evidence</span>
-        </button>
-        {canCorrect ? (
-          <button
-            type="button"
-            className="tdv2-act tdv2-act--correction"
-            onClick={onCorrect}
-            data-testid={`focused-correct-${delta.id}`}
-            aria-label="Report correction"
-          >
-            <FlagIcon />
-            <span>Report correction</span>
-          </button>
-        ) : null}
-      </div>
     </article>
   );
 }
 
-function CategoryIcon() {
+// ---------------------------------------------------------------------
+
+function WhyThisMatters({ delta }: { delta: DecisionDelta }) {
+  // Pull a "potential impact" snippet from key metrics — the highest
+  // severity money-like chip wins. Falls back to the first metric so
+  // the right cell is never empty when there's any data.
+  const impact = pickImpactMetric(delta);
+  return (
+    <section className="tdv2-review__why">
+      <div className="tdv2-review__why-text">
+        <h3 className="tdv2-section__heading">Why this matters</h3>
+        <p className="tdv2-section__body">{delta.whyThisMatters}</p>
+      </div>
+      {impact ? (
+        <aside className="tdv2-review__impact">
+          <span className="tdv2-section__eyebrow">Potential impact</span>
+          <span className="tdv2-review__impact-value">{impact.value}</span>
+          <span className="tdv2-review__impact-sub">{impact.sub}</span>
+        </aside>
+      ) : null}
+    </section>
+  );
+}
+
+function pickImpactMetric(d: DecisionDelta): { value: string; sub: string } | null {
+  const m = d.keyMetrics.find(
+    (x) => x.severity === "critical" || x.severity === "high",
+  );
+  if (m) {
+    const parts = String(m.label).split(/\s+/);
+    const value = parts[0] ?? m.label;
+    const sub = parts.slice(1).join(" ") || (m.unit ?? "at risk");
+    return { value, sub: sub || "at risk" };
+  }
+  if (d.keyMetrics[0]) {
+    const m0 = d.keyMetrics[0];
+    const parts = String(m0.label).split(/\s+/);
+    return {
+      value: parts[0] ?? m0.label,
+      sub: parts.slice(1).join(" ") || m0.unit || "",
+    };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------
+
+function CurrentProposedTable({ delta }: { delta: DecisionDelta }) {
+  const rows = buildRows(delta);
+  if (rows.length === 0) return null;
+  return (
+    <section className="tdv2-review__diff" data-testid="change-diff">
+      <h3 className="tdv2-section__heading">
+        Current → proposed
+      </h3>
+      <div className="tdv2-diff" role="table">
+        <div className="tdv2-diff__head" role="row">
+          <span role="columnheader" />
+          <span role="columnheader" className="tdv2-diff__head-cell">Current</span>
+          <span role="columnheader" />
+          <span role="columnheader" className="tdv2-diff__head-cell">Proposed</span>
+        </div>
+        {rows.map((r) => (
+          <div key={r.key} className="tdv2-diff__row" role="row">
+            <span role="cell" className="tdv2-diff__label">{r.label}</span>
+            <span role="cell" className="tdv2-diff__from">{r.from || "—"}</span>
+            <span role="cell" className="tdv2-diff__arrow" aria-hidden="true">→</span>
+            <span
+              role="cell"
+              className={[
+                "tdv2-diff__to",
+                r.severity ? `tdv2-diff__to--${r.severity}` : "",
+              ].join(" ").trim()}
+            >
+              {r.to || "—"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+interface DiffRow {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+  severity?: string;
+}
+
+function buildRows(d: DecisionDelta): DiffRow[] {
+  const map = new Map<string, DiffRow>();
+  for (const f of d.currentState) {
+    map.set(f.key, { key: f.key, label: f.label, from: f.value, to: "" });
+  }
+  for (const f of d.proposedState) {
+    const prev = map.get(f.key);
+    if (prev) {
+      prev.to = f.value;
+      prev.severity = f.severity;
+    } else {
+      map.set(f.key, {
+        key: f.key,
+        label: f.label,
+        from: "",
+        to: f.value,
+        severity: f.severity,
+      });
+    }
+  }
+  return Array.from(map.values()).filter((r) => r.from !== r.to);
+}
+
+// ---------------------------------------------------------------------
+
+function EvidenceSection({
+  delta,
+  onReview,
+}: {
+  delta: DecisionDelta;
+  onReview: () => void;
+}) {
+  const total = delta.evidenceSummary.totalSignals;
+  const groups = delta.evidenceSummary.groups;
+  return (
+    <section className="tdv2-section">
+      <h3 className="tdv2-section__heading">
+        Evidence <span className="tdv2-section__count">({total})</span>
+      </h3>
+      {total === 0 ? (
+        <p className="tdv2-section__body tdv2-section__body--muted">
+          No new signals since the last evaluation. This proposed change is
+          grounded in existing model items.
+        </p>
+      ) : (
+        <ul className="tdv2-evidence">
+          {groups.map((g) => (
+            <li key={g.id} className="tdv2-evidence__item">
+              <CheckMark />
+              <span className="tdv2-evidence__text">
+                <span className="tdv2-evidence__main">
+                  <strong>{g.count}</strong> {g.label.toLowerCase()}
+                </span>
+                <span className="tdv2-evidence__sub">{describeQuality(g.quality)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        className="tdv2-section__link"
+        onClick={onReview}
+        data-testid={`focused-review-evidence-link-${delta.id}`}
+      >
+        Review all evidence →
+      </button>
+    </section>
+  );
+}
+
+function describeQuality(q: string): string {
+  switch (q) {
+    case "strong":  return "Strong source quality";
+    case "medium":  return "Medium source quality";
+    case "partial": return "Partial source quality";
+    case "weak":    return "Weak source quality";
+    default:        return "";
+  }
+}
+
+function MissingSection({ delta }: { delta: DecisionDelta }) {
+  return (
+    <section className="tdv2-section">
+      <h3 className="tdv2-section__heading">What may be missing</h3>
+      {delta.missingContext.length > 0 ? (
+        <ul className="tdv2-missing">
+          {delta.missingContext.map((m) => (
+            <li key={m.id} className="tdv2-missing__item">
+              <WarningMark />
+              <span>{m.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="tdv2-section__body tdv2-section__body--muted">
+          No major context gaps identified from connected sources.
+        </p>
+      )}
+      {delta.relatedModelLinks[0] ? (
+        <a className="tdv2-section__link" href={delta.relatedModelLinks[0].href}>
+          Explore in Model →
+        </a>
+      ) : null}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------
+
+function WhatHappensIfAccepted({ items }: { items: ImpactItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="tdv2-section">
+      <h3 className="tdv2-section__heading">What happens if accepted</h3>
+      <ol className="tdv2-steps">
+        {items.slice(0, 4).map((i, idx) => (
+          <li key={i.id} className="tdv2-step">
+            <span className="tdv2-step__icon" aria-hidden="true">
+              <ImpactGlyph type={i.operationType} />
+            </span>
+            <span className="tdv2-step__text">{i.text}</span>
+            {idx < Math.min(items.length, 4) - 1 ? (
+              <span className="tdv2-step__sep" aria-hidden="true">→</span>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ImpactGlyph({ type }: { type: ImpactItem["operationType"] }) {
+  const common = {
+    width: 14,
+    height: 14,
+    viewBox: "0 0 14 14",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.4,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  switch (type) {
+    case "create_node":
+      return (
+        <svg {...common}>
+          <rect x="2" y="2" width="10" height="10" rx="1.5" />
+          <path d="M7 4.5v5M4.5 7h5" />
+        </svg>
+      );
+    case "update_node":
+      return (
+        <svg {...common}>
+          <rect x="2" y="2" width="10" height="10" rx="1.5" />
+          <path d="M4.5 7l1.5 1.5L9.5 5.5" />
+        </svg>
+      );
+    case "notify_actor":
+      return (
+        <svg {...common}>
+          <circle cx="5.5" cy="5.5" r="2" />
+          <circle cx="10" cy="6" r="1.4" />
+          <path d="M2 12c.5-2 1.8-3 3.5-3s3 1 3.5 3" />
+        </svg>
+      );
+    case "link_nodes":
+      return (
+        <svg {...common}>
+          <path d="M5 8a2 2 0 0 0 2 2h1a2 2 0 0 0 0-4" />
+          <path d="M9 6a2 2 0 0 0-2-2H6a2 2 0 0 0 0 4" />
+        </svg>
+      );
+    case "schedule_re_evaluation":
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="3" width="9" height="9" rx="1" />
+          <path d="M2.5 6h9" />
+          <path d="M5 2v2M9 2v2" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...common}>
+          <circle cx="7" cy="7" r="4" />
+          <circle cx="7" cy="7" r="1.3" />
+        </svg>
+      );
+  }
+}
+
+// ---------------------------------------------------------------------
+
+function CheckMark() {
   return (
     <svg
-      width="13"
-      height="13"
-      viewBox="0 0 13 13"
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.3"
+      strokeWidth="1.6"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
+      className="tdv2-check"
     >
-      <rect x="2" y="2.5" width="9" height="8" rx="1.2" />
-      <path d="M4.5 5.5h4M4.5 7.5h2.5" />
+      <circle cx="7" cy="7" r="6" />
+      <path d="M4.3 7.2L6.2 9 9.8 5" />
     </svg>
   );
 }
 
-function ShieldIcon() {
+function WarningMark() {
   return (
     <svg
-      width="13"
-      height="13"
-      viewBox="0 0 13 13"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M6.5 1.8L11 3.4v3.2c0 2.3-1.8 4.2-4.5 5C3.8 10.8 2 8.9 2 6.6V3.4l4.5-1.6z" />
-      <path d="M4.7 6.5l1.4 1.4 2.7-2.7" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 11 11"
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
+      className="tdv2-warning"
     >
-      <path d="M2 5.5L4.2 7.7L9 3" />
+      <path d="M7 2l5.5 10h-11z" />
+      <path d="M7 6v3" />
+      <circle cx="7" cy="10.5" r="0.4" fill="currentColor" />
     </svg>
   );
 }
 
-function CheckCircleIcon() {
+function ChevLeft() {
   return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 15 15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="7.5" cy="7.5" r="6" />
-      <path d="M4.8 7.6l2 2 3.4-3.7" />
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function UsersIcon() {
+function ChevRight() {
   return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 15 15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="5.6" cy="6" r="2.1" />
-      <circle cx="10.3" cy="6.6" r="1.6" />
-      <path d="M1.8 12.5c.5-2 2-3 3.8-3s3.3 1 3.8 3" />
-      <path d="M9.6 12.5c.3-1.4 1.2-2.2 2.4-2.2" />
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M4.5 2.5L8 6l-3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function DocIcon() {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 15 15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3.5 2h5.4L11.5 4.6V13H3.5z" />
-      <path d="M5.5 6h4M5.5 8.2h4M5.5 10.4h2.5" />
-    </svg>
-  );
-}
-
-function FlagIcon() {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 15 15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3.5 13V2.6" />
-      <path d="M3.5 2.6h7.3l-1.3 2.5 1.3 2.5h-7.3" />
-    </svg>
-  );
+function Sep() {
+  return <span className="tdv2-review__meta-sep" aria-hidden="true">·</span>;
 }

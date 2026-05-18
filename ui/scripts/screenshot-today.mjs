@@ -1,6 +1,4 @@
-// One-off screenshot script. Captures both modes of the Today (v2)
-// page: (1) Briefing Mode at /today, and (2) Review Mode at
-// /today?review=<id>. Writes both PNGs into ui/test-results/.
+// One-off screenshot script for the combined Today layout.
 //
 //   USE_MOCK=1 npm run dev -- --port 5173    # or live backend
 //   node scripts/screenshot-today.mjs
@@ -22,18 +20,10 @@ const ctx = await browser.newContext({
 });
 const page = await ctx.newPage();
 
-// Briefing Mode.
 await page.goto(`${TARGET}/today`, { waitUntil: "load" });
-await page.waitForSelector('[data-testid="primary-preview"]', { timeout: 15_000 });
+await page.waitForSelector('[data-testid^="focused-review-"]', { timeout: 15_000 });
 await page.waitForTimeout(500);
-await page.screenshot({ path: `${OUT_DIR}today-briefing.png`, fullPage: true });
-console.log(`Saved: ${OUT_DIR}today-briefing.png`);
-
-// Click the CTA to enter Review Mode.
-await page.click('[data-testid="primary-preview-review"]');
-await page.waitForSelector('[data-testid="review-mode"]', { timeout: 10_000 });
-await page.waitForTimeout(700);
-await page.screenshot({ path: `${OUT_DIR}today-review.png`, fullPage: true });
-console.log(`Saved: ${OUT_DIR}today-review.png`);
+await page.screenshot({ path: `${OUT_DIR}today-combined.png`, fullPage: true });
+console.log(`Saved: ${OUT_DIR}today-combined.png`);
 
 await browser.close();
