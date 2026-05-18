@@ -359,13 +359,19 @@ async def test_flag_cache_picks_up_change_within_ttl(_patch_secrets, _stub_inges
     shadow_write_module.reset_metrics()
     body = _slack_body()
 
+    # M5.3 NOTE: the router now reads TWO flags per request —
+    # KAFKA_PATH_ENABLED (cutover) AND SHADOW_WRITE_ENABLED (this
+    # test's subject). Both share the same TenantFlags cache but are
+    # keyed independently (tenant_id × flag_name), so they hit/miss
+    # in lockstep. fetchrow counts reflect both reads.
+
     # ---- Step 1: default True (no row) → shadow fires ----
     r1 = await _post_slack(app, body)
     assert r1.status_code in (200, 201)
     assert s3.put_if_absent.await_count == 1, "step1: shadow must fire when flag is True"
     assert kafka.produce.await_count == 1
-    # Pool was consulted once (cache miss).
-    assert flag_pool.fetchrow.await_count == 1
+    # Pool was consulted twice (one cache miss per flag).
+    assert flag_pool.fetchrow.await_count == 2
 
     # ---- Step 2: flip pool to False, but stay WITHIN TTL ----
     # Cache should still say True; shadow should STILL fire.
@@ -377,8 +383,8 @@ async def test_flag_cache_picks_up_change_within_ttl(_patch_secrets, _stub_inges
         "shadow must still fire. If this fails, the cache isn't "
         "caching (every request hits the DB)."
     )
-    # And the pool was NOT consulted again (cache hit).
-    assert flag_pool.fetchrow.await_count == 1, (
+    # And the pool was NOT consulted again (cache hit for both flags).
+    assert flag_pool.fetchrow.await_count == 2, (
         "step2: cache hit must avoid the pool read"
     )
 
@@ -393,8 +399,9 @@ async def test_flag_cache_picks_up_change_within_ttl(_patch_secrets, _stub_inges
         "the TTL boundary isn't actually expiring."
     )
     assert kafka.produce.await_count == 2  # only step1 + step2
-    # And the pool WAS consulted a second time.
-    assert flag_pool.fetchrow.await_count == 2
+    # And the pool WAS consulted twice more (one re-read per flag
+    # after TTL expiry).
+    assert flag_pool.fetchrow.await_count == 4
 
     # Inline path ran for all three requests regardless of flag state.
     assert _stub_ingest.await_count == 3
