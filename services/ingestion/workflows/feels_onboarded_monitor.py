@@ -182,9 +182,16 @@ async def _count_recent_observations(
 ) -> int:
     """Count observations for (tenant, source) within `window_days`.
 
-    LLD §2.6's `measure_recency_gap` will replace this with a
-    source-side-vs-observation-side delta when M6.2 lands. For now
-    the bare count is enough to validate the substrate plumbing.
+    TODO(M6.2): replace this placeholder with the real
+    `measure_recency_gap` from LLD §2.6. M6.2's reconciliation
+    framework brings per-source count APIs that subtract the
+    observation-side count from the source-side claimed count
+    (gap = claimed_count − observation_count). For M6.0 substrate
+    proof, the bare `count >= MIN_OBSERVATIONS` heuristic exercises
+    every code path; the cleanup is purely the SQL + the threshold
+    name change. The `source_channel LIKE $2 || ':%'` matcher is
+    the part most likely to need per-source adjustment when the
+    LLD §3 channel-naming conventions land per source.
     """
     cutoff = (
         dt.datetime.now(tz=dt.timezone.utc)
