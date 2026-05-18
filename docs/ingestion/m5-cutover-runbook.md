@@ -657,6 +657,237 @@ once M6.2 ships.
 
 ---
 
+## 6.B. M6.2a services (SourceOnboarding + ShardFetch) — operator section
+
+**Scope.** M6.2a is the per-source planner → fetcher chain. Two
+long-running asyncio services compose it: SourceOnboarding (consumes
+`source_onboarding_requested` from M6.1's TenantOnboarding; calls the
+per-source planner; INSERTs `onboarding_shards` rows; emits
+`shard_fetch_requested`) and ShardFetch (consumes
+`shard_fetch_requested`; runs the per-page fetch loop under the N1
+invariant; publishes records to `ingestion.raw`; emits
+`shard_fetch_completed`). Same operator persona as §6.A; this section
+extends the M6.1 runbook with M6.2a's two services.
+
+The end-to-end-shaping test is
+[test_oauth_to_source_completion_end_to_end.py](../../services/ingestion/workflows/tests/test_oauth_to_source_completion_end_to_end.py)
+— four real subprocesses (oauth_poller + tenant_onboarding from
+M6.1 + source_onboarding + shard_fetch from M6.2a) running the full
+chain. If this test fails in CI, M6.2a is not shippable.
+
+### 6.B.1. Architecture summary (the full M6 chain)
+
+```
+[1] OAuth callback        →  writes onboarding_triggers row.
+[2] oauth_poller          →  emits onboarding_run_created.        (M6.1)
+[3] tenant_onboarding     →  emits source_onboarding_requested.   (M6.1)
+[4] source_onboarding     →  calls PLANNER_DISPATCH[source];      (M6.2a)
+                             INSERTs onboarding_shards rows;
+                             emits shard_fetch_requested per shard.
+[5] shard_fetch           →  calls FETCHER_DISPATCH[source];      (M6.2a)
+                             N1-advances cursor per page;
+                             publishes records to ingestion.raw;
+                             emits shard_fetch_completed.
+[6] source_onboarding     →  consumes shard_fetch_completed;      (M6.2a)
+                             rolls up to source_onboarding_runs;
+                             emits source_onboarding_completed.
+[7] tenant_onboarding     →  consumes source_onboarding_completed;(M6.1)
+                             rolls up to onboarding_runs;
+                             emits tenant_onboarding_completed.
+[8] (Bridge consumer)     →  consumes tenant_onboarding_completed.(out of M6 scope)
+```
+
+### 6.B.2. Start procedures (the two new services)
+
+```bash
+# Service 4: SourceOnboarding.
+DATABASE_URL="postgres://..." \
+  SOURCE_ONBOARDING_TICK_SEC=5.0 \
+  SOURCE_ONBOARDING_BATCH=50 \
+  SOURCE_ONBOARDING_INSTANCE=prod-01 \
+  WORKFLOWS_LOG_LEVEL=INFO \
+  python -m services.ingestion.workflows.source_onboarding
+
+# Service 5: ShardFetch.
+DATABASE_URL="postgres://..." \
+  KAFKA_BOOTSTRAP_SERVERS="broker-1:9092,broker-2:9092" \
+  SHARD_FETCH_TICK_SEC=5.0 \
+  SHARD_FETCH_BATCH=10 \
+  SHARD_FETCH_LEASE_SEC=30.0 \
+  SHARD_FETCH_FLUSH_SEC=5.0 \
+  SHARD_FETCH_INSTANCE=prod-01 \
+  WORKFLOWS_LOG_LEVEL=INFO \
+  python -m services.ingestion.workflows.shard_fetch
+```
+
+Same env-var-driven dispatcher (`python -m services.ingestion.workflows`
+with `WORKFLOW_SERVICE=...`) also recognizes both new services.
+
+**Env vars (SourceOnboarding):**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — (required) | Postgres DSN. |
+| `SOURCE_ONBOARDING_TICK_SEC` | `5.0` | Tick interval. |
+| `SOURCE_ONBOARDING_BATCH` | `50` | Max signals drained per tick. |
+| `SOURCE_ONBOARDING_INSTANCE` | `default` | Diagnostic instance name (per-replica unique recommended). |
+| `WORKFLOWS_LOG_LEVEL` | `INFO` | Standard. |
+
+**Env vars (ShardFetch):**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — (required) | Postgres DSN. |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka bootstrap for the `ingestion.raw` publisher. |
+| `SHARD_FETCH_TICK_SEC` | `5.0` | Tick interval. Each tick drains signals AND scans for orphan in-progress shards. |
+| `SHARD_FETCH_BATCH` | `10` | Max signals drained per tick. Each signal handler runs the FULL fetch loop for its shard — tick batch is small because per-shard fetch can take minutes. |
+| `SHARD_FETCH_LEASE_SEC` | `30.0` | Orphan-scan lease timeout. A shard in `state='in_progress'` with no N1 advance for this many seconds is treated as orphan (previous owner crashed) and another replica picks it up. **Production tuning: must be longer than the slowest expected per-source fetcher call's natural latency.** |
+| `SHARD_FETCH_FLUSH_SEC` | `5.0` | Kafka flush timeout per N1 advance. If exceeded, the advance raises `CursorAdvanceFlushFailure`; the shard stays `in_progress` and orphan-scan retries. |
+| `SHARD_FETCH_INSTANCE` | `default` | Diagnostic instance name. |
+| `WORKFLOWS_LOG_LEVEL` | `INFO` | Standard. |
+
+**Replication model.** Both services support multiple replicas safely:
+- SourceOnboarding uses `claim_signals` SKIP LOCKED on its inbox.
+- ShardFetch uses TWO CLAIM-VIA-UPDATE mechanisms (signal-driven and orphan-scan; documented in `shard_fetch.py` module docstring). Concurrent replicas drain signals via SKIP LOCKED and refresh leases via UPDATE-with-state-guard; disjoint work guaranteed.
+
+### 6.B.3. Diagnostic queries
+
+Per-service heartbeat:
+
+```sql
+SELECT workflow_kind, workflow_id AS instance,
+       last_advanced_at,
+       state_data ->> 'last_tick_at'              AS last_tick_iso,
+       state_data ->> 'lifetime_signals_processed' AS lifetime_signals,
+       state_data ->> 'lifetime_orphans_resumed'   AS lifetime_orphans
+  FROM workflow_states
+ WHERE workflow_kind IN ('source_onboarding', 'shard_fetch')
+   AND workflow_id NOT LIKE '0%'   -- exclude per-shard cursor rows
+ ORDER BY workflow_kind, workflow_id;
+```
+
+Per-shard cursor state (the N1 home, keyed by `shard_id`):
+
+```sql
+SELECT s.id, s.source, s.shard_kind, s.state,
+       ws.last_advanced_at,
+       ws.state_data ->> 'pages_fetched'  AS pages_fetched,
+       ws.state_data ->> 'end_of_data'    AS end_of_data,
+       s.last_error
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch'
+   AND ws.workflow_id   = s.id::text
+ WHERE s.onboarding_run_id = '<run_uuid>'
+ ORDER BY s.created_at;
+```
+
+Backlog at each inbox:
+
+```sql
+SELECT workflow_kind, workflow_id, signal_kind,
+       count(*) FILTER (WHERE consumed_at IS NULL) AS pending,
+       max(now() - created_at) FILTER (WHERE consumed_at IS NULL)
+                                                   AS oldest_pending_age
+  FROM workflow_signals
+ WHERE workflow_kind IN ('source_onboarding', 'shard_fetch',
+                         'tenant_onboarding', 'bridge')
+ GROUP BY 1, 2, 3
+ ORDER BY workflow_kind, signal_kind;
+```
+
+### 6.B.4. Pre-M6.3 expected steady state (CRITICAL for operators)
+
+**Until M6.3-M6.6 ship, EVERY shard fails with `NotImplementedError`.**
+The per-source planner and fetcher dispatch tables ship with stub
+entries for every source — `slack`, `github`, `discord`, `gmail` —
+that raise `NotImplementedError` naming the responsible M6.x sub-block
+(M6.3 = gmail, M6.4 = github, M6.5 = slack, M6.6 = discord).
+
+**This is by design**, not a regression. The two failure modes
+operators will see in production until M6.3-M6.6 ship:
+
+1. **Planner stub fires** (M6.2a SourceOnboarding receives a
+   `source_onboarding_requested` and immediately fails the run):
+   - `source_onboarding_runs.status = 'failed'`.
+   - `source_onboarding_runs.failure_reason` contains the M6.x reference.
+   - `source_onboarding_completed` emitted to TenantOnboarding with
+     failure status; parent `onboarding_runs.status = 'failed'`.
+   - No shard rows created (planner raised before the INSERTs).
+
+2. **Fetcher stub fires** (only happens if planners are real but fetchers
+   aren't — won't occur in the pre-M6.3 state since both are stubbed
+   for every source; this matters once partial implementations land):
+   - `onboarding_shards.state = 'failed'` with `last_error` naming M6.x.
+   - `shard_fetch_completed` emitted with status='failed' and
+     `failure_reason`.
+   - Source-onboarding-runs rollup marks the run failed with the
+     rolled-up shard failures.
+
+**Diagnostic query** to confirm a failure is the expected stub path
+(not a real issue):
+
+```sql
+SELECT failure_reason
+  FROM source_onboarding_runs
+ WHERE status = 'failed'
+   AND failure_reason ILIKE '%M6.%'
+   AND created_at > now() - interval '1 hour';
+```
+
+If the failure_reason contains an M6.x reference (`M6.3` / `M6.4` /
+`M6.5` / `M6.6`), it's the expected pre-implementation steady state.
+If it's a different message (e.g., "No active install...", "shard
+Y: timeout"), investigate per §6.B.5.
+
+### 6.B.5. Failure-mode catalog
+
+| Symptom | Likely cause | Diagnosis | Recovery |
+|---|---|---|---|
+| **A. `source_onboarding_runs.status='failed'` with `failure_reason` containing `M6.x`** | **Pre-M6.3 expected state** — planner stub. | Confirm M6.x reference in failure_reason per §6.B.4. | None. This is by design; landing M6.x's per-source planner replaces the stub. |
+| **B. `source_onboarding_runs.status='failed'` with `failure_reason="No active install..."`** | A14 race: install was disabled between M6.1 TenantOnboarding's `source_onboarding_requested` emit and M6.2a SourceOnboarding's pickup. | `SELECT * FROM provider_installations WHERE tenant_id=$1 AND provider=$2;` / `SELECT * FROM gmail_installations WHERE tenant_id=$1;`. | If install legitimately disabled (user uninstalled), the failure is correct. If accidental, re-enable the install row and re-trigger the onboarding flow with a fresh `onboarding_triggers` row (the old `source_onboarding_runs` row stays failed — that's audit history). |
+| **C. `onboarding_shards.state='in_progress'` with `workflow_states.last_advanced_at` very old** | ShardFetch crashed mid-fetch; orphan-scan should pick up. | `SELECT now() - last_advanced_at FROM workflow_states WHERE workflow_kind='shard_fetch' AND workflow_id=<shard_id>::text;` — compare to `SHARD_FETCH_LEASE_SEC`. | Wait for next tick of ANY ShardFetch replica. If shard still stuck after 2× lease timeout, check ShardFetch service health (logs, replica count). |
+| **D. `onboarding_shards.state='failed'` with `last_error` containing M6.x** | Pre-M6.x fetcher stub. | Same as A; confirm M6.x reference. | None; M6.x's per-source fetcher fills in the stub. |
+| **E. `onboarding_shards.state='failed'` with `last_error` NOT containing M6.x** | Real fetcher failure (rate limit, source API down, permission denied, etc.). | Inspect `last_error` for source-specific failure mode. Cross-reference with the M6.x service's runbook (M6.3 gmail, M6.4 github, etc.). | Per-source recovery procedure (often: wait for rate limit window, retry by re-triggering onboarding). Reconciler (M6.2b) will re-shard if gaps detected. |
+| **F. `shard_fetch_requested` accumulating in shard_fetch inbox** | ShardFetch service down or backlogged. | `SELECT workflow_kind, workflow_id, count(*) FROM workflow_signals WHERE consumed_at IS NULL GROUP BY 1,2;` — confirm spike on `shard_fetch`. | Check ShardFetch service health + replicas. The N1 invariant means even if signals queue, no data is lost; service comes back online and drains. |
+| **G. `shard_fetch_completed` accumulating in source_onboarding inbox** | SourceOnboarding service down or backlogged. | Same query, filtered to `source_onboarding`. | Check SourceOnboarding service health. Same no-data-loss property. |
+| **H. CursorAdvanceFlushFailure exceptions in ShardFetch logs** | Kafka broker timeout. N1 invariant working as designed: cursor NOT advanced; shard stays `in_progress`; orphan-scan re-attempts. | Check Kafka broker health (per the M2 shadow-path runbook §4). | Wait for Kafka recovery. ShardFetch's orphan-scan auto-retries; no operator action needed unless broker is permanently down. |
+| **I. Parent `onboarding_runs.status='running'` for hours** | One or more `source_onboarding_runs` not yet terminal. | Per-tenant audit query (§6.A.3). If a `source_onboarding_runs` row is stuck `in_progress`, drill into its shards. | Per cause: fetcher failure → wait/retry; service down → restart. |
+
+### 6.B.6. When-to-investigate (alert thresholds)
+
+| Threshold | Severity | Action |
+|---|---|---|
+| `workflow_states.last_advanced_at` for `source_onboarding` or `shard_fetch` (diagnostic) older than `2 × tick_interval` | **Info** | Likely transient (pod restart). Check next tick. |
+| Per-shard `workflow_states.last_advanced_at` older than `2 × SHARD_FETCH_LEASE_SEC` | **Warn** | Orphan-scan should have picked up. If still stuck, the orphan-scan path is broken or no replica is running. |
+| `shard_fetch_requested` backlog > 100 OR oldest pending > 10 min | **Warn** | ShardFetch capacity. Check replica count + per-fetcher latency. |
+| Spike in `source_onboarding_runs.status='failed'` with non-M6.x reasons | **Warn** | Real failures (vs. expected stub path). Investigate `failure_reason` clustering. |
+| Spike in `onboarding_shards.state='failed'` with non-M6.x `last_error` | **Warn** | Per-source fetcher issues. Cross-reference with source health (e.g., GitHub status page). |
+
+### 6.B.7. Pre-Reconciler (pre-M6.2b) expected state
+
+Until M6.2b's Reconciler ships, there is NO automatic re-share of
+shards that completed with coverage gaps. M6.2a's chain marks a
+parent run 'complete' as soon as all shards reach a terminal state
+(done or failed). If a shard completed `done` but only fetched 80%
+of the expected records (e.g., a Slack channel with deleted
+messages that the test fetcher missed), M6.2a does NOT detect that.
+
+M6.2b's Reconciler — the next M6.2 sub-block — will trigger on
+`source_onboarding_completed`, query the source's
+authoritative-count APIs (per-source; M6.3-M6.6 implement them),
+detect gaps >0.1%, and INSERT new `onboarding_shards` rows with
+`state='reconciliation_resharded'` + `parent_shard_id` set. The
+new shards re-enter the fetch loop via `shard_fetch_requested`
+emits (Reconciler is also a producer).
+
+Operators reading M6.2a logs/metrics: "no gap detection" is the
+expected pre-M6.2b state, not a regression. The M6.2a chain is
+correct for the "complete-as-soon-as-shards-terminal" semantic;
+reconciliation is a post-completion check.
+
+---
+
 ## 7. References
 
 - **Code:**

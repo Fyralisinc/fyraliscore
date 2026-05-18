@@ -58,6 +58,16 @@ from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
 )
+from services.ingestion.workflows.shard_fetch import (
+    DEFAULT_DIAGNOSTIC_INSTANCE as SHARD_FETCH_INSTANCE_DEFAULT,
+    ShardFetch,
+    ShardFetchConfig,
+)
+from services.ingestion.workflows.source_onboarding import (
+    SourceOnboarding,
+    SourceOnboardingConfig,
+    WORKFLOW_ID_DEFAULT as SOURCE_ONBOARDING_INSTANCE_DEFAULT,
+)
 from services.ingestion.workflows.tenant_onboarding import (
     TenantOnboardingConfig,
     TenantOnboardingOrchestrator,
@@ -130,11 +140,49 @@ async def _run_service(name: str) -> None:
                 ),
             ),
         )
+    elif name == "source_onboarding":
+        service = SourceOnboarding(
+            pool,
+            config=SourceOnboardingConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),
+                ),
+                max_signals_per_tick=int(
+                    os.environ.get("SOURCE_ONBOARDING_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "SOURCE_ONBOARDING_INSTANCE",
+                    SOURCE_ONBOARDING_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
+    elif name == "shard_fetch":
+        service = ShardFetch(
+            pool, producer,
+            config=ShardFetchConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("SHARD_FETCH_TICK_SEC", "5.0"),
+                ),
+                max_signals_per_tick=int(
+                    os.environ.get("SHARD_FETCH_BATCH", "10"),
+                ),
+                lease_timeout_seconds=float(
+                    os.environ.get("SHARD_FETCH_LEASE_SEC", "30.0"),
+                ),
+                flush_timeout_seconds=float(
+                    os.environ.get("SHARD_FETCH_FLUSH_SEC", "5.0"),
+                ),
+                instance_name=os.environ.get(
+                    "SHARD_FETCH_INSTANCE",
+                    SHARD_FETCH_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
     else:
         raise SystemExit(
             f"WORKFLOW_SERVICE={name!r} not recognized. "
             f"Known: feels_onboarded_monitor, oauth_poller, "
-            f"tenant_onboarding."
+            f"tenant_onboarding, source_onboarding, shard_fetch."
         )
 
     stop_event = asyncio.Event()
