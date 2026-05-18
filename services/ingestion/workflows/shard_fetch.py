@@ -92,29 +92,70 @@ N1-vs-CLAIM-VIA-UPDATE distinction; M6.2a Phase 2 surfaces the
 FETCH-LOOP-VS-SINGLE-TRANSACTION distinction.
 
 ============================================================
-RESTART RESUMPTION (ORPHAN-SCAN PATTERN)
+TWO CLAIM MECHANISMS COEXIST (load-bearing for M6.3-M6.6 readers)
 ============================================================
-If the service is SIGTERMed (or crashes) mid-fetch:
-  - The signal is consumed (claim transaction committed).
-  - The shard is `state='in_progress'`.
-  - `workflow_states.state_data["cursor"]` holds the most-recently-
-    advanced cursor.
-  - `workflow_states.last_advanced_at` is the heartbeat.
+ShardFetch's tick() does TWO things, each with its own claim
+mechanism. Both are CLAIM-VIA-UPDATE at the per-shard level;
+concurrent replicas are safe under either.
 
-On restart, `tick()` does TWO things per cycle:
-  (a) Drain new `shard_fetch_requested` signals (signal-driven).
-  (b) Scan for orphan shards (state='in_progress' with stale
-      heartbeat) and resume their fetch loops (state-driven).
+  (a) **Signal-driven claim** (`_process_one_signal`). Used when
+      SourceOnboarding emits `shard_fetch_requested` for a NEW
+      shard. The mechanism:
+        1. `claim_signals(conn, ...)` — SKIP LOCKED on the inbox.
+        2. `_claim_shard_for_fetch(conn, shard_id)` — UPDATE
+           onboarding_shards SET state='in_progress' WHERE id=$1
+           AND state='pending'. Returns True iff this caller's
+           UPDATE matched (won the race vs. another replica).
+        3. `_bootstrap_workflow_state(conn, shard_id)` — INSERT
+           the N1 home row.
+      All three commit atomically as the signal-claim transaction.
 
-The orphan scan uses a configurable lease timeout
-(`lease_timeout_seconds`, default 30s). A shard is "orphan" if its
-`workflow_states.last_advanced_at` is older than the timeout, OR if
-no workflow_states row exists yet (claim bootstrap completed but
-loop never started a page).
+  (b) **Orphan-scan claim** (`_scan_and_resume_orphans`). Used to
+      recover shards whose previous owner crashed mid-fetch. The
+      mechanism:
+        1. `_load_orphan_shards(pool, lease_timeout, limit)` —
+           LEFT JOIN onboarding_shards ⨝ workflow_states; find
+           rows where state='in_progress' AND
+           (workflow_states.last_advanced_at IS NULL OR
+            < now() - lease_timeout).
+        2. For each: `_refresh_shard_lease(conn, shard_id)` —
+           UPDATE onboarding_shards SET started_at=now() WHERE
+           id=$1 AND state='in_progress'. Returns True iff this
+           caller's UPDATE matched.
+        3. Run the fetch loop (which calls `load_state` to read
+           the persisted cursor; if no row, the fetch loop
+           defensively bootstraps).
 
-Concurrent replicas are safe — `_mark_shard_in_progress_with_lease`
-uses CLAIM-VIA-UPDATE (UPDATE ... WHERE state='in_progress' AND
-last_progress_at < threshold) so only one replica's UPDATE matches.
+The two mechanisms NEVER produce double-fetches:
+  - In (a), state='pending' guard prevents claiming a shard
+    already 'in_progress' (which would be served by mechanism (b)
+    on a different replica).
+  - In (b), the lease-timeout filter prevents claiming a shard
+    whose owner is still actively advancing (their N1 advance
+    updates last_advanced_at, refreshing the lease).
+  - Concurrent replicas on either mechanism: SKIP LOCKED + the
+    state='in_progress' / state='pending' guards ensure exactly
+    one UPDATE matches per shard.
+
+The lease timeout (`lease_timeout_seconds`, default 30s) is the
+tunable knob. Tighter = faster orphan recovery, more risk of
+double-claim under slow advances. Looser = safer for slow
+fetchers (e.g., rate-limited per-source APIs), longer worst-case
+recovery time. Tests use 0.01-0.3s; production at 30s; M6.3-M6.6
+per-source fetchers may want longer if their natural fetch
+latency approaches the timeout.
+
+============================================================
+RESTART RESUMPTION (where the two mechanisms compose)
+============================================================
+On SIGTERM/SIGKILL mid-fetch, the durable surfaces are:
+  - `onboarding_shards.state = 'in_progress'`.
+  - `workflow_states.state_data["cursor"]` — most-recent N1 advance.
+  - `workflow_states.last_advanced_at` — N1 heartbeat.
+
+A restart's first tick(): mechanism (a) sees an empty inbox (the
+signal was consumed at first claim); mechanism (b) sees the
+in-progress shard with stale last_advanced_at and resumes.
 
 ============================================================
 SIGNAL ADDRESSING (per A13)

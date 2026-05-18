@@ -500,6 +500,41 @@ removed from that file.
 
 - **LLD edits pending:** none. The LLD §1.2 IS authoritative; M6.2a's job was to use it, not modify it. The amendment is fully captured by this tracker entry + the `source_onboarding.py` module docstring + the Phase 1 gate output (three-place documentation per the M6.0/M6.1 precedent).
 
+### A16 — Three transactional patterns codified (M6 service-design guide)
+
+- **Status:** RESOLVED with M6.2a Phase 3.
+- **LLD section:** none directly — this amendment codifies the cross-service design patterns that ship across M6.0 + M6.1 + M6.2a. The LLD describes Temporal workflows where these distinctions are subsumed by Temporal's primitives; this amendment refines the patterns for the asyncio shape that ships under [A11](#a11--temporal-deferred-indefinitely-m6-ships-as-asyncio-with-pattern-alignment).
+- **Implementation surface:** [services/ingestion/workflows/feels_onboarded_monitor.py](../../services/ingestion/workflows/feels_onboarded_monitor.py) (CLAIM-VIA-UPDATE worked example); [services/ingestion/workflows/shard_fetch.py](../../services/ingestion/workflows/shard_fetch.py) (N1 + fetch-loop worked examples); [services/ingestion/workflows/state.py::advance_cursor_atomic_with_kafka_publish](../../services/ingestion/workflows/state.py) (the N1 primitive).
+- **Trigger:** M6.2a Phase 3 acceptance Decision 2 — three transactional patterns are now first-class in the codebase, and M6.2b/M6.3-M6.6 engineers need to know which pattern to use for which use case. Without this codification, future contributors would re-litigate the same design decisions.
+
+- **The three patterns + choice criterion:**
+
+  | Pattern | When to use | Retry semantic | Worked example |
+  |---|---|---|---|
+  | **N1 publish-then-persist** | The work is a cursor advance with associated Kafka publish; re-publish on retry is safe (idempotent producer + downstream UNIQUE dedup). | If publish fails, NEXT TICK re-attempts from the unchanged cursor. At-least-once delivery + dedup makes this safe. | `state.advance_cursor_atomic_with_kafka_publish` + `shard_fetch.py:_run_fetch_loop`. |
+  | **CLAIM-VIA-UPDATE single-fire** | The work is a single-fire event (e.g., "tenant feels onboarded"); concurrent racers MUST NOT double-publish. | If the UPDATE matches but the publish fails AFTER, the event is marked fired but never reached the consumer. Acceptable iff consumers can rediscover the milestone via their own queries. | `feels_onboarded_monitor.py:_claim_and_publish_feels_onboarded`. |
+  | **Multi-tick fetch loop with durable state surfaces** | The work spans many cursor advances (long-running fetch with external API calls); per-page atomicity is enough; the LOOP's overall progress lives in Postgres. | Per-page atomicity owned by the N1 primitive (each advance is publish-then-persist). The loop itself is NOT one transaction; restart resumes via durable state (`onboarding_shards.state='in_progress'` + `workflow_states.state_data["cursor"]`). | `shard_fetch.py:_run_fetch_loop` (same file as pattern 1 — the loop composes per-page N1 advances). |
+
+- **Choice criterion (the design-time question):**
+  - Is the work a single atomic step that produces ONE event? → CLAIM-VIA-UPDATE if double-publish is unacceptable; N1 otherwise.
+  - Is the work a multi-step cursor advance, each step publishing? → N1 per step.
+  - Does the multi-step work span minutes/hours, requiring restart resumption? → Multi-tick fetch loop pattern (compose N1 per step; treat the durable state surfaces as the resume anchor).
+
+- **Pattern composition is expected.** ShardFetch demonstrates this: the fetch loop pattern (compose multiple N1 advances + use durable state to survive restart) wraps per-page N1 advances. M6.2b's Reconciler will likely combine CLAIM-VIA-UPDATE (one-shot decision to re-shard) with N1 (the new shard rows + Kafka publishes after the re-shard).
+
+- **Relationship to the pattern-alignment static analyzer.** The analyzer is ordering-agnostic by design (per [pattern-alignment-rules.md](pattern-alignment-rules.md) Rule 2's "What it does NOT check" + the M6.0 Phase 3 commentary). The analyzer enforces STRUCTURAL properties (state goes through Postgres at some point); choosing the right pattern is a DESIGN-review concern enforced by per-service tests + this codification. Future M6 sub-blocks adding a fourth pattern should add an entry to this table and call it out in their service-module docstring.
+
+- **Relationship to A12 (executor surface).** The pattern-choice and the executor-surface choice are orthogonal. CLAIM-VIA-UPDATE and N1 BOTH have variants that accept Pool (auto-commit) or Connection (caller-managed transaction). The choice criterion is "do I need to extend with adjacent writes in one atomic operation?" The pool-only-N1-primitive exception is documented in A12 for the deliberate ordering reason.
+
+- **Relationship to the pattern-alignment-rules.md doc.** A16 supplements; it does NOT replace. The five rules in pattern-alignment-rules.md are STRUCTURAL (orchestration separation, state in Postgres, named retry, signals via Postgres, no cross-workflow state). A16 is the DESIGN-INTENT guide for which transactional pattern to choose. Future readers: rules-doc for "is my code structurally correct?"; A16 for "am I using the right pattern for my use case?"
+
+- **Tests:** the three patterns are verified across:
+  - N1: `test_advance_cursor_atomic_publishes_before_persists` (M6.0 Phase 1) + `test_shard_fetch_N1_invariant_holds` (M6.2a Phase 2 — service-integration level).
+  - CLAIM-VIA-UPDATE: M6.0 Phase 2's `test_feels_monitor_*` suite verifies single-fire under concurrent racers.
+  - Multi-tick fetch loop: `test_shard_fetch_resumes_from_persisted_cursor_after_restart` (M6.2a Phase 2, real subprocess) — proves the LOOP's restart resumption via durable state surfaces.
+
+- **LLD edits pending:** none. Same posture as A11/A12/A13/A14/A15 — the LLD describes Temporal-workflow semantics that subsume these distinctions (Temporal owns transactional + retry semantics natively); this amendment is the asyncio-shape design guide. Three-place documentation: this amendment + each pattern's worked-example file's module docstring + the Phase 3 gate output.
+
 ---
 
 ## Resolved amendments archive
