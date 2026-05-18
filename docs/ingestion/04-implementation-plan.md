@@ -140,7 +140,7 @@ Risk-if-deferred key: **Low** = nothing else blocks on it; **Med** = limits one 
 
 ## 2. Sequenced milestones
 
-Six milestones. Each has a gate; no milestone starts until the previous one's gate passes. Within a milestone, parallelisation is encouraged; the gate is the integration point.
+Six numbered milestones (M1–M6) plus M7 (deferred refinements), plus two M5-surfaced infrastructure work-units (M-Temporal, M-Load) inserted between M5 and M6. Each has a gate; no milestone starts until the previous one's gate passes. Within a milestone, parallelisation is encouraged; the gate is the integration point.
 
 ### M1 — Foundational substrate
 
@@ -248,9 +248,11 @@ Six milestones. Each has a gate; no milestone starts until the previous one's ga
 
 ### M5 — Steady-state cutover (the riskiest milestone)
 
+**Status (2026-05-18): code complete; execution deferred.** All four sub-blocks (M5.1 circuit breaker, M5.2 writer full mode, M5.3 webhook router cutover, M5.4 runbook + deferrals) merged to `feat/ingestion-m5-cutover-mechanism`. The mechanism is tested at unit + integration levels (9 + 7 + 6 = 22 tests; load-bearing tests `test_writer_observations_match_inline_for_same_input` and `test_double_ingestion_safe_during_cutover` are green). Real-traffic cutover happens when customers exist + the M-Load dry run completes + M-Temporal wires the breaker's deferred Kafka readers. Operator runbook: [m5-cutover-runbook.md](m5-cutover-runbook.md).
+
 **Discharges non-negotiables:** N1 (cutover with observation UNIQUE protecting against double-ingest; circuit breaker auto-reverts under sustained lag → no data loss during regression), N3 (per-tenant cutover flag + circuit breaker means one tenant's lag cannot affect another's flag state), N5 (webhook path becomes the Kafka path; convergence at `ingestion.raw` becomes live). **This is the milestone where N1 transitions from "design property" to "tested property of the running system."** Pre-cutover gates listed below are the proof of N1; do not weaken them.
 
-**Outcome:** for tenants with `ingestion.kafka_path_enabled=TRUE`, the webhook router writes to Kafka and returns 202; the inline `ingest()` is NOT called. The writer pool becomes the sole observation writer. The circuit breaker monitors lag and auto-flips the flag back on sustained breach.
+**Outcome:** for tenants with `ingestion.kafka_path_enabled=TRUE`, the webhook router writes to Kafka and returns 202; the inline `ingest()` is NOT called. The writer pool becomes the sole observation writer. The circuit breaker monitors lag and auto-flips the flag back on sustained breach. **Cutover scope is slack + github only**; discord webhooks remain on inline regardless of flag (see [m5-cutover-runbook.md §2](m5-cutover-runbook.md) and [05-lld-amendments.md](05-lld-amendments.md) A7 for the deferral rationale); gmail enters via Pub/Sub and lands under the flag in M6.
 
 **Pre-cutover gate (all must be true):**
 1. M1-M4 complete and stable for ≥1 week in production.
@@ -262,24 +264,82 @@ Six milestones. Each has a gate; no milestone starts until the previous one's ga
 7. **`services/ingestion/tests/test_ingest_core.py` is green in CI** — **Resolved** on branch `fix/test-ingest-core-ci`. The 15 FK-violation failures + 1 fixture-setup error were fixed by seeding the `tenants` row in the `tenant_id` fixture at [services/ingestion/tests/conftest.py:185-217](../../services/ingestion/tests/conftest.py#L185-L217) (commit `5ea5dc9`). A new CI workflow at [`.github/workflows/ingestion-tests.yml`](../../.github/workflows/ingestion-tests.yml) (commit `913572e` + scope narrowing in `bbf3031`) runs the suite on every push and PR to `integration/ingestion-hardening` and `main` under a non-superuser `fyralis_test` role (LOGIN, no SUPERUSER, no BYPASSRLS), so the project's RLS policies fire under test. First verification CI run: [26021692539](https://github.com/Fyralisinc/fyraliscore/actions/runs/26021692539) — 33 passed + 1 skipped (`test_real_ollama_embedding_stored` skips when `OLLAMA_URL` is unset, by design). Free win surfaced: `test_rls_policy_isolates_by_tenant` now PASSES in CI under `fyralis_test` (was previously only runnable manually). Original gate framing preserved: the shadow comparison measures count parity; count parity is not correctness parity; the legacy baseline now has the verified behavioural coverage the gate requires.
 8. **Discord Gateway save-state ordering is durable against the broker-ack window** — **Resolved** on branch `fix/a6-broker-ack-ordering` (commit `269ce65` Phase 2 + `08c3b1f` Phase 3 + `4ddaf7f` Phase 3 follow-up). Option 1 chosen — per-frame `pre_save_flush(producer, timeout_seconds=2.0)` between the dispatch handler and the save-task creation. On flush failure (broad-scope: any Exception), the metric `discord_gateway_pre_save_flush_failures_total` increments, a warning is logged, and the save is skipped — the next worker re-processes the frame on RESUME under M2 dedup. The gateway worker's save-state is now durable against broker-not-yet-acked frames; verified by `test_no_frames_lost_across_sigkill` running against the extracted production function (no test-level workaround — the subprocess simulation imports the same `pre_save_flush` from [`services/integrations/discord/gateway/_durability.py`](../../services/integrations/discord/gateway/_durability.py) that production uses). See [`05-lld-amendments.md` §A6](05-lld-amendments.md), [`docs/decisions/a6-resolution.md`](../decisions/a6-resolution.md), and the operator runbook at [`docs/ingestion/m4-gateway-runbook.md`](m4-gateway-runbook.md). Original finding context preserved: M4 inherited the pre-M4 produce-return-on-local-enqueue gap; M5 made it operationally relevant by removing the inline fallback; this condition's resolution closes the gap before that cutover.
 
-**Changes:**
-- `services/ingestion/feature_flags/client.py` + `circuit_breaker.py` — full implementation per LLD §11.1 + §11.2.
-- `services/ingestion/feature_flags/traffic_signal.py` — producer hooks in webhook router + FetchPage activity per LLD §11.3.
-- `services/webhooks/router.py` — flag-branched: if `ingestion.kafka_path_enabled=TRUE`, skip inline `ingest()`, return 202 after Kafka publish.
-- `services/ingestion/writers/observation_writer.py` (full mode) — flip from no-op to writing observations; calls into the existing `ingest()` via batched wrapper per LLD §5.2.
-- Cutover plan: tier 1 (internal Fyralis test tenant) → tier 2 (volunteer customer) → tier 3 (10% of customers) → tier 4 (50%) → tier 5 (100%). Each tier flip is per-tenant via the `tenant_flags` table.
+**Changes (delivered):**
+- [services/ingestion/feature_flags/client.py](../../services/ingestion/feature_flags/client.py) + [circuit_breaker.py](../../services/ingestion/feature_flags/circuit_breaker.py) — full implementation per LLD §11.1 + §11.2. Per the M5.1 Phase 0 finding the breaker ships as an asyncio service (not a Temporal Schedule); M-Temporal will port it. Production Kafka readers raise `NotImplementedError` until M-Temporal injects real implementations (intentional fail-loud; see [05-lld-amendments.md](05-lld-amendments.md) A9).
+- [services/ingestion/feature_flags/traffic_signal.py](../../services/ingestion/feature_flags/traffic_signal.py) — 1% deterministic-hash producer; wired into the webhook router at M5.3. FetchPage activity wiring deferred to M6 per LLD §11.3.
+- [services/webhooks/router.py](../../services/webhooks/router.py) — flag-branched: if `ingestion.kafka_path_enabled=TRUE` AND provider ∈ `_CUTOVER_ENABLED_PROVIDERS` (slack, github), skip inline `ingest()`, return 202 after Kafka publish. Graceful Kafka-failure fallback to inline + bumps `webhook_router_kafka_path_total{outcome="fallback"}`.
+- [services/ingestion/writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py) (full mode) — flip from no-op to writing observations via `ingest_from_draft` (per-envelope; Finding 4 — see [05-lld-amendments.md](05-lld-amendments.md) A10 for Mode B collapse rationale).
+- Cutover plan: tier 1 (internal Fyralis test tenant) → tier 2 (volunteer customer) → tier 3 (10% of customers) → tier 4 (50%) → tier 5 (100%). Each tier flip is per-tenant via the `tenant_flags` table. Operator procedure: [m5-cutover-runbook.md §3](m5-cutover-runbook.md).
 
-**Tests that must pass:**
-- `test_writer_full_mode_produces_identical_observations`: shadow-comparison test — run 1000 webhooks; inline path's observation set must equal Kafka path's observation set (modulo UUIDs which are app-allocated).
-- `test_writer_batched_insert_handles_unique_violations`: synthetic batch with duplicates; assert ON CONFLICT DO NOTHING preserves correctness; non-duplicate rows still inserted.
-- `test_circuit_breaker_flips_flag_under_sustained_lag`: inject 60s+ lag for 5 min in staging; assert flag flips for affected tenants; assert webhook router reverts.
-- `test_double_ingestion_safe`: race a webhook arriving during cutover (inline AND Kafka path); assert UNIQUE constraint catches the duplicate.
-- `test_runbook_rollback_scenario_a_clean`: operator flips flag globally; in-flight Kafka drains; new traffic goes inline; assert no observations lost or duplicated.
-- `test_runbook_rollback_scenario_b_per_tenant`: flip per-tenant; rest of traffic unaffected.
+**Tests that pass:**
+- `test_writer_observations_match_inline_for_same_input` ([test_observation_writer_m5.py](../../services/ingestion/writers/tests/test_observation_writer_m5.py)) — load-bearing N1 cutover-safety parity. Inline and writer paths produce structurally-equivalent observations (kind, source_channel, source_actor_ref, trust_tier, embedding, content fields).
+- `test_writer_full_mode_dedupes_on_redelivery` — Kafka redelivery → `ingest_from_draft` returns deduped=True; no duplicate row.
+- `test_breaker_trips_on_sustained_lag` + `test_breaker_state_survives_restart` ([test_circuit_breaker.py](../../services/ingestion/feature_flags/tests/test_circuit_breaker.py)) — 5-consecutive-tick threshold; state survives SIGTERM via subprocess test.
+- `test_breaker_does_not_auto_recover` + `test_breaker_resets_bookkeeping_on_operator_reenable` — no-auto-recovery + single-step operator re-enable.
+- `test_double_ingestion_safe_during_cutover` ([test_router_m5_cutover.py](../../services/webhooks/tests/test_router_m5_cutover.py)) — load-bearing N1-during-cutover: same logical webhook via inline (flag=FALSE) AND Kafka path (flag=TRUE flipped between requests); `count(*) == 1` after both paths + writer simulation.
+- `test_cutover_kafka_failure_falls_back_to_inline` — graceful degradation: customer 200/201, fallback metric incremented.
+- `test_flag_cache_ttl_governs_cutover_window` — explicit `time.monotonic` control (no `asyncio.sleep`); 30s TTL bounds propagation latency.
 
-**Risk if deferred:** the entire backfill story (M6) depends on the cutover. Cannot ship backfill without the steady-state path being trustworthy.
+**Tests deferred (staging / real-traffic dependent):**
+- Synthetic 5-min-lag staging trip test — M-Load.
+- `test_runbook_rollback_scenario_a_clean` (global rollback at scale) — M-Load.
+- `test_runbook_rollback_scenario_b_per_tenant` (per-tenant rollback at scale) — covered structurally by `test_breaker_per_tenant_isolation`; production-volume version pending real customers.
+
+**Risk if deferred:** the entire backfill story (M6) depends on the cutover. Cannot ship backfill without the steady-state path being trustworthy. **Risk of code-without-execution (the current state):** until M-Load runs, the mechanism's behaviour under realistic traffic is unverified; M-Load is the gate condition for the first real cutover.
 
 **Risk of running out of order:** running M5 before M2's shadow-comparison has burned in is the single most dangerous sequencing mistake in this plan. The shadow comparison is the only mechanism that catches subtle handler-pipeline divergences before the writer becomes the sole source of truth.
+
+---
+
+### M-Temporal — Stand up Temporal infrastructure + port circuit breaker
+
+**Status (2026-05-18): planned; new work-unit surfaced during M5.1 execution.** Inserted before M6 because M6 requires Temporal for TenantOnboardingWorkflow + ShardFetchWorkflow.
+
+**Discharges non-negotiables:** none directly — this is infrastructure for M6's N1/N3/N4 discharge. M-Temporal is what makes the rest of LLD §2 implementable.
+
+**Outcome:** Temporal cluster operational (Cloud per §6 Q2 default or self-hosted per the decision); a worker registered for the ingestion namespace; the M5.1 circuit breaker ported from its current asyncio service shape ([circuit_breaker.py](../../services/ingestion/feature_flags/circuit_breaker.py)) to a Temporal Schedule per LLD §11.2; the production Kafka readers (`_measure_kafka_lag_default` + `_sample_active_tenants_default`) implemented (today both raise `NotImplementedError` — fail-loud); the `_kafka_partition_for_tenant` blake2b stand-in replaced with on-delivery correlation against librdkafka's murmur2_random partitioner. See [05-lld-amendments.md](05-lld-amendments.md) A8 + A9.
+
+**Why this exists as a separate work-unit (M5.1 Phase 0 finding):** M5.1 was specified to ship the breaker as a Temporal Schedule per LLD §11.2. The Phase 0 audit found Temporal infrastructure absent from the repo despite the SDK being in deps. Options surfaced: (1) stand up Temporal as part of M5.1, (2) ship the breaker as an asyncio service following M3.3's pattern. Option 2 accepted: avoids coupling M5 progress to an infra spike. M-Temporal is the IOU for the deferred infra work.
+
+**Changes:**
+- Temporal Cloud account / self-hosted cluster (the §6 Q2 decision) — provisioned.
+- `services/ingestion/temporal/` — new package: workflow worker registration, namespace config, retry policy defaults per LLD §2.
+- `services/ingestion/feature_flags/circuit_breaker.py` — port `run_circuit_breaker` from the asyncio loop to a Temporal Schedule + activities; preserve the state machine logic (the `_process_tick` extraction means the port is a wrapper change, not a logic rewrite).
+- Production implementations of `_measure_kafka_lag_default` (via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, or Burrow if operationally cheaper) and `_sample_active_tenants_default` (consumer-group reading the last 90s of `ingestion.tenant_traffic_signal`).
+- `services/webhooks/router.py::_kafka_partition_for_tenant` replaced with a real partition lookup: either (a) `IdempotentProducer.produce` augmented to accept an on-delivery callback that records partition into a tenant→partition table, or (b) explicit partition selection via `confluent_kafka.Producer.produce(partition=...)` using the same murmur2 hash librdkafka uses.
+
+**Tests that must pass:**
+- `test_temporal_worker_starts_against_real_cluster`: smoke test against the chosen cluster.
+- `test_circuit_breaker_temporal_schedule_runs_at_interval`: verify the Schedule fires per `tick_interval_sec`.
+- `test_breaker_state_survives_temporal_worker_restart`: port of M5.1's subprocess test — kill the worker mid-tick, restart, assert state survives (same property, different runtime).
+- `test_kafka_partition_lookup_matches_actual_landing_partition`: produce N keyed messages, assert the predicted partition equals the on-delivery partition for ≥99% of records (allowing for rebalance edge cases).
+- `test_breaker_real_lag_reader_detects_synthetic_breach`: inject 60s+ lag on a real partition; assert `_measure_kafka_lag_default` returns the lag.
+
+**Risk if deferred:** M6 is blocked (TenantOnboardingWorkflow + ShardFetchWorkflow have no runtime); the first real cutover is blocked (the M5.1 breaker's lag-measurement is non-functional in production today; lag must be monitored manually via `kafka-consumer-groups.sh`).
+
+**Risk of running out of order:** M-Temporal before M5 means the breaker has nowhere to write its tenant_flags flips (the `tenant_flags` table is M1; flag-client + breaker logic are M5.1). M-Temporal must NOT precede M5.
+
+---
+
+### M-Load — Synthetic-traffic cutover validation
+
+**Status (2026-05-18): planned; the gate condition for the first real-customer cutover.**
+
+**Discharges non-negotiables:** N1 (verifying that the cutover's correctness properties hold at production-equivalent volume — the M5 code passes the unit/integration gates but production-volume regression is unknown).
+
+**Outcome:** a staging dry run with a synthetic-traffic generator drives the cutover-enabled providers (slack, github) at production-equivalent rate for ≥1 hour. Assertions: (a) `webhook_router_kafka_path_total{outcome="success"}` >> `outcome="fallback"`; (b) writer observation count equals the synthetic generator's send count (modulo intentional dedup); (c) p95 webhook-to-observation latency under target; (d) circuit breaker fires only when synthetic lag is injected, never spuriously.
+
+**Changes:**
+- `services/synthetic/cutover_load.py` — new synthetic-traffic generator that signs and posts to `/webhooks/{slack,github}/*` at configurable QPS, with a controllable mix of duplicate / unique payloads.
+- `tests/load/test_cutover_dryrun.py` — orchestrates the run + asserts the four properties above.
+- `docs/ingestion/m-load-runbook.md` — operator guide for running and interpreting the dry run.
+
+**Tests that must pass:**
+- The four properties above, asserted by the test orchestrator against actual staging metrics.
+
+**Risk if deferred:** the first real-customer cutover happens without production-volume verification. Code-level tests prove the mechanism is correct on toy inputs; M-Load is the gate that proves it under realistic load.
+
+**Risk of running out of order:** M-Load before M-Temporal means the breaker's lag readers aren't real; the synthetic-lag-injection test would fail at the reader level, not the breaker logic level. Run M-Temporal first.
 
 ---
 
@@ -289,7 +349,7 @@ Six milestones. Each has a gate; no milestone starts until the previous one's ga
 
 **Outcome:** new installs trigger `TenantOnboardingWorkflow`; backfill runs to completion; reconciliation closes coverage gaps; `feels_onboarded` events fire; existing tenants get an opt-in "backfill now" admin action. Rollout per source in order: Gmail → GitHub → Slack → Discord.
 
-**Pre-M6 gate:** M5 complete and stable for ≥2 weeks; circuit breaker has NOT auto-fired for any production tenant in that window.
+**Pre-M6 gate:** M-Temporal complete (Temporal cluster operational; breaker ported); M-Load complete (synthetic dry run passes); M5 cutover stable for ≥2 weeks for the slack+github tier ramp; circuit breaker has NOT auto-fired for any production tenant in that window.
 
 **Changes per source** (each is a sub-milestone):
 - M6.1 Gmail: `plan_shards_gmail`, `fetch_page_gmail`, `reconcile_gmail`. Migrate `gmail/fetcher.py` + `history_poller.py` + `watch_scheduler.py` to Temporal Schedules (the LLD names this as the most disruptive single change; allocate L effort).

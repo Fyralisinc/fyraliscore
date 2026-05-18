@@ -299,6 +299,51 @@ removed from that file.
   listing the relevant key per row; cross-reference from §5.5 (DLQ
   writer) so future implementers see the contract.
 
+### A7 — Discord webhook cutover deferred (synchronous-response constraint)
+
+- **Status:** Open. Surfaced during M5.3. Resolution requires a Discord-response-shape decision (see "What's required" below).
+- **LLD section:** §11 (cutover feature flag) and §11.3 (traffic signal — currently named "webhook router + FetchPage activity" producer wiring; the prose implies uniform per-provider behaviour that the M5.3 implementation does not deliver).
+- **Implementation surface:** [services/webhooks/router.py:79-83](../../services/webhooks/router.py#L79-L83) (`_CUTOVER_ENABLED_PROVIDERS` = {"slack": "slack", "github": "github"}; discord intentionally excluded) and [m5-cutover-runbook.md §2](m5-cutover-runbook.md) (per-source cutover semantics table).
+- **What the LLD says today:** §11 enumerates `ingestion.kafka_path_enabled` as a per-tenant flag whose TRUE value routes "the webhook" to the Kafka path. The prose is silent on per-provider semantics — implicit claim is uniform behaviour across slack/github/discord.
+- **What's actually true:** Discord interactions (slash commands) require a synchronous response with shape `{"type": 4, "data": {"content": "..."}}` (CHANNEL_MESSAGE_WITH_SOURCE) within Discord's ~3-second deadline, or the Discord client UI displays "The application didn't respond in time." The M5.3 cutover contract returns 202 with `{"status": "accepted"}` — incompatible. M5.3 enforces this by excluding discord from `_CUTOVER_ENABLED_PROVIDERS`; discord webhooks remain on the inline path regardless of the flag value.
+- **What's required to resolve:** decide between (a) keeping discord interactions on inline indefinitely (operationally fine; documented today), (b) synthesizing the CHANNEL_MESSAGE_WITH_SOURCE response inside the cutover branch BEFORE returning, with the observation arriving asynchronously via the writer pool (operationally feasible; requires the bot to acknowledge "Got it" and post the real follow-up message later via Discord's webhook-token follow-up API), or (c) deferring discord cutover until a Discord-specific Temporal workflow lands in M6/M7. Decision: defer to post-M5.
+- **LLD edit pending:** §11 prose must explicitly enumerate per-provider cutover semantics (matches the runbook §2 table). The implicit "uniform" framing should not survive.
+
+### A8 — Kafka partition stand-in is approximate (`_kafka_partition_for_tenant`)
+
+- **Status:** Open. M-Temporal will resolve.
+- **LLD section:** §11.3 (traffic signal — "raw_partition: the partition the just-published envelope landed on").
+- **Implementation surface:** [services/webhooks/router.py::_kafka_partition_for_tenant](../../services/webhooks/router.py) (blake2b-based deterministic hash, num_partitions=32 default) and [services/ingestion/feature_flags/traffic_signal.py::maybe_emit_traffic_signal](../../services/ingestion/feature_flags/traffic_signal.py).
+- **What the LLD says today:** §11.3 specifies that the signal record carries `raw_partition` so the breaker can correlate tenant → partition. Implicit assumption: the producer knows the partition synchronously at publish time.
+- **What's actually true:** `IdempotentProducer.produce` enqueues to librdkafka's local queue; the REAL partition is determined asynchronously by librdkafka's murmur2_random partitioner. The producer's `produce()` return value is `None`; partition is only available via an `on_delivery` callback. M5.3 ships a blake2b deterministic stand-in (same key → same partition, NOT bit-equivalent to murmur2_random) that gives a stable per-tenant value but mis-attributes lag if the cluster has a different partition count or the partitioner differs from the default.
+- **Operational impact today:** zero. The breaker's lag readers raise `NotImplementedError` until M-Temporal wires real implementations (see A9), so no production code consumes `raw_partition` for actual lag attribution yet.
+- **What's required to resolve:** M-Temporal must either (a) augment `IdempotentProducer.produce` to accept an `on_delivery` callback that records partition into a tenant→partition table the breaker reads from, or (b) compute the partition deterministically using `mmh3` (or an equivalent murmur2 implementation) that matches librdkafka's algorithm bit-for-bit. Option (a) is more correct under partition-count changes; option (b) is simpler if num_partitions is fixed.
+- **LLD edit pending:** §11.3 must acknowledge the partition-prediction-vs-on-delivery question explicitly; the current text presumes synchronous partition knowledge that the librdkafka contract doesn't provide.
+
+### A9 — Default circuit-breaker Kafka readers raise `NotImplementedError` (fail-loud, intentional)
+
+- **Status:** Open. M-Temporal will inject real implementations.
+- **LLD section:** §11.2 (Cutover circuit breaker) — the LLD describes lag measurement + active-tenants sampling as concrete capabilities of the breaker.
+- **Implementation surface:** [services/ingestion/feature_flags/circuit_breaker.py::_measure_kafka_lag_default](../../services/ingestion/feature_flags/circuit_breaker.py) and `_sample_active_tenants_default` — both raise `NotImplementedError` with a message naming M-Temporal as the resolution path. Tests inject mocks via the same function-pointer kwargs.
+- **What the LLD says today:** §11.2 enumerates the breaker's responsibilities including "measure consumer-group lag on `ingestion.raw` per partition" and "sample active tenants from the signal topic," implying production-ready implementations.
+- **What's actually true:** M5.1 ships the breaker as an asyncio service per the Phase 0 finding (Option B; Temporal infrastructure absent at M5.1 time). The state-machine logic, persistence, alert path, and operator re-enable handling are all production-ready. The Kafka readers are NOT — they raise loudly if called in production-without-injection so a misconfigured deployment fails at startup rather than silently no-op'ing.
+- **Design rationale:** fail-loud is intentional. A silent no-op default would let an operator deploy the breaker, observe no trips, and (incorrectly) conclude the cutover is healthy. Raising `NotImplementedError` makes the missing infrastructure obvious. Test injection via kwargs preserves unit-test ergonomics.
+- **What's required to resolve:** M-Temporal must implement `_measure_kafka_lag_default` (via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, OR Burrow integration if operationally cheaper) and `_sample_active_tenants_default` (consumer-group reading the last `signal_lookback_sec` of `ingestion.tenant_traffic_signal`, keyed by tenant_id, returning `{tenant_id: partition}`).
+- **LLD edit pending:** §11.2 must acknowledge the two-stage delivery — state machine in M5.1, Kafka readers in M-Temporal — or the LLD should be edited to forward-reference the M-Temporal section once that section is written.
+
+### A10 — Mode B writer collapses under Finding 4 (single mode ships)
+
+- **Status:** Open. Tied to §6 Q4 (WS-latency product decision).
+- **LLD section:** §5.3 (Dual-mode writer config — Phase 2.1 Q4 WS latency).
+- **Implementation surface:** [services/ingestion/writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py) (single per-envelope path via `_full_mode_write` → `ingest_from_draft`; no `max_poll_records` knob, no per-tenant Mode A vs Mode B selection).
+- **What the LLD says today:** §5.3 specifies two writer modes selectable per tenant via `ingestion.writer_mode_low_latency`:
+    - Mode A — Batched (default; ~500 records/poll; ~1000 obs/sec/process; ~500ms batch-wait latency).
+    - Mode B — Low-latency (max_poll_records=1; ~50 obs/sec/process; ~50ms per-row latency).
+- **What's actually true:** M5 Phase 0 Finding 4 chose per-envelope `ingest_from_draft` calls (not batched-transaction) to avoid an `ingest()` refactor that would have introduced an optional `conn` parameter shared across multiple envelopes. The accepted floor of ~50 obs/sec/process matches Mode B's profile, not Mode A's. The shipping writer is effectively Mode B; "Mode A" is a separate code path that would require either (a) a batched-transaction `ingest()` refactor or (b) a parallel batched writer that bypasses `ingest()` and writes observations directly (the N1 cutover-safety divergence risk that drove Finding 4 in the first place).
+- **Operational implication:** until §6 Q4 (WS-latency tolerance) is answered, the writer ships one mode that matches Mode B's latency profile (~50ms per row) at Mode B's throughput (~50 obs/sec/process). If Q4 answers "YES, 1-5s is fine for everyone": delete the LLD §5.3 dual-mode prose; the single mode is permanent. If "NO, low-latency required for WS-sensitive tenants": Mode A would require a new work-unit ("M-Throughput") that refactors `ingest()` to accept an optional shared connection per Kafka poll, which Finding 4 explicitly defers.
+- **What's required to resolve:** §6 Q4 product call. The architecture branches: Mode A is the deferred work-unit; Mode B is the current ship.
+- **LLD edit pending:** §5.3 must be rewritten to either (a) describe the single-mode ship + delete the dual-mode prose, or (b) restate Mode A's throughput requirement and reference the M-Throughput follow-up work-unit. Pick once Q4 answers.
+
 ### A4 — §12.1 "one-shot script" → long-running rate-limited service
 
 - **Status:** Open (M3.3 will implement; M3.4 documents the LLD edit).
