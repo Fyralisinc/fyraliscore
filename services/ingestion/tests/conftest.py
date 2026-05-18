@@ -182,9 +182,34 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
             pass
 
 
-@pytest.fixture
-def tenant_id() -> UUID:
-    return uuid7()
+@pytest_asyncio.fixture(scope="function")
+async def tenant_id(gateway_pool: asyncpg.Pool) -> UUID:
+    """Return a fresh tenant UUID with the `tenants` row pre-seeded.
+
+    Why this fixture inserts: every tenant-scoped table (`observations`,
+    `actors`, …) carries
+    `FOREIGN KEY (tenant_id) REFERENCES tenants(id) DEFERRABLE
+    INITIALLY IMMEDIATE` per migration 0037_tenant_fks.sql. The
+    constraint fires on each INSERT; tests use `pool.execute(...)`
+    which auto-commits per statement, so the FK has no opportunity
+    to defer to COMMIT. Seeding the `tenants` row up-front is the
+    smallest-change fix; it matches production's "register a tenant
+    first" pattern.
+
+    Function-scoped on purpose: each test gets a clean tenant.
+    `gateway_pool`'s TRUNCATE-on-entry wipes the row at the start of
+    every test, so reuse across tests would conflict with that
+    hygiene anyway.
+
+    Closes GitHub #31 (M5 pre-cutover gate condition (7)). See
+    docs/decisions/ticket-31-diagnosis.md for the read.
+    """
+    tid = uuid7()
+    await gateway_pool.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, $2)",
+        tid, f"test-tenant-{tid.hex[:8]}",
+    )
+    return tid
 
 
 @pytest_asyncio.fixture
