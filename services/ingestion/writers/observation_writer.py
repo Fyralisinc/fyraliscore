@@ -1,43 +1,55 @@
-"""services/ingestion/writers/observation_writer.py — M2.4 no-op writer.
+"""services/ingestion/writers/observation_writer.py
+   — Observation writer with flag-branched full-mode.
 
-Per M2 work-order §M2.4 and LLD §5.2.
-
-Consumes `ingestion.normalized` from M2.3's normalizer pool. In M2,
-this writer is INTENTIONALLY A NO-OP — it logs each
-NormalizedEnvelope and records a `ShadowWriteEvent` in an in-process
-list. It does NOT INSERT into `observations`.
-
-Why no-op in M2:
-  - The inline path (`services.ingestion.core.ingest`) is the
-    source of truth during the 48-hour zero-divergence soak.
-  - Writing observations from the shadow path would mean two paths
-    racing to claim the same `(source_channel, external_id)` slot
-    via the unique index. Either path could legitimately win the
-    insert; we want to PROVE the shadow path produces equivalent
-    rows BEFORE we let it write.
-  - The E2E test (`test_e2e_shadow.py`) asserts set-equality
-    between inline-observation external_ids and shadow_log
-    external_ids. Zero divergence = the shadow pipeline is
-    correctness-equivalent and M3 can flip the writer to batched
-    INSERT.
+History:
+  - M2.4: Path B no-op. Consumed `ingestion.normalized`, logged each
+    NormalizedEnvelope, appended a `ShadowWriteEvent` to an in-process
+    list. NO Postgres write. The inline `ingest()` was the source of
+    truth during the 48h zero-divergence soak.
+  - M5.2: full-mode transition. Per-envelope the writer reads
+    `ingestion.kafka_path_enabled` from `tenant_flags`. When TRUE,
+    the writer calls `services.ingestion.core.ingest_from_draft(...)`
+    to write the observation (the normalizer already ran the handler,
+    so the draft fields embedded in the envelope are used directly).
+    When FALSE (default; pre-cutover tenants), the writer preserves
+    M2's shadow-log no-op behavior.
 
 ============================================================
-PATH B CONTRACT
+PATH A — the writer is now Path A for full-mode tenants
 ============================================================
-This module MUST NOT import asyncpg or any DB-touching module.
-The shadow log is in-process; M3's batched-INSERT version is a
-DIFFERENT module that imports asyncpg and lives in Path A.
+The M2.4 import-graph contract ("writer MUST NOT import asyncpg") is
+INTENTIONALLY LIFTED in M5.2. The writer now:
+  - Holds an asyncpg.Pool (pgbouncer-compatible — fifth activation
+    of `statement_cache_size=0` after M3.1, M3.3, M4.2, M5.1).
+  - Wires ActorRepo + EntityAliasRepo for actor/entity resolution
+    inside `ingest_from_draft`.
+  - Reads `tenant_flags` per envelope.
 
-The static + runtime Path B proofs for the normalizer
-(`test_worker_no_db_access.py`) apply structurally here too: the
-writer imports the same Pydantic envelope model + aiokafka, and
-nothing else.
+The M2 e2e shadow test (`test_e2e_shadow.py`) continues to pass
+because its tenants have no row in `tenant_flags` for
+`ingestion.kafka_path_enabled` → reader returns the default
+`False` → shadow log path runs unchanged.
 
-DLQ note: M2.4 writer parses NormalizedEnvelope; a Pydantic
-ValidationError on the wire format logs + bumps `parse_failure` +
-COMMITS the offset (same prime directive as the normalizer's
-EnvelopeInvariantError handling). M3 adds DLQ insert when the DB
-pool is in scope.
+============================================================
+PER-ENVELOPE TRANSACTION CONTRACT (M5 Finding 4)
+============================================================
+Each envelope gets ONE call to `ingest_from_draft`, which opens its
+own transaction. There is NO batched-transaction wrapper. The
+performance floor is ~50 obs/sec/process — acceptable for M5/M6
+load profiles; a future M-Throughput work-unit may refactor
+`ingest_from_draft` to share a transaction across envelopes if
+M-Load binds.
+
+============================================================
+ERROR HANDLING
+============================================================
+  - Parse failure (NormalizedEnvelope.model_validate raises):
+    bump parse_failure, DLQ-publish, COMMIT offset. Same as M2.4.
+  - Full-mode permanent error (ValidationError, HandlerNotFound):
+    bump full_mode_failure, DLQ-publish, COMMIT offset.
+  - Full-mode transient error (any other Exception): re-raise.
+    The consumer loop exits; the supervisor restarts the writer;
+    Kafka redelivers from the last committed offset.
 """
 from __future__ import annotations
 
@@ -49,9 +61,26 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import asyncpg
 from aiokafka import AIOKafkaConsumer
 
+from lib.shared.errors import ValidationError
+from services.actors.repo import ActorRepo
+from services.entity_aliases.repo import EntityAliasRepo
+from services.ingestion.core import (
+    IngestResult,
+    PayloadTooLarge,
+    ingest_from_draft,
+)
 from services.ingestion.dlq.publish import publish_dlq
+from services.ingestion.feature_flags.client import (
+    KAFKA_PATH_ENABLED,
+    TenantFlags,
+)
+from services.ingestion.handlers import (
+    HandlerNotFound,
+    ObservationDraft,
+)
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.normalizer.models import NormalizedEnvelope
 
@@ -67,6 +96,9 @@ _WRITER_GROUP = "observation-writer"
 _metrics: dict[str, float] = {
     "writer.messages_consumed": 0.0,
     "writer.shadow_write_events": 0.0,
+    "writer.full_mode_writes": 0.0,
+    "writer.full_mode_dedup_hits": 0.0,
+    "writer.full_mode_failures": 0.0,
     "writer.parse_failure": 0.0,
     # M3.1 — DLQ publish metrics.
     "writer.dlq_publish.success": 0.0,
@@ -88,12 +120,15 @@ def _bump(key: str, by: float = 1.0) -> None:
     _metrics[key] = _metrics.get(key, 0.0) + by
 
 
+# ---------------------------------------------------------------------
+# M2 shadow log (preserved for flag=FALSE tenants).
+# ---------------------------------------------------------------------
 @dataclass(frozen=True)
 class ShadowWriteEvent:
-    """One record the writer would INSERT in M3. The set of
-    ShadowWriteEvents on a given test window must (per the E2E
-    contract) have external_ids equal to the set of inline
-    observations.external_id values for that window.
+    """One record the writer would have INSERTed in M2. Preserved
+    in M5.2 for tenants whose `ingestion.kafka_path_enabled` is
+    FALSE — those tenants are still on the inline path, so the
+    writer remains a no-op shadow observer for them.
     """
 
     tenant_id: str
@@ -107,17 +142,11 @@ class ShadowWriteEvent:
     normalized_at: dt.datetime
 
 
-# Module-global so test setup can `reset_shadow_log()` between cases.
-# Concurrent appends are serialised through `_shadow_log_lock`.
 _shadow_log: list[ShadowWriteEvent] = []
 _shadow_log_lock: asyncio.Lock | None = None
 
 
 def _get_lock() -> asyncio.Lock:
-    """Lazily create the lock on the first event-loop touch.
-    `asyncio.Lock()` constructed at module-import time would bind
-    to whichever loop happened to be current then (often none).
-    """
     global _shadow_log_lock
     if _shadow_log_lock is None:
         _shadow_log_lock = asyncio.Lock()
@@ -125,8 +154,6 @@ def _get_lock() -> asyncio.Lock:
 
 
 def get_shadow_log() -> list[ShadowWriteEvent]:
-    """Snapshot copy of the shadow log. Test-friendly; production
-    M3 swaps this entire module for one that writes to Postgres."""
     return list(_shadow_log)
 
 
@@ -134,7 +161,7 @@ def reset_shadow_log() -> None:
     _shadow_log.clear()
 
 
-async def _record_event(env: NormalizedEnvelope) -> None:
+async def _record_shadow_event(env: NormalizedEnvelope) -> None:
     event = ShadowWriteEvent(
         tenant_id=str(env.tenant_id),
         source=env.source,
@@ -156,47 +183,245 @@ async def _record_event(env: NormalizedEnvelope) -> None:
             "source": event.source,
             "source_channel": event.source_channel,
             "external_id": event.external_id,
-            # content_hash truncated — the full 40-char hex is
-            # noise in operator logs; prefix is enough to grep.
             "content_hash_prefix": event.content_hash[:16],
         },
     )
 
 
+# ---------------------------------------------------------------------
+# M5.2 — full-mode draft reconstruction + Postgres write.
+# ---------------------------------------------------------------------
+def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
+    """Rebuild the `ObservationDraft` the normalizer (M2.3) emitted.
+
+    `NormalizedEnvelope` carries the draft fields 1:1 (see
+    `services/ingestion/normalizer/models.py`), so we reconstruct
+    without re-running the handler. `unresolved_phrases` is left
+    empty — the normalizer doesn't surface it on the wire, and
+    `ingest_from_draft` re-derives candidate phrases from
+    `content_text` in step 4.
+    """
+    return ObservationDraft(
+        source_channel=env.source_channel,
+        content_text=env.content_text,
+        content=dict(env.content),
+        occurred_at=env.occurred_at,
+        trust_tier=env.trust_tier,  # type: ignore[arg-type]
+        kind=env.kind,  # type: ignore[arg-type]
+        source_actor_ref=env.source_actor_ref,
+        external_id=env.external_id,
+        entities_hint=list(env.entities_hint),
+        unresolved_phrases=[],
+        raw_payload=None,
+    )
+
+
+async def _full_mode_write(
+    env: NormalizedEnvelope,
+    *,
+    pool: asyncpg.Pool,
+    actor_repo: ActorRepo | None,
+    alias_repo: EntityAliasRepo | None,
+    embedder: Any,
+    embedding_producer: Any,
+) -> IngestResult:
+    """Call `ingest_from_draft` per envelope. One transaction per
+    envelope per Finding 4. Caller is responsible for catching
+    permanent vs transient errors and committing the offset only
+    after a definitive outcome.
+    """
+    draft = _draft_from_envelope(env)
+    result = await ingest_from_draft(
+        channel=env.source_channel,
+        draft=draft,
+        pool=pool,
+        tenant_id=env.tenant_id,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+        enqueue_trigger=True,
+        embedding_producer=embedding_producer,
+    )
+    if result.deduped:
+        _bump("writer.full_mode_dedup_hits")
+    else:
+        _bump("writer.full_mode_writes")
+    return result
+
+
+# ---------------------------------------------------------------------
+# Pool helper — pgbouncer-compatible. Fifth activation of
+# `statement_cache_size=0` after M3.1, M3.3, M4.2, M5.1.
+# ---------------------------------------------------------------------
+async def make_writer_pool(
+    dsn: str,
+    *,
+    max_size: int = 10,
+    command_timeout: float = 30.0,
+) -> asyncpg.Pool:
+    """Construct an asyncpg pool for the observation writer's
+    full-mode Postgres writes. `statement_cache_size=0` per the
+    M1.3 ADR Q1 pgbouncer-transaction-mode contract.
+
+    Mirrors the M5.1 circuit-breaker pool init at
+    `services/ingestion/feature_flags/circuit_breaker.py::make_breaker_pool`
+    and the M4.2 session-state pool at
+    `services/integrations/discord/gateway/session_state.py::make_session_state_pool`.
+    """
+    return await asyncpg.create_pool(
+        dsn,
+        min_size=2,
+        max_size=max_size,
+        command_timeout=command_timeout,
+        statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
+    )
+
+
 @dataclass
 class WriterConfig:
-    """Configuration for one writer process."""
+    """Configuration for one writer process.
+
+    Production startup wires deps from env vars. Tests inject
+    pre-built deps via the fields below; the writer then skips its
+    own startup wiring.
+    """
 
     bootstrap_servers: str = "localhost:9092"
     consumer_group: str = _WRITER_GROUP
     # Stop after N events (test mode). Production = None.
     stop_after: int | None = None
-    # M3.1 — producer config for DLQ publishes. Defaults are
-    # LLD §5.2 (idempotent, zstd, acks=all).
+    # M3.1 — producer config for DLQ publishes + embedding-pending
+    # publishes (same producer instance, different topics).
     dlq_producer_config: ProducerConfig | None = None
+    # M5.2 — Path A deps for full-mode envelopes. When `pool` is
+    # None, the writer stays in shadow-only mode for every envelope
+    # (matches M2.4 behaviour; useful for tests that don't want a
+    # DB).
+    pool: asyncpg.Pool | None = None
+    tenant_flags: TenantFlags | None = None
+    actor_repo: ActorRepo | None = None
+    alias_repo: EntityAliasRepo | None = None
+    embedder: Any = None
+    # M5.2 — Kafka producer used by `ingest_from_draft` to emit
+    # ingestion.embedding requests. Defaults to the same producer
+    # used for DLQ publishes (one IdempotentProducer can publish to
+    # multiple topics).
+    embedding_producer: Any = None
+
+
+async def _handle_message(
+    msg_value: bytes,
+    *,
+    config: WriterConfig,
+    dlq_producer: IdempotentProducer,
+    embedding_producer: Any,
+    msg_topic: str = _NORMALIZED_TOPIC,
+    msg_partition: int = 0,
+    msg_offset: int = 0,
+) -> None:
+    """Per-message logic, factored out of `run_writer` so M5.2 unit
+    tests can drive it without spinning up Kafka.
+
+    Outcome contract — callers (run_writer) should `commit()` the
+    offset after this returns; we either succeeded or DLQ'd. The
+    transient-error path raises so the consumer loop exits and the
+    supervisor restarts (the message is reprocessed from the last
+    committed offset).
+    """
+    _bump("writer.messages_consumed")
+    try:
+        env = NormalizedEnvelope.model_validate(json.loads(msg_value))
+    except Exception as exc:  # noqa: BLE001
+        _bump("writer.parse_failure")
+        log.warning(
+            "writer.parse_failed",
+            extra={
+                "topic": msg_topic,
+                "partition": msg_partition,
+                "offset": msg_offset,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
+        await publish_dlq(
+            producer=dlq_producer,
+            failure_kind="writer.invariant_failure",
+            error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+            msg_bytes=msg_value,
+            on_success=lambda: _bump("writer.dlq_publish.success"),
+            on_failure=lambda: _bump("writer.dlq_publish.failure"),
+            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        )
+        return
+
+    # ---- Flag-branched write ----
+    should_full_mode = False
+    if config.tenant_flags is not None and config.pool is not None:
+        # LLD §11: default missing → False (pre-cutover tenants stay
+        # on the inline path; writer remains shadow-only for them).
+        should_full_mode = await config.tenant_flags.get_bool(
+            env.tenant_id, KAFKA_PATH_ENABLED, default=False,
+        )
+
+    if not should_full_mode:
+        await _record_shadow_event(env)
+        return
+
+    try:
+        await _full_mode_write(
+            env,
+            pool=config.pool,
+            actor_repo=config.actor_repo,
+            alias_repo=config.alias_repo,
+            embedder=config.embedder,
+            embedding_producer=embedding_producer,
+        )
+    except (ValidationError, HandlerNotFound, PayloadTooLarge) as exc:
+        # Permanent error — DLQ + commit. Same shape as the
+        # parse-failure branch.
+        _bump("writer.full_mode_failures")
+        log.warning(
+            "writer.full_mode_permanent_failure",
+            extra={
+                "topic": msg_topic,
+                "partition": msg_partition,
+                "offset": msg_offset,
+                "tenant_id": str(env.tenant_id),
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
+        await publish_dlq(
+            producer=dlq_producer,
+            failure_kind="writer.full_mode_permanent_failure",
+            error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+            msg_bytes=msg_value,
+            on_success=lambda: _bump("writer.dlq_publish.success"),
+            on_failure=lambda: _bump("writer.dlq_publish.failure"),
+            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        )
+    # Transient errors propagate — consumer loop exits, supervisor
+    # restarts, Kafka redelivers from last committed offset.
 
 
 async def run_writer(config: WriterConfig) -> dict[str, int]:
-    """Writer's main loop. Returns a stats dict for tests.
-
-    Path B preserved (NO Postgres pool here). M3.1 adds a Kafka
-    producer for DLQ publishes — still Path B; the failure
-    persistence is done by the separate DLQ writer process which IS
-    Path A. This split is intentional (PRIME DIRECTIVE: failure-
-    handling on the hot path must not introduce DB latency).
-    """
+    """Writer's main loop. Returns a stats dict for tests."""
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
         group_id=config.consumer_group,
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
-    # M3.1 — producer for DLQ publishes.
     dlq_producer_cfg = config.dlq_producer_config or ProducerConfig(
         bootstrap_servers=config.bootstrap_servers,
         client_id=f"observation-writer-dlq-{id(config)}",
     )
     dlq_producer = IdempotentProducer(dlq_producer_cfg)
+    # By default, reuse the dlq_producer for embedding publishes —
+    # one IdempotentProducer can publish to any topic, and we don't
+    # want to start two Kafka clients per writer process for one
+    # extra topic.
+    embedding_producer = config.embedding_producer or dlq_producer
 
     await dlq_producer.start()
     await consumer.start()
@@ -206,43 +431,15 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
     try:
         async for msg in consumer:
             consumed += 1
-            _bump("writer.messages_consumed")
-            try:
-                env = NormalizedEnvelope.model_validate(
-                    json.loads(msg.value)
-                )
-                await _record_event(env)
-            except Exception as exc:  # noqa: BLE001
-                _bump("writer.parse_failure")
-                log.warning(
-                    "writer.parse_failed",
-                    extra={
-                        "topic": msg.topic,
-                        "partition": msg.partition,
-                        "offset": msg.offset,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[:200],
-                    },
-                )
-                # M3.1 — publish to ingestion.dlq with
-                # failure_kind="writer.invariant_failure". The
-                # writer's invariant in M2 is "the message must
-                # parse as a NormalizedEnvelope"; future M3+
-                # writers may add invariant checks for downstream
-                # writability (e.g. content_text non-empty for
-                # the embedding worker). PRIME DIRECTIVE: a DLQ
-                # publish failure here MUST NOT crash the worker.
-                await publish_dlq(
-                    producer=dlq_producer,
-                    failure_kind="writer.invariant_failure",
-                    error_summary=(
-                        f"{type(exc).__name__}: {str(exc)[:200]}"
-                    ),
-                    msg_bytes=msg.value,
-                    on_success=lambda: _bump("writer.dlq_publish.success"),
-                    on_failure=lambda: _bump("writer.dlq_publish.failure"),
-                    on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
-                )
+            await _handle_message(
+                msg.value,
+                config=config,
+                dlq_producer=dlq_producer,
+                embedding_producer=embedding_producer,
+                msg_topic=msg.topic,
+                msg_partition=msg.partition,
+                msg_offset=msg.offset,
+            )
             await consumer.commit()
             if (
                 config.stop_after is not None
@@ -257,17 +454,42 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
 
 
 def main() -> None:
-    """Synchronous CLI entry."""
+    """Synchronous CLI entry. Wires Path A deps from env vars."""
     logging.basicConfig(
         level=os.environ.get("WRITER_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    config = WriterConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-    )
-    asyncio.run(run_writer(config))
+
+    async def _run() -> None:
+        dsn = os.environ.get("DATABASE_URL")
+        config = WriterConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+            ),
+        )
+        if dsn is not None:
+            pool = await make_writer_pool(dsn)
+            config = WriterConfig(
+                bootstrap_servers=config.bootstrap_servers,
+                consumer_group=config.consumer_group,
+                pool=pool,
+                tenant_flags=TenantFlags(pool),
+                actor_repo=ActorRepo(pool),
+                alias_repo=EntityAliasRepo(pool),
+                # `embedder` defaults to None — observations land at
+                # embedding_pending=TRUE and the M3.2 embedding
+                # worker (or M3.3 backlog drainer) picks them up.
+                embedder=None,
+            )
+            try:
+                await run_writer(config)
+            finally:
+                await pool.close()
+        else:
+            # No DSN — run in pure shadow mode (matches M2.4).
+            await run_writer(config)
+
+    asyncio.run(_run())
 
 
 __all__ = [
@@ -276,6 +498,7 @@ __all__ = [
     "get_metrics",
     "get_shadow_log",
     "main",
+    "make_writer_pool",
     "reset_metrics",
     "reset_shadow_log",
     "run_writer",

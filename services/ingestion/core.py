@@ -187,6 +187,62 @@ async def ingest(
             f"but was registered for {channel!r}"
         )
 
+    # Steps 2-7 are shared with the M5.2 writer's full-mode path,
+    # which consumes NormalizedEnvelope (handler already ran in
+    # the normalizer) and would re-handle the payload otherwise.
+    return await ingest_from_draft(
+        channel=channel,
+        draft=draft,
+        pool=pool,
+        tenant_id=tenant_id,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+        enqueue_trigger=enqueue_trigger,
+        embedding_producer=embedding_producer,
+    )
+
+
+async def ingest_from_draft(
+    *,
+    channel: str,
+    draft: ObservationDraft,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    actor_repo: ActorRepo | None = None,
+    alias_repo: EntityAliasRepo | None = None,
+    embedder: OllamaClient | None = None,
+    enqueue_trigger: bool = True,
+    embedding_producer: Any | None = None,
+) -> IngestResult:
+    """Steps 2-7 of the UniformIngestPath, given an already-built draft.
+
+    Public entry for the M5.2 writer full-mode path: the normalizer
+    has already run the handler step in M2.3 and emitted a
+    `NormalizedEnvelope` carrying the draft fields. The writer
+    reconstructs an `ObservationDraft` from that envelope and calls
+    this function, avoiding a second handler dispatch + S3 raw fetch.
+
+    Contract:
+      - `draft.source_channel` MUST equal `channel`. Mismatch raises
+        `ValidationError` — same defensive check as in `ingest()`.
+      - Returns an `IngestResult` with the same shape `ingest()` does.
+      - Per-call transaction (M5 Finding 4: per-envelope ingest()
+        calls; no batched-transaction refactor). One asyncpg
+        connection acquired, one transaction committed.
+
+    All steps 2-7 logic lives here so `ingest()` and the writer
+    share the same observation-creation path — divergence here
+    would be an N1 cutover-safety failure (the writer's full-mode
+    output must be set-equal to the inline path's output for the
+    same input).
+    """
+    if draft.source_channel != channel:
+        raise ValidationError(
+            f"draft.source_channel={draft.source_channel!r} does not match "
+            f"channel={channel!r}"
+        )
+
     # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
 
@@ -436,6 +492,7 @@ class _PrecomputedEmbedder:
 __all__ = [
     "candidate_phrases",
     "ingest",
+    "ingest_from_draft",
     "IngestResult",
     "MAX_PAYLOAD_BYTES",
     "PayloadTooLarge",
