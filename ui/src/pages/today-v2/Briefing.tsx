@@ -61,13 +61,18 @@ export default function TodayBriefing() {
     return list;
   }, [data]);
 
-  // Which card is in Focused Review state. Defaults to the primary
-  // judgment so the user lands directly on the most urgent case.
+  // Which card is in Focused Review state. On first render the primary
+  // judgment auto-expands so the user lands directly on the most urgent
+  // case. After that, the user owns the state — collapsing stays
+  // collapsed; opening another card swaps focus.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const didAutoExpandRef = useRef(false);
   useEffect(() => {
-    if (expandedId && orderedQueue.some((d) => d.id === expandedId)) return;
-    setExpandedId(orderedQueue[0]?.id ?? null);
-  }, [orderedQueue, expandedId]);
+    if (didAutoExpandRef.current) return;
+    if (orderedQueue.length === 0) return;
+    setExpandedId(orderedQueue[0].id);
+    didAutoExpandRef.current = true;
+  }, [orderedQueue]);
 
   const positionOf = useCallback(
     (id: string): { index: number; total: number } | null => {

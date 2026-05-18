@@ -63,13 +63,10 @@ afterEach(() => {
 describe("Today Briefing", () => {
   it("renders briefing header and a stream of judgment cards", async () => {
     renderBriefing();
-    await waitFor(() =>
-      expect(screen.getByTestId("today-page")).toBeInTheDocument(),
-    );
+    await screen.findByTestId(`focused-review-${PRIMARY_ID}`);
+    expect(screen.getByTestId("today-page")).toBeInTheDocument();
     expect(screen.getByTestId("briefing-header")).toBeInTheDocument();
     expect(screen.getByTestId("today-stream")).toBeInTheDocument();
-    // Primary judgment auto-expands into a Focused Review card.
-    expect(screen.getByTestId(`focused-review-${PRIMARY_ID}`)).toBeInTheDocument();
     // Other items render as compact rows that can be opened.
     expect(screen.getByTestId(`compact-card-${PRICING_ID}`)).toBeInTheDocument();
     // Page-level chrome from the old Briefing (SummaryStrip,

@@ -227,34 +227,36 @@ export function FocusedReviewCard({
           </button>
         </section>
 
-        <section className="tdv2-section">
-          <h3 className="tdv2-section__heading">What may be missing</h3>
-          {delta.missingContext.length > 0 ? (
-            <ul className="tdv2-bullets">
-              {delta.missingContext.map((m) => (
-                <li key={m.id}>{m.text}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="tdv2-section__body tdv2-section__body--muted">
-              No major context gaps identified from connected sources.
-            </p>
-          )}
-        </section>
-
-        {delta.impactIfAccepted.length > 0 ? (
-          <section className="tdv2-section tdv2-section--accepted">
-            <h3 className="tdv2-section__heading">If accepted</h3>
-            <ul className="tdv2-bullets tdv2-bullets--check">
-              {delta.impactIfAccepted.slice(0, 6).map((i) => (
-                <li key={i.id}>
-                  <CheckIcon />
-                  <span>{i.text}</span>
-                </li>
-              ))}
-            </ul>
+        <div className="tdv2-review__col-stack">
+          <section className="tdv2-section">
+            <h3 className="tdv2-section__heading">What may be missing</h3>
+            {delta.missingContext.length > 0 ? (
+              <ul className="tdv2-bullets">
+                {delta.missingContext.map((m) => (
+                  <li key={m.id}>{m.text}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="tdv2-section__body tdv2-section__body--muted">
+                No major context gaps identified from connected sources.
+              </p>
+            )}
           </section>
-        ) : null}
+
+          {delta.impactIfAccepted.length > 0 ? (
+            <section className="tdv2-section">
+              <h3 className="tdv2-section__heading">If accepted</h3>
+              <ul className="tdv2-bullets tdv2-bullets--check">
+                {delta.impactIfAccepted.slice(0, 6).map((i) => (
+                  <li key={i.id}>
+                    <CheckIcon />
+                    <span>{i.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </div>
       </div>
 
       <AskFyralisStrip delta={delta} />

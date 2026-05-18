@@ -596,10 +596,13 @@
   color: var(--text-primary);
 }
 
-/* If-accepted section lives in the body grid as the 4th cell on wider
-   layouts. Override layout so it flows naturally with the others. */
-.tdv2-section--accepted {
-  grid-column: span 1;
+/* Column 3 of the review body stacks "What may be missing" and
+   "If accepted" so the consequences sit directly under the gaps. */
+.tdv2-review__col-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
 }
 
 .tdv2-evidence {

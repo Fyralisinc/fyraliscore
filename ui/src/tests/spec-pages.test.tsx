@@ -55,10 +55,10 @@ describe("Today (spec)", () => {
     );
   });
 
-  it("labels the surface as a Primary Judgment proposed change", async () => {
+  it("labels the focused review surface as a Proposed change", async () => {
     render(wrap(<TodayBriefing />, "/today"));
     await waitFor(() =>
-      expect(screen.getByText(/Primary judgment/i)).toBeInTheDocument(),
+      expect(screen.getAllByText(/Proposed change/i).length).toBeGreaterThan(0),
     );
   });
 });
