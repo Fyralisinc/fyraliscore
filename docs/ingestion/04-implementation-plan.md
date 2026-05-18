@@ -395,6 +395,8 @@ Lays the framework all subsequent M6 sub-blocks build on. No business logic; jus
 - `services/ingestion/workflows/feels_onboarded_monitor.py` — asyncio service that polls observation counts per tenant per source; emits `feels_onboarded` events when the LLD §6 thresholds are met.
 - Tests: `test_asyncio_orchestration_matches_temporal_shape` (the pattern-alignment gate), `test_signal_polling_resumes_after_restart`, `test_named_retry_logs_per_attempt`, `test_feels_onboarded_monitor_fires_at_threshold`.
 
+**Substrate amendment history.** The M6.0 substrate's five non-N1 functions (`signals.emit_signal`, `signals.poll_signals`, `signals.signal_count`, `state.load_state`, `state.persist_state`) take `asyncpg.Pool | asyncpg.Connection` per [A12](05-lld-amendments.md#a12--executor-typed-substrate-signatures-for-transactional-participation). The amendment landed post-M6.0-merge, surfaced as a substrate gap during M6.1's Phase 0 design check; the executor-typed surface lets M6.1+ services extend substrate operations with adjacent writes in one atomic transaction. The new `signals.claim_signals(conn, ...)` is the in-transaction claim primitive; `signals.poll_signals` is refactored to delegate to it. `state.advance_cursor_atomic_with_kafka_publish` stays pool-only — the N1 invariant requires substrate-owned ordering (documented in the function's docstring as the deliberate exception).
+
 #### M6.1 — OAuth outbox poller + TenantOnboarding
 
 - `services/ingestion/workflows/oauth_poller.py` — long-running asyncio service that polls `onboarding_triggers` (the OAuth outbox table from M1) under `FOR UPDATE SKIP LOCKED`; consumes claimed rows; spawns per-tenant onboarding work by writing to `onboarding_runs`.
