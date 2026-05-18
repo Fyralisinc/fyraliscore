@@ -49,6 +49,11 @@ from services.ingestion.workflows.feels_onboarded_monitor import (
     FeelsMonitorConfig,
     FeelsOnboardedMonitor,
 )
+from services.ingestion.workflows.oauth_poller import (
+    OAuthPoller,
+    OAuthPollerConfig,
+    WORKFLOW_ID_DEFAULT as OAUTH_POLLER_INSTANCE_DEFAULT,
+)
 from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
@@ -88,10 +93,26 @@ async def _run_service(name: str) -> None:
             pool, producer,
             config=_build_feels_monitor_config(),
         )
+    elif name == "oauth_poller":
+        service = OAuthPoller(
+            pool,
+            config=OAuthPollerConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("OAUTH_POLLER_TICK_SEC", "5.0"),
+                ),
+                max_triggers_per_tick=int(
+                    os.environ.get("OAUTH_POLLER_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "OAUTH_POLLER_INSTANCE",
+                    OAUTH_POLLER_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
     else:
         raise SystemExit(
             f"WORKFLOW_SERVICE={name!r} not recognized. "
-            f"Known: feels_onboarded_monitor."
+            f"Known: feels_onboarded_monitor, oauth_poller."
         )
 
     stop_event = asyncio.Event()

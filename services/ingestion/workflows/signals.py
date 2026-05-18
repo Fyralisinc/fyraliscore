@@ -17,6 +17,47 @@ handoffs instead of using `asyncio.Queue`, shared module state, or
 (M6.0 Phase 3) enforces this.
 
 ============================================================
+SIGNAL ADDRESSING — workflow_id IS A ROUTING PARTITION KEY (A13)
+============================================================
+The `(workflow_kind, workflow_id)` pair is the **routing partition
+key** for the signal, NOT the per-resource instance identifier.
+
+  - `workflow_kind` is the service family the consumer belongs to
+    (e.g. `"tenant_onboarding"`, `"source_onboarding"`).
+  - `workflow_id` is the **inbox** the consumer reads from. For
+    queue-consumer-style asyncio services (one global process
+    handling work for many resources), `workflow_id` is a fixed
+    sentinel — typically equal to `workflow_kind`, sometimes a
+    sharding label like `"orchestrator-shard-0"`.
+  - The per-resource identity (which onboarding_run, which shard,
+    which tenant) belongs in `signal_data` AND in `idempotency_key`.
+    `idempotency_key` carries the uniqueness; `signal_data` carries
+    the payload; `workflow_id` carries the addressing.
+
+Consumers use `claim_signals(conn, workflow_kind=..., workflow_id=...)`
+(or `poll_signals(pool, ...)`) to drain their inbox. A single inbox
+can receive signals for many distinct resources — the consumer
+loops over the claimed batch and looks up each resource via
+`signal_data` + `idempotency_key`.
+
+Temporal mapping note: when the [A11 trigger conditions](../../../docs/ingestion/05-lld-amendments.md)
+fire and Temporal arrives, this addressing collapses naturally —
+the poller would `start_workflow(TenantOnboarding, id=run_id)` per
+resource, and the signal-to-inbox shape disappears. The asyncio
+shape uses the inbox pattern because there's no per-resource
+workflow to address.
+
+Concrete examples:
+  - M6.1 OAuth poller → TenantOnboarding orchestrator:
+      emit `(kind="tenant_onboarding", id="tenant_onboarding")` +
+            `idempotency_key=str(onboarding_run_id)` +
+            `signal_data={"onboarding_run_id": ..., "tenant_id": ...}`
+  - M6.1 → M6.2 SourceOnboarding:
+      emit `(kind="source_onboarding", id="source_onboarding")` +
+            `idempotency_key=f"{run_id}:{source}"` +
+            `signal_data={"onboarding_run_id": ..., "source": ...}`
+
+============================================================
 EXECUTOR-TYPED SURFACE (M6.0 substrate amendment — A12)
 ============================================================
 The DB-touching functions accept `asyncpg.Pool | asyncpg.Connection`
@@ -126,15 +167,21 @@ log = logging.getLogger(__name__)
 class WorkflowSignal(BaseModel):
     """One row in `workflow_signals`.
 
-    `signal_kind` is the producer-defined event type (e.g.
-    `"source_started"`, `"shard_complete"`). `signal_data` is the
-    JSONB payload; the substrate treats it as opaque.
+    Field semantics (see module docstring A13 section for the full
+    rationale):
 
-    `idempotency_key` is REQUIRED (NOT NULL in the schema). Callers
-    that need dedup pass a stable key (e.g.
-    `f"feels_onboarded:{tenant}:{source}"`); callers that don't want
-    dedup pass `uuid7().hex`. There is no "key not provided" option —
-    the schema and the Pydantic model both enforce this.
+    - `workflow_kind` — service family of the consumer (routing).
+    - `workflow_id` — inbox the consumer reads from (routing
+      partition key, NOT a per-resource instance identifier).
+    - `signal_kind` — producer-defined event type (e.g.
+      `"source_started"`, `"shard_complete"`).
+    - `idempotency_key` — REQUIRED uniqueness key. Carries the
+      per-resource identity (e.g. `str(onboarding_run_id)` or
+      `f"{run_id}:{source}"`). NOT NULL in the schema; the Pydantic
+      model also enforces non-empty.
+    - `signal_data` — JSONB payload; the substrate treats it as
+      opaque. Concrete resource identifiers live here (run_id,
+      tenant_id, source name, etc.).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -252,6 +299,14 @@ async def emit_signal(
 ) -> EmitResult:
     """Insert a signal row, idempotent on `idempotency_key`.
 
+    Addressing (per A13): `workflow_id` is the consumer's INBOX, not
+    a per-resource identifier. Pass the inbox string the consumer
+    polls (typically equal to `workflow_kind`, e.g. emit to
+    `(kind="tenant_onboarding", id="tenant_onboarding")` for the
+    TenantOnboarding orchestrator). Per-resource identity goes in
+    `idempotency_key` (uniqueness) and `signal_data` (payload). See
+    the module docstring for the full rationale.
+
     `executor` accepts either:
       - `asyncpg.Pool` — the function opens-and-closes a connection
         per call; the INSERT commits independently. Use this when the
@@ -321,6 +376,12 @@ async def claim_signals(
 ) -> list[WorkflowSignal]:
     """Claim up to `batch_size` unclaimed signals under SKIP LOCKED.
 
+    Addressing (per A13): `(workflow_kind, workflow_id)` identifies
+    the consumer's INBOX. A single inbox can hold signals for many
+    distinct resources — the caller loops over the returned batch
+    and dispatches per-resource via `signal_data` and
+    `idempotency_key`. See the module docstring for the rationale.
+
     ============================================================
     CALLER CONTRACT (LOAD-BEARING)
     ============================================================
@@ -382,7 +443,11 @@ async def poll_signals(
     batch_size: int = 32,
 ) -> AsyncIterator[WorkflowSignal]:
     """Claim and yield up to `batch_size` unclaimed signals for this
-    workflow, oldest first. Substrate-managed atomicity.
+    workflow's inbox, oldest first. Substrate-managed atomicity.
+
+    Addressing (per A13): `(workflow_kind, workflow_id)` identifies
+    the consumer's INBOX. See `claim_signals` and the module
+    docstring for the routing-partition-key semantic.
 
     This is a thin wrapper that delegates to `claim_signals` under a
     substrate-opened connection + transaction. Use this when you do
