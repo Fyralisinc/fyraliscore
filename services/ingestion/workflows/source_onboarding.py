@@ -53,9 +53,42 @@ and `source_onboarding_completed`.
 
 Emits:
   - `shard_fetch_requested` → `(shard_fetch, shard_fetch)` —
-    M6.2a's ShardFetch inbox (Phase 2).
+    M6.2a's ShardFetch inbox.
+  - **`source_shards_completed` → `(reconciler, reconciler)`** —
+    M6.2b's Reconciler inbox (success path; M6.2b chain change
+    below). Idempotency key includes the
+    `reconciliation_pass_count` to survive re-share cycles.
   - `source_onboarding_completed` → `(tenant_onboarding,
-    tenant_onboarding)` — M6.1's orchestrator inbox.
+    tenant_onboarding)` — M6.1's orchestrator inbox. **Failure
+    path only** post-M6.2b; the success path goes through
+    Reconciler.
+
+============================================================
+M6.2b CHAIN CHANGE (success path goes through Reconciler)
+============================================================
+Per M6.2b: the all-shards-success roll-up emits
+`source_shards_completed` to the Reconciler's inbox instead of
+emitting `source_onboarding_completed` directly to TenantOnboarding.
+The Reconciler runs per-source gap-detection and emits
+`source_onboarding_completed` on the CLEAN path; on the RE-SHARE
+path it creates new shards (with `parent_shard_id` linkage) and
+emits `shard_fetch_requested` per new shard. The re-share cycle
+can repeat until reconciliation is clean.
+
+Implementation impacts in THIS file:
+  1. `_COUNT_UNFINISHED_SHARDS_SQL` now treats
+     `'reconciliation_resharded'` as terminal — so the roll-up
+     re-fires after re-share + new-shard completion.
+  2. The success-path roll-up reads
+     `source_onboarding_runs.reconciliation_pass_count` (migration
+     0056) and emits with idempotency_key
+     `f"{run_id}:{source}:pass_{N}"` — without this, the second
+     emit after a re-share cycle would collide on UNIQUE and be
+     silently deduped.
+  3. The failure path is UNCHANGED — failed runs still emit
+     `source_onboarding_completed` directly via
+     `_emit_source_completed`; they bypass the Reconciler because
+     there's nothing to reconcile.
 
 ============================================================
 SCHEMA — A15 COLUMN-NAMING MAP (LOAD-BEARING for M6.2a)
@@ -145,11 +178,14 @@ WORKFLOW_ID_DEFAULT = "default"  # for workflow_states diagnostics
 SIGNAL_KIND_REQUESTED = "source_onboarding_requested"   # consumed from M6.1
 SIGNAL_KIND_SHARD_REQUESTED = "shard_fetch_requested"   # emitted to ShardFetch
 SIGNAL_KIND_SHARD_COMPLETED = "shard_fetch_completed"   # consumed from ShardFetch
-SIGNAL_KIND_COMPLETED = "source_onboarding_completed"   # emitted to M6.1
+SIGNAL_KIND_SHARDS_COMPLETED = "source_shards_completed"  # M6.2b: success path → Reconciler
+SIGNAL_KIND_COMPLETED = "source_onboarding_completed"   # failure path → M6.1 directly
 
 # Downstream inbox addresses.
 SHARD_FETCH_INBOX_KIND = "shard_fetch"
 SHARD_FETCH_INBOX_ID = "shard_fetch"
+RECONCILER_INBOX_KIND = "reconciler"  # M6.2b: success path target
+RECONCILER_INBOX_ID = "reconciler"
 TENANT_ONBOARDING_INBOX_KIND = "tenant_onboarding"
 TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 
@@ -232,14 +268,17 @@ UPDATE onboarding_shards
 """
 
 # Count non-terminal shards for the parent (run, source) pair.
-# Excludes 'reconciliation_resharded' from terminal-set per A15:
-# that state is M6.2b territory; in M6.2a it shouldn't appear, but
-# treating it as non-terminal here is the conservative default if
-# M6.2b ever overlaps with M6.2a code.
+# `reconciliation_resharded` is treated as TERMINAL per the M6.2b
+# chain change (the original shard's data has been collected; a
+# child shard with parent_shard_id is filling the gap). When the
+# Reconciler re-shares, original shards transition done →
+# reconciliation_resharded and new shards take over; the rollup
+# fires again once all NEW shards reach 'done' (because the
+# originals are already in this terminal set).
 _COUNT_UNFINISHED_SHARDS_SQL = """
 SELECT count(*) FROM onboarding_shards
  WHERE onboarding_run_id = $1 AND source = $2
-   AND state NOT IN ('done', 'failed')
+   AND state NOT IN ('done', 'failed', 'reconciliation_resharded')
 """
 
 _ANY_SHARD_FAILED_SQL = """
@@ -505,12 +544,19 @@ class SourceOnboarding(LongRunningService):
 
         if not shards:
             # Empty planner result: source has nothing to fetch.
-            # Mark complete immediately + emit success.
+            # Mark complete immediately + emit success via Reconciler
+            # (M6.2b chain change for consistency — even the
+            # zero-shard case goes through Reconciler so all
+            # success paths converge on one shape; the Reconciler's
+            # dispatch will return clean on an empty shard list).
             await conn.execute(
                 _MARK_SOURCE_RUN_COMPLETED_SQL, run_id, source,
             )
-            await self._emit_source_completed(
-                conn, run_id=run_id, source=source, failure_reason=None,
+            # pass_count is 0 here (the default; no Reconciler
+            # re-shares have happened).
+            await self._emit_shards_completed(
+                conn, run_id=run_id, source=source,
+                tenant_id=tenant_id, pass_count=0,
             )
             return
 
@@ -593,8 +639,54 @@ class SourceOnboarding(LongRunningService):
             return
 
         await conn.execute(_MARK_SOURCE_RUN_COMPLETED_SQL, run_id, source)
-        await self._emit_source_completed(
-            conn, run_id=run_id, source=source, failure_reason=None,
+        # M6.2b chain change: success path → Reconciler (not direct to
+        # TenantOnboarding). Reconciler runs gap-detection then emits
+        # source_onboarding_completed to TenantOnboarding on the
+        # clean path. The failure path below STILL emits direct to
+        # TenantOnboarding (failed runs have nothing to reconcile).
+        # Need the run's reconciliation_pass_count for the
+        # idempotency key — re-read on the same connection.
+        pass_count = int(await conn.fetchval(
+            "SELECT reconciliation_pass_count FROM source_onboarding_runs "
+            "WHERE onboarding_run_id = $1 AND source = $2",
+            run_id, source,
+        ) or 0)
+        await self._emit_shards_completed(
+            conn, run_id=run_id, source=source,
+            tenant_id=shard["tenant_id"],
+            pass_count=pass_count,
+        )
+
+    async def _emit_shards_completed(
+        self, conn: asyncpg.Connection, *,
+        run_id: UUID, source: str, tenant_id: UUID | None,
+        pass_count: int,
+    ) -> None:
+        """Emit `source_shards_completed` to Reconciler's inbox
+        (M6.2b chain change).
+
+        Idempotency key: `f"{run_id}:{source}:pass_{N}"` where N is
+        `reconciliation_pass_count` at the moment of emit. This
+        gives a fresh key per re-share cycle — without it, the second
+        emit (after Reconciler reshare + new-shard completion) would
+        collide with the first emit's key and emit_signal would
+        silently dedup, breaking the cycle. See migration 0056's
+        header for the load-bearing rationale.
+        """
+        data: dict[str, Any] = {
+            "onboarding_run_id": str(run_id),
+            "source": source,
+            "reconciliation_pass_count": pass_count,
+        }
+        if tenant_id is not None:
+            data["tenant_id"] = str(tenant_id)
+        await emit_signal(
+            conn,
+            workflow_kind=RECONCILER_INBOX_KIND,
+            workflow_id=RECONCILER_INBOX_ID,
+            signal_kind=SIGNAL_KIND_SHARDS_COMPLETED,
+            idempotency_key=f"{run_id}:{source}:pass_{pass_count}",
+            signal_data=data,
         )
 
     async def _emit_source_completed(
@@ -603,10 +695,16 @@ class SourceOnboarding(LongRunningService):
     ) -> None:
         """Emit `source_onboarding_completed` to M6.1's inbox.
 
+        Per M6.2b chain change: this method is now used ONLY for the
+        failure path. The success path emits `source_shards_completed`
+        to Reconciler instead (via `_emit_shards_completed`); the
+        Reconciler is the one that emits `source_onboarding_completed`
+        on the CLEAN reconciliation pass. Failed runs have nothing to
+        reconcile and bypass the Reconciler entirely.
+
         Idempotency key matches M6.1's TenantOnboarding orchestrator
-        expectation: `f"{run_id}:{source}"`. The signal_data payload
-        shape matches what M6.1's `_handle_source_completed` reads
-        (onboarding_run_id, source, optional failure_reason).
+        expectation: `f"{run_id}:{source}"`. Preserved across the
+        M6.2b chain change so M6.1 needs no modification.
         """
         data: dict[str, Any] = {
             "onboarding_run_id": str(run_id),
@@ -712,12 +810,15 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
+    "RECONCILER_INBOX_ID",
+    "RECONCILER_INBOX_KIND",
     "SHARD_FETCH_INBOX_ID",
     "SHARD_FETCH_INBOX_KIND",
     "SIGNAL_KIND_COMPLETED",
     "SIGNAL_KIND_REQUESTED",
     "SIGNAL_KIND_SHARD_COMPLETED",
     "SIGNAL_KIND_SHARD_REQUESTED",
+    "SIGNAL_KIND_SHARDS_COMPLETED",
     "SourceOnboarding",
     "SourceOnboardingConfig",
     "TENANT_ONBOARDING_INBOX_ID",

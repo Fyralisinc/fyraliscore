@@ -1,21 +1,26 @@
-"""M6.2a Phase 1 — SourceOnboarding service tests.
+"""M6.2a SourceOnboarding service tests (M6.2b chain-change updated).
 
 Covers the two-phase service (new-request + shard-completion):
   - LOAD-BEARING: source_onboarding_requested handler creates shard
     rows + emits shard_fetch_requested + marks parent run
-    'in_progress', all atomic (Phase 1's atomic-transaction property
-    at the service-integration level).
+    'in_progress', all atomic.
   - LOAD-BEARING: rollback on shard-insert failure preserves the
     signal as claimable on next tick.
   - NotImplementedError from a stubbed planner: parent run marked
-    'failed' + source_onboarding_completed emitted with failure
-    (pre-M6.3 expected steady state).
-  - Empty planner result: parent run marked 'completed' immediately.
+    'failed' + **source_onboarding_completed** emitted with failure
+    (failure path; unchanged by M6.2b).
+  - Empty planner result: parent run marked 'completed' + **emit
+    source_shards_completed to Reconciler** (success path; M6.2b
+    chain change — even the zero-shard case goes through Reconciler
+    for consistency).
   - Completion roll-up: all shards done → parent run 'completed' +
-    source_onboarding_completed to M6.1 inbox.
+    **source_shards_completed to Reconciler inbox** (M6.2b chain
+    change). Idempotency key = f"{run_id}:{source}:pass_{N}" to
+    survive re-share cycles.
   - Failure roll-up: any shard failed → parent run 'failed' with
-    rolled-up failure_reason.
-  - Concurrent shard completions: exactly one source_onboarding_completed
+    rolled-up failure_reason + source_onboarding_completed direct
+    to TenantOnboarding (failure path bypasses Reconciler).
+  - Concurrent shard completions: exactly one source_shards_completed
     emit (idempotency via emit_signal's UNIQUE constraint).
 
 Subprocess SIGTERM test in test_source_onboarding_subprocess.py.
@@ -38,12 +43,15 @@ from lib.shared.ids import uuid7
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingestion.workflows.signals import emit_signal
 from services.ingestion.workflows.source_onboarding import (
+    RECONCILER_INBOX_ID,
+    RECONCILER_INBOX_KIND,
     SHARD_FETCH_INBOX_ID,
     SHARD_FETCH_INBOX_KIND,
     SIGNAL_KIND_COMPLETED,
     SIGNAL_KIND_REQUESTED,
     SIGNAL_KIND_SHARD_COMPLETED,
     SIGNAL_KIND_SHARD_REQUESTED,
+    SIGNAL_KIND_SHARDS_COMPLETED,
     SourceOnboarding,
     SourceOnboardingConfig,
     TENANT_ONBOARDING_INBOX_ID,
@@ -498,13 +506,15 @@ async def test_source_onboarding_handles_empty_planner_result(
     )
     assert status == "completed"
 
-    # source_onboarding_completed emitted without failure_reason.
+    # M6.2b chain change: empty-planner success path now emits
+    # source_shards_completed to Reconciler inbox (not source_onboarding_completed
+    # to TenantOnboarding directly). pass_count is 0 (no re-shares yet).
     completion = await fresh_db.fetchrow(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:gmail",
+        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
+        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:gmail:pass_0",
     )
     assert completion is not None
     data_raw = completion["signal_data"]
@@ -512,6 +522,7 @@ async def test_source_onboarding_handles_empty_planner_result(
         orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
         else dict(data_raw)
     )
+    # No failure_reason on the success path.
     assert "failure_reason" not in data
 
     # No shards.
@@ -574,13 +585,15 @@ async def test_source_onboarding_completes_when_all_shards_done(
     )
     assert status == "completed"
 
-    # (c) source_onboarding_completed emitted.
+    # (c) M6.2b chain change: success path emits source_shards_completed
+    # to Reconciler inbox (not source_onboarding_completed). pass_count
+    # is 0 (no re-shares yet for this run).
     n_emits = int(await fresh_db.fetchval(
         "SELECT count(*) FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:github",
+        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
+        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:github:pass_0",
     ))
     assert n_emits == 1
 
@@ -680,15 +693,19 @@ async def test_source_onboarding_concurrent_completion_signals(
         replica_b.run(max_ticks=3),
     )
 
+    # M6.2b chain change: success path emits source_shards_completed
+    # to Reconciler inbox. The idempotency-key dedup test still holds
+    # — only one rollup emit per run+source+pass_count across
+    # concurrent SourceOnboarding replicas.
     n_emits = int(await fresh_db.fetchval(
         "SELECT count(*) FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:discord",
+        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
+        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:discord:pass_0",
     ))
     assert n_emits == 1, (
-        f"Expected exactly one source_onboarding_completed emit "
+        f"Expected exactly one source_shards_completed emit "
         f"under concurrent completion-signal drains; got {n_emits}. "
         f"The emit_signal idempotency-key UNIQUE constraint did not "
         f"dedupe."
