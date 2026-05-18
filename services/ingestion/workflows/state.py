@@ -155,12 +155,23 @@ RETURNING workflow_id
 # Public API.
 # ---------------------------------------------------------------------
 async def load_state(
-    pool: asyncpg.Pool, workflow_kind: str, workflow_id: str,
+    executor: asyncpg.Pool | asyncpg.Connection,
+    workflow_kind: str, workflow_id: str,
 ) -> WorkflowState | None:
     """Read the state row. Returns None if the workflow has never
     been started. Services typically call `persist_state` with a
-    fresh row when this returns None."""
-    row = await pool.fetchrow(_LOAD_STATE_SQL, workflow_kind, workflow_id)
+    fresh row when this returns None.
+
+    `executor` accepts a Pool (opens-and-closes a connection per
+    call) or a Connection (reads on the caller's connection,
+    participating in any open transaction). Per A12: the connection
+    shape lets callers that need to load-decide-write in one atomic
+    transaction (M6.1's TenantOnboarding orchestrator: load
+    workflow_states row, decide based on it, INSERT signal rows in
+    the same txn) do so without the substrate forcing a separate
+    auto-commit between load and decide.
+    """
+    row = await executor.fetchrow(_LOAD_STATE_SQL, workflow_kind, workflow_id)
     if row is None:
         return None
     raw_state = row["state_data"]
@@ -178,13 +189,23 @@ async def load_state(
     )
 
 
-async def persist_state(pool: asyncpg.Pool, state: WorkflowState) -> None:
+async def persist_state(
+    executor: asyncpg.Pool | asyncpg.Connection,
+    state: WorkflowState,
+) -> None:
     """UPSERT the state row. Use this for non-cursor-advancing updates:
     initial workflow start, pause/resume toggling, metadata changes
     that don't involve a Kafka publish. For cursor advancement under
     the N1 invariant, use
-    `advance_cursor_atomic_with_kafka_publish` instead."""
-    await pool.execute(
+    `advance_cursor_atomic_with_kafka_publish` instead.
+
+    `executor` accepts a Pool (auto-commit per call) or a Connection
+    (participates in the caller's transaction). Per A12: callers
+    that need persist-state-then-emit-signal atomically (M6.1's
+    OAuth poller, M6.1+ orchestrators) pass a Connection inside their
+    own `conn.transaction()` block.
+    """
+    await executor.execute(
         _UPSERT_STATE_SQL,
         state.workflow_kind,
         state.workflow_id,
@@ -236,6 +257,20 @@ async def advance_cursor_atomic_with_kafka_publish(
 
     Same ordering as A6's `pre_save_flush` → save in the Discord
     Gateway worker. Same load-bearing test pattern.
+
+    ===== Deliberate exception to the A12 executor amendment =====
+    This function takes `pool: asyncpg.Pool` and NOT the
+    `Pool | Connection` union accepted by every other substrate
+    function. The N1 invariant requires the broker-ack flush to
+    complete BEFORE the state UPDATE; extending this function into
+    a caller-supplied transaction would let the caller commit writes
+    AFTER the publish, which is precisely the ordering N1 forbids.
+    The substrate enforces the invariant by owning the connection
+    here, not by trusting the caller's transaction discipline. If a
+    future caller needs cursor-advance + adjacent writes to be
+    atomic, surface that as a substrate amendment finding (per the
+    M6.0 substrate-amendment review process) — do NOT pass a
+    Connection here.
     """
     # ---- Step 1: enqueue every message. ----
     for msg in kafka_messages:
