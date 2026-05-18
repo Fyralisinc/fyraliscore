@@ -53,6 +53,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.shadow_write import shadow_write_raw
+from services.integrations.discord.gateway.client import pre_save_flush
 from services.integrations.discord.gateway.leader_lock import LeaderLock
 from services.integrations.discord.gateway.session_state import (
     load_session_state,
@@ -177,17 +178,16 @@ async def _main() -> int:
                 },
             )
 
-            # M4 FINDING — the IdempotentProducer's `produce()`
-            # returns when the message is enqueued in librdkafka, NOT
-            # when the broker has acked it. Under SIGKILL, in-flight
-            # messages are lost from the local queue. For the test to
-            # validate the N1 property "frame fully durable before
-            # save_session_state advances the cursor," we flush here
-            # so the broker-ack precedes the save. Production code
-            # path inherits the M2 at-least-once-via-producer-
-            # idempotence design and does NOT flush per-frame; that
-            # gap is logged in docs/ingestion/05-lld-amendments.md.
-            await kafka_producer.flush(timeout_seconds=5.0)
+            # A6 — broker-ack durability barrier. Uses the extracted
+            # `pre_save_flush` from production code; this is the same
+            # function `DiscordGatewayClient._pre_save_flush` calls.
+            # Refactored in A6 Phase 3 to make this load-bearing test
+            # actually exercise production code (previously this site
+            # had a parallel manual flush that masked the absence of
+            # production-code coverage at the simulation surface).
+            # timeout_seconds matches the production value at
+            # client.py::_dispatch_loop.
+            await pre_save_flush(kafka_producer, timeout_seconds=2.0)
 
             # SAVE-AFTER-HANDLE — see session_state.py "Save-after-
             # handle ordering (N1 contract)." Saving here means a

@@ -274,3 +274,39 @@ still passes against the now-fixed production code.
 
 Phase 4 closes A6 in the amendments tracker and updates the M5
 pre-cutover gate condition (8).
+
+---
+
+## Phase 3 finding + deferred follow-up
+
+**Surfaced during Phase 3** (commit `<phase-3 hash>`): the M4.3 load-
+bearing test `test_no_frames_lost_across_sigkill` does NOT instantiate
+`DiscordGatewayClient` — its subprocess entrypoint
+([_subprocess_entrypoint.py](../../services/integrations/discord/gateway/tests/_subprocess_entrypoint.py))
+hand-rolls a simulation of the dispatch loop by calling
+`shadow_write_raw` and `save_session_state` directly. The original
+M4.3 manual `flush()` in that file was a parallel implementation of
+the durability barrier, not a workaround over a production gap — but
+it had the side effect of masking the absence of any test that
+exercised the production fix at the simulation surface.
+
+**Resolution (Phase 3, Option A from the gate review):** extracted the
+durability-barrier flush from `DiscordGatewayClient._pre_save_flush`
+to a module-level free function `client.pre_save_flush(producer, *,
+timeout_seconds)`. The method became a thin wrapper bound to the
+client's producer. The subprocess entrypoint now imports and calls
+the same free function with the same `timeout_seconds=2.0` as
+production. Result: the load-bearing test now exercises production
+code, and "two parallel implementations" became one.
+
+**Deferred follow-up (Option B from the Phase 3 review):** rewrite
+`_subprocess_entrypoint.py` to instantiate `DiscordGatewayClient`
+end-to-end against a cross-process fake gateway. That would exercise
+the full production WS-loop save site under SIGKILL (not just the
+durability barrier function), giving end-to-end production-code
+coverage of M4.1 (lease) + M4.2 (state) + A6 (flush) + the actual
+client `_dispatch_loop`. Effort estimate: M (medium). Not urgent —
+the function-level extraction in Phase 3 makes the load-bearing test
+prove the A6 property against production code; Option B would
+broaden coverage to the rest of the dispatch loop. Track as a
+future work-unit, not a blocker for M5.
