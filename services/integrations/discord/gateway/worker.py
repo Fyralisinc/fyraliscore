@@ -132,6 +132,10 @@ class GatewayWorker:
                     application_id=self._deps.application_id,
                     initial_state=self._initial_state,
                     on_dispatched=self._on_dispatched,
+                    # A6 — same producer the shadow path enqueues to.
+                    # Pulled from existing DispatchDeps; no new public
+                    # surface on GatewayWorker.
+                    kafka_producer=self._deps.kafka_producer,
                 )
                 self._initial_state = None
                 self._current_client = client

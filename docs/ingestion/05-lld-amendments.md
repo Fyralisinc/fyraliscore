@@ -143,7 +143,11 @@ removed from that file.
 
 ### A6 — Discord Gateway shadow-write Kafka flush window (M4.3 finding)
 
-- **Status:** Open. Surface for design review; no quick fix needed.
+- **Status:** **Resolved** (branch `fix/a6-broker-ack-ordering`,
+  commits `269ce65` + `08c3b1f` + `4ddaf7f`). Option 1 chosen
+  (per-frame flush). Verified by
+  `test_no_frames_lost_across_sigkill` running against the
+  extracted production function (no test-level workaround).
 - **LLD section:** §5.4 (the Discord Gateway worker's frame-by-frame
   shadow path) + §1.5 (gateway_session_state save-after-handle
   contract).
@@ -225,6 +229,35 @@ removed from that file.
   Discord ingestion path; before that flip happens, the production
   code path must be durable against broker-not-yet-acked frames).
   Tracked as M5 pre-cutover gate condition (8).
+- **Resolution (2026-05-18):**
+    - **Decision:** Option 1 — per-frame flush. See
+      [docs/decisions/a6-resolution.md](../decisions/a6-resolution.md).
+    - **Production code:** the durability barrier lives at
+      [services/integrations/discord/gateway/_durability.py](../../services/integrations/discord/gateway/_durability.py)
+      (free function `pre_save_flush`). Called from
+      [services/integrations/discord/gateway/client.py](../../services/integrations/discord/gateway/client.py)
+      `DiscordGatewayClient._dispatch_loop` between the dispatch
+      handler returning and the `on_dispatched` save task being
+      scheduled. On flush failure (broad-scope: any Exception),
+      the metric
+      `discord_gateway_pre_save_flush_failures_total` increments,
+      a warning is logged, and the save is skipped — the next
+      worker re-processes the frame on RESUME (safe under M2
+      dedup).
+    - **Latency cost:** mean 1.65 ms / p95 2.71 ms per frame on
+      the dev cluster (n=100). Production 3-broker clusters run
+      in the same order of magnitude.
+    - **Verification:** four unit tests at
+      [services/integrations/discord/gateway/tests/test_pre_save_flush.py](../../services/integrations/discord/gateway/tests/test_pre_save_flush.py)
+      cover ordering, timeout, failure-skip, and broad-scope
+      metric. The cross-process load-bearing
+      [`test_no_frames_lost_across_sigkill`](../../services/integrations/discord/gateway/tests/test_gateway_lifecycle.py)
+      now exercises the production function (subprocess
+      simulation imports the same `pre_save_flush`).
+    - **Operator runbook:**
+      [docs/ingestion/m4-gateway-runbook.md](m4-gateway-runbook.md)
+      documents the latency expectation and the failure-metric
+      response procedure.
 
 ### A5 — Failure-kind-specific replay anchors
 
