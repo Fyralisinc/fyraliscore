@@ -178,17 +178,53 @@ removed from that file.
   source of truth this is fine. For M6+ when the shadow path
   becomes the only path AND Discord Gateway is the surface, a
   per-frame flush would cap throughput at ~20 frames/sec (single
-  shard, sequential dispatch). Alternatives:
-    1. Per-frame flush (correctness; latency cost).
-    2. Batched flush every N frames (compromise; data loss up to N).
-    3. Track delivery report callbacks → save_session_state inside
-       the callback (correctness; complexity cost — save races with
-       next frame's produce).
+  shard, sequential dispatch).
+- **Three options for resolution (the design discussion that
+  must happen before M5):**
+    1. **Per-frame flush.** Insert
+       `await kafka_producer.flush(timeout=2)` between
+       `shadow_write_raw()` and `save_session_state()` in the gateway
+       dispatch path. The save then only persists `last_seq=N` once
+       the broker has acked frame N. Strongest N1 guarantee;
+       per-frame latency bounded by broker RTT (~5-50ms depending on
+       broker latency + linger). Throughput ceiling per shard is
+       1/RTT — adequate for Discord MESSAGE_CREATE volumes on a
+       typical tenant but a hard cap if the gateway becomes the
+       sole high-volume source.
+    2. **Batched flush every N frames or T milliseconds.** Save
+       state every frame, flush every 10 frames or 100ms. Bounds
+       the loss window (at most N frames or T ms of frames lost
+       under SIGKILL) without paying broker RTT per frame.
+       **Violates N1 by design**: "lost up to N frames" is not
+       "never lose data" under any reading. Listed here for
+       completeness; should be rejected unless N1 is explicitly
+       softened to "lose at most ε frames per crash."
+    3. **Save inside the producer's delivery-report callback.**
+       confluent-kafka's idempotent producer delivers a callback
+       when the broker has acked a message. Move
+       `save_session_state(last_seq=N)` into that callback so the
+       save fires only after frame N is durable on Kafka.
+       Decouples the WS receive loop from broker RTT (the next
+       frame's `shadow_write` runs in parallel with the previous
+       frame's save). Strict N1 preserved. Highest implementation
+       complexity: out-of-order callback completion needs ordering
+       discipline (a callback for seq=5 must not race ahead of a
+       callback for seq=4 when persisting `last_seq`); the save
+       races with the next frame's produce; bookkeeping for the
+       in-flight set is nontrivial.
+- **Read (not a decision; a starting point for the design call):**
+  Option 3 is structurally correct and is what the M4.2
+  "save-after-handle" contract was written to express. Option 1 is
+  the conservative fallback if Option 3's complexity is judged
+  too high for the throughput regime. Option 2 should be rejected
+  unless N1 is renegotiated.
 - **LLD edit pending:** §5.4 needs a paragraph on Kafka publish
   durability semantics + the gap between produce-return and
-  broker-ack. The choice between options (1)/(2)/(3) above is an
-  M5+ design decision (the gateway worker isn't the sole ingestion
-  path until cutover).
+  broker-ack. The choice between options (1)/(2)/(3) above is a
+  pre-M5 design decision (M5 makes the gateway worker the sole
+  Discord ingestion path; before that flip happens, the production
+  code path must be durable against broker-not-yet-acked frames).
+  Tracked as M5 pre-cutover gate condition (8).
 
 ### A5 — Failure-kind-specific replay anchors
 
