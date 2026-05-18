@@ -321,12 +321,29 @@ async def claim_signals(
 ) -> list[WorkflowSignal]:
     """Claim up to `batch_size` unclaimed signals under SKIP LOCKED.
 
+    ============================================================
+    CALLER CONTRACT (LOAD-BEARING)
+    ============================================================
     Caller-managed atomicity: this function does NOT open its own
     transaction. The caller MUST be inside
-    `async with conn.transaction(): ...` when calling this. The
-    `FOR UPDATE` lock is released when the caller's transaction
-    commits or rolls back; if the caller rolls back, the claim is
-    undone and another poller may re-claim the signals.
+    `async with conn.transaction(): ...` when calling this. This is
+    a load-bearing CALLER CONTRACT, not a recommendation: M6.1's
+    OAuth poller and TenantOnboarding orchestrator (and every
+    future M6 service that calls this) rely on the claim being
+    atomic with the caller's adjacent state writes.
+
+    Calling `claim_signals(conn, ...)` on a connection without an
+    open transaction is a PROGRAMMING ERROR. The function will NOT
+    raise — asyncpg's default is implicit-statement-autocommit, so
+    the bare call auto-commits the claim — but the caller's
+    subsequent writes are then NOT atomic with the claim, and a
+    rollback by the caller leaves the claim already-committed. The
+    failure mode is silent state inconsistency, not an exception.
+    The test
+    `test_claim_signals_without_transaction_autocommits` locks this
+    observed behaviour in so future asyncpg changes can't silently
+    alter it; the contract documented here is the discipline
+    callers MUST follow regardless.
 
     Returns a `list[WorkflowSignal]` (not an async iterator) — the
     caller is already inside their own transaction, so accumulating
@@ -346,7 +363,8 @@ async def claim_signals(
         LOCKED` guarantees no overlap.
       - Each returned signal has `consumed_at = now()` and
         `consumed_by = <this caller's value>` staged in the caller's
-        transaction. Durability depends on the caller's commit.
+        transaction. Durability depends on the caller's commit;
+        rollback re-makes the signals available to another poller.
     """
     rows = await conn.fetch(
         _CLAIM_SIGNALS_SQL,

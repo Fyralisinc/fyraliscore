@@ -275,3 +275,33 @@ change is the likely culprit — investigate the change before
 relaxing the rule. If the change is correct and the rule is
 over-strict, document the relaxation here with the rationale (same
 shape as the existing "Relaxation" sections).
+
+---
+
+## A12 substrate amendment — analyzer impact (nil)
+
+Per [05-lld-amendments.md A12](05-lld-amendments.md#a12--executor-typed-substrate-signatures-for-transactional-participation),
+the M6.0 substrate's five non-N1 functions now accept
+`asyncpg.Pool | asyncpg.Connection`. The pattern-alignment analyzer
+is **unchanged** by this amendment:
+
+- **Rule 1's** name-list (`_pool`, `pool`, `_kafka_producer`,
+  `_producer`, `producer`) is unchanged. Methods that receive a
+  connection from `async with self._pool.acquire() as conn` and pass
+  it to a NAMED substrate function (e.g.
+  `await emit_signal(conn, ...)` or `await persist_state(conn, ...)`)
+  are correct — the rule's intent is preserved.
+- The analyzer's name-list does NOT include `conn` / `_conn`. If a
+  future contributor stores a `Connection` as a class attribute
+  (`self._conn`) and calls verbs directly on it (`await self._conn.
+  execute(...)`), that's the same anti-pattern in different paint.
+  Code review is the first line of defence; tighten the analyzer's
+  name-list if such a pattern emerges in production code.
+- **Rules 2-5** are unaffected: R2 checks import-presence, R3 checks
+  `await asyncio.sleep` in `except`, R4 checks queue-primitive
+  imports/constructions, R5 checks module-level mutable state. None
+  of those touch the executor-typed surface.
+
+The retroactive smoke check (`test_pattern_alignment_smoke_passes_against_m3_3_and_m5_1`)
+continues to pass: M3.3 and M5.1 are untouched by A12 and remain
+function-style services that the analyzer trivially satisfies.
