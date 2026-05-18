@@ -352,7 +352,11 @@ async def _apply_claim_op(
             # an offline reembedding job.
             entry["embedding"] = [0.0] * 768
         proposed = ModelCreate.model_validate(entry)
-        row = await models_repo.insert(proposed, conn=conn)
+        row = await models_repo.insert(
+            proposed,
+            conn=conn,
+            apply_confidence_calibration=False,
+        )
         return {
             "summary": {
                 "op": "insert",

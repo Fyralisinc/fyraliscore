@@ -313,16 +313,16 @@ export default function TodayBriefing() {
                       position={positionOf(selectedDelta.id)}
                       onOpenEvidence={() => void openEvidence(selectedDelta)}
                     />
+                    <ReviewActionBar
+                      delta={selectedDelta}
+                      applying={applyingId === selectedDelta.id}
+                      onAccept={() => handleAccept(selectedDelta.id)}
+                      onDelegate={() => setDelegateTarget(selectedDelta)}
+                      onRequestChanges={() => setCorrectionTarget(selectedDelta)}
+                      onCorrect={() => setCorrectionTarget(selectedDelta)}
+                    />
                   </div>
                 </div>
-                <ReviewActionBar
-                  delta={selectedDelta}
-                  applying={applyingId === selectedDelta.id}
-                  onAccept={() => handleAccept(selectedDelta.id)}
-                  onDelegate={() => setDelegateTarget(selectedDelta)}
-                  onRequestChanges={() => setCorrectionTarget(selectedDelta)}
-                  onCorrect={() => setCorrectionTarget(selectedDelta)}
-                />
               </>
             ) : data ? (
               <AllClearState summary={data.handledWithoutYou} />
