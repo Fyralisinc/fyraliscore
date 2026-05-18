@@ -149,6 +149,20 @@ class DiscordGatewayClient:
         # carrying a `seq` (s != None). See module docstring + LLD §1.5
         # for the save-after-handle ordering rationale.
         on_dispatched: "Callable[[GatewaySessionState], Awaitable[None]] | None" = None,
+        # A6 — broker-ack durability barrier. When provided, the
+        # dispatch loop calls `kafka_producer.flush(timeout_seconds=2)`
+        # between the dispatch handler returning and the
+        # `on_dispatched` save task being scheduled. This closes the
+        # produce-to-broker-ack window where a SIGKILL would lose
+        # frames from librdkafka's local queue while Postgres already
+        # has the advanced `last_seq`. See
+        # docs/ingestion/05-lld-amendments.md §A6 +
+        # docs/decisions/a6-resolution.md. Optional — `None` (default)
+        # is a no-op, used by tests that don't wire the shadow path.
+        # Must be the same `IdempotentProducer` instance that the
+        # dispatch handler's `shadow_write_raw` enqueues to;
+        # otherwise the flush guarantees nothing about the frame.
+        kafka_producer: Any = None,
     ) -> None:
         if not bot_token:
             raise ValueError("bot_token is required")
@@ -172,6 +186,7 @@ class DiscordGatewayClient:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._shutdown = asyncio.Event()
         self._on_dispatched = on_dispatched
+        self._kafka_producer = kafka_producer
 
     async def aclose(self) -> None:
         if self._heartbeat_task is not None:
@@ -427,19 +442,53 @@ class DiscordGatewayClient:
                 # would risk RESUMing past a frame that was never
                 # handled — silent N1 breach. See session_state.py
                 # module docstring "Save-after-handle ordering."
+                #
+                # A6 — BROKER-ACK DURABILITY BARRIER (Option 1: per-
+                # frame flush). The dispatch handler enqueues the
+                # frame to librdkafka's local queue via
+                # `shadow_write_raw`. `Producer.produce()` returns on
+                # local-enqueue, NOT broker-ack — so a SIGKILL between
+                # produce-return and broker-ack would lose the frame
+                # from the producer's in-memory queue while Postgres
+                # already advanced `last_seq=N`. The next worker
+                # RESUMEs past N, Discord doesn't replay frame N,
+                # frame N is lost (silent N1 breach).
+                #
+                # Fix: flush the producer here so the save below only
+                # persists `last_seq=N` after the broker has acked
+                # frame N. On flush failure (timeout / broker
+                # unreachable), DO NOT save — the next worker will
+                # RESUME from the previously-saved seq and re-process
+                # this frame, safe under M2 dedup. See
+                # docs/ingestion/05-lld-amendments.md §A6 +
+                # docs/decisions/a6-resolution.md.
                 if self._on_dispatched is not None and frame.get("s") is not None:
-                    # Capture a snapshot — _state is mutated by the
-                    # next frame's seq update, and a queued save task
-                    # could otherwise persist a future seq value.
-                    snapshot = GatewaySessionState(
-                        session_id=self._state.session_id,
-                        resume_gateway_url=self._state.resume_gateway_url,
-                        last_seq=self._state.last_seq,
-                        heartbeat_interval_ms=self._state.heartbeat_interval_ms,
-                        last_heartbeat_ack=self._state.last_heartbeat_ack,
-                        application_id=self._state.application_id,
-                    )
-                    asyncio.create_task(self._safe_save(snapshot))
+                    try:
+                        await self._pre_save_flush(timeout_seconds=2.0)
+                    except Exception as exc:  # noqa: BLE001
+                        metrics.inc(
+                            "discord_gateway_pre_save_flush_failures_total",
+                        )
+                        log.warning(
+                            "discord_gateway_pre_save_flush_failed",
+                            seq=frame.get("s"),
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:200],
+                        )
+                    else:
+                        # Capture a snapshot — _state is mutated by
+                        # the next frame's seq update, and a queued
+                        # save task could otherwise persist a future
+                        # seq value.
+                        snapshot = GatewaySessionState(
+                            session_id=self._state.session_id,
+                            resume_gateway_url=self._state.resume_gateway_url,
+                            last_seq=self._state.last_seq,
+                            heartbeat_interval_ms=self._state.heartbeat_interval_ms,
+                            last_heartbeat_ack=self._state.last_heartbeat_ack,
+                            application_id=self._state.application_id,
+                        )
+                        asyncio.create_task(self._safe_save(snapshot))
 
     async def _safe_save(self, state: "GatewaySessionState") -> None:
         """Wrap the on_dispatched hook in exception logging so a save
@@ -453,6 +502,26 @@ class DiscordGatewayClient:
             log.exception(
                 "discord_gateway_session_save_failed",
                 seq=state.last_seq,
+            )
+
+    async def _pre_save_flush(self, *, timeout_seconds: float) -> None:
+        """A6 — flush the Kafka producer so the broker has acked all
+        in-flight shadow-write messages before the save advances
+        `last_seq`. Raises TimeoutError when the flush returns with
+        messages still queued; the caller skips the save in that case.
+
+        No-op when `kafka_producer` is None — that path is used by
+        tests that don't wire the shadow producer (the unflushed
+        save still races with a hypothetical SIGKILL, but those tests
+        don't exercise the shadow path so the property is moot).
+        """
+        if self._kafka_producer is None:
+            return
+        remaining = await self._kafka_producer.flush(timeout_seconds)
+        if remaining > 0:
+            raise TimeoutError(
+                f"Kafka flush returned with {remaining} message(s) still "
+                f"in queue after {timeout_seconds}s timeout"
             )
 
 
