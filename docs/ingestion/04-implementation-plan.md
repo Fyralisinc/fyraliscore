@@ -356,6 +356,8 @@ With M-Temporal deferred indefinitely, M-Load absorbs the production Kafka reade
 
 **Pre-M6 gate:** M-Load complete (synthetic dry run passes; breaker production readers green); M5 cutover stable for ≥2 weeks for the slack+github tier ramp; circuit breaker has NOT auto-fired for any production tenant in that window.
 
+**Status framing — same shape as M5.** Like M5, M6 ships as code-complete-execution-pending. M-Load's synthetic validation satisfies the first pre-M6 gate clause (synthetic traffic at production-equivalent rate, with breaker readers green). The 2-week stability clauses are satisfied only when real customer traffic exists post-cutover; until then, M6 is mergeable as merged-and-tested code awaiting real-traffic verification. The pre-M6 gate is the criterion for **enabling backfill for the first real tenant**, not for merging M6's substrate + per-source sub-blocks. This framing makes the deferral explicit so a future operator doesn't read the gate as "M6 cannot merge."
+
 #### Pattern-alignment requirements (load-bearing for the seven sub-blocks)
 
 Every M6 asyncio service MUST honour these five requirements. They are derived from the trigger conditions in [05-lld-amendments.md](05-lld-amendments.md) A11 — when one of those trigger conditions fires and the Temporal port is reopened, alignment with these requirements makes the port mechanical (the asyncio main loop is replaced with a Temporal workflow body; the named functions become activities; the state schema is unchanged).
