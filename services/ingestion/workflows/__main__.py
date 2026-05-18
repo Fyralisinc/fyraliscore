@@ -58,6 +58,11 @@ from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
 )
+from services.ingestion.workflows.source_onboarding import (
+    SourceOnboarding,
+    SourceOnboardingConfig,
+    WORKFLOW_ID_DEFAULT as SOURCE_ONBOARDING_INSTANCE_DEFAULT,
+)
 from services.ingestion.workflows.tenant_onboarding import (
     TenantOnboardingConfig,
     TenantOnboardingOrchestrator,
@@ -130,11 +135,27 @@ async def _run_service(name: str) -> None:
                 ),
             ),
         )
+    elif name == "source_onboarding":
+        service = SourceOnboarding(
+            pool,
+            config=SourceOnboardingConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),
+                ),
+                max_signals_per_tick=int(
+                    os.environ.get("SOURCE_ONBOARDING_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "SOURCE_ONBOARDING_INSTANCE",
+                    SOURCE_ONBOARDING_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
     else:
         raise SystemExit(
             f"WORKFLOW_SERVICE={name!r} not recognized. "
             f"Known: feels_onboarded_monitor, oauth_poller, "
-            f"tenant_onboarding."
+            f"tenant_onboarding, source_onboarding."
         )
 
     stop_event = asyncio.Event()

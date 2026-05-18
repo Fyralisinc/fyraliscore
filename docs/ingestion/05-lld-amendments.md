@@ -446,6 +446,58 @@ removed from that file.
 - **Tests:** `test_orchestrator_determines_applicable_sources_from_installs` (LOAD-BEARING for the rule) and `test_orchestrator_fails_run_when_no_installs_active` (zero-installs edge case) in [test_tenant_onboarding.py](../../services/ingestion/workflows/tests/test_tenant_onboarding.py).
 - **LLD edits pending:** none. Same posture as A12 and A13 — the LLD describes Temporal workflows; this is an asyncio-shape refinement that survives the eventual port. The amendment is fully captured by this tracker entry + the source-code docstrings + the implementation plan's §M6.1 architectural-decisions list.
 
+### A15 — M6.2a uses M1-shipped `onboarding_shards` schema; no new migration
+
+- **Status:** RESOLVED with M6.2a Phase 1 on `feat/ingestion-m6-2a-source-onboarding-and-shard-fetch`.
+- **LLD section:** §1.2 (`onboarding_shards` schema). The amendment codifies that the LLD §1.2 schema as shipped in [db/migrations/0045_onboarding_runs_and_shards.sql](../../db/migrations/0045_onboarding_runs_and_shards.sql) IS the authoritative spec; M6.2a uses it without modification.
+- **Implementation surface:** [services/ingestion/workflows/source_onboarding.py](../../services/ingestion/workflows/source_onboarding.py) (Phase 1) and [services/ingestion/workflows/shard_fetch.py](../../services/ingestion/workflows/shard_fetch.py) (Phase 2). [services/ingestion/planners/__init__.py](../../services/ingestion/planners/__init__.py) for the `PLANNER_DISPATCH` table and `Shard` dataclass.
+- **Trigger:** M6.2a Phase 0 design check surfaced that the M6.2a prompt directed a new `0056_onboarding_shards.sql` migration with a schema that conflicted with the existing M1-shipped `onboarding_shards` table (which is the LLD §1.2 schema verbatim). The prompt was written without verifying that 0045 had already shipped the schema three milestones back.
+- **Decision:** **NO new migration 0056 ships with M6.2a.** The M1-shipped `onboarding_shards` schema is strictly more capable than the prompt-described schema — it already carries `parent_shard_id` and the `'reconciliation_resharded'` state value that M6.2b's Reconciler will need, plus `recency_score` / `window_start` / `window_end` / `pages_fetched` / `observations_seen` for M6.3-M6.6 per-source fetcher use. Replacing it would have lost those columns and broken the LLD §1.2 commitment.
+- **Column-naming map (M6.2a-prompt-words → existing-schema-columns):**
+
+  | M6.2a prompt term | Existing column (0045) | Notes |
+  |---|---|---|
+  | `shard_id` (PK) | `id UUID PRIMARY KEY` | Same role. Code uses `id` everywhere. |
+  | `shard_descriptor JSONB` | `shard_identifier JSONB NOT NULL` + `shard_kind TEXT NOT NULL` | Existing splits descriptor into kind + identifier. M6.2a writes both. |
+  | `cursor JSONB` | `cursor_token TEXT` | M6.2a does NOT write to this column. Cursor lives in `workflow_states.state_data` per the M6.0 N1 primitive's contract (see below). |
+  | `status` | `state` | Different name; same role. |
+  | `failure_reason` | `last_error` | Same role; different name. |
+
+- **Status-value mapping (M6.2a-prompt-words → existing-schema-values):**
+
+  | M6.2a prompt value | Existing schema value | Notes |
+  |---|---|---|
+  | `'pending'` | `'pending'` | Same. |
+  | `'in_progress'` | `'in_progress'` | Same. |
+  | `'completed'` | `'done'` | Different vocabulary. Codified in M6.2a. |
+  | `'failed'` | `'failed'` | Same. |
+  | (M6.2b territory) | `'reconciliation_resharded'` | Reserved for M6.2b's Reconciler. M6.2a does NOT write this value. |
+
+  Cross-table vocabulary mismatch (documented rather than papered over): `source_onboarding_runs.status` (M6.1's [0055](../../db/migrations/0055_source_onboarding_runs.sql)) uses `'completed'`; `onboarding_shards.state` (M1's [0045](../../db/migrations/0045_onboarding_runs_and_shards.sql)) uses `'done'`. Each is internally consistent within its own schema; the mismatch is real but bounded.
+
+- **N1 primitive cursor home overlaps with legacy `cursor_token`.** The M6.0 substrate introduced `state.advance_cursor_atomic_with_kafka_publish` which writes the cursor to `workflow_states.state_data` (JSONB), keyed by `(workflow_kind, workflow_id)`. M6.2a's ShardFetch uses `workflow_kind="shard_fetch"` + `workflow_id=str(shard_id)` — one `workflow_states` row per shard. The legacy `onboarding_shards.cursor_token TEXT` column (from M1's 0045, predating the N1 primitive) stays NULL under M6.2a. M6.3-M6.6 per-source fetchers may optionally mirror the cursor to the legacy column for ops visibility; that's a per-source choice and not load-bearing.
+
+- **`shard_kind` value convention (codified for M6.3-M6.6):**
+
+  | Source | `shard_kind` value | M6.x sub-block |
+  |---|---|---|
+  | `slack` | `"slack_channel_window"` | M6.5 |
+  | `github` | `"github_repo_events"` | M6.4 |
+  | `discord` | `"discord_channel_window"` | M6.6 |
+  | `gmail` | `"gmail_mailbox_window"` | M6.3 |
+
+  M6.2a's planner dispatch table writes the stubbed `NotImplementedError`; M6.3-M6.6 each ship their respective planner with the matching `shard_kind`. The corresponding fetcher in [services/ingestion/fetchers/__init__.py](../../services/ingestion/fetchers/__init__.py) keys off this value.
+
+- **Effect on M6.2b (Reconciler):** the existing `parent_shard_id UUID REFERENCES onboarding_shards(id)` column + the `'reconciliation_resharded'` state value are the M6.2b Reconciler's inheritance anchors. M6.2b adds NO schema columns; it INSERTs new `onboarding_shards` rows with `parent_shard_id` set and `state='reconciliation_resharded'` per the existing M1 design.
+
+- **Relationship to [A11](#a11--temporal-deferred-indefinitely-m6-ships-as-asyncio-with-pattern-alignment), [A12](#a12--executor-typed-substrate-signatures-for-transactional-participation), [A13](#a13--signal-addressing-is-a-routing-partition-key-not-a-workflow-instance-identifier), [A14](#a14--source-applicability-resolved-at-orchestrator-tick-time-not-at-trigger-fire-time):** Same posture chain. A11 deferred Temporal; A12 amended substrate signatures; A13 codified signal addressing; A14 fixed source applicability; A15 codifies the cross-milestone schema-vocabulary reconciliation. Each amendment ships under the M6.x sub-block that surfaces it, written when surfaced, without batching. Future M6 sub-blocks should expect their own findings to land in this tracker as A16+.
+
+- **Pattern-alignment status:** no change. M6.2a's services use the substrate per the five rules; no analyzer change required.
+
+- **Tests:** Phase 1's tests of `source_onboarding.py` verify the column writes work against the existing schema (`id`, `shard_kind`, `shard_identifier`, `state='pending'` / `'done'`, etc.). No schema-coupling test changes needed.
+
+- **LLD edits pending:** none. The LLD §1.2 IS authoritative; M6.2a's job was to use it, not modify it. The amendment is fully captured by this tracker entry + the `source_onboarding.py` module docstring + the Phase 1 gate output (three-place documentation per the M6.0/M6.1 precedent).
+
 ---
 
 ## Resolved amendments archive
