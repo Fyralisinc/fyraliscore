@@ -34,15 +34,6 @@ const primaryNav: NavItem[] = [
   { route: "ledger", label: "Ledger", to: "/ledger", icon: <IconLedger /> },
 ];
 
-const shortcutNav: NavItem[] = [
-  { route: "commitments", label: "Commitments", to: "/commitments", icon: <IconDot /> },
-  { route: "customers", label: "Customers", to: "/customers", icon: <IconDot /> },
-  { route: "risks", label: "Risks", to: "/risks", icon: <IconDot /> },
-  { route: "decisions", label: "Decisions", to: "/decisions", icon: <IconDot /> },
-  { route: "owners", label: "Owners", to: "/owners", icon: <IconDot /> },
-  { route: "teams", label: "Teams", to: "/teams", icon: <IconDot /> },
-];
-
 const utilityNav: NavItem[] = [
   { route: "ask", label: "Ask Fyralis", to: "/ask", icon: <IconAsk /> },
   { route: "sources", label: "Sources", to: "/sources", icon: <IconSources /> },
@@ -65,20 +56,8 @@ export function Sidebar({ activeRoute = "today" }: SidebarProps) {
         ))}
       </div>
 
-      <hr className="fy-sidebar__divider" />
-      <div className="fy-sidebar__group-label">Shortcuts</div>
-      <div className="fy-sidebar__group" role="group" aria-label="Shortcuts">
-        {shortcutNav.map((item) => (
-          <SidebarLink
-            key={item.route}
-            item={item}
-            active={activeRoute === item.route}
-            variant="secondary"
-          />
-        ))}
-      </div>
+      <div className="fy-sidebar__spacer" />
 
-      <hr className="fy-sidebar__divider" />
       <div className="fy-sidebar__group-label">Utilities</div>
       <div className="fy-sidebar__group" role="group" aria-label="Utilities">
         {utilityNav.map((item) => (
@@ -90,8 +69,6 @@ export function Sidebar({ activeRoute = "today" }: SidebarProps) {
           />
         ))}
       </div>
-
-      <div className="fy-sidebar__spacer" />
 
       <ModelHealthCard />
       <UserCard />
@@ -266,14 +243,6 @@ function IconSettings() {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
       <circle cx="8" cy="8" r="2" />
       <path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8 3.4 3.4" />
-    </svg>
-  );
-}
-
-function IconDot() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="2.4" fill="currentColor" opacity="0.55" />
     </svg>
   );
 }

@@ -35,6 +35,9 @@ vi.mock("@/api/today-page-client", () => ({
   submitCorrection: vi.fn(async (id: string, body) => mockCorrection(id, body)),
 }));
 
+const PRIMARY_ID = "delta-primary-001";
+const PRICING_ID = "delta-other-pricing";
+
 function renderBriefing() {
   return render(
     <MemoryRouter initialEntries={["/today"]}>
@@ -54,146 +57,103 @@ afterEach(() => {
 });
 
 // =====================================================================
-// Today Briefing — in-place focused review (spec §6 + §7)
+// Today Briefing — in-place focused review (spec §6 + §9 + §10)
 // =====================================================================
 
 describe("Today Briefing", () => {
-  it("renders header + summary strip + primary judgment + other items + handled panel", async () => {
+  it("renders briefing header and a stream of judgment cards", async () => {
     renderBriefing();
     await waitFor(() =>
       expect(screen.getByTestId("today-page")).toBeInTheDocument(),
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("briefing-header")).toBeInTheDocument(),
-    );
-    expect(screen.getByTestId("today-summary-strip")).toBeInTheDocument();
-    expect(screen.getByTestId("primary-judgment")).toBeInTheDocument();
-    expect(screen.getByTestId("other-judgment-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("handled-without-you-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("briefing-header")).toBeInTheDocument();
+    expect(screen.getByTestId("today-stream")).toBeInTheDocument();
+    // Primary judgment auto-expands into a Focused Review card.
+    expect(screen.getByTestId(`focused-review-${PRIMARY_ID}`)).toBeInTheDocument();
+    // Other items render as compact rows that can be opened.
+    expect(screen.getByTestId(`compact-card-${PRICING_ID}`)).toBeInTheDocument();
+    // Page-level chrome from the old Briefing (SummaryStrip,
+    // Handled-without-you) is gone per the locked direction.
+    expect(screen.queryByTestId("today-summary-strip")).toBeNull();
+    expect(screen.queryByTestId("handled-without-you-panel")).toBeNull();
+  });
+
+  it("briefing header surfaces the absorbed-vs-judgment line from the wire fixture", async () => {
+    renderBriefing();
+    await waitFor(() => screen.getByTestId("briefing-header"));
+    const header = screen.getByTestId("briefing-header");
+    expect(within(header).getByText(/Fyralis reviewed 98 signals/i)).toBeInTheDocument();
     expect(
-      within(screen.getByTestId("primary-judgment")).getByText(/Salesforce sync instability/i),
+      within(header).getByText(/4 require judgment; 94 were absorbed/i),
     ).toBeInTheDocument();
   });
 
-  it("shows summary metrics from the wire fixture", async () => {
+  it("shows the status badge for the expanded judgment", async () => {
     renderBriefing();
-    await waitFor(() => screen.getByTestId("today-summary-strip"));
-    const strip = screen.getByTestId("today-summary-strip");
-    expect(within(strip).getByText("98")).toBeInTheDocument();
-    expect(within(strip).getByText("94")).toBeInTheDocument();
-    expect(within(strip).getByText("4")).toBeInTheDocument();
-    expect(within(strip).getByText("$2.04M")).toBeInTheDocument();
+    const card = await screen.findByTestId(`focused-review-${PRIMARY_ID}`);
+    expect(within(card).getByText(/Needs your authority/i)).toBeInTheDocument();
   });
 
-  it("shows the right status chip for the primary judgment", async () => {
-    renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-judgment"));
-    expect(screen.getByTestId("status-chip-needs_authority")).toBeInTheDocument();
-  });
-
-  it("clicking the primary judgment title expands the card inline (no navigation)", async () => {
+  it("clicking a compact card switches focused review without leaving Today", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-judgment-open"));
-    expect(screen.queryByTestId(/^inline-detail-/)).not.toBeInTheDocument();
-    await user.click(screen.getByTestId("primary-judgment-open"));
-    await waitFor(() =>
-      expect(
-        screen.getByTestId("inline-detail-delta-primary-001"),
-      ).toBeInTheDocument(),
-    );
-    // No navigation away from Today and no "Reviewing N of M" header
-    // would appear on a separate page — the strip lives inside the
-    // same primary judgment card.
-    expect(screen.getByTestId("today-page")).toBeInTheDocument();
-    expect(screen.getByTestId("primary-collapse")).toBeInTheDocument();
-  });
+    // Primary is expanded by default; pricing is compact.
+    await screen.findByTestId(`focused-review-${PRIMARY_ID}`);
+    expect(screen.queryByTestId(`focused-review-${PRICING_ID}`)).toBeNull();
 
-  it("clicking an Other Judgment row expands it inline into a focused review case", async () => {
-    const user = userEvent.setup();
-    renderBriefing();
-    await waitFor(() => screen.getByTestId("other-judgment-panel"));
-    const pricingRow = screen.getByTestId("other-row-delta-other-pricing");
-    await user.click(pricingRow);
+    await user.click(screen.getByTestId(`compact-row-${PRICING_ID}`));
+
+    // Pricing card is now the expanded one; primary collapsed to compact.
     await waitFor(() =>
-      expect(
-        screen.getByTestId("inline-detail-delta-other-pricing"),
-      ).toBeInTheDocument(),
+      expect(screen.getByTestId(`focused-review-${PRICING_ID}`)).toBeInTheDocument(),
     );
+    expect(screen.queryByTestId(`focused-review-${PRIMARY_ID}`)).toBeNull();
+    expect(screen.getByTestId(`compact-card-${PRIMARY_ID}`)).toBeInTheDocument();
     // Still on Today.
     expect(screen.getByTestId("today-page")).toBeInTheDocument();
-    // Title is rendered inside the expanded review card.
+    // "Reviewing N of M" is present in the header.
     expect(
-      within(screen.getByTestId("other-card-delta-other-pricing")).getByText(
-        /Assign owner for pricing model decision/i,
-      ),
-    ).toBeInTheDocument();
-    // "Reviewing N of M" header is present.
-    expect(
-      within(screen.getByTestId("other-card-delta-other-pricing")).getByText(
+      within(screen.getByTestId(`focused-review-${PRICING_ID}`)).getByText(
         /Reviewing \d+ of \d+/i,
       ),
     ).toBeInTheDocument();
   });
 
-  it("Collapse review (in card header) returns the card to compact form", async () => {
+  it("Collapse review collapses the expanded card to compact form", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("other-judgment-panel"));
-    await user.click(screen.getByTestId("other-row-delta-other-pricing"));
+    await screen.findByTestId(`focused-review-${PRIMARY_ID}`);
+    await user.click(screen.getByTestId(`focused-collapse-${PRIMARY_ID}`));
     await waitFor(() =>
-      expect(
-        screen.getByTestId("inline-detail-delta-other-pricing"),
-      ).toBeInTheDocument(),
+      expect(screen.queryByTestId(`focused-review-${PRIMARY_ID}`)).toBeNull(),
     );
-    // Collapse lives in the card header, not the action bar (spec §2.1).
-    await user.click(screen.getByTestId("other-collapse-delta-other-pricing"));
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("inline-detail-delta-other-pricing"),
-      ).not.toBeInTheDocument(),
-    );
-    // Compact row is back.
-    expect(
-      screen.getByTestId("other-row-delta-other-pricing"),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId(`compact-card-${PRIMARY_ID}`)).toBeInTheDocument();
   });
 
   it("expanded card surfaces Ask Fyralis suggestions and renders a stubbed typed answer", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-judgment-open"));
-    await user.click(screen.getByTestId("primary-judgment-open"));
-    await waitFor(() =>
-      expect(
-        screen.getByTestId("ask-strip-delta-primary-001"),
-      ).toBeInTheDocument(),
-    );
-    // Suggested prompts from spec §7.8.
+    await screen.findByTestId(`ask-strip-${PRIMARY_ID}`);
     expect(screen.getByTestId("ask-suggestion-why_now")).toBeInTheDocument();
     expect(screen.getByTestId("ask-suggestion-what_if_wait")).toBeInTheDocument();
     expect(screen.getByTestId("ask-suggestion-who_owns")).toBeInTheDocument();
-    expect(
-      screen.getByTestId("ask-suggestion-evidence_weakest"),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("ask-suggestion-evidence_weakest")).toBeInTheDocument();
     await user.click(screen.getByTestId("ask-suggestion-why_now"));
     await waitFor(() =>
-      expect(
-        screen.getByTestId("ask-answer-delta-primary-001"),
-      ).toBeInTheDocument(),
+      expect(screen.getByTestId(`ask-answer-${PRIMARY_ID}`)).toBeInTheDocument(),
     );
-    // Stubbed answer uses the spec's "Why now" typed response.
     expect(
-      within(screen.getByTestId("ask-answer-delta-primary-001"))
-        .getByRole("heading", { name: /Why now/i }),
+      within(screen.getByTestId(`ask-answer-${PRIMARY_ID}`)).getByRole("heading", {
+        name: /Why now/i,
+      }),
     ).toBeInTheDocument();
   });
 
-  it("Primary 'Review evidence' opens the evidence drawer in place (no navigation)", async () => {
+  it("Review evidence opens the evidence drawer in place (no navigation)", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-review-evidence"));
-    await user.click(screen.getByTestId("primary-review-evidence"));
+    await screen.findByTestId(`focused-review-evidence-${PRIMARY_ID}`);
+    await user.click(screen.getByTestId(`focused-review-evidence-${PRIMARY_ID}`));
     await waitFor(() =>
       expect(screen.getByTestId("evidence-drawer")).toBeInTheDocument(),
     );
@@ -204,10 +164,10 @@ describe("Today Briefing", () => {
     const user = userEvent.setup();
     const client = await import("@/api/today-page-client");
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-accept"));
-    await user.click(screen.getByTestId("primary-accept"));
+    await screen.findByTestId(`focused-accept-${PRIMARY_ID}`);
+    await user.click(screen.getByTestId(`focused-accept-${PRIMARY_ID}`));
     await waitFor(() =>
-      expect(client.applyDelta).toHaveBeenCalledWith("delta-primary-001"),
+      expect(client.applyDelta).toHaveBeenCalledWith(PRIMARY_ID),
     );
     await waitFor(() =>
       expect(screen.getByTestId("today-toast")).toBeInTheDocument(),
@@ -217,16 +177,16 @@ describe("Today Briefing", () => {
   it("Delegate button opens the delegation sheet", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-delegate"));
-    await user.click(screen.getByTestId("primary-delegate"));
+    await screen.findByTestId(`focused-delegate-${PRIMARY_ID}`);
+    await user.click(screen.getByTestId(`focused-delegate-${PRIMARY_ID}`));
     expect(screen.getByTestId("delegation-sheet")).toBeInTheDocument();
   });
 
   it("Report correction button opens the correction sheet", async () => {
     const user = userEvent.setup();
     renderBriefing();
-    await waitFor(() => screen.getByTestId("primary-correct"));
-    await user.click(screen.getByTestId("primary-correct"));
+    await screen.findByTestId(`focused-correct-${PRIMARY_ID}`);
+    await user.click(screen.getByTestId(`focused-correct-${PRIMARY_ID}`));
     expect(screen.getByTestId("correction-sheet")).toBeInTheDocument();
   });
 });

@@ -50,6 +50,16 @@ services:
     env_file: .env.production
     expose:
       - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   think_worker:
     build: .
@@ -88,6 +98,12 @@ services:
       VIRTUAL_HOST: demo.fyralis.xyz
       LETSENCRYPT_HOST: demo.fyralis.xyz
       LETSENCRYPT_EMAIL: rachin.kalakheti@gmail.com
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   nginx-proxy:
     image: nginxproxy/nginx-proxy:alpine

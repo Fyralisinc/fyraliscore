@@ -418,22 +418,34 @@ def build_app(
             if rt is not None:
                 try:
                     await rt.dispatcher.stop()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "lifespan_dispatcher_stop_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             ceo = getattr(app_.state, "ceo_view", None)
             if ceo is not None:
                 scheduler = ceo.get("scheduler")
                 if scheduler is not None:
                     try:
                         await scheduler.stop()
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "lifespan_scheduler_stop_failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
             deps: GatewayDeps = app_.state.deps
             if deps.embedder is not None:
                 try:
                     await deps.embedder.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "lifespan_embedder_close_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             if os.environ.get("GATEWAY_OWNS_POOL", "") == "1":
                 await close_gateway_pool(deps.pool)
 

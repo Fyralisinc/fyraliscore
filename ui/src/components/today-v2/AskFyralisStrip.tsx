@@ -6,7 +6,7 @@
 // Backend is stubbed (api/ask-client.ts). When the real /api/ask
 // endpoint lands the call swap is the only change required.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { DecisionDelta } from "@/api/today-page-types";
 import {
@@ -25,6 +25,11 @@ export function AskFyralisStrip({ delta }: Props) {
   const [lastQuestion, setLastQuestion] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+
   const suggestions = getSuggestedPrompts(delta);
 
   async function submit(text: string) {
@@ -34,16 +39,20 @@ export function AskFyralisStrip({ delta }: Props) {
     setLastQuestion(q);
     try {
       const a = await askFyralis(delta, q);
+      if (!mountedRef.current) return;
       setAnswer(a);
     } catch {
+      if (!mountedRef.current) return;
       setAnswer({
         type: "unsupported_answer",
         title: "Ask is unavailable",
         body: "Couldn't reach Ask Fyralis right now. Try again in a moment.",
       });
     } finally {
-      setLoading(false);
-      setPrompt("");
+      if (mountedRef.current) {
+        setLoading(false);
+        setPrompt("");
+      }
     }
   }
 
@@ -54,45 +63,48 @@ export function AskFyralisStrip({ delta }: Props) {
       aria-label="Ask Fyralis about this proposed change"
     >
       <div className="tdv2-ask__label">Ask Fyralis about this change</div>
-      <form
-        className="tdv2-ask__form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit(prompt);
-        }}
-      >
-        <input
-          type="text"
-          className="tdv2-ask__input"
-          placeholder="Ask about this proposed change…"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          disabled={loading}
-          data-testid={`ask-input-${delta.id}`}
-          aria-label="Ask Fyralis about this proposed change"
-        />
-        <button
-          type="submit"
-          className="tdv2-btn tdv2-btn--secondary"
-          disabled={loading || prompt.trim().length === 0}
-          data-testid={`ask-submit-${delta.id}`}
+      <div className="tdv2-ask__row">
+        <div className="tdv2-ask__suggestions">
+          {suggestions.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              className="tdv2-ask__chip"
+              onClick={() => void submit(s.label)}
+              disabled={loading}
+              data-testid={`ask-suggestion-${s.key}`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <form
+          className="tdv2-ask__form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit(prompt);
+          }}
         >
-          {loading ? "Asking…" : "Ask"}
-        </button>
-      </form>
-      <div className="tdv2-ask__suggestions">
-        {suggestions.map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            className="tdv2-ask__chip"
-            onClick={() => void submit(s.label)}
+          <input
+            type="text"
+            className="tdv2-ask__input"
+            placeholder="Ask anything about this change…"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
             disabled={loading}
-            data-testid={`ask-suggestion-${s.key}`}
+            data-testid={`ask-input-${delta.id}`}
+            aria-label="Ask Fyralis about this proposed change"
+          />
+          <button
+            type="submit"
+            className="tdv2-ask__submit"
+            disabled={loading || prompt.trim().length === 0}
+            data-testid={`ask-submit-${delta.id}`}
+            aria-label="Send question"
           >
-            {s.label}
+            <SendIcon />
           </button>
-        ))}
+        </form>
       </div>
       {answer ? (
         <article
@@ -137,5 +149,23 @@ export function AskFyralisStrip({ delta }: Props) {
         </article>
       ) : null}
     </section>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12L12 7 2 2v4l6 1-6 1z" />
+    </svg>
   );
 }

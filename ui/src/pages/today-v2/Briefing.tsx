@@ -1,11 +1,11 @@
 // Today page — Briefing Mode. Default landing surface.
 //
-// Layout is a single vertical column: header → summary strip → primary
-// judgment card → other-judgment accordion → handled-without-you panel.
-// Cards expand in place rather than navigating away, so the user's
-// scroll position and mental anchor never reset.
+// Layout: header → vertical queue of judgment cards.
+// One card at a time enters Focused Review state in place; the rest
+// remain visible above and below as compact rows. No navigation, no
+// modal, no separate inspector (spec §4.2).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { AppShell } from "@/shell/AppShell";
@@ -15,10 +15,8 @@ import { useTodayPage } from "@/hooks/useTodayPage";
 import { getDeltaEvidence } from "@/api/today-page-client";
 
 import { BriefingHeader } from "@/components/today-v2/BriefingHeader";
-import { SummaryStrip } from "@/components/today-v2/SummaryStrip";
-import { PrimaryJudgmentCard } from "@/components/today-v2/PrimaryJudgmentCard";
-import { OtherJudgmentList } from "@/components/today-v2/OtherJudgmentList";
-import { HandledWithoutYouPanel } from "@/components/today-v2/HandledWithoutYouPanel";
+import { FocusedReviewCard } from "@/components/today-v2/FocusedReviewCard";
+import { CompactCard } from "@/components/today-v2/CompactCard";
 import { DelegationSheet } from "@/components/today-v2/DelegationSheet";
 import { CorrectionSheet } from "@/components/today-v2/CorrectionSheet";
 import { EvidenceDrawer } from "@/components/today-v2/EvidenceDrawer";
@@ -47,12 +45,6 @@ export default function TodayBriefing() {
   const [correctionTarget, setCorrectionTarget] = useState<DecisionDelta | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
 
-  // Inline expansion. Tracks which "other item" is open. The primary
-  // judgment card has its own toggle (primaryExpanded) since the user's
-  // mental model is "primary is always partly open, click for more".
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [primaryExpanded, setPrimaryExpanded] = useState(false);
-
   // Lazy-loaded evidence keyed by deltaId. Cleared on refetch.
   const [evidenceCache, setEvidenceCache] = useState<
     Record<string, EvidenceResponse>
@@ -60,7 +52,7 @@ export default function TodayBriefing() {
   const [evidenceDelta, setEvidenceDelta] = useState<DecisionDelta | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
 
-  // Ordered queue for "Reviewing N of M" — primary first, others after.
+  // Ordered queue: primary first, then others.
   const orderedQueue = useMemo<DecisionDelta[]>(() => {
     if (!data) return [];
     const list: DecisionDelta[] = [];
@@ -68,6 +60,14 @@ export default function TodayBriefing() {
     list.push(...data.otherChanges);
     return list;
   }, [data]);
+
+  // Which card is in Focused Review state. Defaults to the primary
+  // judgment so the user lands directly on the most urgent case.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (expandedId && orderedQueue.some((d) => d.id === expandedId)) return;
+    setExpandedId(orderedQueue[0]?.id ?? null);
+  }, [orderedQueue, expandedId]);
 
   const positionOf = useCallback(
     (id: string): { index: number; total: number } | null => {
@@ -82,19 +82,16 @@ export default function TodayBriefing() {
   useEffect(() => {
     const target = searchParams.get("expand");
     if (!target || !data) return;
-    if (data.primaryJudgment?.id === target) {
-      setPrimaryExpanded(true);
-    } else if (data.otherChanges.some((d) => d.id === target)) {
+    if (orderedQueue.some((d) => d.id === target)) {
       setExpandedId(target);
     }
-    // Clean the param so re-renders don't keep re-opening on toggle.
     const next = new URLSearchParams(searchParams);
     next.delete("expand");
     setSearchParams(next, { replace: true });
-  }, [data, searchParams, setSearchParams]);
+  }, [data, orderedQueue, searchParams, setSearchParams]);
 
-  // Keyboard model. Esc collapses the open accordion (or closes the
-  // top-most sheet); Enter expands/collapses the primary card.
+  // Keyboard model. Esc collapses the open card or closes the top-most
+  // sheet. Letter shortcuts hit the visible action bar.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
@@ -113,32 +110,16 @@ export default function TodayBriefing() {
         } else if (expandedId) {
           setExpandedId(null);
           e.preventDefault();
-        } else if (primaryExpanded) {
-          setPrimaryExpanded(false);
-          e.preventDefault();
         }
-        return;
-      }
-      if (
-        e.key === "Enter" &&
-        data?.primaryJudgment &&
-        !delegateTarget &&
-        !correctionTarget &&
-        !evidenceDelta
-      ) {
-        setPrimaryExpanded((v) => !v);
-        e.preventDefault();
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [
-    data,
     delegateTarget,
     correctionTarget,
     evidenceDelta,
     expandedId,
-    primaryExpanded,
   ]);
 
   const showToast = useCallback((kind: ToastKind, text: string) => {
@@ -151,35 +132,62 @@ export default function TodayBriefing() {
     return () => window.clearTimeout(id);
   }, [toast]);
 
-  const handleToggleOther = useCallback((id: string) => {
-    setExpandedId((current) => {
-      if (current === id) return null;
-      // Smoothly bring the newly-expanded card into the viewport so the
-      // user can read it without manual scrolling. The browser keeps
-      // surrounding cards visible above/below.
-      window.setTimeout(() => {
-        const el = document.querySelector(
-          `[data-testid="other-card-${id}"]`,
-        ) as HTMLElement | null;
-        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }, 0);
-      return id;
-    });
+  const handleOpen = useCallback((id: string) => {
+    setExpandedId(id);
+    window.setTimeout(() => {
+      const el = document.getElementById(`focused-${id}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }, []);
+
+  const handleCollapse = useCallback((id: string) => {
+    setExpandedId((current) => (current === id ? null : current));
+  }, []);
+
+  // Abort the in-flight evidence fetch when the user opens a different
+  // delta, closes the drawer, or unmounts the page, so a slow response
+  // can't overwrite the cache or clear the loading flag for a newer
+  // request.
+  const evidenceAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (evidenceDelta === null) {
+      evidenceAbortRef.current?.abort();
+      evidenceAbortRef.current = null;
+    }
+  }, [evidenceDelta]);
+  useEffect(
+    () => () => {
+      evidenceAbortRef.current?.abort();
+    },
+    [],
+  );
 
   const openEvidence = useCallback(
     async (delta: DecisionDelta) => {
       setEvidenceDelta(delta);
+      // Always read from a ref-style snapshot of cache via setState below;
+      // a direct read of `evidenceCache` here would be stale for callbacks
+      // queued before the latest setState commits.
       if (evidenceCache[delta.id]) return;
+
+      evidenceAbortRef.current?.abort();
+      const controller = new AbortController();
+      evidenceAbortRef.current = controller;
+
       setEvidenceLoading(true);
       try {
-        const ev = await getDeltaEvidence(delta.id);
+        const ev = await getDeltaEvidence(delta.id, controller.signal);
+        if (controller.signal.aborted) return;
         setEvidenceCache((prev) => ({ ...prev, [delta.id]: ev }));
-      } catch {
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        if ((err as { name?: string })?.name === "AbortError") return;
         showToast("error", "Could not load evidence right now.");
         setEvidenceDelta(null);
       } finally {
-        setEvidenceLoading(false);
+        if (!controller.signal.aborted) {
+          setEvidenceLoading(false);
+        }
       }
     },
     [evidenceCache, showToast],
@@ -192,8 +200,6 @@ export default function TodayBriefing() {
         const result = await applyChange(id);
         if (result?.status === "applied") {
           showToast("success", result.resultMessage);
-          // Collapse the row that was just accepted — it's gone from
-          // the actionable set.
           setExpandedId((current) => (current === id ? null : current));
         } else if (result?.status === "requires_refresh") {
           showToast("error", result.resultMessage);
@@ -264,42 +270,29 @@ export default function TodayBriefing() {
                   summary={data.summary}
                   generatedAt={data.generatedAt}
                 />
-                <SummaryStrip summary={data.summary} />
-                {data.primaryJudgment || data.otherChanges.length > 0 ? (
-                  <div className="tdv2-body tdv2-body--stack">
-                    {data.primaryJudgment ? (
-                      <PrimaryJudgmentCard
-                        delta={data.primaryJudgment}
-                        applying={applyingId === data.primaryJudgment.id}
-                        expanded={primaryExpanded}
-                        position={positionOf(data.primaryJudgment.id) ?? undefined}
-                        onToggleExpand={() => setPrimaryExpanded((v) => !v)}
-                        onOpenEvidence={() =>
-                          void openEvidence(data.primaryJudgment!)
-                        }
-                        onAccept={() =>
-                          handleAccept(data.primaryJudgment!.id)
-                        }
-                        onDelegate={() =>
-                          setDelegateTarget(data.primaryJudgment!)
-                        }
-                        onCorrect={() =>
-                          setCorrectionTarget(data.primaryJudgment!)
-                        }
-                      />
-                    ) : null}
-                    <OtherJudgmentList
-                      items={data.otherChanges}
-                      expandedId={expandedId}
-                      applyingId={applyingId}
-                      positionOf={positionOf}
-                      onToggle={handleToggleOther}
-                      onAccept={handleAccept}
-                      onDelegate={(d) => setDelegateTarget(d)}
-                      onCorrect={(d) => setCorrectionTarget(d)}
-                      onOpenEvidence={(d) => void openEvidence(d)}
-                    />
-                    <HandledWithoutYouPanel summary={data.handledWithoutYou} />
+                {orderedQueue.length > 0 ? (
+                  <div className="tdv2-stream" data-testid="today-stream">
+                    {orderedQueue.map((d) =>
+                      d.id === expandedId ? (
+                        <FocusedReviewCard
+                          key={d.id}
+                          delta={d}
+                          applying={applyingId === d.id}
+                          position={positionOf(d.id)}
+                          onCollapse={() => handleCollapse(d.id)}
+                          onAccept={() => handleAccept(d.id)}
+                          onDelegate={() => setDelegateTarget(d)}
+                          onCorrect={() => setCorrectionTarget(d)}
+                          onOpenEvidence={() => void openEvidence(d)}
+                        />
+                      ) : (
+                        <CompactCard
+                          key={d.id}
+                          delta={d}
+                          onOpen={() => handleOpen(d.id)}
+                        />
+                      ),
+                    )}
                   </div>
                 ) : (
                   <AllClearState summary={data.handledWithoutYou} />
