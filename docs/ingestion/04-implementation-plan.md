@@ -140,7 +140,7 @@ Risk-if-deferred key: **Low** = nothing else blocks on it; **Med** = limits one 
 
 ## 2. Sequenced milestones
 
-Six numbered milestones (M1–M6) plus M7 (deferred refinements), plus two M5-surfaced infrastructure work-units (M-Temporal, M-Load) inserted between M5 and M6. Each has a gate; no milestone starts until the previous one's gate passes. Within a milestone, parallelisation is encouraged; the gate is the integration point.
+Six numbered milestones (M1–M6) plus M7 (deferred refinements). M-Load is an M5-surfaced infrastructure work-unit inserted between M5 and M6 (production Kafka readers + synthetic-traffic dry run). M-Temporal is documented but **deferred indefinitely** ([05-lld-amendments.md](05-lld-amendments.md) A11) — M6 ships as asyncio services with pattern-alignment so a later Temporal port is mechanical rather than a rewrite. Each milestone has a gate; no milestone starts until the previous one's gate passes. Within a milestone, parallelisation is encouraged; the gate is the integration point.
 
 ### M1 — Foundational substrate
 
@@ -291,91 +291,144 @@ Six numbered milestones (M1–M6) plus M7 (deferred refinements), plus two M5-su
 
 ---
 
-### M-Temporal — Stand up Temporal infrastructure + port circuit breaker
+### M-Temporal — Temporal infrastructure (DEFERRED INDEFINITELY)
 
-**Status (2026-05-18): planned; new work-unit surfaced during M5.1 execution.** Inserted before M6 because M6 requires Temporal for TenantOnboardingWorkflow + ShardFetchWorkflow.
+**Status (2026-05-18): DEFERRED INDEFINITELY.** M6 ships as asyncio services following the M3.3 cursor-persistence pattern; the Temporal port becomes a future migration rather than a prerequisite. The pattern-alignment requirements documented in M6.0 below make a later Temporal port mechanical rather than a rewrite.
 
-**Discharges non-negotiables:** none directly — this is infrastructure for M6's N1/N3/N4 discharge. M-Temporal is what makes the rest of LLD §2 implementable.
+**Trigger conditions for revisiting** (per [05-lld-amendments.md](05-lld-amendments.md) A11) — any ONE of these is grounds for re-opening this work-unit:
 
-**Outcome:** Temporal cluster operational (Cloud per §6 Q2 default or self-hosted per the decision); a worker registered for the ingestion namespace; the M5.1 circuit breaker ported from its current asyncio service shape ([circuit_breaker.py](../../services/ingestion/feature_flags/circuit_breaker.py)) to a Temporal Schedule per LLD §11.2; the production Kafka readers (`_measure_kafka_lag_default` + `_sample_active_tenants_default`) implemented (today both raise `NotImplementedError` — fail-loud); the `_kafka_partition_for_tenant` blake2b stand-in replaced with on-delivery correlation against librdkafka's murmur2_random partitioner. See [05-lld-amendments.md](05-lld-amendments.md) A8 + A9.
+1. **First crash-recovery failure** — an asyncio service crashes and the state-in-Postgres reconstruction fails to restore correctly, OR a SIGTERM-restart loses work that Temporal's history-as-source-of-truth would have preserved.
+2. **First significant operator-tooling friction** — an incident where debugging the orchestration takes substantially longer than it would have with Temporal's workflow history + replay tooling. "Substantially" = >2× the time of a comparable Temporal investigation.
+3. **First multi-day debugging session** — an investigation that consumes >2 working days where the bisected root cause is "asyncio service had no introspectable history of its decisions." Single instance — not a pattern of three.
 
-**Why this exists as a separate work-unit (M5.1 Phase 0 finding):** M5.1 was specified to ship the breaker as a Temporal Schedule per LLD §11.2. The Phase 0 audit found Temporal infrastructure absent from the repo despite the SDK being in deps. Options surfaced: (1) stand up Temporal as part of M5.1, (2) ship the breaker as an asyncio service following M3.3's pattern. Option 2 accepted: avoids coupling M5 progress to an infra spike. M-Temporal is the IOU for the deferred infra work.
+Any of these flips the cost-benefit calculation: today the asyncio shape is cheaper to operate (one less infra component, one less SDK to learn); the trigger conditions are when that flips.
 
-**Changes:**
-- Temporal Cloud account / self-hosted cluster (the §6 Q2 decision) — provisioned.
-- `services/ingestion/temporal/` — new package: workflow worker registration, namespace config, retry policy defaults per LLD §2.
-- `services/ingestion/feature_flags/circuit_breaker.py` — port `run_circuit_breaker` from the asyncio loop to a Temporal Schedule + activities; preserve the state machine logic (the `_process_tick` extraction means the port is a wrapper change, not a logic rewrite).
-- Production implementations of `_measure_kafka_lag_default` (via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, or Burrow if operationally cheaper) and `_sample_active_tenants_default` (consumer-group reading the last 90s of `ingestion.tenant_traffic_signal`).
-- `services/webhooks/router.py::_kafka_partition_for_tenant` replaced with a real partition lookup: either (a) `IdempotentProducer.produce` augmented to accept an on-delivery callback that records partition into a tenant→partition table, or (b) explicit partition selection via `confluent_kafka.Producer.produce(partition=...)` using the same murmur2 hash librdkafka uses.
+**Why deferred (rationale):** M5.1's Phase 0 audit found Temporal infrastructure absent. Standing it up adds operational surface (cluster ops, SDK learning curve, deployment story) for benefits that are currently theoretical (no production traffic exists; no incident has surfaced where Temporal's replay would have shortened recovery). M3.3's cursor-style asyncio pattern demonstrated that orchestration without Temporal is viable when state lives in Postgres and the service is single-purpose. M6 will use the same pattern across more orchestration surfaces.
 
-**Tests that must pass:**
-- `test_temporal_worker_starts_against_real_cluster`: smoke test against the chosen cluster.
-- `test_circuit_breaker_temporal_schedule_runs_at_interval`: verify the Schedule fires per `tick_interval_sec`.
-- `test_breaker_state_survives_temporal_worker_restart`: port of M5.1's subprocess test — kill the worker mid-tick, restart, assert state survives (same property, different runtime).
-- `test_kafka_partition_lookup_matches_actual_landing_partition`: produce N keyed messages, assert the predicted partition equals the on-delivery partition for ≥99% of records (allowing for rebalance edge cases).
-- `test_breaker_real_lag_reader_detects_synthetic_breach`: inject 60s+ lag on a real partition; assert `_measure_kafka_lag_default` returns the lag.
+**What does NOT block on this deferral:**
+- Production execution of M5 cutover (gated on M-Load, not Temporal).
+- M6 backfill rollout (gated on M-Load, the asyncio orchestration framework in M6.0, and the M6 per-source sub-blocks).
+- Circuit breaker functionality (already ships as an asyncio service that meets the pattern-alignment requirements).
 
-**Risk if deferred:** M6 is blocked (TenantOnboardingWorkflow + ShardFetchWorkflow have no runtime); the first real cutover is blocked (the M5.1 breaker's lag-measurement is non-functional in production today; lag must be monitored manually via `kafka-consumer-groups.sh`).
-
-**Risk of running out of order:** M-Temporal before M5 means the breaker has nowhere to write its tenant_flags flips (the `tenant_flags` table is M1; flag-client + breaker logic are M5.1). M-Temporal must NOT precede M5.
+**What this work-unit would deliver if re-opened** (preserved for reference): Temporal Cloud account or self-hosted cluster; `services/ingestion/temporal/` package with worker registration; port of the asyncio orchestration services (circuit breaker, OAuth poller, TenantOnboarding, SourceOnboarding, ShardFetch, FeelsOnboardedMonitor) to Temporal workflows + activities; the production Kafka readers and partition fix (now part of M-Load — see below).
 
 ---
 
-### M-Load — Synthetic-traffic cutover validation
+### M-Load — Synthetic-traffic cutover validation + breaker readers
 
 **Status (2026-05-18): planned; the gate condition for the first real-customer cutover.**
 
+With M-Temporal deferred indefinitely, M-Load absorbs the production Kafka readers and partition-correlation fix that were originally in M-Temporal's scope. Those changes don't require Temporal — they're independent infrastructure that the breaker's asyncio service can consume directly.
+
 **Discharges non-negotiables:** N1 (verifying that the cutover's correctness properties hold at production-equivalent volume — the M5 code passes the unit/integration gates but production-volume regression is unknown).
 
-**Outcome:** a staging dry run with a synthetic-traffic generator drives the cutover-enabled providers (slack, github) at production-equivalent rate for ≥1 hour. Assertions: (a) `webhook_router_kafka_path_total{outcome="success"}` >> `outcome="fallback"`; (b) writer observation count equals the synthetic generator's send count (modulo intentional dedup); (c) p95 webhook-to-observation latency under target; (d) circuit breaker fires only when synthetic lag is injected, never spuriously.
+**Outcome:** (a) the breaker's deferred Kafka readers and partition stand-in are replaced with production implementations; (b) a staging dry run with a synthetic-traffic generator drives the cutover-enabled providers (slack, github) at production-equivalent rate for ≥1 hour and validates the four cutover properties.
 
-**Changes:**
-- `services/synthetic/cutover_load.py` — new synthetic-traffic generator that signs and posts to `/webhooks/{slack,github}/*` at configurable QPS, with a controllable mix of duplicate / unique payloads.
-- `tests/load/test_cutover_dryrun.py` — orchestrates the run + asserts the four properties above.
+**Changes — breaker production readers (from former M-Temporal scope):**
+- `services/ingestion/feature_flags/circuit_breaker.py::_measure_kafka_lag_default` — implement via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, OR Burrow integration if operationally cheaper. Today raises `NotImplementedError` ([05-lld-amendments.md](05-lld-amendments.md) A9).
+- `services/ingestion/feature_flags/circuit_breaker.py::_sample_active_tenants_default` — implement via a consumer-group reading the last `signal_lookback_sec` of `ingestion.tenant_traffic_signal`, returning `{tenant_id: partition}`. Today raises `NotImplementedError`.
+- `services/webhooks/router.py::_kafka_partition_for_tenant` — replace blake2b stand-in with either (a) `IdempotentProducer.produce` augmented to accept an on-delivery callback that records partition into a tenant→partition table the signal hook reads from, or (b) explicit partition selection using `mmh3` murmur2 matching librdkafka's algorithm. See [05-lld-amendments.md](05-lld-amendments.md) A8.
+
+**Changes — synthetic traffic generator + dry run:**
+- `services/synthetic/cutover_load.py` — synthetic-traffic generator that signs and posts to `/webhooks/{slack,github}/*` at configurable QPS, with a controllable mix of duplicate / unique payloads.
+- `tests/load/test_cutover_dryrun.py` — orchestrates the run + asserts the four cutover properties.
 - `docs/ingestion/m-load-runbook.md` — operator guide for running and interpreting the dry run.
 
 **Tests that must pass:**
-- The four properties above, asserted by the test orchestrator against actual staging metrics.
+- `test_breaker_real_lag_reader_detects_synthetic_breach`: inject 60s+ lag on a real partition; assert `_measure_kafka_lag_default` returns the lag within ±5s of the true value.
+- `test_kafka_partition_lookup_matches_actual_landing_partition`: produce N keyed messages; assert the predicted partition equals the on-delivery partition for ≥99% of records.
+- `test_signal_topic_round_trip`: publish 1000 signal records; consume via `_sample_active_tenants_default`; assert tenant→partition map round-trips correctly.
+- Cutover dry-run properties: (a) `webhook_router_kafka_path_total{outcome="success"}` >> `outcome="fallback"`; (b) writer observation count equals the synthetic generator's send count (modulo intentional dedup); (c) p95 webhook-to-observation latency under target; (d) circuit breaker fires only when synthetic lag is injected, never spuriously.
 
-**Risk if deferred:** the first real-customer cutover happens without production-volume verification. Code-level tests prove the mechanism is correct on toy inputs; M-Load is the gate that proves it under realistic load.
+**Risk if deferred:** the first real-customer cutover happens without production-volume verification AND without functional breaker lag-measurement. Code-level tests prove the mechanism is correct on toy inputs; M-Load is the gate that proves it under realistic load with real Kafka readers.
 
-**Risk of running out of order:** M-Load before M-Temporal means the breaker's lag readers aren't real; the synthetic-lag-injection test would fail at the reader level, not the breaker logic level. Run M-Temporal first.
+**Risk of running out of order:** M-Load needs to run AFTER M5 (the cutover code) and BEFORE M6 (which depends on the breaker actually functioning in production to enforce N3). It does NOT need Temporal — that decoupling is the rationale for M-Temporal's deferral.
 
 ---
 
-### M6 — Backfill rollout per source
+### M6 — Backfill rollout per source (asyncio services; Temporal-aligned)
+
+**Status (2026-05-18): seven sub-blocks (M6.0 through M6.6) implementing the LLD §2 workflows as long-running asyncio services rather than Temporal workflows.** This is a deliberate consequence of M-Temporal's indefinite deferral; the pattern-alignment requirements below ensure that a later Temporal port (under the trigger conditions in [05-lld-amendments.md](05-lld-amendments.md) A11) is mechanical rather than a rewrite.
 
 **Discharges non-negotiables:** N1 (cursor-data ordering invariant becomes a tested property; `test_advance_cursor_atomic_with_kafka_publish` is the gate), N4 (`feels_onboarded` content-based event becomes a user-facing reality; recency-first planning materializes), N3 (per-source planner + per-tenant rate buckets enforce isolation under backfill load).
 
-**Outcome:** new installs trigger `TenantOnboardingWorkflow`; backfill runs to completion; reconciliation closes coverage gaps; `feels_onboarded` events fire; existing tenants get an opt-in "backfill now" admin action. Rollout per source in order: Gmail → GitHub → Slack → Discord.
+**Outcome:** new installs trigger `TenantOnboarding`; backfill runs to completion; reconciliation closes coverage gaps; `feels_onboarded` events fire; existing tenants get an opt-in "backfill now" admin action. Rollout per source in order: Gmail → GitHub → Slack → Discord.
 
-**Pre-M6 gate:** M-Temporal complete (Temporal cluster operational; breaker ported); M-Load complete (synthetic dry run passes); M5 cutover stable for ≥2 weeks for the slack+github tier ramp; circuit breaker has NOT auto-fired for any production tenant in that window.
+**Pre-M6 gate:** M-Load complete (synthetic dry run passes; breaker production readers green); M5 cutover stable for ≥2 weeks for the slack+github tier ramp; circuit breaker has NOT auto-fired for any production tenant in that window.
 
-**Changes per source** (each is a sub-milestone):
-- M6.1 Gmail: `plan_shards_gmail`, `fetch_page_gmail`, `reconcile_gmail`. Migrate `gmail/fetcher.py` + `history_poller.py` + `watch_scheduler.py` to Temporal Schedules (the LLD names this as the most disruptive single change; allocate L effort).
-- M6.2 GitHub: `plan_shards_github`, `fetch_page_github`, `reconcile_github`. Reuse existing `GithubClient` token-cache and chokepoint logic.
-- M6.3 Slack: `plan_shards_slack`, `fetch_page_slack`, `reconcile_slack`.
-- M6.4 Discord: `plan_shards_discord`, `fetch_page_discord`, `reconcile_discord` (with sparse 5% sampling).
-- For each: per-source OAuth callback already writes the outbox row (from M5 changes); now the poller actually starts a workflow that does work.
+#### Pattern-alignment requirements (load-bearing for the seven sub-blocks)
 
-**Common changes:**
-- `services/ingestion/workflows/{tenant,source,shard,poller,monitor}.py` — full implementation per LLD §2.
-- `services/ingestion/activities/` — all activities.
-- `services/ingestion/reconciler/` — per-source count APIs.
-- `services/ingestion/progress/publisher.py` + `events.py` — full Pydantic models + Kafka publisher.
+Every M6 asyncio service MUST honour these five requirements. They are derived from the trigger conditions in [05-lld-amendments.md](05-lld-amendments.md) A11 — when one of those trigger conditions fires and the Temporal port is reopened, alignment with these requirements makes the port mechanical (the asyncio main loop is replaced with a Temporal workflow body; the named functions become activities; the state schema is unchanged).
 
-**Tests that must pass (per source):**
-- `test_planner_<source>_produces_expected_shards`: fixture install with known channel/repo/mailbox set; assert shard count and recency scores.
-- `test_fetch_page_<source>_advances_cursor_atomically`: mock the API; assert cursor advances only after Kafka publish succeeds; assert mid-fetch crash re-runs from same cursor.
-- `test_shard_fetch_workflow_resumes_after_worker_crash`: kill the worker mid-shard via Temporal test framework; assert workflow resumes and completes.
-- `test_reconciler_detects_injected_gap`: pre-populate observations with a deliberate gap; run reconciler; assert reshared shard appears.
-- `test_feels_onboarded_fires_when_window_filled`: full end-to-end pipeline with fixture; assert event published with content-based trigger.
-- `test_oauth_outbox_to_workflow_end_to_end`: simulate OAuth callback; assert outbox row written, poller consumes within 5s, workflow starts, observations land.
+1. **Orchestration separated from side effects.** The main loop reads state from Postgres, decides what to do next, and calls a named side-effect function. Decisions live in pure functions of the state row; side effects (API calls, Kafka publishes, DB writes outside the orchestration's own state table) live in separately-named functions that take their inputs explicitly. The boundary makes the eventual Temporal split (workflow code vs activity code) one refactor pass, not a structural rewrite.
+
+2. **State in Postgres, not memory.** Every progress-bearing variable lives in a Postgres table (`onboarding_runs`, `onboarding_shards`, `circuit_breaker_state`, `embedding_backlog_state`, etc.). The asyncio process holds NO state that wouldn't survive a SIGTERM-restart. Recovery on startup is "load the latest state row from Postgres" — no in-memory caches that need warming, no per-process counters that diverge from the durable record.
+
+3. **Retry logic in named functions.** When a side-effect call fails and needs retrying, the retry policy lives in a function with a name (e.g. `retry_with_backoff_on_429`), NOT inline `try/except` blocks scattered through the orchestrator. Temporal's retry policies are declarative; named retry helpers map to those declarations 1:1 when porting.
+
+4. **Signals via Postgres polling.** Cross-service communication uses Postgres rows as the signal channel, not in-process events or shared queues. The OAuth outbox poller polls a table; the `TenantOnboarding` service polls another table; the `FeelsOnboardedMonitor` polls observation counts. Polling intervals are short enough for operator UX (≤30s) but long enough not to thrash the DB. Temporal's `signal_workflow` API maps to "insert a row in the signal table" — same shape, different transport.
+
+5. **No cross-workflow shared in-process state.** Each asyncio service is one process per logical workflow (or a small fleet, partitioned by tenant). Services do NOT share Python globals, in-process queues, or singleton objects. The circuit breaker doesn't reach into the writer's metrics dict; the OAuth poller doesn't share state with the TenantOnboarding service. All cross-service handoffs go through Postgres or Kafka. This is what makes per-workflow Temporal porting independent — one service at a time, in any order.
+
+**Gate test for the pattern-alignment requirements:** `test_asyncio_orchestration_matches_temporal_shape` runs a static analyzer over `services/ingestion/workflows/` and asserts: (a) no module-level mutable state, (b) every `time.sleep` / `asyncio.sleep` longer than the polling interval is preceded by a Postgres state-persist call, (c) every external-API call is wrapped by a named retry helper from `services/ingestion/workflows/retry/`. Specifics are calibrated as M6.0 lands.
+
+#### M6.0 — Asyncio orchestration substrate
+
+Lays the framework all subsequent M6 sub-blocks build on. No business logic; just the pattern.
+
+- `services/ingestion/workflows/__init__.py` — package root with the substrate.
+- `services/ingestion/workflows/state.py` — base helpers for "load state row by id," "persist updated state row," "advance cursor atomically with Kafka publish" (the LLD §3.1 cursor-data ordering invariant).
+- `services/ingestion/workflows/retry.py` — named retry helpers: `retry_with_backoff_on_429`, `retry_with_jitter_on_5xx`, etc.
+- `services/ingestion/workflows/signals.py` — Postgres-table-based signal polling (`poll_signal_table(table, predicate, interval_sec=5)` returns an async iterator).
+- `services/ingestion/workflows/runtime.py` — the long-running-service skeleton mirroring M3.3's embedding backlog drainer: `signal.SIGTERM` handler, max_ticks for tests, `pgbouncer_compatible=True` pool helper (sixth `statement_cache_size=0` activation).
+- `services/ingestion/progress/publisher.py` + `events.py` — Pydantic event models per LLD §6.
+- `services/ingestion/workflows/feels_onboarded_monitor.py` — asyncio service that polls observation counts per tenant per source; emits `feels_onboarded` events when the LLD §6 thresholds are met.
+- Tests: `test_asyncio_orchestration_matches_temporal_shape` (the pattern-alignment gate), `test_signal_polling_resumes_after_restart`, `test_named_retry_logs_per_attempt`, `test_feels_onboarded_monitor_fires_at_threshold`.
+
+#### M6.1 — OAuth outbox poller + TenantOnboarding
+
+- `services/ingestion/workflows/oauth_poller.py` — long-running asyncio service that polls `onboarding_triggers` (the OAuth outbox table from M1) under `FOR UPDATE SKIP LOCKED`; consumes claimed rows; spawns per-tenant onboarding work by writing to `onboarding_runs`.
+- `services/ingestion/workflows/tenant_onboarding.py` — long-running asyncio service that picks up `onboarding_runs` rows where `status='pending'`, fans out per-source onboarding (writes per-source rows to `source_onboarding_runs` or similar), and waits via Postgres polling for completion signals from the source workflows.
+- Tests: `test_outbox_poller_consumes_under_for_update_skip_locked`, `test_tenant_onboarding_resumes_after_restart`, `test_tenant_onboarding_fans_out_to_all_sources`.
+
+#### M6.2 — SourceOnboarding + ShardFetch + reconciliation framework
+
+- `services/ingestion/workflows/source_onboarding.py` — per-source planner orchestration: calls `plan_shards_<source>`, persists shard rows, polls shard completion.
+- `services/ingestion/workflows/shard_fetch.py` — per-shard fetcher loop: cursor advance atomic with Kafka publish (the N1 invariant — `test_advance_cursor_atomic_with_kafka_publish` is the gate); uses the named retry helpers from M6.0; rate-limits via the M1.3 Lua bucket.
+- `services/ingestion/workflows/reconciler.py` — reconciliation orchestration: detects coverage gaps via per-source count APIs (the per-source modules implement those in M6.3–M6.6); decides whether to re-share a shard; persists decision in `onboarding_shards`.
+- Tests: `test_shard_fetch_resumes_after_restart_from_persisted_cursor`, `test_advance_cursor_atomic_with_kafka_publish`, `test_reconciler_detects_gap_and_reshares_shard`.
+
+#### M6.3 — Gmail backfill (planner + fetcher + reconciler)
+
+- `services/ingestion/planners/gmail.py` — `plan_shards_gmail`.
+- `services/ingestion/fetchers/gmail.py` — `fetch_page_gmail`. Subsumes the existing `gmail/fetcher.py` + `history_poller.py` + `watch_scheduler.py` — the LLD names this as the most disruptive single change; allocate L effort.
+- `services/ingestion/reconciler/gmail.py` — `reconcile_gmail`.
+- Tests: `test_planner_gmail_produces_expected_shards`, `test_fetch_page_gmail_advances_cursor_atomically`, `test_reconciler_gmail_detects_below_threshold_no_reshare`, `test_e2e_gmail_install_to_first_observation`.
+
+#### M6.4 — GitHub backfill
+
+- `services/ingestion/planners/github.py`, `fetchers/github.py`, `reconciler/github.py`. Reuses existing `GithubClient` token-cache and chokepoint logic.
+- Tests: `test_planner_github_produces_expected_shards`, `test_fetch_page_github_advances_cursor_atomically`, `test_reconciler_github_above_threshold_reshares`, `test_e2e_github_full_backfill_5_repos`.
+
+#### M6.5 — Slack backfill
+
+- `services/ingestion/planners/slack.py`, `fetchers/slack.py`, `reconciler/slack.py`.
+- Tests: `test_planner_slack_produces_expected_shards`, `test_fetch_page_slack_advances_cursor_atomically`, `test_e2e_slack_install_feels_onboarded_within_target`.
+
+#### M6.6 — Discord backfill (sparse sampling)
+
+- `services/ingestion/planners/discord.py`, `fetchers/discord.py`, `reconciler/discord.py` (5% sparse sampling per LLD §3.4).
+- Tests: `test_planner_discord_produces_expected_shards`, `test_reconciler_discord_sparse_sampling_correctness`, `test_e2e_discord_gateway_message_to_observation`.
+
+#### M6 — common artifacts
+
+- `test_oauth_outbox_to_workflow_end_to_end`: simulate OAuth callback; assert outbox row written, poller consumes within 5s, TenantOnboarding starts, per-source services pick up the work, observations land.
 - `test_end_to_end_small_tenant_backfill`: fixture tenant with 5 channels/repos/mailboxes; full backfill; assert coverage 100%.
+- `test_oauth_outbox_to_workflow_end_to_end` is the integration gate across M6.1–M6.6.
 
 **Risk if deferred:** the headline product gap (no backfill) persists.
 
-**Risk of running out of order:** M6 before M5 means backfill writes go to a path that hasn't been validated against the steady-state path; divergences become bugs at install time.
+**Risk of running out of order:** M6 before M5 means backfill writes go to a path that hasn't been validated against the steady-state path; divergences become bugs at install time. M6.3–M6.6 (per-source sub-blocks) MUST land after M6.0–M6.2 (the substrate) — the pattern-alignment requirements are enforced at the framework level.
 
 ---
 

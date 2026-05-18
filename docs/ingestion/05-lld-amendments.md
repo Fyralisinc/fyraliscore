@@ -331,6 +331,28 @@ removed from that file.
 - **What's required to resolve:** M-Temporal must implement `_measure_kafka_lag_default` (via `confluent_kafka.AdminClient.list_consumer_group_offsets` + broker-timestamp correlation, OR Burrow integration if operationally cheaper) and `_sample_active_tenants_default` (consumer-group reading the last `signal_lookback_sec` of `ingestion.tenant_traffic_signal`, keyed by tenant_id, returning `{tenant_id: partition}`).
 - **LLD edit pending:** §11.2 must acknowledge the two-stage delivery — state machine in M5.1, Kafka readers in M-Temporal — or the LLD should be edited to forward-reference the M-Temporal section once that section is written.
 
+### A11 — Temporal deferred indefinitely; M6 ships as asyncio with pattern-alignment
+
+- **Status:** Open. Re-evaluated under the trigger conditions below.
+- **LLD section:** §2 (Workflow orchestration via Temporal) and §11.2 (Cutover circuit breaker via Temporal Schedule). Both prescribe Temporal as the runtime; the production reality through M5.4 + M6 is asyncio services following M3.3's cursor-persistence pattern.
+- **Implementation surface:** [services/ingestion/feature_flags/circuit_breaker.py](../../services/ingestion/feature_flags/circuit_breaker.py) (M5.1; asyncio); the M6.0–M6.6 services that will land under [04-implementation-plan.md §M6](04-implementation-plan.md#m6--backfill-rollout-per-source-asyncio-services-temporal-aligned) (all asyncio per the M6 restructure).
+- **What the LLD says today:** §2 enumerates `OnboardingTriggerPollerWorkflow`, `TenantOnboardingWorkflow`, `SourceOnboardingWorkflow`, `ShardFetchWorkflow`, `FeelsOnboardedMonitorWorkflow`, `IngestionCircuitBreakerWorkflow` as Temporal workflows. §11.2 specifies the breaker as a Temporal Schedule.
+- **What's actually true:** M5.1 ships the breaker as an asyncio service per the Phase 0 finding (Temporal infra absent, Option B chosen). M6 ships every workflow as an asyncio service per [04-implementation-plan.md §M6 pattern-alignment requirements](04-implementation-plan.md#pattern-alignment-requirements-load-bearing-for-the-seven-sub-blocks). Pattern-alignment makes a later Temporal port mechanical (workflow body ↔ asyncio main loop; activity ↔ named side-effect function; signal_workflow ↔ Postgres signal table; retry policy ↔ named retry helper; workflow state ↔ Postgres state row), but the port itself does not happen until one of the trigger conditions fires.
+
+- **Trigger conditions for revisiting (any ONE flips the cost-benefit calculation):**
+
+  1. **First crash-recovery failure.** An asyncio service crashes and Postgres-state reconstruction either fails to restore correctly OR loses work that Temporal's history-as-source-of-truth would have preserved. Diagnostic: an incident postmortem identifies "Temporal would have retained the prior decision tree; the asyncio service had only the latest state row."
+  2. **First significant operator-tooling friction.** An incident where debugging the orchestration takes substantially longer than it would have with Temporal's workflow-history + replay tooling. "Substantially" = >2× the time of a comparable Temporal investigation. Diagnostic: an operator's incident-review explicitly names "no introspectable history of decisions" as the slowdown.
+  3. **First multi-day debugging session.** An investigation that consumes >2 working days where the bisected root cause is "asyncio service had no introspectable history of its decisions." Single instance — not a pattern of three; the threshold is one instance because multi-day debugging sessions are themselves uncommon enough to be a load-bearing signal.
+
+  These are NOT thresholds for cosmetic preferences ("Temporal would be nicer to read"); they are thresholds where the asyncio shape has demonstrably cost more engineering or operations time than the Temporal infrastructure investment would have. Document the incident, name the trigger condition met, then reopen [04-implementation-plan.md §M-Temporal](04-implementation-plan.md#m-temporal--temporal-infrastructure-deferred-indefinitely).
+
+- **Why deferred (rationale):** standing up Temporal adds operational surface (cluster ops, SDK learning curve, deployment story) for benefits that are currently theoretical (no production traffic exists; no incident has surfaced where Temporal's replay would have shortened recovery). M3.3's cursor-style asyncio pattern demonstrated viability when state lives in Postgres and the service is single-purpose. Pattern-alignment ensures the deferral is reversible at low cost; the trigger conditions make the reversal criterion measurable rather than aesthetic.
+
+- **What does NOT block on this deferral:** production execution of M5 cutover (gated on M-Load); M6 backfill rollout (gated on M-Load + M6.0 substrate); circuit breaker functionality (already shipping as asyncio).
+
+- **LLD edits pending:** §2 prose must be rewritten from "Temporal workflows" to "long-running asyncio services per the pattern-alignment requirements in [04-implementation-plan.md §M6](04-implementation-plan.md#m6--backfill-rollout-per-source-asyncio-services-temporal-aligned), portable to Temporal under [05-lld-amendments.md A11](05-lld-amendments.md) trigger conditions." §11.2 prose for the breaker similarly. The Temporal-workflow code shapes in §2 stay as REFERENCE for the future port (they describe the destination, not the current code).
+
 ### A10 — Mode B writer collapses under Finding 4 (single mode ships)
 
 - **Status:** Open. Tied to §6 Q4 (WS-latency product decision).
