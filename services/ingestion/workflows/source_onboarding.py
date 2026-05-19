@@ -211,11 +211,42 @@ SELECT id, tenant_id, provider, installation_id, enabled
  LIMIT 1
 """
 
+# Per M6.3 S1 amendment (per [05-lld-amendments.md A18]
+# — per-source enrichment via JSON-aggregating LEFT JOIN):
+# Gmail's install record is workspace-scoped, but the planner needs the
+# 1-to-N active-mailbox list to emit one shard per mailbox. The
+# enrichment lives in `gmail_mailbox_watches` (per-mailbox table
+# populated at install-time by `_provision_install`).
+#
+# The LEFT JOIN aggregates active mailboxes into a JSON array column;
+# the planner decodes `install["mailboxes"]` (string) via orjson and
+# stays stateless (no DB I/O in the planner). Filter on
+# `state = 'active'` so paused / opted_out / errored mailboxes don't
+# get planned — matches the existing steady-state code's
+# `_lease_due_mailboxes` filter (services/integrations/gmail/
+# history_poller.py:55).
+#
+# ShardFetch's own `_LOAD_GMAIL_INSTALL_SQL` does NOT need this
+# enrichment (the fetcher works on one mailbox at a time via
+# `shard_identifier`); only the planner's loader carries the aggregate.
 _LOAD_GMAIL_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM gmail_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
+SELECT gi.id, gi.tenant_id, gi.workspace_domain, gi.service_account_email,
+       gi.scope, gi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'email_address', mw.email_address,
+             'google_user_id', mw.google_user_id,
+             'history_id', mw.history_id
+           ) ORDER BY mw.email_address
+         ) FILTER (WHERE mw.id IS NOT NULL),
+         '[]'::json
+       ) AS mailboxes
+  FROM gmail_installations gi
+  LEFT JOIN gmail_mailbox_watches mw
+    ON mw.gmail_installation_id = gi.id AND mw.state = 'active'
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ GROUP BY gi.id
  LIMIT 1
 """
 
