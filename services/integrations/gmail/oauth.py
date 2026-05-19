@@ -196,6 +196,27 @@ async def connect_finalize(request: Request) -> JSONResponse:
                 "inclusion_spec": inclusion_spec,
             },
         )
+        # F4 / A20: atomic onboarding_triggers write. The retrofit makes
+        # the M6 backfill chain fire on every completed OAuth install.
+        # Idempotency: migration 0057 added a partial unique index on
+        # (tenant_id, source, gmail_installation_id) WHERE
+        # gmail_installation_id IS NOT NULL; ON CONFLICT DO NOTHING means
+        # OAuth retries / browser refreshes / reinstalls produce at most
+        # one trigger row per (tenant, gmail_install) tuple.
+        await tctx.execute(
+            """
+            INSERT INTO onboarding_triggers (
+                id, tenant_id, source, trigger_kind,
+                gmail_installation_id, payload
+            ) VALUES ($1, $2, 'gmail', 'install', $3, $4::jsonb)
+            ON CONFLICT (tenant_id, source, gmail_installation_id)
+                WHERE gmail_installation_id IS NOT NULL
+                DO NOTHING
+            """,
+            uuid7(), tenant_id, install_id,
+            __dumps({"scope": scope_alias,
+                     "workspace_domain": workspace_domain}),
+        )
 
     # Provisioning runs out-of-band: it makes external API calls
     # (Pub/Sub admin, users.watch per mailbox) that we don't want to

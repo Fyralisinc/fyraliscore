@@ -560,6 +560,12 @@ All four sources wired. The three dispatch tables (`PLANNER_DISPATCH`, `FETCHER_
 
 What remains: M-Load (production Kafka readers + synthetic harness for cutover dry run) is the gate to first real-customer cutover. The F4 retrofit (`ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md`) must also land before customers see backfill in production.
 
+### §X1 closeout — F4 OAuth retrofit (mega-prompt 2)
+
+**Status:** Closed on branch `feat/ingestion-x1-oauth-onboarding-triggers-retrofit`. Per [A20](./05-lld-amendments.md#a20--f4-oauth-retrofit-all-callbacks-write-onboarding_triggers-atomically-with-install): all four OAuth callbacks (Gmail / Slack / GitHub / Discord) now write `onboarding_triggers` rows atomically with the install row insert. Migration 0057 adds two partial unique indexes (one per install-id column family) so `ON CONFLICT DO NOTHING` makes the retry path silently safe. [Ticket #36](../decisions/ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md) resolved.
+
+**The M6 framework is now production-trigger-capable.** Whether real customers exist or not, an OAuth install in any of the four sources fires the full M6 chain. The F4 gate is closed; M-Load is the remaining gate to first real-customer cutover.
+
 ---
 
 #### M-Load — Production Kafka readers + synthetic cutover dry run — **CLOSED (code-complete; staging validation pending)**

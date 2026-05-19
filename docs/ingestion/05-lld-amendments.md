@@ -723,6 +723,51 @@ A18 inherits from and extends:
 
 ---
 
+## A20 — F4 OAuth retrofit: all callbacks write `onboarding_triggers` atomically with install
+
+**Status:** Resolved with X1 commit on `feat/ingestion-x1-oauth-onboarding-triggers-retrofit`.
+
+**Trigger:** Pre-customer-cutover audit revealed the M6 framework was inert in production because OAuth callbacks (Gmail / Slack / GitHub / Discord) never wrote `onboarding_triggers` rows. Filed as [ticket #36](../decisions/ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md) during M6.3 closeout; resolved here.
+
+**Decision:** Each OAuth callback inserts an `onboarding_triggers` row in the same transaction as the install row insert. Idempotent on retry via partial unique indexes (migration 0057) + `ON CONFLICT DO NOTHING`. Forward-only — no backfill of existing installs (none in production currently).
+
+**Rationale:**
+
+- **Atomicity** removes the install-succeeded-but-no-trigger failure mode. Pre-retrofit, each callback ran install UPSERT + audit (+ side effects) as separate auto-commit statements; a crash between the install commit and a separate trigger write would have silently dropped onboarding. The retrofit makes install + trigger one transaction; either both land or neither does.
+- **DB-level idempotency** prevents application-level race windows. OAuth retries (browser refresh, network retransmit, user clicking "install" twice) and reinstalls (user re-completing the OAuth flow on an existing workspace) are all common in production; the unique-index-driven `ON CONFLICT DO NOTHING` makes the path silently safe rather than depending on application logic for dedup.
+- **Forward-only** avoids speculative migration of nonexistent data — no installs predate this retrofit in production, so no backfill is needed.
+
+**Implementation:**
+
+- **Migration 0057** — `0057_onboarding_triggers_unique_per_install.sql`:
+  - `UNIQUE (tenant_id, source, installation_row_id) WHERE installation_row_id IS NOT NULL` — applies to slack/github/discord triggers (which reference `provider_installations.id`).
+  - `UNIQUE (tenant_id, source, gmail_installation_id) WHERE gmail_installation_id IS NOT NULL` — applies to gmail triggers (which reference `gmail_installations.id`).
+  - Two partial indexes because the schema (from migration 0047) uses mutually exclusive install-id columns; a single multi-column unique would treat both NULLs as distinct.
+- **Gmail** (`services/integrations/gmail/oauth.py::connect_finalize`) — install + trigger inside the existing `async with tenant_transaction(tenant_id) as tctx:` block.
+- **Slack** (`services/integrations/slack/oauth.py::callback_handler`) — wrapped the previously-autocommit install UPSERT in `async with pool.acquire() as conn: async with conn.transaction():` (the pre-retrofit code ran each statement with autocommit per asyncpg default); added `_emit_onboarding_trigger` helper. `_upsert_installation` accepts pool OR connection per [A12](#a12--executor-typed-substrate-signatures-for-transactional-participation).
+- **GitHub** (`services/integrations/github/oauth.py::callback_handler`) — same shape as Slack; added `_upsert_installation_in_tx` (connection-bound variant) + `_emit_onboarding_trigger`.
+- **Discord** (`services/integrations/discord/oauth.py::callback_handler`) — same shape as Slack/GitHub.
+
+**Trigger row shape (column-name reality):**
+
+The `onboarding_triggers` schema (migration 0047) uses TWO mutually-exclusive install-id columns: `installation_row_id` (for slack/github/discord — references `provider_installations.id`) and `gmail_installation_id` (for gmail — references `gmail_installations.id`). The retrofit fills exactly one column per source; the other stays NULL. The `trigger_kind` value reflects the install lifecycle: `'install'` for fresh inserts, `'reinstall'` when the UPSERT updated an existing row (detected via `xmax = 0` for non-Gmail; Gmail's UPSERT does not surface this flag — Gmail relies entirely on the partial unique index for retry idempotency).
+
+**Tests:**
+
+- `test_{gmail,slack,github,discord}_oauth_callback_writes_onboarding_trigger` — for each source, drives the callback end-to-end (HTTP), asserts the install row and trigger row both exist, asserts the trigger references the install via the correct id column.
+- `test_oauth_callback_atomic_rollback_includes_trigger` — monkeypatches `_emit_onboarding_trigger` to raise; asserts the install row also rolls back (neither row present in DB).
+- `test_oauth_callback_idempotent_on_retry_with_unique_constraint` — issues two callbacks for the same install identity; asserts exactly one trigger row exists.
+
+**Cross-references:**
+
+- [A12](#a12--executor-typed-substrate-signatures-for-transactional-participation) — executor-typed substrate signatures; the per-source `_upsert_installation` helpers now accept `Pool | Connection`.
+- [A18](#a18--per-source-backfill-is-net-new-code-framework--existing-steady-state-coexist-until-m7) — per-source backfill is net-new code; F4 is the trigger source for that net-new code. Without A20, the M6 chain has no real-traffic source in production.
+- [Ticket #36](../decisions/ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md) — this amendment is the resolution.
+
+**Effect on future per-source additions:** M6.7+ (if added) follows the same pattern. New OAuth callbacks write `onboarding_triggers` atomically with the install row; new sources extend the partial unique index pattern as needed.
+
+---
+
 ## A19 — Framework exception handling for per-source dispatch failures
 
 **Status:** Resolved with the post-M-Load follow-up commit on `integration/ingestion-hardening`.

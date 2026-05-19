@@ -1,8 +1,17 @@
 # Ticket #36 — Retrofit OAuth callbacks to write `onboarding_triggers` rows
 
-**Status:** Deferred. Filed in M6.3 Phase 3 closeout.
-**Target milestone:** **Required before first real-customer cutover.** M7 territory or earlier if customer timeline demands.
+**Status:** **Resolved** with mega-prompt-2 X1 commit on branch `feat/ingestion-x1-oauth-onboarding-triggers-retrofit`. See [A20](../ingestion/05-lld-amendments.md#a20--f4-oauth-retrofit-all-callbacks-write-onboarding_triggers-atomically-with-install) for the codified pattern.
+**Target milestone:** Closed.
 **Filed:** 2026-05-19.
+**Resolved:** 2026-05-19.
+
+## Resolution summary
+
+Migration 0057 adds two partial unique indexes on `onboarding_triggers` (one for `(tenant_id, source, installation_row_id)` covering slack/github/discord, one for `(tenant_id, source, gmail_installation_id)` covering gmail). Each of the four OAuth callbacks now writes its trigger row in the same transaction as the install row insert, with `ON CONFLICT DO NOTHING` for retry idempotency. Slack / GitHub / Discord callbacks needed explicit transaction wrappers added (pre-retrofit they ran each statement with autocommit per asyncpg default); Gmail's existing `tenant_transaction()` block was extended additively.
+
+Forward-only — no backfill of existing installs per X1.3 (audit confirmed zero production installs predate the retrofit).
+
+## Original ticket content (preserved for context)
 
 ## Summary
 

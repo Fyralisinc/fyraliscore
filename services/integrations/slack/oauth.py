@@ -407,7 +407,7 @@ async def _persist_secrets(
 
 
 async def _upsert_installation(
-    pool: asyncpg.Pool,
+    executor: asyncpg.Pool | asyncpg.Connection,
     tenant_id: UUID,
     team_id: str,
     secret_ref_value: str,
@@ -418,10 +418,15 @@ async def _upsert_installation(
     state-token's `tenant_id`; otherwise raises
     `InstallationCollisionError` (FR-018 edge).
 
+    Per A12: accepts pool OR connection so the callback can wrap the
+    install + onboarding_triggers insert in one atomic transaction
+    (per A20). Each statement's auto-commit semantics are preserved
+    when invoked with a pool.
+
     Returns `(installation_row_id, was_inserted)`.
     """
     row_id = uuid7()
-    row = await pool.fetchrow(
+    row = await executor.fetchrow(
         """
         INSERT INTO provider_installations
             (id, tenant_id, provider, installation_id, secret_ref, enabled)
@@ -444,6 +449,35 @@ async def _upsert_installation(
             "team_id is already bound to a different Fyralis tenant",
         )
     return row["id"], bool(row["was_inserted"])
+
+
+async def _emit_onboarding_trigger(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    installation_row_id: UUID,
+    trigger_kind: str,
+    payload: dict[str, Any],
+) -> None:
+    """Per A20: write an onboarding_triggers row atomically with the
+    install. Idempotent via migration 0057's partial unique index on
+    (tenant_id, source, installation_row_id) WHERE
+    installation_row_id IS NOT NULL — OAuth retries / browser refreshes
+    / reinstalls produce at most one trigger row per (tenant, install).
+    """
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'slack', $3, $4, $5::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), tenant_id, trigger_kind,
+        installation_row_id, json.dumps(payload),
+    )
 
 
 async def _write_audit(
@@ -590,11 +624,23 @@ async def callback_handler(request: Request) -> Any:
         )
         return _error_redirect("secret_store_unavailable", status_code=503)
 
-    # 6. Upsert installation. Collision is the cross-tenant rebind case.
+    # 6. Upsert installation + emit onboarding_triggers atomically.
+    # Per A20: trigger insert is in the SAME transaction as the install
+    # row insert so the F4 retrofit has no install-succeeded-but-no-
+    # trigger failure mode. Collision is the cross-tenant rebind case.
     try:
-        installation_row_id, was_inserted = await _upsert_installation(
-            pool, tenant_id, team_id, signing_ref,
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                installation_row_id, was_inserted = await _upsert_installation(
+                    conn, tenant_id, team_id, signing_ref,
+                )
+                await _emit_onboarding_trigger(
+                    conn,
+                    tenant_id=tenant_id,
+                    installation_row_id=installation_row_id,
+                    trigger_kind=("install" if was_inserted else "reinstall"),
+                    payload={"team_id": team_id},
+                )
     except InstallationCollisionError:
         log.info("slack_install_failure", reason="installation_collision")
         await _write_audit(
