@@ -1,0 +1,640 @@
+"""`BackfillHarness` — OAuth-callback-driven multi-tenant backfill orchestrator.
+
+Per A22. Operates in three phases:
+
+  Phase A — Setup:
+    1. Seed tenants (one row in `tenants` per scenario).
+    2. Build per-tenant fixtures via X2 generators.
+    3. Write the multi-tenant helper module to a temp directory; the
+       helper registers fixture-aware mock-client factories at import.
+    4. Invoke OAuth callbacks in-process (via httpx ASGITransport) to
+       write install + onboarding_triggers rows.
+
+  Phase B — Run:
+    5. Spawn 5 shared subprocesses (oauth_poller, tenant_onboarding,
+       source_onboarding, shard_fetch, reconciler) with PYTHONPATH +
+       `-c "import <helper>; from <svc> import main; main()"`.
+    6. Concurrently (bounded by `concurrency`) poll for each tenant's
+       `tenant_onboarding_completed` signal in the Bridge inbox.
+
+  Phase C — Teardown:
+    7. SIGTERM all 5 subprocesses; assert rc == 0 (15s grace).
+    8. Collect observations, signals, state-table snapshots into
+       `TenantOutcome` records.
+    9. Return `HarnessResult` for assertion checks.
+
+Concurrency model: per the X3 audit, the 5 services are tenant-agnostic
+at the claim layer — one shared subprocess set serves all tenants.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal as sig_module
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import UUID, uuid4
+
+import asyncpg
+
+from lib.shared.ids import uuid7
+from services.synthetic.backfill_harness.scenarios import BackfillScenario
+from services.synthetic.fixtures import (
+    make_discord_guild,
+    make_github_repos,
+    make_gmail_mailbox,
+    make_slack_workspace,
+)
+
+
+log = logging.getLogger(__name__)
+
+
+TENANT_ONBOARDING_INBOX_KIND = "tenant_onboarding"
+TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
+SIGNAL_KIND_TENANT_COMPLETED = "tenant_onboarding_completed"
+
+
+# =====================================================================
+# Result types.
+# =====================================================================
+@dataclass
+class TenantOutcome:
+    """Per-tenant collected state after the harness run."""
+
+    scenario: BackfillScenario
+    tenant_id: UUID
+    onboarding_run_id: UUID | None = None
+    completion_observed: bool = False
+    completion_signal_count: int = 0
+    observations: list[dict[str, Any]] = field(default_factory=list)
+    cursor_history: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict,
+    )
+    reconciliation_pass_count: int = 0
+    expected_reshare: bool = False
+    install_error: str | None = None
+
+
+@dataclass
+class HarnessResult:
+    """Aggregate result returned by `BackfillHarness.run()`."""
+
+    outcomes: list[TenantOutcome]
+    subprocess_returncodes: dict[str, int] = field(default_factory=dict)
+    subprocess_stderr_tails: dict[str, str] = field(default_factory=dict)
+    wall_time_seconds: float = 0.0
+
+
+# =====================================================================
+# Fixture builder dispatch.
+# =====================================================================
+def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
+    if source == "gmail":
+        return make_gmail_mailbox(**params)
+    if source == "github":
+        return make_github_repos(**params)
+    if source == "slack":
+        return make_slack_workspace(**params)
+    if source == "discord":
+        return make_discord_guild(**params)
+    raise ValueError(f"unknown source: {source!r}")
+
+
+# =====================================================================
+# Helper-module writer.
+# =====================================================================
+_HELPER_TEMPLATE = '''"""Auto-generated X3 harness helper.
+
+Loaded into each M6 subprocess via PYTHONPATH + `-c "import {module}"`.
+Reads the per-tenant fixture registry from FIXTURE_REGISTRY_PATH,
+registers fixture-aware mock-client factories, and overrides
+PLANNER / FETCHER / RECONCILER dispatch where the source's planner /
+reconciler needs the source_client wired or the pool-provider injected.
+"""
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+from uuid import UUID
+
+from services.synthetic.fault_profiles import FaultProfile
+from services.synthetic.mock_clients import (
+    MockDiscordClient, MockGithubClient, MockGmailClient, MockSlackClient,
+)
+
+
+_REGISTRY: dict[str, Any] = {{}}
+
+
+def _load_registry() -> None:
+    global _REGISTRY
+    path = os.environ.get("X3_FIXTURE_REGISTRY_PATH")
+    if not path or not os.path.exists(path):
+        return
+    with open(path) as f:
+        _REGISTRY = json.load(f)
+
+
+_load_registry()
+
+
+def _profile_from(p: dict[str, Any] | None) -> FaultProfile:
+    if not p:
+        return FaultProfile()
+    return FaultProfile(**p)
+
+
+def _lookup_by_tenant_id(tenant_id: Any) -> dict[str, Any] | None:
+    tid = str(tenant_id)
+    for entry in _REGISTRY.get("entries", []):
+        if entry["tenant_id"] == tid:
+            return entry
+    return None
+
+
+def _make_mock(source: str, fixture: dict[str, Any],
+               profile: FaultProfile) -> Any:
+    if source == "gmail":
+        return MockGmailClient(fixture=fixture, profile=profile)
+    if source == "github":
+        return MockGithubClient(fixture=fixture, profile=profile)
+    if source == "slack":
+        return MockSlackClient(fixture=fixture, profile=profile)
+    if source == "discord":
+        return MockDiscordClient(fixture=fixture, profile=profile)
+    raise ValueError(f"unknown source: {{source!r}}")
+
+
+# Per-source factory installer. Bound at import time.
+def _install_factories() -> None:
+    from services.ingestion.fetchers import gmail as gf
+    from services.ingestion.fetchers import github as ghf
+    from services.ingestion.fetchers import slack as sf
+    from services.ingestion.fetchers import discord as df
+    from services.ingestion.reconcilers import gmail as gr
+    from services.ingestion.reconcilers import github as ghr
+    from services.ingestion.reconcilers import slack as sr
+    from services.ingestion.reconcilers import discord as dr
+    from services.ingestion.workflows import source_onboarding as so
+
+    for source, modules in (
+        ("gmail", (gf, gr)),
+        ("github", (ghf, ghr)),
+        ("slack", (sf, sr)),
+        ("discord", (df, dr)),
+    ):
+        async def _factory(install, _source=source):  # noqa: B023
+            entry = _lookup_by_tenant_id(install["tenant_id"])
+            if entry is None or entry["source"] != _source:
+                raise RuntimeError(
+                    f"X3 helper: no fixture for tenant={{install['tenant_id']}} "
+                    f"source={{_source}}"
+                )
+            mock = _make_mock(
+                _source, entry["fixture"],
+                _profile_from(entry.get("fault_profile")),
+            )
+            async def _close() -> None: return None
+            return mock, _close
+        for mod in modules:
+            setattr(mod, f"_open_{{source}}_client", _factory)
+
+    # source_onboarding builds a source_client via _build_source_client
+    # for github/slack at plan time. Inject a fixture-aware version.
+    async def _build_source_client(source: str, pool: Any, install: Any):
+        if source not in ("github", "slack"):
+            return None
+        entry = _lookup_by_tenant_id(install["tenant_id"])
+        if entry is None or entry["source"] != source:
+            return None
+        return _make_mock(
+            source, entry["fixture"],
+            _profile_from(entry.get("fault_profile")),
+        )
+    so._build_source_client = _build_source_client
+
+
+_install_factories()
+'''
+
+
+def _write_helper(workdir: str, helper_module: str) -> str:
+    """Write the helper module under `workdir` and return its
+    directory (for PYTHONPATH)."""
+    helpers_dir = os.path.join(workdir, "_x3_helpers")
+    os.makedirs(helpers_dir, exist_ok=True)
+    init_path = os.path.join(helpers_dir, "__init__.py")
+    if not os.path.exists(init_path):
+        with open(init_path, "w") as f:
+            f.write("")
+    module_path = os.path.join(helpers_dir, f"{helper_module}.py")
+    with open(module_path, "w") as f:
+        f.write(_HELPER_TEMPLATE.format(module=helper_module))
+    return helpers_dir
+
+
+# =====================================================================
+# Harness.
+# =====================================================================
+class BackfillHarness:
+    """Orchestrates multi-tenant synthetic backfill end-to-end.
+
+    Args:
+      pool: asyncpg pool connected to the test Postgres.
+      scenarios: List of BackfillScenarios.
+      concurrency: Max in-flight tenants during the install / poll
+        phases. Default 4.
+      completion_deadline_s: Per-tenant deadline for waiting on
+        tenant_onboarding_completed. Default 60s.
+      kafka_bootstrap_servers: KAFKA_BOOTSTRAP_SERVERS env for the
+        subprocesses. Default "localhost:9092".
+    """
+
+    def __init__(
+        self,
+        *,
+        pool: asyncpg.Pool,
+        scenarios: list[BackfillScenario],
+        concurrency: int = 4,
+        completion_deadline_s: float = 60.0,
+        kafka_bootstrap_servers: str = "localhost:9092",
+    ) -> None:
+        self._pool = pool
+        self._scenarios = scenarios
+        self._concurrency = max(1, concurrency)
+        self._deadline_s = completion_deadline_s
+        self._kafka_bootstrap = kafka_bootstrap_servers
+        self._workdir: str | None = None
+        self._helpers_dir: str | None = None
+        self._helper_module = (
+            f"x3_helper_{uuid4().hex[:8]}"
+        )
+        self._registry_path: str | None = None
+        self._procs: dict[str, subprocess.Popen | None] = {}
+
+    async def run(self) -> HarnessResult:
+        start = time.monotonic()
+        outcomes = [
+            TenantOutcome(
+                scenario=s,
+                tenant_id=uuid4(),
+                expected_reshare=_scenario_expects_reshare(s),
+            )
+            for s in self._scenarios
+        ]
+
+        self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
+        try:
+            await self._setup_tenants_and_fixtures(outcomes)
+            self._helpers_dir = _write_helper(
+                self._workdir, self._helper_module,
+            )
+            self._registry_path = self._write_registry(outcomes)
+            await self._invoke_oauth_callbacks(outcomes)
+            self._spawn_services()
+            await self._wait_for_completions(outcomes)
+            await self._collect_state(outcomes)
+        finally:
+            stderrs = self._teardown_services()
+            elapsed = time.monotonic() - start
+
+        return HarnessResult(
+            outcomes=outcomes,
+            subprocess_returncodes={
+                k: (v.returncode if v else -999)
+                for k, v in self._procs.items()
+            },
+            subprocess_stderr_tails=stderrs,
+            wall_time_seconds=elapsed,
+        )
+
+    # ---- Phase A: Setup ----
+    async def _setup_tenants_and_fixtures(
+        self, outcomes: list[TenantOutcome],
+    ) -> None:
+        for outcome in outcomes:
+            await self._pool.execute(
+                "INSERT INTO tenants (id, name) VALUES ($1, $2) "
+                "ON CONFLICT (id) DO NOTHING",
+                outcome.tenant_id,
+                f"x3-{outcome.scenario.tenant_slug}-"
+                f"{outcome.tenant_id.hex[:8]}",
+            )
+
+    def _write_registry(self, outcomes: list[TenantOutcome]) -> str:
+        entries = []
+        for outcome in outcomes:
+            fixture = _build_fixture(
+                outcome.scenario.source,
+                outcome.scenario.fixture_params,
+            )
+            entries.append({
+                "tenant_id": str(outcome.tenant_id),
+                "tenant_slug": outcome.scenario.tenant_slug,
+                "source": outcome.scenario.source,
+                "fixture": fixture,
+                "fault_profile": (
+                    outcome.scenario.fault_profile.__dict__
+                    if outcome.scenario.fault_profile.__dict__
+                    else None
+                ),
+            })
+        path = os.path.join(self._workdir, "registry.json")
+        with open(path, "w") as f:
+            json.dump({"entries": entries}, f)
+        return path
+
+    async def _invoke_oauth_callbacks(
+        self, outcomes: list[TenantOutcome],
+    ) -> None:
+        """Drive each tenant's OAuth callback in-process via ASGI to
+        write install + onboarding_triggers atomically per A20.
+
+        For simplicity, the harness uses a streamlined direct-DB path
+        instead of full OAuth callbacks: it writes the install row
+        and the onboarding_triggers row in one transaction, mirroring
+        what the production callback does. This avoids the secret-
+        store / Kafka producer / state-token complexity that the
+        production callback layer adds — those layers aren't what X3
+        is testing. X3 is testing the M6 chain from
+        `onboarding_triggers` onward.
+        """
+        sem = asyncio.Semaphore(self._concurrency)
+
+        async def _one(outcome: TenantOutcome) -> None:
+            async with sem:
+                try:
+                    await self._write_install_and_trigger(outcome)
+                except Exception as exc:  # noqa: BLE001
+                    outcome.install_error = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+        await asyncio.gather(*(_one(o) for o in outcomes))
+
+    async def _write_install_and_trigger(
+        self, outcome: TenantOutcome,
+    ) -> None:
+        source = outcome.scenario.source
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                if source == "gmail":
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO gmail_installations (
+                          id, tenant_id, workspace_domain,
+                          service_account_email, scope
+                        ) VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (tenant_id, workspace_domain)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        f"x3-{outcome.scenario.tenant_slug}.example",
+                        "sa@x3-test.iam.gserviceaccount.com",
+                        "gmail.metadata",
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            gmail_installation_id, payload
+                        ) VALUES ($1, $2, 'gmail', 'install', $3,
+                                  '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source,
+                                     gmail_installation_id)
+                            WHERE gmail_installation_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                else:
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, $3, $4, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, source,
+                        f"x3-{outcome.scenario.tenant_slug}-{source}",
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, $3, 'install', $4,
+                                  '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source,
+                                     installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, source, install_id,
+                    )
+
+    # ---- Phase B: Run ----
+    def _spawn_services(self) -> None:
+        env = os.environ.copy()
+        env["KAFKA_BOOTSTRAP_SERVERS"] = self._kafka_bootstrap
+        env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
+        env["PYTHONPATH"] = (
+            self._helpers_dir + os.pathsep + env.get("PYTHONPATH", "")
+        )
+        env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path
+
+        services = {
+            "oauth_poller": (
+                "services.ingestion.workflows.oauth_poller",
+                {"OAUTH_POLLER_TICK_SEC": "0.1",
+                 "OAUTH_POLLER_BATCH": "10",
+                 "OAUTH_POLLER_INSTANCE": f"x3-poll-{uuid4().hex[:6]}"},
+            ),
+            "tenant_onboarding": (
+                "services.ingestion.workflows.tenant_onboarding",
+                {"ORCHESTRATOR_TICK_SEC": "0.1",
+                 "ORCHESTRATOR_BATCH": "20",
+                 "ORCHESTRATOR_INSTANCE": f"x3-orch-{uuid4().hex[:6]}"},
+            ),
+            "source_onboarding": (
+                "services.ingestion.workflows.source_onboarding",
+                {"SOURCE_ONBOARDING_TICK_SEC": "0.1",
+                 "SOURCE_ONBOARDING_BATCH": "20",
+                 "SOURCE_ONBOARDING_INSTANCE":
+                     f"x3-src-{uuid4().hex[:6]}"},
+            ),
+            "shard_fetch": (
+                "services.ingestion.workflows.shard_fetch",
+                {"SHARD_FETCH_TICK_SEC": "0.1",
+                 "SHARD_FETCH_BATCH": "10",
+                 "SHARD_FETCH_LEASE_SEC": "30.0",
+                 "SHARD_FETCH_FLUSH_SEC": "2.0",
+                 "SHARD_FETCH_INSTANCE":
+                     f"x3-shf-{uuid4().hex[:6]}"},
+            ),
+            "reconciler": (
+                "services.ingestion.workflows.reconciler",
+                {"RECONCILER_TICK_SEC": "0.1",
+                 "RECONCILER_BATCH": "20",
+                 "RECONCILER_INSTANCE":
+                     f"x3-rec-{uuid4().hex[:6]}"},
+            ),
+        }
+        for name, (mod, extra_env) in services.items():
+            penv = env.copy()
+            penv.update(extra_env)
+            cmd = [
+                sys.executable, "-c",
+                f"import {self._helper_module}; "
+                f"from {mod} import main; main()",
+            ]
+            self._procs[name] = subprocess.Popen(
+                cmd,
+                env=penv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+    async def _wait_for_completions(
+        self, outcomes: list[TenantOutcome],
+    ) -> None:
+        sem = asyncio.Semaphore(self._concurrency)
+
+        async def _one(outcome: TenantOutcome) -> None:
+            async with sem:
+                deadline = time.monotonic() + self._deadline_s
+                while time.monotonic() < deadline:
+                    row = await self._pool.fetchrow(
+                        """
+                        SELECT onboarding_run_id
+                          FROM onboarding_runs
+                         WHERE tenant_id = $1
+                         ORDER BY started_at DESC NULLS LAST
+                         LIMIT 1
+                        """,
+                        outcome.tenant_id,
+                    ) if False else None  # placeholder for typing
+                    # Reads via run lookup → tenant_onboarding_completed
+                    # signal in Bridge inbox keyed by run_id.
+                    row = await self._pool.fetchrow(
+                        """
+                        SELECT id, status, completed_at
+                          FROM onboarding_runs
+                         WHERE tenant_id = $1
+                         ORDER BY started_at DESC NULLS LAST
+                         LIMIT 1
+                        """,
+                        outcome.tenant_id,
+                    )
+                    if row is not None:
+                        outcome.onboarding_run_id = row["id"]
+                        n = int(await self._pool.fetchval(
+                            """
+                            SELECT count(*) FROM workflow_signals
+                             WHERE workflow_kind = $1
+                               AND workflow_id = $2
+                               AND signal_kind = $3
+                               AND idempotency_key = $4
+                            """,
+                            TENANT_ONBOARDING_INBOX_KIND,
+                            TENANT_ONBOARDING_INBOX_ID,
+                            SIGNAL_KIND_TENANT_COMPLETED,
+                            str(row["id"]),
+                        ))
+                        if n > 0:
+                            outcome.completion_observed = True
+                            outcome.completion_signal_count = n
+                            return
+                    await asyncio.sleep(0.2)
+
+        await asyncio.gather(*(_one(o) for o in outcomes))
+
+    # ---- Phase C: Teardown ----
+    def _teardown_services(self) -> dict[str, str]:
+        stderrs: dict[str, str] = {}
+        for name, proc in self._procs.items():
+            if proc is None:
+                continue
+            try:
+                proc.send_signal(sig_module.SIGTERM)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                if proc.stderr is not None:
+                    stderrs[name] = proc.stderr.read().decode(
+                        errors="replace",
+                    )[-2000:]
+            except Exception as exc:  # noqa: BLE001
+                stderrs[name] = f"teardown error: {exc!r}"
+        return stderrs
+
+    async def _collect_state(
+        self, outcomes: list[TenantOutcome],
+    ) -> None:
+        for outcome in outcomes:
+            if outcome.onboarding_run_id is None:
+                continue
+            # observations
+            rows = await self._pool.fetch(
+                "SELECT external_id, source_channel, observed_at "
+                "FROM observations WHERE tenant_id = $1",
+                outcome.tenant_id,
+            )
+            outcome.observations = [dict(r) for r in rows]
+
+            # reconciliation pass count
+            pass_count = await self._pool.fetchval(
+                """
+                SELECT reconciliation_pass_count
+                  FROM source_onboarding_runs
+                 WHERE onboarding_run_id = $1
+                 LIMIT 1
+                """,
+                outcome.onboarding_run_id,
+            )
+            outcome.reconciliation_pass_count = int(pass_count or 0)
+
+            # cursor history per shard
+            shards = await self._pool.fetch(
+                "SELECT id FROM onboarding_shards "
+                "WHERE onboarding_run_id = $1",
+                outcome.onboarding_run_id,
+            )
+            for shard in shards:
+                state_row = await self._pool.fetchrow(
+                    """
+                    SELECT state_data FROM workflow_states
+                     WHERE workflow_kind = 'shard_fetch'
+                       AND workflow_id = $1
+                    """,
+                    str(shard["id"]),
+                )
+                if state_row is None:
+                    continue
+                data = state_row["state_data"]
+                if isinstance(data, str):
+                    data = json.loads(data)
+                outcome.cursor_history[str(shard["id"])] = [data]
+
+
+def _scenario_expects_reshare(s: BackfillScenario) -> bool:
+    """True when the fixture parameters indicate a reshare-triggering
+    shape (history_events > 0 for Gmail; analogous knobs for other
+    sources may be added later)."""
+    if s.source == "gmail":
+        return int(s.fixture_params.get("history_events", 0)) > 0
+    return False

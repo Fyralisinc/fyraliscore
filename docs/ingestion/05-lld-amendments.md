@@ -723,6 +723,60 @@ A18 inherits from and extends:
 
 ---
 
+## A22 — Backfill synthetic harness: OAuth-callback-driven install simulation with parallel concurrency and properties-based assertions
+
+**Status:** Resolved with X3 commit on `feat/ingestion-x3-backfill-harness`.
+
+**Trigger:** Mega-prompt 2 X3 work-unit. The M6 framework requires end-to-end synthetic testing across all four sources for single-tenant + concurrent-tenant scenarios. M6.3-M6.6 5-subprocess E2E tests cover the single-tenant case per source × clean+reshare; X3 extends to multi-tenant under fault profiles.
+
+**Decision:**
+
+The `BackfillHarness` orchestrator (in `services/synthetic/backfill_harness/`) operates in three phases against a real Postgres + a real Kafka broker:
+
+1. **Phase A — Setup.** For each `BackfillScenario`: seed a `tenants` row, build a fixture via the X2 generators, write a per-run helper module to a temp directory, and write a fixture registry JSON file the helper will read at subprocess startup.
+2. **Phase B — Run.** Invoke the install + `onboarding_triggers` write (atomic per A20) for each scenario directly via the test pool, bounded by `concurrency`. Spawn FIVE shared subprocesses (one each of oauth_poller, tenant_onboarding, source_onboarding, shard_fetch, reconciler) via `python -c "import <helper>; from <svc> import main; main()"` — the helper module registers fixture-aware mock-client factories at import. Concurrently poll for each tenant's `tenant_onboarding_completed` signal in the Bridge inbox.
+3. **Phase C — Teardown.** SIGTERM all subprocesses; assert rc=0 within 15s. Collect observations, completion-signal counts, cursor-history snapshots, and reconciliation pass counts into per-tenant `TenantOutcome` records.
+
+**Concurrency model:** Five **shared** subprocesses serve all tenants (not 5N). Per the X3 audit, the M6 services are tenant-agnostic at the claim layer — they claim signals across all tenants. Subprocess startup is the dominant per-run cost (~50ms × 5), so per-tenant subprocess isolation would scale poorly with N. The harness exposes `concurrency` as the bound on in-flight install + completion-polling work, not as a subprocess multiplier.
+
+**Install simulation depth:** The harness writes install + onboarding_triggers rows **directly** via the test pool (with the same atomic-transaction shape as the production callbacks; see A20). It does NOT drive the full HTTP OAuth callback stack. The X3 contract is "exercise the M6 chain from `onboarding_triggers` onward"; A20's invariants (atomic install+trigger, idempotency via partial unique index) are verified by the X1 retrofit tests independently. X3 trusts those tests and skips the OAuth-layer plumbing — fewer moving parts (no FastAPI app construction, no respx HTTP mocks, no state-token issuance) for a higher-leverage test surface.
+
+**Per-tenant mock dispatch:** The helper module reads `X3_FIXTURE_REGISTRY_PATH` at subprocess startup, loads the per-tenant fixture registry into memory, and installs fixture-aware `_open_<source>_client` factories. Each factory looks up the install row's `tenant_id` in the registry, constructs the appropriate mock client with the tenant's fixture + fault profile, and returns it via the standard `(client, close)` tuple. The same single helper module serves all five subprocesses; each subprocess imports it via `python -c` before invoking `main()`.
+
+**Properties-based assertions** (`services/synthetic/backfill_harness/assertions.py`):
+- `assert_all_complete` — every tenant reached completion.
+- `assert_no_duplicate_observations` — per tenant, no duplicate `external_id` values in `observations`.
+- `assert_cursor_monotonic_per_shard` — cursor `pages_fetched` advances monotonically.
+- `assert_completion_emitted_per_tenant` — exactly one `tenant_onboarding_completed` signal per tenant.
+- `assert_observation_count_matches_fixture` — `len(observations) == expected` (with `tolerance` for sources with sampling, e.g., Discord 5%).
+- `assert_reshare_cycles_completed` — when a scenario triggers reshare, `reconciliation_pass_count >= 1`.
+
+These assertions verify framework guarantees rather than exact fixture data; the harness is robust to fixture-generator evolution.
+
+**Rationale:**
+
+- **In-process install** exercises the F4 retrofit's atomicity + idempotency without HTTP-layer noise. Production OAuth callbacks have their own tests (X1); X3 tests what they enable downstream.
+- **Shared subprocess set** matches production architecture (the M6 services are per-cluster, not per-tenant). Per-tenant subprocess isolation would test a model that production doesn't use.
+- **JSON-file fixture registry** is the simplest cross-process state-sharing mechanism. Picking a database-backed registry would add coordination overhead; environment-variable encoding is too size-constrained for realistic fixtures. The helper module reads the file once at import and keeps it in memory for the subprocess lifetime.
+- **Properties-based assertions** are robust to fixture evolution. Exact-record-match assertions would break every time a fixture generator added a field; property checks survive that churn.
+
+**Tests:**
+
+- `test_scenarios.py` (5) — `BackfillScenario` validation + dataclass shape.
+- `test_assertions.py` (15) — every assertion with deliberately-violating + clean fixtures, plus the `tolerance` behavior and the `expected=0` skip path.
+- `test_harness_unit.py` (5) — install+trigger writes per source (gmail, slack), idempotency on retry, helper-module generation + importability, registry JSON correctness. Marked `pytest.mark.integration` (DB-required).
+- `test_harness_e2e.py` (2) — full 5-subprocess single-tenant Gmail + 4-tenant mixed-sources runs. **Default-skipped**; opt-in via `X3_HARNESS_E2E=1` + real `KAFKA_BOOTSTRAP_SERVERS`. Same shape as M-Load's `tests/load/test_cutover_dryrun.py`.
+
+**Cross-references:**
+
+- [A20](#a20--f4-oauth-retrofit-all-callbacks-write-onboarding_triggers-atomically-with-install) — F4 retrofit; the harness exercises this via direct install+trigger writes that mirror the callback's transaction shape.
+- [A21](#a21--mock-api-server-architecture-stateful-in-process-libraries-with-fixture-generators-and-fault-injection) — mock servers; the harness uses these for per-source client substitution.
+- [A19](#a19--framework-exception-handling-for-per-source-dispatch-failures) — framework exception handling; harness fault profiles trigger A19's broad catches under the `FLAKY` / `RATE_LIMITED` / `AUTH_EXPIRED` presets.
+
+**Effect on future work:** Mega-prompt 3 (live-ingestion synthetics) will reuse the harness shape, extending it with Pub/Sub and Gateway driver patterns. First-customer pilot work will reuse the harness for regression testing — define BackfillScenarios that mirror the pilot's source mix.
+
+---
+
 ## A21 — Mock API server architecture: stateful in-process libraries with fixture generators and fault injection
 
 **Status:** Resolved with X2 commit on `feat/ingestion-x2-mock-api-servers`.

@@ -566,6 +566,18 @@ What remains: M-Load (production Kafka readers + synthetic harness for cutover d
 
 **The M6 framework is now production-trigger-capable.** Whether real customers exist or not, an OAuth install in any of the four sources fires the full M6 chain. The F4 gate is closed; M-Load is the remaining gate to first real-customer cutover.
 
+### §X2 closeout — Mock API server libraries (mega-prompt 2)
+
+**Status:** Closed on branch `feat/ingestion-x2-mock-api-servers`. Per [A21](./05-lld-amendments.md#a21--mock-api-server-architecture-stateful-in-process-libraries-with-fixture-generators-and-fault-injection): in-process Python mock libraries (`MockGmailClient`, `MockGithubClient`, `MockSlackClient`, `MockDiscordClient`) replace production clients at the `_open_<source>_client` factory seams. Stateful per session (cursor / etag / history_id / snowflake tracking); programmatically-generated fixtures (`services/synthetic/fixtures/`); fault injection via `FaultProfile` with `HAPPY_PATH` / `RATE_LIMITED` / `FLAKY` / `AUTH_EXPIRED` presets.
+
+### §X3 closeout — Backfill synthetic harness (mega-prompt 2)
+
+**Status:** Closed on branch `feat/ingestion-x3-backfill-harness`. Per [A22](./05-lld-amendments.md#a22--backfill-synthetic-harness-oauth-callback-driven-install-simulation-with-parallel-concurrency-and-properties-based-assertions): `BackfillHarness` orchestrates multi-tenant synthetic backfill end-to-end. Writes install + `onboarding_triggers` rows directly (mirroring A20's atomic shape), spawns five shared subprocesses, polls per-tenant `tenant_onboarding_completed` signals, and verifies framework guarantees via properties-based assertions (no duplicates, cursor monotonic, completion exactly-once, observation count match, reshare cycles complete).
+
+Synthetic operator guide: [docs/ingestion/synthetic-testing-guide.md](./synthetic-testing-guide.md).
+
+**Mega-prompt 2 closes.** The M6 backfill chain is now fully synthetic-testable across all four sources for both single-tenant and concurrent-tenant scenarios. Whats next: mega-prompt 3 (live-ingestion synthetics for Gmail Pub/Sub and Discord Gateway), production wiring of per-source client backfill methods (separate work-unit), and staging dry-run execution against real brokers.
+
 ---
 
 #### M-Load — Production Kafka readers + synthetic cutover dry run — **CLOSED (code-complete; staging validation pending)**
