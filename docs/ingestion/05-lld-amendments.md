@@ -593,6 +593,120 @@ removed from that file.
 
 ---
 
+## A18 — Per-source backfill is net-new code; framework + existing steady-state coexist until M7
+
+**Status:** Resolved with M6.3 merge.
+
+**Trigger:** M6.3 pre-Phase-1 audit established that the existing per-source code is steady-state machinery (Pub/Sub push + 10-min poll via Gmail's `users.history.list` for Gmail; analogous shapes for the other sources) — NOT backfill. True backfill via per-source backfill APIs (`users.messages.list` for Gmail; equivalent endpoints for GitHub/Slack/Discord) is **not implemented anywhere in the codebase pre-M6.3**. The initial M6.3 prompt's "behavior-preserving refactor of existing fetcher.py" premise was wrong.
+
+A second substrate finding (S1) emerged during the revised M6.3 audit: Gmail's `gmail_installations` schema is workspace-scoped, not per-mailbox; the planner contract (`Callable[[UUID, asyncpg.Record], Awaitable[list[Shard]]]`) doesn't provide DB access, but the planner needs to enumerate mailboxes from `gmail_mailbox_watches`.
+
+A18 codifies how these are resolved for M6.3 and how M6.4-M6.6 inherit the pattern.
+
+### A18.1 — Per-source backfill is net-new code
+
+**Decision:** Each M6.x per-source sub-block (M6.3-M6.6) ships net-new backfill code via three dispatch entries (planner, fetcher, reconciler). Existing per-source code (steady-state push/poll, webhook ingestion, Gateway, etc.) is NOT retired in these sub-blocks. The M6 framework's backfill path coexists with the existing steady-state path. Coexistence is interim; resolution happens in M7-territory inline-ingestion retirement work (deferred tickets filed in M6.3 Phase 3).
+
+**Effect on M6.4-M6.6:** Each follows the same pattern. Each starts with a **pre-Phase-1 substrate audit** verifying:
+- (a) The per-source backfill API exists and is callable from the existing client.
+- (b) Whether per-source code retirement is needed (default expectation: NO — existing code is steady-state).
+- (c) Whether M6.2a's install-loading handles this source (Gmail: yes via `_LOAD_GMAIL_INSTALL_SQL`; GitHub/Slack/Discord: presumed via `_LOAD_PROVIDER_INSTALL_SQL`).
+- (d) Whether the per-source planner needs any per-source data plumbing the framework doesn't yet provide (e.g., Gmail's `gmail_mailbox_watches` aggregation).
+
+If an audit surfaces a substrate finding, STOP and surface (same discipline as A12/A13/A15/A17). New A-numbered amendments only land if substrate findings require them.
+
+### A18.2 — Per-source loader enrichment pattern (the S1 finding's resolution)
+
+**Decision:** Per-source loaders in `services/ingestion/workflows/source_onboarding.py` may aggregate per-source enrichment data via JSON aggregation. The planner reads the enriched install record and stays stateless (no DB I/O in the planner).
+
+**Example (Gmail, M6.3 S1 amendment):**
+
+```sql
+-- _LOAD_GMAIL_INSTALL_SQL — aggregates active mailboxes as a JSON column
+SELECT gi.id, gi.tenant_id, gi.workspace_domain, gi.service_account_email,
+       gi.scope, gi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'email_address', mw.email_address,
+             'google_user_id', mw.google_user_id,
+             'history_id', mw.history_id
+           ) ORDER BY mw.email_address
+         ) FILTER (WHERE mw.id IS NOT NULL),
+         '[]'::json
+       ) AS mailboxes
+  FROM gmail_installations gi
+  LEFT JOIN gmail_mailbox_watches mw
+    ON mw.gmail_installation_id = gi.id AND mw.state = 'active'
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ GROUP BY gi.id LIMIT 1
+```
+
+The planner reads `install["mailboxes"]`, orjson-decodes it (the JSON aggregate arrives as a string), and emits one shard per active mailbox.
+
+**Inheritance:** M6.4-M6.6 may use this pattern if their installs need per-source enrichment. Each pre-Phase-1 audit asks: "is the install record self-contained, or does the planner need per-source 1-to-N data (channels, repos, guilds)?" If the latter, extend the source-specific loader.
+
+**ShardFetch's loader is NOT subject to this pattern**: the fetcher works on one shard at a time via `shard_identifier`; aggregated mailbox/channel/repo lists are irrelevant inside the fetcher. Per-source enrichment lives in the planner's loader path only.
+
+### A18.3 — Reconciler pool-provider seam
+
+**Decision:** Per-source reconciler modules (`services/ingestion/reconcilers/<source>.py`) may need pool access for auxiliary DB reads (e.g., Gmail reads `workflow_states` for each shard's `final_history_id`). The M6.2b `RECONCILER_DISPATCH` contract does NOT pass a pool to the dispatch function. Resolution: per-source modules expose a module-level `set_pool_provider(pool)` function, and the service-startup path (in `services/ingestion/workflows/reconciler.py::_run_service` and `services/ingestion/workflows/__main__.py`) calls it before the reconciler service starts.
+
+**Why not change the dispatch contract:** changing the M6.2b contract would require modifying all four per-source stubs and `services/ingestion/workflows/reconciler.py`. The seam pattern is a smaller blast radius, observable failure mode (`RuntimeError: pool provider not registered`), and tests can rebind it per-test via `monkeypatch.setattr`.
+
+**Inheritance:** M6.4-M6.6 reconcilers SHOULD use this pattern if they need pool access. The startup path registers each source's pool provider before the Reconciler service starts.
+
+### A18.4 — `shard_kind` mirrored into `shard_identifier`
+
+**Decision:** Per-source fetchers may dispatch on `shard_kind` to know which API to call. The `onboarding_shards.shard_kind` column is the canonical row-level value (used by indexes / operator queries), but the fetcher receives only `shard_identifier` (JSONB) from `ShardFetch`'s call site. To make the fetcher's dispatch unambiguous without a framework contract change, planners and reconcilers SHOULD mirror the `shard_kind` value into `shard_identifier["shard_kind"]`. The fetcher reads it from there.
+
+**Example (Gmail, M6.3):**
+
+```python
+# Gmail planner:
+Shard(
+    shard_kind="gmail_mailbox_window",
+    shard_identifier={
+        "shard_kind": "gmail_mailbox_window",  # mirrored
+        "mailbox_email": "...",
+        "user_id": "...",
+    },
+)
+
+# Gmail reconciler (gap-fill shard):
+ResharedShard(
+    shard=Shard(
+        shard_kind="gmail_history_gap",
+        shard_identifier={
+            "shard_kind": "gmail_history_gap",  # mirrored
+            "start_history_id": "...",
+            "end_history_id": "...",
+        },
+    ),
+    parent_shard_id=...,
+)
+```
+
+The fetcher reads `shard_identifier.get("shard_kind")` and routes to the right per-source API path.
+
+**Inheritance:** M6.4-M6.6 may use this pattern when a single per-source fetcher serves multiple shard kinds (backfill vs gap-fill, or any other per-source-API variant). If a source has only one shard kind, the mirror is optional but recommended for symmetry.
+
+### A18.5 — Cross-references
+
+A18 inherits from and extends:
+- **A12** — Executor-typed substrate signatures.
+- **A13** — Signal addressing as routing partition key.
+- **A14** — Source applicability resolved at orchestrator-tick-time.
+- **A15** — M6.2a uses M1-shipped `onboarding_shards` schema.
+- **A16** — Three transactional patterns (N1, CLAIM-VIA-UPDATE, multi-tick fetch loop).
+- **A17** — Reconciler state machine + idempotency-key discipline + recency boost.
+
+**Three-place documentation:** this amendment + each per-source module's docstring (planner / fetcher / reconciler) + the M6.3 closeout in `docs/ingestion/04-implementation-plan.md` §M6.3.
+
+**LLD edits pending:** none. Same posture as A11-A17 — the LLD describes a Temporal-workflow design where these patterns would map onto Temporal's native primitives; the asyncio-shape needs explicit codification. M6.4-M6.6 may extend A18 with additional sub-sections (A18.6, A18.7, etc.) for per-source patterns that emerge.
+
+---
+
 ## Resolved amendments archive
 
 (Empty — A1 and A2 land here at M3.4 closeout once the LLD edits ship.)

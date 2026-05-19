@@ -1084,6 +1084,114 @@ service's import-time registration into `RECONCILER_DISPATCH`.
 
 ---
 
+## 6.D. M6.3 Gmail backfill — operator section
+
+The M6.3 sub-block ships Gmail-specific entries in the three M6 dispatch tables (planner, fetcher, reconciler) as **net-new code** using `users.messages.list` for backfill. The existing steady-state path (`services/integrations/gmail/{fetcher,history_poller,watch_scheduler,push_handler}.py` writing to `observations` via inline handler dispatch) is **unmodified**. Both paths coexist; the operator must understand the two-path framing.
+
+### 6.D.1. Two-path coexistence (CRITICAL)
+
+After M6.3 merges, two Gmail ingestion paths run in parallel:
+
+| Path | Trigger | Code | Output |
+|---|---|---|---|
+| **Backfill (M6.3, new)** | `onboarding_triggers` row → M6 framework chain | `services/ingestion/planners/gmail.py`, `fetchers/gmail.py`, `reconcilers/gmail.py` | Kafka `ingestion.raw` → normalizer → observation writer |
+| **Steady-state (existing)** | Pub/Sub push to `/webhooks/gmail/pubsub` or 10-min poller | `services/integrations/gmail/push_handler.py` → `fetcher.py::drain_mailbox_history` | Inline `dispatch_gmail_message_resource` → `observations` directly |
+
+The watermark handoff at install-time (backfill's final `historyId` → steady-state's starting point) is **not yet implemented**; it's covered by the deferred ticket "Gmail inline-ingestion retirement" (M7 territory). Until that ticket lands, the two paths share `gmail_mailbox_watches.history_id` as the steady-state watermark; backfill stamps its own `final_history_id` in `workflow_states.state_data["cursor"]` and does NOT advance `gmail_mailbox_watches.history_id`.
+
+### 6.D.2. Pre-F4-ticket expected steady state (CRITICAL)
+
+**The M6.3 plumbing is INERT in production today.** No production code writes `onboarding_triggers` rows for Gmail. The OAuth callback at [oauth.py:_provision_install](../../services/integrations/gmail/oauth.py) creates `gmail_installations` + `gmail_mailbox_watches` but does NOT write an `onboarding_triggers` row. Without that row, `oauth_poller` has nothing to claim, and the M6 chain never starts. This is by design — the F4 retrofit (deferred ticket "OAuth callbacks → onboarding_triggers") closes the gap before first real-customer cutover.
+
+In the pre-F4 steady state, **all Gmail ingestion goes through the existing push/poll path**. Operator queries on the backfill surfaces will show:
+- `SELECT count(*) FROM onboarding_triggers WHERE source = 'gmail'` → 0 (or test-only rows).
+- `SELECT count(*) FROM source_onboarding_runs WHERE source = 'gmail'` → 0.
+- The M6 services run idle (their workflow_states rows update each tick but `last_signals_processed = 0`).
+
+This is NOT a regression. It is the expected pre-F4-retrofit state.
+
+### 6.D.3. Start procedure (post-F4)
+
+Once F4 ticket lands, Gmail backfill runs alongside the other four services. The five M6 services boot via:
+
+```sh
+WORKFLOW_SERVICE=oauth_poller         python -m services.ingestion.workflows
+WORKFLOW_SERVICE=tenant_onboarding    python -m services.ingestion.workflows
+WORKFLOW_SERVICE=source_onboarding    python -m services.ingestion.workflows
+WORKFLOW_SERVICE=shard_fetch          python -m services.ingestion.workflows
+WORKFLOW_SERVICE=reconciler           python -m services.ingestion.workflows
+```
+
+No Gmail-specific service. The dispatch-table wire-in via `services/ingestion/{planners,fetchers,reconcilers}/__init__.py` registers Gmail at process start. The Reconciler's `__main__.py` boot path calls `services.ingestion.reconcilers.gmail.set_pool_provider(pool)` so the Gmail reconciler can read `workflow_states` for each shard's `final_history_id`. (Same wire-up exists in `services/ingestion/workflows/reconciler.py::_run_service` for the per-service CLI path used by subprocess tests.)
+
+### 6.D.4. Diagnostic queries
+
+**Per-mailbox cursor (where backfill landed):**
+```sql
+SELECT s.id AS shard_id,
+       s.shard_identifier->>'mailbox_email' AS mailbox,
+       ws.state_data->'cursor'->>'final_history_id' AS final_history_id,
+       ws.state_data->'cursor'->>'page_token' AS page_token,
+       ws.state_data->>'pages_fetched' AS pages_fetched,
+       s.state
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch' AND ws.workflow_id = s.id::text
+ WHERE s.source = 'gmail'
+   AND s.shard_kind = 'gmail_mailbox_window'
+ ORDER BY s.created_at DESC LIMIT 50;
+```
+
+**Gap-fill shards (reshare-cycle audit):**
+```sql
+SELECT id, parent_shard_id, state,
+       shard_identifier->>'start_history_id' AS start_hid,
+       shard_identifier->>'end_history_id' AS end_hid,
+       recency_score, last_error
+  FROM onboarding_shards
+ WHERE shard_kind = 'gmail_history_gap'
+ ORDER BY created_at DESC LIMIT 50;
+```
+
+**Tenants where Gmail has cycled multiple times (potential algorithm issue):**
+```sql
+SELECT tenant_id, onboarding_run_id, reconciliation_pass_count,
+       status, reconciled_at, failure_reason
+  FROM source_onboarding_runs
+ WHERE source = 'gmail' AND reconciliation_pass_count >= 2
+ ORDER BY reconciliation_pass_count DESC, completed_at DESC LIMIT 30;
+```
+
+### 6.D.5. Gmail-specific failure modes
+
+| Symptom | Likely cause | Diagnostic step | Remediation |
+|---|---|---|---|
+| Shards stuck `in_progress`; `pages_fetched` not advancing | Gmail API quota exhaustion (429s). Retry backoff is in effect; eventual progress expected. | Check `gmail.fetcher.get_message_failed` log volume; check service logs for `retry_with_backoff_on_429`. | Wait for quota reset; consider per-tenant rate-limit tuning. |
+| Shard `failed` with `GoogleApiError: status=401` | DWD bearer token expired or revoked. | `kubectl logs` on the shard_fetch pod; check `services.integrations.gmail.dwd` minter status. | Re-run DWD provisioning per [oauth.py](../../services/integrations/gmail/oauth.py). |
+| Shard `failed` with `historyId out of range` | History-API horizon (~7 days) exceeded. Steady-state path's `gmail_mailbox_watches.history_id` is older than Gmail's retention window. | Compare `final_history_id` in cursor vs `getProfile`'s response horizon. | Treat as full re-backfill via `users.messages.list` (initial-backfill shard); skip the gap-fill path for that mailbox. Algorithm refinement is future work. |
+| `gmail_history_gap` shard endlessly re-spawning (`reconciliation_pass_count` keeps growing) | Mailbox receiving live mail at higher rate than reconciler can catch up. Backfill never converges. | `SELECT reconciliation_pass_count FROM source_onboarding_runs WHERE source='gmail'` shows monotonic increase. | Expected for very-active mailboxes; per-source algorithm should add a convergence cap. M6.3 algorithm runs as-is; refinement is per-source-policy. |
+| `_pool_provider not registered` RuntimeError in reconciler logs | Service started via a non-blessed entry point that didn't call `set_pool_provider`. | Check the reconciler subprocess invocation in deployment manifest. | Use `python -m services.ingestion.workflows` (with `WORKFLOW_SERVICE=reconciler`) OR `python -m services.ingestion.workflows.reconciler`. Both register the provider. |
+
+### 6.D.6. When to investigate (alert thresholds)
+
+| Threshold | Severity | Notes |
+|---|---|---|
+| Any Gmail shard `failed` with `historyId out of range` | **Warn** | History-horizon issue. Per-source algorithm correction. |
+| Any duplicate `source_onboarding_completed` for the same Gmail (run, source) | **Page** | Cross-service idempotency broken (same A17 invariant). |
+| `gmail_mailbox_watches` row with `state='errored'` and `consecutive_poll_failures >= 5` | **Info** | Existing steady-state path issue; M6.3 does not address. |
+| `onboarding_triggers` for Gmail with `consume_attempts >= 3` and no `consumed_at` | **Warn** | F4 retrofit landing is exposing oauth_poller issues. |
+
+### 6.D.7. Two-path coexistence resolution path
+
+The deferred ticket "Gmail inline-ingestion retirement" (M7 territory) is the resolution. It converts `services/integrations/gmail/fetcher.py::drain_mailbox_history` to publish to Kafka `ingestion.raw` instead of dispatching inline through `services/ingestion/handlers/gmail.py`. After that change ships:
+- Steady-state Gmail messages flow through the same Kafka topic as backfill.
+- A single normalizer code path handles both backfill and steady-state.
+- `gmail_mailbox_watches.history_id` becomes redundant with `workflow_states.state_data["cursor"]["final_history_id"]`; the steady-state path is rewritten to read/write from the M6 cursor home.
+
+Operators do NOT need to plan for this transition in M6.3-era operations. The runbook will be re-released when the M7 ticket lands.
+
+---
+
 ## 7. References
 
 - **Code:**

@@ -536,6 +536,14 @@ async def _run_service() -> None:
     from services.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
+    # M6.3: per-source reconcilers may need pool access for auxiliary
+    # reads (e.g., Gmail reads workflow_states for each shard's
+    # final_history_id). Register the pool with each per-source module
+    # that needs it; the per-source module raises an explicit error
+    # if its pool isn't registered when called.
+    from services.ingestion.reconcilers import gmail as gmail_reconciler_mod
+    gmail_reconciler_mod.set_pool_provider(pool)
+
     config = ReconcilerConfig(
         tick_interval_seconds=float(
             os.environ.get("RECONCILER_TICK_SEC", "5.0"),
