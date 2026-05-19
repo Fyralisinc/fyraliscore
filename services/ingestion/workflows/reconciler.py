@@ -542,7 +542,9 @@ async def _run_service() -> None:
     # that needs it; the per-source module raises an explicit error
     # if its pool isn't registered when called.
     from services.ingestion.reconcilers import gmail as gmail_reconciler_mod
+    from services.ingestion.reconcilers import github as github_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
+    github_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

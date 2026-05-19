@@ -160,3 +160,4 @@ __all__ = [
 # Per-source modules import below — each assigns into FETCHER_DISPATCH
 # at module-load time (per A18).
 from services.ingestion.fetchers import gmail as _gmail  # noqa: E402,F401
+from services.ingestion.fetchers import github as _github  # noqa: E402,F401

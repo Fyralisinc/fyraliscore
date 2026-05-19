@@ -1192,6 +1192,39 @@ Operators do NOT need to plan for this transition in M6.3-era operations. The ru
 
 ---
 
+## 6.E. M6.4 GitHub backfill — operator section
+
+The M6.4 sub-block ships GitHub-specific entries in the three M6 dispatch tables. Like Gmail (§6.D), GitHub backfill is **net-new code via Octokit's `/repos/{owner}/{repo}/{issues|pulls}` endpoints**; existing webhook ingestion (under `services/integrations/github/`) is unmodified. Two-path coexistence applies until the M7 inline-ingestion retirement work (no Gmail-style ticket filed yet — file as analogous when M7 work begins).
+
+### 6.E.1. Shard cardinality
+Per (repo, event_type). M6.4 ships 2 event_types (`issues`, `pull_requests`). Per-tenant typical: ~20 repos × 2 = ~40 shards. The framework supports ~250 shards/tenant; future event_types (issue_comments, pr_review_comments, commits) fit within headroom.
+
+### 6.E.2. Diagnostic queries
+```sql
+-- Per-shard cursor (page, etag, last_seen_updated_at):
+SELECT s.id, s.shard_identifier->>'repo_full_name' AS repo,
+       s.shard_identifier->>'event_type' AS event_type,
+       ws.state_data->'cursor'->>'page' AS page,
+       ws.state_data->'cursor'->>'etag' AS etag,
+       ws.state_data->'cursor'->>'last_seen_updated_at' AS last_seen,
+       s.state
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch' AND ws.workflow_id = s.id::text
+ WHERE s.source = 'github'
+ ORDER BY s.created_at DESC LIMIT 50;
+```
+
+### 6.E.3. GitHub-specific failure modes
+| Symptom | Cause | Remediation |
+|---|---|---|
+| Run failed with "all-repositories mode is not yet supported" | App install has org-wide grant | Per-source policy: scope the install to specific repos via the GitHub App settings |
+| Shard `failed` with `secondary rate limit` | Octokit abuse-detection trigger | Backoff is automatic; investigate per-repo request volume |
+| `head_repo_events` etag drift across reconciler cycles | Normal — every push advances etag | No action needed; the cursor-based check decides whether gap exists |
+| `reconciliation_pass_count` keeps growing | Repo receiving constant pushes; reconciler never catches up | Per-source convergence cap (algorithm refinement) is future work |
+
+---
+
 ## 7. References
 
 - **Code:**

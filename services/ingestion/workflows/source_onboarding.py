@@ -154,6 +154,7 @@ import asyncpg
 
 from lib.shared.ids import uuid7
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingestion.planners.context import PlannerContext
 from services.ingestion.workflows.runtime import LongRunningService
 from services.ingestion.workflows.signals import (
     WorkflowSignal,
@@ -360,6 +361,26 @@ async def _load_install(
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
+async def _build_source_client(
+    source: str, pool: asyncpg.Pool, install: asyncpg.Record,
+) -> Any:
+    """Construct a per-source API client for the planner's PlannerContext.
+
+    Per M6.4 / A18.6: per-source planners that enumerate resources at
+    plan time (e.g., GitHub repos) receive a source-side client via
+    `ctx.source_client`. Sources whose planner only reads DB state
+    (Gmail) receive None.
+
+    Production: lazy-imports the per-source client so unrelated
+    services don't pay the import cost. Tests rebind this function
+    via `monkeypatch.setattr` to inject fakes.
+    """
+    if source == "github":
+        from services.integrations.github.client import GithubClient
+        return GithubClient(pool=pool)
+    return None
+
+
 async def _insert_shard(
     conn: asyncpg.Connection, *,
     shard_id: UUID, run_id: UUID, tenant_id: UUID, source: str,
@@ -559,8 +580,20 @@ class SourceOnboarding(LongRunningService):
         # 'in_progress').
         await conn.execute(_MARK_SOURCE_RUN_IN_PROGRESS_SQL, run_id, source)
 
+        # M6.4 / A18.6: planners receive a PlannerContext bundle.
+        # Build it from the in-transaction conn + per-source client (if
+        # any). Per-source clients for sources that need them
+        # (GitHub) are constructed via `_build_source_client`; sources
+        # whose planner only reads `install` (Gmail) receive None.
+        source_client = await _build_source_client(
+            source, self._pool, install,
+        )
+        ctx = PlannerContext(
+            tenant_id=tenant_id, install=install, conn=conn,
+            source_client=source_client,
+        )
         try:
-            shards = await PLANNER_DISPATCH[source](tenant_id, install)
+            shards = await PLANNER_DISPATCH[source](ctx)
         except NotImplementedError as exc:
             failure_reason = str(exc)
             await conn.execute(

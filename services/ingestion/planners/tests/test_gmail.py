@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingestion.planners.context import PlannerContext
 from services.ingestion.planners.gmail import (
     SHARD_KIND_MAILBOX_WINDOW,
     plan_shards_gmail,
@@ -24,6 +25,14 @@ from services.ingestion.planners.gmail import (
 
 
 pytestmark = pytest.mark.asyncio
+
+
+def _ctx(install, tenant_id=None):
+    """Build a PlannerContext for tests. Gmail uses only ctx.install."""
+    return PlannerContext(
+        tenant_id=tenant_id or uuid4(),
+        install=install, conn=None, source_client=None,
+    )
 
 
 class _FakeRecord:
@@ -59,7 +68,7 @@ async def test_single_mailbox_install_returns_one_shard():
             "history_id": "42",
         },
     ]))
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert len(shards) == 1
     s = shards[0]
     assert isinstance(s, Shard)
@@ -80,7 +89,7 @@ async def test_multi_mailbox_install_returns_one_shard_per_mailbox():
         {"email_address": "bob@acme.com",   "google_user_id": "2", "history_id": "20"},
         {"email_address": "carol@acme.com", "google_user_id": "3", "history_id": "30"},
     ]))
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert len(shards) == 3
     emails = {s.shard_identifier["mailbox_email"] for s in shards}
     assert emails == {"alice@acme.com", "bob@acme.com", "carol@acme.com"}
@@ -91,7 +100,7 @@ async def test_multi_mailbox_install_returns_one_shard_per_mailbox():
 
 async def test_empty_mailboxes_install_returns_empty_list():
     install = _install(mailboxes_json="[]")
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert shards == []
 
 
@@ -102,7 +111,7 @@ async def test_null_history_id_propagates_as_none():
     install = _install(mailboxes_json=json.dumps([
         {"email_address": "alice@acme.com", "google_user_id": None, "history_id": None},
     ]))
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert len(shards) == 1
     assert shards[0].shard_identifier["initial_history_id"] is None
     assert shards[0].shard_identifier["user_id"] is None
@@ -115,7 +124,7 @@ async def test_planner_decodes_mailboxes_when_passed_as_list():
     install = _install(mailboxes_json=[
         {"email_address": "a@acme.com", "google_user_id": "1", "history_id": "1"},
     ])
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert len(shards) == 1
     assert shards[0].shard_identifier["mailbox_email"] == "a@acme.com"
 
@@ -138,6 +147,6 @@ async def test_planner_skips_mailbox_with_missing_email_address():
         {"email_address": "alice@acme.com", "google_user_id": "1", "history_id": "1"},
         {"google_user_id": "2", "history_id": "2"},  # no email_address
     ]))
-    shards = await plan_shards_gmail(uuid4(), install)
+    shards = await plan_shards_gmail(_ctx(install))
     assert len(shards) == 1
     assert shards[0].shard_identifier["mailbox_email"] == "alice@acme.com"

@@ -210,10 +210,11 @@ def _service(pool: asyncpg.Pool) -> SourceOnboarding:
     )
 
 
-# Test planner: 3 shards.
-async def _test_planner_three_shards(
-    tenant_id: UUID, install: asyncpg.Record,
-) -> list[Shard]:
+# Test planners — updated for M6.4 / A18.6 PlannerContext signature.
+from services.ingestion.planners.context import PlannerContext  # noqa: E402
+
+
+async def _test_planner_three_shards(ctx: PlannerContext) -> list[Shard]:
     return [
         Shard(
             shard_kind="slack_channel_window",
@@ -224,9 +225,7 @@ async def _test_planner_three_shards(
     ]
 
 
-async def _test_planner_empty(
-    tenant_id: UUID, install: asyncpg.Record,
-) -> list[Shard]:
+async def _test_planner_empty(ctx: PlannerContext) -> list[Shard]:
     return []
 
 
