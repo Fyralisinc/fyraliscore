@@ -540,10 +540,25 @@ Lays the framework all subsequent M6 sub-blocks build on. No business logic; jus
 
 **Production wiring deferred to M-Load:** Slack client extensions `conversations_list` + `conversations_history` use the fetcher/reconciler seam in tests; real wiring is M-Load.
 
-#### M6.6 — Discord backfill (sparse sampling)
+#### M6.6 — Discord backfill (sparse sampling) — **CLOSED**
 
-- `services/ingestion/planners/discord.py`, `fetchers/discord.py`, `reconciler/discord.py` (5% sparse sampling per LLD §3.4).
-- Tests: `test_planner_discord_produces_expected_shards`, `test_reconciler_discord_sparse_sampling_correctness`, `test_e2e_discord_gateway_message_to_observation`.
+**Status:** Complete on `feat/ingestion-m6-6-discord-backfill` (off M6.5 HEAD).
+
+**Files:** `services/ingestion/{planners,fetchers,reconcilers}/discord.py`. 5% deterministic per-tenant sampling (`SAMPLING_VERSION = "v1"`, seed = `hash((tenant_id, "v1"))`). Fetcher paginates via `before=<oldest_snowflake>`; reconciler probes `after=<newest_snowflake>` per **sampled-only** shard.
+
+**Tests:** 8 planner + 4 fetcher + 5 reconciler unit tests + 2 E2E. All green. Includes `test_only_sampled_channels_checked` (M6.6's load-bearing sampling-awareness assertion) and `test_sampling_deterministic_per_tenant` / `test_sampling_differs_across_tenants`.
+
+**Substrate findings:** none. M6.4's PlannerContext + A18 patterns inherited cleanly. M6 fully closed.
+
+**Production wiring deferred to M-Load:** DiscordClient extensions (`list_guilds`, `list_guild_channels`, `get_messages`) use the seam in tests; real wiring is M-Load.
+
+---
+
+### §M6 closeout (post M6.6)
+
+All four sources wired. The three dispatch tables (`PLANNER_DISPATCH`, `FETCHER_DISPATCH`, `RECONCILER_DISPATCH`) are fully populated. The framework supports end-to-end OAuth → trigger → run → shards → fetch → reconcile → completion → Bridge with 5-subprocess E2E tests for all four sources × clean+reshare paths = 8 E2E tests total.
+
+What remains: M-Load (production Kafka readers + synthetic harness for cutover dry run) is the gate to first real-customer cutover. The F4 retrofit (`ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md`) must also land before customers see backfill in production.
 
 #### M6 — common artifacts
 

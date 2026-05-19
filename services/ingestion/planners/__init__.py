@@ -146,3 +146,4 @@ __all__ = [
 from services.ingestion.planners import gmail as _gmail  # noqa: E402,F401
 from services.ingestion.planners import github as _github  # noqa: E402,F401
 from services.ingestion.planners import slack as _slack  # noqa: E402,F401
+from services.ingestion.planners import discord as _discord  # noqa: E402,F401
