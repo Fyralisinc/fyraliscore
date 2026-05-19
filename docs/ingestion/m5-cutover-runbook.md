@@ -1246,6 +1246,29 @@ Failure modes: `not_in_channel` (bot not in private channel — recreate join), 
 
 ---
 
+## 6.G. M6.6 Discord backfill — operator section
+
+**5% sparse sampling.** Discord backfill samples 5% of text channels per guild, deterministically by `hash((tenant_id, "v1"))`. The 95% un-sampled channels do NOT get a backfill shard; the reconciler also skips them (sampling-aware).
+
+Sampling-rate operator questions:
+- "Why is X channel missing from backfill?" → 95% chance it wasn't sampled. Confirm via `shard_identifier->>'is_sampled'` query.
+- "Can we increase the sampling rate?" → bump `SAMPLING_RATE` + `SAMPLING_VERSION` in `services/ingestion/planners/discord.py`. New runs use the new seed (older tenants' previous samples NOT re-honored).
+
+Per-shard cursor query:
+```sql
+SELECT s.id, s.shard_identifier->>'guild_id' AS guild,
+       s.shard_identifier->>'channel_id' AS channel,
+       s.shard_identifier->>'is_sampled' AS sampled,
+       ws.state_data->'cursor'->>'newest_seen_snowflake' AS newest,
+       s.state
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch' AND ws.workflow_id = s.id::text
+ WHERE s.source = 'discord' ORDER BY s.created_at DESC LIMIT 50;
+```
+
+---
+
 ## 7. References
 
 - **Code:**

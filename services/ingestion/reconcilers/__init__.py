@@ -187,3 +187,4 @@ __all__ = [
 from services.ingestion.reconcilers import gmail as _gmail  # noqa: E402,F401
 from services.ingestion.reconcilers import github as _github  # noqa: E402,F401
 from services.ingestion.reconcilers import slack as _slack  # noqa: E402,F401
+from services.ingestion.reconcilers import discord as _discord  # noqa: E402,F401
