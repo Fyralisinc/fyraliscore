@@ -483,12 +483,32 @@ Lays the framework all subsequent M6 sub-blocks build on. No business logic; jus
 
 **M6.2 fully closed.** Both M6.2a (commit hashes `e61b945` / `3c07824` / `a4e8f0a`, merged at `2c282c6`) and M6.2b (commit hashes `8e76223` / Phase 2 closeout) ship; the M6.2 sub-block is complete. M6.3 (Gmail) is the next work-unit per Path A sequencing — it replaces one entry each in `PLANNER_DISPATCH` + `FETCHER_DISPATCH` + `RECONCILER_DISPATCH`. M6.4 (GitHub), M6.5 (Slack), M6.6 (Discord) can ship sequentially or in parallel after M6.3 since the per-source sub-blocks are independent.
 
-#### M6.3 — Gmail backfill (planner + fetcher + reconciler)
+#### M6.3 — Gmail backfill (planner + fetcher + reconciler) — **CLOSED**
 
-- `services/ingestion/planners/gmail.py` — `plan_shards_gmail`.
-- `services/ingestion/fetchers/gmail.py` — `fetch_page_gmail`. Subsumes the existing `gmail/fetcher.py` + `history_poller.py` + `watch_scheduler.py` — the LLD names this as the most disruptive single change; allocate L effort.
-- `services/ingestion/reconciler/gmail.py` — `reconcile_gmail`.
-- Tests: `test_planner_gmail_produces_expected_shards`, `test_fetch_page_gmail_advances_cursor_atomically`, `test_reconciler_gmail_detects_below_threshold_no_reshare`, `test_e2e_gmail_install_to_first_observation`.
+**Status:** Phase 1 (S1 amendment + Gmail implementation) + Phase 2 (E2E + runbook §6.D + plan) + Phase 3 (A18 + 3 deferred tickets) complete on `feat/ingestion-m6-3-gmail-backfill`.
+
+**Architectural redirection from initial prompt:** the pre-Phase-1 audit established that the existing `services/integrations/gmail/{fetcher,history_poller}.py` are steady-state push/poll machinery (incremental drain via `users.history.list`), NOT backfill code. True backfill via `users.messages.list` does not exist in the codebase. M6.3 ships net-new code (not a refactor); existing steady-state code stays untouched. The two paths coexist until M7's inline-ingestion retirement ticket (deferred, filed in Phase 3). See [A18 in 05-lld-amendments.md](./05-lld-amendments.md).
+
+**Files shipped:**
+
+- `services/ingestion/planners/gmail.py` — `plan_shards_gmail`: one shard per active mailbox; reads `install["mailboxes"]` from the S1-amended loader.
+- `services/ingestion/fetchers/gmail.py` — `fetch_page_gmail` with two paths dispatched on `shard_identifier["shard_kind"]`: `gmail_mailbox_window` (backfill via `users.messages.list`) and `gmail_history_gap` (reconciler-spawned gap fill via `users.history.list`).
+- `services/ingestion/reconcilers/gmail.py` — `reconcile_gmail`: per-mailbox `users.getProfile`-based gap detection; gap shards stamped with `parent_shard_id` and `recency_score=1.5` per A17.
+- `services/integrations/gmail/client.py` — extended with `messages_list()` method (the missing piece for backfill paging).
+- `services/ingestion/workflows/source_onboarding.py` — `_LOAD_GMAIL_INSTALL_SQL` extended with JSON-aggregating LEFT JOIN on `gmail_mailbox_watches` filtered to `state='active'` (the S1 amendment).
+- `services/ingestion/workflows/reconciler.py` + `services/ingestion/workflows/__main__.py` — register the Gmail reconciler's pool provider at service startup.
+
+**Tests shipped:** 7 planner unit tests + 11 fetcher unit tests + 11 reconciler unit tests + 2 service-integration N1 invariant tests + 2 five-subprocess E2E tests (clean path + reshare path). All green.
+
+**Substrate amendments:** A18 (per-source backfill = net-new code; framework + existing steady-state coexist until M7; per-source loader enrichment via JSON aggregation; reconciler pool-provider seam; `shard_kind` mirrored into `shard_identifier`).
+
+**Three deferred tickets filed in Phase 3:**
+
+- Watch scheduler retirement (Gmail steady-state push machinery → M6 framework as sixth service). M7.
+- OAuth callbacks retrofit to write `onboarding_triggers` (all four sources; required before first real-customer cutover). M7.
+- Inline-ingestion retirement (convert existing `fetcher.py::drain_mailbox_history` to Kafka publish). M7.
+
+**Original test list (legacy, superseded by actual tests above):** `test_planner_gmail_produces_expected_shards`, `test_fetch_page_gmail_advances_cursor_atomically`, `test_reconciler_gmail_detects_below_threshold_no_reshare`, `test_e2e_gmail_install_to_first_observation`.
 
 #### M6.4 — GitHub backfill
 

@@ -142,3 +142,10 @@ __all__ = [
     "Planner",
     "Shard",
 ]
+
+
+# Per-source modules import below — each assigns into PLANNER_DISPATCH
+# at module-load time (per A18 — M6.3 establishes this wire-in pattern).
+# Order is informational only; assignments are last-wins, but each
+# source touches a distinct key so ordering doesn't matter.
+from services.ingestion.planners import gmail as _gmail  # noqa: E402,F401

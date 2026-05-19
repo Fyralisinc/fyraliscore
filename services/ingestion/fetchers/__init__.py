@@ -155,3 +155,8 @@ __all__ = [
     "FetchResult",
     "Fetcher",
 ]
+
+
+# Per-source modules import below — each assigns into FETCHER_DISPATCH
+# at module-load time (per A18).
+from services.ingestion.fetchers import gmail as _gmail  # noqa: E402,F401

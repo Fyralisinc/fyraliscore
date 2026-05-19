@@ -180,3 +180,8 @@ __all__ = [
     "ReconciliationDecision",
     "ResharedShard",
 ]
+
+
+# Per-source modules import below — each assigns into RECONCILER_DISPATCH
+# at module-load time (per A18).
+from services.ingestion.reconcilers import gmail as _gmail  # noqa: E402,F401
