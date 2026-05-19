@@ -528,10 +528,17 @@ Lays the framework all subsequent M6 sub-blocks build on. No business logic; jus
 
 **Production wiring deferred to M-Load:** the GithubClient extensions `list_repo_events` + `head_repo_events` are exercised by fakes via `_open_github_client` seam; real Octokit wiring is M-Load territory.
 
-#### M6.5 — Slack backfill
+#### M6.5 — Slack backfill — **CLOSED**
 
-- `services/ingestion/planners/slack.py`, `fetchers/slack.py`, `reconciler/slack.py`.
-- Tests: `test_planner_slack_produces_expected_shards`, `test_fetch_page_slack_advances_cursor_atomically`, `test_e2e_slack_install_feels_onboarded_within_target`.
+**Status:** Complete on `feat/ingestion-m6-5-slack-backfill` (off M6.4 HEAD).
+
+**Files:** `services/ingestion/{planners,fetchers,reconcilers}/slack.py`. Same shape as M6.4 (PlannerContext for API enumeration via `conversations.list`; cursor-based fetcher; reconciler probes for newer messages via `conversations.history(oldest=newest_seen_ts)`).
+
+**Tests:** 5 planner + 5 fetcher + 5 reconciler unit tests + 2 E2E (clean + reshare). All green.
+
+**Substrate findings:** none. A18.6 PlannerContext pattern inherited cleanly. No new amendments.
+
+**Production wiring deferred to M-Load:** Slack client extensions `conversations_list` + `conversations_history` use the fetcher/reconciler seam in tests; real wiring is M-Load.
 
 #### M6.6 — Discord backfill (sparse sampling)
 

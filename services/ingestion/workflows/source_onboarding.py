@@ -378,6 +378,12 @@ async def _build_source_client(
     if source == "github":
         from services.integrations.github.client import GithubClient
         return GithubClient(pool=pool)
+    if source == "slack":
+        # Real SlackClient construction needs secret_store + team_id;
+        # production wiring is M-Load territory. Tests patch this
+        # factory function to return a fake. Without a fake, the
+        # planner raises a clear RuntimeError naming the missing wire.
+        return None
     return None
 
 
