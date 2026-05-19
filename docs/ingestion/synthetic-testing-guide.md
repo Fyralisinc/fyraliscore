@@ -345,7 +345,74 @@ scenario = LivePubSubScenario(
 # (duplicates were sent but deduped at the writer).
 ```
 
-### 9.4. Composing X3 backfill with Y1 live ingestion
+### 9.4. Discord Gateway — `DiscordGatewayGenerator`
+
+Per [A24](./05-lld-amendments.md#a24--discord-gateway-synthetic-generator-in-process-event-injection-without-websocket-simulation). Invokes `handle_message_create` directly with synthesized Discord MESSAGE_CREATE payloads. **No WebSocket simulation** — A24 documents this as explicit non-coverage; lifecycle scenarios remain M4-tested-only.
+
+**Coverage:** MESSAGE_CREATE dispatch (bot/webhook filters) + tenant resolution + ingest core + observation write + dedup. **Non-coverage:** WebSocket framing, HELLO/IDENTIFY/READY handshake, heartbeat protocol, session resume.
+
+**Usage:**
+
+```python
+import time
+from services.actors.repo import ActorRepo
+from services.entity_aliases.repo import EntityAliasRepo
+from services.integrations.discord.gateway.dispatch import DispatchDeps
+from services.synthetic.fixtures import make_discord_guild
+from services.synthetic.live_generators import (
+    DiscordGatewayGenerator, GuildBinding,
+)
+from services.synthetic.mock_clients import MockDiscordClient
+from services.webhooks.tenant_resolver import (
+    InstallationCache, TenantResolverDeps, build_tenant_resolver,
+    noop_metrics,
+)
+
+# Seed a tenant + provider_installations row for the test guild.
+tenant_id = ...  # from test fixture
+guild_id = "1504477009927999569"
+await pool.execute(
+    "INSERT INTO provider_installations "
+    "(id, tenant_id, provider, installation_id, enabled) "
+    "VALUES ($1, $2, 'discord', $3, TRUE)",
+    uuid7(), tenant_id, guild_id,
+)
+
+deps = DispatchDeps(
+    pool=pool,
+    tenant_resolver=build_tenant_resolver(TenantResolverDeps(
+        pool=pool, cache=InstallationCache(),
+        clock=time.monotonic, metrics=noop_metrics(),
+    )),
+    actor_repo=ActorRepo(pool),
+    alias_repo=EntityAliasRepo(pool),
+    embedder=None,
+    application_id="1504474857914499194",
+)
+
+mock = MockDiscordClient(fixture=make_discord_guild(
+    guild_id=guild_id, channels=1, messages_per_channel=0,
+))
+mock._fixture["channels"][0]["id"] = "channel_test_001"
+
+async with DiscordGatewayGenerator(
+    dispatch_deps=deps,
+    guild_bindings={guild_id: GuildBinding(
+        guild_id=guild_id, mock_client=mock,
+    )},
+) as gen:
+    result = await gen.simulate_message_create(
+        guild_id=guild_id, channel_id="channel_test_001",
+        content="hello from synthetic Gateway",
+    )
+    assert result.handler_succeeded
+```
+
+**Scenario presets:** `SINGLE_ACTIVE_CHANNEL`, `MULTI_CHANNEL_PER_GUILD`, `HIGH_VOLUME_BURST` (all in `services.synthetic.scenarios`).
+
+**MESSAGE_UPDATE / MESSAGE_DELETE:** the generator records the event but does NOT invoke a handler — v1 dispatch has no handler for these (see A24). The methods return `SimulatedEventResult(handler_invoked=False, notes="...v1 dispatch scope...")` as runnable documentation.
+
+### 9.5. Composing X3 backfill with Y1 live ingestion
 
 Worked example: a tenant completes backfill via X3, then ongoing Gmail Pub/Sub notifications arrive:
 

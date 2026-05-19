@@ -83,3 +83,76 @@ MIXED_PUBSUB = LivePubSubScenario(
         for i in range(5)
     ],
 )
+
+
+# =====================================================================
+# Discord Gateway scenarios (Y2).
+# =====================================================================
+MessagePattern = list[tuple[int, int]]
+
+
+@dataclass(frozen=True)
+class GatewayChannelEntry:
+    """One (guild, channel)'s message-injection configuration."""
+
+    tenant_slug: str
+    guild_id: str
+    channel_id: str
+    message_pattern: MessagePattern
+
+
+@dataclass(frozen=True)
+class LiveGatewayScenario:
+    """Multi-channel Discord Gateway live-event scenario.
+
+    Attributes:
+      tenants:
+        List of `GatewayChannelEntry`. Within a (guild, channel),
+        events fire sequentially (matches per-channel ordering).
+        Across (guild, channel) pairs, events run concurrently.
+      fault_profile:
+        FaultProfile applied to mock Discord clients during the run.
+    """
+
+    tenants: list[GatewayChannelEntry]
+    fault_profile: FaultProfile = HAPPY_PATH
+
+
+# Gateway scenario presets (Y2.4).
+SINGLE_ACTIVE_CHANNEL = LiveGatewayScenario(
+    tenants=[
+        GatewayChannelEntry(
+            tenant_slug="single",
+            guild_id="1504477009927999569",
+            channel_id="channel_test_001",
+            message_pattern=[(1000, 1)] * 10,
+        ),
+    ],
+)
+
+MULTI_CHANNEL_PER_GUILD = LiveGatewayScenario(
+    tenants=[
+        GatewayChannelEntry(
+            tenant_slug=f"multi-ch-{i}",
+            guild_id="1504477009927999569",
+            channel_id=f"channel_multi_{i}",
+            message_pattern=(
+                [(500, 1)] * 5 if i == 0
+                else [(200, 2)] * 5 if i == 1
+                else [(0, 3), (1000, 2)]
+            ),
+        )
+        for i in range(3)
+    ],
+)
+
+HIGH_VOLUME_BURST = LiveGatewayScenario(
+    tenants=[
+        GatewayChannelEntry(
+            tenant_slug="burst",
+            guild_id="1504477009927999569",
+            channel_id="channel_burst",
+            message_pattern=[(0, 100)],
+        ),
+    ],
+)

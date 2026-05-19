@@ -16,6 +16,11 @@ the X3 backfill harness. Common pattern:
        coherently (no duplicates across paths; observation count
        matches backfill+live total).
 """
+from services.synthetic.live_generators.discord_gateway import (
+    DiscordGatewayGenerator,
+    GuildBinding,
+    SimulatedEventResult,
+)
 from services.synthetic.live_generators.gmail_pubsub import (
     GmailPubSubGenerator,
     SimulatedPushResult,
@@ -23,6 +28,9 @@ from services.synthetic.live_generators.gmail_pubsub import (
 
 
 __all__ = [
+    "DiscordGatewayGenerator",
     "GmailPubSubGenerator",
+    "GuildBinding",
+    "SimulatedEventResult",
     "SimulatedPushResult",
 ]

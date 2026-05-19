@@ -723,6 +723,87 @@ A18 inherits from and extends:
 
 ---
 
+## A24 — Discord Gateway synthetic generator: in-process event injection without WebSocket simulation
+
+**Status:** Resolved with Y2 commit on `feat/ingestion-y2-discord-gateway-generator`.
+
+**Trigger:** Mega-prompt 3 Y2 work-unit. Completes the synthetic-coverage trilogy (M-Load webhooks + X3 backfill + Y1 Gmail Pub/Sub + Y2 Discord Gateway). M4's Gateway client tests already cover the WebSocket protocol layer (HELLO / IDENTIFY / heartbeat / RESUME); Y2's scope is the **dispatch and ingestion** layer — what the protocol layer delivers to the rest of the system.
+
+**Decision:** `DiscordGatewayGenerator` (in `services/synthetic/live_generators/discord_gateway.py`) invokes `services.integrations.discord.gateway.dispatch.handle_message_create` directly in-process. The handler is already directly callable per its production signature:
+
+```python
+async def handle_message_create(message: dict[str, Any], deps: DispatchDeps) -> None
+```
+
+The generator:
+
+1. Holds a `DispatchDeps` reference (built the same way M4 tests build it — `pool`, `tenant_resolver`, `actor_repo`, `alias_repo`, `embedder=None`, `application_id`).
+2. Holds a `GuildBinding` map keyed by `guild_id`, each containing a `MockDiscordClient`.
+3. Per `simulate_message_create(guild_id, channel_id, content, author_id)`: builds the Discord MESSAGE_CREATE payload shape, calls `MockDiscordClient.append_message` (new method added by Y2), then awaits `handle_message_create(payload, deps)`. Returns a `SimulatedEventResult` carrying handler outcome.
+
+**Explicit non-coverage (Y2.3):**
+
+The generator does NOT exercise:
+
+- WebSocket framing.
+- HELLO (op 10) heartbeat-interval negotiation.
+- IDENTIFY (op 2) + READY (op 0, t=READY) handshake.
+- Heartbeat protocol (op 1 send / op 11 ACK).
+- Session resume (op 6 + sequence numbers).
+- INVALID_SESSION (op 9) fallback.
+- Connection / reconnection / disconnect lifecycle.
+
+These remain M4-tested-only in `services/integrations/discord/gateway/tests/test_client_lifecycle.py` and `test_client_reconnect.py`. The runnable enforcement: `test_gateway_generator_does_not_simulate_connection_lifecycle` asserts the generator's source does not import `websockets` or the Gateway `client.py` module. A future contributor adding lifecycle simulation must write A25 before changing this test.
+
+**Trade-off acknowledged:** Y2 does NOT test connection/reconnection/session-resumption scenarios. If lifecycle synthetic coverage is ever required, a future work-unit ships a WebSocket simulator (Option A from the mega-prompt's decision matrix) at that point. Until then, real-Discord-monitoring + M4's existing test suite covers that surface.
+
+**MESSAGE_UPDATE / MESSAGE_DELETE handling:** Production has no v1 handler for these events (see `services/integrations/discord/gateway/dispatch.py` line 93–95: "Other events (MESSAGE_UPDATE, MESSAGE_DELETE, TYPING_START, …) are not in v1 scope"). The generator's `simulate_message_update` and `simulate_message_delete` methods are **runnable documentation** of this non-coverage: they return a `SimulatedEventResult` with `handler_invoked=False` and a `notes` field citing A24. If MESSAGE_UPDATE/DELETE ever ships in v2, those methods can be promoted to real handler invocations without changing the API surface.
+
+**Rationale (Option B vs A vs C — settled):**
+
+- **Option A (full WebSocket simulator)** rejected: implementing the Gateway protocol fidelitously is ~3-5 sessions of work for dubious additional coverage. The M4 client tests already exercise this surface against a `FakeGateway` server.
+- **Option C (library-level stubbing of the websockets module)** rejected: asyncio synchronization fragility against websockets library upgrades. Tests would become brittle and hard to debug.
+- **Option B (direct handler invocation)** chosen: validates event processing — what backfill + live ingestion correctness depend on — without re-litigating protocol fidelity.
+
+**Coverage end-to-end:**
+
+| Layer | Exercised? |
+|-------|-----------|
+| WebSocket frame parsing | ✗ (M4-tested, not Y2) |
+| HELLO / IDENTIFY / READY handshake | ✗ (M4-tested, not Y2) |
+| Heartbeat protocol | ✗ (M4-tested, not Y2) |
+| Session resume / sequence numbers | ✗ (M4-tested, not Y2) |
+| MESSAGE_CREATE dispatch (bot/webhook filters) | ✓ real `handle_message_create` |
+| Tenant resolution via `provider_installations` | ✓ real `tenant_resolver` |
+| Discord ingest core | ✓ real `ingest()` |
+| Observation write + `(source_channel, external_id, occurred_at)` dedup | ✓ real |
+| MESSAGE_UPDATE / DELETE | ✗ documented v1 non-coverage |
+
+**Tests (9 in Y2):**
+
+- `test_gateway_generator_basic_event_processed` — MESSAGE_CREATE → observation row.
+- `test_gateway_generator_coordinates_mock_discord_state` — append precedes handler call.
+- `test_gateway_generator_message_update_event_documents_noncoverage` — runnable A24 documentation.
+- `test_gateway_generator_message_delete_event_documents_noncoverage` — runnable A24 documentation.
+- `test_gateway_generator_multi_channel_scenario` — 3 channels × 2 messages = 6 observations.
+- `test_gateway_generator_high_volume_burst` — 30 events serialized through one channel.
+- `test_gateway_generator_fault_profile_transient_failure` — documents that mock-FaultProfile is a backfill-path concern, not a dispatch-path concern (dispatch doesn't call the mock's async surface).
+- `test_gateway_generator_composable_with_x3_seeding` — prior backfill-style obs + live event coexist.
+- `test_gateway_generator_does_not_simulate_connection_lifecycle` — structural enforcement: no `import websockets`, no `gateway.client` import. The test will break if anyone adds lifecycle simulation; they should write A25 before changing it.
+
+**MockDiscordClient extension (Y2 substrate addition):** Added `append_message(channel_id, message)` mirroring Y1's `MockGmailClient.append_messages` shape. Additive; existing backfill tests unaffected.
+
+**Cross-references:**
+
+- [A23](#a23--gmail-pubsub-synthetic-generator-fastapi-in-process-invocation-with-mock-gmail-coordination) — Gmail Pub/Sub generator; Y2 inherits the in-process invocation pattern, just with direct handler call instead of HTTP.
+- [A21](#a21--mock-api-server-architecture-stateful-in-process-libraries-with-fixture-generators-and-fault-injection) — mock servers; Y2 uses `MockDiscordClient` and adds the `append_message` extension.
+- [A19](#a19--framework-exception-handling-for-per-source-dispatch-failures) — framework exception handling; the dispatch handler's existing tenant-resolution + ingest error handling embodies the same robustness contract.
+- M4 (Discord Gateway) — Y2 exercises its event handlers but explicitly NOT its protocol layer.
+
+**Effect on future work:** Mega-prompt 3 closes the synthetic-coverage trilogy. The system now has webhook synthetics (M-Load), backfill synthetics (X3), Gmail live synthetics (Y1), and Discord live synthetics (Y2) — **every code path in the M6 ingestion pipeline is testable with synthetic data**. Composition patterns: install + backfill + live ingestion can be exercised in one test scenario (see `docs/ingestion/synthetic-testing-guide.md` §9).
+
+---
+
 ## A23 — Gmail Pub/Sub synthetic generator: FastAPI in-process invocation with mock Gmail coordination
 
 **Status:** Resolved with Y1 commit on `feat/ingestion-y1-gmail-pubsub-generator`.
