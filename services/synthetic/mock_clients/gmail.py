@@ -52,6 +52,41 @@ class MockGmailClient(_MockBase):
         # `messages_list` cursor: index into the messages list.
         self._page_size = int(fixture.get("page_size", 5))
 
+    # ---- Live-ingestion extension (Y1) ----
+    def append_messages(
+        self, new_messages: list[dict[str, Any]],
+    ) -> str:
+        """Append messages dynamically and advance the watermark.
+
+        Used by Y1's `GmailPubSubGenerator` to simulate new mail
+        arriving between Pub/Sub notifications. Each call:
+          1. Appends `new_messages` to `_fixture["messages"]`.
+          2. Appends one history event per message to
+             `_fixture["history_events"]`.
+          3. Increments `_fixture["current_history_id"]` by
+             `len(new_messages)`.
+
+        Returns the new `current_history_id` (string), which the
+        generator embeds in the Pub/Sub notification payload.
+        """
+        if not new_messages:
+            return self._fixture["current_history_id"]
+
+        current_history_id = int(self._fixture["current_history_id"])
+        for m in new_messages:
+            current_history_id += 1
+            self._fixture["messages"].append(m)
+            self._fixture.setdefault("history_events", []).append({
+                "id": str(current_history_id),
+                "messages": [{"id": m["id"]}],
+                "messagesAdded": [
+                    {"message": {"id": m["id"],
+                                 "threadId": m.get("threadId", "")}},
+                ],
+            })
+        self._fixture["current_history_id"] = str(current_history_id)
+        return self._fixture["current_history_id"]
+
     # ---- M6.3 surface ----
     async def messages_list(
         self,
