@@ -413,17 +413,26 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
 # =====================================================================
 
 async def test_source_onboarding_handles_not_implemented_planner(
-    fresh_db: asyncpg.Pool,
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """source='slack' uses the dispatch table's NotImplementedError
-    stub (since M6.5 hasn't shipped). Assert:
+    """Inject a not-implemented planner stub for slack and verify:
       (a) source_onboarding_runs marked 'failed' with informative
           failure_reason that names M6.5.
       (b) source_onboarding_completed emitted to TenantOnboarding
           inbox with failure_reason in signal_data.
       (c) No shard rows created.
+
+    Pre-M6.5 this exercised the real stub registered in PLANNER_DISPATCH.
+    Post-M6.5 the slack entry is the real planner, so we monkeypatch
+    the factory-built stub back in to keep verifying the dispatch's
+    raise-NotImplementedError handling.
     """
-    # No monkeypatch: use the real stub from PLANNER_DISPATCH.
+    from services.ingestion.planners import _not_implemented_planner
+    monkeypatch.setitem(
+        PLANNER_DISPATCH, "slack",
+        _not_implemented_planner("slack", "M6.5"),
+    )
+
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)

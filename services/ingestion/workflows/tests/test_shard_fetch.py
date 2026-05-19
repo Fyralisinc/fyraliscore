@@ -416,16 +416,25 @@ async def test_shard_fetch_N1_invariant_holds(
 # =====================================================================
 
 async def test_shard_fetch_handles_not_implemented_fetcher(
-    fresh_db: asyncpg.Pool,
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default dispatch table: source='slack' raises NotImplementedError.
-    Assert:
+    """Inject a not-implemented fetcher stub for slack and verify:
       (a) shard.state == 'failed'.
       (b) last_error names M6.5 (slack's responsible sub-block).
       (c) shard_fetch_completed emitted with status='failed' and
           failure_reason set.
+
+    Pre-M6.5 this exercised the real stub. Post-M6.5 the slack entry
+    is a real fetcher, so we monkeypatch the factory-built stub back
+    in to keep verifying the dispatch's raise-NotImplementedError
+    handling.
     """
-    # No monkeypatch: use the real stub.
+    from services.ingestion.fetchers import _not_implemented_fetcher
+    monkeypatch.setitem(
+        FETCHER_DISPATCH, "slack",
+        _not_implemented_fetcher("slack", "M6.5"),
+    )
+
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)

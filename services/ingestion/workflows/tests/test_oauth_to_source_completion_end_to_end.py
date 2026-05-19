@@ -106,9 +106,9 @@ def _ensure_e2e_helpers() -> str:
         with open(init_py, "w") as f:
             f.write("# Test helpers for M6.2a subprocess tests.\n")
 
-    content = '''"""Subprocess-loadable test planner + fetcher for the
-M6.2a Phase 3 four-subprocess end-to-end test. Installs both into
-their respective dispatch tables on import.
+    content = '''"""Subprocess-loadable test planner + fetcher + reconciler
+for the M6.2a Phase 3 multi-subprocess end-to-end test. Installs all
+three into their respective dispatch tables on import.
 
 Test planner: returns 2 shards for source='slack' (channel C001
 and C002 windows).
@@ -116,6 +116,11 @@ and C002 windows).
 Test fetcher: returns 5 records on the first call (cursor is
 None), then end_of_data=True with empty records on the second
 call. One page per shard; 10 records total across 2 shards.
+
+Test reconciler: always returns clean (no gaps) — the test's
+clean-path intent. Post-M6.5 the real slack reconciler tries to
+open a Slack API client this test doesn't wire up; the override
+sidesteps that.
 """
 from __future__ import annotations
 
@@ -127,6 +132,10 @@ import asyncpg
 from services.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingestion.planners.context import PlannerContext
+from services.ingestion.reconcilers import (
+    RECONCILER_DISPATCH,
+    ReconciliationDecision,
+)
 
 
 async def _e2e_test_planner(ctx: PlannerContext) -> list[Shard]:
@@ -164,9 +173,16 @@ async def _e2e_test_fetcher(
     )
 
 
-# Install both into the dispatch tables at import time.
+async def _e2e_test_reconciler(
+    shards: list[asyncpg.Record], run: asyncpg.Record,
+) -> ReconciliationDecision:
+    return ReconciliationDecision(has_gaps=False, message="e2e clean")
+
+
+# Install all three into the dispatch tables at import time.
 PLANNER_DISPATCH["slack"] = _e2e_test_planner
 FETCHER_DISPATCH["slack"] = _e2e_test_fetcher
+RECONCILER_DISPATCH["slack"] = _e2e_test_reconciler
 '''
     helpers_file = os.path.join(helpers_dir, "e2e_test_dispatch.py")
     with open(helpers_file, "w") as f:
@@ -474,10 +490,13 @@ async def test_oauth_trigger_to_source_completion_end_to_end(
         )
 
         # ----- Start subprocess 5: reconciler -----
-        # Default-clean stub for slack — no monkeypatching needed.
+        # Post-M6.5: slack reconciler is real and needs a Slack client.
+        # Bootstrap via e2e_test_dispatch which installs a clean
+        # RECONCILER_DISPATCH override before main() runs.
         procs["rec"] = subprocess.Popen(
-            [sys.executable, "-m",
-             "services.ingestion.workflows.reconciler"],
+            [sys.executable, "-c", bootstrap_for_dispatch_services.format(
+                svc_main="services.ingestion.workflows.reconciler",
+            )],
             env=_env_for(
                 instance_var="RECONCILER_INSTANCE",
                 instance_value=rec_instance,

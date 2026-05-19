@@ -611,6 +611,26 @@ class SourceOnboarding(LongRunningService):
                 failure_reason=failure_reason,
             )
             return
+        except Exception as exc:  # noqa: BLE001
+            # Any other planner exception (config error, transient API
+            # failure, real bug): mark the run failed and continue
+            # serving. A single bad signal must NOT crash the
+            # orchestrator. The exception type + message are preserved
+            # in failure_reason for diagnosis.
+            failure_reason = f"{type(exc).__name__}: {exc}"
+            log.exception(
+                "source_onboarding.planner_exception",
+                extra={"source": source, "run_id": str(run_id)},
+            )
+            await conn.execute(
+                _MARK_SOURCE_RUN_FAILED_SQL,
+                run_id, source, failure_reason,
+            )
+            await self._emit_source_completed(
+                conn, run_id=run_id, source=source,
+                failure_reason=failure_reason,
+            )
+            return
 
         if not shards:
             # Empty planner result: source has nothing to fetch.
