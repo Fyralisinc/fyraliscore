@@ -305,3 +305,32 @@ is **unchanged** by this amendment:
 The retroactive smoke check (`test_pattern_alignment_smoke_passes_against_m3_3_and_m5_1`)
 continues to pass: M3.3 and M5.1 are untouched by A12 and remain
 function-style services that the analyzer trivially satisfies.
+
+---
+
+## A19 framework resilience contract — analyzer impact (nil)
+
+Per [05-lld-amendments.md A19](05-lld-amendments.md#a19--framework-exception-handling-for-per-source-dispatch-failures),
+framework dispatch call sites (SourceOnboarding's `PLANNER_DISPATCH`,
+ShardFetch's `FETCHER_DISPATCH`, Reconciler's `RECONCILER_DISPATCH`)
+catch `Exception` rather than narrow subclasses; the catch marks the
+relevant entity (run or shard) failed with the exception's repr and
+keeps the service serving. The pattern-alignment analyzer is
+**unchanged** by this amendment:
+
+- A19 is a **runtime resilience contract**, not a structural one.
+  The "catch around dispatch call" pattern is hard to characterize
+  as an AST property without false positives (a `try/except` block
+  in unrelated code would also match). The analyzer's existing
+  rules (R1-R5) don't cover this dimension, and adding such a rule
+  would conflict with the deliberate scope discipline documented
+  per-rule.
+- Code review and the dedicated tests
+  (`test_*_handles_unexpected_*_exception` for each broadened site)
+  are the enforcement surface. New framework dispatch call sites
+  added in M6.7+ (or in mega-prompt-2 work) should follow A19 by
+  construction; reviewers checking such changes should confirm the
+  broad catch + per-entity failure-marking pattern is present.
+- The "framework resilience pattern" naming exists so future
+  contributors auditing dispatch call sites have a documented
+  reference; A19 itself contains the implementation specifics.

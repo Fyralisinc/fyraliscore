@@ -723,6 +723,45 @@ A18 inherits from and extends:
 
 ---
 
+## A19 — Framework exception handling for per-source dispatch failures
+
+**Status:** Resolved with the post-M-Load follow-up commit on `integration/ingestion-hardening`.
+
+**Trigger:** Post-M6.5 merge surfaced that `SourceOnboarding`'s narrow `except NotImplementedError` crashed the orchestrator subprocess when Slack's real planner raised `RuntimeError` on missing `source_client`. The narrow-catch pattern was inherited at multiple framework dispatch call sites; this amendment broadens them uniformly so any per-source dispatch failure is absorbed by the framework, marked as a per-run failure, and the service keeps serving subsequent work.
+
+**Decision:** Framework dispatch call sites — `SourceOnboarding`'s planner dispatch, `ShardFetch`'s fetcher dispatch, `Reconciler`'s reconciler dispatch — catch `Exception`, not narrow subclasses. On exception: mark the relevant entity (run or shard) as failed with the exception's repr in `failure_reason`; keep the service serving. The `NotImplementedError` branch is preserved purely for `failure_reason` formatting (operator-facing "not yet implemented" distinction); control flow is identical between the two branches.
+
+**Rationale:** Per-source dispatch entries are net-new code (per [A18.1](#a181--per-source-backfill-is-net-new-code-not-a-behavior-preserving-refactor)). Real per-source implementations have realistic failure modes beyond `NotImplementedError`:
+- Rate limits (`RuntimeError`, provider-specific exception types).
+- Expired credentials (auth-layer exceptions).
+- Transient network failures (`httpx.HTTPError`, `asyncio.TimeoutError`).
+- Unexpected API responses (`KeyError`, `pydantic.ValidationError`).
+- Configuration errors at runtime (`RuntimeError` from missing client wiring — the M6.5 case that motivated this amendment).
+
+Narrow catches let those failures bypass the framework's per-run failure-marking and crash the service. A single bad signal must NOT take down the orchestrator. Broad catch with explicit per-run failure marking is the framework's resilience contract; the catch is the boundary between "per-source code can fail freely" and "framework guarantees forward progress."
+
+**Implementation:**
+- `services/ingestion/workflows/source_onboarding.py::_handle_source_requested` — narrow `NotImplementedError` + broad `Exception` (broadened in commit `29b797c`).
+- `services/ingestion/workflows/shard_fetch.py::_run_fetch_loop` — narrow `NotImplementedError` + broad `Exception` (already present pre-A19; this amendment codifies the pattern).
+- `services/ingestion/workflows/reconciler.py::_handle_source_shards_completed` — wraps the dispatch call with narrow `NotImplementedError` + broad `Exception`; on exception, calls `_mark_run_failed` (new helper) and `_emit_source_completed` with the failure reason. WHERE-guard on the `UPDATE` accepts `('pending', 'in_progress', 'completed')` because the reconciler's dispatch typically fires when status is already `'completed'` (post-SourceOnboarding rollup); the `reconciled_at IS NULL` guard prevents clobbering a successful reconciliation.
+
+**Tests:**
+- `test_shard_fetch_handles_unexpected_fetcher_exception` — fetcher raising `RuntimeError`; shard marked failed; `last_error` contains exception repr; service keeps serving.
+- `test_source_onboarding_handles_unexpected_planner_exception` — planner raising `RuntimeError`; run marked failed; `failure_reason` contains exception repr; service keeps serving. Load-bearing for the `29b797c` fix.
+- `test_reconciler_handles_unexpected_dispatch_exception` — reconciler raising `RuntimeError`; run marked failed; `reconciled_at` stays NULL; `source_onboarding_completed` emitted with failure_reason; service keeps serving.
+
+Each test exercises the broadened catch via `monkeypatch.setitem` on the dispatch table — the same shape as the existing `_not_implemented_*` tests but with an `_exploding_*` stub.
+
+**Cross-references:**
+- [A18.1](#a181--per-source-backfill-is-net-new-code-not-a-behavior-preserving-refactor) — per-source backfill is net-new code; this resilience contract follows directly.
+- [A18.3](#a183--reconciler-pool-provider-seam) — Reconciler pool-provider seam; an unregistered provider raises at dispatch time, now absorbed by the A19 broad catch.
+
+**Effect on future sub-blocks:** M6.7+ sources, F4 retrofit (mega-prompt 2), backfill harness (mega-prompt 2), and any future framework consumer inherits this pattern. Per-source modules can raise any exception; the framework absorbs it, marks the relevant entity failed with the exception repr, and keeps serving subsequent work. Stub messages can still raise `NotImplementedError` specifically; the framework's catch is broad regardless.
+
+**Pattern documentation:** `docs/ingestion/pattern-alignment-rules.md` references A19 under framework resilience patterns. The static analyzer does NOT enforce A19 (it's a runtime resilience contract, not a structural one); the reference is for human contributors auditing dispatch call sites.
+
+---
+
 ## Resolved amendments archive
 
 (Empty — A1 and A2 land here at M3.4 closeout once the LLD edits ship.)

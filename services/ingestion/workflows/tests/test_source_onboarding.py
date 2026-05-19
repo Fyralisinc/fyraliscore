@@ -482,6 +482,69 @@ async def test_source_onboarding_handles_not_implemented_planner(
 
 
 # =====================================================================
+# 3b. Unexpected planner exception → run failed + service keeps serving.
+# =====================================================================
+
+async def test_source_onboarding_handles_unexpected_planner_exception(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per A19: framework dispatch call sites catch Exception, not
+    narrow subclasses. Verify that a planner raising RuntimeError
+    (e.g., the M6.5 slack-planner-missing-source-client case that
+    motivated A19) still marks the run failed and keeps the service
+    serving.
+
+    Load-bearing test for the 29b797c fix that broadened
+    SourceOnboarding's planner exception handler.
+    """
+    async def _exploding_planner(ctx):
+        raise RuntimeError("simulated planner failure")
+
+    monkeypatch.setitem(PLANNER_DISPATCH, "slack", _exploding_planner)
+
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+    )
+    await _emit_source_requested(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+    )
+
+    # Service does NOT crash — tick completes normally.
+    await _service(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        "SELECT status, failure_reason FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = $2",
+        run_id, "slack",
+    )
+    assert row["status"] == "failed"
+    failure_reason = row["failure_reason"] or ""
+    assert "RuntimeError" in failure_reason, (
+        f"failure_reason should contain exception type name; "
+        f"got {failure_reason!r}"
+    )
+    assert "simulated planner failure" in failure_reason
+
+    completion = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_COMPLETED, f"{run_id}:slack",
+    )
+    assert completion is not None
+    data_raw = completion["signal_data"]
+    data = (
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
+        else dict(data_raw)
+    )
+    assert "RuntimeError" in data.get("failure_reason", "")
+
+
+# =====================================================================
 # 4. Empty planner result → immediate success.
 # =====================================================================
 

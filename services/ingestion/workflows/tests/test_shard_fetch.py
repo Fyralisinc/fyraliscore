@@ -475,6 +475,65 @@ async def test_shard_fetch_handles_not_implemented_fetcher(
 
 
 # =====================================================================
+# 3b. Unexpected fetcher exception → shard 'failed' with exception repr.
+# =====================================================================
+
+async def test_shard_fetch_handles_unexpected_fetcher_exception(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per A19: framework dispatch call sites catch Exception, not
+    narrow subclasses. Verify that a fetcher raising RuntimeError
+    (simulated rate-limit / config error / transient API failure)
+    still marks the shard failed and keeps the service serving.
+    """
+    async def _exploding_fetcher(install, shard_identifier, cursor):
+        raise RuntimeError("simulated fetcher failure")
+
+    monkeypatch.setitem(FETCHER_DISPATCH, "slack", _exploding_fetcher)
+
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    shard_id = await _seed_shard(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+    )
+    await _emit_shard_requested(
+        fresh_db, shard_id=shard_id, run_id=run_id,
+        tenant_id=tid, source="slack",
+    )
+
+    producer = _CapturingProducer()
+    # Service does NOT crash — tick completes normally.
+    await _service(fresh_db, producer).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        "SELECT state, last_error FROM onboarding_shards WHERE id = $1",
+        shard_id,
+    )
+    assert row["state"] == "failed"
+    last_error = row["last_error"] or ""
+    assert "RuntimeError" in last_error, (
+        f"last_error should contain exception type name; "
+        f"got {last_error!r}"
+    )
+    assert "simulated fetcher failure" in last_error
+
+    completion = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE signal_kind = $1 AND idempotency_key = $2",
+        SIGNAL_KIND_COMPLETED, str(shard_id),
+    )
+    assert completion is not None
+    data_raw = completion["signal_data"]
+    data = (
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
+        else dict(data_raw)
+    )
+    assert data["status"] == "failed"
+    assert "RuntimeError" in data.get("failure_reason", "")
+
+
+# =====================================================================
 # 4. Signal-replay idempotency (emit_signal UNIQUE constraint).
 # =====================================================================
 

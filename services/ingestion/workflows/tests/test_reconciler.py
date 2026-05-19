@@ -443,6 +443,69 @@ async def test_reconciler_clean_decision_path(
 
 
 # =====================================================================
+# 4b. Unexpected dispatch exception → run failed + service keeps serving.
+# =====================================================================
+
+async def test_reconciler_handles_unexpected_dispatch_exception(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per A19: framework dispatch call sites catch Exception, not
+    narrow subclasses. Verify that a reconciler raising RuntimeError
+    (simulated rate-limit / expired-credentials / transient API
+    failure) still marks the run failed, emits
+    source_onboarding_completed with the failure_reason, and keeps
+    the service serving.
+    """
+    async def _exploding_reconciler(shards, run):
+        raise RuntimeError("simulated reconciler failure")
+
+    monkeypatch.setitem(RECONCILER_DISPATCH, "github", _exploding_reconciler)
+
+    tid = await _seed_tenant(fresh_db)
+    run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
+    await _seed_shard(
+        fresh_db, run_id=run_id, tenant_id=tid, source="github",
+        state="done", shard_kind="github_repo_events",
+    )
+    await _emit_shards_completed(
+        fresh_db, run_id=run_id, tenant_id=tid, source="github",
+    )
+
+    # Service does NOT crash — tick completes normally.
+    await _service(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        "SELECT status, failure_reason, reconciled_at "
+        "FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = $2",
+        run_id, "github",
+    )
+    assert row["status"] == "failed"
+    assert row["reconciled_at"] is None
+    failure_reason = row["failure_reason"] or ""
+    assert "RuntimeError" in failure_reason, (
+        f"failure_reason should contain exception type name; "
+        f"got {failure_reason!r}"
+    )
+    assert "simulated reconciler failure" in failure_reason
+
+    completion = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND signal_kind = $2 "
+        "AND idempotency_key = $3",
+        TENANT_ONBOARDING_INBOX_KIND, SIGNAL_KIND_SOURCE_COMPLETED,
+        f"{run_id}:github",
+    )
+    assert completion is not None
+    data_raw = completion["signal_data"]
+    data = (
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
+        else dict(data_raw)
+    )
+    assert "RuntimeError" in data.get("failure_reason", "")
+
+
+# =====================================================================
 # 5. Signal-replay idempotency (emit_signal UNIQUE).
 # =====================================================================
 

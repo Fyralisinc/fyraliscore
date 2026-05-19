@@ -201,6 +201,22 @@ UPDATE source_onboarding_runs
    AND reconciled_at IS NULL
 """
 
+# Dispatch-failure path (per A19): when RECONCILER_DISPATCH[source]
+# raises, mark the run failed and emit source_onboarding_completed
+# with the failure reason. When the reconciler's dispatch fires, the
+# run's status is typically 'completed' (SourceOnboarding's rollup
+# marks completed BEFORE emitting source_shards_completed). The
+# WHERE-guard accepts all pre-terminal-reconciliation states and
+# the reconciled_at-NULL guard prevents clobbering a successful
+# reconciliation.
+_MARK_RUN_FAILED_SQL = """
+UPDATE source_onboarding_runs
+   SET status = 'failed', completed_at = now(), failure_reason = $3
+ WHERE onboarding_run_id = $1 AND source = $2
+   AND reconciled_at IS NULL
+   AND status IN ('pending', 'in_progress', 'completed')
+"""
+
 # Re-share path:
 #   1. Increment pass_count (load-bearing for idempotency_key uniqueness
 #      on the next source_shards_completed emit — see module docstring).
@@ -262,6 +278,13 @@ async def _stamp_reconciled(
     conn: asyncpg.Connection, *, run_id: UUID, source: str,
 ) -> None:
     await conn.execute(_STAMP_RECONCILED_SQL, run_id, source)
+
+
+async def _mark_run_failed(
+    conn: asyncpg.Connection, *,
+    run_id: UUID, source: str, failure_reason: str,
+) -> None:
+    await conn.execute(_MARK_RUN_FAILED_SQL, run_id, source, failure_reason)
 
 
 async def _start_reshare(
@@ -401,7 +424,46 @@ class Reconciler(LongRunningService):
 
         shards = await _load_shards(conn, run_id=run_id, source=source)
 
-        decision = await RECONCILER_DISPATCH[source](shards, run)
+        # Per A19: framework dispatch call sites catch Exception, not
+        # narrow subclasses. Real per-source reconcilers have realistic
+        # failure modes (rate limits, expired credentials, transient
+        # API failures) beyond NotImplementedError. Narrow catches let
+        # those failures bypass the framework's per-run failure-marking
+        # and crash the service. The NotImplementedError branch is
+        # preserved purely for failure_reason formatting (operator-
+        # facing "not yet implemented" distinction); control flow is
+        # identical.
+        try:
+            decision = await RECONCILER_DISPATCH[source](shards, run)
+        except NotImplementedError as exc:
+            failure_reason = str(exc)
+            await _mark_run_failed(
+                conn, run_id=run_id, source=source,
+                failure_reason=failure_reason,
+            )
+            await self._emit_source_completed(
+                conn, run_id=run_id, source=source,
+                failure_reason=failure_reason,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            failure_reason = f"{type(exc).__name__}: {exc}"
+            log.exception(
+                "reconciler.dispatch_exception",
+                extra={
+                    "source": source,
+                    "run_id": str(run_id),
+                },
+            )
+            await _mark_run_failed(
+                conn, run_id=run_id, source=source,
+                failure_reason=failure_reason,
+            )
+            await self._emit_source_completed(
+                conn, run_id=run_id, source=source,
+                failure_reason=failure_reason,
+            )
+            return
 
         if not decision.has_gaps:
             await self._handle_clean_path(
