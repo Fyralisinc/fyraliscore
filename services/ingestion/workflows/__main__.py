@@ -184,6 +184,15 @@ async def _run_service(name: str) -> None:
             ),
         )
     elif name == "reconciler":
+        # M6.3: per-source reconcilers may need pool access for
+        # auxiliary reads (e.g., Gmail reads workflow_states for each
+        # shard's final_history_id). Register the pool with each
+        # per-source module that needs it; the per-source module
+        # raises an explicit error if its pool isn't registered when
+        # called.
+        from services.ingestion.reconcilers import gmail as gmail_reconciler
+        gmail_reconciler.set_pool_provider(pool)
+
         service = Reconciler(
             pool,
             config=ReconcilerConfig(

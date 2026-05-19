@@ -192,6 +192,42 @@ class GmailClient:
             scopes=(scope,),
         )
 
+    async def messages_list(
+        self,
+        *,
+        user_email: str,
+        scope: str,
+        page_token: str | None = None,
+        max_results: int = 100,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """List messages in the mailbox. Per Gmail's users.messages.list.
+
+        Used by the M6.3 backfill fetcher to page through all messages
+        chronologically (Gmail returns newest-first; backfill is
+        page-by-page until nextPageToken is absent).
+
+        Returns the raw API body: `{"messages": [{"id": ..., "threadId": ...}, ...],
+        "nextPageToken": ..., "resultSizeEstimate": ...}`. The fetcher
+        is responsible for hydrating each id via `get_message`.
+
+        `query` is the Gmail search expression; M6.3 doesn't use it
+        (full-mailbox backfill) but it's exposed for future per-source
+        filtering needs.
+        """
+        params: dict[str, Any] = {"maxResults": max_results}
+        if page_token:
+            params["pageToken"] = page_token
+        if query:
+            params["q"] = query
+        return await self._http.request(
+            "GET",
+            f"{_GMAIL_BASE}/users/me/messages",
+            user_email=user_email,
+            scopes=(scope,),
+            params=params,
+        )
+
     async def history_list(
         self,
         *,
