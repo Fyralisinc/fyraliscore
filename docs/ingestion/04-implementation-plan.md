@@ -560,6 +560,26 @@ All four sources wired. The three dispatch tables (`PLANNER_DISPATCH`, `FETCHER_
 
 What remains: M-Load (production Kafka readers + synthetic harness for cutover dry run) is the gate to first real-customer cutover. The F4 retrofit (`ticket-36-oauth-callbacks-onboarding-triggers-retrofit.md`) must also land before customers see backfill in production.
 
+---
+
+#### M-Load — Production Kafka readers + synthetic cutover dry run — **CLOSED (code-complete; staging validation pending)**
+
+**Status:** Implementation on `feat/ingestion-m-load` (off M6.6 HEAD). Code complete + unit tests green. The 1-hour cutover dry run is an OPERATOR PROCEDURE that runs in staging (see [docs/ingestion/m-load-runbook.md](./m-load-runbook.md)); the "actual numbers" section of the runbook is populated after the first staging run.
+
+**Files shipped:**
+- `services/ingestion/feature_flags/circuit_breaker.py` — `_measure_kafka_lag_default` (real `confluent_kafka.AdminClient` lag reader, committed-offset → timestamp probe → lag-in-seconds) + `_sample_active_tenants_default` (real Consumer reading `ingestion.tenant_traffic_signal` over lookback window).
+- `services/webhooks/router.py::_kafka_partition_for_tenant` — replaced blake2b with `mmh3.hash(seed=0x9747b28c, signed=False) & 0x7fffffff % num_partitions` (librdkafka-compatible murmur2).
+- `pyproject.toml` — added `mmh3>=4.1,<5.0`.
+- `services/synthetic/cutover_load.py` — synthetic Slack + GitHub webhook generator with Zipf tenant distribution, 5% duplicate-payload rate, HMAC signing.
+- `tests/load/test_cutover_dryrun.py` — orchestrates the 1-hour dry run (default-skipped; requires staging env vars).
+- `docs/ingestion/m-load-runbook.md` — operator procedure for running + interpreting the dry run.
+
+**Tests:** 4 partition-mmh3 unit tests + 8 synthetic-harness unit tests (sigs, payloads, Zipf bias, deterministic pool, error handling). All green. The cutover-dryrun test is default-skipped per its docstring; runs only with `CUTOVER_DRYRUN_TARGET_URL` set.
+
+**Cutover-dry-run validation TBD on staging:** the runbook explicitly documents this. The "expected metrics" section in the runbook is populated by the operator after the first staging run.
+
+**Substrate findings:** none.
+
 #### M6 — common artifacts
 
 - `test_oauth_outbox_to_workflow_end_to_end`: simulate OAuth callback; assert outbox row written, poller consumes within 5s, TenantOnboarding starts, per-source services pick up the work, observations land.

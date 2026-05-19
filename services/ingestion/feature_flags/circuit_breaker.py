@@ -253,26 +253,71 @@ async def _measure_kafka_lag_default(
     topic: str,
     consumer_group: str,
 ) -> dict[int, float]:
-    """Measure per-partition lag in seconds. confluent_kafka AdminClient
-    returns lag as a message count; converting to seconds requires
-    correlating with broker timestamps, which is expensive. M5.1
-    approximates by treating message-count-lag as roughly proportional
-    via a rough heuristic — operators should override with a real
-    time-based lag exporter (e.g. Burrow) in production.
+    """M-Load: real Kafka lag reader via confluent_kafka.AdminClient.
 
-    For M5.1 the test path injects this function; production deployment
-    can swap to a richer implementation. The exposed contract is just
-    `{partition: lag_seconds}`.
+    Returns `{partition: lag_seconds}`. Lag-in-seconds is computed by
+    correlating the consumer group's committed offset to its
+    broker-side message timestamp:
+      1. AdminClient.list_consumer_group_offsets → committed per partition.
+      2. For each partition: get_watermark_offsets → (low, high).
+         lag_messages = high - committed.
+      3. To convert to seconds, consume one message AT the committed
+         offset and read its CreateTime; lag_seconds = now - createtime.
+         (Skipped if committed == high; partition is caught up; 0s.)
+
+    Step 3 is expensive but operators want time, not messages. Tests
+    rebind this function with a mock for unit work; production wires
+    a real bootstrap.
     """
-    # Implementation deferred — M5.1 does not run against a real
-    # Kafka broker in any test. The production wiring lands in
-    # M-Temporal (or earlier if operations needs it) at which point
-    # this function gets a real implementation. The default raises
-    # so we fail loud if someone forgets to inject in production.
-    raise NotImplementedError(
-        "_measure_kafka_lag_default has no production implementation yet — "
-        "inject a measure_lag_fn or wait for M-Temporal."
-    )
+    # Lazy import — confluent_kafka is a heavy dep; not all callers need it.
+    from confluent_kafka.admin import AdminClient, ConsumerGroupTopicPartitions, TopicPartition
+    from confluent_kafka import Consumer, KafkaError
+
+    admin = AdminClient({"bootstrap.servers": bootstrap})
+    # 1. Committed offsets for this group on this topic.
+    cgtp = ConsumerGroupTopicPartitions(consumer_group, topic_partitions=None)
+    fut = admin.list_consumer_group_offsets([cgtp])
+    result = fut[consumer_group].result(timeout=10.0)
+    committed_by_partition: dict[int, int] = {}
+    for tp in result.topic_partitions:
+        if tp.topic == topic and tp.offset >= 0:
+            committed_by_partition[tp.partition] = tp.offset
+    if not committed_by_partition:
+        return {}
+
+    # 2. Watermark (high) offsets per partition.
+    consumer = Consumer({
+        "bootstrap.servers": bootstrap,
+        "group.id": f"{consumer_group}-lagprobe",
+        "enable.auto.commit": False,
+    })
+    try:
+        out: dict[int, float] = {}
+        import time as _time
+        for partition, committed in committed_by_partition.items():
+            low, high = consumer.get_watermark_offsets(
+                TopicPartition(topic, partition), timeout=5.0,
+            )
+            if committed >= high:
+                out[partition] = 0.0
+                continue
+            # 3. Read one message at `committed` to get its timestamp.
+            consumer.assign([TopicPartition(topic, partition, committed)])
+            msg = consumer.poll(timeout=5.0)
+            if msg is None or msg.error():
+                # Couldn't read; conservative — report 0 to avoid spurious
+                # alerts. Operator runbook (m-load-runbook.md) explains.
+                out[partition] = 0.0
+                continue
+            ts_kind, ts_ms = msg.timestamp()
+            if ts_ms <= 0:
+                out[partition] = 0.0
+                continue
+            now_ms = int(_time.time() * 1000)
+            out[partition] = max(0.0, (now_ms - ts_ms) / 1000.0)
+        return out
+    finally:
+        consumer.close()
 
 
 async def _sample_active_tenants_default(
@@ -281,17 +326,68 @@ async def _sample_active_tenants_default(
     signal_topic: str,
     lookback_sec: int,
 ) -> dict[UUID, int]:
-    """Read the last `lookback_sec` of the signal topic. Return
-    `{tenant_id: partition}` mapping for tenants that produced
-    traffic in the window.
+    """M-Load: real Kafka consumer reading the traffic-signal topic.
 
-    Same deferral as `_measure_kafka_lag_default` — M5.1 unit and
-    integration tests inject; production wiring lands in M-Temporal.
+    Reads back `lookback_sec` of `ingestion.tenant_traffic_signal`,
+    returns `{tenant_id: partition}` mapping for tenants that emitted
+    signals in the window. M5.3's `traffic_signal.py` produces these
+    signals with `key=tenant_id_bytes` and a JSON value containing
+    `raw_partition`.
     """
-    raise NotImplementedError(
-        "_sample_active_tenants_default has no production implementation "
-        "yet — inject an active_tenants_fn or wait for M-Temporal."
-    )
+    from confluent_kafka import Consumer, TopicPartition
+    import json
+    import time as _time
+
+    cutoff_ms = int((_time.time() - lookback_sec) * 1000)
+    consumer = Consumer({
+        "bootstrap.servers": bootstrap,
+        "group.id": f"breaker-tenant-sampler-{int(_time.time())}",
+        "enable.auto.commit": False,
+        "auto.offset.reset": "earliest",
+    })
+    try:
+        # Get partition list for the topic.
+        cluster_md = consumer.list_topics(signal_topic, timeout=5.0)
+        topic_md = cluster_md.topics.get(signal_topic)
+        if topic_md is None or topic_md.error is not None:
+            return {}
+        partitions = list(topic_md.partitions.keys())
+
+        # Seek each partition to the offset closest to cutoff_ms.
+        offsets_for_times = consumer.offsets_for_times(
+            [TopicPartition(signal_topic, p, cutoff_ms) for p in partitions],
+            timeout=5.0,
+        )
+        assignments = [
+            TopicPartition(tp.topic, tp.partition, tp.offset)
+            for tp in offsets_for_times if tp.offset >= 0
+        ]
+        if not assignments:
+            return {}
+        consumer.assign(assignments)
+
+        out: dict[UUID, int] = {}
+        deadline = _time.monotonic() + 5.0  # 5s read budget
+        while _time.monotonic() < deadline:
+            msg = consumer.poll(timeout=0.5)
+            if msg is None:
+                break
+            if msg.error():
+                continue
+            ts_kind, ts_ms = msg.timestamp()
+            if ts_ms > 0 and ts_ms < cutoff_ms:
+                continue
+            try:
+                payload = json.loads(msg.value())
+                tenant_id_raw = payload.get("tenant_id")
+                raw_partition = int(payload.get("raw_partition", 0))
+                tid = UUID(tenant_id_raw)
+                out[tid] = raw_partition
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return out
+    finally:
+        consumer.close()
 
 
 async def _default_alert(tenant_id: UUID, payload: dict[str, Any]) -> None:

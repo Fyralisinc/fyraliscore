@@ -50,6 +50,12 @@ dependencies = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-instrumentation-asyncpg>=0.40b0",
     "opentelemetry-instrumentation-aiokafka>=0.40b0",
+    # M-Load: mmh3 for librdkafka-compatible murmur2 partition hashing
+    # used by services/webhooks/router.py::_kafka_partition_for_tenant.
+    # Pin minor; librdkafka's partitioner algorithm is stable across
+    # versions but bumping mmh3 should be re-verified against the
+    # actual landing partition (test_kafka_partition_lookup_matches_actual_landing_partition).
+    "mmh3>=4.1,<5.0",
 ]
 
 [project.optional-dependencies]
