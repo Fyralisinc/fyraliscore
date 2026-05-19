@@ -535,6 +535,62 @@ removed from that file.
 
 - **LLD edits pending:** none. Same posture as A11/A12/A13/A14/A15 — the LLD describes Temporal-workflow semantics that subsume these distinctions (Temporal owns transactional + retry semantics natively); this amendment is the asyncio-shape design guide. Three-place documentation: this amendment + each pattern's worked-example file's module docstring + the Phase 3 gate output.
 
+### A17 — Reconciler state machine, idempotency-key discipline, and re-share recency boost
+
+- **Status:** RESOLVED with M6.2b Phase 2 on `feat/ingestion-m6-2b-reconciler`.
+- **LLD section:** LLD §2 (Reconciler workflow shape) and §3 (re-share recency-score boost).
+- **Implementation surface:** [services/ingestion/workflows/reconciler.py](../../services/ingestion/workflows/reconciler.py) (state machine + idempotency); [services/ingestion/workflows/source_onboarding.py](../../services/ingestion/workflows/source_onboarding.py) (chain-change emit + pass-count idempotency key); [db/migrations/0056_reconciler_columns.sql](../../db/migrations/0056_reconciler_columns.sql) (two additive columns); [services/ingestion/reconcilers/__init__.py](../../services/ingestion/reconcilers/__init__.py) (`ResharedShard.recency_score` default).
+- **Trigger:** M6.2b Phase 1 implementation surfaced three architectural decisions that M6.3-M6.6 + M6.2-future-readers need to inherit cleanly: (1) the `source_onboarding_runs.status` state machine across re-share cycles; (2) the SPLIT idempotency-key discipline between `source_shards_completed` (pass-count-keyed) and `source_onboarding_completed` (run-keyed); (3) the re-share recency-score boost per LLD §3.
+
+- **(1) Reconciler state machine** — `source_onboarding_runs.status` transitions across the M6.2b chain:
+
+  ```
+  'pending' ──────► 'in_progress' ──────► 'completed'
+                      ↑                          │
+                      │                          │ (Reconciler decides reshare)
+                      └─────'in_progress'──◄─────┘
+                                  │
+                                  │ (new shards complete; SourceOnboarding rolls up)
+                                  ▼
+                              'completed'
+                                  │
+                                  │ (Reconciler clean → stamp reconciled_at)
+                                  ▼
+                              'completed' AND reconciled_at IS NOT NULL  ← terminal
+  ```
+
+  Each `completed → in_progress` transition is one re-share cycle. `reconciliation_pass_count` increments on each. The TERMINAL state — the consumer-side observable — is `status='completed' AND reconciled_at IS NOT NULL`. The TRANSIENT state of operator interest is `status='completed' AND reconciled_at IS NULL` (post-rollup, pre-Reconciler-pickup). Migration 0056's `source_onboarding_runs_awaiting_reconcile_idx` is the diagnostic index.
+
+- **(2) Idempotency-key discipline (SPLIT keys; LOAD-BEARING):**
+
+  | Emit | Producer | Consumer | Idempotency key | Rationale |
+  |---|---|---|---|---|
+  | `source_shards_completed` | SourceOnboarding (rollup) | Reconciler | `f"{run_id}:{source}:pass_{N}"` | One per re-share cycle. Pass-count makes each cycle's emit a fresh key so `emit_signal` doesn't silently dedup the second cycle. |
+  | `source_onboarding_completed` | Reconciler (clean path) | TenantOnboarding | `f"{run_id}:{source}"` | EXACTLY ONE per (run, source) lifetime. Pass-count NOT included so a re-emit-after-replay dedups at the UNIQUE constraint — TenantOnboarding sees the signal exactly once regardless of re-share cycle count. |
+  | `shard_fetch_requested` | Reconciler (reshare path) | ShardFetch | `str(new_shard_id)` | Per-new-shard uniqueness. Matches M6.2a's ShardFetch consumer expectation. |
+
+  The SPLIT — pass-count-keyed cycle signal vs run-keyed terminal signal — is the load-bearing invariant. Without it, either the re-share cycle deadlocks (cycle key dedups), or TenantOnboarding double-counts completions (terminal key includes pass_count). Verified by `test_reconciler_replays_completion_for_already_reconciled_run` (in-process, exactly-one assertion) and `test_oauth_trigger_to_tenant_completion_with_reconciler_reshare_path` (5-subprocess E2E across pass_0 + pass_1).
+
+- **(3) Re-share recency-score boost (per LLD §3):** new shards created by the Reconciler get `recency_score=1.5` by default (vs. the planner default of 1.0). The boost lets reshared gap-fillers run ahead of any remaining low-recency backfill — per LLD §3 + HLD §6 specifications. The default lives in test reconcilers (per `test_reconciler.py` and the reshare-path E2E test); M6.3-M6.6 per-source reconcilers may override per source-specific concerns. The boost is INTENTIONAL, not arbitrary; future readers (and code reviewers spotting a magic `1.5`) should refer to this entry + LLD §3.
+
+- **Re-share linkage semantic** (codifying the M6.2b contract for M6.3-M6.6):
+  - **`parent_shard_id`** on a re-shared `onboarding_shards` row references the ORIGINAL shard whose gap is being filled. The original transitions `done → reconciliation_resharded` (terminal) in the same transaction that INSERTs the new row.
+  - The original's `done` state is preserved as audit history via the state value change — the data it collected is still there; `state='reconciliation_resharded'` means "this shard's data is good, but a sibling is filling its gap region."
+  - Multiple new shards may share the same `parent_shard_id` (one original split into N gap-fillers). Each original is marked `reconciliation_resharded` exactly once even if N child shards reference it (the Reconciler de-dups parent IDs via a set).
+
+- **Relationship to A15 + A16:** A15 codified the M1-shipped schema reuse and the schema-vocabulary mapping. A16 codified the three transactional patterns. A17 codifies the cross-cycle state machine + idempotency discipline + recency boost — operational refinements that compose with A15's schema and A16's patterns. M6.3-M6.6 readers find all three amendments together for the full per-source contract.
+
+- **Pattern-alignment status:** no change. The Reconciler service satisfies all five rules by construction.
+
+- **Pre-M6.3-M6.6 expected steady state.** Every per-source dispatch entry in `RECONCILER_DISPATCH` defaults to `has_gaps=False` (clean). The re-share path is exercised ONLY by tests; production traffic always takes the clean path until M6.3-M6.6 ship real algorithms. Documented in [runbook §6.C.4](m5-cutover-runbook.md) for operator clarity.
+
+- **Tests:** the load-bearing properties are verified across:
+  - State machine: `test_reconciler_handles_source_shards_completed_reshare_path` (single-cycle, in-process); `test_oauth_trigger_to_tenant_completion_with_reconciler_reshare_path` (full-cycle, 5-subprocess E2E).
+  - Idempotency discipline: `test_reconciler_replays_completion_for_already_reconciled_run` (in-process, asserts exactly-one source_onboarding_completed); the reshare-path E2E also asserts exactly-one source_onboarding_completed across 2 cycles.
+  - Recency boost: the reshare-path tests verify `recency_score=1.5` on the reshared shard.
+
+- **LLD edits pending:** none. Same posture as A11-A16 — the LLD describes Temporal-workflow semantics where this kind of state-machine + idempotency-key discipline is owned by Temporal natively; the asyncio-shape needs explicit codification. Three-place documentation: this entry + the `reconciler.py` module docstring + the M6.2b Phase 2 gate output.
+
 ---
 
 ## Resolved amendments archive

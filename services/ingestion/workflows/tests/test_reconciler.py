@@ -479,19 +479,42 @@ async def test_reconciler_idempotent_on_signal_replay(
 
 
 # =====================================================================
-# 6. Already-reconciled run: idempotent re-emit of completion.
+# 6. LOAD-BEARING — cross-service idempotency on replay-after-reconciled.
 # =====================================================================
 
 async def test_reconciler_replays_completion_for_already_reconciled_run(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pre-seed source_onboarding_runs with reconciled_at already set
-    (simulating a prior clean reconciliation). Emit
-    source_shards_completed with a NEW idempotency key (e.g.,
-    pass_count=1 — a stale signal from a previous era). Assert:
-      (a) Reconciler does NOT re-stamp reconciled_at (idempotent).
-      (b) Reconciler DOES re-emit source_onboarding_completed
-          (covering the consumer-side replay-after-completion gap).
+    """The cross-service idempotency property (per M6.2b Phase 2
+    acceptance verification): a replayed `source_shards_completed`
+    AFTER a clean reconciliation MUST NOT produce a duplicate
+    `source_onboarding_completed` in TenantOnboarding's inbox.
+
+    The mechanism: the Reconciler emits `source_onboarding_completed`
+    with idempotency_key `f"{run_id}:{source}"` — NO pass_count
+    suffix — so the second emit collides on
+    workflow_signals' UNIQUE constraint and `emit_signal` returns
+    `was_new=False` silently.
+
+    Without this property, TenantOnboarding would see multiple
+    `source_onboarding_completed` signals across re-share cycles +
+    stale replays and the M6.1 roll-up logic would over-count.
+
+    Sequence verified here:
+      1. Pre-seed reconciled_at + a prior `source_onboarding_completed`
+         signal in TenantOnboarding's inbox (simulating "Reconciler
+         already finished and the consumer already saw it").
+      2. Emit a stale `source_shards_completed` with a fresh
+         idempotency_key (pass_count=1 — a different cycle).
+      3. Run Reconciler.
+
+    Assertions:
+      (a) Reconciler does NOT re-stamp reconciled_at (the
+          _STAMP_RECONCILED_SQL WHERE-guard makes re-stamping a
+          no-op).
+      (b) **Exactly ONE `source_onboarding_completed` exists in
+          TenantOnboarding's inbox** — the Reconciler's re-emit
+          deduped on the UNIQUE constraint.
     """
     monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
 
@@ -510,16 +533,29 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
         "WHERE onboarding_run_id = $1 AND source = $2",
         run_id, "slack",
     )
+    # Pre-emit `source_onboarding_completed` to TenantOnboarding's
+    # inbox (simulating the prior Reconciler clean pass).
+    await emit_signal(
+        fresh_db,
+        workflow_kind=TENANT_ONBOARDING_INBOX_KIND,
+        workflow_id=TENANT_ONBOARDING_INBOX_ID,
+        signal_kind=SIGNAL_KIND_SOURCE_COMPLETED,
+        idempotency_key=f"{run_id}:slack",
+        signal_data={
+            "onboarding_run_id": str(run_id), "source": "slack",
+        },
+    )
 
-    # Emit with pass_count=1 to get a fresh key.
+    # Emit a stale source_shards_completed with pass_count=1 (a
+    # different idempotency key from any prior shards_completed,
+    # so it lands fresh in Reconciler's inbox and gets processed).
     await _emit_shards_completed(
         fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=1,
     )
 
     await _service(fresh_db).run(max_ticks=1)
 
-    # (a) reconciled_at NOT updated (the WHERE-guard on
-    # _STAMP_RECONCILED_SQL prevents re-stamping).
+    # (a) reconciled_at NOT updated.
     new_reconciled = await fresh_db.fetchval(
         "SELECT reconciled_at FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
@@ -527,15 +563,23 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
     )
     assert new_reconciled == original_reconciled
 
-    # (b) source_onboarding_completed re-emitted to TenantOnboarding.
-    completed = await fresh_db.fetchrow(
-        "SELECT signal_data FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND signal_kind = $2 "
-        "AND idempotency_key = $3",
-        TENANT_ONBOARDING_INBOX_KIND, SIGNAL_KIND_SOURCE_COMPLETED,
-        f"{run_id}:slack",
+    # (b) LOAD-BEARING: exactly ONE source_onboarding_completed in
+    # TenantOnboarding's inbox. The Reconciler's idempotent re-emit
+    # deduped on the UNIQUE constraint (key `{run_id}:slack`).
+    n_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_SOURCE_COMPLETED, f"{run_id}:slack",
+    ))
+    assert n_completed == 1, (
+        f"Cross-service idempotency broken: TenantOnboarding's inbox "
+        f"has {n_completed} source_onboarding_completed signals for "
+        f"this run after a replay-after-reconciled cycle. The "
+        f"Reconciler's emit key should be `{{run_id}}:{{source}}` "
+        f"(no pass_count) so replays dedup at the UNIQUE constraint."
     )
-    assert completed is not None
 
 
 # =====================================================================
