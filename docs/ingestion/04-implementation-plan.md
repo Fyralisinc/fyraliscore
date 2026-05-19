@@ -576,7 +576,26 @@ What remains: M-Load (production Kafka readers + synthetic harness for cutover d
 
 Synthetic operator guide: [docs/ingestion/synthetic-testing-guide.md](./synthetic-testing-guide.md).
 
-**Mega-prompt 2 closes.** The M6 backfill chain is now fully synthetic-testable across all four sources for both single-tenant and concurrent-tenant scenarios. Whats next: mega-prompt 3 (live-ingestion synthetics for Gmail Pub/Sub and Discord Gateway), production wiring of per-source client backfill methods (separate work-unit), and staging dry-run execution against real brokers.
+**Mega-prompt 2 closes.** The M6 backfill chain is now fully synthetic-testable across all four sources for both single-tenant and concurrent-tenant scenarios.
+
+### §Y1 closeout — Gmail Pub/Sub synthetic generator (mega-prompt 3)
+
+**Status:** Closed on branch `feat/ingestion-y1-gmail-pubsub-generator`. Per [A23](./05-lld-amendments.md#a23--gmail-pubsub-synthetic-generator-fastapi-in-process-invocation-with-mock-gmail-coordination): `GmailPubSubGenerator` drives the Gmail Pub/Sub live-ingestion path end-to-end in-process via `httpx.AsyncClient(transport=ASGITransport(app=fastapi_app))`. Coordinates X2 mock Gmail state with notification dispatch; supports per-tenant burst patterns + replay simulation (at-least-once-delivery idempotency). 13 new tests.
+
+### §Y2 closeout — Discord Gateway synthetic generator (mega-prompt 3)
+
+**Status:** Closed on branch `feat/ingestion-y2-discord-gateway-generator`. Per [A24](./05-lld-amendments.md#a24--discord-gateway-synthetic-generator-in-process-event-injection-without-websocket-simulation): `DiscordGatewayGenerator` invokes `handle_message_create` directly in-process with synthesized MESSAGE_CREATE payloads. **Explicit non-coverage of WebSocket lifecycle** (M4-tested-only). 9 new tests including a structural enforcement test that asserts the generator does not import `websockets` or the Gateway client module.
+
+**Mega-prompt 3 closes — synthetic-coverage trilogy complete:**
+
+| Path | Generator | Status |
+|------|-----------|--------|
+| Webhook synthetic traffic (Slack + GitHub) | `services/synthetic/cutover_load.py` (M-Load) | Closed M-Load |
+| Backfill synthetic harness (all four sources) | `services/synthetic/backfill_harness/` (X3) | Closed X3 |
+| Gmail Pub/Sub live-ingestion synthetic | `services/synthetic/live_generators/gmail_pubsub.py` (Y1) | Closed Y1 |
+| Discord Gateway live-ingestion synthetic | `services/synthetic/live_generators/discord_gateway.py` (Y2) | Closed Y2 |
+
+**Every code path in the M6 ingestion pipeline is now testable with synthetic data.** What's next: production wiring of per-source client backfill methods (separate work-unit; M6.4/M6.5/M6.6 currently have mocks-only), Discord Gateway connection-lifecycle synthetic coverage (deferred to a future work-unit if needed), and staging dry-run execution against real brokers (operator-side).
 
 ---
 

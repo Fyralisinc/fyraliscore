@@ -48,6 +48,29 @@ class MockDiscordClient(_MockBase):
         self._fixture = fixture
         self._page_size = int(fixture.get("page_size", 100))
 
+    # ---- Live-ingestion extension (Y2) ----
+    def append_message(
+        self, channel_id: str, message: dict[str, Any],
+    ) -> str:
+        """Append one message to the channel's state.
+
+        Used by Y2's `DiscordGatewayGenerator` to record events that
+        the Gateway dispatcher will see. Returns the message id for
+        convenience.
+
+        Mirrors MockGmailClient.append_messages from Y1 in shape: the
+        client owns the message store, the generator owns when to
+        write to it.
+        """
+        for c in self._fixture["channels"]:
+            if c["id"] == channel_id:
+                c.setdefault("messages", []).append(message)
+                return str(message["id"])
+        raise KeyError(
+            f"MockDiscordClient.append_message: unknown channel "
+            f"{channel_id!r}; declare it in the fixture first.",
+        )
+
     # ---- M6.6 surface ----
     async def list_guilds(self) -> list[dict[str, Any]]:
         self._check_fault()
