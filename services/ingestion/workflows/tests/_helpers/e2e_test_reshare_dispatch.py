@@ -27,9 +27,10 @@ from services.ingestion.reconcilers import (
 )
 
 
-async def _planner(
-    tenant_id: UUID, install: asyncpg.Record,
-) -> list[Shard]:
+from services.ingestion.planners.context import PlannerContext
+
+
+async def _planner(ctx: PlannerContext) -> list[Shard]:
     return [
         Shard(
             shard_kind="slack_channel_window",

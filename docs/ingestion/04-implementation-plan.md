@@ -510,10 +510,23 @@ Lays the framework all subsequent M6 sub-blocks build on. No business logic; jus
 
 **Original test list (legacy, superseded by actual tests above):** `test_planner_gmail_produces_expected_shards`, `test_fetch_page_gmail_advances_cursor_atomically`, `test_reconciler_gmail_detects_below_threshold_no_reshare`, `test_e2e_gmail_install_to_first_observation`.
 
-#### M6.4 — GitHub backfill
+#### M6.4 — GitHub backfill — **CLOSED**
 
-- `services/ingestion/planners/github.py`, `fetchers/github.py`, `reconciler/github.py`. Reuses existing `GithubClient` token-cache and chokepoint logic.
-- Tests: `test_planner_github_produces_expected_shards`, `test_fetch_page_github_advances_cursor_atomically`, `test_reconciler_github_above_threshold_reshares`, `test_e2e_github_full_backfill_5_repos`.
+**Status:** Complete on `feat/ingestion-m6-4-github-backfill` (off M6.3 HEAD `f53ee7d`).
+
+**Substrate amendment:** A18.6 (PlannerContext) — the planner contract now passes a `PlannerContext(install, conn, source_client)` bundle. Gmail's planner refactored to accept the new shape. GitHub's planner uses `ctx.source_client` (GithubClient) to enumerate repos at plan time.
+
+**Files shipped:**
+- `services/ingestion/planners/context.py` (NEW) — PlannerContext dataclass.
+- `services/ingestion/planners/github.py` — `plan_shards_github`: one Shard per (repo, event_type) for event_types in (`issues`, `pull_requests`).
+- `services/ingestion/fetchers/github.py` — `fetch_page_github`: paged Octokit fetch with `GithubCursor(page, etag, last_seen_updated_at)`.
+- `services/ingestion/reconcilers/github.py` — `reconcile_github`: two-tier check (etag fast-path + cursor-based newer-record detection).
+- `services/ingestion/workflows/source_onboarding.py` — `_build_source_client` factory wires per-source client construction.
+- `services/ingestion/planners/gmail.py` + tests refactored to PlannerContext.
+
+**Tests:** 7 GitHub planner + 6 GitHub fetcher + 6 GitHub reconciler unit tests + 2 5-subprocess E2E tests (clean + reshare) — all green. Existing M6.3 Gmail tests still pass after refactor.
+
+**Production wiring deferred to M-Load:** the GithubClient extensions `list_repo_events` + `head_repo_events` are exercised by fakes via `_open_github_client` seam; real Octokit wiring is M-Load territory.
 
 #### M6.5 — Slack backfill
 

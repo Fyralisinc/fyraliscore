@@ -18,11 +18,10 @@ import asyncpg
 
 from services.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingestion.planners.context import PlannerContext
 
 
-async def _e2e_test_planner(
-    tenant_id: UUID, install: asyncpg.Record,
-) -> list[Shard]:
+async def _e2e_test_planner(ctx: PlannerContext) -> list[Shard]:
     return [
         Shard(
             shard_kind="slack_channel_window",

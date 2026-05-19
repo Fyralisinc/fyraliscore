@@ -191,7 +191,9 @@ async def _run_service(name: str) -> None:
         # raises an explicit error if its pool isn't registered when
         # called.
         from services.ingestion.reconcilers import gmail as gmail_reconciler
+        from services.ingestion.reconcilers import github as github_reconciler
         gmail_reconciler.set_pool_provider(pool)
+        github_reconciler.set_pool_provider(pool)
 
         service = Reconciler(
             pool,

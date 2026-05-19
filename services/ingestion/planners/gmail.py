@@ -84,6 +84,7 @@ import asyncpg
 import orjson
 
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingestion.planners.context import PlannerContext
 
 
 SHARD_KIND_MAILBOX_WINDOW = "gmail_mailbox_window"
@@ -108,18 +109,14 @@ def _decode_mailboxes(install: asyncpg.Record) -> list[dict[str, Any]]:
     return decoded if isinstance(decoded, list) else []
 
 
-async def plan_shards_gmail(
-    tenant_id: UUID, install: asyncpg.Record,
-) -> list[Shard]:
+async def plan_shards_gmail(ctx: PlannerContext) -> list[Shard]:
     """Return one Shard per active mailbox.
 
-    `tenant_id` is currently unused (mailboxes are scoped to the
-    install row by M6.2a's loader; the install's `tenant_id` column
-    must match `tenant_id` already). Kept in the signature for the
-    `Planner` type contract.
+    M6.4 contract: receives `PlannerContext`. Gmail uses only
+    `ctx.install` (the S1-amended loader provides `mailboxes`).
+    `ctx.conn` and `ctx.source_client` are unused for Gmail.
     """
-    _ = tenant_id  # noqa: F841 — required by the contract; install carries the scope
-    mailboxes = _decode_mailboxes(install)
+    mailboxes = _decode_mailboxes(ctx.install)
     return [
         Shard(
             shard_kind=SHARD_KIND_MAILBOX_WINDOW,

@@ -92,30 +92,24 @@ class Shard:
 
 
 # `Planner` type alias for readability and dispatch-table typing.
-# Async because real planners (M6.3-M6.6) will make API calls to source
-# services to enumerate installs / repos / mailboxes / channels.
-Planner = Callable[[UUID, asyncpg.Record], Awaitable[list[Shard]]]
+# Updated in M6.4 per [A18.6] — planners receive a `PlannerContext`
+# bundle (install + conn + per-source API client). Gmail uses only
+# `ctx.install`; GitHub uses `ctx.source_client` for API enumeration.
+from services.ingestion.planners.context import PlannerContext  # noqa: E402
+
+Planner = Callable[[PlannerContext], Awaitable[list[Shard]]]
 
 
 # ---------------------------------------------------------------------
 # NotImplementedError stub factory.
 # ---------------------------------------------------------------------
 def _not_implemented_planner(source: str, milestone: str) -> Planner:
-    """Build a planner stub that raises `NotImplementedError` loudly.
-
-    The error message names the responsible sub-block so a future
-    operator reading the failure (in `source_onboarding_runs.failure_reason`
-    or in service logs) immediately knows where the implementation
-    work lives.
-    """
-    async def stub(tenant_id: UUID, install: asyncpg.Record) -> list[Shard]:
+    """Build a planner stub that raises `NotImplementedError` loudly."""
+    async def stub(ctx: PlannerContext) -> list[Shard]:
         raise NotImplementedError(
             f"Planner for source={source!r} is not yet implemented. "
             f"Pending in {milestone} per "
-            f"docs/ingestion/04-implementation-plan.md §{milestone}. "
-            f"Until then, source_onboarding_runs for this source will "
-            f"fail with this reason; the failure is the expected "
-            f"pre-{milestone} steady state, not a regression."
+            f"docs/ingestion/04-implementation-plan.md §{milestone}."
         )
     stub.__name__ = f"_not_implemented_planner_{source}"
     return stub
@@ -140,6 +134,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
 __all__ = [
     "PLANNER_DISPATCH",
     "Planner",
+    "PlannerContext",
     "Shard",
 ]
 
@@ -149,3 +144,4 @@ __all__ = [
 # Order is informational only; assignments are last-wins, but each
 # source touches a distinct key so ordering doesn't matter.
 from services.ingestion.planners import gmail as _gmail  # noqa: E402,F401
+from services.ingestion.planners import github as _github  # noqa: E402,F401

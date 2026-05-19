@@ -705,6 +705,22 @@ A18 inherits from and extends:
 
 **LLD edits pending:** none. Same posture as A11-A17 — the LLD describes a Temporal-workflow design where these patterns would map onto Temporal's native primitives; the asyncio-shape needs explicit codification. M6.4-M6.6 may extend A18 with additional sub-sections (A18.6, A18.7, etc.) for per-source patterns that emerge.
 
+### A18.6 — PlannerContext (M6.4 substrate addition)
+
+**Status:** Resolved with M6.4 merge.
+
+**Trigger:** M6.4's GitHub planner needs API access at plan time (enumerate repos via Octokit's `/installation/repositories`). The M6.2a/M6.3 planner contract (`(tenant_id, install) -> list[Shard]`) doesn't provide a source-side client.
+
+**Decision:** Supersede the planner contract with `PlannerContext(tenant_id, install, conn, source_client)`. The planner receives a single bundle; per-source planners use whichever surfaces they need. Gmail's planner uses only `ctx.install` (the S1-amended loader provides the per-source data). GitHub's planner uses `ctx.source_client` for API enumeration. The `conn` is available for sources that prefer direct DB access (none currently use it).
+
+**Implementation:**
+- `services/ingestion/planners/context.py` — defines `PlannerContext`.
+- `services/ingestion/planners/__init__.py` — `Planner` type alias updated to `Callable[[PlannerContext], Awaitable[list[Shard]]]`.
+- `services/ingestion/workflows/source_onboarding.py` — adds `_build_source_client(source, pool, install)` factory; constructs the PlannerContext at the dispatch call site.
+- All existing M6.3 Gmail planner tests pass after the refactor (signature change is mechanical; Gmail uses only `ctx.install`).
+
+**Inheritance:** M6.5 (Slack) and M6.6 (Discord) follow the same pattern. Each per-source `_build_source_client` branch in `source_onboarding.py` decides what client to construct (or `None` if the planner doesn't need one).
+
 ---
 
 ## Resolved amendments archive
