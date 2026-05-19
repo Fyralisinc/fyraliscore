@@ -1225,6 +1225,27 @@ SELECT s.id, s.shard_identifier->>'repo_full_name' AS repo,
 
 ---
 
+## 6.F. M6.5 Slack backfill — operator section
+
+One shard per channel via `conversations.list`. Reconciler probes for newer messages via `conversations.history(channel, oldest=newest_seen_ts)`.
+
+Per-shard cursor query:
+```sql
+SELECT s.id, s.shard_identifier->>'channel_id' AS channel_id,
+       s.shard_identifier->>'channel_name' AS channel_name,
+       ws.state_data->'cursor'->>'newest_seen_ts' AS newest_ts,
+       ws.state_data->'cursor'->>'oldest_seen_ts' AS oldest_ts,
+       s.state
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch' AND ws.workflow_id = s.id::text
+ WHERE s.source = 'slack' ORDER BY s.created_at DESC LIMIT 50;
+```
+
+Failure modes: `not_in_channel` (bot not in private channel — recreate join), tier-3 rate limits (1-100 calls/min/team — backoff), `account_inactive` (workspace suspended).
+
+---
+
 ## 7. References
 
 - **Code:**
