@@ -184,13 +184,23 @@ async def callback_handler(request: Request) -> Any:
 
     short_hash = _short_installation_hash(installation_id)
 
-    # Step 2: UPSERT provider_installations with cross-tenant collision guard.
+    # Step 2: UPSERT provider_installations + emit onboarding_triggers
+    # atomically (A20). Cross-tenant collision rolls back both inserts.
     try:
-        installation_row_id, was_inserted = await _upsert_installation(
-            pool=pool,
-            tenant_id=tenant_id,
-            installation_id=installation_id,
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                installation_row_id, was_inserted = await _upsert_installation_in_tx(
+                    conn,
+                    tenant_id=tenant_id,
+                    installation_id=installation_id,
+                )
+                await _emit_onboarding_trigger(
+                    conn,
+                    tenant_id=tenant_id,
+                    installation_row_id=installation_row_id,
+                    trigger_kind=("install" if was_inserted else "reinstall"),
+                    payload={"installation_id_hash": short_hash},
+                )
     except InstallationCollisionError:
         metrics.record_install_callback("installation_collision")
         await _audit(
@@ -354,6 +364,65 @@ async def _upsert_installation(
             "github installation_id is already bound to a different tenant",
         )
     return row["id"], bool(row["was_inserted"])
+
+
+async def _upsert_installation_in_tx(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    installation_id: str,
+) -> tuple[UUID, bool]:
+    """Connection-bound variant of _upsert_installation. Per A12: same
+    SQL, executes on a caller-supplied connection so the callback can
+    wrap the install + onboarding_triggers insert in one atomic
+    transaction (per A20)."""
+    row_id = uuid7()
+    row = await conn.fetchrow(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id, secret_ref, enabled)
+        VALUES ($1, $2, 'github', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE,
+                secret_ref = NULL
+            WHERE provider_installations.tenant_id = EXCLUDED.tenant_id
+        RETURNING id, (xmax = 0) AS was_inserted
+        """,
+        row_id, tenant_id, installation_id,
+    )
+    if row is None:
+        raise InstallationCollisionError(
+            "github installation_id is already bound to a different tenant",
+        )
+    return row["id"], bool(row["was_inserted"])
+
+
+async def _emit_onboarding_trigger(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    installation_row_id: UUID,
+    trigger_kind: str,
+    payload: dict[str, Any],
+) -> None:
+    """Per A20: write an onboarding_triggers row atomically with the
+    install. Idempotent via migration 0057's partial unique index on
+    (tenant_id, source, installation_row_id) WHERE
+    installation_row_id IS NOT NULL — OAuth retries / reinstalls
+    produce at most one trigger row per (tenant, install)."""
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'github', $3, $4, $5::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), tenant_id, trigger_kind,
+        installation_row_id, json.dumps(payload),
+    )
 
 
 def _install_action_label(*, setup_action: str, was_inserted: bool) -> str:

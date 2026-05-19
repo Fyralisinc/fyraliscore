@@ -282,7 +282,7 @@ async def _persist_secrets(
 
 
 async def _upsert_installation(
-    pool: asyncpg.Pool,
+    executor: asyncpg.Pool | asyncpg.Connection,
     tenant_id: UUID,
     guild_id: str,
     public_key_ref: str,
@@ -292,13 +292,17 @@ async def _upsert_installation(
     row (not the bot token) so the signature verifier's `load_secrets`
     DB path returns the verifier-relevant secret.
 
+    Per A12: accepts pool OR connection so the callback can wrap the
+    install + onboarding_triggers insert in one atomic transaction
+    (per A20).
+
     Zero rows ⇒ cross-tenant collision (the WHERE-clause filtered out
     the UPDATE branch). Raises `InstallationCollisionError`.
 
     Returns `(installation_row_id, was_inserted)`.
     """
     row_id = uuid7()
-    row = await pool.fetchrow(
+    row = await executor.fetchrow(
         """
         INSERT INTO provider_installations
             (id, tenant_id, provider, installation_id, secret_ref, enabled)
@@ -319,6 +323,34 @@ async def _upsert_installation(
             "guild_id is already bound to a different Fyralis tenant",
         )
     return row["id"], bool(row["was_inserted"])
+
+
+async def _emit_onboarding_trigger(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    installation_row_id: UUID,
+    trigger_kind: str,
+    payload: dict[str, Any],
+) -> None:
+    """Per A20: write an onboarding_triggers row atomically with the
+    install. Idempotent via migration 0057's partial unique index on
+    (tenant_id, source, installation_row_id) WHERE
+    installation_row_id IS NOT NULL — OAuth retries / reinstalls
+    produce at most one trigger row per (tenant, install)."""
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'discord', $3, $4, $5::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), tenant_id, trigger_kind,
+        installation_row_id, json.dumps(payload),
+    )
 
 
 async def _write_audit(
@@ -511,11 +543,24 @@ async def callback_handler(request: Request) -> Any:
         )
         return _error_redirect("secret_store_unavailable")
 
-    # 4. Upsert installation (cross-tenant collision guard).
+    # 4. Upsert installation + emit onboarding_triggers atomically (A20).
+    # Cross-tenant collision rolls back both inserts. The post-commit
+    # work below (cleanup, command registration, cache invalidation)
+    # stays outside the transaction — it's best-effort and not part of
+    # the install-trigger atomicity contract.
     try:
-        installation_row_id, was_inserted = await _upsert_installation(
-            pool, tenant_id, guild_id, public_key_ref,
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                installation_row_id, was_inserted = await _upsert_installation(
+                    conn, tenant_id, guild_id, public_key_ref,
+                )
+                await _emit_onboarding_trigger(
+                    conn,
+                    tenant_id=tenant_id,
+                    installation_row_id=installation_row_id,
+                    trigger_kind=("install" if was_inserted else "reinstall"),
+                    payload={"guild_id": guild_id},
+                )
     except InstallationCollisionError:
         log.info("discord_install_failure", reason="installation_collision")
         await _write_audit(
