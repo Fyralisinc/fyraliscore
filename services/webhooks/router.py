@@ -97,20 +97,25 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
 def _kafka_partition_for_tenant(
     tenant_id: Any, *, num_partitions: int = 32,
 ) -> int:
-    """Deterministic stand-in for the partition librdkafka would assign
-    for `key=tenant_id` on the `ingestion.raw` topic.
+    """M-Load: explicit murmur2 partition match with librdkafka.
 
-    The REAL partition is opaque without an `on_delivery` callback; the
-    M5.3 traffic-signal hook needs SOMETHING to feed
-    `maybe_emit_traffic_signal(raw_partition=...)` so the breaker has
-    a tenant→partition map. This blake2b-based hash gives a stable
-    per-tenant value but is NOT bit-equivalent to librdkafka's
-    murmur2_random partitioner — M-Temporal must refine via real
-    delivery-report correlation when the breaker is wired against
-    production Kafka. Surfaced as an LLD-amendments item in M5.4.
+    librdkafka's default `murmur2_random` partitioner uses MurmurHash2
+    32-bit with seed `0x9747b28c`, ANDs with `0x7fffffff` (positive
+    int32), and mods by `num_partitions`. With `signed=False`, mmh3
+    returns unsigned uint32 which is already positive; the mask is a
+    no-op but kept conceptually for parity with the librdkafka source.
+
+    The match between this function's output and the actual landing
+    partition is verified by
+    `test_kafka_partition_lookup_matches_actual_landing_partition`
+    (M-Load Phase 1 test). librdkafka version must match the partitioner
+    algorithm assumed here; if a future librdkafka switches
+    partitioners, that test catches the drift.
     """
-    h = hashlib.blake2b(str(tenant_id).encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(h, "big") % num_partitions
+    import mmh3
+    key_bytes = str(tenant_id).encode("utf-8")
+    h = mmh3.hash(key_bytes, seed=0x9747b28c, signed=False)
+    return (h & 0x7fffffff) % num_partitions
 
 
 async def _attempt_kafka_path(
