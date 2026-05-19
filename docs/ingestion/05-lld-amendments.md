@@ -723,6 +723,80 @@ A18 inherits from and extends:
 
 ---
 
+## A21 — Mock API server architecture: stateful in-process libraries with fixture generators and fault injection
+
+**Status:** Resolved with X2 commit on `feat/ingestion-x2-mock-api-servers`.
+
+**Trigger:** Mega-prompt 2 X2 work-unit. Synthetic testing of M6 backfill requires mock per-source clients that faithfully simulate real API behavior (cursor progression, etag handling, rate limits, transient failures). M6.3-M6.6 fetcher / reconciler / planner tests had per-test ad-hoc fakes; X2 centralizes the mock surface so X3's harness (and future testing) reuses one canonical set of mocks instead of duplicating.
+
+**Decision:** In-process Python class libraries replacing production per-source clients at the `_open_<source>_client` factory seams. Three orthogonal abstractions:
+
+1. **Mock clients** (`services/synthetic/mock_clients/{gmail,github,slack,discord}.py`):
+   - Each class implements ONLY the methods called by M6 backfill code (planner / fetcher / reconciler) — not the full provider SDK surface.
+   - Stateful per session — `MockGmailClient` tracks `history_id`; `MockGithubClient` tracks `etag` state per `(owner, repo, event_type)`; `MockSlackClient` paginates via opaque `next_cursor`; `MockDiscordClient` paginates via snowflake `before` / `after`.
+   - Each method consults a `FaultProfile` first (via `_MockBase._check_fault`); on the happy path serves the fixture data; on a configured fault raises the source's real error type.
+   - Constructor takes `fixture` (the data to serve) + `profile` (fault configuration); both are dataclasses.
+
+2. **Fixture generators** (`services/synthetic/fixtures/{gmail,github,slack,discord}_generator.py`):
+   - `make_gmail_mailbox(email, messages=N, history_events=M, message_size_kb=K, page_size=P)`.
+   - `make_github_repos(org_or_user, repos=N, events_per_repo=M, per_page=P)`.
+   - `make_slack_workspace(team_id, channels=N, messages_per_channel=M, page_size=P)`.
+   - `make_discord_guild(guild_id, channels=N, messages_per_channel=M, page_size=P)`.
+   - Each generator is deterministic: same parameters → identical fixture (test verified: `test_fixture_generators_are_deterministic`). Internal randomness uses hash-based digests, not RNG.
+
+3. **Fault profiles** (`services/synthetic/fault_profiles/profiles.py`):
+   - `FaultProfile` dataclass with four orthogonal knobs: `rate_limit_after_n_requests`, `random_5xx_probability`, `auth_expires_after_n_seconds`, `transient_network_error_probability`. RNG seeded by `rng_seed` for deterministic probabilistic faults.
+   - Presets: `HAPPY_PATH` (no faults), `RATE_LIMITED` (rate-limit after 50), `FLAKY` (10% 5xx), `AUTH_EXPIRED` (auth dies after 30s).
+
+**Per-source error type mapping** (the mocks raise these on configured faults, matching the production clients' surface):
+
+| Source  | Rate limit | 5xx              | Auth          | Transient        |
+|---------|------------|------------------|---------------|------------------|
+| Gmail   | `GoogleRateLimited` | `GoogleApiError` | `GoogleApiError` (401) | `GoogleApiError` |
+| GitHub  | `GithubApiError` | `GithubApiError` | `GithubApiError` (401) | `GithubApiError` |
+| Slack   | `SlackApiError`  | `SlackApiError`  | `SlackApiError` (invalid_auth) | `SlackApiError`  |
+| Discord | `DiscordApiError` | `DiscordApiError` | `DiscordApiError` (401) | `DiscordApiError` |
+
+**Wiring at test time:**
+
+```python
+from services.synthetic.mock_clients.gmail import MockGmailClient
+from services.synthetic.fixtures import make_gmail_mailbox
+from services.synthetic.fault_profiles import HAPPY_PATH
+
+fixture = make_gmail_mailbox(email="alice@x.com", messages=10)
+client = MockGmailClient(fixture=fixture, profile=HAPPY_PATH)
+
+async def _open(install):
+    async def close(): return None
+    return client, close
+monkeypatch.setattr(gmail_fetcher_mod, "_open_gmail_client", _open)
+```
+
+The seam contract (the `(client, close)` tuple returned from `_open_*_client`) is unchanged from M6.3-M6.6.
+
+**Rationale:**
+
+- **In-process** avoids port management, startup sequencing, and Docker complexity. Mock clients are Python classes, instantiated and passed in.
+- **Stateful** mocks reproduce real cursor-advance and reshare patterns. A reconciler's `get_profile` / `head_repo_events` / `conversations_history(oldest=...)` / `get_messages(after=...)` probe surfaces a higher watermark or new records exactly as the production API would; X3's harness can drive reshare cycles by parameterizing the fixture appropriately.
+- **Fixture generators** enable load-scale testing (100+ tenants, varied sizes) without manual fixture authoring. Determinism is essential — flaky synthetic tests are worse than no synthetic tests.
+- **Fault injection** tests framework resilience contracts ([A19](#a19--framework-exception-handling-for-per-source-dispatch-failures)'s broad exception handling). A `FLAKY` profile drives the framework's per-shard failure marking; a `RATE_LIMITED` profile drives the cursor-resume path.
+
+**Tests:**
+
+- `test_mock_clients.py` — 22 tests covering: happy-path serve (4 sources), cursor advance (4), rate-limit threshold (4), error-type correctness on fault (4), source-specific stateful probes (Gmail history_id, GitHub etag, Slack oldest_ts, Discord after_snowflake). Plus determinism + profile shape.
+- `test_compatibility_with_m6.py` — 5 tests verifying each mock implements the methods called by M6 code (introspection-based shape check) + the `(client, close)` factory tuple contract.
+
+**Cross-references:**
+
+- [A18](#a18--per-source-backfill-is-net-new-code-framework--existing-steady-state-coexist-until-m7) — per-source dispatch; the mocks plug into the per-source planner / fetcher / reconciler seams.
+- [A18.3](#a183--reconciler-pool-provider-seam) — reconciler pool-provider seam; the mocks don't touch DB, but they coexist with the pool-provider pattern (tests inject both).
+- [A19](#a19--framework-exception-handling-for-per-source-dispatch-failures) — framework exception handling; fault profiles let mock servers trigger A19's broad catches.
+
+**Effect on testing:** X3 harness uses these mock libraries instead of ad-hoc per-test fakes. Mega-prompt 3 (live-ingestion synthetics) will extend the mock surface with push/Gateway driver patterns. Post-mega-prompt-3 work (first-customer pilot regression suites) reuses the same mocks; the canonical mock library is the long-term home for source-side test substrate.
+
+---
+
 ## A20 — F4 OAuth retrofit: all callbacks write `onboarding_triggers` atomically with install
 
 **Status:** Resolved with X1 commit on `feat/ingestion-x1-oauth-onboarding-triggers-retrofit`.
