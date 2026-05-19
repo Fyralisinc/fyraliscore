@@ -54,6 +54,11 @@ from services.ingestion.workflows.oauth_poller import (
     OAuthPollerConfig,
     WORKFLOW_ID_DEFAULT as OAUTH_POLLER_INSTANCE_DEFAULT,
 )
+from services.ingestion.workflows.reconciler import (
+    Reconciler,
+    ReconcilerConfig,
+    WORKFLOW_ID_DEFAULT as RECONCILER_INSTANCE_DEFAULT,
+)
 from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
@@ -178,11 +183,28 @@ async def _run_service(name: str) -> None:
                 ),
             ),
         )
+    elif name == "reconciler":
+        service = Reconciler(
+            pool,
+            config=ReconcilerConfig(
+                tick_interval_seconds=float(
+                    os.environ.get("RECONCILER_TICK_SEC", "5.0"),
+                ),
+                max_signals_per_tick=int(
+                    os.environ.get("RECONCILER_BATCH", "50"),
+                ),
+                instance_name=os.environ.get(
+                    "RECONCILER_INSTANCE",
+                    RECONCILER_INSTANCE_DEFAULT,
+                ),
+            ),
+        )
     else:
         raise SystemExit(
             f"WORKFLOW_SERVICE={name!r} not recognized. "
             f"Known: feels_onboarded_monitor, oauth_poller, "
-            f"tenant_onboarding, source_onboarding, shard_fetch."
+            f"tenant_onboarding, source_onboarding, shard_fetch, "
+            f"reconciler."
         )
 
     stop_event = asyncio.Event()

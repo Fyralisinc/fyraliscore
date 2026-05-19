@@ -888,6 +888,202 @@ reconciliation is a post-completion check.
 
 ---
 
+## 6.C. M6.2b Reconciler — operator section
+
+**Scope.** M6.2b is the at-completion reconciliation check. One
+long-running asyncio service (Reconciler) intercepts the M6.2a
+chain between SourceOnboarding's "all shards complete" rollup and
+TenantOnboarding's source-completion handling. On CLEAN: stamps
+`reconciled_at` + emits `source_onboarding_completed` to
+TenantOnboarding. On RE-SHARE: increments
+`reconciliation_pass_count`, transitions
+`source_onboarding_runs.status` back to `'in_progress'`, marks
+originals `'reconciliation_resharded'`, INSERTs new shards with
+`parent_shard_id` linkage + boosted `recency_score`, emits
+`shard_fetch_requested` per new shard. The cycle restarts.
+
+The two end-to-end-shaping tests:
+- [test_oauth_to_source_completion_end_to_end.py](../../services/ingestion/workflows/tests/test_oauth_to_source_completion_end_to_end.py)
+  — clean-path 5-subprocess E2E (extended in M6.2b Phase 1 with
+  the Reconciler subprocess; default-clean stub).
+- [test_oauth_to_tenant_completion_with_reconciler_reshare.py](../../services/ingestion/workflows/tests/test_oauth_to_tenant_completion_with_reconciler_reshare.py)
+  — re-share-path 5-subprocess E2E; monkeypatched test
+  reconciler that returns `has_gaps=True` on pass_0 then `has_gaps=False`
+  on pass_1. Verifies the cycle + cross-service idempotency.
+
+### 6.C.1. Start procedure
+
+```bash
+# Service 6: Reconciler.
+DATABASE_URL="postgres://..." \
+  RECONCILER_TICK_SEC=5.0 \
+  RECONCILER_BATCH=50 \
+  RECONCILER_INSTANCE=prod-01 \
+  WORKFLOWS_LOG_LEVEL=INFO \
+  python -m services.ingestion.workflows.reconciler
+```
+
+Also reachable via the dispatcher (`WORKFLOW_SERVICE=reconciler`).
+
+**Env vars:**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — (required) | Postgres DSN. |
+| `RECONCILER_TICK_SEC` | `5.0` | Tick interval. |
+| `RECONCILER_BATCH` | `50` | Max signals drained per tick. |
+| `RECONCILER_INSTANCE` | `default` | Diagnostic instance name. |
+| `WORKFLOWS_LOG_LEVEL` | `INFO` | Standard. |
+
+**Replication model.** Multi-replica safe via `claim_signals`
+SKIP LOCKED on the `(reconciler, reconciler)` inbox. The per-run
+transaction owns idempotency.
+
+### 6.C.2. The state machine (operator mental model)
+
+Per [05-lld-amendments.md A17](05-lld-amendments.md#a17--reconciler-state-machine-idempotency-key-discipline-and-re-share-recency-boost):
+
+```
+source_onboarding_runs.status:
+
+  'pending' → 'in_progress' → 'completed'
+                                  ↓
+                              (Reconciler)
+                                  ↓
+            ┌─ 'completed' + reconciled_at = now()    ← TERMINAL (clean)
+            │
+            └─ 'in_progress' + pass_count++           ← RE-SHARE CYCLE
+                    ↓
+              new shards fetch
+                    ↓
+              'completed' (new emit)
+                    ↓
+              (Reconciler again — clean or another reshare)
+```
+
+The TRANSIENT state worth monitoring:
+`status='completed' AND reconciled_at IS NULL`. A row in this state
+is between SourceOnboarding's rollup and the Reconciler's pickup.
+Normal: <1 minute. Investigate per §6.C.5 if longer.
+
+### 6.C.3. Diagnostic queries
+
+Reconciler heartbeat:
+
+```sql
+SELECT workflow_kind, workflow_id AS instance,
+       last_advanced_at,
+       state_data ->> 'last_tick_at'              AS last_tick_iso,
+       state_data ->> 'lifetime_signals_processed' AS lifetime
+  FROM workflow_states
+ WHERE workflow_kind = 'reconciler';
+```
+
+Runs awaiting reconciliation (uses migration 0056's index):
+
+```sql
+SELECT onboarding_run_id, source, tenant_id, completed_at,
+       now() - completed_at AS waiting_for
+  FROM source_onboarding_runs
+ WHERE status = 'completed' AND reconciled_at IS NULL
+ ORDER BY completed_at;
+```
+
+Re-share cycle history (per-run audit):
+
+```sql
+SELECT onboarding_run_id, source, status, reconciliation_pass_count,
+       reconciled_at, completed_at
+  FROM source_onboarding_runs
+ WHERE tenant_id = '<tenant_uuid>'
+ ORDER BY created_at DESC;
+```
+
+Re-shared shards for a run:
+
+```sql
+SELECT id, state, parent_shard_id, recency_score, shard_identifier
+  FROM onboarding_shards
+ WHERE onboarding_run_id = '<run_uuid>'
+   AND parent_shard_id IS NOT NULL
+ ORDER BY created_at;
+```
+
+Reconciler inbox backlog:
+
+```sql
+SELECT signal_kind, idempotency_key,
+       now() - created_at AS pending_age
+  FROM workflow_signals
+ WHERE workflow_kind = 'reconciler'
+   AND consumed_at IS NULL
+ ORDER BY created_at;
+```
+
+### 6.C.4. Pre-M6.3-M6.6 expected steady state (CRITICAL)
+
+**Until M6.3-M6.6 ship, every `RECONCILER_DISPATCH[source]` returns
+`has_gaps=False`** — the default-clean stub. The re-share path
+exists in code but is exercised ONLY by tests.
+
+**Why the stubs return clean (not raise NotImplementedError):**
+unlike M6.2a's planner/fetcher stubs (which raise so the system
+fails loudly), reconcilers MUST return a valid decision because the
+system needs to function pre-M6.3-M6.6. If reconcilers raised, no
+tenant onboarding would ever reach `tenant_onboarding_completed` and
+the entire M6 chain would be unusable. Default-clean keeps the
+chain moving while the per-source M6.x sub-blocks land.
+
+**Diagnostic: distinguishing stub-default from real-clean.**
+
+Once M6.3-M6.6 ship per-source reconcilers, operators will need to
+tell apart:
+- *"clean because the stub defaults to clean"* (pre-M6.x state)
+- *"clean because the real algorithm found no gaps"* (post-M6.x;
+  the desired production state)
+
+The simplest signal: the stub messages name the responsible
+M6.x sub-block. Pre-M6.x runs have `RECONCILER_DISPATCH[source]`'s
+stub `message` containing `"M6.3"` / `"M6.4"` / `"M6.5"` / `"M6.6"`.
+That message currently isn't persisted to a DB column (the
+Reconciler stores it transiently via the decision object). For ops
+visibility, scan service logs for the stub message — OR (future
+work) add an optional `last_reconciler_message TEXT` column on
+`source_onboarding_runs` to persist the stub-vs-real distinction.
+
+```bash
+# Pre-M6.x stub matched on log:
+kubectl logs reconciler-prod-01 | grep -E "M6\.[3-6].*defaulting to clean"
+```
+
+If the M6.x sub-blocks have shipped and stub messages still appear,
+the dispatch table override didn't land — check the per-source
+service's import-time registration into `RECONCILER_DISPATCH`.
+
+### 6.C.5. Failure-mode catalog
+
+| Symptom | Likely cause | Diagnosis | Recovery |
+|---|---|---|---|
+| **A. `source_shards_completed` accumulating in reconciler inbox** | Reconciler service down or backlogged. | `SELECT count(*) FROM workflow_signals WHERE workflow_kind='reconciler' AND consumed_at IS NULL;`. | Restart Reconciler. The N1-style at-most-once + at-least-once semantics mean no data loss; signals drain on service recovery. |
+| **B. `source_onboarding_runs.status='completed' AND reconciled_at IS NULL` for > 5 min** | Reconciler hasn't picked up. Either down (see A) OR the `source_shards_completed` signal never landed (a deeper M6.2a chain bug). | Compare reconciler-inbox backlog with `awaiting_reconcile_idx` count. If backlog has the row, A applies. If not, investigate SourceOnboarding's rollup-emit. | Per cause: restart reconciler, or escalate the SourceOnboarding-emit bug. |
+| **C. `onboarding_shards.state='reconciliation_resharded'` for an original WITHOUT any new shards referencing it** | Reconciler crashed mid-transaction between marking the original and inserting the new shards. **Should be impossible per the A12 atomicity contract** — if observed, file a P0 against the Reconciler's transaction discipline. | `SELECT s.id FROM onboarding_shards s WHERE s.state='reconciliation_resharded' AND NOT EXISTS (SELECT 1 FROM onboarding_shards c WHERE c.parent_shard_id=s.id);` | Manual recovery: insert a new shard for the abandoned-original's gap region, OR revert the original to `state='done'`. Cause investigation: the atomic-rollback test should catch this; if the test passes but production fails, suspect connection-level transaction handling. |
+| **D. Re-share cycle that does NOT terminate (more than 3 passes for one run)** | Per-source reconciler bug — algorithm declares `has_gaps=True` repeatedly without converging. | `SELECT reconciliation_pass_count, source, onboarding_run_id FROM source_onboarding_runs ORDER BY reconciliation_pass_count DESC LIMIT 10;`. | Investigate the per-source algorithm (M6.3-M6.6 territory). M6.2b ships no per-source convergence guard; the per-source impl owns this. **Alert threshold: pass_count >= 3 is the investigation trigger.** |
+| **E. `source_onboarding_completed` count > 1 for the same (run, source)** | Cross-service idempotency broken — the Reconciler's emit key should be `{run_id}:{source}` (no pass_count). If duplicates exist, the key shape changed. | `SELECT idempotency_key, count(*) FROM workflow_signals WHERE workflow_kind='tenant_onboarding' AND signal_kind='source_onboarding_completed' GROUP BY 1 HAVING count(*)>1;`. | P0 against the Reconciler's emit. Cross-reference [A17](05-lld-amendments.md#a17--reconciler-state-machine-idempotency-key-discipline-and-re-share-recency-boost) section (2) for the load-bearing key-shape rationale. |
+| **F. Reconciler tick stuck (lifetime_signals_processed not incrementing)** | Possible deadlock — concurrent replicas spinning on lock contention; OR the dispatch function hung. | Inspect `pg_stat_activity` for blocked queries; check Reconciler logs for "RECONCILER_DISPATCH" execution time. | If dispatch hung, the per-source algorithm has a bug. Pre-M6.3-M6.6 the dispatch is the stub (returns immediately), so this is unlikely. |
+
+### 6.C.6. When-to-investigate (alert thresholds)
+
+| Threshold | Severity | Action |
+|---|---|---|
+| `awaiting_reconcile_idx` count > 0 with `completed_at < now() - interval '1 min'` | **Info** | Likely transient (Reconciler tick). Check next tick. |
+| Same as above with `completed_at < now() - interval '5 min'` | **Warn** | Reconciler likely down or backlogged. Check service health + reconciler inbox. |
+| Any row with `reconciliation_pass_count >= 3` | **Warn** | Per-source algorithm not converging. M6.3-M6.6 investigation. |
+| Reconciler `workflow_states.last_advanced_at` older than `2 × tick_interval` | **Info** | Likely transient. Check next tick. |
+| Same as above older than `10 × tick_interval` | **Warn** | Service stuck or dead. |
+| ANY duplicate `source_onboarding_completed` for the same (run, source) | **Page** | Cross-service idempotency broken — load-bearing invariant. See [A17 section 2](05-lld-amendments.md#a17--reconciler-state-machine-idempotency-key-discipline-and-re-share-recency-boost). |
+
+---
+
 ## 7. References
 
 - **Code:**

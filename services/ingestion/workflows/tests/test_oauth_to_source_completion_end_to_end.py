@@ -1,14 +1,25 @@
-"""M6.2a Phase 3 — full M6 backfill flow end-to-end (4 subprocesses).
+"""M6.2a Phase 3 — full M6 backfill flow end-to-end (5 subprocesses
+post-M6.2b chain insertion).
 
 The milestone-shaping artifact of M6.2a. If this test fails, M6.2a
 does NOT ship.
+
+**Updated by M6.2b Phase 1 for the chain change**: SourceOnboarding's
+success-path now emits `source_shards_completed` to the Reconciler
+inbox instead of `source_onboarding_completed` direct to
+TenantOnboarding. The test now spawns a 5th subprocess (Reconciler)
+and the chain assertions reflect the additional Reconciler hop.
+M6.2b's Phase 2 will ship a re-share-path E2E test that monkeypatches
+the dispatch to return `has_gaps=True`.
 
 Architectural value: this test exercises the full M6 backfill
 framework end-to-end WITHOUT any per-source planner or fetcher
 implementation. M6.3-M6.6 will plug real planners + fetchers into
 the dispatch tables; the framework is now proven correct without
 that per-source code. The test_planner + test_fetcher used here
-are the M6.3-M6.6 stand-ins.
+are the M6.3-M6.6 stand-ins. The Reconciler dispatch uses the
+default-clean stub (per the M6.2b A17 amendment) — no
+monkeypatching needed for the clean-path test.
 
 What this test proves end-to-end:
 
@@ -229,18 +240,23 @@ async def test_oauth_trigger_to_source_completion_end_to_end(
     orch_instance = f"e2e-orch-{tid.hex[:6]}"
     src_instance = f"e2e-src-{tid.hex[:6]}"
     shf_instance = f"e2e-shf-{tid.hex[:6]}"
+    rec_instance = f"e2e-rec-{tid.hex[:6]}"
 
     # Bootstrap for the two services that need monkeypatched dispatch.
-    # The other two subprocesses (poller, orchestrator) don't use the
-    # planner/fetcher dispatch tables at all, so they don't need the
-    # import bootstrap.
+    # The other three subprocesses (poller, orchestrator, reconciler)
+    # don't use the planner/fetcher dispatch tables at all, so they
+    # don't need the import bootstrap. The reconciler uses its OWN
+    # dispatch (RECONCILER_DISPATCH); for this clean-path test, the
+    # default-clean stub is fine — no monkeypatching needed in the
+    # subprocess.
     bootstrap_for_dispatch_services = (
         "import e2e_test_dispatch; "
         "from {svc_main} import main; main()"
     )
 
     procs: dict[str, subprocess.Popen | None] = {
-        "poller": None, "orch": None, "src": None, "shf": None,
+        "poller": None, "orch": None, "src": None,
+        "shf": None, "rec": None,
     }
 
     try:
@@ -442,7 +458,61 @@ async def test_oauth_trigger_to_source_completion_end_to_end(
                 f"within 30s of both shards done. status={src_status!r}"
             )
 
-        # source_onboarding_completed emitted to tenant_onboarding.
+        # M6.2b chain change: SourceOnboarding emits source_shards_completed
+        # to Reconciler (not source_onboarding_completed direct to
+        # TenantOnboarding). Verify the emit landed before starting
+        # Reconciler.
+        n_shards_completed = int(await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = 'reconciler' "
+            "AND signal_kind = 'source_shards_completed' "
+            "AND idempotency_key = $1",
+            f"{run_id}:slack:pass_0",
+        ))
+        assert n_shards_completed == 1, (
+            f"Expected source_shards_completed emit to Reconciler "
+            f"inbox post-M6.2a-rollup; got {n_shards_completed}."
+        )
+
+        # ----- Start subprocess 5: reconciler -----
+        # Default-clean stub for slack — no monkeypatching needed.
+        procs["rec"] = subprocess.Popen(
+            [sys.executable, "-m",
+             "services.ingestion.workflows.reconciler"],
+            env=_env_for(
+                instance_var="RECONCILER_INSTANCE",
+                instance_value=rec_instance,
+                helpers_dir=helpers_dir,
+                extra={
+                    "RECONCILER_TICK_SEC": "0.1",
+                    "RECONCILER_BATCH": "20",
+                },
+            ),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        # Wait for Reconciler to stamp reconciled_at + emit
+        # source_onboarding_completed to TenantOnboarding.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            reconciled = await fresh_db.fetchval(
+                "SELECT reconciled_at FROM source_onboarding_runs "
+                "WHERE onboarding_run_id = $1 AND source = 'slack'",
+                run_id,
+            )
+            if reconciled is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            stderr = procs["rec"].stderr.read().decode() if procs["rec"].stderr else ""
+            raise AssertionError(
+                f"Reconciler did not stamp reconciled_at within 30s. "
+                f"stderr: {stderr[:1000]}"
+            )
+
+        # source_onboarding_completed emitted to tenant_onboarding by
+        # Reconciler (the M6.2b chain change — this emit now comes
+        # from Reconciler on the CLEAN path, not from SourceOnboarding).
         n_src_completed = int(await fresh_db.fetchval(
             "SELECT count(*) FROM workflow_signals "
             "WHERE workflow_kind = $1 AND workflow_id = $2 "
