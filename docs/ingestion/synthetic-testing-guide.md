@@ -261,9 +261,131 @@ The X2 mock client may need an update if the new parameter changes the fixture's
 
 ---
 
-## 9. Known limitations
+## 9. Live-ingestion synthetic generators
 
-- **Real Kafka required for E2E.** No in-memory broker today; mock-Kafka is mega-prompt-3+ territory.
+The X3 backfill harness covers the M6 backfill chain (OAuth → trigger → run → shards → fetch → reconcile). The **live-ingestion** code paths (continuous traffic after backfill completes) are covered by separate per-source generators in `services/synthetic/live_generators/`.
+
+### 9.1. Gmail Pub/Sub — `GmailPubSubGenerator`
+
+Per [A23](./05-lld-amendments.md#a23--gmail-pubsub-synthetic-generator-fastapi-in-process-invocation-with-mock-gmail-coordination). Drives the Gmail Pub/Sub push-notification path end-to-end in-process via FastAPI ASGI transport.
+
+**Coverage:** FastAPI routing + OIDC envelope validation surface (test-mode no-op'd) + Pub/Sub envelope decoding + `gmail_pubsub_topics` tenant resolution + `handle_push` + `drain_mailbox_history` (real) + per-message thread canonicalization + observation write. **Bypasses:** DWD token minting, real Google httpx client, real OIDC cert fetch.
+
+**Usage:**
+
+```python
+import os
+from fastapi import FastAPI
+from services.synthetic.fixtures import make_gmail_mailbox
+from services.synthetic.live_generators import GmailPubSubGenerator
+from services.synthetic.mock_clients import MockGmailClient
+from services.webhooks.gmail_pubsub import router as gmail_router
+
+# Required env (validated at handler import even though no-op'd in tests).
+os.environ["GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE"] = "https://x.example/webhook"
+os.environ["GMAIL_PUBSUB_PUSH_OIDC_SA"] = "pusher@y1.iam.gserviceaccount.com"
+
+# Build a FastAPI app with the Gmail Pub/Sub router mounted.
+app = FastAPI()
+app.include_router(gmail_router)
+class _Deps: pass
+deps = _Deps(); deps.pool = pool
+app.state.deps = deps
+
+# Construct a mailbox + mock client.
+mock = MockGmailClient(fixture=make_gmail_mailbox(
+    email="alice@x.com", messages=0, starting_history_id=1000,
+))
+
+async with GmailPubSubGenerator(
+    app=app, pool=pool, mailboxes={"alice@x.com": mock},
+) as gen:
+    # Dispatch one notification with 3 new messages.
+    result = await gen.simulate_push(
+        mailbox_email="alice@x.com", new_messages=3,
+    )
+    assert result.http_status == 200
+    assert result.response_body["ingested"] == 3
+```
+
+### 9.2. Burst patterns
+
+Each tenant's pattern is a list of `(delay_ms, message_count)` tuples — the generator sleeps then dispatches:
+
+```python
+from services.synthetic.scenarios import (
+    LivePubSubScenario, PerTenantBurst,
+    STEADY_STATE_PUBSUB, BURSTY_PUBSUB, MIXED_PUBSUB,
+)
+
+# Custom pattern: 2 messages every 500ms, five times.
+custom = LivePubSubScenario(tenants=[
+    PerTenantBurst(
+        tenant_slug="custom",
+        mailbox_email="custom@x.com",
+        burst_pattern=[(500, 2)] * 5,
+    ),
+])
+
+async with GmailPubSubGenerator(app=app, pool=pool,
+                                mailboxes={...}) as gen:
+    result = await gen.run_scenario(custom)
+```
+
+### 9.3. Replay simulation (at-least-once-delivery idempotency)
+
+`LivePubSubScenario.replay_probability` ∈ [0.0, 1.0] — the generator duplicates a fraction of pushes (same historyId, same payload). Tests verify the writer's `external_id` UNIQUE constraint dedupes them:
+
+```python
+scenario = LivePubSubScenario(
+    tenants=[...],
+    replay_probability=1.0,  # every push is followed by a duplicate
+)
+# After scenario runs: observation count == unique message count
+# (duplicates were sent but deduped at the writer).
+```
+
+### 9.4. Composing X3 backfill with Y1 live ingestion
+
+Worked example: a tenant completes backfill via X3, then ongoing Gmail Pub/Sub notifications arrive:
+
+```python
+from services.synthetic.backfill_harness import BackfillHarness, BackfillScenario
+
+# Phase A: install + backfill via X3.
+scenarios = [BackfillScenario(
+    tenant_slug="compose",
+    source="gmail",
+    fixture_params={"email": "compose@x.com", "messages": 5},
+    expected_observation_count=5,
+)]
+backfill = BackfillHarness(pool=pool, scenarios=scenarios)
+backfill_result = await backfill.run()
+assert_all_complete(backfill_result)
+
+# Phase B: drive ongoing live notifications.
+async with GmailPubSubGenerator(
+    app=app, pool=pool,
+    mailboxes={"compose@x.com": shared_mock},
+) as gen:
+    await gen.simulate_push(mailbox_email="compose@x.com", new_messages=3)
+
+# Phase C: assert backfill observations + live observations coexist.
+total = await pool.fetchval(
+    "SELECT count(*) FROM observations WHERE tenant_id = $1",
+    backfill_result.outcomes[0].tenant_id,
+)
+assert total == 5 + 3  # 5 from backfill, 3 from live notification
+```
+
+The harness's properties-based assertions (`assert_no_duplicate_observations`, etc.) compose naturally with live-generator output — backfill + live writes go to the same `observations` table with the same `external_id` UNIQUE constraint guarding against duplicates.
+
+---
+
+## 10. Known limitations
+
+- **Real Kafka required for X3 E2E.** No in-memory broker today; live-ingestion generators (Y1/Y2) work without one because they don't go through the M6 chain.
 - **Gmail-only reshare configuration.** GitHub/Slack/Discord reshare scenarios require fixture-generator extensions (see §3).
 - **Single fault profile per tenant.** A tenant can't switch profiles mid-run (e.g., happy for the first 100 requests, then flaky). Per-call profile dispatch is a future extension.
-- **The harness doesn't drive HTTP OAuth callbacks.** It writes install + trigger rows directly. The X1 retrofit tests verify the OAuth-layer atomicity independently.
+- **The X3 harness doesn't drive HTTP OAuth callbacks.** It writes install + trigger rows directly. The X1 retrofit tests verify the OAuth-layer atomicity independently.
+- **Y1 bypasses real OIDC + DWD token minting** by design. Those layers have their own tests (`services/integrations/gmail/tests/test_oidc_verify.py`); Y1's scope is the M6 + observation-write surface.

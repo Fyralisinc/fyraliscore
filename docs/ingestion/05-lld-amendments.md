@@ -723,6 +723,63 @@ A18 inherits from and extends:
 
 ---
 
+## A23 — Gmail Pub/Sub synthetic generator: FastAPI in-process invocation with mock Gmail coordination
+
+**Status:** Resolved with Y1 commit on `feat/ingestion-y1-gmail-pubsub-generator`.
+
+**Trigger:** Mega-prompt 3 Y1 work-unit. M-Load covered webhook synthetic traffic (Slack + GitHub); X3 covered backfill across all four sources. The remaining gap — live-ingestion paths — starts here with Gmail Pub/Sub.
+
+**Decision:** `GmailPubSubGenerator` (in `services/synthetic/live_generators/gmail_pubsub.py`) drives the Gmail Pub/Sub live-ingestion path end-to-end in-process via `httpx.AsyncClient(transport=ASGITransport(app=fastapi_app))`. The generator:
+
+1. Seeds `tenants`, `gmail_installations`, `gmail_mailbox_watches`, and `gmail_pubsub_topics` rows for each registered mailbox — the production handler's tenant resolution path reads from these tables.
+2. Monkeypatches `verify_pubsub_oidc_token` to a no-op (proven test pattern from the M2.2 shadow-write tests at `services/integrations/gmail/tests/test_pubsub_shadow.py`).
+3. Monkeypatches `services.integrations.gmail.push_handler._drain_history` to call the real `drain_mailbox_history` with the X2 `MockGmailClient` instead of constructing a real `GoogleHttpClient` + `GmailClient`.
+4. Points `lib.shared.db._pool` at the test pool so `tenant_transaction()` (used downstream by `dispatch_gmail_message_resource`) resolves to the test database.
+5. Per `simulate_push(mailbox_email, new_messages=N)`: appends N new messages to the X2 mock via `MockGmailClient.append_messages` (new method shipped with Y1), advances the mock's `current_history_id`, builds a standard Pub/Sub envelope with the new historyId, POSTs to `/webhooks/gmail/pubsub`.
+
+The patches are installed in `__aenter__` and unwound in `__aexit__`; the generator is an async context manager.
+
+**Scenarios** (in `services/synthetic/scenarios/live_scenarios.py`):
+- `LivePubSubScenario(tenants=[PerTenantBurst(...), ...], replay_probability=0.0, fault_profile=HAPPY_PATH)`.
+- `PerTenantBurst(tenant_slug, mailbox_email, burst_pattern=[(delay_ms, msg_count), ...])`.
+- Presets: `STEADY_STATE_PUBSUB` (1 msg/s × 10), `BURSTY_PUBSUB` (50 in burst + 30s idle), `MIXED_PUBSUB` (5 tenants × varied patterns).
+
+**Coverage end-to-end:**
+| Layer | Exercised? |
+|-------|-----------|
+| FastAPI routing | ✓ via ASGITransport |
+| OIDC envelope validation surface | ✓ (test-mode no-op'd; same pattern as existing tests) |
+| Pub/Sub envelope decoding | ✓ real `decode_pubsub_message` |
+| `gmail_pubsub_topics` tenant resolution | ✓ generator seeds; handler queries |
+| `handle_push` rate-limit + Google-error branches | ✓ exposed via X2 FaultProfile presets |
+| `drain_mailbox_history` page-by-page logic | ✓ real (the meaty path) |
+| `dispatch_gmail_message_resource` thread canonicalization | ✓ real |
+| Observation table write + dedup on `external_id` | ✓ real |
+| DWD token minting | ✗ bypassed (not part of M6 chain logic) |
+| Real Google httpx client | ✗ replaced by MockGmailClient |
+| Real OIDC cert fetch | ✗ replaced by no-op verifier |
+
+**Replay simulation:** `LivePubSubScenario.replay_probability` ∈ [0.0, 1.0]; the generator's RNG (seeded for determinism) duplicates a fraction of pushes (same historyId, same payload). Tests verify the writer's `external_id` UNIQUE constraint dedupes them — observation count tracks unique messages, not push count.
+
+**Rationale:**
+
+- **In-process ASGI** matches X3 harness pattern (no port management, deterministic teardown, no flaky timing).
+- **Direct mock coordination** (generator holds a reference to MockGmailClient and appends to it directly) eliminates indirection that wouldn't exist in test code anyway.
+- **Burst patterns** model real-world Gmail traffic shape better than uniform sequential/parallel — operators can encode "this customer gets bursts of activity then idles" scenarios for soak testing.
+- **Patching `_drain_history` rather than `GmailClient`** keeps the real `drain_mailbox_history` page-by-page logic in the test path; that's the meaty Gmail-specific code that we want exercised.
+
+**Cross-references:**
+
+- [A18](#a18--per-source-backfill-is-net-new-code-framework--existing-steady-state-coexist-until-m7) — per-source backfill; live-ingestion path is the steady-state side of that coexistence.
+- [A19](#a19--framework-exception-handling-for-per-source-dispatch-failures) — framework exception handling; the handler's existing rate-limit + Google-error branches embody the same robustness contract.
+- [A20](#a20--f4-oauth-retrofit-all-callbacks-write-onboarding_triggers-atomically-with-install) — F4 retrofit; the generator composes with X3 (install via F4 retrofit, then drive live notifications).
+- [A21](#a21--mock-api-server-architecture-stateful-in-process-libraries-with-fixture-generators-and-fault-injection) — mock servers; Y1 uses `MockGmailClient` and adds the `append_messages` extension.
+- [A22](#a22--backfill-synthetic-harness-oauth-callback-driven-install-simulation-with-parallel-concurrency-and-properties-based-assertions) — backfill harness; Y1 inherits the in-process invocation pattern.
+
+**Effect on future work:** Y2 (Discord Gateway) inherits the in-process invocation pattern (different protocol — direct event-handler call, not HTTP). Future live-ingestion paths follow same shape. Composition example: install a tenant via X3, run backfill, then drive ongoing live notifications via Y1 — verifies that backfill observations + live observations coexist in the same `observations` table without duplicate-key violations.
+
+---
+
 ## A22 — Backfill synthetic harness: OAuth-callback-driven install simulation with parallel concurrency and properties-based assertions
 
 **Status:** Resolved with X3 commit on `feat/ingestion-x3-backfill-harness`.
