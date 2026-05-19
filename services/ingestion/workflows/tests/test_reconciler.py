@@ -394,22 +394,22 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
 
 
 # =====================================================================
-# 4. Default stub returns clean (system functions pre-M6.3-M6.6).
+# 4. Clean-decision path stamps reconciled_at and emits completion.
 # =====================================================================
 
-async def test_reconciler_default_stub_returns_clean(
-    fresh_db: asyncpg.Pool,
+async def test_reconciler_clean_decision_path(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No monkeypatch — use the default-clean stub. Assert run reconciles
-    cleanly (no errors, source_onboarding_completed emitted, system
-    functions pre-M6.3-M6.6).
+    """Monkeypatch github dispatch to a clean reconciler; assert run
+    reconciles cleanly (status='completed', reconciled_at stamped,
+    source_onboarding_completed emitted once).
 
-    This is the LOAD-BEARING property that distinguishes the
-    reconciler stub from planner/fetcher stubs (which raise): if
-    the reconciler stub raised, no tenant onboarding would ever
-    complete, and the entire M6 chain would be unusable pre-M6.3.
-    The default-clean ensures the system keeps moving.
+    Pre-M6.3 this verified the default-clean stub. Post-M6.3-M6.6 all
+    sources have real reconcilers, so this verifies the clean-decision
+    branch of the Reconciler service via an explicit monkeypatch.
     """
+    monkeypatch.setitem(RECONCILER_DISPATCH, "github", _clean_reconciler)
+
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
     await _seed_shard(
