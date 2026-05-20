@@ -8,6 +8,21 @@ broker. Run with:
     pytest services/synthetic/backfill_harness/tests/test_harness_e2e.py
 
 Same opt-in shape as M-Load's `tests/load/test_cutover_dryrun.py`.
+
+EXPECTED-FAILURE STATE (until M6.7 ships):
+    `test_harness_single_tenant_gmail_completes` asserts
+    `assert_observation_count_matches_fixture`, which is EXPECTED TO
+    FAIL today: M6 backfill never wires fetched records through to the
+    `observations` table (shard_fetch publishes an inline envelope the
+    normalizer can't consume; channel_mapping has no `backfill` entry;
+    the observation_writer is flag-gated off). The failing assertion is
+    the regression-prevention surface — it converts a silent invariant
+    violation into a visible, tracked failure.
+
+    DO NOT suppress, xfail, or @skip this assertion to make the suite
+    green. The resolution is the M6.7 backfill-producer work-unit, not
+    a test edit. See A26 + docs/decisions/ticket-43-m6-backfill-producer-completion.md
+    + docs/decisions/q1-backfill-producer-gap-scope.md.
 """
 from __future__ import annotations
 
@@ -22,6 +37,7 @@ from services.synthetic.backfill_harness import (
     assert_all_complete,
     assert_completion_emitted_per_tenant,
     assert_no_duplicate_observations,
+    assert_observation_count_matches_fixture,
 )
 
 
@@ -56,6 +72,9 @@ async def test_harness_single_tenant_gmail_completes(
     assert_all_complete(result)
     assert_completion_emitted_per_tenant(result)
     assert_no_duplicate_observations(result)
+    # Expected to fail until M6.7 backfill producer completion ships.
+    # Do NOT suppress or skip — see A26 + ticket #43.
+    assert_observation_count_matches_fixture(result)
 
 
 @pytest.mark.asyncio
