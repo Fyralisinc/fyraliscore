@@ -1,10 +1,14 @@
-"""Y1+Y2 live-ingestion synthetic generators.
+"""Y1+Y2+Z1 live-ingestion synthetic generators.
 
-Per A23: in-process generators that drive the live-ingestion code
-paths (Gmail Pub/Sub via FastAPI ASGI; Discord Gateway via direct
-event-handler invocation) with synthetic traffic. Coordinate X2 mock
-clients' state with notification / event dispatch as one logical
-operation.
+Per A23 / A24 / A25: in-process generators that drive the
+live-ingestion code paths with synthetic traffic, coordinating X2 mock
+client state with notification / event / webhook dispatch as one
+logical operation:
+
+  - Gmail Pub/Sub via FastAPI ASGI (Y1, A23).
+  - Discord Gateway via direct event-handler invocation (Y2, A24).
+  - Slack webhooks via FastAPI ASGI (Z1-slack, A25).
+  - GitHub webhooks via FastAPI ASGI (Z1-github, A25).
 
 Composition contract: these generators are usable side-by-side with
 the X3 backfill harness. Common pattern:
@@ -25,6 +29,10 @@ from services.synthetic.live_generators.gmail_pubsub import (
     GmailPubSubGenerator,
     SimulatedPushResult,
 )
+from services.synthetic.live_generators.slack_webhook import (
+    SimulatedWebhookResult,
+    SlackWebhookGenerator,
+)
 
 
 __all__ = [
@@ -33,4 +41,6 @@ __all__ = [
     "GuildBinding",
     "SimulatedEventResult",
     "SimulatedPushResult",
+    "SimulatedWebhookResult",
+    "SlackWebhookGenerator",
 ]
