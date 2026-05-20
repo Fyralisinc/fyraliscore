@@ -243,3 +243,92 @@ MIXED_SLACK = LiveSlackScenario(
         for i in range(5)
     ],
 )
+
+
+# =====================================================================
+# GitHub webhook scenarios (Z1-github).
+# =====================================================================
+@dataclass(frozen=True)
+class GithubTenantTraffic:
+    """One GitHub tenant's webhook-traffic configuration.
+
+    `installation_id` is the GitHub App installation id; it MUST match
+    a seeded `provider_installations` row (`provider='github'`,
+    `installation_id=<this>`) so the webhook router resolves the
+    tenant. `repo_full_name` (`owner/repo`) is the repository the
+    synthetic events target (must pass the installation's
+    `selected_repositories` filter — NULL = all repos). `event_pattern`
+    is `[(delay_ms, event_count), ...]` like the Slack / Gateway
+    scenarios."""
+
+    tenant_slug: str
+    installation_id: str
+    repo_full_name: str
+    event_pattern: MessagePattern
+
+
+@dataclass(frozen=True)
+class LiveGithubScenario:
+    """Multi-tenant GitHub webhook live-ingestion scenario.
+
+    Attributes:
+      tenants:
+        List of `GithubTenantTraffic`. Within a tenant, events fire
+        sequentially with configured delays; across tenants they run
+        concurrently.
+      event_type:
+        Which event the scenario dispatches: ``"issues"`` or
+        ``"pull_request"``.
+      replay_probability:
+        [0.0, 1.0] — fraction of events re-delivered with the same
+        delivery id + node_id (at-least-once delivery). Verifies the
+        router replay cache + observation-layer `external_id` dedup
+        prevent double-counting.
+      fault_profile:
+        FaultProfile applied to the mock GitHub client. NOTE: the
+        webhook ingest path does NOT query the GitHub API, so the
+        profile is inert for webhook dispatch (accepted for parity)."""
+
+    tenants: list[GithubTenantTraffic]
+    event_type: str = "issues"
+    replay_probability: float = 0.0
+    fault_profile: FaultProfile = HAPPY_PATH
+
+
+# GitHub scenario presets (Z1.4).
+STEADY_STATE_GITHUB = LiveGithubScenario(
+    tenants=[
+        GithubTenantTraffic(
+            tenant_slug="steady",
+            installation_id="900001",
+            repo_full_name="octo/steady",
+            event_pattern=[(2000, 1)] * 10,
+        ),
+    ],
+)
+
+BURSTY_GITHUB = LiveGithubScenario(
+    tenants=[
+        GithubTenantTraffic(
+            tenant_slug="bursty",
+            installation_id="900002",
+            repo_full_name="octo/bursty",
+            event_pattern=[(0, 30), (30000, 0), (0, 30)],
+        ),
+    ],
+)
+
+MIXED_GITHUB = LiveGithubScenario(
+    tenants=[
+        GithubTenantTraffic(
+            tenant_slug=f"mixed-gh-{i}",
+            installation_id=f"90010{i}",
+            repo_full_name=f"octo/mixed-{i}",
+            event_pattern=(
+                [(500, 2)] * 5 if i % 2 == 0
+                else [(0, 10), (5000, 1)]
+            ),
+        )
+        for i in range(5)
+    ],
+)

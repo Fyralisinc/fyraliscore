@@ -723,6 +723,36 @@ A18 inherits from and extends:
 
 ---
 
+## A25 — Slack + GitHub webhook synthetic drivers: FastAPI in-process invocation with tenant-targeted webhook dispatch
+
+**Status:** Resolved with this commit (covers both `feat/ingestion-z1-slack-webhook-generator` and `feat/ingestion-z1-github-webhook-generator`).
+
+**Trigger:** Mega-prompt 4 Z1 work-units. The Path I validation audit (post-mega-prompt-3) surfaced that Slack + GitHub *live* ingestion lacked tenant-targeted synthetic drivers: `services/synthetic/cutover_load.py` (M-Load) is an HTTP throughput load tester that POSTs to a running webhook server with a *random, deterministic-Zipf* tenant pool whose `team_id` / `installation.id` values resolve to **no** installed tenant (the router returns `UnknownInstallation → 401`), so it produces zero observations for known tenants. The X3 backfill harness (A22) + Y1 Gmail Pub/Sub (A23) + Y2 Discord Gateway (A24) covered backfill-everywhere plus Gmail/Discord live, leaving Slack/GitHub live ingestion as the only synthetic-coverage gap. Closes ticket #42.
+
+**Decision:** Two in-process Python drivers — `SlackWebhookGenerator` (`services/synthetic/live_generators/slack_webhook.py`) and `GithubWebhookGenerator` (`services/synthetic/live_generators/github_webhook.py`) — dispatch webhooks via `httpx.AsyncClient(transport=ASGITransport(app=fastapi_app))` to `/webhooks/slack/events` and `/webhooks/github/events`. The app is the real gateway app (`services.gateway.main.build_app`), so the full path is exercised: body-size precheck → signature verification → tenant resolution → (GitHub) replay-cache + `selected_repositories` filter → inline `ingest()` → observation write.
+
+Both drivers share an architecture:
+
+1. **Tenant-targeting (Z1.2).** Drivers target a *seeded* `provider_installations` row — they do NOT create installs (parallels Y2's reliance on pre-seeded installs). Slack resolves by `installation_id = team_id`; GitHub resolves by `installation.id`. The caller seeds the install; the production resolver maps the webhook to the real tenant.
+2. **Real signatures (Z1.1).** Slack uses the `v0` HMAC-SHA256 scheme (`v0:{ts}:{body}`); GitHub uses `sha256=` HMAC-SHA256 over the body. Drivers sign with the same secret the app is configured with (Slack: `WEBHOOK_SECRET_SLACK` + `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1`; GitHub: App-level `WEBHOOK_SECRET_GITHUB`). A `tamper_signature` flag produces a deliberately-wrong signature for negative tests (expect 401, no observation).
+3. **Mock coordination (Z1.3).** Each dispatched event is first appended to the X2 mock's fixture (`MockSlackClient` channel `messages`; `MockGithubClient` `repos[].events_by_type`) so a subsequent backfill/reconciler probe against the mock sees it. The mock libraries are **not modified** — the drivers write the fixture data structures the mocks already expose (Z1 only adds new driver modules; it does not touch the X2 mocks the way Y1/Y2 did).
+4. **Burst patterns + replay (Z1.4 / Z1.5).** `LiveSlackScenario` / `LiveGithubScenario` carry per-tenant `[(delay_ms, count), ...]` patterns with `STEADY_STATE` / `BURSTY` / `MIXED` presets (suffixed `_SLACK` / `_GITHUB` to avoid collision with the existing `_PUBSUB` Gmail presets). `replay_probability` re-delivers an event to test at-least-once idempotency.
+
+**Provider-specific replay/dedup semantics (substrate-documented):**
+
+- **Slack** has no router-level replay cache. Replays reuse the message's `ts`; the `slack:message` handler derives `external_id = f"{channel}:{ts}"`, so the observation-layer `(source_channel, external_id, occurred_at)` UNIQUE constraint dedups the redelivery. Net: no double-count.
+- **GitHub** *does* have a router-level replay cache (`build_app` wires `app.state.github_replay_cache`). A redelivery with the same `(installation_id, X-GitHub-Delivery)` is dropped at the router with HTTP 200 `handled:replay` *before* ingest. Drivers reuse the original delivery id + `node_id` on replay, so the redelivery is caught by the cache; were the cache absent, the `external_id = node_id` observation dedup is the backstop. Net: no double-count via either layer.
+
+**Fault-profile inertness (documented limitation):** the webhook *ingest* path does not call the Slack/GitHub Web API — it ingests the webhook payload directly. A `RATE_LIMITED` / `FLAKY` mock fault profile is therefore inert for webhook dispatch; the drivers accept a `fault_profile` on the scenario for signature parity with the Pub/Sub / Gateway scenarios, and the `*_fault_profile_rate_limit` test asserts the webhook still succeeds (documenting the independence). Fault behaviour for these sources is exercised on the *backfill* path via the X3 harness (A22), where the mock API *is* called.
+
+**Rationale:** ASGI in-process invocation exercises signature validation + tenant resolution + dispatch + Kafka/inline path without port binding (inherits the Y1 pattern, A23). Tenant-targeting enables backfill-then-live composition (X3 installs + Z1 drives live for the same tenant → full lifecycle in shared observation state; inherits the Y2 pattern, A24). Both drivers share enough architectural shape that one amendment captures both.
+
+**Cross-references:** A20 (F4 retrofit — drivers target installs the callbacks create), A21 (X2 mock servers used by drivers for state coordination), A22 (X3 harness composes with Z1), A23 (Y1 — Z1 inherits the in-process ASGI pattern), A24 (Y2 — Z1 inherits the seeded-install tenant-targeting pattern), ticket #42 (resolved here).
+
+**Effect on future work:** the synthetic-coverage trilogy is now complete — X3 backfill (all four sources) + Y1 Gmail Pub/Sub + Y2 Discord Gateway + Z1 Slack/GitHub webhooks. All four sources are testable end-to-end for both backfill and live paths with synthetic data targeting specific seeded tenants. Validation runs composing all four sources × (backfill + live) can now be authored without a coverage gap (mega-prompt 5 territory).
+
+---
+
 ## A24 — Discord Gateway synthetic generator: in-process event injection without WebSocket simulation
 
 **Status:** Resolved with Y2 commit on `feat/ingestion-y2-discord-gateway-generator`.

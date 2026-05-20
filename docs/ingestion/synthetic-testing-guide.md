@@ -1,9 +1,12 @@
-# Synthetic Testing Guide — X2 mocks + X3 harness
+# Synthetic Testing Guide — X2 mocks + X3 harness + live generators
 
-This guide is the operator's reference for exercising the M6 backfill chain end-to-end with synthetic traffic. The substrate is:
+This guide is the operator's reference for exercising the M6 ingestion pipeline end-to-end with synthetic traffic, across **all four sources for both backfill and live ingestion**. The substrate is:
 
 - **X2 mock clients + fixture generators + fault profiles** ([A21](./05-lld-amendments.md#a21--mock-api-server-architecture-stateful-in-process-libraries-with-fixture-generators-and-fault-injection)) — in-process Python libraries that replace production per-source clients at their `_open_<source>_client` factory seams.
-- **X3 BackfillHarness** ([A22](./05-lld-amendments.md#a22--backfill-synthetic-harness-oauth-callback-driven-install-simulation-with-parallel-concurrency-and-properties-based-assertions)) — multi-tenant orchestrator that drives the X2 mocks through the M6 chain end-to-end.
+- **X3 BackfillHarness** ([A22](./05-lld-amendments.md#a22--backfill-synthetic-harness-oauth-callback-driven-install-simulation-with-parallel-concurrency-and-properties-based-assertions)) — multi-tenant orchestrator that drives the X2 mocks through the M6 chain end-to-end (backfill, all four sources).
+- **Live-ingestion generators** — drive the ongoing/live paths in-process (see §9): Gmail Pub/Sub (Y1, [A23](./05-lld-amendments.md)), Discord Gateway (Y2, [A24](./05-lld-amendments.md)), and Slack + GitHub webhooks (Z1, [A25](./05-lld-amendments.md)).
+
+Synthetic coverage is now complete: **webhook (Slack + GitHub via Z1) + backfill (all four via X3) + Pub/Sub (Gmail via Y1) + Gateway (Discord via Y2)** — every source × (backfill + live), targeting specific seeded tenants.
 
 ---
 
@@ -447,6 +450,59 @@ assert total == 5 + 3  # 5 from backfill, 3 from live notification
 
 The harness's properties-based assertions (`assert_no_duplicate_observations`, etc.) compose naturally with live-generator output — backfill + live writes go to the same `observations` table with the same `external_id` UNIQUE constraint guarding against duplicates.
 
+### 9.6. Slack + GitHub webhooks — `SlackWebhookGenerator` / `GithubWebhookGenerator` (Z1)
+
+These two drivers (A25) close the synthetic-coverage gap for Slack + GitHub *live* ingestion. Both dispatch real, signed webhooks in-process via `httpx.AsyncClient(transport=ASGITransport(app))` to the gateway app's webhook router, exercising the full path: signature verify → tenant resolution → (GitHub) replay-cache + repo filter → inline `ingest()` → observation write.
+
+Both drivers **target a seeded `provider_installations` row** — they do not create installs. Seed the install first (mirroring what an OAuth callback writes), then drive live traffic:
+
+```python
+from services.gateway.main import build_app
+from services.actors.repo import ActorRepo
+from services.entity_aliases.repo import EntityAliasRepo
+from services.gateway.rate_limit import RateLimiter
+from services.synthetic.fixtures import make_slack_workspace, make_github_repos
+from services.synthetic.live_generators.slack_webhook import SlackWebhookGenerator
+from services.synthetic.live_generators.github_webhook import GithubWebhookGenerator
+from services.synthetic.mock_clients import MockSlackClient, MockGithubClient
+
+# Test env: Slack needs WEBHOOK_SECRET_SLACK + WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1;
+# GitHub needs the App-level WEBHOOK_SECRET_GITHUB. MASTER_KEK keeps the secret
+# store off its dev-warning branch under `filterwarnings = error`.
+
+app = build_app(pool=pool, actor_repo=ActorRepo(pool),
+                alias_repo=EntityAliasRepo(pool), embedder=None,
+                rate_limiter=RateLimiter(), configure_logging=False)
+
+# Slack: seed provider_installations(provider='slack', installation_id=team_id).
+async with SlackWebhookGenerator(
+    app=app, mock_client=MockSlackClient(fixture=make_slack_workspace(team_id="T1")),
+    signing_secret=slack_secret,
+) as gen:
+    r = await gen.simulate_message(team_id="T1", channel_id="C1", content="hi")
+    assert r.http_status in (200, 201)
+
+# GitHub: seed provider_installations(provider='github', installation_id="999001").
+async with GithubWebhookGenerator(
+    app=app, mock_client=MockGithubClient(fixture=make_github_repos(
+        org_or_user="octo", installation_id="999001")),
+    signing_secret=github_secret,
+) as gen:
+    r = await gen.simulate_issue_event(
+        installation_id="999001", repo_full_name="octo/repo", action="opened",
+        issue_title="bug")
+    assert r.http_status in (200, 201)
+    # GitHub also has simulate_pull_request_event(...).
+```
+
+**Burst patterns + scenarios.** `LiveSlackScenario(tenants=[SlackTenantTraffic(...)] )` and `LiveGithubScenario(tenants=[GithubTenantTraffic(...)], event_type="issues"|"pull_request")` carry per-tenant `[(delay_ms, count), ...]` patterns, run via `gen.run_scenario(scenario)` (sequential within a tenant, concurrent across tenants). Presets: `STEADY_STATE_SLACK` / `BURSTY_SLACK` / `MIXED_SLACK` and `STEADY_STATE_GITHUB` / `BURSTY_GITHUB` / `MIXED_GITHUB`.
+
+**Replay simulation.** Set `replay_probability` (or call `simulate_*(..., replay=True)`). Slack reuses the message `ts` → observation-layer `external_id = "{channel}:{ts}"` dedup. GitHub reuses the original `X-GitHub-Delivery` + `node_id` → router replay-cache drop (HTTP 200 `handled:replay`), with the `external_id = node_id` dedup as backstop. Either way: no double-counted observation.
+
+**Signature handling.** Drivers sign with the same secret the app is configured with. Pass `signing_secret=` (or let it read the env var). `simulate_*(..., tamper_signature=True)` produces a wrong signature for negative tests (expect 401, no observation). An unknown `team_id` / `installation_id` (no seeded install) returns 401 (`UnknownInstallation`) after signature verification — also no observation.
+
+**Composition with X3.** Same pattern as §9.5: install via X3 → backfill → drive live webhooks via Z1 targeting the same tenant. Backfill + live observations coexist in the shared `observations` table under the `external_id` UNIQUE constraint.
+
 ---
 
 ## 10. Known limitations
@@ -456,3 +512,5 @@ The harness's properties-based assertions (`assert_no_duplicate_observations`, e
 - **Single fault profile per tenant.** A tenant can't switch profiles mid-run (e.g., happy for the first 100 requests, then flaky). Per-call profile dispatch is a future extension.
 - **The X3 harness doesn't drive HTTP OAuth callbacks.** It writes install + trigger rows directly. The X1 retrofit tests verify the OAuth-layer atomicity independently.
 - **Y1 bypasses real OIDC + DWD token minting** by design. Those layers have their own tests (`services/integrations/gmail/tests/test_oidc_verify.py`); Y1's scope is the M6 + observation-write surface.
+- **Z1 fault profiles are inert for the webhook ingest path.** The Slack/GitHub webhook *ingest* path never calls the source Web API, so a `RATE_LIMITED` / `FLAKY` mock profile has no effect on Z1 dispatch (the scenario accepts `fault_profile` only for parity). Source-API fault behaviour is exercised on the *backfill* path via the X3 harness.
+- **Z1 targets seeded installs only.** The drivers resolve to a pre-seeded `provider_installations` row (Slack by `team_id`, GitHub by `installation.id`); they do not run OAuth. Seed the install (or use X3) before driving live traffic.
