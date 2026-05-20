@@ -1,7 +1,7 @@
 # Ticket #43 — M6.7: Backfill producer completion
 
 **Title:** M6.7 — Backfill producer completion (shard_fetch S3 + envelope + channel mapping + handler conformance + writer flag).
-**Status:** Queued. Required before mega-prompt 5's backfill validation can proceed. **Not deferred indefinitely** — next focused work-unit conversation.
+**Status:** **RESOLVED** on `feat/ingestion-m6-7-backfill-producer-completion` — all four sub-blocks shipped; external_id parity verified per source; A27 documents the producer-side contract (supersedes A26's "pending"). Pending review + merge (Q1-minimal first, then M6.7).
 **Filed:** 2026-05-20.
 **Origin:** Pre-implementation audit for mega-prompt 5; see [`q1-backfill-producer-gap-scope.md`](./q1-backfill-producer-gap-scope.md) for the full per-file enumeration, risk assessment, and effort estimate, and [A26](../ingestion/05-lld-amendments.md) for the architectural framing.
 

@@ -400,12 +400,25 @@ async def _normalize_one_with_envelope(
     raw_body = await s3.get(envelope.raw_s3_key)
     payload = orjson.loads(raw_body)
 
+    # M6.7 (A27.3) — the backfill producer (shard_fetch) wraps the
+    # handler body in a blob `{record, shard_context, webhook_metadata}`
+    # so it can carry the webhook-equivalent headers a handler needs
+    # (e.g. X-GitHub-Event) without a webhook signature. Unwrap it here:
+    # the handler then sees the SAME (body, headers) shape webhook
+    # routing would provide, so it derives the SAME external_id (parity,
+    # HLD §02 L278). The live webhook/gateway/pubsub paths publish the
+    # bare body with no wrapper, so they keep headers={}.
+    headers: dict[str, str] = {}
+    if envelope.ingress_kind == "backfill" and isinstance(payload, dict):
+        headers = payload.get("webhook_metadata") or {}
+        payload = payload.get("record", payload)
+
     # Dispatch — the handler is a pure (payload, headers) → draft
-    # function. headers={} because the verified-at-ingress info is
-    # already in `envelope.ingress_metadata`; M3+ may pass a subset
-    # through if a handler needs it.
+    # function. For live ingress, headers={} (the verified-at-ingress
+    # info is already in `envelope.ingress_metadata`); for backfill,
+    # headers carry the replayed webhook_metadata (A27.3).
     handler = get_handler(channel)
-    draft = await handler(payload, {})
+    draft = await handler(payload, headers)
 
     normalized = NormalizedEnvelope(
         envelope_version=1,

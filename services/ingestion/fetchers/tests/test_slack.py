@@ -74,8 +74,11 @@ async def test_multi_page(monkeypatch):
 
 
 async def test_record_envelope_shape(monkeypatch):
+    """A27.3 — records are emitted in the slack:message event_callback
+    shape with `channel` injected into the event, so external_id
+    ("{channel}:{ts}") matches the live webhook."""
     fake = _FakeSlackClient([
-        ([{"ts": "1700000.001", "text": "hi"}], None),
+        ([{"ts": "1700000.001", "text": "hi", "user": "U1"}], None),
     ])
     _patch(monkeypatch, fake)
     r = await fetch_page_slack(
@@ -84,10 +87,11 @@ async def test_record_envelope_shape(monkeypatch):
         cursor=None,
     )
     rec = r.records[0]
-    assert set(rec.keys()) == {
-        "channel_id", "team_id", "installation_id", "message", "read_path",
-    }
-    assert rec["read_path"] == "backfill"
+    assert set(rec.keys()) == {"type", "team_id", "event"}
+    assert rec["type"] == "event_callback"
+    assert rec["event"]["channel"] == "C1"
+    assert rec["event"]["ts"] == "1700000.001"
+    assert rec["event"]["text"] == "hi"
 
 
 async def test_cursor_strict():

@@ -62,7 +62,9 @@ from services.ingestion.workflows.tenant_onboarding import (
 )
 
 
-pytestmark = [pytest.mark.timeout(300)]
+# A27.6: shared moto S3 server provides the raw-tier endpoint for the
+# M6.7 shard_fetch producer (subprocesses inherit S3_ENDPOINT_URL).
+pytestmark = [pytest.mark.timeout(300), pytest.mark.usefixtures("moto_s3_server")]
 
 
 def _ensure_gmail_reshare_helper() -> str:

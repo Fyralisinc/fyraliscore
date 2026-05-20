@@ -1,8 +1,21 @@
 """services/ingestion/fetchers/slack.py — Slack backfill fetcher (M6.5).
 
-Per A18 + A16 (N1) + A18.4 (shard_kind mirror). Uses
-`conversations.history` with `cursor` pagination. Last page stamps
-`oldest_seen_ts` for the reconciler's gap check.
+Per A18 + A16 (N1) + A18.4 (shard_kind mirror) + A27.3 (handler
+conformance). Uses `conversations.history` with `cursor` pagination.
+Last page stamps `oldest_seen_ts` for the reconciler's gap check.
+
+============================================================
+HANDLER CONFORMANCE (A27.3) + EXTERNAL_ID PARITY (HLD §02 L278)
+============================================================
+Each record is emitted in the Slack Events-API `event_callback` shape
+the `slack:message` webhook handler consumes — `{event: {...}, ...}`
+— NOT a backfill-specific wrapper. The webhook handler derives
+`external_id = "{channel}:{ts}"`; `conversations.history` messages
+carry `ts` but NOT `channel` (it's the request parameter), so the
+fetcher INJECTS `channel` into the event. A backfilled message and
+its live webhook twin therefore derive the identical external_id and
+dedup to one observation. Slack carries no load-bearing webhook
+headers, so no `webhook_metadata` is attached.
 """
 from __future__ import annotations
 
@@ -52,7 +65,6 @@ async def fetch_page_slack(
     cursor: dict[str, Any] | None,
 ) -> FetchResult:
     channel_id = shard_identifier["channel_id"]
-    install_id = str(shard_identifier.get("installation_id") or "")
     cur = _decode_cursor(cursor)
 
     client, close = await _open_slack_client(install)
@@ -62,12 +74,16 @@ async def fetch_page_slack(
         )
         is_end = not next_cursor
 
+        # A27.3: emit the event_callback shape the slack:message handler
+        # consumes. Inject `channel` into the event so external_id
+        # ("{channel}:{ts}") matches the live webhook for the same
+        # message. `install_id` is dropped — the webhook body has no
+        # such field and the handler doesn't read it; tenant is known
+        # from the shard.
         records = [{
-            "channel_id": channel_id,
+            "type": "event_callback",
             "team_id": shard_identifier.get("team_id"),
-            "installation_id": install_id,
-            "message": m,
-            "read_path": "backfill",
+            "event": {**m, "channel": channel_id},
         } for m in messages]
 
         # Track oldest/newest seen ts across the entire shard.

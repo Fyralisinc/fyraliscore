@@ -24,19 +24,26 @@ from services.ingestion.raw_tier.envelope import (
 
 # Mapping table. Keep alphabetic by source for grep-ability.
 _CHANNEL_MAP: dict[tuple[str, str], str] = {
-    # Discord — two ingress surfaces.
+    # Discord — two live ingress surfaces + backfill.
     ("discord", "gateway"): "discord:message",      # IN-12 MESSAGE_CREATE
     ("discord", "webhook"): "discord:interaction",  # IN-09 slash commands
-    # GitHub — single webhook surface.
+    ("discord", "backfill"): "discord:message",     # M6.7 (A27.2) — same
+                                                    # handler as the gateway
+                                                    # MESSAGE_CREATE path.
+    # GitHub — webhook + backfill.
     ("github", "webhook"): "github:webhook",
-    # Slack — single webhook surface.
+    ("github", "backfill"): "github:webhook",       # M6.7 (A27.2)
+    # Slack — webhook + backfill.
     ("slack", "webhook"): "slack:message",
-    # Gmail Pub/Sub — INTENTIONALLY OMITTED. The Pub/Sub payload is a
-    # notification (emailAddress + historyId), NOT a Gmail message
-    # resource. The "gmail:" handler expects a message resource. M6's
-    # shadow-message-fetch path will introduce a new ingress_kind for
-    # the fetched messages and map it here. For M2 the normalizer
-    # drops gmail/pubsub envelopes with reason="unsupported_combination".
+    ("slack", "backfill"): "slack:message",         # M6.7 (A27.2)
+    # Gmail — backfill resolves to the canonical "gmail:" message
+    # handler (A27.2). The Pub/Sub notification ingress stays
+    # INTENTIONALLY OMITTED: that payload is a notification
+    # (emailAddress + historyId), NOT a Gmail message resource, so it
+    # has no direct handler. M6's backfill path fetches the actual
+    # message resources and publishes them under ingress_kind=backfill,
+    # which the "gmail:" handler consumes.
+    ("gmail", "backfill"): "gmail:",                # M6.7 (A27.2)
 }
 
 

@@ -11,20 +11,30 @@ Per A22. Operates in three phases:
        write install + onboarding_triggers rows.
 
   Phase B — Run:
-    5. Spawn 5 shared subprocesses (oauth_poller, tenant_onboarding,
-       source_onboarding, shard_fetch, reconciler) with PYTHONPATH +
+    5. Spawn 7 shared subprocesses (oauth_poller, tenant_onboarding,
+       source_onboarding, shard_fetch, reconciler, normalizer,
+       observation_writer) with PYTHONPATH +
        `-c "import <helper>; from <svc> import main; main()"`.
     6. Concurrently (bounded by `concurrency`) poll for each tenant's
        `tenant_onboarding_completed` signal in the Bridge inbox.
 
   Phase C — Teardown:
-    7. SIGTERM all 5 subprocesses; assert rc == 0 (15s grace).
+    7. SIGTERM all 7 subprocesses; assert rc == 0 (15s grace).
     8. Collect observations, signals, state-table snapshots into
        `TenantOutcome` records.
     9. Return `HarnessResult` for assertion checks.
 
-Concurrency model: per the X3 audit, the 5 services are tenant-agnostic
+Concurrency model: per the X3 audit, the services are tenant-agnostic
 at the claim layer — one shared subprocess set serves all tenants.
+
+M6.7 (A27.4): the backfill chain only PRODUCES observations when the
+normalizer + observation_writer run AND the tenant has
+`ingestion.kafka_path_enabled=TRUE`. So the harness (a) writes that
+flag per tenant at setup, (b) spawns the two extra subprocesses
+(5→7), wiring S3 env into the shard_fetch producer + normalizer, and
+(c) creates the moto raw bucket. S3_ENDPOINT_URL must point at a moto
+server (the E2E runner provides it alongside real Kafka); without it
+the harness still runs but the producer's S3 writes go to real AWS.
 """
 from __future__ import annotations
 
@@ -44,6 +54,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
 from services.synthetic.backfill_harness.scenarios import BackfillScenario
 from services.synthetic.fixtures import (
     make_discord_guild,
@@ -51,6 +62,12 @@ from services.synthetic.fixtures import (
     make_gmail_mailbox,
     make_slack_workspace,
 )
+
+
+# Raw-tier (S3) env for the backfill producer + normalizer (A27.4).
+# S3_ENDPOINT_URL points at moto in the E2E runner; bucket defaults to
+# the production raw bucket name.
+_DEFAULT_S3_BUCKET = "fyralis-raw"
 
 
 log = logging.getLogger(__name__)
@@ -279,6 +296,10 @@ class BackfillHarness:
         self._concurrency = max(1, concurrency)
         self._deadline_s = completion_deadline_s
         self._kafka_bootstrap = kafka_bootstrap_servers
+        # Raw-tier (S3) wiring for the M6.7 backfill producer + normalizer.
+        self._s3_endpoint = os.environ.get("S3_ENDPOINT_URL")
+        self._s3_bucket = os.environ.get("S3_RAW_BUCKET", _DEFAULT_S3_BUCKET)
+        self._ingestion_env = os.environ.get("INGESTION_ENV", "dev")
         self._workdir: str | None = None
         self._helpers_dir: str | None = None
         self._helper_module = (
@@ -301,6 +322,7 @@ class BackfillHarness:
         self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
         try:
             await self._setup_tenants_and_fixtures(outcomes)
+            await self._ensure_s3_bucket()
             self._helpers_dir = _write_helper(
                 self._workdir, self._helper_module,
             )
@@ -335,6 +357,45 @@ class BackfillHarness:
                 f"x3-{outcome.scenario.tenant_slug}-"
                 f"{outcome.tenant_id.hex[:8]}",
             )
+            # A27.4 — flip the cutover flag so observation_writer writes
+            # (instead of shadow-logging a no-op) for this tenant.
+            await self._pool.execute(
+                "INSERT INTO tenant_flags "
+                "    (tenant_id, flag_name, flag_value, set_by) "
+                "VALUES ($1, $2, TRUE, 'x3-harness') "
+                "ON CONFLICT (tenant_id, flag_name) "
+                "    DO UPDATE SET flag_value = TRUE",
+                outcome.tenant_id, KAFKA_PATH_ENABLED,
+            )
+
+    async def _ensure_s3_bucket(self) -> None:
+        """Create the moto raw bucket if it doesn't exist (A27.4).
+
+        No-op when S3_ENDPOINT_URL is unset (the producer then targets
+        real AWS, which owns its own bucket lifecycle). Idempotent —
+        BucketAlreadyOwnedByYou / BucketAlreadyExists are swallowed."""
+        if not self._s3_endpoint:
+            return
+        import aioboto3
+
+        session = aioboto3.Session()
+        async with session.client(
+            "s3",
+            endpoint_url=self._s3_endpoint,
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            region_name="us-east-1",
+        ) as s3:
+            try:
+                await s3.create_bucket(Bucket=self._s3_bucket)
+            except Exception as exc:  # noqa: BLE001
+                # Already-exists is success; anything else is logged but
+                # not fatal — the producer's put_if_absent will surface a
+                # genuine misconfiguration loudly per-shard.
+                if "BucketAlreadyOwnedByYou" not in repr(exc) and (
+                    "BucketAlreadyExists" not in repr(exc)
+                ):
+                    log.warning("x3.s3_bucket_create_failed: %r", exc)
 
     def _write_registry(self, outcomes: list[TenantOutcome]) -> str:
         entries = []
@@ -453,16 +514,30 @@ class BackfillHarness:
                     )
 
     # ---- Phase B: Run ----
-    def _spawn_services(self) -> None:
+    def _base_env(self) -> dict[str, str]:
+        """Build the shared subprocess env (testable in isolation)."""
         env = os.environ.copy()
         env["KAFKA_BOOTSTRAP_SERVERS"] = self._kafka_bootstrap
         env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
         env["PYTHONPATH"] = (
-            self._helpers_dir + os.pathsep + env.get("PYTHONPATH", "")
+            (self._helpers_dir or "") + os.pathsep + env.get("PYTHONPATH", "")
         )
-        env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path
+        env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path or ""
+        # A27.4 — S3 raw-tier wiring for the shard_fetch producer + the
+        # normalizer. INGESTION_ENV pins the key prefix on both sides.
+        env["S3_RAW_BUCKET"] = self._s3_bucket
+        env["INGESTION_ENV"] = self._ingestion_env
+        if self._s3_endpoint:
+            env["S3_ENDPOINT_URL"] = self._s3_endpoint
+        return env
 
-        services = {
+    def _service_specs(self) -> dict[str, tuple[str, dict[str, str]]]:
+        """The (name → (module, extra_env)) spec for every subprocess.
+
+        7 entries (A27.4): the 5 M6 framework services + the normalizer
+        + the observation_writer. Extracted so tests can assert the
+        roster without spawning real processes."""
+        return {
             "oauth_poller": (
                 "services.ingestion.workflows.oauth_poller",
                 {"OAUTH_POLLER_TICK_SEC": "0.1",
@@ -498,8 +573,23 @@ class BackfillHarness:
                  "RECONCILER_INSTANCE":
                      f"x3-rec-{uuid4().hex[:6]}"},
             ),
+            # A27.4 — the consumer half of the chain: normalizer turns
+            # RawEnvelope pointers into NormalizedEnvelopes; the writer
+            # writes observations (full-mode, gated by the per-tenant
+            # kafka_path_enabled flag set at setup).
+            "normalizer": (
+                "services.ingestion.normalizer.worker",
+                {"NORMALIZER_LOG_LEVEL": "WARNING"},
+            ),
+            "observation_writer": (
+                "services.ingestion.writers.observation_writer",
+                {"WRITER_LOG_LEVEL": "WARNING"},
+            ),
         }
-        for name, (mod, extra_env) in services.items():
+
+    def _spawn_services(self) -> None:
+        env = self._base_env()
+        for name, (mod, extra_env) in self._service_specs().items():
             penv = env.copy()
             penv.update(extra_env)
             cmd = [

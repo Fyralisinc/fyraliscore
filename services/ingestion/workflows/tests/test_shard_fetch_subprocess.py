@@ -47,7 +47,10 @@ from services.ingestion.workflows.shard_fetch import (
 from services.ingestion.workflows.signals import emit_signal
 
 
-pytestmark = [pytest.mark.timeout(120)]
+# A27.6: the resume test's real shard_fetch subprocess produces records
+# and so writes to S3 (M6.7 decision 1.3); the shared moto S3 server
+# provides the endpoint (inherited via os.environ.copy()).
+pytestmark = [pytest.mark.timeout(120), pytest.mark.usefixtures("moto_s3_server")]
 
 
 # Test fetcher module path — installed via PYTHONPATH so the

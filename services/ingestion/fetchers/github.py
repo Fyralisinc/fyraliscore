@@ -1,7 +1,23 @@
 """services/ingestion/fetchers/github.py — GitHub backfill fetcher (M6.4).
 
 Per ingestion LLD §4 + §3.1 (N1) + A18 (per-source backfill = new
-code) + A18.4 (shard_kind mirrored into shard_identifier).
+code) + A18.4 (shard_kind mirrored into shard_identifier) + A27.3
+(handler conformance).
+
+============================================================
+HANDLER CONFORMANCE (A27.3) + EXTERNAL_ID PARITY (HLD §02 L278)
+============================================================
+The REST list endpoints return bare issue / PR objects, but the
+`github:webhook` handler consumes the webhook *event body*
+(`{action, issue|pull_request, repository, sender}`) and reads the
+event TYPE from the `X-GitHub-Event` header. So the fetcher reshapes
+each REST item into that event-body shape and emits the header under
+the reserved `webhook_metadata` key (lifted into the RawEnvelope blob
+by the producer; replayed to the handler by the normalizer). The
+handler derives `external_id` from the object's `node_id`, which is
+identical in the REST item and the webhook payload — so a backfilled
+event and its live webhook twin dedup to one observation. Backfill is
+authenticated by the REST call, so no signature is attached.
 
 ============================================================
 ENDPOINT DISPATCH
@@ -78,17 +94,46 @@ def _encode_cursor(cursor: GithubCursor) -> dict[str, Any]:
     return cursor.model_dump(mode="json")
 
 
+# Maps the shard's REST event_type to the webhook `X-GitHub-Event`
+# header value the handler dispatches on. The REST endpoint "issues"
+# and the webhook event "issues" coincide; "pull_requests" (REST) maps
+# to "pull_request" (webhook, singular).
+_GH_EVENT_NAME = {"issues": "issues", "pull_requests": "pull_request"}
+
+
+def _derive_action(event_type: str, item: dict[str, Any]) -> str:
+    """Synthesize the webhook `action` from the REST item's state.
+
+    The REST list objects carry `state` ("open"/"closed") but no
+    `action`. external_id parity does NOT depend on `action` (it's
+    derived from `node_id`); this only shapes content/trust_tier so the
+    backfilled observation reads sensibly.
+    """
+    if event_type == "pull_requests" and bool(item.get("merged")):
+        return "closed"
+    return "closed" if item.get("state") == "closed" else "opened"
+
+
 def _build_record(
-    *, event_type: str, repo_full_name: str,
-    installation_id: str, payload: dict[str, Any],
+    *, event_type: str, repo_full_name: str, payload: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
-        "event_type": event_type,
-        "repo_full_name": repo_full_name,
-        "installation_id": installation_id,
-        "payload": payload,
-        "read_path": "backfill",
+    """Reshape one REST item into the webhook event body the
+    `github:webhook` handler consumes, plus the `webhook_metadata`
+    header (A27.3). `payload` is the bare issue / PR object.
+    """
+    gh_event = _GH_EVENT_NAME[event_type]
+    user = payload.get("user") or {}
+    body: dict[str, Any] = {
+        "action": _derive_action(event_type, payload),
+        "repository": {"full_name": repo_full_name},
+        "sender": {"login": user.get("login", "unknown")},
+        # The reserved key the producer lifts into the blob's
+        # webhook_metadata; the normalizer replays it as the handler's
+        # X-GitHub-Event header.
+        "webhook_metadata": {"X-GitHub-Event": gh_event},
     }
+    body["pull_request" if event_type == "pull_requests" else "issue"] = payload
+    return body
 
 
 async def fetch_page_github(
@@ -103,7 +148,6 @@ async def fetch_page_github(
     repo_full_name = shard_identifier.get(
         "repo_full_name", f"{owner}/{repo}",
     )
-    installation_id = str(shard_identifier.get("installation_id") or "")
 
     if event_type not in ("issues", "pull_requests"):
         raise ValueError(
@@ -121,7 +165,7 @@ async def fetch_page_github(
         records = [
             _build_record(
                 event_type=event_type, repo_full_name=repo_full_name,
-                installation_id=installation_id, payload=item,
+                payload=item,
             )
             for item in page_records
         ]
