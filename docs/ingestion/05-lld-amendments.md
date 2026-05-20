@@ -723,6 +723,22 @@ A18 inherits from and extends:
 
 ---
 
+## A28 — Observation writer permanent-error classification for missing partition (DLQ instead of crash-loop)
+
+**Status:** Resolved on `feat/ingestion-x3-harness-e2e-fixes` (commit 2). Surfaced during M6.7 verification.
+
+**Trigger.** Running the X3 harness E2E to verification surfaced a writer crash-loop: an observation whose `occurred_at` falls outside the range-partitioned `observations` table's coverage makes `ingest_from_draft`'s INSERT raise `asyncpg.exceptions.CheckViolationError` ("no partition of relation \"observations\" found for row"). The original `observation_writer._handle_message` classification caught only `(ValidationError, HandlerNotFound, PayloadTooLarge)` as permanent; `CheckViolationError` fell through to the transient path, which re-raises so the consumer loop exits and Kafka redelivers from the last committed offset — i.e. an **indefinite crash-loop** on the first out-of-range message, blocking the partition for all subsequent messages.
+
+**Decision.** A missing-partition routing failure is **permanent** — retrying never creates the partition. The writer now routes it to the DLQ (`writer.invariant_failure` → DB `observation_insert_error`) with an operational diagnostic and commits, rather than crash-looping.
+
+**Detection (structural, not message-pattern).** asyncpg raises the missing-partition case as `CheckViolationError` (sqlstate `23514`) with **`constraint_name is None`** — structurally distinct from a *named* CHECK constraint violation, which carries a `constraint_name`. The writer keys off `constraint_name is None`; a named CHECK violation is re-raised (prior transient behavior preserved). `error_summary` = `"partition_missing: occurred_at=<ts> outside partition range; observations partitioning may need extension"`, and `error_context = {"reason": "partition_missing", "occurred_at": <ts>, "table": "observations"}`. New metric `writer.partition_missing`. Covered by `test_observation_writer_m5.py::test_writer_missing_partition_dlqs_not_crash_loop` (out-of-range `occurred_at` → DLQ + diagnostic, no raise, no observation written).
+
+**Rationale.** Real backfill of historical data (e.g. a Slack workspace with 2023 messages) legitimately produces old `occurred_at`. Treating partition-missing as permanent unblocks the consumer and gives operators the actionable signal "extend partitions and reprocess from the DLQ" instead of an opaque crash-loop. Whether to *extend* partition coverage (vs. accept DLQ-routing of pre-coverage data) is an operational decision, deliberately left out of this code change.
+
+**Cross-references:** A19 (broad exception handling — A28 narrows the missing-partition case from generic transient to specific permanent). A27 / A27.6 (M6.7 — A28 was discovered during M6.7 verification). Ticket #44 (operational decision on observations partition-coverage range — the follow-up this defers).
+
+---
+
 ## A27 — M6 backfill producer completion: shard_fetch S3-write + RawEnvelope + channel_mapping + handler conformance + writer flag-gating
 
 **Status:** Resolved with this commit (M6.7). Supersedes A26's "pending M6.7" status.

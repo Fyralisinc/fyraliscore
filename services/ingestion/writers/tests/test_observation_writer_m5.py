@@ -638,3 +638,62 @@ async def test_writer_parse_failure_dlqs_and_commits(
         tenant_cutover,
     )
     assert obs_count == 0
+
+
+async def test_writer_missing_partition_dlqs_not_crash_loop(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A28: an observation whose `occurred_at` falls outside the
+    `observations` table's partition coverage triggers asyncpg's
+    CheckViolationError (no partition routes the row). The writer must
+    classify this as PERMANENT — distinguished from a *named* CHECK
+    violation by `constraint_name is None` — and route it to the DLQ
+    with a `partition_missing` diagnostic + commit, rather than letting
+    it propagate as a transient error that crash-loops the consumer on
+    the first out-of-range message. See ticket #44.
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-partition-missing")
+    await _enable_kafka_path(fresh_db, tenant)
+
+    # Well before the earliest observations partition (coverage starts
+    # 2025-01) → Postgres finds no partition for the row.
+    out_of_range = dt.datetime(2023, 11, 14, 22, 14, 20, tzinfo=dt.timezone.utc)
+    env = _build_envelope(
+        tenant, external_id="C01:partition-miss",
+    ).model_copy(update={"occurred_at": out_of_range})
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    # MUST NOT raise — a raise here is the crash-loop the fix prevents.
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.partition_missing"] == 1, (
+        f"Out-of-range occurred_at should bump writer.partition_missing; "
+        f"got {metrics['writer.partition_missing']}."
+    )
+    # Routed to ingestion.dlq with the partition_missing diagnostic.
+    dlq_publishes = [
+        value for (topic, value, _key) in capture.published
+        if topic == "ingestion.dlq"
+    ]
+    assert len(dlq_publishes) == 1, (
+        f"Expected exactly 1 DLQ publish; got {len(dlq_publishes)}."
+    )
+    dlq = orjson.loads(dlq_publishes[0])
+    assert "partition_missing" in dlq["error_summary"], dlq
+    assert dlq["error_context"]["reason"] == "partition_missing", dlq
+    assert dlq["error_context"]["occurred_at"] == out_of_range.isoformat()
+    # No observation written.
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant,
+    )
+    assert obs_count == 0
