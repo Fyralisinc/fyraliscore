@@ -29,6 +29,11 @@ from services.synthetic.live_generators.gmail_pubsub import (
     GmailPubSubGenerator,
     SimulatedPushResult,
 )
+from services.synthetic.live_generators.github_webhook import (
+    GithubScenarioResult,
+    GithubWebhookGenerator,
+    GithubWebhookResult,
+)
 from services.synthetic.live_generators.slack_webhook import (
     SimulatedWebhookResult,
     SlackWebhookGenerator,
@@ -37,6 +42,9 @@ from services.synthetic.live_generators.slack_webhook import (
 
 __all__ = [
     "DiscordGatewayGenerator",
+    "GithubScenarioResult",
+    "GithubWebhookGenerator",
+    "GithubWebhookResult",
     "GmailPubSubGenerator",
     "GuildBinding",
     "SimulatedEventResult",
