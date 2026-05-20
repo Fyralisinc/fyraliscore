@@ -56,8 +56,15 @@ from services.synthetic.fixtures import (
 log = logging.getLogger(__name__)
 
 
-TENANT_ONBOARDING_INBOX_KIND = "tenant_onboarding"
-TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
+# The `tenant_onboarding_completed` signal is emitted to the BRIDGE
+# inbox, not the tenant_onboarding inbox — see
+# services/ingestion/workflows/tenant_onboarding.py:160-161,508-509
+# (BRIDGE_INBOX_KIND/ID) and this module's docstring ("Bridge inbox").
+# The prior constants ("tenant_onboarding") watched the wrong inbox, so
+# `_wait_for_completions` never observed completion. Latent because the
+# X3 E2E path had never executed end-to-end.
+BRIDGE_INBOX_KIND = "bridge"
+BRIDGE_INBOX_ID = "bridge"
 SIGNAL_KIND_TENANT_COMPLETED = "tenant_onboarding_completed"
 
 
@@ -548,8 +555,8 @@ class BackfillHarness:
                                AND signal_kind = $3
                                AND idempotency_key = $4
                             """,
-                            TENANT_ONBOARDING_INBOX_KIND,
-                            TENANT_ONBOARDING_INBOX_ID,
+                            BRIDGE_INBOX_KIND,
+                            BRIDGE_INBOX_ID,
                             SIGNAL_KIND_TENANT_COMPLETED,
                             str(row["id"]),
                         ))
@@ -590,7 +597,7 @@ class BackfillHarness:
                 continue
             # observations
             rows = await self._pool.fetch(
-                "SELECT external_id, source_channel, observed_at "
+                "SELECT external_id, source_channel, occurred_at "
                 "FROM observations WHERE tenant_id = $1",
                 outcome.tenant_id,
             )

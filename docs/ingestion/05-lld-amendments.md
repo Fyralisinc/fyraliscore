@@ -723,6 +723,43 @@ A18 inherits from and extends:
 
 ---
 
+## A26 — M6 backfill producer gap: shard_fetch envelope doesn't conform to the RawEnvelope contract; observation production never wired
+
+**Status:** Documented; resolution pending M6.7 (ticket #43).
+
+**Trigger:** Pre-implementation substrate audit for mega-prompt 5 (the all-sources backfill+live validation runs). Smoke-testing the X3 harness — the foundation those runs build on — surfaced that **M6 backfill has never produced an observation end-to-end in any test or environment.** The backfill orchestration (plan → fetch → cursor-advance → completion signal) completes and reports success, but the final hop to the `observations` table is unbuilt. Full enumeration in [`docs/decisions/q1-backfill-producer-gap-scope.md`](../decisions/q1-backfill-producer-gap-scope.md).
+
+**Root cause (four layers):**
+
+1. **Harness collection bug.** `services/synthetic/backfill_harness/harness.py` `_collect_state` selected `observations.observed_at`; the column is `occurred_at` (`db/migrations/0001_foundation.sql:68`). `harness.run()` always raised after the wait phase, so the E2E path never reached its assertions. **Fixed in this commit (Q1-minimal).**
+
+2. **Producer/consumer envelope mismatch.** `shard_fetch._build_kafka_message` publishes an **inline** envelope `{tenant_id, source, shard_id, record}` with no S3 write; `advance_cursor_atomic_with_kafka_publish` ships those bytes verbatim. The normalizer (`normalizer/worker.py:370`) requires a `RawEnvelope` S3-pointer (`raw_s3_key`, `extra="forbid"`) and drops the inline shape. This contradicts the documented design (HLD §02 L208: "write the raw response to S3 … publish a tiny pointer envelope"; system-design N5: "one normalizer pool consumes all three"). **M6.7.**
+
+3. **No backfill normalization path.** `normalizer/channel_mapping.py` has no `(*, "backfill")` entries → `resolve_channel(source, "backfill")` returns `None` → envelope dropped as `unsupported_combination`. And the per-source fetcher records are wrapper-shaped (tagged `read_path:"backfill"`) that don't match the handlers the normalizer dispatches to — GitHub reads `X-GitHub-Event` from headers the normalizer passes empty; Slack/Discord wrap the message; Gmail is likely the only conformant source. **M6.7.** (The high-risk layer: any reshape must preserve `external_id` derivation so a webhook event and the same backfilled event dedup to one observation — HLD §02 L278.)
+
+4. **Writer flag-gated.** `writers/observation_writer.py` no-ops unless `ingestion.kafka_path_enabled=TRUE` for the tenant (default FALSE). The harness never sets it. **M6.7** (harness-side flag wiring).
+
+**Decision (this commit — Q1-minimal):**
+
+- Fix layer 1 (column name) so `harness.run()` returns.
+- Add `assert_observation_count_matches_fixture` to the X3 E2E test (`test_harness_single_tenant_gmail_completes`). It is **EXPECTED TO FAIL** until M6.7 ships — the failing assertion is the regression-prevention surface, converting a silent invariant violation into a visible, tracked failure. The assertion call site and the test docstring both instruct future contributors NOT to suppress/xfail/skip it.
+- Defer layers 2 + 3 + writer-flag to the M6.7 backfill-producer work-unit (ticket #43), per the scope document's recommendation (framework-scope, ~3–4 sessions, high-risk handler-conformance layer — folding it into a harness hardening task would silently expand the work-unit).
+
+**Why this is the right split:** layers 2–3 are M6 *framework* changes touching the N1 hot path and per-source observation derivation. Q1's mandate was additive harness hardening. Shipping the failing assertion now (a) makes the gap impossible to miss and (b) gives M6.7 a green-when-done acceptance signal, without smuggling framework scope into a hardening commit.
+
+**Harness hardening done in Q1-minimal (NOT M6.7 scope):** Q1-minimal also fixed **two latent harness bugs** that were invisible because the X3 E2E path had never executed end-to-end (gated off by default; timed out under pytest's 30s limit before reaching state collection):
+
+1. `_collect_state` selected the non-existent column `observed_at` (actual: `occurred_at`) — `harness.run()` always raised after the wait phase.
+2. The completion-wait constants watched the wrong inbox: `(tenant_onboarding, tenant_onboarding)` instead of `(bridge, bridge)`. Production emits `tenant_onboarding_completed` to the Bridge inbox (`tenant_onboarding.py:160-161,508-509`), which the harness's own docstring already documents ("Bridge inbox") — the constants contradicted it, so `_wait_for_completions` never observed completion and `assert_all_complete` failed first with a misleading "M6 chain stalled" message.
+
+These are pure harness hardening (harness-internal constants/queries that never ran), not part of M6.7's framework scope. Fixing them is what lets the new `assert_observation_count_matches_fixture` assertion surface *accurately* (failing on "0 observations, expected N") rather than being masked by an earlier, misleading failure.
+
+**Cross-references:** A12 / A15 / A16 (M6.0 substrate — **not affected**; the recommended M6.7 fix preserves the cursor-advance primitive's contract, doing the S3 write before it). A22 (X3 harness — A26 corrects its implicit "harness produces observations" claim; A22's `assert_observation_count_matches_fixture` existed but was never wired into the E2E test). HLD §02 L208 (the S3-pointer design `shard_fetch` must conform to). System-design N5 (one normalizer consumes webhook + gateway + backfill). Ticket #43 (M6.7 work-unit). [`q1-backfill-producer-gap-scope.md`](../decisions/q1-backfill-producer-gap-scope.md) (full per-file scope + risk + effort).
+
+**Resolution path:** M6.7 ships the four-layer fix (shard_fetch S3+RawEnvelope, channel_mapping backfill entries, per-source handler conformance, writer-flag harness wiring + the normalizer/writer subprocess co-spawn). When it lands, the E2E assertion goes green and mega-prompt 5's backfill validation can proceed unchanged.
+
+---
+
 ## A25 — Slack + GitHub webhook synthetic drivers: FastAPI in-process invocation with tenant-targeted webhook dispatch
 
 **Status:** Resolved with this commit (covers both `feat/ingestion-z1-slack-webhook-generator` and `feat/ingestion-z1-github-webhook-generator`).
