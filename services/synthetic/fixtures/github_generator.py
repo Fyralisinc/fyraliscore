@@ -6,6 +6,7 @@ produces a deterministic set of repositories shaped to feed
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 from typing import Any
 
@@ -62,8 +63,19 @@ def _event(
     minute = 1_700_000 + idx
     iso = f"2026-01-01T00:{minute % 60:02d}:00Z"
     record_id = f"{event_type}-{idx}-{_digest(full_name, idx)[:8]}"
+    # GitHub's GraphQL global node ID. Real REST + webhook payloads
+    # always carry `node_id`; the `github:webhook` handler derives the
+    # observation external_id from it (handlers/github.py), and the
+    # backfill fetcher relies on REST node_id == webhook node_id for
+    # external_id parity. Synthesize a deterministic value in GitHub's
+    # modern prefixed-base64 shape (I_ for issues, PR_ for pulls).
+    prefix = "I_kwDO" if event_type == "issues" else "PR_kwDO"
+    node_id = prefix + base64.urlsafe_b64encode(
+        bytes.fromhex(_digest(full_name, event_type, idx)[:18])
+    ).decode().rstrip("=")
     return {
         "id": record_id,
+        "node_id": node_id,
         "number": idx + 1,
         "title": f"{event_type} #{idx + 1} for {full_name}",
         "state": "open" if idx % 2 == 0 else "closed",

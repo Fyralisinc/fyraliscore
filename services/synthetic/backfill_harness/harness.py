@@ -232,9 +232,12 @@ def _install_factories() -> None:
             setattr(mod, f"_open_{{source}}_client", _factory)
 
     # source_onboarding builds a source_client via _build_source_client
-    # for github/slack at plan time. Inject a fixture-aware version.
+    # for the planners that enumerate resources at plan time. GitHub
+    # (repos), Slack (channels), and Discord (guilds/channels) all need
+    # a client; the Discord planner RAISES on source_client=None, so it
+    # must be wired here. Gmail's planner reads DB state only → None.
     async def _build_source_client(source: str, pool: Any, install: Any):
-        if source not in ("github", "slack"):
+        if source not in ("github", "slack", "discord"):
             return None
         entry = _lookup_by_tenant_id(install["tenant_id"])
         if entry is None or entry["source"] != source:
@@ -330,6 +333,7 @@ class BackfillHarness:
             await self._invoke_oauth_callbacks(outcomes)
             self._spawn_services()
             await self._wait_for_completions(outcomes)
+            await self._wait_for_observations_to_drain(outcomes)
             await self._collect_state(outcomes)
         finally:
             stderrs = self._teardown_services()
@@ -469,6 +473,28 @@ class BackfillHarness:
                         f"x3-{outcome.scenario.tenant_slug}.example",
                         "sa@x3-test.iam.gserviceaccount.com",
                         "gmail.metadata",
+                    )
+                    # Seed one active mailbox watch so the planner's
+                    # S1-amended loader (_LOAD_GMAIL_INSTALL_SQL) returns
+                    # a non-empty `mailboxes` aggregate → one shard. Without
+                    # this the gmail planner emits zero shards (clean run,
+                    # zero records). `history_id` = starting_history_id so
+                    # clean scenarios show no gap and reshare scenarios
+                    # (history_events>0 → current_history_id advances)
+                    # still trigger the reconciler gap-fill.
+                    fp = outcome.scenario.fixture_params
+                    await conn.execute(
+                        """
+                        INSERT INTO gmail_mailbox_watches (
+                            id, tenant_id, gmail_installation_id,
+                            email_address, google_user_id, history_id,
+                            state
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                        fp["email"],
+                        f"x3-{outcome.tenant_id.hex[:12]}",
+                        str(fp.get("starting_history_id", 1000)),
                     )
                     await conn.execute(
                         """
@@ -657,6 +683,61 @@ class BackfillHarness:
                     await asyncio.sleep(0.2)
 
         await asyncio.gather(*(_one(o) for o in outcomes))
+
+    async def _wait_for_observations_to_drain(
+        self,
+        outcomes: list[TenantOutcome],
+        *,
+        timeout_s: float = 30.0,
+        poll_interval_s: float = 2.0,
+    ) -> None:
+        """Wait for the asynchronous consumer chain to materialize
+        observations before collecting state.
+
+        `_wait_for_completions` observes the PRODUCER side
+        (`tenant_onboarding_completed`). But the CONSUMER chain —
+        normalizer (ingestion.raw → ingestion.normalized) →
+        observation_writer (→ `observations`) — runs on its own Kafka
+        clock and lags producer completion. Without this wait the
+        harness reads `observations` before the writer has caught up
+        and sees zero, even when the chain is healthy.
+
+        Per-tenant drain target = `expected_observation_count` when the
+        scenario specifies one (> 0), else 1. The fallback-to-1 matters
+        because several E2E tests leave the count unspecified (0) yet
+        assert `len(observations) >= 1` per source; waiting only on
+        positive expected counts would let those tenants be collected
+        before the writer caught up. Returns once every target is met OR
+        the timeout fires. A timeout is NOT silently absorbed: control
+        returns and the downstream assertion surfaces the shortfall as a
+        real diagnostic signal (a genuinely stalled chain, not a
+        too-short wait — the default budget drains in seconds when the
+        chain is healthy).
+        """
+        expected = {
+            o.tenant_id: max(o.scenario.expected_observation_count, 1)
+            for o in outcomes
+        }
+        if not expected:
+            return
+        tenant_ids = list(expected.keys())
+        deadline = time.monotonic() + timeout_s
+        while True:
+            rows = await self._pool.fetch(
+                """
+                SELECT tenant_id, count(*) AS n
+                  FROM observations
+                 WHERE tenant_id = ANY($1::uuid[])
+                 GROUP BY tenant_id
+                """,
+                tenant_ids,
+            )
+            counts = {r["tenant_id"]: int(r["n"]) for r in rows}
+            if all(counts.get(tid, 0) >= n for tid, n in expected.items()):
+                return
+            if time.monotonic() >= deadline:
+                return
+            await asyncio.sleep(poll_interval_s)
 
     # ---- Phase C: Teardown ----
     def _teardown_services(self) -> dict[str, str]:

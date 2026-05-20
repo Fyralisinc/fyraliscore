@@ -99,6 +99,9 @@ _metrics: dict[str, float] = {
     "writer.full_mode_writes": 0.0,
     "writer.full_mode_dedup_hits": 0.0,
     "writer.full_mode_failures": 0.0,
+    # A28 — observation routed to DLQ because no partition covers its
+    # occurred_at (permanent, not transient; see ticket #44).
+    "writer.partition_missing": 0.0,
     "writer.parse_failure": 0.0,
     # M3.1 — DLQ publish metrics.
     "writer.dlq_publish.success": 0.0,
@@ -396,6 +399,57 @@ async def _handle_message(
             failure_kind="writer.full_mode_permanent_failure",
             error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
             msg_bytes=msg_value,
+            on_success=lambda: _bump("writer.dlq_publish.success"),
+            on_failure=lambda: _bump("writer.dlq_publish.failure"),
+            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        )
+    except asyncpg.exceptions.CheckViolationError as exc:
+        # A28: a missing-partition routing failure on the range-
+        # partitioned `observations` table (no partition covers this
+        # row's occurred_at) raises CheckViolationError with NO
+        # constraint name — structurally distinct from a *named* CHECK
+        # constraint violation, which carries `constraint_name`. The
+        # missing-partition case is PERMANENT: retrying never creates
+        # the partition, so the prior transient-classification crash-
+        # loops the consumer on the first out-of-range message (e.g. a
+        # backfill of historical data older than partition coverage).
+        # Route it to the DLQ with an operational diagnostic instead.
+        # A *named* CHECK violation keeps the prior transient behavior.
+        # See A28 + ticket #44 (partition-coverage extension).
+        if exc.constraint_name is not None:
+            raise
+        _bump("writer.partition_missing")
+        occurred = (
+            env.occurred_at.isoformat()
+            if env.occurred_at is not None else "<none>"
+        )
+        summary = (
+            f"partition_missing: occurred_at={occurred} outside partition "
+            f"range; observations partitioning may need extension"
+        )
+        log.warning(
+            "writer.partition_missing",
+            extra={
+                "topic": msg_topic,
+                "partition": msg_partition,
+                "offset": msg_offset,
+                "tenant_id": str(env.tenant_id),
+                "occurred_at": occurred,
+            },
+        )
+        await publish_dlq(
+            producer=dlq_producer,
+            failure_kind="writer.invariant_failure",
+            error_summary=summary,
+            tenant_id=env.tenant_id,
+            source=env.source,
+            raw_s3_key=env.raw_s3_key,
+            msg_bytes=msg_value,
+            error_context={
+                "reason": "partition_missing",
+                "occurred_at": occurred,
+                "table": "observations",
+            },
             on_success=lambda: _bump("writer.dlq_publish.success"),
             on_failure=lambda: _bump("writer.dlq_publish.failure"),
             on_skipped=lambda: _bump("writer.dlq_publish.skipped"),

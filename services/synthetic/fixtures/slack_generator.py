@@ -53,8 +53,14 @@ def make_slack_workspace(
 def _slack_message(
     team_id: str, channel_id: str, idx: int,
 ) -> dict[str, Any]:
-    # Slack ts format: "<unix_seconds>.<microseconds>"
-    base = 1_700_000_000.0 + idx * 60.0
+    # Slack ts format: "<unix_seconds>.<microseconds>".
+    # Base = 2026-01-01T00:00:00Z (1_767_225_600). Must fall within the
+    # `observations` table's partition coverage (monthly partitions);
+    # an out-of-range occurred_at makes the writer's INSERT raise a
+    # missing-partition CheckViolation. Real backfill of historical data
+    # can legitimately produce older timestamps — see A28 + ticket #44
+    # for the partition-coverage / DLQ handling of that production case.
+    base = 1_767_225_600.0 + idx * 60.0
     ts = f"{base:.6f}"
     return {
         "ts": ts,

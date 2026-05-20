@@ -57,13 +57,24 @@ def make_gmail_mailbox(
             "id": mid,
             "threadId": thread_id,
             "snippet": snippet_pad[:140],
-            "internalDate": str(1_700_000_000_000 + i * 60_000),
+            # 2026-01-01T00:00:00Z in ms (1_767_225_600_000). Drives the
+            # observation's occurred_at, which must fall within the
+            # `observations` table partition coverage (see slack_generator
+            # + A28 / ticket #44 for the historical-backfill case).
+            "internalDate": str(1_767_225_600_000 + i * 60_000),
             "historyId": history_id,
             "payload": {
                 "headers": [
                     {"name": "From", "value": f"sender-{i}@example.com"},
                     {"name": "To", "value": email},
                     {"name": "Subject", "value": f"Subject {i}"},
+                    # Real Gmail message resources always carry a
+                    # Message-ID header; the `gmail:` handler requires it
+                    # (handlers/gmail.py). Synthesize a unique one so
+                    # fixture-built messages exercise the same path real
+                    # ones do.
+                    {"name": "Message-ID",
+                     "value": f"<{mid}@mail.example.com>"},
                 ],
                 "body": {"size": message_size_kb * 1024},
             },
