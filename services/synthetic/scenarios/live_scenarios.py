@@ -156,3 +156,90 @@ HIGH_VOLUME_BURST = LiveGatewayScenario(
         ),
     ],
 )
+
+
+# =====================================================================
+# Slack webhook scenarios (Z1-slack).
+# =====================================================================
+@dataclass(frozen=True)
+class SlackTenantTraffic:
+    """One Slack tenant's webhook-traffic configuration.
+
+    `team_id` is the Slack workspace identifier; it MUST match a seeded
+    `provider_installations` row (`provider='slack'`,
+    `installation_id=team_id`) so the webhook router resolves the
+    tenant. `channel_id` is the Slack channel the synthetic messages
+    target. The driver derives the resolved `tenant_id` from the DB at
+    dispatch time — scenarios carry only the logical Slack identifiers
+    (parallels `PerTenantBurst` / `GatewayChannelEntry`)."""
+
+    tenant_slug: str
+    team_id: str
+    channel_id: str
+    message_pattern: MessagePattern
+
+
+@dataclass(frozen=True)
+class LiveSlackScenario:
+    """Multi-tenant Slack webhook live-ingestion scenario.
+
+    Attributes:
+      tenants:
+        List of `SlackTenantTraffic`. Within a tenant, messages fire
+        sequentially with the configured per-step delays (matches
+        per-channel ordering); across tenants, dispatch concurrently.
+      replay_probability:
+        [0.0, 1.0] — fraction of messages re-delivered with the same
+        Slack `ts` (at-least-once delivery). Tests verify the
+        `(source_channel, external_id, occurred_at)` dedup holds so
+        replays don't double-count observations.
+      fault_profile:
+        FaultProfile applied to the mock Slack client. NOTE: the Slack
+        webhook ingest path does NOT query the Slack API, so the
+        profile is inert for webhook dispatch — it's accepted for
+        signature parity with the Pub/Sub / Gateway scenarios."""
+
+    tenants: list[SlackTenantTraffic]
+    replay_probability: float = 0.0
+    fault_profile: FaultProfile = HAPPY_PATH
+
+
+# Slack scenario presets (Z1.4). Suffix matches the file convention
+# (`_PUBSUB` for Gmail) so the names don't collide with Discord's.
+STEADY_STATE_SLACK = LiveSlackScenario(
+    tenants=[
+        SlackTenantTraffic(
+            tenant_slug="steady",
+            team_id="T_STEADY",
+            channel_id="C_STEADY",
+            message_pattern=[(2000, 1)] * 10,  # 1 msg / 2s × 10
+        ),
+    ],
+)
+
+BURSTY_SLACK = LiveSlackScenario(
+    tenants=[
+        SlackTenantTraffic(
+            tenant_slug="bursty",
+            team_id="T_BURSTY",
+            channel_id="C_BURSTY",
+            # 30 in a burst, idle 30s, then another burst.
+            message_pattern=[(0, 30), (30000, 0), (0, 30)],
+        ),
+    ],
+)
+
+MIXED_SLACK = LiveSlackScenario(
+    tenants=[
+        SlackTenantTraffic(
+            tenant_slug=f"mixed-slack-{i}",
+            team_id=f"T_MIXED_{i}",
+            channel_id=f"C_MIXED_{i}",
+            message_pattern=(
+                [(500, 2)] * 5 if i % 2 == 0
+                else [(0, 10), (5000, 1)]
+            ),
+        )
+        for i in range(5)
+    ],
+)
