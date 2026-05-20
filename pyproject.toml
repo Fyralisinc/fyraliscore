@@ -71,7 +71,11 @@ dev = [
     "numpy>=2.0",               # transitive; model-embedding stacking
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
     "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
-    "moto[s3]>=5.0",            # M1.4: in-process S3 mock for raw_tier tests
+    "moto[s3,server]>=5.0",     # M1.4: in-process S3 mock for raw_tier tests.
+                                # M6.7 (A27.6): the [server] extra (pulls flask)
+                                # runs a real moto S3 HTTP endpoint for the
+                                # OAuth→completion subprocess tests, whose
+                                # shard_fetch subprocess writes raw bodies to S3.
     # M2.3: real-broker Kafka tests (cooperative-sticky rebalance) require
     # an actual Kafka cluster. `testcontainers[kafka]` spins one up per
     # test; the test asserts `@pytest.mark.requires_docker` and skips

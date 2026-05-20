@@ -105,8 +105,15 @@ async def test_multi_page_paginates(monkeypatch):
 
 
 async def test_record_envelope_shape(monkeypatch):
+    """A27.3 — records are emitted in the github:webhook event-body
+    shape (`{action, pull_request|issue, repository, sender}`) plus a
+    reserved `webhook_metadata` carrying X-GitHub-Event. The bare REST
+    item is preserved verbatim under the pull_request/issue key so the
+    handler derives the same node_id-based external_id."""
     fake = _FakeGithubClient(pages=[
-        [{"id": 1, "title": "Bug", "updated_at": "2025-01-01T00:00:00Z"}],
+        [{"id": 1, "node_id": "PR_node", "title": "Bug", "state": "open",
+          "user": {"login": "octocat"},
+          "updated_at": "2025-01-01T00:00:00Z"}],
     ])
     _patch_client(monkeypatch, fake)
     result = await fetch_page_github(
@@ -117,12 +124,15 @@ async def test_record_envelope_shape(monkeypatch):
     )
     rec = result.records[0]
     assert set(rec.keys()) == {
-        "event_type", "repo_full_name", "installation_id",
-        "payload", "read_path",
+        "action", "pull_request", "repository", "sender",
+        "webhook_metadata",
     }
-    assert rec["read_path"] == "backfill"
-    assert rec["event_type"] == "pull_requests"
-    assert rec["payload"]["title"] == "Bug"
+    assert rec["webhook_metadata"] == {"X-GitHub-Event": "pull_request"}
+    assert rec["pull_request"]["title"] == "Bug"
+    assert rec["pull_request"]["node_id"] == "PR_node"
+    assert rec["repository"]["full_name"] == "a/b"
+    assert rec["sender"]["login"] == "octocat"
+    assert rec["action"] == "opened"
 
 
 async def test_unknown_event_type_raises():

@@ -200,6 +200,16 @@ def _resolve_scope(install: asyncpg.Record) -> str:
     return long_scope
 
 
+# A27.3: the `gmail:` handler validates `read_path in ("push","poll")`
+# and rejects anything else. Backfill + reconciliation-gap are both
+# pull-based historical reads, so they conform to the handler as
+# "poll". The backfill-vs-gap distinction is diagnostic only and does
+# NOT affect external_id (`gmail:{install}:{message_id}`), so parity
+# with the live push/poll webhook path holds. The genuine source of
+# the read is preserved in the cursor + the shard, not the record.
+_HANDLER_READ_PATH = "poll"
+
+
 def _build_record(
     *,
     message_resource: dict[str, Any],
@@ -208,19 +218,21 @@ def _build_record(
     gmail_installation_id: str,
     read_path: str,
 ) -> dict[str, Any]:
-    """Build one Kafka record from a Gmail message resource.
+    """Build one handler-conformant Gmail record (A27.3).
 
-    Shape matches `services/ingestion/handlers/gmail.py`'s
-    `raw_payload` shape (per A18's two-path coexistence framing) so
-    the downstream normalizer can read identical payloads regardless
-    of which path produced them.
+    Shape matches the `gmail:` handler's `raw_payload` contract so the
+    normalizer dispatches it through the same handler the live
+    push/poll path uses — yielding the same external_id. The
+    `read_path` argument names the producing path (backfill |
+    reconciliation_gap) for callers' readability; it is normalised to
+    the handler-accepted `"poll"` here.
     """
     return {
         "message_resource": message_resource,
         "mailbox_email": mailbox_email,
         "scope_used": scope_alias,
         "gmail_installation_id": gmail_installation_id,
-        "read_path": read_path,
+        "read_path": _HANDLER_READ_PATH,
     }
 
 

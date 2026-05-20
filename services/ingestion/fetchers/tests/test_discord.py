@@ -65,6 +65,9 @@ async def test_paginate_via_snowflake(monkeypatch):
 
 
 async def test_record_envelope_shape(monkeypatch):
+    """A27.3 — records are emitted in the MESSAGE_CREATE shape the
+    discord:message handler consumes, with guild_id injected, so
+    external_id ("discord:{id}") matches the live Gateway message."""
     fake = _FakeDC([[{"id": "100", "content": "hi"}]])
     _patch(monkeypatch, fake)
     r = await fetch_page_discord(
@@ -73,11 +76,10 @@ async def test_record_envelope_shape(monkeypatch):
         cursor=None,
     )
     rec = r.records[0]
-    assert set(rec.keys()) == {
-        "guild_id", "channel_id", "installation_id",
-        "message", "read_path",
-    }
-    assert rec["read_path"] == "backfill"
+    assert rec["id"] == "100"
+    assert rec["content"] == "hi"
+    assert rec["guild_id"] == "G"
+    assert rec["channel_id"] == "C"
 
 
 async def test_cursor_strict():

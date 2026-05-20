@@ -33,6 +33,34 @@ downstream observation UNIQUE constraint dedups the writer side.
 The N1 invariant — "publish-then-advance, never advance-then-publish"
 — holds end-to-end.
 
+============================================================
+S3-WRITE-BEFORE-PUBLISH (M6.7 / A27.1)
+============================================================
+M6.7 makes ShardFetch a real backfill PRODUCER: each fetched record
+is written to the raw tier (S3, content-addressed via PutIfAbsent),
+then a `RawEnvelope(ingress_kind="backfill", raw_s3_key, content_hash)`
+pointer is published to `ingestion.raw` — the SAME envelope shape the
+webhook/gateway/pubsub shadow path publishes (see
+`services/ingestion/shadow_write.py`). The normalizer consumes the
+pointer, fetches the blob, and dispatches it through the handler
+registry exactly as for live traffic.
+
+Ordering extends N1 to "S3-write → publish → flush → advance":
+  1. For each record: write the content-addressed blob to S3
+     (PutIfAbsent) and build the RawEnvelope KafkaMessage. This
+     happens BEFORE step 2 — the cursor never advances until the
+     blobs are durable AND the broker has acked the pointers.
+  2/3. advance_cursor_atomic_with_kafka_publish (unchanged N1).
+
+Content-addressing makes the S3 write idempotent under Kafka-retry:
+if the flush fails and the next tick re-fetches the same page, the
+re-write is a no-op PutIfAbsent (same content_hash → same key) and
+the re-published pointer is deduped by the idempotent producer +
+the observation UNIQUE index. The N1 primitive's contract is
+UNCHANGED — it still receives opaque `KafkaMessage` bytes and owns
+the publish→flush→advance barrier. S3 failures propagate as
+exceptions and mark the shard 'failed' per A19.
+
 If the N1 primitive's contract is wrong for this use, that is a
 substrate finding (per the M6.2a prompt's discipline: "If the
 primitive needs amendment, STOP and surface as a substrate finding").
@@ -171,10 +199,10 @@ PATTERN-ALIGNMENT MAPPING
 ============================================================
   Rule 1 (orchestration separated from side effects):
     `tick()` and `_run_fetch_loop()` are orchestration; the
-    module-level `_load_*` / `_mark_*` / `_build_kafka_message`
-    functions own DB/Kafka I/O. The class methods pass the pool /
-    connection / producer through; no `await self._pool.X(...)` or
-    `await self._kafka_producer.X(...)` in class bodies.
+    module-level `_load_*` / `_mark_*` / `_write_record_and_build_message`
+    functions own DB/Kafka/S3 I/O. The class methods pass the pool /
+    connection / producer / s3_client through; no `await self._pool.X(...)`
+    or `await self._kafka_producer.X(...)` in class bodies.
 
   Rule 2 (state in Postgres, not memory):
     `state.persist_state` to bootstrap; the N1 primitive's
@@ -210,6 +238,12 @@ import asyncpg
 import orjson
 
 from services.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingestion.raw_tier.envelope import RawEnvelope
+from services.ingestion.raw_tier.s3 import (
+    S3Client,
+    build_raw_s3_key,
+    compute_content_hash,
+)
 from services.ingestion.workflows.runtime import LongRunningService
 from services.ingestion.workflows.signals import (
     WorkflowSignal,
@@ -243,6 +277,12 @@ SOURCE_ONBOARDING_INBOX_ID = "source_onboarding"
 
 # Kafka topic for fetched records (LLD §4).
 RAW_TOPIC = "ingestion.raw"
+
+# Raw-tier (S3) defaults — mirror services/ingestion/shadow_write.py so
+# the backfill producer and the webhook shadow path land bodies under
+# the same key scheme + bucket (A27.1).
+DEFAULT_S3_BUCKET = "fyralis-raw"
+DEFAULT_INGESTION_ENV = "dev"
 
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 10  # smaller batch — each runs a fetch loop
@@ -345,6 +385,8 @@ class ShardFetchConfig:
     lease_timeout_seconds: float = DEFAULT_LEASE_TIMEOUT_SECONDS
     flush_timeout_seconds: float = DEFAULT_FLUSH_TIMEOUT_SECONDS
     instance_name: str = DEFAULT_DIAGNOSTIC_INSTANCE
+    # Raw-tier env prefix for S3 keys (A27.1). Mirrors INGESTION_ENV.
+    ingestion_env: str = DEFAULT_INGESTION_ENV
 
 
 # ---------------------------------------------------------------------
@@ -411,23 +453,72 @@ async def _load_install(
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
-def _build_kafka_message(
+async def _write_record_and_build_message(
+    s3_client: S3Client,
     *,
-    tenant_id: UUID, source: str, shard_id: UUID,
+    tenant_id: UUID,
+    source: str,
+    shard_id: UUID,
+    cursor: dict[str, Any] | None,
     record: dict[str, Any],
+    env: str,
+    now: dt.datetime | None = None,
 ) -> KafkaMessage:
-    """Serialize one fetched record into one Kafka message for the
-    ingestion.raw topic. Partition key = tenant_id bytes (LLD §5.2
-    partition affinity)."""
-    envelope = {
-        "tenant_id": str(tenant_id),
-        "source": source,
-        "shard_id": str(shard_id),
-        "record": record,
+    """Backfill producer (A27.1): write one fetched record's blob to
+    S3, then build the `RawEnvelope` pointer KafkaMessage.
+
+    The S3 blob wraps three things:
+      - `record`: the handler-conformant body (A27.3) — exactly what a
+        webhook for the same event would deliver, so the normalizer's
+        handler derives the SAME external_id.
+      - `shard_context`: `{shard_id, cursor}` — backfill provenance for
+        operators / replay; not read by the handler.
+      - `webhook_metadata`: the webhook-equivalent headers the handler
+        needs (e.g. `{"X-GitHub-Event": "issues"}`). The fetcher emits
+        these under a reserved `webhook_metadata` key on its record;
+        this function LIFTS that key out so `record` is the bare body.
+
+    The S3 write (content-addressed PutIfAbsent) happens HERE, before
+    the caller's `advance_cursor_atomic_with_kafka_publish`. See the
+    module docstring's S3-WRITE-BEFORE-PUBLISH section + A27.1. Raises
+    on S3 failure; the fetch loop's A19 boundary marks the shard failed.
+
+    Partition key = tenant_id bytes (LLD §5.2 partition affinity).
+    """
+    now = now or dt.datetime.now(tz=dt.timezone.utc)
+
+    record_body = dict(record)
+    webhook_metadata = record_body.pop("webhook_metadata", {})
+    blob = {
+        "record": record_body,
+        "shard_context": {"shard_id": str(shard_id), "cursor": cursor},
+        "webhook_metadata": webhook_metadata,
     }
+    blob_bytes = orjson.dumps(blob)
+    content_hash = compute_content_hash(blob_bytes)
+    s3_key = build_raw_s3_key(
+        env=env,
+        source=source,
+        tenant_id=tenant_id,
+        ymd=now.date(),
+        content_hash=content_hash,
+    )
+
+    # S3 write BEFORE the N1 publish (A27.1). PutIfAbsent is idempotent
+    # under Kafka-retry because the key encodes the content hash.
+    await s3_client.put_if_absent(s3_key, blob_bytes)
+
+    envelope = RawEnvelope(
+        source=source,  # type: ignore[arg-type]  # shard.source ∈ SourceLiteral
+        tenant_id=tenant_id,
+        raw_s3_key=s3_key,
+        content_hash=content_hash,
+        ingested_at=now,
+        ingress_kind="backfill",
+    )
     return KafkaMessage(
         topic=RAW_TOPIC,
-        value=orjson.dumps(envelope),
+        value=orjson.dumps(envelope.model_dump(mode="json")),
         key=str(tenant_id).encode("utf-8"),
     )
 
@@ -452,10 +543,16 @@ class ShardFetch(LongRunningService):
         kafka_producer: Any,  # IdempotentProducer
         *,
         config: ShardFetchConfig | None = None,
+        s3_client: S3Client | None = None,
     ) -> None:
         self._pool = pool
         self._kafka_producer = kafka_producer
         self._config = config or ShardFetchConfig()
+        # Raw-tier client for the backfill producer (A27.1). Required
+        # whenever a fetcher returns records to publish; the fetch loop
+        # raises a clear error if it's missing so a misconfigured
+        # subprocess fails loudly rather than silently dropping records.
+        self._s3_client = s3_client
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -672,13 +769,33 @@ class ShardFetch(LongRunningService):
                 fetcher = FETCHER_DISPATCH[source]
                 result = await fetcher(install, shard_identifier, cursor)
 
-                msgs = [
-                    _build_kafka_message(
-                        tenant_id=tenant_id, source=source,
-                        shard_id=shard_id, record=rec,
+                # A27.1 — write each record's blob to S3 + build the
+                # RawEnvelope pointer BEFORE the N1 publish. S3 failures
+                # are tagged distinctly from Kafka/cursor failures for
+                # operator debugging (the broad except below records the
+                # message), then propagate to mark the shard 'failed'.
+                if result.records and self._s3_client is None:
+                    raise RuntimeError(
+                        "shard_fetch backfill producer requires an "
+                        "S3Client (A27.1) but none was wired; set "
+                        "S3_ENDPOINT_URL / S3_RAW_BUCKET and pass "
+                        "s3_client=… to ShardFetch."
                     )
-                    for rec in result.records
-                ]
+                try:
+                    msgs = [
+                        await _write_record_and_build_message(
+                            self._s3_client,
+                            tenant_id=tenant_id, source=source,
+                            shard_id=shard_id, cursor=cursor, record=rec,
+                            env=self._config.ingestion_env,
+                        )
+                        for rec in result.records
+                    ]
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"S3 raw-tier write failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
 
                 try:
                     await advance_cursor_atomic_with_kafka_publish(
@@ -862,6 +979,16 @@ async def _run_service() -> None:
     ))
     await producer.start()
 
+    # Raw-tier S3 client for the backfill producer (A27.1). S3_ENDPOINT_URL
+    # is optional (None → real AWS); S3_RAW_BUCKET defaults to fyralis-raw,
+    # matching the webhook shadow path.
+    s3_client = S3Client(
+        os.environ.get("S3_RAW_BUCKET", DEFAULT_S3_BUCKET),
+        endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        region_name=os.environ.get("S3_REGION_NAME", "auto"),
+    )
+    await s3_client.connect()
+
     config = ShardFetchConfig(
         tick_interval_seconds=float(
             os.environ.get("SHARD_FETCH_TICK_SEC", "5.0"),
@@ -878,8 +1005,9 @@ async def _run_service() -> None:
         instance_name=os.environ.get(
             "SHARD_FETCH_INSTANCE", DEFAULT_DIAGNOSTIC_INSTANCE,
         ),
+        ingestion_env=os.environ.get("INGESTION_ENV", DEFAULT_INGESTION_ENV),
     )
-    service = ShardFetch(pool, producer, config=config)
+    service = ShardFetch(pool, producer, config=config, s3_client=s3_client)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -894,6 +1022,7 @@ async def _run_service() -> None:
     finally:
         log.info("workflow.shard_fetch.shutting_down")
         await producer.stop()
+        await s3_client.close()
         await pool.close()
     log.info("workflow.shard_fetch.exited")
 

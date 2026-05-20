@@ -202,7 +202,10 @@ async def test_record_envelope_matches_handler_payload_shape(monkeypatch):
     assert rec["mailbox_email"] == "alice@acme.com"
     assert rec["scope_used"] == "gmail.readonly"
     assert rec["gmail_installation_id"] == install_id
-    assert rec["read_path"] == "backfill"
+    # A27.3 — the gmail: handler validates read_path ∈ {push, poll};
+    # backfill conforms as "poll" (external_id is install+message_id,
+    # independent of read_path).
+    assert rec["read_path"] == "poll"
     assert rec["message_resource"]["id"] == "m1"
     assert "payload" in rec["message_resource"]
 
@@ -279,7 +282,9 @@ async def test_gap_fill_dispatches_to_history_list(monkeypatch):
     assert fake.history_calls[0]["start_history_id"] == "100"
     assert len(result.records) == 2
     for rec in result.records:
-        assert rec["read_path"] == "reconciliation_gap"
+        # A27.3 — gap-fill records also conform to the handler as
+        # "poll" (the producing path is diagnostic, kept in the cursor).
+        assert rec["read_path"] == "poll"
     assert result.end_of_data is True
 
 

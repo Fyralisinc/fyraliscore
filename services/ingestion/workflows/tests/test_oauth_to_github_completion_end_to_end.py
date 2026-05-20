@@ -33,7 +33,10 @@ from services.ingestion.workflows.tenant_onboarding import (
 )
 
 
-pytestmark = [pytest.mark.timeout(300)]
+# A27.6: the shared moto S3 server provides the raw-tier endpoint the
+# M6.7 shard_fetch producer writes to (subprocesses inherit
+# S3_ENDPOINT_URL via os.environ.copy()).
+pytestmark = [pytest.mark.timeout(300), pytest.mark.usefixtures("moto_s3_server")]
 
 
 def _ensure_clean_helper() -> str:

@@ -33,10 +33,47 @@ def test_discord_webhook_resolves_to_interaction_handler():
 
 
 def test_gmail_pubsub_intentionally_unmapped():
-    """Pub/Sub notifications are NOT Gmail messages. M6 will add the
-    mapping for the fetched-message ingress; for M2 the normalizer
-    skips with reason="unsupported_combination"."""
+    """Pub/Sub notifications are NOT Gmail messages. M6 backfill maps
+    the fetched-message ingress (`gmail`/`backfill`) — the Pub/Sub
+    notification ingress stays unmapped; the normalizer skips it with
+    reason="unsupported_combination"."""
     assert resolve_channel("gmail", "pubsub") is None
+
+
+# ---------------------------------------------------------------------
+# M6.7 (A27.2) — backfill ingress resolves to the same handler as the
+# live surface for each source, so a re-fetched event derives the same
+# external_id and dedups against its webhook/gateway twin.
+# ---------------------------------------------------------------------
+def test_resolve_channel_for_backfill_all_sources():
+    assert resolve_channel("gmail", "backfill") == "gmail:"
+    assert resolve_channel("github", "backfill") == "github:webhook"
+    assert resolve_channel("slack", "backfill") == "slack:message"
+    assert resolve_channel("discord", "backfill") == "discord:message"
+
+
+def test_backfill_resolves_to_same_channel_as_live_surface():
+    """The load-bearing property of A27.2: backfill and the live
+    surface share a handler. Discord's live surface for messages is
+    the gateway (not the interaction webhook); Gmail's live Pub/Sub
+    notification has no handler, so its backfill points at the
+    canonical "gmail:" message handler directly."""
+    assert resolve_channel("gmail", "backfill") == "gmail:"
+    assert resolve_channel("github", "backfill") == resolve_channel(
+        "github", "webhook",
+    )
+    assert resolve_channel("slack", "backfill") == resolve_channel(
+        "slack", "webhook",
+    )
+    assert resolve_channel("discord", "backfill") == resolve_channel(
+        "discord", "gateway",
+    )
+
+
+def test_unknown_source_backfill_returns_none():
+    """An unmapped source under backfill ingress preserves the
+    skip-with-None behaviour (no accidental catch-all)."""
+    assert resolve_channel("telegram", "backfill") is None  # type: ignore[arg-type]
 
 
 def test_resolved_channels_all_have_callable_handlers():

@@ -39,6 +39,7 @@ from services.ingestion.workflows.shard_fetch import (
 )
 from services.ingestion.workflows.signals import emit_signal
 from services.ingestion.workflows.state import load_state
+from services.ingestion.workflows.tests._fake_s3 import FakeS3Client
 
 
 pytestmark = [pytest.mark.timeout(60)]
@@ -207,6 +208,7 @@ async def _emit_shard_requested(
 
 def _service(
     pool: asyncpg.Pool, producer: _CapturingProducer,
+    s3_client: FakeS3Client | None = None,
 ) -> ShardFetch:
     return ShardFetch(
         pool, producer,
@@ -216,6 +218,7 @@ def _service(
             lease_timeout_seconds=30.0,
             flush_timeout_seconds=1.0,
         ),
+        s3_client=s3_client or FakeS3Client(),
     )
 
 
@@ -388,20 +391,28 @@ async def test_fetch_page_gmail_runs_to_completion_in_service(
     )
 
     producer = _CapturingProducer()
-    await _service(fresh_db, producer).run(max_ticks=1)
+    s3 = FakeS3Client()
+    await _service(fresh_db, producer, s3).run(max_ticks=1)
 
-    # (a) 3 records, all on ingestion.raw, all with tenant key.
+    # (a) 3 records, each published as a backfill RawEnvelope pointer on
+    # ingestion.raw, keyed by tenant. The Gmail message body lives in
+    # the S3 blob the pointer addresses (M6.7 / A27.1).
+    from services.ingestion.raw_tier.envelope import RawEnvelope
+
     assert len(producer.published) == 3
     for topic, value, key in producer.published:
         assert topic == RAW_TOPIC
         assert key == str(tid).encode("utf-8")
-        # The envelope wraps the Gmail record.
-        envelope = orjson.loads(value)
-        assert envelope["source"] == "gmail"
-        assert envelope["tenant_id"] == str(tid)
-        assert envelope["shard_id"] == str(shard_id)
-        assert "message_resource" in envelope["record"]
-        assert envelope["record"]["read_path"] == "backfill"
+        env = RawEnvelope.model_validate(orjson.loads(value))
+        assert env.source == "gmail"
+        assert env.tenant_id == tid
+        assert env.ingress_kind == "backfill"
+        blob = orjson.loads(s3.store[env.raw_s3_key])
+        assert blob["shard_context"]["shard_id"] == str(shard_id)
+        assert "message_resource" in blob["record"]
+        # M6.7 (A27.3): the Gmail fetcher emits a handler-conformant
+        # read_path ("poll"), not the old wrapper "backfill" value.
+        assert blob["record"]["read_path"] == "poll"
 
     # (b) Cursor: final_history_id stamped.
     ws = await load_state(fresh_db, WORKFLOW_KIND, str(shard_id))

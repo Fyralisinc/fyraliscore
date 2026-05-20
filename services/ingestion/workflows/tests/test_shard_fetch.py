@@ -52,6 +52,7 @@ from services.ingestion.workflows.shard_fetch import (
 )
 from services.ingestion.workflows.signals import emit_signal
 from services.ingestion.workflows.state import load_state
+from services.ingestion.workflows.tests._fake_s3 import FakeS3Client
 
 
 pytestmark = [pytest.mark.timeout(60)]
@@ -170,6 +171,7 @@ async def _emit_shard_requested(
 def _service(
     pool: asyncpg.Pool, producer: _CapturingProducer,
     *, lease_timeout: float = 30.0,
+    s3_client: FakeS3Client | None = None,
 ) -> ShardFetch:
     return ShardFetch(
         pool, producer,
@@ -179,6 +181,7 @@ def _service(
             lease_timeout_seconds=lease_timeout,
             flush_timeout_seconds=1.0,
         ),
+        s3_client=s3_client or FakeS3Client(),
     )
 
 
