@@ -56,6 +56,7 @@ from aiokafka import AIOKafkaConsumer
 
 from lib.shared.ids import uuid7
 from services.ingestion.dlq.models import DLQEnvelope
+from services.ingestion.kafka.shutdown import install_shutdown_event
 
 
 log = logging.getLogger(__name__)
@@ -219,8 +220,11 @@ async def run_dlq_writer(
     consumed = 0
     upserted = 0
 
+    # Ticket #45: getmany returns every batch_idle_ms, so checking the
+    # stop event each iteration gives a clean rc=0 exit on SIGTERM.
+    stop_event = install_shutdown_event()
     try:
-        while True:
+        while not stop_event.is_set():
             # getmany returns a dict[TopicPartition, list[record]].
             # max_records caps the batch size; timeout_ms is the
             # idle flush deadline.

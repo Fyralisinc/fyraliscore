@@ -82,7 +82,23 @@ from services.ingestion.handlers import (
     ObservationDraft,
 )
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
 from services.ingestion.normalizer.models import NormalizedEnvelope
+
+
+# Transient-error retry (avoids a tight crash-loop on a brief DB blip).
+# Permanent errors are DLQ'd inside `_handle_message`; only transient/
+# unknown errors escape to the loop, so retrying them in place is safe
+# (the offset is not committed until the message succeeds).
+_TRANSIENT_MAX_ATTEMPTS = int(
+    os.environ.get("WRITER_TRANSIENT_MAX_ATTEMPTS", "5")
+)
+_TRANSIENT_BACKOFF_BASE_S = float(
+    os.environ.get("WRITER_TRANSIENT_BACKOFF_BASE_SEC", "0.5")
+)
+_TRANSIENT_BACKOFF_MAX_S = float(
+    os.environ.get("WRITER_TRANSIENT_BACKOFF_MAX_SEC", "30")
+)
 
 
 log = logging.getLogger(__name__)
@@ -482,17 +498,18 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
     consumer.subscribe([_NORMALIZED_TOPIC])
 
     consumed = 0
+    # Ticket #45: SIGTERM/SIGINT sets this; next_or_stop returns None and
+    # the loop exits into normal teardown (rc=0) instead of dying mid-poll.
+    stop_event = install_shutdown_event()
     try:
-        async for msg in consumer:
+        while True:
+            msg = await next_or_stop(consumer, stop_event)
+            if msg is None:
+                break
             consumed += 1
-            await _handle_message(
-                msg.value,
-                config=config,
-                dlq_producer=dlq_producer,
-                embedding_producer=embedding_producer,
-                msg_topic=msg.topic,
-                msg_partition=msg.partition,
-                msg_offset=msg.offset,
+            await _handle_message_with_retry(
+                msg, config=config, dlq_producer=dlq_producer,
+                embedding_producer=embedding_producer, stop_event=stop_event,
             )
             await consumer.commit()
             if (
@@ -505,6 +522,69 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
         await dlq_producer.stop()
 
     return {"consumed": consumed}
+
+
+async def _handle_message_with_retry(
+    msg: Any,
+    *,
+    config: WriterConfig,
+    dlq_producer: IdempotentProducer,
+    embedding_producer: IdempotentProducer,
+    stop_event: asyncio.Event,
+) -> None:
+    """Run `_handle_message`, retrying transient errors in place with
+    bounded exponential backoff.
+
+    Permanent errors (ValidationError / HandlerNotFound / PayloadTooLarge
+    / partition-missing) are already DLQ'd and swallowed inside
+    `_handle_message`, so anything that escapes here is transient (e.g. a
+    brief DB outage). Retrying in place — without committing the offset —
+    rides out the blip without a process restart and its reprocessing
+    churn. After `_TRANSIENT_MAX_ATTEMPTS` it re-raises so a sustained
+    outage still surfaces (the supervisor/orchestrator restarts the
+    process, and Kafka redelivers from the last committed offset).
+    """
+    attempt = 0
+    while True:
+        try:
+            await _handle_message(
+                msg.value,
+                config=config,
+                dlq_producer=dlq_producer,
+                embedding_producer=embedding_producer,
+                msg_topic=msg.topic,
+                msg_partition=msg.partition,
+                msg_offset=msg.offset,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — transient; bounded retry
+            attempt += 1
+            _bump("writer.transient_retry")
+            if attempt >= _TRANSIENT_MAX_ATTEMPTS or stop_event.is_set():
+                _bump("writer.transient_giveup")
+                raise
+            backoff = min(
+                _TRANSIENT_BACKOFF_MAX_S,
+                _TRANSIENT_BACKOFF_BASE_S * (2 ** (attempt - 1)),
+            )
+            log.warning(
+                "writer.transient_error_retry",
+                extra={
+                    "attempt": attempt,
+                    "max_attempts": _TRANSIENT_MAX_ATTEMPTS,
+                    "backoff_s": backoff,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:200],
+                    "topic": msg.topic,
+                    "partition": msg.partition,
+                    "offset": msg.offset,
+                },
+            )
+            # Sleep, but wake immediately on shutdown.
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+            except asyncio.TimeoutError:
+                pass
 
 
 def main() -> None:

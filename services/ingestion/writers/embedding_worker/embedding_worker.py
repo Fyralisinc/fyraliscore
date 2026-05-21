@@ -81,6 +81,7 @@ from lib.embeddings.ollama import (
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.shutdown import install_shutdown_event
 
 
 log = logging.getLogger(__name__)
@@ -314,8 +315,11 @@ async def run_embedding_worker(
 
     consumed = 0
     embedded = 0
+    # Ticket #45: getmany returns every poll_timeout_ms, so checking the
+    # stop event each iteration gives a clean rc=0 exit on SIGTERM.
+    stop_event = install_shutdown_event()
     try:
-        while True:
+        while not stop_event.is_set():
             batches = await consumer.getmany(
                 timeout_ms=config.poll_timeout_ms,
             )

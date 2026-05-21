@@ -45,7 +45,6 @@ import asyncio
 import datetime as dt
 import logging
 import os
-import signal
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +59,7 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
 from services.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingestion.normalizer.invariants import (
     EnvelopeInvariantError,
@@ -193,24 +193,16 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
     consumed = 0
     produced = 0
-    stop = False
 
-    def _handle_signal(*_args: Any) -> None:
-        nonlocal stop
-        stop = True
-
-    # signal.signal() only works on the main thread; in worker
-    # processes started by the supervisor this IS the main thread.
-    # In test harnesses we may run off-main-thread, so guard.
-    try:
-        signal.signal(signal.SIGTERM, _handle_signal)
-        signal.signal(signal.SIGINT, _handle_signal)
-    except (ValueError, OSError):
-        pass
+    # Ticket #45: a SIGTERM/SIGINT sets this event and the racing
+    # `next_or_stop` returns None, breaking the loop into its normal
+    # teardown (rc=0) instead of dying mid-poll (rc=-15/-9).
+    stop_event = install_shutdown_event()
 
     try:
-        async for msg in consumer:
-            if stop:
+        while True:
+            msg = await next_or_stop(consumer, stop_event)
+            if msg is None:
                 break
 
             consumed += 1
