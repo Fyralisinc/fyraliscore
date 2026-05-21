@@ -23,18 +23,23 @@ from typing import Any
 
 import httpx
 
-from lib.shared.errors import CompanyOSError
+from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
 
 
 EMBEDDING_DIM = 768  # SCHEMA-LOCK.md S1.1 / S2.1 / S6.1 — VECTOR(768)
 DEFAULT_MODEL = "nomic-embed-text"
 
 
-class OllamaError(CompanyOSError):
+# Ollama's errors ARE Embedder-Protocol errors (EmbedderError subclasses
+# CompanyOSError, so this stays a CompanyOSError too). This lets the
+# provider-agnostic call sites — e.g. the embedding worker — catch the
+# Protocol-level `EmbedderError` and treat any backend's terminal failure
+# uniformly, instead of hard-coding `OllamaError`.
+class OllamaError(EmbedderError):
     default_code = "ollama_error"
 
 
-class OllamaDimensionMismatch(OllamaError):
+class OllamaDimensionMismatch(OllamaError, EmbedderDimensionMismatch):
     default_code = "ollama_dimension_mismatch"
 
 
