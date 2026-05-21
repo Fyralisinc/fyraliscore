@@ -18,6 +18,7 @@ minted JWT and installation access token are NEVER logged at any level.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -52,6 +53,24 @@ _APPS_DOC_URL_PATTERN = re.compile(
 # M6.4 backfill: maps the shard's REST event_type to the collection path.
 _GH_EVENT_PATH = {"issues": "issues", "pull_requests": "pulls"}
 _LINK_NEXT_PATTERN = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="next"')
+
+# Backfill read-path rate-limit retry. Installation requests hit a
+# primary 5000/h limit plus secondary (abuse) limits; honoring
+# Retry-After with a bounded budget lets a transient 429 / secondary
+# limit be absorbed instead of failing the whole shard. Matches the
+# internal retry the Slack and Discord clients already do. Read at call
+# time so they are env-configurable (and test-overridable).
+
+
+def _parse_retry_after(value: str | None) -> float:
+    """Seconds to wait from a Retry-After header (integer-seconds form;
+    GitHub also uses this for secondary limits). Falls back to 1s."""
+    if not value:
+        return 1.0
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +133,31 @@ class GithubClient:
         if self._owns_client and self._http is not None:
             await self._http.aclose()
             self._http = None
+
+    async def _get_with_rl_retry(
+        self, url: str, headers: dict[str, str],
+    ) -> httpx.Response:
+        """GET with bounded Retry-After-aware retry on 429 / secondary
+        rate limits (403 + Retry-After). Returns the final response; the
+        caller maps a non-2xx (including a still-429 after the budget is
+        exhausted) to GithubApiError. Transport errors propagate to the
+        caller's existing handler.
+        """
+        max_attempts = int(os.environ.get("GITHUB_RL_MAX_ATTEMPTS", "4"))
+        max_sleep = float(os.environ.get("GITHUB_RL_MAX_SLEEP_SEC", "30"))
+        client = self._httpx()
+        attempt = 0
+        while True:
+            attempt += 1
+            response = await client.get(url, headers=headers)
+            rate_limited = response.status_code == 429 or (
+                response.status_code == 403
+                and response.headers.get("Retry-After") is not None
+            )
+            if not rate_limited or attempt >= max_attempts:
+                return response
+            delay = _parse_retry_after(response.headers.get("Retry-After"))
+            await asyncio.sleep(min(max_sleep, delay))
 
     # -----------------------------------------------------------------
     # Public surface
@@ -245,7 +289,6 @@ class GithubClient:
         logged — never silent). `per_page=100` is GitHub's maximum.
         """
         token = await self.mint_installation_token(installation_id)
-        client = self._httpx()
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
@@ -265,7 +308,7 @@ class GithubClient:
                 f"?per_page={per_page}&page={page}"
             )
             try:
-                response = await client.get(url, headers=headers)
+                response = await self._get_with_rl_retry(url, headers)
             except httpx.TransportError as exc:
                 raise GithubApiError(
                     "transport error fetching installation repositories",
@@ -424,9 +467,8 @@ class GithubClient:
         }
         if etag:
             headers["If-None-Match"] = etag
-        client = self._httpx()
         try:
-            response = await client.get(url, headers=headers)
+            response = await self._get_with_rl_retry(url, headers)
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error fetching repo events",
@@ -479,9 +521,8 @@ class GithubClient:
         }
         if etag:
             headers["If-None-Match"] = etag
-        client = self._httpx()
         try:
-            response = await client.get(url, headers=headers)
+            response = await self._get_with_rl_retry(url, headers)
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error probing repo events",

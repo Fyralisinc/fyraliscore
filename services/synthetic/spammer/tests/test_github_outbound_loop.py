@@ -105,22 +105,47 @@ async def test_github_etag_conditional_fast_path(monkeypatch):
         await http.aclose()
 
 
-async def test_github_429_maps_to_api_error(monkeypatch):
+async def test_github_429_absorbed_by_retry(monkeypatch):
+    """A transient 429 (Retry-After) is absorbed by the client's bounded
+    rate-limit retry — consistent with the Slack/Discord clients."""
     _set_github_app_env(monkeypatch)
     fx = make_github_repos(
         org_or_user="rl", repos=1, events_per_repo=2,
         installation_id=_INSTALL,
     )
     owner, repo = fx["repos"][0]["full_name"].split("/", 1)
-    # 429 on every 2nd data request (token mint is exempt).
+    # 429 on every 2nd data request (token mint is exempt); the client
+    # honors Retry-After and retries the 429'd call to success.
     app = build_spammer_app(fixtures={"github": [fx]}, rate_limit_every=2,
                             retry_after_s=0)
     gh, http = _client(app, monkeypatch)
     try:
         await gh.list_repo_events(
             owner=owner, repo=repo, event_type="issues")  # #1 → 200
+        page, _etag, _next = await gh.list_repo_events(
+            owner=owner, repo=repo, event_type="issues")  # #2 → 429 → retry → 200
+        assert isinstance(page, list)
+    finally:
+        await http.aclose()
+
+
+async def test_github_429_budget_exhausted_raises(monkeypatch):
+    """A sustained 429 (every request) exhausts the retry budget and
+    surfaces as GithubApiError."""
+    _set_github_app_env(monkeypatch)
+    fx = make_github_repos(
+        org_or_user="rl", repos=1, events_per_repo=2,
+        installation_id=_INSTALL,
+    )
+    owner, repo = fx["repos"][0]["full_name"].split("/", 1)
+    monkeypatch.setenv("GITHUB_RL_MAX_ATTEMPTS", "2")
+    # 429 on EVERY data request → retries exhaust → raises.
+    app = build_spammer_app(fixtures={"github": [fx]}, rate_limit_every=1,
+                            retry_after_s=0)
+    gh, http = _client(app, monkeypatch)
+    try:
         with pytest.raises(GithubApiError):
             await gh.list_repo_events(
-                owner=owner, repo=repo, event_type="issues")  # #2 → 429
+                owner=owner, repo=repo, event_type="issues")
     finally:
         await http.aclose()

@@ -334,12 +334,31 @@ class DiscordClient:
     # -----------------------------------------------------------------
 
     async def list_guilds(self) -> list[dict[str, Any]]:
-        """The bot's guilds (planner shard source). `GET /users/@me/guilds`."""
-        result = await self._request(
-            "GET", "/users/@me/guilds",
-            endpoint_substituted="/users/@me/guilds",
-        )
-        return result if isinstance(result, list) else []
+        """The bot's guilds (planner shard source). `GET /users/@me/guilds`.
+
+        Cursor-paginated via `after` (Discord caps the page at 200), so a
+        bot in >200 guilds is not silently truncated to the first page.
+        """
+        out: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": 200}
+            if after:
+                params["after"] = after
+            result = await self._request(
+                "GET", "/users/@me/guilds",
+                endpoint_substituted="/users/@me/guilds",
+                params=params,
+            )
+            page = result if isinstance(result, list) else []
+            out.extend(g for g in page if isinstance(g, dict))
+            if len(page) < 200:
+                break
+            last_id = page[-1].get("id") if isinstance(page[-1], dict) else None
+            if not last_id:
+                break
+            after = str(last_id)
+        return out
 
     async def list_guild_channels(
         self, guild_id: str,

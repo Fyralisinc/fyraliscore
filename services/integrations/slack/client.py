@@ -230,24 +230,50 @@ class SlackClient:
     # -----------------------------------------------------------------
 
     async def conversations_list(self) -> list[dict[str, Any]]:
-        """List the workspace's public channels (planner shard source).
-        Returns the `channels` array; each entry carries at least `id`
-        and `name`. `team_id` is injected for mock-client parity."""
-        data = await self._call(
-            "conversations.list",
-            method="GET",
-            params={"types": "public_channel", "limit": 1000},
+        """List the workspace's channels (planner shard source).
+
+        Cursor-paginated to completion, so a workspace with >1000
+        channels is not silently truncated. Public channels by default;
+        set SLACK_BACKFILL_INCLUDE_PRIVATE=1 (requires the app's
+        groups:read scope) to also enumerate private channels, or
+        SLACK_BACKFILL_CHANNEL_TYPES to set the comma-separated types
+        explicitly. Each entry carries at least `id` and `name`;
+        `team_id` is injected for mock-client parity.
+        """
+        import os
+
+        types = os.environ.get(
+            "SLACK_BACKFILL_CHANNEL_TYPES", "public_channel"
         )
-        channels = data.get("channels") or []
-        return [
-            {
-                "id": c.get("id"),
-                "name": c.get("name"),
-                "team_id": c.get("context_team_id") or self._team_id,
-            }
-            for c in channels
-            if isinstance(c, dict)
-        ]
+        if (
+            os.environ.get("SLACK_BACKFILL_INCLUDE_PRIVATE", "") == "1"
+            and "private_channel" not in types
+        ):
+            types = f"{types},private_channel"
+
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"types": types, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._call(
+                "conversations.list", method="GET", params=params,
+            )
+            for c in data.get("channels") or []:
+                if isinstance(c, dict):
+                    out.append({
+                        "id": c.get("id"),
+                        "name": c.get("name"),
+                        "team_id": c.get("context_team_id") or self._team_id,
+                    })
+            cursor = (
+                (data.get("response_metadata") or {}).get("next_cursor")
+                or None
+            )
+            if not cursor:
+                break
+        return out
 
     async def conversations_history(
         self,
