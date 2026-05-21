@@ -82,6 +82,11 @@ from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 
 
 log = logging.getLogger(__name__)
@@ -318,6 +323,10 @@ async def run_embedding_worker(
     # Ticket #45: getmany returns every poll_timeout_ms, so checking the
     # stop event each iteration gives a clean rc=0 exit on SIGTERM.
     stop_event = install_shutdown_event()
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
     try:
         while not stop_event.is_set():
             batches = await consumer.getmany(
@@ -392,6 +401,9 @@ async def run_embedding_worker(
             ):
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
         await dlq_producer.stop()
         if own_ollama:

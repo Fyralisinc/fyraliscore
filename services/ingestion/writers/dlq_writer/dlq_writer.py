@@ -57,6 +57,11 @@ from aiokafka import AIOKafkaConsumer
 from lib.shared.ids import uuid7
 from services.ingestion.dlq.models import DLQEnvelope
 from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 
 
 log = logging.getLogger(__name__)
@@ -223,6 +228,10 @@ async def run_dlq_writer(
     # Ticket #45: getmany returns every batch_idle_ms, so checking the
     # stop event each iteration gives a clean rc=0 exit on SIGTERM.
     stop_event = install_shutdown_event()
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
     try:
         while not stop_event.is_set():
             # getmany returns a dict[TopicPartition, list[record]].
@@ -306,6 +315,9 @@ async def run_dlq_writer(
             if config.stop_after is not None and consumed >= config.stop_after:
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
 
     return {"consumed": consumed, "upserted": upserted}

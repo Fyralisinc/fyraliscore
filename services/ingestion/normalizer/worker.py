@@ -60,6 +60,11 @@ from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 from services.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingestion.normalizer.invariants import (
     EnvelopeInvariantError,
@@ -199,6 +204,11 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
     # teardown (rc=0) instead of dying mid-poll (rc=-15/-9).
     stop_event = install_shutdown_event()
 
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
+
     try:
         while True:
             msg = await next_or_stop(consumer, stop_event)
@@ -317,6 +327,9 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
             ):
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
         await producer.stop()
         await s3.close()

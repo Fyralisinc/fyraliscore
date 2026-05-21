@@ -36,6 +36,18 @@ x-app-env: &app-env
   S3_REGION_NAME: us-east-1
   AWS_ACCESS_KEY_ID: fyralis
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+  # Consumers expose /healthz + /metrics on this port (per container).
+  INGESTION_HEALTH_PORT: "9300"
+
+# Liveness probe for the Kafka consumers: /healthz is 503 if the worker
+# has not made progress recently (hung loop), so a wedged consumer is
+# restarted rather than silently stalling.
+x-consumer-healthcheck: &consumer-healthcheck
+  test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+  interval: 15s
+  timeout: 5s
+  retries: 4
+  start_period: 30s
 
 # Every long-running app/worker waits for migrations + topics + bucket.
 x-app-deps: &app-deps
@@ -222,21 +234,25 @@ services:
     <<: *worker
     container_name: company_os_normalizer
     command: python -m services.ingestion.normalizer.worker
+    healthcheck: *consumer-healthcheck
 
   observation_writer:
     <<: *worker
     container_name: company_os_observation_writer
     command: python -m services.ingestion.writers.observation_writer
+    healthcheck: *consumer-healthcheck
 
   dlq_writer:
     <<: *worker
     container_name: company_os_dlq_writer
     command: python -m services.ingestion.writers.dlq_writer.dlq_writer
+    healthcheck: *consumer-healthcheck
 
   embedding_worker:
     <<: *worker
     container_name: company_os_embedding_worker
     command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    healthcheck: *consumer-healthcheck
 
   # ---- live source workers -----------------------------------------
   discord_gateway_worker:
