@@ -164,12 +164,21 @@ class GithubWebhookGenerator:
         sender_login: str = "octocat",
         replay: bool = False,
         tamper_signature: bool = False,
+        node_id: str | None = None,
+        occurred_at_iso: str | None = None,
     ) -> GithubWebhookResult:
         """Append an issue to the mock and dispatch an `issues` webhook.
 
         `replay=True` re-dispatches the previous issue event for this
         repo (same delivery id + node_id) — exercises the router replay
-        cache + observation dedup."""
+        cache + observation dedup.
+
+        `node_id` / `occurred_at_iso`, when provided, override the
+        auto-minted node_id and event timestamp. GitHub's `external_id`
+        is the node_id and its `occurred_at` derives from
+        `updated_at`/`created_at`, so injecting both lets a caller
+        dispatch a live event matching a known backfilled event for the
+        cross-path dedup twin (A30.2). `None` preserves auto-mint."""
         if replay:
             return await self._replay("issues", repo_full_name,
                                       installation_id, tenant_id,
@@ -177,8 +186,10 @@ class GithubWebhookGenerator:
 
         self._seq += 1
         number = self._seq
-        node_id = f"I_{installation_id}_{self._seq}"
-        ts = "2026-05-19T00:00:00Z"
+        node_id = (node_id if node_id is not None
+                   else f"I_{installation_id}_{self._seq}")
+        ts = (occurred_at_iso if occurred_at_iso is not None
+              else "2026-05-19T00:00:00Z")
         self._append_to_mock(
             repo_full_name, "issues",
             {"id": node_id, "number": number, "title": issue_title,
@@ -217,9 +228,15 @@ class GithubWebhookGenerator:
         sender_login: str = "octocat",
         replay: bool = False,
         tamper_signature: bool = False,
+        node_id: str | None = None,
+        occurred_at_iso: str | None = None,
     ) -> GithubWebhookResult:
         """Append a PR to the mock and dispatch a `pull_request`
-        webhook."""
+        webhook.
+
+        `node_id` / `occurred_at_iso`, when provided, override the
+        auto-minted node_id and timestamp — the cross-path dedup twin
+        seam (A30.2). `None` preserves auto-mint."""
         if replay:
             return await self._replay("pull_request", repo_full_name,
                                       installation_id, tenant_id,
@@ -227,8 +244,10 @@ class GithubWebhookGenerator:
 
         self._seq += 1
         number = self._seq
-        node_id = f"PR_{installation_id}_{self._seq}"
-        ts = "2026-05-19T00:00:00Z"
+        node_id = (node_id if node_id is not None
+                   else f"PR_{installation_id}_{self._seq}")
+        ts = (occurred_at_iso if occurred_at_iso is not None
+              else "2026-05-19T00:00:00Z")
         self._append_to_mock(
             repo_full_name, "pull_requests",
             {"id": node_id, "number": number, "title": pr_title,

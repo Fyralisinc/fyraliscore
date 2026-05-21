@@ -385,3 +385,63 @@ async def test_github_webhook_driver_composable_with_x3_harness(
         tenant_id,
     ))
     assert count == 3, f"expected 3 (1 backfill + 2 live), got {count}"
+
+
+# =====================================================================
+# Phase 0 (A30.2) — identity injection for cross-path twins.
+# =====================================================================
+@pytest.mark.asyncio
+async def test_github_webhook_default_kwarg_preserves_existing_behavior(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """No node_id/occurred_at_iso kwargs → auto-minted node_id; the
+    observation's external_id is that node_id. Backward-compat guard."""
+    iid = "999DEF"
+    tenant_id = await _seed_github_install(fresh_db, iid)
+    app = _build_app(fresh_db)
+    async with GithubWebhookGenerator(
+        app=app, mock_client=_mock(iid), signing_secret=_SECRET,
+    ) as gen:
+        result = await gen.simulate_issue_event(
+            installation_id=iid, repo_full_name="octo/def",
+        )
+
+    assert result.node_id == f"I_{iid}_1"
+    row = await fresh_db.fetchrow(
+        "SELECT external_id FROM observations WHERE id = $1",
+        UUID(result.observation_id),
+    )
+    assert row["external_id"] == result.node_id
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_injected_identity_propagates_to_observation(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Injected node_id + occurred_at_iso flow to the observation's
+    external_id (= node_id) and occurred_at. The twin seam: GitHub's
+    dedup key is (source_channel, node_id, occurred_at)."""
+    from datetime import datetime, timezone
+
+    iid = "999INJ"
+    tenant_id = await _seed_github_install(fresh_db, iid)
+    app = _build_app(fresh_db)
+    injected_node = "I_kwDOtwin0001"
+    injected_ts = "2026-02-02T03:04:05Z"
+    async with GithubWebhookGenerator(
+        app=app, mock_client=_mock(iid), signing_secret=_SECRET,
+    ) as gen:
+        result = await gen.simulate_issue_event(
+            installation_id=iid, repo_full_name="octo/twin",
+            node_id=injected_node, occurred_at_iso=injected_ts,
+        )
+
+    assert result.node_id == injected_node
+    row = await fresh_db.fetchrow(
+        "SELECT external_id, occurred_at FROM observations WHERE id = $1",
+        UUID(result.observation_id),
+    )
+    assert row["external_id"] == injected_node
+    assert row["occurred_at"] == datetime(
+        2026, 2, 2, 3, 4, 5, tzinfo=timezone.utc,
+    )

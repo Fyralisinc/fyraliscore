@@ -360,3 +360,59 @@ async def test_slack_webhook_driver_composable_with_x3_harness(
         tenant_id,
     ))
     assert count == 3, f"expected 3 (1 backfill + 2 live), got {count}"
+
+
+# =====================================================================
+# Phase 0 (A30.2) — identity injection for cross-path twins.
+# =====================================================================
+@pytest.mark.asyncio
+async def test_slack_webhook_default_kwarg_preserves_existing_behavior(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """No `ts` kwarg → auto-minted monotonic ts; external_id derives
+    from it. Guards the backward-compatible default path."""
+    team_id = "T_DEFAULT"
+    tenant_id = await _seed_slack_install(fresh_db, team_id)
+    app = _build_app(fresh_db)
+    async with SlackWebhookGenerator(
+        app=app, mock_client=_mock(team_id), signing_secret=_SECRET,
+    ) as gen:
+        result = await gen.simulate_message(
+            team_id=team_id, channel_id="C_DEFAULT", content="auto",
+        )
+
+    assert result.http_status in (200, 201), result.response_body
+    # Auto-minted ts has the `{epoch}.{seq}` shape.
+    assert "." in result.message_ts
+    row = await fresh_db.fetchrow(
+        "SELECT external_id FROM observations WHERE tenant_id = $1",
+        tenant_id,
+    )
+    assert row["external_id"] == f"C_DEFAULT:{result.message_ts}"
+
+
+@pytest.mark.asyncio
+async def test_slack_webhook_injected_identity_propagates_to_observation(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Injected `ts` flows to external_id (`{channel}:{ts}`). This is
+    the twin seam: a live event can match a backfilled event's
+    external_id + occurred_at (both derive from ts)."""
+    team_id = "T_INJECT"
+    tenant_id = await _seed_slack_install(fresh_db, team_id)
+    app = _build_app(fresh_db)
+    injected_ts = "1767225600.000123"
+    async with SlackWebhookGenerator(
+        app=app, mock_client=_mock(team_id), signing_secret=_SECRET,
+    ) as gen:
+        result = await gen.simulate_message(
+            team_id=team_id, channel_id="C_INJECT", content="twin",
+            ts=injected_ts,
+        )
+
+    assert result.message_ts == injected_ts
+    row = await fresh_db.fetchrow(
+        "SELECT external_id FROM observations WHERE tenant_id = $1",
+        tenant_id,
+    )
+    assert row["external_id"] == f"C_INJECT:{injected_ts}"
