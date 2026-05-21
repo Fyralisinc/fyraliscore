@@ -491,6 +491,10 @@ def main() -> None:
     asyncio.run(run_worker(config))
 
 
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    main()
+
+
 # Re-export the channel resolver as a module attribute so the
 # Path B static proof can introspect it without importing the
 # private module. Convenience-only; not a public API.

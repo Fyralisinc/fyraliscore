@@ -1,4 +1,66 @@
+# =====================================================================
+# docker-compose.yml — deployed production stack.
+# =====================================================================
+# Brings up the full ingestion data plane for a real customer on the
+# four sources (gmail/github/slack/discord):
+#
+#   infra   : postgres, ollama, kafka (KRaft), minio (S3)
+#   one-shot: migrate, kafka-init (topics), minio-init (bucket)
+#   ingress : gateway (webhooks + Pub/Sub push + OAuth callbacks)
+#   live    : discord_gateway_worker, gmail_watch_scheduler,
+#             gmail_history_poller
+#   backfill: oauth_poller, tenant_onboarding, source_onboarding,
+#             shard_fetch, reconciler
+#   consume : normalizer, observation_writer, dlq_writer, embedding_worker
+#   app     : think_worker, post_commit_worker, ui, nginx, acme
+#
+# Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
+# `.env.production` (gitignored) — see `.env.production.example`.
+#
+# For MANAGED Kafka/S3 (MSK, Confluent, real AWS S3): drop the kafka /
+# minio / kafka-init / minio-init services and point
+# KAFKA_BOOTSTRAP_SERVERS / S3_* at the managed endpoints (override the
+# x-app-env values below). See docs/ingestion/production-deploy.md.
+
+# ---- shared building blocks (YAML anchors) --------------------------
+x-app-env: &app-env
+  DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+  OLLAMA_URL: http://ollama:11434
+  COMPANY_OS_ENV: prod
+  FYRALIS_ENV: prod
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  # Default single-box object store (MinIO). For real AWS S3 set
+  # S3_ENDPOINT_URL="" and real IAM creds (here or in .env.production).
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_RAW_BUCKET: fyralis-raw
+  S3_REGION_NAME: us-east-1
+  AWS_ACCESS_KEY_ID: fyralis
+  AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+
+# Every long-running app/worker waits for migrations + topics + bucket.
+x-app-deps: &app-deps
+  postgres:
+    condition: service_healthy
+  kafka:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+  kafka-init:
+    condition: service_completed_successfully
+  minio-init:
+    condition: service_completed_successfully
+
+x-worker: &worker
+  build: .
+  restart: unless-stopped
+  depends_on: *app-deps
+  environment: *app-env
+  env_file: .env.production
+
 services:
+  # ---- infrastructure ----------------------------------------------
   postgres:
     image: pgvector/pgvector:pg16
     container_name: company_os_postgres
@@ -25,64 +87,185 @@ services:
       - "11434:11434"
     volumes:
       - company_os_ollama:/root/.ollama
-    # Pull the embed model on first run. Safe on re-run — Ollama
-    # skips the pull if the model is already present.
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "ollama serve & sleep 3 &&
        ollama pull nomic-embed-text &&
        wait"
 
-  gateway:
-    build: .
-    container_name: company_os_gateway
+  kafka:
+    image: apache/kafka:4.0.2
+    container_name: company_os_kafka
     restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # In-network clients reach the broker via the service name.
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      # Topics are provisioned explicitly by kafka-init.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - company_os_kafka:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  minio:
+    image: minio/minio:latest
+    container_name: company_os_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: fyralis
+      MINIO_ROOT_PASSWORD: fyralis-secret-change-me
+    volumes:
+      - company_os_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # ---- one-shot init (run to completion, then exit) ----------------
+  migrate:
+    build: .
+    container_name: company_os_migrate
+    command: bash scripts/docker-migrate.sh
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
-      OLLAMA_URL: http://ollama:11434
-      COMPANY_OS_ENV: prod
-      # Belt-and-suspenders: the secret-store / webhook / OAuth guards key
-      # on FYRALIS_ENV; set it too so a missing MASTER_KEK fails fast
-      # instead of silently using an ephemeral key. is_prod() treats the
-      # env as prod if either var says prod, so both being set is safe.
-      FYRALIS_ENV: prod
-      # Synthetic /simulation/* injection endpoints stay OFF in prod (the
-      # gateway also hard-refuses to mount them when is_prod()).
+    env_file: .env.production
+
+  kafka-init:
+    build: .
+    container_name: company_os_kafka_init
+    command: python scripts/provision_kafka_topics.py
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    env_file: .env.production
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: company_os_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 fyralis fyralis-secret-change-me &&
+      mc mb --ignore-existing local/fyralis-raw &&
+      echo 'bucket fyralis-raw ready'"
+    restart: "no"
+
+  # ---- ingress (gateway: webhooks, Pub/Sub push, OAuth callbacks) --
+  gateway:
+    <<: *worker
+    container_name: company_os_gateway
+    environment:
+      <<: *app-env
       GATEWAY_MOUNT_SIM: "0"
       GATEWAY_START_GRT_SCHEDULER: "1"
       GATEWAY_OWNS_POOL: "1"
-    env_file: .env.production
     expose:
       - "8000"
 
+  # ---- backfill / onboarding workflow loops ------------------------
+  oauth_poller:
+    <<: *worker
+    container_name: company_os_oauth_poller
+    command: python -m services.ingestion.workflows.oauth_poller
+
+  tenant_onboarding:
+    <<: *worker
+    container_name: company_os_tenant_onboarding
+    command: python -m services.ingestion.workflows.tenant_onboarding
+
+  source_onboarding:
+    <<: *worker
+    container_name: company_os_source_onboarding
+    command: python -m services.ingestion.workflows.source_onboarding
+
+  shard_fetch:
+    <<: *worker
+    container_name: company_os_shard_fetch
+    command: python -m services.ingestion.workflows.shard_fetch
+
+  reconciler:
+    <<: *worker
+    container_name: company_os_reconciler
+    command: python -m services.ingestion.workflows.reconciler
+
+  # ---- Kafka consumer chain ----------------------------------------
+  normalizer:
+    <<: *worker
+    container_name: company_os_normalizer
+    command: python -m services.ingestion.normalizer.worker
+
+  observation_writer:
+    <<: *worker
+    container_name: company_os_observation_writer
+    command: python -m services.ingestion.writers.observation_writer
+
+  dlq_writer:
+    <<: *worker
+    container_name: company_os_dlq_writer
+    command: python -m services.ingestion.writers.dlq_writer.dlq_writer
+
+  embedding_worker:
+    <<: *worker
+    container_name: company_os_embedding_worker
+    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+
+  # ---- live source workers -----------------------------------------
+  discord_gateway_worker:
+    <<: *worker
+    container_name: company_os_discord_gateway_worker
+    command: python scripts/run_discord_gateway_worker.py
+
+  gmail_watch_scheduler:
+    <<: *worker
+    container_name: company_os_gmail_watch_scheduler
+    command: python scripts/run_gmail_watch_scheduler.py
+
+  gmail_history_poller:
+    <<: *worker
+    container_name: company_os_gmail_history_poller
+    command: python scripts/run_gmail_history_poller.py
+
+  # ---- think / post-commit application workers ---------------------
   think_worker:
-    build: .
+    <<: *worker
     container_name: company_os_think_worker
     command: python scripts/run_think_worker.py
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
-      OLLAMA_URL: http://ollama:11434
-    env_file: .env.production
 
   post_commit_worker:
-    build: .
+    <<: *worker
     container_name: company_os_post_commit_worker
     command: python scripts/run_post_commit_worker.py
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
-    env_file: .env.production
 
+  # ---- UI + edge ----------------------------------------------------
   ui:
     build:
       context: .
@@ -124,6 +307,8 @@ services:
 volumes:
   company_os_pgdata:
   company_os_ollama:
+  company_os_kafka:
+  company_os_minio:
   nginx-certs:
   nginx-html:
   acme:

@@ -428,6 +428,10 @@ def main() -> None:
     asyncio.run(_run())
 
 
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    main()
+
+
 __all__ = [
     "EmbeddingWorkerConfig",
     "embed_and_update",

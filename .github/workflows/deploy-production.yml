@@ -27,11 +27,16 @@ jobs:
             git reset --hard origin/production
 
             echo "==> Rebuilding and restarting containers"
-            docker compose pull
+            # Migrations auto-apply via the `migrate` one-shot service
+            # (gateway/workers depend on it via service_completed_successfully).
+            # Kafka topics + S3 bucket are provisioned by kafka-init/minio-init.
+            docker compose pull --ignore-buildable || true
             docker compose up -d --build --remove-orphans
 
             echo "==> Waiting for gateway health check"
-            timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'
+            # Larger window: the data plane now boots kafka (start_period 20s)
+            # plus the migrate/kafka-init/minio-init one-shots before gateway.
+            timeout 180 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'
 
             echo "==> Deployment complete"
             docker compose ps
