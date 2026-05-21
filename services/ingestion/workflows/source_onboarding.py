@@ -375,13 +375,18 @@ async def _build_source_client(
     services don't pay the import cost. Tests rebind this function
     via `monkeypatch.setattr` to inject fakes.
     """
+    # Planners that enumerate at plan time (github repos / slack channels /
+    # discord guilds) get a real client; gmail reads DB state → None. The
+    # builders resolve the base URL via the endpoint resolver and, in
+    # spammer mode, carry a spammer-recognized identity token (no real
+    # JWT / secret material needed). See services/ingestion/fetchers/_clients.py.
+    from services.ingestion.fetchers import _clients
     if source == "github":
-        from services.integrations.github.client import GithubClient
-        return GithubClient(pool=pool)
+        return await _clients.build_github_client(install, pool=pool)
     if source == "slack":
-        return None  # M-Load wiring; tests patch
+        return await _clients.build_slack_client(install, pool=pool)
     if source == "discord":
-        return None  # M-Load wiring; tests patch
+        return await _clients.build_discord_client(install, pool=pool)
     return None
 
 

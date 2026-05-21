@@ -307,6 +307,9 @@ def _execute_run(n: int, *, bootstrap: str, tenants_per_source: int):
             run3,
         )
         return asyncio.run(run3(bootstrap_servers=bootstrap))
+    if n == 5:
+        from services.synthetic.validation_runs.run4_concurrent import run5
+        return asyncio.run(run5(bootstrap_servers=bootstrap))
     from services.synthetic.validation_runs.run4_concurrent import run4
     return asyncio.run(run4(bootstrap_servers=bootstrap))
 
@@ -324,8 +327,9 @@ def main() -> int:
     )
     parser = argparse.ArgumentParser(description="Composed validation runs")
     parser.add_argument(
-        "--run", default="1", choices=("1", "2", "3", "4", "all"),
-        help="which run to execute; 'all' runs 1→2→3→4 sequentially",
+        "--run", default="1", choices=("1", "2", "3", "4", "5", "all"),
+        help="which run to execute; 'all' runs 1→2→3→4 sequentially. "
+             "5 = the spammer capstone (Run 4 shape, real clients → spammer).",
     )
     parser.add_argument("--tenants-per-source", type=int, default=4)
     args = parser.parse_args()

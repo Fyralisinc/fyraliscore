@@ -65,7 +65,10 @@ class DiscordClient:
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
         http_client: httpx.AsyncClient | None = None,
+        base_url: str | None = None,
     ) -> None:
+        from lib.integrations.endpoints import endpoint
+        self._api_base = (base_url or endpoint("discord_api")).rstrip("/")
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
@@ -139,7 +142,7 @@ class DiscordClient:
         (e.g. `/guilds/{guild_id}/members/{user_id}`) — used in the
         structured log so raw IDs are never logged. `endpoint_substituted`
         is what we actually hit."""
-        url = f"{_DISCORD_API_BASE}{endpoint_substituted}"
+        url = f"{self._api_base}{endpoint_substituted}"
         headers: dict[str, str] = {}
         if require_bot_token:
             token = await self._resolve_bot_token()
@@ -322,6 +325,55 @@ class DiscordClient:
             endpoint_substituted=f"/applications/{application_id}/commands",
             json_body=command_spec,
         )
+
+    # -----------------------------------------------------------------
+    # Backfill read surface (M6.6) — mirrors MockDiscordClient so the
+    # planner / fetcher / reconciler exercise the real REST API the same
+    # way they exercise the in-process mock. These endpoints return JSON
+    # arrays; `_request` returns the parsed body (a list) on 2xx.
+    # -----------------------------------------------------------------
+
+    async def list_guilds(self) -> list[dict[str, Any]]:
+        """The bot's guilds (planner shard source). `GET /users/@me/guilds`."""
+        result = await self._request(
+            "GET", "/users/@me/guilds",
+            endpoint_substituted="/users/@me/guilds",
+        )
+        return result if isinstance(result, list) else []
+
+    async def list_guild_channels(
+        self, guild_id: str,
+    ) -> list[dict[str, Any]]:
+        """A guild's channels. `GET /guilds/{guild_id}/channels`."""
+        result = await self._request(
+            "GET", "/guilds/{guild_id}/channels",
+            endpoint_substituted=f"/guilds/{guild_id}/channels",
+        )
+        return result if isinstance(result, list) else []
+
+    async def get_messages(
+        self,
+        *,
+        channel_id: str,
+        before: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """One page of a channel's messages (newest-first), paginated by
+        snowflake. `GET /channels/{channel_id}/messages`."""
+        params: dict[str, Any] = {}
+        if before is not None:
+            params["before"] = before
+        if after is not None:
+            params["after"] = after
+        if limit is not None:
+            params["limit"] = limit
+        result = await self._request(
+            "GET", "/channels/{channel_id}/messages",
+            endpoint_substituted=f"/channels/{channel_id}/messages",
+            params=params or None,
+        )
+        return result if isinstance(result, list) else []
 
 
 def _parse_retry_after(value: str | None) -> float | None:

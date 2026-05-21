@@ -120,8 +120,10 @@ PATTERN-ALIGNMENT MAPPING
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -153,6 +155,16 @@ log = logging.getLogger(__name__)
 
 WORKFLOW_KIND = "reconciler"
 WORKFLOW_ID_INBOX = "reconciler"  # per A13: workflow_id = inbox
+
+# The per-source reconciler dispatch runs a best-effort gap-check that may
+# make source-API calls (real HTTP in production / against the spammer).
+# Bound it so one slow/wedged API call can't hold the claim transaction —
+# and thus freeze the reconciler's single-loop tick — indefinitely. A
+# timed-out check is treated as "clean" (no gaps): the run completes, and a
+# genuine gap would be re-detected on a later pass. Configurable for tests.
+RECONCILER_DISPATCH_TIMEOUT_S = float(
+    os.environ.get("RECONCILER_DISPATCH_TIMEOUT_SEC", "30"),
+)
 WORKFLOW_ID_DEFAULT = "default"
 
 # Signal kinds.
@@ -434,7 +446,22 @@ class Reconciler(LongRunningService):
         # facing "not yet implemented" distinction); control flow is
         # identical.
         try:
-            decision = await RECONCILER_DISPATCH[source](shards, run)
+            decision = await asyncio.wait_for(
+                RECONCILER_DISPATCH[source](shards, run),
+                timeout=RECONCILER_DISPATCH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            # Best-effort gap-check exceeded its bound (slow / wedged source
+            # API). Treat as clean rather than failing the run or holding the
+            # claim open: the data is already backfilled; a real gap re-detects
+            # on a later reconcile. Prevents a single hung call from stalling
+            # all remaining reconciliations on this single-loop worker.
+            log.warning(
+                "reconciler.dispatch_timeout",
+                extra={"source": source, "run_id": str(run_id),
+                       "timeout_s": RECONCILER_DISPATCH_TIMEOUT_S},
+            )
+            decision = ReconciliationDecision(has_gaps=False)
         except NotImplementedError as exc:
             failure_reason = str(exc)
             await _mark_run_failed(
