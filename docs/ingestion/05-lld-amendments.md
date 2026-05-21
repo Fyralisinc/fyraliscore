@@ -723,6 +723,32 @@ A18 inherits from and extends:
 
 ---
 
+## A29 — Composed validation-run spine: standalone runner with fixture-realism pre-flight, state reset, and consumer-rc policy
+
+**Status:** Spine resolved on `feat/ingestion-validation-runs-spine`. The live phase + Runs 2/3 are deferred (see sub-section below).
+
+**Context.** M6.7 + the X3 harness fixes made backfill produce observations end-to-end across all four sources. M-Validate composes that into an operator-invokable validation surface. This amendment records the **spine** — the runner skeleton plus Run 1 (clean-path E2E backfill, all four sources) — and the four new decisions that shaped it. It lives in `services/synthetic/validation_runs/` and runs as `python -m services.synthetic.validation_runs.runner --run=1`.
+
+**Architecture.** A standalone asyncio runner (Decision 1 — not pytest; the run needs real Kafka + Postgres + moto-S3 + the 7 M6 subprocesses, which is operator infrastructure). It is phase-structured: `moto-up → state-reset → pre-flight → backfill(+drain) → assertions → report`. The backfill phase reuses the proven `BackfillHarness` (whose `_wait_for_observations_to_drain` is the Decision-4 consumer-drain step between producer completion and state collection). Run 1 = 16 tenants (4 per source, Decision 3); verified producing exact per-source observation counts (gmail 20, github 24, slack 20, discord 20) with external_id parity and zero partition-missing DLQs.
+
+**A29.1 — Runner spawns its own moto S3 (Decision 9).** `moto_lifecycle.moto_s3()` boots a `ThreadedMotoServer` (port 5600 with ephemeral fallback), exports `S3_ENDPOINT_URL`/`S3_RAW_BUCKET` + dummy creds (inherited by the harness subprocesses via `os.environ.copy()`), creates the bucket, and tears down + restores env on exit. One command brings up everything; the operator doesn't pre-start S3. Mirrors the M6.7 `moto_s3_server` conftest fixture but as a context manager for the standalone process.
+
+**A29.2 — State reset between runs (Decision 10).** `cleanup.reset_state()` delete+recreates the four ingestion topics (`ingestion.{raw,normalized,embedding,dlq}`) via `AIOKafkaAdminClient` and clears the moto raw bucket. Topic deletion also drops the consumer groups' committed offsets — directly defusing the cross-run offset pollution that cost hours in M6.7 (stale `ingestion.normalized` offsets shadow-moded re-read messages). Verified idempotent: back-to-back runs each start from genuinely empty topics + bucket.
+
+**A29.3 — Consumer-rc policy (Decision 11).** The report accepts `rc ∈ {0,-9,-15}` for the two consumer services (`normalizer`, `observation_writer`) — the documented ticket #45 idle-SIGTERM gap — and treats anything else (especially `rc=1`, the partition-crash signature pre-A28) OR any non-zero rc on a framework service as a **real failure**. This tolerates the known shutdown gap without blinding the runner to a genuine crash, and **auto-greens** when ticket #45 ships (rc flips to 0, still accepted). Chosen over blanket "accept non-zero rc."
+
+**A29.4 — Fixture-realism pre-flight (Decision 12).** `preflight.run_preflight()` is the structural defense against the M6.7-class finding (synthetic fixtures missing fields real APIs carry — gmail Message-ID, github node_id, out-of-range timestamps; hit three times in M6.7). It is **behavioral, not static**: per source it drives the *real* backfill fetcher against its mock client, runs each emitted record through the *real* handler (mirroring shard_fetch's `webhook_metadata` lift + the normalizer's blob-unwrap), and asserts (1) the handler doesn't raise, (2) `external_id` is non-null, (3) `occurred_at` falls within the live `observations` partition coverage (parsed from `pg_inherits`, so it adapts to whatever partitions exist). Fails fast before a 90-minute run on a known-bad fixture. Verified green for all four sources.
+
+**Deferred to the M-Validate-Live work-unit (ticket #47).** This commit is intentional scope discipline, NOT partial completion — the spine is fully verified. Explicitly NOT in this commit:
+- **Live-phase orchestration** — composing the four in-process live generators (`build_app` for slack/github/gmail webhooks + Discord's `DispatchDeps`/`build_tenant_resolver`) with the runner's live phase, and the live + cross-path assertions that prove a backfilled event and its live twin dedup to one row.
+- **Run 2 (fault injection)** across all paths — including the *positive* partition-missing assertion (verify A28's DLQ routing fires when an out-of-range `occurred_at` is deliberately injected).
+- **Run 3 (50-tenant concurrency stress)** — per-tenant isolation + bounded signal backlog under load.
+The live composition is its own architectural surface (four heterogeneous in-process drivers) deserving the same verify-before-green discipline; cramming it into the spine would risk shipping unverified composition.
+
+**Cross-references:** A22 (X3 harness — the backfill engine the spine reuses). A27 / A27.6 (M6.7 — what made backfill produce observations; A27.6's continuation documents the harness fixes the spine depends on). A28 (partition-missing DLQ — A29.4's pre-flight + the zero-partition-missing assertion guard against re-triggering it). Ticket #45 (consumer shutdown — A29.3's rc policy). Ticket #47 (M-Validate-Live — the deferred work-unit).
+
+---
+
 ## A28 — Observation writer permanent-error classification for missing partition (DLQ instead of crash-loop)
 
 **Status:** Resolved on `feat/ingestion-x3-harness-e2e-fixes` (commit 2). Surfaced during M6.7 verification.
