@@ -1,6 +1,10 @@
 -- =====================================================================
--- 0014_customer_commitments_superset.sql — Q2 resolution (Option B1)
+-- 0025_customer_commitments_superset.sql — Q2 resolution (Option B1)
 -- =====================================================================
+-- (Renumbered from a duplicate `0014_` prefix that made migration
+-- apply-order locale-dependent. Dependency-safe: this file only ALTERs
+-- `customer_commitments` — created in 0001 — and nothing in 0015-0024
+-- touches that table.)
 -- Rachin resolved SCHEMA-QUESTION.md Q2 on 2026-04-21 by choosing to
 -- migrate `customer_commitments` to the §27 superset shape. The §4
 -- shape becomes a subset preserved via column defaults so that

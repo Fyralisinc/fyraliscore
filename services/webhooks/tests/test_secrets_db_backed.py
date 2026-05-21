@@ -219,6 +219,20 @@ def test_assert_prod_safety_invariants_allows_in_dev(
 ) -> None:
     """In non-prod, the flag is permitted (and indeed expected)."""
     monkeypatch.setenv("FYRALIS_ENV", "dev")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
     monkeypatch.setenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", "1")
     # Should NOT raise.
     assert_prod_safety_invariants()
+
+
+def test_assert_prod_safety_invariants_raises_when_company_os_env_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the guard must fire even when only COMPANY_OS_ENV (not
+    FYRALIS_ENV) marks the environment as prod — the shipped compose set
+    only that one, so the FYRALIS_ENV-only guard never fired."""
+    monkeypatch.delenv("FYRALIS_ENV", raising=False)
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+    monkeypatch.setenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", "1")
+    with pytest.raises(RuntimeError, match="WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW"):
+        assert_prod_safety_invariants()

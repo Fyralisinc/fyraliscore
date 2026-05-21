@@ -44,7 +44,14 @@ services:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
       OLLAMA_URL: http://ollama:11434
       COMPANY_OS_ENV: prod
-      GATEWAY_MOUNT_SIM: "1"
+      # Belt-and-suspenders: the secret-store / webhook / OAuth guards key
+      # on FYRALIS_ENV; set it too so a missing MASTER_KEK fails fast
+      # instead of silently using an ephemeral key. is_prod() treats the
+      # env as prod if either var says prod, so both being set is safe.
+      FYRALIS_ENV: prod
+      # Synthetic /simulation/* injection endpoints stay OFF in prod (the
+      # gateway also hard-refuses to mount them when is_prod()).
+      GATEWAY_MOUNT_SIM: "0"
       GATEWAY_START_GRT_SCHEDULER: "1"
       GATEWAY_OWNS_POOL: "1"
     env_file: .env.production

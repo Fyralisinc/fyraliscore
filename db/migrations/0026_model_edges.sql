@@ -1,4 +1,10 @@
--- 0031_model_edges.sql
+-- 0026_model_edges.sql
+--
+-- (Renumbered from a duplicate `0031_` prefix that collided with
+-- 0031_gmail_integration.sql. Dependency-safe: this file only creates
+-- `model_edges` and ALTERs `model_reeval_queue` — created in 0007 — and
+-- the migrations that reference model_edges, 0032/0036/0037, all run
+-- after it.)
 --
 -- S1 of the Self-Organizing Substrate plan — unified Model-to-Model
 -- edge primitive. Replaces the seven ad-hoc connection mechanisms

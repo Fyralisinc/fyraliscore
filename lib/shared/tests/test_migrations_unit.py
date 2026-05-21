@@ -6,9 +6,32 @@ The integration counterpart (apply against a real Postgres) lives in
 """
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
-from lib.shared.migrations import _needs_no_transaction
+from lib.shared.migrations import _assert_unique_prefixes, _needs_no_transaction
+
+
+_MIGRATIONS_DIR = (
+    pathlib.Path(__file__).resolve().parents[3] / "db" / "migrations"
+)
+
+
+def test_real_migrations_have_unique_prefixes() -> None:
+    """Regression for P0-2: the shipped db/migrations/ set must never
+    contain two files sharing a numeric prefix (apply-order would be
+    locale-dependent and the schema non-deterministic across envs)."""
+    files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
+    assert files, f"no migrations found in {_MIGRATIONS_DIR}"
+    _assert_unique_prefixes(files)  # raises RuntimeError on a dupe
+
+
+def test_assert_unique_prefixes_rejects_duplicates(tmp_path) -> None:
+    (tmp_path / "0001_a.sql").write_text("SELECT 1;")
+    (tmp_path / "0001_b.sql").write_text("SELECT 1;")
+    with pytest.raises(RuntimeError, match="duplicate migration prefixes"):
+        _assert_unique_prefixes(sorted(tmp_path.glob("*.sql")))
 
 
 @pytest.mark.parametrize(

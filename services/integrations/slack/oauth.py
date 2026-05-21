@@ -107,8 +107,9 @@ def _hmac_key() -> bytes:
     """
     raw = os.environ.get("OAUTH_STATE_HMAC_KEY", "")
     if not raw:
-        env = os.environ.get("FYRALIS_ENV", "").lower()
-        if env == "prod":
+        from lib.shared.env import is_prod
+
+        if is_prod():
             raise StateTokenInvalidError(
                 "state_invalid",
                 "OAUTH_STATE_HMAC_KEY not configured in production",

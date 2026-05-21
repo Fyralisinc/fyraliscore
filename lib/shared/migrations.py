@@ -81,6 +81,36 @@ _NO_TXN_DIRECTIVE_RE = re.compile(
 )
 
 
+_PREFIX_RE = re.compile(r"^(\d+)_")
+
+
+def _assert_unique_prefixes(files: Iterable[pathlib.Path]) -> None:
+    """Reject a migrations set with duplicate numeric prefixes.
+
+    Two files sharing a prefix (e.g. `0014_a.sql` and `0014_b.sql`)
+    make the apply order depend on locale collation, which can diverge
+    across environments and silently produce a non-deterministic
+    schema. This is always a defect — fail loudly before applying
+    anything, regardless of `on_error`.
+    """
+    seen: dict[str, str] = {}
+    dupes: list[str] = []
+    for path in files:
+        m = _PREFIX_RE.match(path.name)
+        if m is None:
+            continue
+        prefix = m.group(1)
+        if prefix in seen:
+            dupes.append(f"{prefix}: {seen[prefix]} + {path.name}")
+        else:
+            seen[prefix] = path.name
+    if dupes:
+        raise RuntimeError(
+            "duplicate migration prefixes detected (each db/migrations/"
+            "*.sql must have a unique numeric prefix): " + "; ".join(dupes)
+        )
+
+
 def _needs_no_transaction(sql_text: str) -> bool:
     """True iff this migration must run outside a transaction.
 
@@ -154,6 +184,7 @@ async def apply_migrations_dir(
     files = sorted(migrations_dir.glob("*.sql"))
     if not files:
         raise RuntimeError(f"no migrations found in {migrations_dir}")
+    _assert_unique_prefixes(files)
 
     applied: list[str] = []
     for path in files:
@@ -177,4 +208,9 @@ async def apply_migrations_dir(
     return applied
 
 
-__all__ = ["MigrationError", "apply_migration", "apply_migrations_dir"]
+__all__ = [
+    "MigrationError",
+    "apply_migration",
+    "apply_migrations_dir",
+    "_assert_unique_prefixes",
+]

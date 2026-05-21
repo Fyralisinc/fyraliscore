@@ -2468,11 +2468,28 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     # gateway pool and a lazily-constructed embedder; the standalone
     # `simulation.server:app` continues to work via its own app factory.
     #
-    # Default ON in dev/test, OFF in prod. Set `GATEWAY_MOUNT_SIM=0` to
-    # force off regardless of environment.
-    env_name = os.environ.get("COMPANY_OS_ENV", "dev").lower()
-    _mount_sim_default = "0" if env_name == "prod" else "1"
-    if os.environ.get("GATEWAY_MOUNT_SIM", _mount_sim_default) == "1":
+    # Default ON in dev/test, OFF in prod. In production the sim /
+    # authoring endpoints are NEVER mounted, regardless of
+    # GATEWAY_MOUNT_SIM, because `/simulation/inject` is an
+    # unauthenticated, signature-free, caller-chooses-tenant
+    # substrate-injection surface (it lives under the public path
+    # allowlist). A stray GATEWAY_MOUNT_SIM=1 in a prod compose must not
+    # be able to re-open it.
+    from lib.shared.env import env_name as _env_name_fn, is_prod as _is_prod
+    env_name = _env_name_fn()
+    _prod = _is_prod()
+    _sim_requested = (
+        os.environ.get("GATEWAY_MOUNT_SIM", "0" if _prod else "1") == "1"
+    )
+    if _prod and _sim_requested:
+        log.error(
+            "sim_mount_refused_in_prod",
+            reason=(
+                "GATEWAY_MOUNT_SIM=1 ignored in production; "
+                "/simulation/* is an unauthenticated injection surface"
+            ),
+        )
+    if _sim_requested and not _prod:
         try:
             from simulation.server import SimDeps, build_sim_router
             from simulation.workers._common import (

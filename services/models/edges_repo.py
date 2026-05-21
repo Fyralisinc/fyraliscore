@@ -1,6 +1,6 @@
 """
 services/models/edges_repo.py — repository for the unified
-Model-to-Model edge primitive (migration 0031_model_edges.sql).
+Model-to-Model edge primitive (migration 0026_model_edges.sql).
 
 Single writer for `model_edges`. Every edge mutation in the codebase
 goes through this repo; arrays on `models` (supporting_model_ids,

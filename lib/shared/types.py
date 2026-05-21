@@ -126,7 +126,7 @@ ActorStatus = Literal["active", "inactive", "departed"]
 
 # ---------------------------------------------------------------------
 # Model-edge enums (S1 of self-organizing-substrate plan, migration
-# 0031_model_edges.sql + lib/shared/edge_registry.py).
+# 0026_model_edges.sql + lib/shared/edge_registry.py).
 # ---------------------------------------------------------------------
 
 # Edge lifecycle. Edges become 'inert' when either endpoint is

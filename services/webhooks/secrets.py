@@ -73,12 +73,14 @@ def assert_prod_safety_invariants() -> None:
     that left the flag on would silently downgrade security; failing
     startup is the loud, observable response.
     """
-    env = os.environ.get("FYRALIS_ENV", "").lower()
+    from lib.shared.env import is_prod
+
     fallback = _env_fallback_allowed()
-    if env == "prod" and fallback:
+    if is_prod() and fallback:
         raise RuntimeError(
             "WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1 is set in a production "
-            "environment (FYRALIS_ENV=prod). The env-var fallback for "
+            "environment (FYRALIS_ENV/COMPANY_OS_ENV=prod). The env-var "
+            "fallback for "
             "webhook signing secrets is dev-only and must not be enabled "
             "in prod — refusing to start so tenant secrets are not "
             "silently sourced from process environment."
