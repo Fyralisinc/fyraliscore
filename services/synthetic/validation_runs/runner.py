@@ -287,13 +287,43 @@ async def _as_coro(fn, *args):
     fn(*args)
 
 
+def _execute_run(n: int, *, bootstrap: str, tenants_per_source: int):
+    """Execute one run (1/2/3) and return its RunReport."""
+    if n == 1:
+        return asyncio.run(run1(
+            bootstrap_servers=bootstrap,
+            tenants_per_source=tenants_per_source,
+        ))
+    if n == 2:
+        from services.synthetic.validation_runs.run2_fault_injection import (
+            run2,
+        )
+        return asyncio.run(run2(
+            bootstrap_servers=bootstrap,
+            tenants_per_source=tenants_per_source,
+        ))
+    from services.synthetic.validation_runs.run3_concurrency_stress import (
+        run3,
+    )
+    return asyncio.run(run3(bootstrap_servers=bootstrap))
+
+
+def _run_ok(report) -> bool:
+    if report.verdict is not None:
+        return report.verdict in ("READY", "PARTIAL")
+    return report.passed
+
+
 def main() -> int:
     logging.basicConfig(
         level=os.environ.get("VALIDATION_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     parser = argparse.ArgumentParser(description="Composed validation runs")
-    parser.add_argument("--run", type=int, default=1, choices=(1, 2, 3))
+    parser.add_argument(
+        "--run", default="1", choices=("1", "2", "3", "all"),
+        help="which run to execute; 'all' runs 1→2→3 sequentially",
+    )
     parser.add_argument("--tenants-per-source", type=int, default=4)
     args = parser.parse_args()
 
@@ -302,33 +332,26 @@ def main() -> int:
         return 2
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
-    if args.run == 1:
-        report = asyncio.run(run1(
-            bootstrap_servers=bootstrap,
+    run_numbers = [1, 2, 3] if args.run == "all" else [int(args.run)]
+    all_ok = True
+    verdicts: list[str] = []
+    for n in run_numbers:
+        report = _execute_run(
+            n, bootstrap=bootstrap,
             tenants_per_source=args.tenants_per_source,
-        ))
-    elif args.run == 2:
-        from services.synthetic.validation_runs.run2_fault_injection import (
-            run2,
         )
-        report = asyncio.run(run2(
-            bootstrap_servers=bootstrap,
-            tenants_per_source=args.tenants_per_source,
-        ))
-    else:  # run == 3
-        from services.synthetic.validation_runs.run3_concurrency_stress import (
-            run3,
-        )
-        report = asyncio.run(run3(bootstrap_servers=bootstrap))
+        path = write_report(report)
+        status = report.verdict or ("PASS" if report.passed else "FAIL")
+        verdicts.append(f"Run {n}={status}")
+        print(f"\nRun {n} {status} — report: {path}")
+        rc_bad = report.rc_violations()
+        if rc_bad:
+            print(f"  rc violations: {rc_bad}", file=sys.stderr)
+        all_ok = all_ok and _run_ok(report)
 
-    path = write_report(report)
-    status = report.verdict or ("PASS" if report.passed else "FAIL")
-    print(f"\nRun {args.run} {status} — report: {path}")
-    rc_bad = report.rc_violations()
-    if rc_bad:
-        print(f"  rc violations: {rc_bad}", file=sys.stderr)
-    ok = report.verdict in ("READY", "PARTIAL") if report.verdict else report.passed
-    return 0 if ok else 1
+    if len(run_numbers) > 1:
+        print(f"\nAll runs: {', '.join(verdicts)}")
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":
