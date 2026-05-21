@@ -366,3 +366,136 @@ async def test_pubsub_generator_composable_with_x3_seeding(
         tenant_id,
     ))
     assert count == 3, f"expected 3 observations (1 bf + 2 live), got {count}"
+
+
+# =====================================================================
+# Phase 0 (A30.1 / A30.2) — install reuse + identity injection.
+# =====================================================================
+@pytest.mark.asyncio
+async def test_pubsub_generator_default_kwarg_preserves_existing_behavior(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """No message_id/internal_date → auto-minted id; external_id has the
+    `gmail:{install}:msg-y1-...` shape. Backward-compat guard."""
+    app = _build_app(fresh_db)
+    client = MockGmailClient(
+        fixture=make_gmail_mailbox(
+            email="def@y1.com", messages=0, starting_history_id=9100,
+        ),
+    )
+    async with GmailPubSubGenerator(
+        app=app, pool=fresh_db, mailboxes={"def@y1.com": client},
+    ) as gen:
+        tenant_id = gen._bindings["def@y1.com"].tenant_id
+        install_id = gen._bindings["def@y1.com"].gmail_installation_id
+        result = await gen.simulate_push(
+            mailbox_email="def@y1.com", new_messages=1,
+        )
+
+    assert result.http_status == 200, result.response_body
+    row = await fresh_db.fetchrow(
+        "SELECT external_id FROM observations WHERE tenant_id = $1",
+        tenant_id,
+    )
+    # external_id derives from the Message-ID header (`y1-{nonce}-{i}`),
+    # not the resource id.
+    assert row["external_id"].startswith(f"gmail:{install_id}:y1-")
+
+
+@pytest.mark.asyncio
+async def test_pubsub_generator_injected_identity_propagates_to_observation(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Injected message_id + internal_date flow to external_id
+    (`gmail:{install}:{message_id}`) and occurred_at. The twin seam."""
+    from datetime import datetime, timezone
+
+    app = _build_app(fresh_db)
+    client = MockGmailClient(
+        fixture=make_gmail_mailbox(
+            email="inj@y1.com", messages=0, starting_history_id=9200,
+        ),
+    )
+    injected_mid = "msg-y1-twin-0001"
+    injected_idate = "1767225600000"  # 2026-01-01T00:00:00Z in epoch ms
+    async with GmailPubSubGenerator(
+        app=app, pool=fresh_db, mailboxes={"inj@y1.com": client},
+    ) as gen:
+        tenant_id = gen._bindings["inj@y1.com"].tenant_id
+        install_id = gen._bindings["inj@y1.com"].gmail_installation_id
+        result = await gen.simulate_push(
+            mailbox_email="inj@y1.com", new_messages=1,
+            message_id=injected_mid, internal_date=injected_idate,
+        )
+
+    assert result.http_status == 200, result.response_body
+    row = await fresh_db.fetchrow(
+        "SELECT external_id, occurred_at FROM observations "
+        "WHERE tenant_id = $1",
+        tenant_id,
+    )
+    assert row["external_id"] == f"gmail:{install_id}:{injected_mid}"
+    assert row["occurred_at"] == datetime(
+        2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pubsub_generator_reuses_existing_install(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A30.1: when a gmail_mailbox_watches row already exists for the
+    email (X3-backfill-style), the generator binds to its tenant +
+    install instead of minting a fresh one. This is what lets a live
+    push share backfill's install so the cross-path twin's external_id
+    collides."""
+    from uuid import uuid4 as _uuid4
+
+    from lib.shared.ids import uuid7
+
+    email = "reuse@y1.com"
+    pre_tenant = _uuid4()
+    pre_install = uuid7()
+    await fresh_db.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, $2)",
+        pre_tenant, "pre-reuse",
+    )
+    await fresh_db.execute(
+        "INSERT INTO gmail_installations "
+        "(id, tenant_id, workspace_domain, service_account_email, scope) "
+        "VALUES ($1, $2, $3, $4, 'gmail.metadata')",
+        pre_install, pre_tenant, "y1.com", "sa@y1-test.iam.gserviceaccount.com",
+    )
+    await fresh_db.execute(
+        "INSERT INTO gmail_mailbox_watches "
+        "(id, tenant_id, gmail_installation_id, email_address, "
+        " history_id, state) "
+        "VALUES ($1, $2, $3, $4, $5, 'active')",
+        uuid7(), pre_tenant, pre_install, email, "1000",
+    )
+
+    app = _build_app(fresh_db)
+    client = MockGmailClient(
+        fixture=make_gmail_mailbox(
+            email=email, messages=0, starting_history_id=1000,
+        ),
+    )
+    async with GmailPubSubGenerator(
+        app=app, pool=fresh_db, mailboxes={email: client},
+    ) as gen:
+        binding = gen._bindings[email]
+        assert binding.tenant_id == pre_tenant
+        assert binding.gmail_installation_id == pre_install
+        result = await gen.simulate_push(
+            mailbox_email=email, new_messages=1,
+        )
+        assert result.http_status == 200, result.response_body
+
+    # No NEW tenant was created; the observation lands under pre_tenant.
+    n_tenants = int(await fresh_db.fetchval("SELECT count(*) FROM tenants"))
+    assert n_tenants == 1, "generator must not create a second tenant"
+    count = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        pre_tenant,
+    ))
+    assert count == 1

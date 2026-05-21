@@ -172,10 +172,64 @@ class GmailPubSubGenerator:
         """For each registered mailbox, ensure a tenants row +
         gmail_installations row + gmail_mailbox_watches row +
         gmail_pubsub_topics row exist. The handler reads from these
-        to resolve subscription → tenant_id + email."""
+        to resolve subscription → tenant_id + email.
+
+        REUSE (A30.1): if a `gmail_mailbox_watches` row already exists
+        for the email — e.g. created by the X3 backfill harness — bind
+        to its tenant_id + gmail_installation_id instead of minting a
+        fresh install. This is what lets a live push share the SAME
+        install as backfill, so the cross-path dedup twin's external_id
+        (`gmail:{install}:{message_id}`) actually collides. If the
+        existing watch has no pubsub-topic row yet (backfill doesn't
+        create one), we add it so `handle_push` can resolve the
+        subscription. With no existing watch the original
+        create-fresh behaviour is preserved."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 for email, client in self._mock_clients.items():
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT w.tenant_id,
+                               w.gmail_installation_id,
+                               t.subscription_name
+                          FROM gmail_mailbox_watches w
+                     LEFT JOIN gmail_pubsub_topics t
+                            ON t.gmail_installation_id
+                               = w.gmail_installation_id
+                         WHERE lower(w.email_address) = $1
+                         LIMIT 1
+                        """,
+                        email,
+                    )
+                    if existing is not None:
+                        tenant_id = existing["tenant_id"]
+                        install_id = existing["gmail_installation_id"]
+                        sub_name = existing["subscription_name"]
+                        if sub_name is None:
+                            sub_name = (
+                                f"projects/y1-test/subscriptions/"
+                                f"gmail-{tenant_id.hex[:8]}-sub"
+                            )
+                            await conn.execute(
+                                """
+                                INSERT INTO gmail_pubsub_topics (
+                                    id, tenant_id, gmail_installation_id,
+                                    topic_name, subscription_name
+                                ) VALUES ($1, $2, $3, $4, $5)
+                                """,
+                                uuid7(), tenant_id, install_id,
+                                f"projects/y1-test/topics/"
+                                f"gmail-{tenant_id.hex[:8]}",
+                                sub_name,
+                            )
+                        self._bindings[email] = _MailboxBinding(
+                            tenant_id=tenant_id,
+                            gmail_installation_id=install_id,
+                            subscription_name=sub_name,
+                            mock_client=client,
+                        )
+                        continue
+
                     slug = self._tenant_slugs.get(email, f"y1-{email}")
                     tenant_id = uuid4()
                     await conn.execute(
@@ -286,6 +340,8 @@ class GmailPubSubGenerator:
         mailbox_email: str,
         new_messages: int = 1,
         replay: bool = False,
+        message_id: str | None = None,
+        internal_date: str | None = None,
     ) -> SimulatedPushResult:
         """Append `new_messages` to the mock mailbox and dispatch
         a matching Pub/Sub notification. Returns the result.
@@ -293,6 +349,15 @@ class GmailPubSubGenerator:
         If `replay=True`, the message append is skipped and the
         previous-call's historyId is reused (simulates Pub/Sub's
         at-least-once-delivery duplicate).
+
+        If `message_id` / `internal_date` are provided, the FIRST new
+        message uses them instead of the auto-minted id/timestamp.
+        Gmail's `external_id` is `gmail:{install}:{message_id}` and its
+        `occurred_at` derives from `internalDate`, so injecting both —
+        against the SAME install backfill used (see `_seed_db` reuse) —
+        lets a caller dispatch a live message matching a backfilled one
+        for the cross-path dedup twin (A30.2). `None` preserves
+        auto-mint.
         """
         binding = self._bindings.get(mailbox_email.lower())
         if binding is None:
@@ -304,6 +369,7 @@ class GmailPubSubGenerator:
         if not replay:
             new_msg_dicts = self._build_new_messages(
                 mailbox_email, new_messages,
+                message_id=message_id, internal_date=internal_date,
             )
             new_history_id = binding.mock_client.append_messages(
                 new_msg_dicts,
@@ -421,28 +487,40 @@ class GmailPubSubGenerator:
 
     def _build_new_messages(
         self, mailbox_email: str, count: int,
+        *, message_id: str | None = None, internal_date: str | None = None,
     ) -> list[dict[str, Any]]:
         """Construct `count` new message dicts shaped like Gmail API
         message resources, deterministic per mailbox + per-call
         sequence (uses time-based suffix so successive calls produce
-        distinct ids without an explicit counter)."""
+        distinct ids without an explicit counter).
+
+        When `message_id` / `internal_date` are given, the i==0 message
+        uses them verbatim (the cross-path twin seam, A30.2). Note:
+        Gmail's `external_id` derives from the RFC822 **Message-ID
+        header** (not the resource id), so `message_id` overrides that
+        header — the handler strips the angle brackets, yielding
+        `gmail:{install}:{message_id}`."""
         out: list[dict[str, Any]] = []
         nonce = uuid4().hex[:6]
         for i in range(count):
             mid = f"msg-y1-{_digest(mailbox_email, nonce, i)[:14]}"
             tid = f"thr-y1-{_digest(mailbox_email, nonce, i // 3)[:14]}"
+            idate = str(int(time.time() * 1000) + i)
+            if i == 0 and internal_date is not None:
+                idate = internal_date
+            msgid_header = f"<y1-{nonce}-{i}@example.com>"
+            if i == 0 and message_id is not None:
+                msgid_header = f"<{message_id}>"
             out.append({
                 "id": mid,
                 "threadId": tid,
                 "snippet": f"Y1 synthetic msg #{i}",
-                "internalDate": str(
-                    int(time.time() * 1000) + i,
-                ),
+                "internalDate": idate,
                 "historyId": "",  # filled by mock's append_messages
                 "payload": {
                     "headers": [
                         {"name": "Message-ID",
-                         "value": f"<y1-{nonce}-{i}@example.com>"},
+                         "value": msgid_header},
                         {"name": "From",
                          "value": f"sender-{i}@example.com"},
                         {"name": "To", "value": mailbox_email},

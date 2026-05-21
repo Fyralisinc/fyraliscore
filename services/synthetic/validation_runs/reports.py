@@ -50,6 +50,13 @@ class RunReport:
     subprocess_returncodes: dict[str, int] = field(default_factory=dict)
     assertions: list[AssertionResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # M-Validate-Live (A30): free-form live-phase + coverage lines.
+    live_lines: list[str] = field(default_factory=list)
+    coverage_rows: list[tuple[str, str, str, str, str, str]] = field(
+        default_factory=list)
+    # Explicit verdict overrides the binary pass/fail when set
+    # (READY / PARTIAL / NOT_READY) — Run 2 may be PARTIAL under FLAKY.
+    verdict: str | None = None
 
     def rc_violations(self) -> list[str]:
         """Return rc entries that are real failures under Decision 11."""
@@ -83,7 +90,11 @@ def _rc_annotation(name: str, rc: int) -> str:
 
 def render(report: RunReport) -> str:
     r = report
-    status = "PASS ✅" if r.passed else "FAIL ❌"
+    if r.verdict is not None:
+        status = {"READY": "READY ✅", "PARTIAL": "PARTIAL ⚠️",
+                  "NOT_READY": "NOT_READY ❌"}.get(r.verdict, r.verdict)
+    else:
+        status = "PASS ✅" if r.passed else "FAIL ❌"
     lines: list[str] = []
     lines.append(f"# Validation Run {r.run_number} — {r.run_name}")
     lines.append("")
@@ -115,6 +126,24 @@ def render(report: RunReport) -> str:
             f"{s.actual_observations} | {mark} |"
         )
     lines.append("")
+
+    if r.live_lines:
+        lines.append("## Live phase (A30)")
+        lines.append("")
+        for ln in r.live_lines:
+            lines.append(f"- {ln}")
+        lines.append("")
+
+    if r.coverage_rows:
+        lines.append("## Per-source × per-dimension coverage")
+        lines.append("")
+        lines.append(
+            "| Source | Backfill | Live | Cross-path dedup | "
+            "Signature gate | Replay idempotency |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in r.coverage_rows:
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("")
 
     lines.append("## Assertions")
     lines.append("")

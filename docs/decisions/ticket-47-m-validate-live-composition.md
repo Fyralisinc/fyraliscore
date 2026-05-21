@@ -1,6 +1,8 @@
 # Ticket #47 — M-Validate-Live: live-phase composition + Runs 2/3
 
-**Status:** **QUEUED.** Follow-up to the M-Validate spine (A29). Its own focused work-unit.
+**Status:** **RESOLVED** with the M-Validate-Live commit on `feat/ingestion-validation-runs-live-composition` (see [A30](../ingestion/05-lld-amendments.md)). Live-phase orchestration, cross-path dedup (gmail/github/slack), Run 2 (fault injection + A28 positive assertion), and Run 3 (50-tenant concurrency) all delivered + verified. Discord cross-path twin documented as architecturally excluded (disjoint id namespaces), not deferred.
+
+**Originally:** QUEUED. Follow-up to the M-Validate spine (A29). Its own focused work-unit.
 **Filed:** 2026-05-20.
 **Origin:** Deferred from the validation-run spine (`feat/ingestion-validation-runs-spine`). See [A29's deferral sub-section](../ingestion/05-lld-amendments.md).
 

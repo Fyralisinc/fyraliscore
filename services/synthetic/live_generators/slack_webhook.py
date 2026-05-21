@@ -161,6 +161,7 @@ class SlackWebhookGenerator:
         user_id: str | None = None,
         replay: bool = False,
         tamper_signature: bool = False,
+        ts: str | None = None,
     ) -> SimulatedWebhookResult:
         """Append a message to the mock Slack state and dispatch a
         matching `event_callback` webhook. Returns the outcome.
@@ -171,6 +172,13 @@ class SlackWebhookGenerator:
 
         If `tamper_signature=True`, send a deliberately wrong signature
         (negative test — expect 401, no observation).
+
+        If `ts` is provided (and not a replay), use it instead of the
+        auto-minted monotonic ts. This lets a caller dispatch a live
+        event whose `external_id` (`{channel}:{ts}`) and `occurred_at`
+        (parsed from ts) match a known backfilled event — the
+        cross-path dedup twin (A30.2). `ts=None` preserves the existing
+        auto-mint behaviour.
         """
         assert self._client is not None
         user = user_id or f"U_{channel_id}"
@@ -178,7 +186,7 @@ class SlackWebhookGenerator:
         if replay and channel_id in self._last_ts_by_channel:
             ts = self._last_ts_by_channel[channel_id]
         else:
-            ts = self._next_ts()
+            ts = ts if ts is not None else self._next_ts()
             self._append_to_mock(channel_id, ts=ts, user=user, text=content)
             self._last_ts_by_channel[channel_id] = ts
 
