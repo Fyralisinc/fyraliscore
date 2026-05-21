@@ -73,15 +73,12 @@ class GithubCursor(BaseModel):
 # Test seam — production opens a real GithubClient against the
 # install's auth; tests rebind to return a fake.
 async def _open_github_client(install: asyncpg.Record):  # noqa: ANN202
-    from services.integrations.github.client import GithubClient
-    # Production uses the SAME GithubClient instance the planner used
-    # (shared per-process). For the fetcher, we build a new one if no
-    # shared instance is available. Tests override.
-    raise RuntimeError(
-        "fetchers.github._open_github_client not configured; tests must "
-        "rebind via monkeypatch. Production wiring should provide a "
-        "shared GithubClient instance via the substrate (M-Load work)."
-    )
+    # Builds a real GithubClient pointed at the resolver's github_api base
+    # (production, or the local spammer when *_API_BASE_URL points at it).
+    # The X3 mock harness monkeypatches this symbol to inject a fixture
+    # client instead.
+    from services.ingestion.fetchers._clients import open_github_client
+    return await open_github_client(install)
 
 
 def _decode_cursor(cursor: dict[str, Any] | None) -> GithubCursor:

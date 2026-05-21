@@ -49,6 +49,9 @@ _APPS_DOC_URL_PATTERN = re.compile(
     r"/rest/apps/(apps|installations)",
     re.IGNORECASE,
 )
+# M6.4 backfill: maps the shard's REST event_type to the collection path.
+_GH_EVENT_PATH = {"issues": "issues", "pull_requests": "pulls"}
+_LINK_NEXT_PATTERN = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="next"')
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,12 +83,19 @@ class GithubClient:
         *,
         pool: asyncpg.Pool,
         http_client: httpx.AsyncClient | None = None,
-        api_base_url: str = _GITHUB_API_BASE,
+        api_base_url: str | None = None,
         tenant_resolver: Any | None = None,
+        backfill_installation_id: str | None = None,
     ) -> None:
+        from lib.integrations.endpoints import endpoint
         self._pool = pool
-        self._api_base_url = api_base_url.rstrip("/")
+        self._api_base_url = (api_base_url or endpoint("github_api")).rstrip("/")
         self._tenant_resolver = tenant_resolver
+        # Installation the backfill read methods (list_repo_events /
+        # head_repo_events) mint a token against. The M6.4 fetcher calls
+        # those methods WITHOUT an installation_id (mock-client parity),
+        # so `_open_github_client` binds it here at open time.
+        self._backfill_installation_id = backfill_installation_id
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
         self._installation_tokens: dict[str, CachedInstallationToken] = {}
@@ -324,6 +334,134 @@ class GithubClient:
         return repos
 
     # -----------------------------------------------------------------
+    # Backfill read surface (M6.4) — mirrors MockGithubClient so the
+    # fetcher / reconciler exercise the SAME code against the real API
+    # (or a local spammer) as against the in-process mock.
+    # -----------------------------------------------------------------
+
+    def _backfill_inst(self, installation_id: str | None) -> str:
+        inst = installation_id or self._backfill_installation_id
+        if not inst:
+            raise GithubApiError(
+                "github backfill read called without an installation_id; "
+                "build the client with backfill_installation_id=…",
+                code="github_api_error",
+            )
+        return inst
+
+    async def list_repo_events(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        event_type: str,
+        page: int = 1,
+        per_page: int = 30,
+        etag: str | None = None,
+        installation_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        """One page of issues / pull_requests for a repo.
+
+        Returns `(page_records, etag, next_page)` — the exact shape the
+        M6.4 fetcher consumes. `event_type` maps to the REST collection
+        (`issues` → /issues, `pull_requests` → /pulls). The response
+        `ETag` is returned for the reconciler's conditional fast-path;
+        `next_page` is parsed from the `Link` header (rel="next"),
+        falling back to `page+1` when a full page came back.
+        """
+        token = await self.mint_installation_token(
+            self._backfill_inst(installation_id),
+        )
+        path = _GH_EVENT_PATH[event_type]
+        url = (
+            f"{self._api_base_url}/repos/{owner}/{repo}/{path}"
+            f"?state=all&sort=updated&direction=asc"
+            f"&per_page={per_page}&page={page}"
+        )
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if etag:
+            headers["If-None-Match"] = etag
+        client = self._httpx()
+        try:
+            response = await client.get(url, headers=headers)
+        except httpx.TransportError as exc:
+            raise GithubApiError(
+                "transport error fetching repo events",
+                code="github_api_error",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+
+        metrics.record_outbound_request(
+            path=f"/repos/{{owner}}/{{repo}}/{path}",
+            status=response.status_code,
+        )
+        new_etag = response.headers.get("ETag", etag or "")
+        if response.status_code == 304:
+            # Not modified — nothing new on this page.
+            return [], new_etag, None
+        if response.status_code != 200:
+            raise _api_error_from_response(response)
+
+        body = _safe_json(response)
+        records = body if isinstance(body, list) else []
+        next_page = _parse_next_page(response.headers.get("Link"))
+        if next_page is None and len(records) >= per_page:
+            next_page = page + 1
+        return records, new_etag, next_page
+
+    async def head_repo_events(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        event_type: str,
+        etag: str | None = None,
+        installation_id: str | None = None,
+    ) -> tuple[bool, str]:
+        """Conditional fast-path probe for the reconciler. Issues a
+        1-record conditional GET; a `304 Not Modified` means nothing
+        changed. Returns `(has_changes, current_etag)`."""
+        token = await self.mint_installation_token(
+            self._backfill_inst(installation_id),
+        )
+        path = _GH_EVENT_PATH[event_type]
+        url = (
+            f"{self._api_base_url}/repos/{owner}/{repo}/{path}"
+            f"?state=all&sort=updated&direction=desc&per_page=1&page=1"
+        )
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if etag:
+            headers["If-None-Match"] = etag
+        client = self._httpx()
+        try:
+            response = await client.get(url, headers=headers)
+        except httpx.TransportError as exc:
+            raise GithubApiError(
+                "transport error probing repo events",
+                code="github_api_error",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+
+        metrics.record_outbound_request(
+            path=f"/repos/{{owner}}/{{repo}}/{path}",
+            status=response.status_code,
+        )
+        current_etag = response.headers.get("ETag", etag or "")
+        if response.status_code == 304:
+            return False, current_etag
+        if response.status_code != 200:
+            raise _api_error_from_response(response)
+        return etag != current_etag, current_etag
+
+    # -----------------------------------------------------------------
     # Chokepoint
     # -----------------------------------------------------------------
 
@@ -403,6 +541,15 @@ def _parse_iso(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_next_page(link_header: str | None) -> int | None:
+    """Extract the `page=N` of the `rel="next"` link from a GitHub
+    `Link` header, or None when there is no next page."""
+    if not link_header:
+        return None
+    m = _LINK_NEXT_PATTERN.search(link_header)
+    return int(m.group(1)) if m else None
 
 
 def _safe_json(response: httpx.Response) -> Any:

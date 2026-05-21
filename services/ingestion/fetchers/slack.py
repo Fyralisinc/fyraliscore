@@ -44,9 +44,10 @@ class SlackCursor(BaseModel):
 
 
 async def _open_slack_client(install: asyncpg.Record):  # noqa: ANN202
-    raise RuntimeError(
-        "fetchers.slack._open_slack_client not configured; tests rebind."
-    )
+    # Real SlackClient pointed at the resolver's slack_api base (prod or
+    # local spammer). X3 mock harness monkeypatches this symbol.
+    from services.ingestion.fetchers._clients import open_slack_client
+    return await open_slack_client(install)
 
 
 def _decode_cursor(c: dict[str, Any] | None) -> SlackCursor:

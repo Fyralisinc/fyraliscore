@@ -45,9 +45,8 @@ def _get_pool():  # noqa: ANN202
 
 
 async def _open_discord_client(install: asyncpg.Record):  # noqa: ANN202
-    raise RuntimeError(
-        "reconcilers.discord._open_discord_client not configured; tests rebind."
-    )
+    from services.ingestion.fetchers._clients import open_discord_client
+    return await open_discord_client(install)
 
 
 def _decode_id(raw: Any) -> dict[str, Any]:

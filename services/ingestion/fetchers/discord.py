@@ -46,9 +46,10 @@ class DiscordCursor(BaseModel):
 
 
 async def _open_discord_client(install: asyncpg.Record):  # noqa: ANN202
-    raise RuntimeError(
-        "fetchers.discord._open_discord_client not configured; tests rebind."
-    )
+    # Real DiscordClient pointed at the resolver's discord_api base (prod
+    # or local spammer). X3 mock harness monkeypatches this symbol.
+    from services.ingestion.fetchers._clients import open_discord_client
+    return await open_discord_client(install)
 
 
 def _decode(c: dict[str, Any] | None) -> DiscordCursor:

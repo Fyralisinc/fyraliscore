@@ -160,10 +160,13 @@ class GoogleHttpClient:
 
 
 class GmailClient:
-    """Operations against gmail.googleapis.com."""
+    """Operations against gmail.googleapis.com (base URL resolved via
+    lib.integrations.endpoints so it can be pointed at a local spammer)."""
 
-    def __init__(self, http: GoogleHttpClient) -> None:
+    def __init__(self, http: GoogleHttpClient, *, base_url: str | None = None) -> None:
+        from lib.integrations.endpoints import endpoint
         self._http = http
+        self._base = (base_url or endpoint("gmail_api")).rstrip("/")
 
     async def watch(
         self,
@@ -178,7 +181,7 @@ class GmailClient:
             body["labelIds"] = label_ids
         return await self._http.request(
             "POST",
-            f"{_GMAIL_BASE}/users/me/watch",
+            f"{self._base}/users/me/watch",
             user_email=user_email,
             scopes=(scope,),
             json_body=body,
@@ -187,7 +190,7 @@ class GmailClient:
     async def stop(self, *, user_email: str, scope: str) -> None:
         await self._http.request(
             "POST",
-            f"{_GMAIL_BASE}/users/me/stop",
+            f"{self._base}/users/me/stop",
             user_email=user_email,
             scopes=(scope,),
         )
@@ -222,7 +225,7 @@ class GmailClient:
             params["q"] = query
         return await self._http.request(
             "GET",
-            f"{_GMAIL_BASE}/users/me/messages",
+            f"{self._base}/users/me/messages",
             user_email=user_email,
             scopes=(scope,),
             params=params,
@@ -245,7 +248,7 @@ class GmailClient:
             params["pageToken"] = page_token
         return await self._http.request(
             "GET",
-            f"{_GMAIL_BASE}/users/me/history",
+            f"{self._base}/users/me/history",
             user_email=user_email,
             scopes=(scope,),
             params=params,
@@ -262,7 +265,7 @@ class GmailClient:
         format_ = "full" if scope == GMAIL_READONLY_SCOPE else "metadata"
         return await self._http.request(
             "GET",
-            f"{_GMAIL_BASE}/users/me/messages/{message_id}",
+            f"{self._base}/users/me/messages/{message_id}",
             user_email=user_email,
             scopes=(scope,),
             params={"format": format_},
@@ -271,7 +274,7 @@ class GmailClient:
     async def get_profile(self, *, user_email: str, scope: str) -> dict[str, Any]:
         return await self._http.request(
             "GET",
-            f"{_GMAIL_BASE}/users/me/profile",
+            f"{self._base}/users/me/profile",
             user_email=user_email,
             scopes=(scope,),
         )
@@ -285,9 +288,14 @@ class GmailClient:
 class DirectoryClient:
     """Operations against admin.googleapis.com/admin/directory."""
 
-    def __init__(self, http: GoogleHttpClient, admin_email: str) -> None:
+    def __init__(
+        self, http: GoogleHttpClient, admin_email: str,
+        *, base_url: str | None = None,
+    ) -> None:
+        from lib.integrations.endpoints import endpoint
         self._http = http
         self._admin = admin_email
+        self._base = (base_url or endpoint("google_directory")).rstrip("/")
 
     async def list_users(
         self, *, domain: str, page_token: str | None = None, page_size: int = 200,
@@ -297,7 +305,7 @@ class DirectoryClient:
             params["pageToken"] = page_token
         body = await self._http.request(
             "GET",
-            f"{_DIRECTORY_BASE}/users",
+            f"{self._base}/users",
             user_email=self._admin,
             scopes=(DIRECTORY_USER_SCOPE,),
             params=params,
@@ -315,7 +323,7 @@ class DirectoryClient:
             params["pageToken"] = page_token
         body = await self._http.request(
             "GET",
-            f"{_DIRECTORY_BASE}/groups",
+            f"{self._base}/groups",
             user_email=self._admin,
             scopes=(DIRECTORY_GROUP_SCOPE,),
             params=params,
@@ -333,7 +341,7 @@ class DirectoryClient:
             params["pageToken"] = page_token
         body = await self._http.request(
             "GET",
-            f"{_DIRECTORY_BASE}/groups/{group_key}/members",
+            f"{self._base}/groups/{group_key}/members",
             user_email=self._admin,
             scopes=(DIRECTORY_GROUP_SCOPE,),
             params=params,
@@ -346,7 +354,7 @@ class DirectoryClient:
     async def list_org_units(self, *, customer_id: str = "my_customer") -> list[dict[str, Any]]:
         body = await self._http.request(
             "GET",
-            f"{_DIRECTORY_BASE}/customer/{customer_id}/orgunits",
+            f"{self._base}/customer/{customer_id}/orgunits",
             user_email=self._admin,
             scopes=(DIRECTORY_ORGUNIT_SCOPE,),
             params={"type": "all"},
@@ -370,7 +378,7 @@ class DirectoryClient:
             params["pageToken"] = page_token
         body = await self._http.request(
             "GET",
-            f"{_DIRECTORY_BASE}/users",
+            f"{self._base}/users",
             user_email=self._admin,
             scopes=(DIRECTORY_USER_SCOPE,),
             params=params,

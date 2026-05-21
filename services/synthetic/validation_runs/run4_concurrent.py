@@ -191,14 +191,26 @@ async def run4(
     concurrency: int = 10,
     distribution: dict[str, int] | None = None,
     drain_timeout_s: float = 180.0,
+    real_clients: bool = False,
 ) -> RunReport:
     started = dt.datetime.now(tz=dt.timezone.utc)
     t0 = time.monotonic()
     dsn = os.environ["DATABASE_URL"]
     scenarios = run4_scenarios(distribution)
+    if real_clients:
+        run_name = (
+            "Concurrent backfill (REAL clients → spammer) + live-via-Kafka "
+            "(50 tenants, 4 sources)"
+        )
+        run_number = 5
+    else:
+        run_name = (
+            "Concurrent backfill + live-via-Kafka (50 tenants, 4 sources)"
+        )
+        run_number = 4
     report = RunReport(
-        run_name="Concurrent backfill + live-via-Kafka (50 tenants, 4 sources)",
-        run_number=4, tenant_count=len(scenarios),
+        run_name=run_name,
+        run_number=run_number, tenant_count=len(scenarios),
         started_at=started, wall_seconds=0.0,
     )
 
@@ -227,7 +239,8 @@ async def run4(
                 pool=pool, scenarios=scenarios, concurrency=concurrency,
                 completion_deadline_s=600.0,
                 kafka_bootstrap_servers=bootstrap_servers,
-                drain_timeout_s=drain_timeout_s)
+                drain_timeout_s=drain_timeout_s,
+                real_clients=real_clients)
 
             # Phase A: seed tenants + installs + kafka_path_enabled=TRUE.
             outcomes = await harness.setup()
@@ -359,6 +372,14 @@ async def run4(
                 "cutover → HTTP 202; discord via gateway cutover; gmail via "
                 "push-handler cutover). Consumer rc=-9/-15 expected per "
                 "ticket #45.")
+            if real_clients:
+                report.notes.append(
+                    "BACKFILL drove the REAL source clients "
+                    "(Github/Slack/Discord/Gmail) over HTTP against the local "
+                    "spammer (services/synthetic/spammer) — token exchange, "
+                    "pagination, rate-limit backoff — instead of in-process "
+                    "mock clients. Live ingestion remains inbound (webhook / "
+                    "gateway / pubsub) routed via the Kafka cutover.")
         finally:
             if drivers is not None:
                 await teardown_live_drivers(drivers)
@@ -379,6 +400,25 @@ async def run4(
     report.wall_seconds = time.monotonic() - t0
     report.verdict = "READY" if report.passed else "NOT_READY"
     return report
+
+
+async def run5(
+    *,
+    bootstrap_servers: str,
+    concurrency: int = 10,
+    distribution: dict[str, int] | None = None,
+    drain_timeout_s: float = 300.0,
+) -> RunReport:
+    """Run 5 — the capstone: identical to Run 4 (concurrent backfill +
+    live-via-Kafka, 50 tenants, 4 sources) but BACKFILL is driven by the
+    REAL source clients over HTTP against the local spammer (no in-process
+    mock clients). Live ingestion stays inbound, routed via the Kafka
+    cutover. A longer default drain accommodates the real HTTP round-trips."""
+    return await run4(
+        bootstrap_servers=bootstrap_servers, concurrency=concurrency,
+        distribution=distribution, drain_timeout_s=drain_timeout_s,
+        real_clients=True,
+    )
 
 
 def _assert_run4(

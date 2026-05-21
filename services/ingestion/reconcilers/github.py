@@ -67,10 +67,8 @@ def _get_pool():  # noqa: ANN202
 
 # Test seam (production wires a GithubClient share).
 async def _open_github_client(install: asyncpg.Record):  # noqa: ANN202
-    raise RuntimeError(
-        "reconcilers.github._open_github_client not configured for "
-        "production; tests must rebind via monkeypatch."
-    )
+    from services.ingestion.fetchers._clients import open_github_client
+    return await open_github_client(install)
 
 
 def _decode_identifier(raw: Any) -> dict[str, Any]:
