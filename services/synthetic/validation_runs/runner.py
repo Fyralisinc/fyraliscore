@@ -302,10 +302,13 @@ def _execute_run(n: int, *, bootstrap: str, tenants_per_source: int):
             bootstrap_servers=bootstrap,
             tenants_per_source=tenants_per_source,
         ))
-    from services.synthetic.validation_runs.run3_concurrency_stress import (
-        run3,
-    )
-    return asyncio.run(run3(bootstrap_servers=bootstrap))
+    if n == 3:
+        from services.synthetic.validation_runs.run3_concurrency_stress import (
+            run3,
+        )
+        return asyncio.run(run3(bootstrap_servers=bootstrap))
+    from services.synthetic.validation_runs.run4_concurrent import run4
+    return asyncio.run(run4(bootstrap_servers=bootstrap))
 
 
 def _run_ok(report) -> bool:
@@ -321,8 +324,8 @@ def main() -> int:
     )
     parser = argparse.ArgumentParser(description="Composed validation runs")
     parser.add_argument(
-        "--run", default="1", choices=("1", "2", "3", "all"),
-        help="which run to execute; 'all' runs 1→2→3 sequentially",
+        "--run", default="1", choices=("1", "2", "3", "4", "all"),
+        help="which run to execute; 'all' runs 1→2→3→4 sequentially",
     )
     parser.add_argument("--tenants-per-source", type=int, default=4)
     args = parser.parse_args()
@@ -332,7 +335,7 @@ def main() -> int:
         return 2
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
-    run_numbers = [1, 2, 3] if args.run == "all" else [int(args.run)]
+    run_numbers = [1, 2, 3, 4] if args.run == "all" else [int(args.run)]
     all_ok = True
     verdicts: list[str] = []
     for n in run_numbers:

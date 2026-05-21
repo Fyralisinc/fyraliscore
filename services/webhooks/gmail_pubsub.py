@@ -190,7 +190,16 @@ async def gmail_pubsub_push(
         return JSONResponse(content={"status": "skipped", "reason": "bad_envelope"})
 
     try:
-        result = await handle_push(pool=pool, envelope=envelope)
+        # Live-via-Kafka cutover deps (sourced from app.state, parallel to
+        # the webhook router). When wired + `kafka_path_enabled=TRUE`, the
+        # fetched messages publish to `ingestion.raw` instead of inline.
+        result = await handle_push(
+            pool=pool,
+            envelope=envelope,
+            s3_raw_client=getattr(request.app.state, "s3_raw_client", None),
+            kafka_producer=getattr(request.app.state, "kafka_producer", None),
+            tenant_flags=getattr(request.app.state, "tenant_flags", None),
+        )
     except Exception as exc:  # noqa: BLE001 — translate to 200 + log
         log.exception("gmail.pubsub.handler_error", error=str(exc)[:200])
         return JSONResponse(content={"status": "error_swallowed"})

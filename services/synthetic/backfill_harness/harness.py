@@ -293,12 +293,24 @@ class BackfillHarness:
         concurrency: int = 4,
         completion_deadline_s: float = 60.0,
         kafka_bootstrap_servers: str = "localhost:9092",
+        drain_timeout_s: float = 30.0,
+        drain_poll_interval_s: float = 2.0,
     ) -> None:
         self._pool = pool
         self._scenarios = scenarios
         self._concurrency = max(1, concurrency)
         self._deadline_s = completion_deadline_s
         self._kafka_bootstrap = kafka_bootstrap_servers
+        # Configurable consumer-drain window (A30.6): the 30s default
+        # matches the historical hardcode (Runs 1-3); the concurrent
+        # runner raises it so a higher-volume backfill+live soak can
+        # fully drain. `run()` uses these; `drain()` accepts overrides.
+        self._drain_timeout_s = drain_timeout_s
+        self._drain_poll_interval_s = drain_poll_interval_s
+        # Populated by `setup()`; the concurrent orchestrator reads
+        # these tenant_ids/slugs to address the same installs live.
+        self._outcomes: list[TenantOutcome] | None = None
+        self._start: float = 0.0
         # Raw-tier (S3) wiring for the M6.7 backfill producer + normalizer.
         self._s3_endpoint = os.environ.get("S3_ENDPOINT_URL")
         self._s3_bucket = os.environ.get("S3_RAW_BUCKET", _DEFAULT_S3_BUCKET)
@@ -312,8 +324,31 @@ class BackfillHarness:
         self._procs: dict[str, subprocess.Popen | None] = {}
 
     async def run(self) -> HarnessResult:
-        start = time.monotonic()
-        outcomes = [
+        """Backward-compatible sequential composition (Runs 1-3):
+        setup → spawn → wait-backfill → drain → collect → teardown.
+
+        The concurrent orchestrator (Run 4) calls the phase methods
+        directly so it can interleave the live phase with the backfill
+        producer drive and drain the shared consumer chain ONCE."""
+        await self.setup()
+        try:
+            self.start_services()
+            await self.wait_for_backfill()
+            await self.drain()
+            await self.collect()
+        finally:
+            stderrs = self._teardown_services()
+            self._last_elapsed = time.monotonic() - self._start
+        return self.build_result(stderrs)
+
+    # ---- Decomposed phases (used directly by the concurrent runner) ----
+    async def setup(self) -> list[TenantOutcome]:
+        """Phase A: seed tenants + fixtures + flags, ensure S3 bucket,
+        write helper + registry, write install/onboarding rows. Returns
+        (and stores) the outcomes so a caller can read tenant_ids before
+        the producer/live phases run."""
+        self._start = time.monotonic()
+        self._outcomes = [
             TenantOutcome(
                 scenario=s,
                 tenant_id=uuid4(),
@@ -321,32 +356,68 @@ class BackfillHarness:
             )
             for s in self._scenarios
         ]
-
         self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
-        try:
-            await self._setup_tenants_and_fixtures(outcomes)
-            await self._ensure_s3_bucket()
-            self._helpers_dir = _write_helper(
-                self._workdir, self._helper_module,
-            )
-            self._registry_path = self._write_registry(outcomes)
-            await self._invoke_oauth_callbacks(outcomes)
-            self._spawn_services()
-            await self._wait_for_completions(outcomes)
-            await self._wait_for_observations_to_drain(outcomes)
-            await self._collect_state(outcomes)
-        finally:
-            stderrs = self._teardown_services()
-            elapsed = time.monotonic() - start
+        await self._setup_tenants_and_fixtures(self._outcomes)
+        await self._ensure_s3_bucket()
+        self._helpers_dir = _write_helper(self._workdir, self._helper_module)
+        self._registry_path = self._write_registry(self._outcomes)
+        await self._invoke_oauth_callbacks(self._outcomes)
+        return self._outcomes
 
+    @property
+    def outcomes(self) -> list[TenantOutcome]:
+        if self._outcomes is None:
+            raise RuntimeError("BackfillHarness.setup() not called yet")
+        return self._outcomes
+
+    def start_services(self) -> None:
+        """Phase B(i): spawn the 7 shared subprocesses (producer chain +
+        normalizer + observation_writer consumers). The consumers drain
+        BOTH backfill and live-via-Kafka envelopes from `ingestion.raw`."""
+        self._spawn_services()
+
+    async def wait_for_backfill(self) -> None:
+        """Phase B(ii): wait for every tenant's `tenant_onboarding_completed`
+        producer signal."""
+        await self._wait_for_completions(self.outcomes)
+
+    async def drain(
+        self,
+        *,
+        timeout_s: float | None = None,
+        poll_interval_s: float | None = None,
+    ) -> None:
+        """Phase B(iii): wait for the consumer chain to materialize
+        observations. Timeout defaults to the configured drain window
+        (A30.6) but the concurrent runner may override per call."""
+        await self._wait_for_observations_to_drain(
+            self.outcomes,
+            timeout_s=timeout_s if timeout_s is not None else self._drain_timeout_s,
+            poll_interval_s=(
+                poll_interval_s if poll_interval_s is not None
+                else self._drain_poll_interval_s
+            ),
+        )
+
+    async def collect(self) -> None:
+        """Phase C(i): collect per-tenant observations + state snapshots."""
+        await self._collect_state(self.outcomes)
+
+    def teardown(self) -> dict[str, str]:
+        """Phase C(ii): SIGTERM the subprocesses; return stderr tails."""
+        stderrs = self._teardown_services()
+        self._last_elapsed = time.monotonic() - self._start
+        return stderrs
+
+    def build_result(self, stderrs: dict[str, str]) -> HarnessResult:
         return HarnessResult(
-            outcomes=outcomes,
+            outcomes=self.outcomes,
             subprocess_returncodes={
                 k: (v.returncode if v else -999)
                 for k, v in self._procs.items()
             },
             subprocess_stderr_tails=stderrs,
-            wall_time_seconds=elapsed,
+            wall_time_seconds=getattr(self, "_last_elapsed", 0.0),
         )
 
     # ---- Phase A: Setup ----
