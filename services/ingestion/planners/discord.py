@@ -6,6 +6,7 @@ per (tenant, sampling_version) so re-runs produce the same set.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 
@@ -21,20 +22,35 @@ SAMPLING_VERSION = "v1"  # bump if changing the algorithm
 SAMPLING_RATE = 0.05
 
 
+def _stable_seed(tenant_id: str) -> int:
+    """Process-independent seed from (tenant_id, SAMPLING_VERSION).
+
+    Python's builtin `hash()` is salted per process (PYTHONHASHSEED), so
+    seeding the RNG with it gave a DIFFERENT sampled set after every
+    restart — breaking the documented "same set across runs" guarantee.
+    A SHA-256 digest is stable across processes and machines.
+    """
+    digest = hashlib.sha256(
+        f"{tenant_id}:{SAMPLING_VERSION}".encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def _sampled_channels(
     tenant_id: str, channels: list[dict],
 ) -> list[dict]:
     """Deterministic per-guild 5% sample.
 
-    Seed = (tenant_id, SAMPLING_VERSION). Same tenant + same channel
-    universe → same sampled set across runs.
+    Same tenant + same channel universe → same sampled set across runs
+    and across process restarts. Channels are sorted by id first so the
+    sample is independent of the order the API returned them in.
     """
     if not channels:
         return []
-    seed = hash((tenant_id, SAMPLING_VERSION))
-    rng = random.Random(seed)
-    k = max(1, int(len(channels) * SAMPLING_RATE))
-    return rng.sample(channels, k=min(k, len(channels)))
+    ordered = sorted(channels, key=lambda c: str(c.get("id") or ""))
+    rng = random.Random(_stable_seed(tenant_id))
+    k = max(1, int(len(ordered) * SAMPLING_RATE))
+    return rng.sample(ordered, k=min(k, len(ordered)))
 
 
 async def plan_shards_discord(ctx: PlannerContext) -> list[Shard]:

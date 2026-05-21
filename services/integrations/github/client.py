@@ -233,16 +233,16 @@ class GithubClient:
             )
             raise _api_error_from_response(response)
 
-    async def list_installation_repositories(
-        self, installation_id: str
-    ) -> list[str] | None:
-        """Return the `<owner>/<repo>` list for the installation, OR
-        None if the installation is in "all-repositories" mode (NULL
-        semantics per data-model.md).
+    async def _paginate_installation_repositories(
+        self, installation_id: str, *, per_page: int = 100, max_repos: int = 0,
+    ) -> tuple[list[str], bool, bool]:
+        """Fully paginate `GET /installation/repositories`.
 
-        Reads up to 3 pages (90 repos at `per_page=30`); on truncation,
-        sets `self._last_repos_truncated=True` and records the
-        `total_count` GitHub reported via `self._last_repos_total_available`.
+        Returns `(repos, all_mode_marker, any_selection_marker)`.
+        Paginates until a short page (end of data) or, when
+        `max_repos > 0`, until that many repos have been collected (in
+        which case `self._last_repos_truncated` is set and a warning is
+        logged — never silent). `per_page=100` is GitHub's maximum.
         """
         token = await self.mint_installation_token(installation_id)
         client = self._httpx()
@@ -258,10 +258,11 @@ class GithubClient:
         any_selection_marker = False
         all_mode_marker = False
 
-        for page in range(1, 4):  # 3 pages × 30 = 90 repo cap (R8)
+        page = 1
+        while True:
             url = (
                 f"{self._api_base_url}/installation/repositories"
-                f"?per_page=30&page={page}"
+                f"?per_page={per_page}&page={page}"
             )
             try:
                 response = await client.get(url, headers=headers)
@@ -309,28 +310,66 @@ class GithubClient:
                     if isinstance(full, str) and full:
                         repos.append(full)
 
-            if len(page_repos) < 30:
-                break
-        else:  # for-else: ran all 3 iterations without breaking
-            if (
-                isinstance(self._last_repos_total_available, int)
-                and self._last_repos_total_available > len(repos)
-            ):
+            if len(page_repos) < per_page:
+                break  # end of data
+            if max_repos and len(repos) >= max_repos:
                 self._last_repos_truncated = True
                 log.warning(
-                    "github_repos_pagination_truncated",
+                    "github_repos_pagination_capped",
                     installation_id_hash=_short_installation_hash(
                         installation_id
                     ),
                     retrieved=len(repos),
+                    cap=max_repos,
                     total_available=self._last_repos_total_available,
                 )
+                break
+            page += 1
 
+        return repos, all_mode_marker, any_selection_marker
+
+    async def list_installation_repositories(
+        self, installation_id: str
+    ) -> list[str] | None:
+        """Return the `<owner>/<repo>` list for the installation, OR
+        None if the installation is in "all-repositories" mode (NULL
+        semantics per data-model.md). Used by the OAuth callback to seed
+        `selected_repositories` (NULL = all-repos grant).
+
+        Fully paginated (per_page=100); no longer caps at 90 repos.
+        For backfill enumeration that needs the concrete repo list even
+        in all-repos mode, use `list_repositories_for_backfill`.
+        """
+        repos, all_mode_marker, any_selection_marker = (
+            await self._paginate_installation_repositories(installation_id)
+        )
         # If the API said `repository_selection='all'` AND no `selected`
         # marker was seen, return None (the NULL/all-repos semantic).
         if all_mode_marker and not any_selection_marker:
             return None
+        return repos
 
+    async def list_repositories_for_backfill(
+        self, installation_id: str
+    ) -> list[str]:
+        """Every repository accessible to the installation, fully
+        paginated, regardless of selected/all-repos mode.
+
+        The backfill planner uses this so org-wide (all-repos) installs
+        are supported — `GET /installation/repositories` enumerates the
+        accessible repos in both modes — and large selections are not
+        silently truncated. Bound with `GITHUB_MAX_BACKFILL_REPOS`
+        (env, default 0 = no cap); on cap a warning is logged and
+        `self._last_repos_truncated` is set.
+        """
+        import os
+
+        max_repos = int(os.environ.get("GITHUB_MAX_BACKFILL_REPOS", "0"))
+        repos, _all_mode, _selected = (
+            await self._paginate_installation_repositories(
+                installation_id, max_repos=max_repos,
+            )
+        )
         return repos
 
     # -----------------------------------------------------------------

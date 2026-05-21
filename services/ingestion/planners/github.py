@@ -28,15 +28,14 @@ event_types in future work.
 ============================================================
 ALL-REPOS vs SELECTED-REPOS MODE
 ============================================================
-GitHub's `list_installation_repositories` returns:
-  - `list[str]` (selected mode) — explicit selection in the App's
-    installation grant.
-  - `None` (all-repos mode) — App was granted org-wide access.
-
-In all-repos mode the planner cannot enumerate from this endpoint
-alone; for M6.4 we mark the install with a `failure_reason` calling
-out the unsupported mode. Per-source policy improvement (e.g., use
-`/search/repositories?q=org:<name>`) is future work, NOT M6.4 scope.
+`GET /installation/repositories` enumerates the repos accessible to the
+installation in BOTH selected and all-repos (org-wide) mode. The planner
+uses `list_repositories_for_backfill`, which fully paginates that
+endpoint and returns the concrete repo list regardless of mode — so an
+org-wide grant is supported and a large selection is not silently
+truncated. (`list_installation_repositories`, which returns None as the
+all-repos signal, remains for the OAuth callback's
+`selected_repositories` column.)
 
 ============================================================
 WIRE-IN
@@ -63,12 +62,9 @@ EVENT_TYPES = ("issues", "pull_requests")
 async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
     """One Shard per (repo, event_type) for this install.
 
-    Uses `ctx.source_client.list_installation_repositories(installation_id)`
-    to enumerate repos. Each repo gets `len(EVENT_TYPES)` shards.
-
-    All-repos mode (returns None) is not yet supported; raises
-    `NotImplementedError` (caught by SourceOnboarding → run marked
-    failed with a clear reason).
+    Uses `ctx.source_client.list_repositories_for_backfill(installation_id)`
+    to enumerate every accessible repo (selected OR all-repos mode, fully
+    paginated). Each repo gets `len(EVENT_TYPES)` shards.
     """
     install = ctx.install
     installation_id = str(install["installation_id"])
@@ -78,16 +74,13 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
             "PlannerContext factory must supply a GithubClient. "
             "See _build_source_client in source_onboarding.py."
         )
-    repos = await ctx.source_client.list_installation_repositories(
+    # `list_repositories_for_backfill` fully enumerates the installation's
+    # accessible repos regardless of selected/all-repos mode (org-wide
+    # grants included) and is not capped at 90 — so a customer who
+    # installs the App org-wide, or on >90 repos, backfills completely.
+    repos = await ctx.source_client.list_repositories_for_backfill(
         installation_id,
     )
-    if repos is None:
-        raise NotImplementedError(
-            "GitHub planner: all-repositories mode is not yet supported "
-            "in M6.4. Install has org-wide grant; per-repo enumeration "
-            "via search endpoint is deferred. Mark install as scoped "
-            "via the GitHub App settings to unblock backfill."
-        )
     shards: list[Shard] = []
     for repo_full_name in repos:
         if "/" not in repo_full_name:

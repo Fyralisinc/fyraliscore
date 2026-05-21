@@ -58,6 +58,14 @@ class MockGithubClient(_MockBase):
         self._check_fault()
         return [r["full_name"] for r in self._fixture["repos"]]
 
+    async def list_repositories_for_backfill(
+        self, installation_id: str,
+    ) -> list[str]:
+        """All accessible repos (mirror of the real client's
+        backfill-planner method; mode-agnostic, fully enumerated)."""
+        self._check_fault()
+        return [r["full_name"] for r in self._fixture["repos"]]
+
     async def list_repo_events(
         self,
         *,

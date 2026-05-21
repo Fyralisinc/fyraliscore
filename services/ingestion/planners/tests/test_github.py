@@ -26,13 +26,20 @@ class _FakeRecord:
 
 
 class _FakeGithubClient:
-    def __init__(self, repos):
+    def __init__(self, repos, *, all_repos=None):
         self.repos = repos
+        # The backfill planner calls list_repositories_for_backfill, which
+        # enumerates concretely even in all-repos mode.
+        self.all_repos = all_repos if all_repos is not None else repos
         self.calls = []
 
     async def list_installation_repositories(self, installation_id):
         self.calls.append(installation_id)
         return self.repos
+
+    async def list_repositories_for_backfill(self, installation_id):
+        self.calls.append(installation_id)
+        return self.all_repos or []
 
 
 def _ctx(repos=None, *, all_mode=False):
@@ -40,7 +47,12 @@ def _ctx(repos=None, *, all_mode=False):
         id=uuid4(), tenant_id=uuid4(),
         provider="github", installation_id="42", enabled=True,
     )
-    client = _FakeGithubClient(repos=None if all_mode else (repos or []))
+    if all_mode:
+        # Org-wide grant: list_installation_repositories returns None, but
+        # the endpoint still enumerates the accessible repos for backfill.
+        client = _FakeGithubClient(repos=None, all_repos=["org/a", "org/b"])
+    else:
+        client = _FakeGithubClient(repos=repos or [], all_repos=repos or [])
     return PlannerContext(
         tenant_id=uuid4(), install=install, conn=None,
         source_client=client,
@@ -72,10 +84,16 @@ async def test_empty_repo_list_returns_empty():
     assert shards == []
 
 
-async def test_all_repos_mode_raises_not_implemented():
+async def test_all_repos_mode_enumerates_repos():
+    """Org-wide (all-repos) grants are now supported: the planner
+    enumerates the accessible repos via list_repositories_for_backfill
+    and produces shards (previously raised NotImplementedError)."""
     ctx = _ctx(all_mode=True)
-    with pytest.raises(NotImplementedError, match="all-repositories mode"):
-        await plan_shards_github(ctx)
+    shards = await plan_shards_github(ctx)
+    assert len(shards) == 2 * len(EVENT_TYPES)
+    assert {s.shard_identifier["repo_full_name"] for s in shards} == {
+        "org/a", "org/b",
+    }
 
 
 async def test_missing_source_client_raises_runtime_error():
