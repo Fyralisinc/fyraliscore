@@ -1,13 +1,13 @@
 # Validation Run 1 — E2E backfill + live (all sources)
 
 **Status:** PASS ✅
-**Started:** 2026-05-21T07:54:13.863747+00:00
-**Wall time:** 27.5s
+**Started:** 2026-05-21T10:08:45.079269+00:00
+**Wall time:** 27.4s
 **Tenants:** 16
 
 ## Pre-flight (fixture realism — Decision 12)
 
-- gmail: 3 records, external_id='gmail:e78d21a8-dfbc-49f5-8176-33', occurred_at=2026-01-01T00:02:00+00:00 ✅
+- gmail: 3 records, external_id='gmail:6885ec50-e382-4cf0-9b64-a8', occurred_at=2026-01-01T00:02:00+00:00 ✅
 - github: 2 records, external_id='I_kwDO8x2NYDDUMdgx', occurred_at=2026-01-01T00:21:00+00:00 ✅
 - slack: 3 records, external_id='C_9C1302B2C2:1767225600.000000', occurred_at=2026-01-01T00:00:00+00:00 ✅
 - discord: 3 records, external_id='discord:402097', occurred_at=2026-01-01T00:00:00+00:00 ✅

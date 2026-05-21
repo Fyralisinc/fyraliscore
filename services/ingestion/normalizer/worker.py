@@ -412,6 +412,18 @@ async def _normalize_one_with_envelope(
     if envelope.ingress_kind == "backfill" and isinstance(payload, dict):
         headers = payload.get("webhook_metadata") or {}
         payload = payload.get("record", payload)
+    elif envelope.source == "github":
+        # Live-via-Kafka github (ingress_kind="webhook"): the handler keys
+        # the event on the `X-GitHub-Event` header, NOT the body. The
+        # webhook-router cutover (and any live producer) records the event
+        # type in `ingress_metadata["event_type"]`; reconstruct the header
+        # here so the live cutover path derives the SAME draft the inline
+        # ingest() would (which received the real header). Backfill carries
+        # it via webhook_metadata above; other sources read the body and
+        # ignore headers.
+        event_type = envelope.ingress_metadata.get("event_type")
+        if event_type:
+            headers = {"X-GitHub-Event": event_type}
 
     # Dispatch — the handler is a pure (payload, headers) → draft
     # function. For live ingress, headers={} (the verified-at-ingress

@@ -49,7 +49,7 @@ _DEFAULT_ENV = os.environ.get("INGESTION_ENV", "dev")
 _RAW_TOPIC = "ingestion.raw"
 
 
-IngressKind = Literal["webhook", "gateway", "pubsub", "backfill"]
+IngressKind = Literal["webhook", "gateway", "pubsub", "backfill", "poll"]
 
 
 # In-process counters. M3 will replace these with the real metrics

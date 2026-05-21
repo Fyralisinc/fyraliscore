@@ -22,7 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 SourceLiteral = Literal["slack", "github", "discord", "gmail"]
-IngressKindLiteral = Literal["webhook", "gateway", "pubsub", "backfill"]
+# "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
+# history poller fetches the message resource (a real Gmail message, NOT
+# the Pub/Sub notification) and publishes it here instead of ingesting
+# inline. Maps to the same "gmail:" handler as backfill (channel_mapping),
+# so external_id parity holds. Additive within v1 (envelope_version stays 1).
+IngressKindLiteral = Literal["webhook", "gateway", "pubsub", "backfill", "poll"]
 
 
 class RawEnvelope(BaseModel):

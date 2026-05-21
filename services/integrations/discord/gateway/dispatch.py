@@ -32,7 +32,10 @@ import structlog
 from services.actors.repo import ActorRepo
 from services.entity_aliases.repo import EntityAliasRepo
 from services.ingestion.core import ingest
-from services.ingestion.feature_flags import SHADOW_WRITE_ENABLED
+from services.ingestion.feature_flags import (
+    KAFKA_PATH_ENABLED,
+    SHADOW_WRITE_ENABLED,
+)
 from services.ingestion.shadow_write import shadow_write_raw
 from services.integrations.discord.gateway import metrics
 from services.integrations.discord.oauth import short_guild_hash
@@ -140,6 +143,49 @@ async def handle_message_create(message: dict[str, Any], deps: DispatchDeps) -> 
         return
     tenant_id: UUID = outcome.tenant_id
 
+    # ---- Cutover branch (parallel to the M5.3 webhook-router cutover) ----
+    # Read `ingestion.kafka_path_enabled` for the resolved tenant.
+    # default=False — pre-cutover tenants stay on the inline path; this
+    # default is the load-bearing N1 invariant (missing flag rows MUST
+    # NOT activate cutover for tenants never explicitly enabled).
+    #
+    # The Gateway MESSAGE_CREATE frame — unlike a Discord webhook
+    # interaction (M5.4 deferral) — has no synchronous response-shape
+    # requirement, so the publish-and-return cutover shape applies here
+    # exactly as it does for slack/github in services/webhooks/router.py.
+    # When TRUE: publish the frame to `ingestion.raw` and return; the
+    # writer pool produces the observation via M5.2's full-mode path.
+    #
+    # `flag_enabled` is also consulted below to skip the M2 shadow write
+    # after a fallback-to-inline (retrying the same publish would almost
+    # certainly fail again — parity with the router's suppression).
+    flag_enabled = False
+    if (
+        deps.tenant_flags is not None
+        and deps.kafka_producer is not None
+        and deps.s3_raw_client is not None
+    ):
+        flag_enabled = await deps.tenant_flags.get_bool(
+            tenant_id, KAFKA_PATH_ENABLED, default=False,
+        )
+
+    if flag_enabled:
+        cutover_ok = await _attempt_gateway_cutover(
+            deps, tenant_id=tenant_id, message=message, guild_id=guild_id,
+        )
+        if cutover_ok:
+            metrics.inc("discord_gateway_kafka_path_total", outcome="success")
+            return
+        # Graceful degradation: the publish failed; fall through to
+        # inline ingest() so the message is not dropped. NOT
+        # gate-relaxation — the flag stays TRUE; the `fallback` metric
+        # is the operator's signal that cutover connectivity is degraded.
+        metrics.inc("discord_gateway_kafka_path_total", outcome="fallback")
+        log.warning(
+            "discord_gateway.kafka_path_fallback_to_inline",
+            short_guild_hash=short_guild_hash(guild_id),
+        )
+
     # 4. Hand to the unified ingest path. The handler registered for
     # `discord:message` shapes the payload; `ingest()` handles dedup
     # via the existing unique index.
@@ -173,12 +219,80 @@ async def handle_message_create(message: dict[str, Any], deps: DispatchDeps) -> 
     # truth during M2; observable divergence is "inline observation
     # exists, shadow record missing." Best-effort; failures caught
     # inside the helper.
-    await _maybe_shadow_write_gateway(
-        deps,
-        tenant_id=tenant_id,
-        message=message,
-        guild_id=guild_id,
-    )
+    #
+    # Suppressed when `flag_enabled` (cutover mode): a fallback-to-inline
+    # already attempted the Kafka publish; the M2 shadow audit is moot
+    # once the tenant is on the cutover path.
+    if not flag_enabled:
+        await _maybe_shadow_write_gateway(
+            deps,
+            tenant_id=tenant_id,
+            message=message,
+            guild_id=guild_id,
+        )
+
+
+def _gateway_raw(
+    message: dict[str, Any], guild_id: str,
+) -> tuple[bytes, dict[str, Any]]:
+    """Build the canonical raw body + ingress_metadata for a Gateway
+    MESSAGE_CREATE frame. Shared by the cutover publish and the M2
+    shadow write so both produce byte-identical S3 bodies (content_hash
+    dedup + N2 replay-from-raw depend on this byte-equality).
+
+    Canonical-JSON via orjson OPT_SORT_KEYS — Discord retransmissions of
+    the same message_id arrive byte-identical at the WSS layer, so the
+    canonical form matches across retransmissions (the dedup property
+    the work order requires). NEVER emit the raw guild_id — only its
+    short hash (SC-006).
+    """
+    raw_body = orjson.dumps(message, option=orjson.OPT_SORT_KEYS)
+    ingress_metadata: dict[str, Any] = {
+        "event_type": "MESSAGE_CREATE",
+        "message_id": message.get("id"),
+        "channel_id": message.get("channel_id"),
+        "short_guild_hash": short_guild_hash(guild_id),
+    }
+    return raw_body, ingress_metadata
+
+
+async def _attempt_gateway_cutover(
+    deps: DispatchDeps,
+    *,
+    tenant_id: UUID,
+    message: dict[str, Any],
+    guild_id: str,
+) -> bool:
+    """M5.3-style cutover for the Gateway MESSAGE_CREATE path: publish the
+    frame to `ingestion.raw` (S3 PutIfAbsent → Kafka publish). Returns
+    True on full success, False on any failure (caller MUST fall back to
+    inline `ingest()`).
+
+    Unlike `_maybe_shadow_write_gateway` (best-effort audit alongside the
+    inline source-of-truth), this is the SOLE write when it succeeds — so
+    its failure must be observable to the caller via the return value
+    rather than swallowed-and-continued.
+    """
+    raw_body, ingress_metadata = _gateway_raw(message, guild_id)
+    try:
+        await shadow_write_raw(
+            tenant_id=tenant_id,
+            source="discord",
+            ingress_kind="gateway",
+            raw_body=raw_body,
+            s3_client=deps.s3_raw_client,
+            kafka_producer=deps.kafka_producer,
+            ingress_metadata=ingress_metadata,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "discord_gateway.kafka_path_failed",
+            short_guild_hash=short_guild_hash(guild_id),
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+        return False
 
 
 async def _maybe_shadow_write_gateway(
@@ -216,13 +330,7 @@ async def _maybe_shadow_write_gateway(
             if not enabled:
                 return
 
-        raw_body = orjson.dumps(message, option=orjson.OPT_SORT_KEYS)
-        ingress_metadata: dict[str, Any] = {
-            "event_type": "MESSAGE_CREATE",
-            "message_id": message.get("id"),
-            "channel_id": message.get("channel_id"),
-            "short_guild_hash": short_guild_hash(guild_id),
-        }
+        raw_body, ingress_metadata = _gateway_raw(message, guild_id)
         await shadow_write_raw(
             tenant_id=tenant_id,
             source="discord",

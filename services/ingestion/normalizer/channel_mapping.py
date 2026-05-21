@@ -44,6 +44,12 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # message resources and publishes them under ingress_kind=backfill,
     # which the "gmail:" handler consumes.
     ("gmail", "backfill"): "gmail:",                # M6.7 (A27.2)
+    # Gmail live-via-Kafka cutover: the push handler / poller fetches the
+    # message resource and publishes it under ingress_kind="poll" instead
+    # of ingesting inline. Same handler as backfill, so external_id
+    # (`gmail:{install}:{message_id}`) is identical — cross-path dedup
+    # collapses a backfilled message and its live "poll" twin to one row.
+    ("gmail", "poll"): "gmail:",
 }
 
 

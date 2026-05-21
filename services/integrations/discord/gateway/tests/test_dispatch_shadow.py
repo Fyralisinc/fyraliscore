@@ -45,9 +45,15 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def _shadow_mocks():
     """Build (s3_mock, kafka_mock, flags_mock) — the three optional
-    DispatchDeps for the shadow path. Flags returns True (default-on)
-    unless a per-test override is set.
+    DispatchDeps for the shadow path. The M2 shadow path is, by
+    definition, the pre-cutover behaviour: SHADOW_WRITE_ENABLED on,
+    KAFKA_PATH_ENABLED off. (A per-test override may flip either.)
     """
+    from services.ingestion.feature_flags import (
+        KAFKA_PATH_ENABLED,
+        SHADOW_WRITE_ENABLED,
+    )
+
     s3 = MagicMock()
     s3.put_if_absent = AsyncMock(return_value=None)
     s3.get = AsyncMock(return_value=b"")
@@ -56,8 +62,15 @@ def _shadow_mocks():
     kafka.produce = AsyncMock(return_value=None)
     kafka.flush = AsyncMock(return_value=0)
 
+    async def _get_bool(tenant_id, flag_name, *, default):  # noqa: ANN001
+        if flag_name == KAFKA_PATH_ENABLED:
+            return False  # shadow path = NOT in cutover mode
+        if flag_name == SHADOW_WRITE_ENABLED:
+            return True
+        return default
+
     flags = MagicMock()
-    flags.get_bool = AsyncMock(return_value=True)
+    flags.get_bool = AsyncMock(side_effect=_get_bool)
 
     shadow_write_module.reset_metrics()
     return s3, kafka, flags

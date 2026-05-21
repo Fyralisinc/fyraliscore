@@ -160,6 +160,10 @@ async def build_live_drivers(
     pool: asyncpg.Pool,
     targets: list[LiveTarget],
     secrets: SigningSecrets,
+    *,
+    kafka_producer: Any = None,
+    s3_raw_client: Any = None,
+    tenant_flags: Any = None,
 ) -> LiveDrivers:
     """Construct + enter all four generators against `targets`.
 
@@ -167,7 +171,16 @@ async def build_live_drivers(
     teardown_live_drivers(drivers)` to restore monkeypatches + close
     httpx clients. (Kept explicit rather than a context manager so the
     runner can interleave the live phase between backfill drain and
-    assertion collection.)"""
+    assertion collection.)
+
+    Live-via-Kafka (Run 4): when `kafka_producer` + `s3_raw_client` +
+    `tenant_flags` are provided, they are wired onto the shared app's
+    state (slack/github router cutover), the gmail app's state + the
+    gmail generator (gmail push cutover), and the discord DispatchDeps
+    (gateway cutover). With `kafka_path_enabled=TRUE` set per tenant, the
+    live webhooks/events then publish to `ingestion.raw` instead of
+    ingesting inline. All three default to None → the Run 1 inline path
+    (no behavioural change for the existing runs)."""
     from contextlib import AsyncExitStack
 
     from services.actors.repo import ActorRepo
@@ -194,6 +207,12 @@ async def build_live_drivers(
         slack_signing_secret=secrets.slack,
         configure_logging=False,
     )
+    # Live-via-Kafka cutover deps on the shared app's state — the
+    # slack/github webhook router reads these for `_attempt_kafka_path`.
+    # Absent (Run 1) → cutover stays off, inline path runs.
+    shared_app.state.kafka_producer = kafka_producer
+    shared_app.state.s3_raw_client = s3_raw_client
+    shared_app.state.tenant_flags = tenant_flags
 
     # ---- Gmail's own minimal app (router not mounted by build_app) ----
     from services.webhooks.gmail_pubsub import router as gmail_router
@@ -205,6 +224,11 @@ async def build_live_drivers(
     _deps = _GmailDeps()
     _deps.pool = pool  # type: ignore[attr-defined]
     gmail_app.state.deps = _deps
+    # Gmail push cutover deps (read by the pubsub router; the generator's
+    # monkeypatched drain also threads them straight into the fetcher).
+    gmail_app.state.kafka_producer = kafka_producer
+    gmail_app.state.s3_raw_client = s3_raw_client
+    gmail_app.state.tenant_flags = tenant_flags
 
     # ---- Per-source mock clients ----
     gmail_targets = [t for t in targets if t.source == "gmail"]
@@ -258,12 +282,21 @@ async def build_live_drivers(
         pool=pool, tenant_resolver=discord_resolver,
         actor_repo=ActorRepo(pool), alias_repo=EntityAliasRepo(pool),
         embedder=None, application_id="v-discord-app",
+        # Gateway cutover deps (Run 4): when wired + flag TRUE, the
+        # MESSAGE_CREATE frame publishes to ingestion.raw instead of inline.
+        s3_raw_client=s3_raw_client,
+        kafka_producer=kafka_producer,
+        tenant_flags=tenant_flags,
     )
 
     # ---- Instantiate + enter the generators ----
     stack = AsyncExitStack()
     gmail_gen = await stack.enter_async_context(
-        GmailPubSubGenerator(app=gmail_app, pool=pool, mailboxes=mailboxes),
+        GmailPubSubGenerator(
+            app=gmail_app, pool=pool, mailboxes=mailboxes,
+            s3_raw_client=s3_raw_client, kafka_producer=kafka_producer,
+            tenant_flags=tenant_flags,
+        ),
     )
     discord_gen = await stack.enter_async_context(
         DiscordGatewayGenerator(
@@ -494,6 +527,83 @@ async def run_live_phase(
             result.per_source_counts.get(t.source, 0) + delta
         )
 
+    result.wall_seconds = time.monotonic() - t0
+    return result
+
+
+@dataclass
+class LiveDispatchResult:
+    """Result of the concurrent live dispatch (Run 4). Unlike
+    `LivePhaseResult`, this does NOT count observations synchronously —
+    under live-via-Kafka the writer produces them asynchronously, so the
+    caller counts after the shared consumer drain."""
+    dispatched_by_tenant: dict[UUID, int] = field(default_factory=dict)
+    dispatched_by_source: dict[str, int] = field(default_factory=dict)
+    # Per-source set of HTTP statuses seen (slack/github/gmail are HTTP;
+    # discord is direct-dispatch and reports no status). 202 == the
+    # webhook router took the Kafka cutover (live-via-Kafka proof).
+    http_status_by_source: dict[str, set[int]] = field(default_factory=dict)
+    wall_seconds: float = 0.0
+
+
+async def dispatch_live_concurrent(
+    drivers: LiveDrivers,
+    targets: list[LiveTarget],
+    *,
+    events_per_tenant: int = 5,
+) -> LiveDispatchResult:
+    """Fire `events_per_tenant` distinct live events for every tenant,
+    concurrently across tenants. Returns dispatch counts + per-source
+    HTTP statuses. Does NOT count observations (the consumer chain is
+    async under live-via-Kafka — the runner counts after drain).
+
+    Live ids are minted distinct from backfill (channel `C_LIVE_*`,
+    content `live-*`), so there is no accidental cross-path dedup: the
+    post-drain total is exactly backfill_expected + live_dispatched."""
+    t0 = time.monotonic()
+    result = LiveDispatchResult()
+    lock = asyncio.Lock()
+
+    async def _record_status(source: str, status: int | None) -> None:
+        if status is None:
+            return
+        async with lock:
+            result.http_status_by_source.setdefault(source, set()).add(status)
+
+    async def _one(t: LiveTarget) -> None:
+        for i in range(events_per_tenant):
+            status: int | None = None
+            if t.source == "gmail":
+                r = await drivers.gmail_pubsub.simulate_push(
+                    mailbox_email=t.email, new_messages=1,
+                )
+                status = getattr(r, "http_status", None)
+            elif t.source == "slack":
+                r = await drivers.slack_webhook.simulate_message(
+                    team_id=t.team_id, channel_id=t.channel_id,
+                    content=f"live-{t.slug}-{i}",
+                )
+                status = getattr(r, "http_status", None)
+            elif t.source == "github":
+                r = await drivers.github_webhook.simulate_issue_event(
+                    installation_id=t.installation_id,
+                    repo_full_name=t.repo_full_name,
+                    issue_title=f"live-{t.slug}-{i}",
+                )
+                status = getattr(r, "http_status", None)
+            elif t.source == "discord":
+                await drivers.discord_gateway.simulate_message_create(
+                    guild_id=t.guild_id, channel_id=t.channel_id,
+                    content=f"live-{t.slug}-{i}",
+                )
+            await _record_status(t.source, status)
+        async with lock:
+            result.dispatched_by_tenant[t.tenant_id] = events_per_tenant
+            result.dispatched_by_source[t.source] = (
+                result.dispatched_by_source.get(t.source, 0) + events_per_tenant
+            )
+
+    await asyncio.gather(*(_one(t) for t in targets))
     result.wall_seconds = time.monotonic() - t0
     return result
 
