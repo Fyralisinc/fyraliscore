@@ -1,8 +1,10 @@
 # ---- Secrets / env ----
-# Never commit any .env variant. Only .env.example is tracked.
+# Never commit any .env variant. Only the *.example templates (which
+# hold placeholders, no real secrets) are tracked.
 .env
 .env.*
 !.env.example
+!.env.production.example
 .secrets/
 
 # ---- Python ----
