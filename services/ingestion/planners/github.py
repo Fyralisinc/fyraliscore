@@ -13,17 +13,18 @@ repos via Octokit's `/installation/repositories` endpoint (per
 [GithubClient.list_installation_repositories](../../../services/integrations/github/client.py)).
 
 ============================================================
-EVENT TYPES (M6.4 — 2 types initially, extensible later)
+EVENT TYPES (gap-closure — Class A repo-level list endpoints)
 ============================================================
-Backfill scope: one shard per (repo, event_type). M6.4 ships TWO
-event types — issues + pull_requests — which together cover the
-high-signal observation density per the LLD. Other event types
-(issue_comments, pr_review_comments, commits) are deferred; their
-shards can be added later by extending `EVENT_TYPES`.
+Backfill scope: one shard per (repo, event_type). Ships FOUR
+repo-level-list event types — issues, pull_requests, issue_comments,
+commits — bringing backfill to parity with the live handler for the
+mandatory CompanyOS signal set, minus the two fan-out signals
+(pr_reviews, check_runs) tracked as Class B in
+docs/ingestion/github-backfill-gap-closure.md.
 
-With ~20 repos/tenant typical and 2 event_types = ~40 shards/tenant.
-The settled-decision target of ~250 leaves headroom for additional
-event_types in future work.
+With ~20 repos/tenant typical and 4 event_types = ~80 shards/tenant.
+The settled-decision target of ~250 leaves headroom for the Class B
+fan-out shards.
 
 ============================================================
 ALL-REPOS vs SELECTED-REPOS MODE
@@ -56,7 +57,7 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_REPO_EVENTS = "github_repo_events"
-EVENT_TYPES = ("issues", "pull_requests")
+EVENT_TYPES = ("issues", "pull_requests", "issue_comments", "commits")
 
 
 async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:

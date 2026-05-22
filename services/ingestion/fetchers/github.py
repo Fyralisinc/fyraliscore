@@ -25,6 +25,24 @@ ENDPOINT DISPATCH
 The fetcher dispatches on `shard_identifier["event_type"]`:
   - `issues` → /repos/{owner}/{repo}/issues
   - `pull_requests` → /repos/{owner}/{repo}/pulls
+  - `issue_comments` → /repos/{owner}/{repo}/issues/comments
+  - `commits` → /repos/{owner}/{repo}/commits
+
+All four are repo-level list endpoints (Class A — plain offset/Link
+paging). Per-PR / per-commit fan-out signals (pr_reviews, check_runs)
+are Class B and live in a separate fetch path; see
+docs/ingestion/github-backfill-gap-closure.md.
+
+DEDUP-KEY PARITY:
+  - issue_comments → `issue_comment` webhook; external_id = comment.node_id.
+    The repo-level endpoint omits the parent issue object, so we reshape
+    `issue = {"number": <parsed from issue_url>}` — the handler only uses
+    issue.node_id for an optional entity hint, never the dedup key.
+  - commits → `push` webhook; external_id = `{repo}@{sha}`. We reshape each
+    commit as a single-commit push with `after=sha` and inject
+    `head_commit.timestamp` from the commit's author date so the backfilled
+    observation keeps its true time. The live push tip-SHA collides with the
+    backfilled tip commit (dedups); intermediate commits are backfill-only.
 
 Cursor schema (per-source Pydantic, opaque to ShardFetch):
     GithubCursor:
@@ -94,8 +112,16 @@ def _encode_cursor(cursor: GithubCursor) -> dict[str, Any]:
 # Maps the shard's REST event_type to the webhook `X-GitHub-Event`
 # header value the handler dispatches on. The REST endpoint "issues"
 # and the webhook event "issues" coincide; "pull_requests" (REST) maps
-# to "pull_request" (webhook, singular).
-_GH_EVENT_NAME = {"issues": "issues", "pull_requests": "pull_request"}
+# to "pull_request" (webhook, singular); the comment/commit collections
+# map to their respective webhook events.
+_GH_EVENT_NAME = {
+    "issues": "issues",
+    "pull_requests": "pull_request",
+    "issue_comments": "issue_comment",
+    "commits": "push",
+}
+
+_SUPPORTED_EVENT_TYPES = frozenset(_GH_EVENT_NAME)
 
 
 def _derive_action(event_type: str, item: dict[str, Any]) -> str:
@@ -111,26 +137,81 @@ def _derive_action(event_type: str, item: dict[str, Any]) -> str:
     return "closed" if item.get("state") == "closed" else "opened"
 
 
+def _issue_number_from_url(issue_url: str | None) -> int | None:
+    """Parse the trailing issue number from a REST `issue_url`
+    (e.g. ".../repos/o/r/issues/42" → 42). The repo-level comments
+    endpoint omits the parent issue object; the handler only needs the
+    number for the content sentence, never for the dedup key."""
+    if not issue_url:
+        return None
+    tail = issue_url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
 def _build_record(
     *, event_type: str, repo_full_name: str, payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Reshape one REST item into the webhook event body the
     `github:webhook` handler consumes, plus the `webhook_metadata`
-    header (A27.3). `payload` is the bare issue / PR object.
+    header (A27.3). `payload` is the bare REST object for `event_type`.
     """
     gh_event = _GH_EVENT_NAME[event_type]
+    meta = {"X-GitHub-Event": gh_event}
+    repo = {"full_name": repo_full_name}
+
+    if event_type == "commits":
+        # Reshape one commit into a single-commit push body. external_id
+        # parity = `{repo}@{after}` with after=sha; head_commit.timestamp
+        # carries the real author date so occurred_at is correct.
+        sha = payload.get("sha")
+        commit = payload.get("commit") or {}
+        author_obj = payload.get("author") or {}
+        login = author_obj.get("login") if isinstance(author_obj, dict) else None
+        commit_author = commit.get("author") or {}
+        ts = commit_author.get("date") if isinstance(commit_author, dict) else None
+        head_commit = {"id": sha, "timestamp": ts, "message": commit.get("message")}
+        return {
+            "ref": "",
+            "after": sha,
+            "commits": [head_commit],
+            "head_commit": head_commit,
+            "repository": repo,
+            "sender": {"login": login or "unknown"},
+            "webhook_metadata": meta,
+        }
+
+    if event_type == "issue_comments":
+        user = payload.get("user") or {}
+        return {
+            "action": "created",
+            "comment": payload,
+            "issue": {"number": _issue_number_from_url(payload.get("issue_url"))},
+            "repository": repo,
+            "sender": {"login": user.get("login", "unknown")},
+            "webhook_metadata": meta,
+        }
+
+    # issues / pull_requests — bare object under its event key.
     user = payload.get("user") or {}
     body: dict[str, Any] = {
         "action": _derive_action(event_type, payload),
-        "repository": {"full_name": repo_full_name},
+        "repository": repo,
         "sender": {"login": user.get("login", "unknown")},
-        # The reserved key the producer lifts into the blob's
-        # webhook_metadata; the normalizer replays it as the handler's
-        # X-GitHub-Event header.
-        "webhook_metadata": {"X-GitHub-Event": gh_event},
+        "webhook_metadata": meta,
     }
     body["pull_request" if event_type == "pull_requests" else "issue"] = payload
     return body
+
+
+def _item_updated_at(event_type: str, item: dict[str, Any]) -> str | None:
+    """The timestamp used to advance `last_seen_updated_at`. Commits
+    carry it under `commit.author.date`; everything else uses
+    `updated_at`."""
+    if event_type == "commits":
+        commit = item.get("commit") or {}
+        author = commit.get("author") or {}
+        return author.get("date") if isinstance(author, dict) else None
+    return item.get("updated_at")
 
 
 async def fetch_page_github(
@@ -146,7 +227,7 @@ async def fetch_page_github(
         "repo_full_name", f"{owner}/{repo}",
     )
 
-    if event_type not in ("issues", "pull_requests"):
+    if event_type not in _SUPPORTED_EVENT_TYPES:
         raise ValueError(
             f"github fetcher: unknown event_type={event_type!r}"
         )
@@ -168,7 +249,7 @@ async def fetch_page_github(
         ]
         last_seen = cur.last_seen_updated_at
         for item in page_records:
-            ts = item.get("updated_at")
+            ts = _item_updated_at(event_type, item)
             if ts and (last_seen is None or ts > last_seen):
                 last_seen = ts
 

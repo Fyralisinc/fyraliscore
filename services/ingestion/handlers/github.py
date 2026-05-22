@@ -227,6 +227,16 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
     after = payload.get("after")  # new HEAD SHA — stable dedup key
     author = _author(payload)
     n = len(commits) if isinstance(commits, list) else 0
+    # occurred_at: real push events carry `head_commit.timestamp`; the M6.4
+    # commit-backfill reshape injects it from the commit's author date so a
+    # historical commit keeps its true time. Falls back to now() when absent
+    # (matches the prior live-only behavior).
+    head_commit = payload.get("head_commit") or {}
+    occurred_ts = head_commit.get("timestamp") if isinstance(head_commit, dict) else None
+    if occurred_ts is None and isinstance(commits, list) and commits:
+        last = commits[-1]
+        if isinstance(last, dict):
+            occurred_ts = last.get("timestamp")
     content_text = (
         f"{author} pushed {n} commit(s) to {branch} "
         f"in {repo_full or 'unknown-repo'}"
@@ -249,7 +259,7 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
             "author": author,
             "after": after,
         },
-        occurred_at=_utcnow(),
+        occurred_at=_parse_iso(occurred_ts) if occurred_ts else _utcnow(),
         trust_tier="authoritative",
         kind="signal",
         source_actor_ref=f"github:{author}" if author != "unknown" else None,

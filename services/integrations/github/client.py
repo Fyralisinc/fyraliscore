@@ -51,7 +51,30 @@ _APPS_DOC_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 # M6.4 backfill: maps the shard's REST event_type to the collection path.
-_GH_EVENT_PATH = {"issues": "issues", "pull_requests": "pulls"}
+_GH_EVENT_PATH = {
+    "issues": "issues",
+    "pull_requests": "pulls",
+    # M6.4 gap-closure (Class A — repo-level list endpoints):
+    "issue_comments": "issues/comments",
+    "commits": "commits",
+}
+
+
+def _gh_event_query(event_type: str, *, per_page: int, page: int) -> str:
+    """Per-event REST query string. issues/pulls + comments support
+    `state`/`sort`/`direction`; the commits collection takes neither
+    (it pages by sha/since/page only). Always carries per_page+page.
+    """
+    paging = f"per_page={per_page}&page={page}"
+    if event_type == "commits":
+        # /commits has no `state`; default ordering is reverse-chronological.
+        return paging
+    if event_type == "issue_comments":
+        # /issues/comments has no `state`; ascending by update for a stable
+        # forward scan.
+        return f"sort=updated&direction=asc&{paging}"
+    # issues / pull_requests
+    return f"state=all&sort=updated&direction=asc&{paging}"
 _LINK_NEXT_PATTERN = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="next"')
 
 # Backfill read-path rate-limit retry. Installation requests hit a
@@ -442,12 +465,13 @@ class GithubClient:
         etag: str | None = None,
         installation_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], str, int | None]:
-        """One page of issues / pull_requests for a repo.
+        """One page of a repo's events for `event_type`.
 
         Returns `(page_records, etag, next_page)` — the exact shape the
         M6.4 fetcher consumes. `event_type` maps to the REST collection
-        (`issues` → /issues, `pull_requests` → /pulls). The response
-        `ETag` is returned for the reconciler's conditional fast-path;
+        (`issues` → /issues, `pull_requests` → /pulls, `issue_comments`
+        → /issues/comments, `commits` → /commits). The response `ETag`
+        is returned for the reconciler's conditional fast-path;
         `next_page` is parsed from the `Link` header (rel="next"),
         falling back to `page+1` when a full page came back.
         """
@@ -455,11 +479,8 @@ class GithubClient:
             self._backfill_inst(installation_id),
         )
         path = _GH_EVENT_PATH[event_type]
-        url = (
-            f"{self._api_base_url}/repos/{owner}/{repo}/{path}"
-            f"?state=all&sort=updated&direction=asc"
-            f"&per_page={per_page}&page={page}"
-        )
+        query = _gh_event_query(event_type, per_page=per_page, page=page)
+        url = f"{self._api_base_url}/repos/{owner}/{repo}/{path}?{query}"
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
