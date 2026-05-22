@@ -249,12 +249,15 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("terminal_at", TS, True),
             _col("created_by_event_id", UUID, False),
             _col("last_confidence_basis", UUID, True),
+            # Migration 0021 — I1 C10 maintenance flag.
+            _col("is_maintenance", BOOL, False, default=True),
         ]),
         indexes={
             "commitments_pkey",
             "commitments_state_idx",
             "commitments_owner_idx",
             "commitments_due_idx",
+            "commitments_active_maintenance_idx",   # 0021
         },
     ),
     "commitment_contributors": Table(

@@ -99,6 +99,7 @@ async def load_snapshot(
         sql = _read_snapshot_file(sql_path)
         sql = _remap_snapshot_uuids(sql, tenant_id)
         await conn.execute(sql)
+        await _backfill_predictions_from_models(conn, tenant_id=tenant_id)
         return await _find_ceo_actor(
             conn, tenant_id=tenant_id,
         )
@@ -107,6 +108,66 @@ async def load_snapshot(
         conn, tenant_id=tenant_id, company_id=company_id,
         preserve_ceo_actor_id=preserve_ceo_actor_id,
     )
+
+
+# SQL: derive `predictions` rows from prediction-kind Models. The demo
+# content pipeline predates the Forecasts feature (migration 0041) and
+# its snapshots export Models but not the `predictions` table the
+# Forecasts page reads — so a freshly-loaded demo tenant shows an empty
+# Forecasts page. Each prediction Model already carries the real
+# statement, confidence, resolution date (evaluate_at) and an `outcome`
+# in its proposition; we project those onto the predictions schema,
+# satisfying its category/status/outcome CHECK constraints. Reusing the
+# Model id as the prediction id keeps this idempotent (ON CONFLICT).
+_BACKFILL_PREDICTIONS_SQL = """
+INSERT INTO predictions (
+    id, tenant_id, status, statement, category,
+    confidence, resolution_at, resolved_at, outcome,
+    created_at, updated_at
+)
+SELECT
+    m.id,
+    m.tenant_id,
+    CASE
+        WHEN m.proposition->>'outcome' IS NOT NULL THEN 'resolved'
+        ELSE 'active'
+    END,
+    left(coalesce(m."natural", m.proposition->>'natural', 'Prediction'), 2000),
+    CASE
+        WHEN (m.proposition->>'commitment') IS NOT NULL THEN 'delivery'
+        WHEN (m.proposition->>'subject') ILIKE '%customer%'
+          OR (m.proposition->>'subject') ILIKE '%churn%'
+          OR (m.proposition->>'predicted_outcome') ILIKE '%churn%' THEN 'customer_risk'
+        WHEN (m.proposition->>'predicted_outcome') ILIKE '%slip%' THEN 'delivery'
+        ELSE 'strategy'
+    END,
+    greatest(0, least(1, coalesce(m.confidence, 0.5)))::numeric(4,3),
+    coalesce(m.evaluate_at, m.created_at + interval '30 days'),
+    CASE WHEN m.proposition->>'outcome' IS NOT NULL
+         THEN coalesce(m.evaluate_at, m.created_at) END,
+    CASE
+        WHEN m.proposition->>'outcome' IN
+             ('validated','validated_early','true','correct') THEN 'true'
+        WHEN m.proposition->>'outcome' IN
+             ('invalidated','false','incorrect') THEN 'false'
+        WHEN m.proposition->>'outcome' IS NOT NULL THEN 'partial'
+    END,
+    m.created_at, now()
+FROM models m
+WHERE m.tenant_id = $1
+  AND m.proposition_kind = 'prediction'
+ON CONFLICT (id) DO NOTHING;
+"""
+
+
+async def _backfill_predictions_from_models(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> None:
+    """Project a tenant's prediction-kind Models into the `predictions`
+    table so the Forecasts page has content. See `_BACKFILL_PREDICTIONS_SQL`."""
+    await conn.execute(_BACKFILL_PREDICTIONS_SQL, tenant_id)
 
 
 async def _find_ceo_actor(

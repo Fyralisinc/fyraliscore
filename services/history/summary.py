@@ -195,15 +195,23 @@ async def _safe_fetchrow(
     hasn't shipped yet. SAVEPOINT + ROLLBACK TO restores the
     transaction to a clean state so subsequent queries succeed.
     """
+    # A SAVEPOINT is only legal inside an open transaction. When the
+    # caller hands us an autocommit connection (no active transaction),
+    # a failed prepare can't poison anything, so the savepoint dance is
+    # both unnecessary and itself an error — guard on the tx state.
+    in_tx = conn.is_in_transaction()
     sp = f"hist_summary_{savepoint}"
-    await conn.execute(f"SAVEPOINT {sp}")
+    if in_tx:
+        await conn.execute(f"SAVEPOINT {sp}")
     try:
         row = await conn.fetchrow(query, *args)
     except _PREDICTIONS_ABSENT_ERRORS as exc:
-        await conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+        if in_tx:
+            await conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
         log.info(log_event, error=str(exc))
         return None
-    await conn.execute(f"RELEASE SAVEPOINT {sp}")
+    if in_tx:
+        await conn.execute(f"RELEASE SAVEPOINT {sp}")
     return row
 
 
