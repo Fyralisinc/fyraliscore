@@ -13,18 +13,21 @@ repos via Octokit's `/installation/repositories` endpoint (per
 [GithubClient.list_installation_repositories](../../../services/integrations/github/client.py)).
 
 ============================================================
-EVENT TYPES (gap-closure — Class A repo-level list endpoints)
+EVENT TYPES (gap-closure — full mandatory signal set)
 ============================================================
-Backfill scope: one shard per (repo, event_type). Ships FOUR
-repo-level-list event types — issues, pull_requests, issue_comments,
-commits — bringing backfill to parity with the live handler for the
-mandatory CompanyOS signal set, minus the two fan-out signals
-(pr_reviews, check_runs) tracked as Class B in
-docs/ingestion/github-backfill-gap-closure.md.
+Backfill scope: one shard per (repo, event_type), covering the
+mandatory CompanyOS GitHub signal set at parity with the live handler:
 
-With ~20 repos/tenant typical and 4 event_types = ~80 shards/tenant.
-The settled-decision target of ~250 leaves headroom for the Class B
-fan-out shards.
+  - Class A (repo-level list): issues, pull_requests, issue_comments,
+    commits.
+  - Class B (PR-parent fan-out): pr_reviews (always on; bounded by PR
+    count), check_runs (OPTIONAL — gated by GITHUB_BACKFILL_CHECK_RUNS=1,
+    default off, because per-PR-head check-run fan-out is the
+    highest-cost / lowest-ROI signal).
+
+With ~20 repos/tenant typical and 5 always-on event_types =
+~100 shards/tenant (~120 with check_runs). The settled-decision target
+of ~250 leaves headroom. See docs/ingestion/github-backfill-gap-closure.md.
 
 ============================================================
 ALL-REPOS vs SELECTED-REPOS MODE
@@ -48,6 +51,7 @@ module to trigger the assignment.
 from __future__ import annotations
 
 import logging
+import os
 
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingestion.planners.context import PlannerContext
@@ -57,7 +61,19 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_REPO_EVENTS = "github_repo_events"
-EVENT_TYPES = ("issues", "pull_requests", "issue_comments", "commits")
+# Always-on event types (one shard per (repo, event_type)).
+EVENT_TYPES = (
+    "issues", "pull_requests", "issue_comments", "commits", "pr_reviews",
+)
+# Opt-in via GITHUB_BACKFILL_CHECK_RUNS=1 — expensive per-PR-head fan-out.
+OPTIONAL_EVENT_TYPES = ("check_runs",)
+
+
+def _effective_event_types() -> tuple[str, ...]:
+    """`EVENT_TYPES` plus any opt-in types whose env flag is set."""
+    if os.environ.get("GITHUB_BACKFILL_CHECK_RUNS", "") == "1":
+        return EVENT_TYPES + OPTIONAL_EVENT_TYPES
+    return EVENT_TYPES
 
 
 async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
@@ -82,6 +98,7 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
     repos = await ctx.source_client.list_repositories_for_backfill(
         installation_id,
     )
+    event_types = _effective_event_types()
     shards: list[Shard] = []
     for repo_full_name in repos:
         if "/" not in repo_full_name:
@@ -91,7 +108,7 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
             )
             continue
         owner, repo = repo_full_name.split("/", 1)
-        for event_type in EVENT_TYPES:
+        for event_type in event_types:
             shards.append(Shard(
                 shard_kind=SHARD_KIND_REPO_EVENTS,
                 shard_identifier={
@@ -111,4 +128,9 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
 PLANNER_DISPATCH["github"] = plan_shards_github
 
 
-__all__ = ["EVENT_TYPES", "SHARD_KIND_REPO_EVENTS", "plan_shards_github"]
+__all__ = [
+    "EVENT_TYPES",
+    "OPTIONAL_EVENT_TYPES",
+    "SHARD_KIND_REPO_EVENTS",
+    "plan_shards_github",
+]

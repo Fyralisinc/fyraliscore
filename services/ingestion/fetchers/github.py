@@ -68,7 +68,7 @@ import logging
 from typing import Any
 
 import asyncpg
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 
@@ -119,7 +119,14 @@ _GH_EVENT_NAME = {
     "pull_requests": "pull_request",
     "issue_comments": "issue_comment",
     "commits": "push",
+    # Class B (fan-out — nested child collections):
+    "pr_reviews": "pull_request_review",
+    "check_runs": "check_run",
 }
+
+# Fan-out event types: no repo-level list endpoint exists; the fetcher
+# enumerates PR parents and drains each parent's children one page per call.
+_FANOUT_EVENT_TYPES = frozenset({"pr_reviews", "check_runs"})
 
 _SUPPORTED_EVENT_TYPES = frozenset(_GH_EVENT_NAME)
 
@@ -214,12 +221,185 @@ def _item_updated_at(event_type: str, item: dict[str, Any]) -> str | None:
     return item.get("updated_at")
 
 
+# ---------------------------------------------------------------------
+# Fan-out (Class B) — pr_reviews / check_runs.
+# ---------------------------------------------------------------------
+class GithubFanoutCursor(BaseModel):
+    """Resumable two-level cursor for nested child collections.
+
+    Parents are PRs (enumerated via the pull_requests list); children are
+    that PR's reviews (pr_reviews) or the check-runs for the PR's head SHA
+    (check_runs). Each `_fetch_page_fanout` call does exactly ONE HTTP
+    fetch — either advance parent enumeration or drain one child page — so
+    the whole walk is restorable from this dict under the N1 invariant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_page: int = 1
+    parents_exhausted: bool = False
+    parent_queue: list[dict[str, Any]] = Field(default_factory=list)
+    current_parent: dict[str, Any] | None = None
+    child_page: int = 1
+    last_seen_updated_at: str | None = None
+
+
+def _parent_entry(event_type: str, pr: dict[str, Any]) -> dict[str, Any] | None:
+    """Project a PR list item into the minimal parent context the child
+    fetch + reshape need. Returns None to skip a parent (e.g. a PR with no
+    head SHA when fanning out to check_runs)."""
+    if event_type == "check_runs":
+        head = pr.get("head") or {}
+        sha = head.get("sha") if isinstance(head, dict) else None
+        return {"sha": sha} if sha else None
+    # pr_reviews: keep number (child endpoint) + node_id (reshape hint).
+    return {"number": pr.get("number"), "node_id": pr.get("node_id")}
+
+
+def _build_review_record(
+    repo_full_name: str, parent: dict[str, Any], review: dict[str, Any],
+) -> dict[str, Any]:
+    """Reshape one review into the `pull_request_review` webhook body.
+    external_id parity = review.node_id."""
+    user = review.get("user") or {}
+    return {
+        "action": "submitted",
+        "review": review,
+        "pull_request": {
+            "number": parent.get("number"),
+            "node_id": parent.get("node_id"),
+        },
+        "repository": {"full_name": repo_full_name},
+        "sender": {"login": user.get("login", "unknown")},
+        "webhook_metadata": {"X-GitHub-Event": "pull_request_review"},
+    }
+
+
+def _build_check_run_record(
+    repo_full_name: str, check: dict[str, Any],
+) -> dict[str, Any]:
+    """Reshape one check-run into the `check_run` webhook body. external_id
+    parity = check.node_id; check runs are bot-originated (no sender)."""
+    return {
+        "action": "completed",
+        "check_run": check,
+        "repository": {"full_name": repo_full_name},
+        "webhook_metadata": {"X-GitHub-Event": "check_run"},
+    }
+
+
+async def _fetch_page_fanout(
+    install: asyncpg.Record,
+    shard_identifier: dict[str, Any],
+    cursor: dict[str, Any] | None,
+) -> FetchResult:
+    """One unit of fan-out work: enumerate the next PR page, or drain one
+    child page for the parent currently in flight."""
+    event_type = shard_identifier["event_type"]
+    owner = shard_identifier.get("owner")
+    repo = shard_identifier.get("repo")
+    repo_full_name = shard_identifier.get(
+        "repo_full_name", f"{owner}/{repo}",
+    )
+    cur = (
+        GithubFanoutCursor()
+        if cursor is None
+        else GithubFanoutCursor.model_validate(cursor)
+    )
+    client, close = await _open_github_client(install)
+    try:
+        # 1. Ensure a parent is in flight, enumerating PRs if needed.
+        if cur.current_parent is None:
+            if not cur.parent_queue:
+                if cur.parents_exhausted:
+                    return FetchResult(
+                        records=[],
+                        next_cursor=cur.model_dump(mode="json"),
+                        end_of_data=True,
+                    )
+                prs, _etag, next_page = await client.list_repo_events(
+                    owner=owner, repo=repo, event_type="pull_requests",
+                    page=cur.parent_page, per_page=_DEFAULT_PER_PAGE,
+                    etag=None,
+                )
+                for pr in prs:
+                    entry = _parent_entry(event_type, pr)
+                    if entry is not None:
+                        cur.parent_queue.append(entry)
+                if next_page is None:
+                    cur.parents_exhausted = True
+                else:
+                    cur.parent_page = next_page
+                end = cur.parents_exhausted and not cur.parent_queue
+                return FetchResult(
+                    records=[],
+                    next_cursor=cur.model_dump(mode="json"),
+                    end_of_data=end,
+                )
+            cur.current_parent = cur.parent_queue.pop(0)
+            cur.child_page = 1
+
+        # 2. Drain one child page for the current parent.
+        parent = cur.current_parent
+        if event_type == "pr_reviews":
+            children, _etag, next_child = await client.list_pr_reviews(
+                owner=owner, repo=repo, pull_number=parent["number"],
+                page=cur.child_page, per_page=_DEFAULT_PER_PAGE, etag=None,
+            )
+            records = [
+                _build_review_record(repo_full_name, parent, c)
+                for c in children
+            ]
+            ts_field = "submitted_at"
+        else:  # check_runs
+            children, _etag, next_child = await client.list_check_runs(
+                owner=owner, repo=repo, ref=parent["sha"],
+                page=cur.child_page, per_page=_DEFAULT_PER_PAGE, etag=None,
+            )
+            records = [
+                _build_check_run_record(repo_full_name, c) for c in children
+            ]
+            ts_field = "completed_at"
+
+        for c in children:
+            ts = c.get(ts_field)
+            if ts and (
+                cur.last_seen_updated_at is None
+                or ts > cur.last_seen_updated_at
+            ):
+                cur.last_seen_updated_at = ts
+
+        if next_child is None:
+            cur.current_parent = None
+            cur.child_page = 1
+        else:
+            cur.child_page = next_child
+
+        end = (
+            cur.current_parent is None
+            and not cur.parent_queue
+            and cur.parents_exhausted
+        )
+        return FetchResult(
+            records=records,
+            next_cursor=cur.model_dump(mode="json"),
+            end_of_data=end,
+        )
+    finally:
+        await close()
+
+
 async def fetch_page_github(
     install: asyncpg.Record,
     shard_identifier: dict[str, Any],
     cursor: dict[str, Any] | None,
 ) -> FetchResult:
-    """One page of records via Octokit + cursor advance."""
+    """One page of records via Octokit + cursor advance.
+
+    Class A (repo-level list: issues/pull_requests/issue_comments/commits)
+    pages here directly; Class B (pr_reviews/check_runs) is delegated to the
+    fan-out walker.
+    """
     event_type = shard_identifier.get("event_type")
     owner = shard_identifier.get("owner")
     repo = shard_identifier.get("repo")
@@ -231,6 +411,8 @@ async def fetch_page_github(
         raise ValueError(
             f"github fetcher: unknown event_type={event_type!r}"
         )
+    if event_type in _FANOUT_EVENT_TYPES:
+        return await _fetch_page_fanout(install, shard_identifier, cursor)
 
     cur = _decode_cursor(cursor)
     client, close = await _open_github_client(install)
@@ -276,6 +458,7 @@ FETCHER_DISPATCH["github"] = fetch_page_github
 
 __all__ = [
     "GithubCursor",
+    "GithubFanoutCursor",
     "SHARD_KIND_REPO_EVENTS",
     "fetch_page_github",
 ]

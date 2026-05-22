@@ -103,7 +103,52 @@ class MockGithubClient(_MockBase):
         has_changes = etag != current_etag
         return has_changes, current_etag
 
+    # ---- Fan-out surface (gap-closure Class B) ----
+    async def list_pr_reviews(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        page: int = 1,
+        per_page: int = 100,
+        etag: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        """Reviews for one PR. Reads `reviews_by_pr[pull_number]` from the
+        fixture (default empty)."""
+        self._check_fault()
+        reviews = list(
+            self._fixture.get("reviews_by_pr", {}).get(pull_number, [])
+        )
+        return self._paginate(reviews, page, per_page)
+
+    async def list_check_runs(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        ref: str,
+        page: int = 1,
+        per_page: int = 100,
+        etag: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        """Check-runs for a commit ref. Reads `check_runs_by_sha[ref]`
+        from the fixture (default empty)."""
+        self._check_fault()
+        checks = list(
+            self._fixture.get("check_runs_by_sha", {}).get(ref, [])
+        )
+        return self._paginate(checks, page, per_page)
+
     # ---- Helpers ----
+    def _paginate(
+        self, items: list[dict[str, Any]], page: int, per_page: int,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        start = (page - 1) * per_page
+        end = start + per_page
+        next_page = page + 1 if end < len(items) else None
+        return items[start:end], 'W/"mock"', next_page
+
     def _events_for(
         self, full_name: str, event_type: str,
     ) -> list[dict[str, Any]]:

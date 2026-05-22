@@ -563,6 +563,118 @@ class GithubClient:
         return etag != current_etag, current_etag
 
     # -----------------------------------------------------------------
+    # Fan-out read surface (gap-closure Class B) — nested child
+    # collections with no repo-level list endpoint. Each returns the
+    # `(records, etag, next_page)` triple the fan-out fetcher consumes.
+    # -----------------------------------------------------------------
+
+    async def list_pr_reviews(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        pull_number: int,
+        page: int = 1,
+        per_page: int = 100,
+        etag: str | None = None,
+        installation_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        """One page of reviews for a single PR
+        (`GET /repos/{o}/{r}/pulls/{n}/reviews`). Bare list response."""
+        token = await self.mint_installation_token(
+            self._backfill_inst(installation_id),
+        )
+        url = (
+            f"{self._api_base_url}/repos/{owner}/{repo}/pulls/{pull_number}"
+            f"/reviews?per_page={per_page}&page={page}"
+        )
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if etag:
+            headers["If-None-Match"] = etag
+        try:
+            response = await self._get_with_rl_retry(url, headers)
+        except httpx.TransportError as exc:
+            raise GithubApiError(
+                "transport error fetching pr reviews",
+                code="github_api_error",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+        metrics.record_outbound_request(
+            path="/repos/{owner}/{repo}/pulls/{n}/reviews",
+            status=response.status_code,
+        )
+        new_etag = response.headers.get("ETag", etag or "")
+        if response.status_code == 304:
+            return [], new_etag, None
+        if response.status_code != 200:
+            raise _api_error_from_response(response)
+        body = _safe_json(response)
+        records = body if isinstance(body, list) else []
+        next_page = _parse_next_page(response.headers.get("Link"))
+        if next_page is None and len(records) >= per_page:
+            next_page = page + 1
+        return records, new_etag, next_page
+
+    async def list_check_runs(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        ref: str,
+        page: int = 1,
+        per_page: int = 100,
+        etag: str | None = None,
+        installation_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str, int | None]:
+        """One page of check-runs for a commit ref
+        (`GET /repos/{o}/{r}/commits/{ref}/check-runs`). The response is a
+        WRAPPED object `{total_count, check_runs:[...]}`; we unwrap the
+        list. Requires the App's `checks: read` permission."""
+        token = await self.mint_installation_token(
+            self._backfill_inst(installation_id),
+        )
+        url = (
+            f"{self._api_base_url}/repos/{owner}/{repo}/commits/{ref}"
+            f"/check-runs?per_page={per_page}&page={page}"
+        )
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if etag:
+            headers["If-None-Match"] = etag
+        try:
+            response = await self._get_with_rl_retry(url, headers)
+        except httpx.TransportError as exc:
+            raise GithubApiError(
+                "transport error fetching check runs",
+                code="github_api_error",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+        metrics.record_outbound_request(
+            path="/repos/{owner}/{repo}/commits/{ref}/check-runs",
+            status=response.status_code,
+        )
+        new_etag = response.headers.get("ETag", etag or "")
+        if response.status_code == 304:
+            return [], new_etag, None
+        if response.status_code != 200:
+            raise _api_error_from_response(response)
+        body = _safe_json(response)
+        records = (
+            body.get("check_runs", []) if isinstance(body, dict) else []
+        )
+        next_page = _parse_next_page(response.headers.get("Link"))
+        if next_page is None and len(records) >= per_page:
+            next_page = page + 1
+        return records, new_etag, next_page
+
+    # -----------------------------------------------------------------
     # Chokepoint
     # -----------------------------------------------------------------
 

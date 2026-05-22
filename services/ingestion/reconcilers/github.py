@@ -47,6 +47,14 @@ log = logging.getLogger(__name__)
 SHARD_KIND_REPO_EVENTS = "github_repo_events"
 RESHARE_RECENCY_SCORE = 1.5
 
+# Gap detection works only for endpoints with (a) a stable etag/HEAD probe
+# and (b) an `updated_at` ordering. That holds for issues, pull_requests and
+# issue_comments. `commits` carries no `updated_at`, and the fan-out signals
+# (pr_reviews, check_runs) have no single repo-level endpoint — so those
+# shards are not gap-checked here (their backfill is one-shot). They are
+# skipped rather than KeyError'd against `_GH_EVENT_PATH`.
+_RECONCILABLE_EVENT_TYPES = frozenset({"issues", "pull_requests", "issue_comments"})
+
 
 _pool_provider: Any = None
 
@@ -98,6 +106,9 @@ async def _check_one_shard_for_gap(
     repo = identifier.get("repo")
     event_type = identifier.get("event_type")
     if not (owner and repo and event_type):
+        return None
+    if event_type not in _RECONCILABLE_EVENT_TYPES:
+        # commits / pr_reviews / check_runs: no etag+updated_at gap model.
         return None
 
     cursor = await _load_shard_cursor(pool, shard["id"])

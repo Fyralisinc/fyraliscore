@@ -217,6 +217,136 @@ async def test_commit_reshape_flows_through_push_handler(monkeypatch):
     assert draft.occurred_at.year == 2024 and draft.occurred_at.month == 6
 
 
+class _FakeFanoutClient:
+    """PR enumeration + per-parent child paging for the fan-out fetcher."""
+
+    def __init__(self, prs, *, review_pages=None, check_pages=None):
+        self.prs = prs
+        self.review_pages = review_pages or {}   # {pr_number: [[p1], [p2]]}
+        self.check_pages = check_pages or {}      # {sha: [[p1], ...]}
+
+    async def list_repo_events(
+        self, *, owner, repo, event_type, page, per_page, etag,
+    ):
+        assert event_type == "pull_requests"  # parents are always PRs
+        return (self.prs, "etag", None) if page == 1 else ([], "etag", None)
+
+    @staticmethod
+    def _page(pages, page):
+        idx = page - 1
+        if idx >= len(pages):
+            return [], "etag", None
+        nxt = page + 1 if (idx + 1) < len(pages) else None
+        return pages[idx], "etag", nxt
+
+    async def list_pr_reviews(
+        self, *, owner, repo, pull_number, page, per_page, etag,
+    ):
+        return self._page(self.review_pages.get(pull_number, []), page)
+
+    async def list_check_runs(self, *, owner, repo, ref, page, per_page, etag):
+        return self._page(self.check_pages.get(ref, []), page)
+
+
+async def _drain_fanout(monkeypatch, fake, shard_identifier):
+    """Drive fetch_page_github call-by-call (round-tripping the opaque
+    cursor) until end_of_data, accumulating records — the N1 loop."""
+    _patch_client(monkeypatch, fake)
+    cursor, records = None, []
+    for _ in range(50):  # safety bound
+        r = await fetch_page_github(_FakeInstall(), shard_identifier, cursor)
+        records.extend(r.records)
+        cursor = r.next_cursor
+        if r.end_of_data:
+            break
+    else:  # pragma: no cover
+        raise AssertionError("fan-out did not terminate")
+    return records
+
+
+async def test_pr_reviews_fanout_parity(monkeypatch):
+    """pr_reviews enumerates PRs then drains each PR's reviews; the reshape
+    flows through the live pull_request_review shaper to review.node_id."""
+    from services.ingestion.handlers.github import _EVENT_SHAPERS
+
+    prs = [{"number": 1, "node_id": "PR_1"}, {"number": 2, "node_id": "PR_2"}]
+    review_pages = {
+        1: [[{"node_id": "PRR_1", "state": "approved",
+              "user": {"login": "rev"}, "submitted_at": "2025-01-01T00:00:00Z"}]],
+        2: [[{"node_id": "PRR_2", "state": "commented",
+              "user": {"login": "rev"}, "submitted_at": "2025-01-02T00:00:00Z"}]],
+    }
+    fake = _FakeFanoutClient(prs, review_pages=review_pages)
+    records = await _drain_fanout(
+        monkeypatch, fake,
+        {"event_type": "pr_reviews", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+    )
+    assert len(records) == 2
+    rec = records[0]
+    assert set(rec.keys()) == {
+        "action", "review", "pull_request", "repository", "sender",
+        "webhook_metadata",
+    }
+    assert rec["webhook_metadata"] == {"X-GitHub-Event": "pull_request_review"}
+    assert rec["pull_request"]["number"] == 1
+    draft = _EVENT_SHAPERS["pull_request_review"](rec)
+    assert draft.external_id == "PRR_1"
+
+
+async def test_pr_reviews_fanout_resumes_inner_pages(monkeypatch):
+    """A single PR with two review pages is drained across calls — the inner
+    child_page advances and resumes purely from the cursor dict."""
+    prs = [{"number": 7, "node_id": "PR_7"}]
+    review_pages = {7: [
+        [{"node_id": "R_a", "user": {"login": "x"}}],
+        [{"node_id": "R_b", "user": {"login": "x"}}],
+    ]}
+    fake = _FakeFanoutClient(prs, review_pages=review_pages)
+    records = await _drain_fanout(
+        monkeypatch, fake,
+        {"event_type": "pr_reviews", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+    )
+    assert [r["review"]["node_id"] for r in records] == ["R_a", "R_b"]
+
+
+async def test_check_runs_fanout_parity(monkeypatch):
+    """check_runs fans out over PR head SHAs; reshape flows through the live
+    check_run shaper to check.node_id."""
+    from services.ingestion.handlers.github import _EVENT_SHAPERS
+
+    prs = [{"number": 1, "node_id": "PR_1", "head": {"sha": "sha1"}}]
+    check_pages = {"sha1": [[{"node_id": "CR_1", "name": "ci",
+                              "status": "completed", "conclusion": "success",
+                              "head_sha": "sha1",
+                              "completed_at": "2025-01-01T00:00:00Z"}]]}
+    fake = _FakeFanoutClient(prs, check_pages=check_pages)
+    records = await _drain_fanout(
+        monkeypatch, fake,
+        {"event_type": "check_runs", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+    )
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["webhook_metadata"] == {"X-GitHub-Event": "check_run"}
+    draft = _EVENT_SHAPERS["check_run"](rec)
+    assert draft.external_id == "CR_1"
+
+
+async def test_check_runs_skips_prs_without_head_sha(monkeypatch):
+    """A PR with no head SHA is skipped (no ref to query) — yields no
+    records and terminates cleanly."""
+    prs = [{"number": 1, "node_id": "PR_1"}]  # no head
+    fake = _FakeFanoutClient(prs, check_pages={})
+    records = await _drain_fanout(
+        monkeypatch, fake,
+        {"event_type": "check_runs", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+    )
+    assert records == []
+
+
 async def test_unknown_event_type_raises():
     with pytest.raises(ValueError, match="unknown event_type"):
         await fetch_page_github(
