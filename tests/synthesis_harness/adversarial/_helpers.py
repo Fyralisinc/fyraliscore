@@ -153,11 +153,18 @@ def assert_no_crash(actual: dict, _expected: dict, _ctx: dict) -> tuple[bool, st
 
     Use when the scenario reveals an architectural question — the
     "correct" behavior is unknown, but the substrate must at minimum
-    not raise an unhandled exception. The result still flows into
-    TRIAGE.md so the design question is visible.
+    complete the Think invocation. A returned `status='failed'` is not
+    a crash in Python terms, but it is still a production failure and
+    must not count as a pass. The result still flows into TRIAGE.md so
+    the design question is visible.
     """
+    if actual.get("skipped") is True:
+        return True, "skipped"
     if actual.get("crashed") is True:
         return False, f"pipeline crashed: {actual.get('error')!r}"
+    status = actual.get("status")
+    if status not in (None, "success", "skipped_idempotent"):
+        return False, f"think outcome: {status}; error={actual.get('error')!r}"
     return True, ""
 
 
@@ -250,6 +257,14 @@ async def run_think_with_text(
         "status": outcome.status,
         "ops_applied_count": outcome.ops_applied_count,
         "error": outcome.error,
+        "llm": {
+            "model": outcome.llm_model_name,
+            "calls": outcome.llm_calls_count,
+            "input_tokens": outcome.llm_input_tokens,
+            "output_tokens": outcome.llm_output_tokens,
+            "cost_usd": outcome.llm_cost_usd,
+            "latency_ms": outcome.llm_latency_ms,
+        },
         "models": models,
         "model_count": len(models),
         "model_kinds": [m["proposition_kind"] for m in models],

@@ -1,31 +1,23 @@
-// HTTP client for the History page surface.
-// Endpoint backed by services.history.aggregator + gateway /v1/history.
+// HTTP client for the Ledger surface.
+// Backed by services.history.aggregator + summary; gateway routes
+// /v1/history (with surface=ledger + types filter) and /v1/history/summary.
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
-  Arc,
-  CalibrationSummary,
-  HistoryEvent,
-  LayerStripCounts,
-  Prediction,
-  ShapeToken,
-} from "@/components/history/types";
+  LedgerEvent,
+  LedgerEventType,
+  LedgerSummary,
+} from "./history-types";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
 export type HistoryPeriod = "7d" | "30d" | "90d" | "365d" | "all";
 
-export type HistoryResponse = {
-  events: HistoryEvent[];
-  predictions: Prediction[];
-  arcs: Arc[];
-  calibration: CalibrationSummary;
-  layer_counts: LayerStripCounts;
-  chronicle_statement: ShapeToken[];
-  predictions_statement: ShapeToken[];
-  arcs_statement: ShapeToken[];
+export type LedgerHistoryResponse = {
+  events: LedgerEvent[];
   period: HistoryPeriod;
+  types?: LedgerEventType[];
 };
 
 async function request<T>(
@@ -46,12 +38,30 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-export function getHistory(
-  period: HistoryPeriod = "90d",
+export function getLedgerHistory(
+  options: { period?: HistoryPeriod; types?: LedgerEventType[] } = {},
   signal?: AbortSignal
-): Promise<HistoryResponse> {
-  return request<HistoryResponse>(
-    `/v1/history?period=${encodeURIComponent(period)}`,
+): Promise<LedgerHistoryResponse> {
+  const period = options.period ?? "30d";
+  const params = new URLSearchParams();
+  params.set("period", period);
+  params.set("surface", "ledger");
+  if (options.types && options.types.length > 0) {
+    params.set("types", options.types.join(","));
+  }
+  return request<LedgerHistoryResponse>(
+    `/v1/history?${params.toString()}`,
+    signal
+  );
+}
+
+export function getHistorySummary(
+  options: { range_days?: number } = {},
+  signal?: AbortSignal
+): Promise<LedgerSummary> {
+  const range = options.range_days ?? 30;
+  return request<LedgerSummary>(
+    `/v1/history/summary?range_days=${encodeURIComponent(range)}`,
     signal
   );
 }

@@ -64,8 +64,17 @@ def isoplus(seconds: float = 0) -> datetime:
 
 
 async def make_tenant(conn: asyncpg.Connection) -> UUID:
-    """Create a fresh tenant id (no row required — tenants are implicit)."""
-    return uuid7()
+    """Create a fresh tenant row for FK-constrained schemas."""
+    tid = uuid7()
+    await conn.execute(
+        """
+        INSERT INTO tenants (id, name, is_demo)
+        VALUES ($1, $2, FALSE)
+        """,
+        tid,
+        f"synthesis harness {tid}",
+    )
+    return tid
 
 
 async def make_actor(

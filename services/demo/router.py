@@ -108,6 +108,64 @@ async def start(request: Request) -> JSONResponse:
             status_code=500,
         )
 
+    # Promote the tenant's active recommendations into Decision Deltas so
+    # the Today page (Wave 1 entity) renders out of the box. Idempotent.
+    try:
+        async with deps.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO decision_deltas (
+                  id, tenant_id, status, label, main_assertion,
+                  current_state, suggested_update,
+                  target_node_kind, target_node_id,
+                  confidence, confidence_basis, falsification_condition,
+                  consequence_preview, impact, category,
+                  source_recommendation_id, created_at, updated_at
+                )
+                SELECT
+                  gen_random_uuid(), m.tenant_id, 'proposed',
+                  CASE WHEN m.confidence >= 0.75 THEN 'authority_required'
+                       WHEN m.confidence >= 0.55 THEN 'needs_review'
+                       ELSE 'recommended_update' END,
+                  m."natural",
+                  jsonb_build_object('label','Current','value','At watch','color_hint','review'),
+                  jsonb_build_object('label','Suggested','value','Critical','color_hint','critical'),
+                  COALESCE(m.proposition->'target_act_ref'->>'type', 'commitment'),
+                  CASE WHEN m.proposition->'target_act_ref'->>'id' ~ '^[0-9a-f-]{36}$'
+                       THEN (m.proposition->'target_act_ref'->>'id')::uuid
+                       ELSE NULL END,
+                  m.confidence,
+                  'Derived from active recommendation evidence',
+                  CASE WHEN m.falsifier IS NOT NULL THEN m.falsifier->>'description' ELSE NULL END,
+                  jsonb_build_object(
+                    'creates', '[]'::jsonb,
+                    'updates', jsonb_build_array(jsonb_build_object('label','Apply recommendation','target', m.id)),
+                    'archives', '[]'::jsonb, 'notifies', '[]'::jsonb,
+                    're_evaluates_in', '48h'),
+                  jsonb_build_object('confidence', m.confidence),
+                  CASE
+                    WHEN m."natural" ILIKE '%customer%' OR m."natural" ILIKE '%anchor%' OR m."natural" ILIKE '%churn%' THEN 'customer_risk'
+                    WHEN m."natural" ILIKE '%utilization%' OR m."natural" ILIKE '%capacity%' THEN 'capacity'
+                    WHEN m."natural" ILIKE '%pricing%' OR m."natural" ILIKE '%cost%' THEN 'pricing'
+                    WHEN m."natural" ILIKE '%commitment%' OR m."natural" ILIKE '%delivery%' THEN 'delivery'
+                    WHEN m."natural" ILIKE '%decision%' OR m."natural" ILIKE '%owner%' THEN 'decision'
+                    ELSE 'strategy' END,
+                  m.id, m.created_at, m.created_at
+                FROM models m
+                WHERE m.tenant_id = $1
+                  AND m.proposition_kind = 'recommendation'
+                  AND m.status = 'active'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM decision_deltas d
+                    WHERE d.tenant_id = m.tenant_id
+                      AND d.source_recommendation_id = m.id
+                  )
+                """,
+                result.tenant_id,
+            )
+    except Exception as _promote_exc:  # noqa: BLE001
+        log.warning("demo_promote_deltas_failed", error=str(_promote_exc))
+
     # Register the new tenant with the greeting scheduler so it receives
     # cache refreshes (and WebSocket pushes) after think runs.
     try:

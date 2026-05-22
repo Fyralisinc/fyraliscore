@@ -225,6 +225,10 @@ def tenant_id_b() -> UUID:
 async def seeded_actor(gateway_pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
     actor_id = uuid7()
     await gateway_pool.execute(
+        "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+        tenant_id,
+    )
+    await gateway_pool.execute(
         """
         INSERT INTO actors (id, tenant_id, type, display_name, status)
         VALUES ($1, $2, 'human_internal', 'Alice', 'active')
@@ -240,6 +244,10 @@ async def seeded_actor_b(
     gateway_pool: asyncpg.Pool, tenant_id_b: UUID
 ) -> UUID:
     actor_id = uuid7()
+    await gateway_pool.execute(
+        "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+        tenant_id_b,
+    )
     await gateway_pool.execute(
         """
         INSERT INTO actors (id, tenant_id, type, display_name, status)

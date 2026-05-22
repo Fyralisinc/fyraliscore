@@ -78,9 +78,9 @@ async def seed_commitment(
         """
         INSERT INTO commitments (
             id, tenant_id, title, description, state, owner_id,
-            created_by_event_id
+            is_maintenance, created_by_event_id
         ) VALUES (
-            $1, $2, $3, NULL, $4, $5, $6
+            $1, $2, $3, NULL, $4, $5, TRUE, $6
         )
         """,
         cid, tenant, title, state, owner_id, born_from_event,

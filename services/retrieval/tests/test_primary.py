@@ -249,6 +249,46 @@ async def test_retrieval_tenant_isolation(
         assert m.tenant_id == other_tenant
 
 
+async def test_primary_threads_event_scope_into_semantic_pathway(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    seed = {"type": "commitment", "id": str(fs.hero_commitment_id)}
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[seed],
+        seed_natural_text="alice ships reliably",
+        seed_occurred_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding("alice ships reliably"),
+    )
+    result = await primary_retrieve(trigger, tx_conn)
+    pr_b = next(p for p in result.pathway_results if p.source_pathway == "B")
+    assert pr_b.notes["scope_filter"]["applied"] is True
+    assert pr_b.notes["scope_filter"]["event_entities_count"] == 1
+    assert pr_b.models
+    for m in pr_b.models:
+        assert seed in m.scope_entities
+
+
+async def test_primary_t2_uses_due_model_scope_text_and_embedding_without_embedder(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    trigger = TriggerContext(
+        kind="T2",
+        tenant_id=tenant,
+        model_id=fs.hero_model_id,
+    )
+    result = await primary_retrieve(trigger, tx_conn)
+    pr_b = next(p for p in result.pathway_results if p.source_pathway == "B")
+    assert pr_b.notes["vector_source"] == "precomputed"
+    assert pr_b.notes["scope_filter"]["applied"] is True
+    assert result.notes["effective_scope"]["t2_model_text_fallback"] is True
+    assert result.notes["effective_scope"]["t2_model_embedding_fallback"] is True
+    assert pr_b.models
+
+
 # =====================================================================
 # Large seed + benchmark
 # =====================================================================

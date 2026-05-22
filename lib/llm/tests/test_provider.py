@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from lib.llm.provider import (
     AnthropicProvider,
+    DeepSeekProvider,
     LLMConfig,
     LLMConfigError,
     LLMParseError,
@@ -66,6 +68,7 @@ def _valid_payload() -> str:
 
 def test_config_from_env_defaults(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
     assert cfg.provider == "anthropic"
@@ -102,6 +105,82 @@ def test_build_provider_openai(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "k")
     provider = build_provider()
     assert isinstance(provider, OpenAIProvider)
+
+
+def test_deepseek_reasoner_uses_json_mode_not_strict_tools(monkeypatch):
+    """DeepSeek reasoner rejects tool_choice; chat models keep strict tools."""
+    from lib.llm.provider import _deepseek_supports_strict_tool_calling
+
+    assert not _deepseek_supports_strict_tool_calling("deepseek-reasoner")
+    assert not _deepseek_supports_strict_tool_calling("deepseek-reasoner-v2")
+    assert _deepseek_supports_strict_tool_calling("deepseek-chat")
+
+
+async def test_deepseek_strict_parse_failure_falls_back_to_json_mode(
+    monkeypatch,
+):
+    """Malformed strict tool args should not be the final failure mode."""
+    from services.think.diff_schema import RawDiff
+
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+
+    strict_calls = 0
+    fallback_call: dict = {}
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            nonlocal strict_calls
+            strict_calls += 1
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            tool_calls=[
+                                SimpleNamespace(
+                                    function=SimpleNamespace(
+                                        arguments='{"trigger_ref": "x" "tenant_id": "y"}'
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
+            )
+
+    class FakeOpenAIClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=FakeCompletions()
+            )
+
+    async def fake_json_mode(self, **kwargs):
+        fallback_call.update(kwargs)
+        return '{"fallback": true}'
+
+    import openai
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeOpenAIClient)
+    monkeypatch.setattr(OpenAIProvider, "_structured_raw", fake_json_mode)
+
+    provider = DeepSeekProvider(LLMConfig(
+        provider="deepseek",
+        api_key="k",
+        model="deepseek-chat",
+        max_retries=1,
+    ))
+
+    raw = await provider._structured_raw(
+        system="s",
+        user="u",
+        schema=RawDiff,
+        temperature=0.0,
+        max_tokens=128,
+    )
+
+    assert raw == '{"fallback": true}'
+    assert strict_calls == 2
+    assert "Prior strict tool-call output failed validation" in fallback_call["user"]
 
 
 # =====================================================================

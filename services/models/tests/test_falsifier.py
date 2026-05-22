@@ -14,6 +14,7 @@ import pytest
 from services.models.falsifier import (
     LEGAL_FALSIFIER_KINDS,
     is_adequate_falsifier,
+    parse_within_window,
 )
 
 
@@ -64,6 +65,12 @@ def test_observation_pattern_adequate() -> None:
         }
     )
     assert ok, reason
+
+
+def test_compact_within_window_shorthand_is_accepted() -> None:
+    assert parse_within_window("4w") == timedelta(weeks=4)
+    assert parse_within_window("6h") == timedelta(hours=6)
+    assert parse_within_window("30m") == timedelta(minutes=30)
 
 
 def test_observation_pattern_short_pattern_inadequate() -> None:

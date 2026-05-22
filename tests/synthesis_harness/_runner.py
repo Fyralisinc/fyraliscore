@@ -187,6 +187,16 @@ def render_report(results: list[CaseResult]) -> str:
             mark = "PASS" if r.passed else "FAIL"
             lines.append(f"  [{mark}] ({r.elapsed_ms:>5} ms) {r.name}")
             lines.append(f"         intent: {r.intent}")
+            llm = r.actual.get("llm") if isinstance(r.actual, dict) else None
+            if isinstance(llm, dict) and llm.get("calls"):
+                lines.append(
+                    "         llm:    "
+                    f"{llm.get('model') or '-'} "
+                    f"calls={llm.get('calls')} "
+                    f"in={llm.get('input_tokens')} "
+                    f"out={llm.get('output_tokens')} "
+                    f"cost=${float(llm.get('cost_usd') or 0.0):.6f}"
+                )
             if not r.passed:
                 if r.error:
                     err_lines = r.error.strip().split("\n")

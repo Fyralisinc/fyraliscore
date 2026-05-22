@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fyralis — Starscape (design mock)</title>
+<style>
+  :root {
+    --ink: #f4ece0;
+    --ink-dim: rgba(244,236,224,0.55);
+    --ink-dimmer: rgba(244,236,224,0.32);
+    --serif: "Lora", "Merriweather", Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  }
+  html, body { margin:0; padding:0; height:100%; background:#03040a; color:var(--ink); font-family:var(--sans); overflow:hidden; }
+  canvas#sky { display:block; position:absolute; inset:0; width:100vw; height:100vh; }
+
+  .hud { position:absolute; pointer-events:none; user-select:none; }
+  .hud .pill { pointer-events:auto; }
+
+  .hud.tl { top:24px; left:32px; }
+  .hud.tl .brand { font-family:var(--serif); font-style:italic; font-size:20px; letter-spacing:0.02em; }
+  .hud.tl .sub { color:var(--ink-dim); font-size:12px; margin-top:4px; }
+
+  .hud.tr { top:24px; right:32px; text-align:right; }
+  .hud.tr .clock { font-family:var(--serif); font-style:italic; font-size:13px; color:var(--ink-dim); }
+  .hud.tr .legend { margin-top:10px; font-size:11px; color:var(--ink-dimmer); line-height:1.6; }
+  .hud.tr .legend .swatch { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+
+  .hud.bl { bottom:24px; left:32px; max-width:560px; }
+  .hud.bl .tag { font-size:10px; letter-spacing:0.18em; text-transform:uppercase; color:var(--ink-dimmer); }
+  .hud.bl .copy { font-family:var(--serif); font-style:italic; font-size:15px; color:var(--ink-dim); margin-top:6px; line-height:1.45; }
+  .hud.bl .copy em { color:var(--ink); font-style:italic; }
+
+  .hover-label { position:absolute; pointer-events:none; font-family:var(--serif); font-style:italic; font-size:13px; color:var(--ink); background:rgba(3,4,10,0.85); padding:4px 10px; border-radius:2px; border:1px solid rgba(244,236,224,0.12); white-space:nowrap; opacity:0; transition:opacity 120ms; }
+  .hover-label.on { opacity:1; }
+
+  .controls { position:absolute; bottom:24px; right:32px; font-size:11px; color:var(--ink-dimmer); }
+  .controls button { background:transparent; border:1px solid rgba(244,236,224,0.15); color:var(--ink-dim); padding:4px 10px; font:inherit; cursor:pointer; margin-left:6px; }
+  .controls button:hover { color:var(--ink); border-color:rgba(244,236,224,0.35); }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div class="hud tl">
+  <div class="brand">Fyralis</div>
+  <div class="sub" id="sub">tonight at the company · day <span id="day">247</span></div>
+</div>
+
+<div class="hud tr">
+  <div class="clock" id="clock">a clear sky · 1 flare in the last hour</div>
+  <div class="legend">
+    <div><span class="swatch" style="background:#FFE9B0"></span>strategic goal</div>
+    <div><span class="swatch" style="background:#F5D680"></span>operational goal</div>
+    <div><span class="swatch" style="background:#87B8E8"></span>commitment</div>
+    <div><span class="swatch" style="background:#F5E5D0"></span>actor</div>
+    <div><span class="swatch" style="background:#98D5B5"></span>customer</div>
+    <div><span class="swatch" style="background:#7E91D4"></span>belief (model)</div>
+    <div><span class="swatch" style="background:#FFB870"></span>phase event</div>
+  </div>
+</div>
+
+<div class="hud bl">
+  <div class="tag">what&rsquo;s bright tonight</div>
+  <div class="copy" id="caption">
+    <em>Engineering velocity</em> pulled bright as <em>Ship Workflow v2</em> took new evidence;
+    <em>Acme Corp</em> dimmed toward warning. A new neighborhood is forming near
+    <em>customer health monitoring</em>.
+  </div>
+</div>
+
+<div class="controls">
+  <button id="freeze">freeze</button>
+  <button id="reset">reset</button>
+</div>
+
+<div class="hover-label" id="hover"></div>
+
+<script>
+// =====================================================================
+// Synthetic substrate, shaped like S2/S3/S4/S5. Not real data — but
+// realistic counts, naming, and relationships so the mock reads as a
+// plausible B2B SaaS company at ~9 months in. Positions are
+// pre-computed (mock for UMAP). All animation is procedural; nothing
+// here calls a backend.
+// =====================================================================
+
+const W = () => window.innerWidth;
+const H = () => window.innerHeight;
+
+// Cluster centers (pre-laid-out — a stand-in for the UMAP projection
+// of topo_embedding). The CEO sees the same shape each visit.
+const NEIGHBORHOODS = [
+  { id: "n_eng",     name: "engineering velocity",   cx: 0.30, cy: 0.42, r: 0.13 },
+  { id: "n_cust",    name: "customer relationships", cx: 0.72, cy: 0.38, r: 0.14 },
+  { id: "n_fin",     name: "financial discipline",   cx: 0.62, cy: 0.72, r: 0.10 },
+  { id: "n_pmf",     name: "product–market fit",     cx: 0.46, cy: 0.55, r: 0.12 },
+  { id: "n_risk",    name: "operational risk",       cx: 0.20, cy: 0.74, r: 0.09 },
+  { id: "n_health",  name: "customer health (new)",  cx: 0.85, cy: 0.62, r: 0.07, emerging: true },
+];
+
+const ACTORS = [
+  { name: "Sarah Chen",     role: "CEO",         cx: 0.50, cy: 0.18 },
+  { name: "Marcus Rao",     role: "VP Eng",      cx: 0.22, cy: 0.30 },
+  { name: "Priya Mehta",    role: "VP Sales",    cx: 0.78, cy: 0.26 },
+  { name: "Tom Williams",   role: "Head Product",cx: 0.42, cy: 0.66 },
+  { name: "Sofia Reyes",    role: "CFO",         cx: 0.66, cy: 0.84 },
+  { name: "David Park",     role: "VP CS",       cx: 0.86, cy: 0.50 },
+  { name: "Jenny Wu",       role: "Head People", cx: 0.10, cy: 0.55 },
+];
+
+const CUSTOMERS = [
+  { name: "Acme Corp",        health: "warning",   cx: 0.92, cy: 0.30 },
+  { name: "Globex",           health: "healthy",   cx: 0.94, cy: 0.45 },
+  { name: "Initech",          health: "degraded",  cx: 0.92, cy: 0.70 },
+  { name: "Wonka Industries", health: "healthy",   cx: 0.88, cy: 0.80 },
+  { name: "Tyrell",           health: "healthy",   cx: 0.06, cy: 0.40 },
+];
+
+// Strategic goals — the brightest stars, fixed positions.
+const STRATEGIC = [
+  { title: "Hit $20M ARR by EOY",     cx: 0.58, cy: 0.30, owner: "Sarah Chen" },
+  { title: "Land 5 enterprise logos", cx: 0.72, cy: 0.50, owner: "Priya Mehta" },
+  { title: "Ship Workflow Engine v2", cx: 0.38, cy: 0.50, owner: "Tom Williams", boosting: true },
+  { title: "Grow to 60",              cx: 0.20, cy: 0.62, owner: "Jenny Wu" },
+];
+
+// Operational goals — medium stars, cluster near their parent strategic.
+const OPERATIONAL = [
+  { title: "Convert pipeline to 25% close",     cx: 0.74, cy: 0.42, parent: 1 },
+  { title: "Reduce onboarding to <14 days",     cx: 0.82, cy: 0.56, parent: 1 },
+  { title: "Cut p99 latency below 200ms",       cx: 0.34, cy: 0.40, parent: 2 },
+  { title: "Launch SOC2 Type II",               cx: 0.46, cy: 0.46, parent: 1 },
+  { title: "Hire VP Product",                   cx: 0.28, cy: 0.68, parent: 3 },
+  { title: "Multi-region infra migration",      cx: 0.42, cy: 0.58, parent: 2 },
+  { title: "Customer success playbook",         cx: 0.78, cy: 0.62, parent: 1 },
+  { title: "Q3 marketing campaign",             cx: 0.64, cy: 0.24, parent: 0 },
+];
+
+// Commitments — small stars tethered to operational goals. Some past due, some this week.
+const COMMITMENTS = [];
+const COMMIT_TITLES = [
+  "draft pricing v3", "land Acme expansion", "rev fix in onboarding",
+  "ship telemetry pipeline", "audit Q2 churn", "submit SOC2 evidence",
+  "interview VP Product cand", "EU region cutover plan", "rate-limit fix",
+  "renew Globex 3y", "publish case study", "Q3 brand spend RFC",
+  "platform team hire #3", "design partner sync", "deprecate v1 API",
+  "consolidate billing accts", "Initech recovery plan", "comp band review",
+  "Tyrell renewal kickoff", "EAP cohort 5 onboard", "fire drill Q3",
+  "executive offsite plan", "perf review templates", "OKR drafting wk",
+  "support volume SLA", "infra cost rev", "exec dashboard v2",
+  "demo environment refresh", "trial conversion exp", "DLP rollout",
+];
+{
+  const stateMix = ["active","active","active","active","blocked","doneunverified","proposed"];
+  for (let i = 0; i < COMMIT_TITLES.length; i++) {
+    const parent = OPERATIONAL[i % OPERATIONAL.length];
+    const angle = (i * 137.508) * Math.PI / 180;
+    const dist = 0.035 + (i % 5) * 0.008;
+    COMMITMENTS.push({
+      title: COMMIT_TITLES[i],
+      cx: parent.cx + Math.cos(angle) * dist,
+      cy: parent.cy + Math.sin(angle) * dist,
+      state: stateMix[i % stateMix.length],
+      due_in_days: ((i * 7) % 21) - 5,    // some past-due (negative), some due soon
+      owner: ACTORS[i % ACTORS.length].name,
+    });
+  }
+}
+
+// Models — the background star field, clustered by neighborhood.
+// Each Model gets a position drawn from a Gaussian around the
+// neighborhood center.
+const MODELS = [];
+const PROP_KINDS = ["state","relation","prediction","prediction","state","state","relation","recommendation"];
+function gauss() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+for (const n of NEIGHBORHOODS) {
+  const count = n.emerging ? 8 : 16 + Math.floor(Math.random() * 10);
+  for (let i = 0; i < count; i++) {
+    const dx = gauss() * n.r * 0.55;
+    const dy = gauss() * n.r * 0.55;
+    MODELS.push({
+      neighborhood: n.id,
+      cx: Math.max(0.04, Math.min(0.96, n.cx + dx)),
+      cy: Math.max(0.06, Math.min(0.94, n.cy + dy)),
+      kind: PROP_KINDS[Math.floor(Math.random() * PROP_KINDS.length)],
+      confidence: 0.35 + Math.random() * 0.55,
+      activation: Math.random(),
+      contested: Math.random() < 0.07,
+    });
+  }
+}
+
+// Archived (ghost) Models — still visible, faded, as historical record.
+const GHOSTS = [];
+for (let i = 0; i < 22; i++) {
+  GHOSTS.push({ cx: 0.08 + Math.random() * 0.84, cy: 0.10 + Math.random() * 0.80 });
+}
+
+// Decisions — permanent markers. Drawn as small cross-glyphs.
+const DECISIONS = [
+  { title: "Decided to ship Workflow v2 in Q3", cx: 0.36, cy: 0.51, made_days_ago: 38 },
+  { title: "Decided not to pursue mid-market in 2026", cx: 0.68, cy: 0.40, made_days_ago: 92 },
+  { title: "Decided to migrate to multi-region", cx: 0.40, cy: 0.55, made_days_ago: 14 },
+  { title: "Decided VP Product is a hire, not a promote", cx: 0.24, cy: 0.66, made_days_ago: 7 },
+];
+
+// =====================================================================
+// Renderer
+// =====================================================================
+
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d");
+const hover = document.getElementById("hover");
+let dpr = window.devicePixelRatio || 1;
+let frozen = false;
+let frozenT = 0;
+let observations = [];   // active meteor streaks
+let flares = [];         // active phase-event flares
+let mouseX = -9999, mouseY = -9999;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = W() * dpr;
+  canvas.height = H() * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+canvas.addEventListener("mousemove", (e) => {
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+});
+canvas.addEventListener("mouseleave", () => {
+  mouseX = -9999; mouseY = -9999;
+  hover.classList.remove("on");
+});
+
+document.getElementById("freeze").addEventListener("click", (e) => {
+  frozen = !frozen;
+  e.target.textContent = frozen ? "play" : "freeze";
+});
+document.getElementById("reset").addEventListener("click", () => {
+  observations = [];
+  flares = [];
+});
+
+function bg(t) {
+  // Deep space gradient + subtle nebula tints.
+  const w = W(), h = H();
+  const g = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w,h)*0.7);
+  g.addColorStop(0, "#0a0c1c");
+  g.addColorStop(0.6, "#05060f");
+  g.addColorStop(1, "#020308");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+
+  // Faint nebula patches over neighborhoods — gives the cluster a halo.
+  for (const n of NEIGHBORHOODS) {
+    const x = n.cx * w, y = n.cy * h, r = n.r * Math.min(w, h);
+    const rg = ctx.createRadialGradient(x, y, 0, x, y, r * 2.4);
+    const tint = n.emerging ? "rgba(80,180,210,0.10)" : "rgba(80,72,130,0.075)";
+    rg.addColorStop(0, tint);
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(x - r*2.5, y - r*2.5, r*5, r*5);
+  }
+}
+
+function star(x, y, coreR, bloomR, color, opacity) {
+  // Bloom
+  const g = ctx.createRadialGradient(x, y, 0, x, y, bloomR);
+  g.addColorStop(0, `rgba(${color},${0.55 * opacity})`);
+  g.addColorStop(0.4, `rgba(${color},${0.18 * opacity})`);
+  g.addColorStop(1, `rgba(${color},0)`);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, bloomR, 0, Math.PI * 2);
+  ctx.fill();
+  // Core
+  ctx.fillStyle = `rgba(${color},${opacity})`;
+  ctx.beginPath();
+  ctx.arc(x, y, coreR, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function spike(x, y, r, len, color, opacity) {
+  // 4-spike cross for the brightest stars.
+  ctx.strokeStyle = `rgba(${color},${opacity})`;
+  ctx.lineWidth = 0.6;
+  ctx.beginPath();
+  ctx.moveTo(x - len, y); ctx.lineTo(x + len, y);
+  ctx.moveTo(x, y - len); ctx.lineTo(x, y + len);
+  ctx.stroke();
+}
+
+function ring(x, y, r, color, opacity) {
+  ctx.strokeStyle = `rgba(${color},${opacity})`;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.ellipse(x, y, r * 1.6, r * 0.45, 0.4, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function ghostStar(x, y, t) {
+  // Slow shimmer, very dim — visible history without competing for attention.
+  const op = 0.05 + 0.04 * Math.sin(t * 0.00045 + x * 0.01);
+  ctx.fillStyle = `rgba(180,170,200,${op})`;
+  ctx.beginPath(); ctx.arc(x, y, 0.7, 0, Math.PI*2); ctx.fill();
+}
+
+function decisionMark(x, y, ageDays) {
+  // Persistent cross — never disappears, dims slightly with age.
+  const op = Math.max(0.25, 0.6 - ageDays * 0.003);
+  ctx.strokeStyle = `rgba(244,236,224,${op})`;
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(x - 4, y); ctx.lineTo(x + 4, y);
+  ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4);
+  ctx.stroke();
+  // Subtle ring around it
+  ctx.strokeStyle = `rgba(244,236,224,${op * 0.35})`;
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI*2); ctx.stroke();
+}
+
+// Constellation lines — connect each Model to its 2 nearest in same neighborhood
+const CONSTELLATION_LINES = (() => {
+  const lines = [];
+  const byN = new Map();
+  for (const m of MODELS) {
+    if (!byN.has(m.neighborhood)) byN.set(m.neighborhood, []);
+    byN.get(m.neighborhood).push(m);
+  }
+  for (const [, members] of byN) {
+    for (let i = 0; i < members.length; i++) {
+      const a = members[i];
+      const dists = members
+        .map((b, j) => j === i ? null : { b, d: (a.cx-b.cx)**2 + (a.cy-b.cy)**2 })
+        .filter(Boolean)
+        .sort((x, y) => x.d - y.d)
+        .slice(0, 2);
+      for (const { b } of dists) lines.push([a, b]);
+    }
+  }
+  return lines;
+})();
+
+function drawConstellations(t) {
+  ctx.lineWidth = 0.4;
+  const w = W(), h = H();
+  for (const [a, b] of CONSTELLATION_LINES) {
+    // Pulse very subtly with time, per-line phase.
+    const phase = (a.cx + b.cy) * 13;
+    const op = 0.045 + 0.025 * Math.sin(t * 0.0005 + phase);
+    ctx.strokeStyle = `rgba(180,180,220,${op})`;
+    ctx.beginPath();
+    ctx.moveTo(a.cx * w, a.cy * h);
+    ctx.lineTo(b.cx * w, b.cy * h);
+    ctx.stroke();
+  }
+}
+
+function drawModels(t) {
+  const w = W(), h = H();
+  for (const m of MODELS) {
+    const x = m.cx * w, y = m.cy * h;
+    const twinkle = 0.7 + 0.3 * Math.sin(t * 0.001 * (1 + m.confidence) + x * 0.02 + y * 0.013);
+    const flicker = m.contested ? (0.4 + 0.6 * Math.abs(Math.sin(t * 0.005))) : 1;
+    const op = m.confidence * twinkle * flicker;
+    const color = m.kind === "prediction" ? "212,160,140"
+                : m.kind === "relation"   ? "180,140,210"
+                : m.kind === "recommendation" ? "220,200,140"
+                : "150,170,220";
+    star(x, y, 0.8, 3.2 + m.activation * 2, color, op * 0.85);
+  }
+}
+
+function drawGhosts(t) {
+  const w = W(), h = H();
+  for (const g of GHOSTS) ghostStar(g.cx * w, g.cy * h, t);
+}
+
+function drawCommitments(t) {
+  const w = W(), h = H();
+  for (const c of COMMITMENTS) {
+    const x = c.cx * w, y = c.cy * h;
+    const dueSoon = c.due_in_days >= 0 && c.due_in_days < 5;
+    const overdue = c.due_in_days < 0 && c.state !== "doneunverified";
+    const blocked = c.state === "blocked";
+    let op = 0.55;
+    if (overdue) {
+      op = 0.45 + 0.4 * Math.abs(Math.sin(t * 0.004));  // throbbing
+    } else if (dueSoon) {
+      op = 0.55 + 0.3 * Math.sin(t * 0.003);
+    } else if (c.state === "doneunverified") {
+      op = 0.35;
+    }
+    const color = blocked      ? "232,150,150"
+                : overdue      ? "232,140,120"
+                : "135,184,232";
+    star(x, y, 1.0, 4.5, color, op);
+  }
+}
+
+function drawGoals(t) {
+  const w = W(), h = H();
+  for (const o of OPERATIONAL) {
+    const x = o.cx * w, y = o.cy * h;
+    const op = 0.75 + 0.15 * Math.sin(t * 0.0009 + x * 0.01);
+    star(x, y, 2.2, 11, "245,214,128", op);
+  }
+  for (const s of STRATEGIC) {
+    const x = s.cx * w, y = s.cy * h;
+    const pulse = s.boosting ? (1 + 0.18 * Math.sin(t * 0.0018)) : 1;
+    const op = 0.95;
+    star(x, y, 3.4 * pulse, 28 * pulse, "255,233,176", op);
+    spike(x, y, 3.4, 22 * pulse, "255,233,176", 0.45);
+  }
+}
+
+function drawDecisions() {
+  const w = W(), h = H();
+  for (const d of DECISIONS) decisionMark(d.cx * w, d.cy * h, d.made_days_ago);
+}
+
+function drawActors(t) {
+  const w = W(), h = H();
+  for (const a of ACTORS) {
+    const x = a.cx * w, y = a.cy * h;
+    const op = 0.85 + 0.1 * Math.sin(t * 0.0011 + x * 0.018);
+    star(x, y, 2.0, 16, "245,229,208", op);
+    spike(x, y, 2, 11, "245,229,208", 0.30);
+  }
+}
+
+function drawCustomers(t) {
+  const w = W(), h = H();
+  for (const c of CUSTOMERS) {
+    const x = c.cx * w, y = c.cy * h;
+    const color = c.health === "warning"  ? "230,180,120"
+                : c.health === "degraded" ? "230,140,130"
+                : "152,213,181";
+    const op = c.health === "healthy" ? 0.85 : 0.7 + 0.2 * Math.sin(t * 0.003);
+    star(x, y, 2.4, 9, color, op);
+    ring(x, y, 4, color, op * 0.55);
+  }
+}
+
+function drawLabels(t) {
+  // Neighborhood names — serif italic, low opacity, near cluster centroid.
+  const w = W(), h = H();
+  ctx.font = '13px "Lora", "Merriweather", Georgia, serif';
+  ctx.fillStyle = "rgba(244,236,224,0.32)";
+  ctx.textAlign = "center";
+  for (const n of NEIGHBORHOODS) {
+    const x = n.cx * w, y = (n.cy - n.r * 0.6) * h;
+    ctx.fillStyle = n.emerging
+      ? `rgba(140,210,225,${0.32 + 0.18 * Math.sin(t * 0.001)})`
+      : "rgba(244,236,224,0.32)";
+    ctx.fillText(n.name, x, y);
+  }
+  // Strategic goal labels — small, just below the star.
+  ctx.font = '11px "Lora", "Merriweather", Georgia, serif';
+  ctx.fillStyle = "rgba(255,233,176,0.65)";
+  for (const s of STRATEGIC) ctx.fillText(s.title, s.cx * w, (s.cy + 0.04) * h);
+  // Actor labels — tiny, top.
+  ctx.font = '10px "Lora", Georgia, serif';
+  ctx.fillStyle = "rgba(245,229,208,0.55)";
+  for (const a of ACTORS) ctx.fillText(a.name, a.cx * w, (a.cy - 0.025) * h);
+  // Customer labels
+  ctx.font = '10px "Lora", Georgia, serif';
+  for (const c of CUSTOMERS) {
+    const color = c.health === "warning"  ? "rgba(230,180,120,0.75)"
+                : c.health === "degraded" ? "rgba(230,140,130,0.78)"
+                : "rgba(152,213,181,0.55)";
+    ctx.fillStyle = color;
+    ctx.fillText(c.name, c.cx * W(), (c.cy + 0.028) * H());
+  }
+}
+
+// ---- Observations (meteor streaks) ----
+function spawnObservation() {
+  // From a random actor toward a random Model in some neighborhood.
+  const a = ACTORS[Math.floor(Math.random() * ACTORS.length)];
+  const m = MODELS[Math.floor(Math.random() * MODELS.length)];
+  observations.push({
+    x0: a.cx, y0: a.cy, x1: m.cx, y1: m.cy,
+    age: 0,
+    life: 1200 + Math.random() * 800,
+  });
+}
+
+function drawObservations(t, dt) {
+  const w = W(), h = H();
+  for (const o of observations) {
+    if (frozen) break;
+    o.age += dt;
+  }
+  observations = observations.filter(o => o.age < o.life);
+  for (const o of observations) {
+    const f = o.age / o.life;
+    const head = Math.min(1, f * 1.15);
+    const tail = Math.max(0, head - 0.18);
+    const hx = o.x0 + (o.x1 - o.x0) * head;
+    const hy = o.y0 + (o.y1 - o.y0) * head;
+    const tx = o.x0 + (o.x1 - o.x0) * tail;
+    const ty = o.y0 + (o.y1 - o.y0) * tail;
+    const op = 0.55 * (1 - f);
+    const grad = ctx.createLinearGradient(tx*w, ty*h, hx*w, hy*h);
+    grad.addColorStop(0, "rgba(255,200,140,0)");
+    grad.addColorStop(1, `rgba(255,220,180,${op})`);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(tx*w, ty*h);
+    ctx.lineTo(hx*w, hy*h);
+    ctx.stroke();
+    // Bright head dot
+    ctx.fillStyle = `rgba(255,228,184,${op * 1.2})`;
+    ctx.beginPath(); ctx.arc(hx*w, hy*h, 1.6, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+// ---- Phase-event flares ----
+const FLARE_KINDS = [
+  { kind: "emergence",   color: "93,212,232",  copy: "neighborhood emerged" },
+  { kind: "drift",       color: "245,166,35",  copy: "neighborhood drifted" },
+  { kind: "split",       color: "184,132,212", copy: "neighborhood split" },
+  { kind: "merge",       color: "232,146,61",  copy: "neighborhoods merged" },
+];
+function spawnFlare() {
+  const kind = FLARE_KINDS[Math.floor(Math.random() * FLARE_KINDS.length)];
+  const n = NEIGHBORHOODS[Math.floor(Math.random() * NEIGHBORHOODS.length)];
+  flares.push({
+    x: n.cx, y: n.cy, color: kind.color, kind: kind.kind, copy: kind.copy,
+    name: n.name, age: 0, life: 3200,
+  });
+  // Update the caption HUD.
+  document.getElementById("caption").innerHTML =
+    `A <em>${kind.copy}</em> in <em>${n.name}</em>. ` +
+    `<em>Engineering velocity</em> remains the brightest tonight.`;
+}
+function drawFlares(t, dt) {
+  const w = W(), h = H();
+  for (const f of flares) {
+    if (!frozen) f.age += dt;
+  }
+  flares = flares.filter(f => f.age < f.life);
+  for (const f of flares) {
+    const p = f.age / f.life;
+    const eased = 1 - Math.pow(1 - p, 3);
+    const r = 12 + eased * 110;
+    const op = 0.65 * (1 - eased);
+    ctx.strokeStyle = `rgba(${f.color},${op})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(f.x*w, f.y*h, r, 0, Math.PI*2);
+    ctx.stroke();
+    if (p < 0.4) {
+      ctx.fillStyle = `rgba(${f.color},${0.35 * (1 - p*2.5)})`;
+      ctx.beginPath();
+      ctx.arc(f.x*w, f.y*h, 6 + p * 18, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+// ---- Hover ----
+function updateHover() {
+  if (mouseX < 0) return;
+  const w = W(), h = H();
+  // Find the closest named object (goals, actors, customers, strategic).
+  const candidates = [
+    ...STRATEGIC.map(o => ({ ...o, kind: "goal", label: o.title + " · " + o.owner })),
+    ...OPERATIONAL.map(o => ({ ...o, kind: "goal", label: o.title })),
+    ...ACTORS.map(a => ({ ...a, kind: "actor", label: a.name + " · " + a.role })),
+    ...CUSTOMERS.map(c => ({ ...c, kind: "customer", label: c.name + " · " + c.health })),
+    ...COMMITMENTS.map(c => ({ ...c, kind: "commit",
+      label: c.title + " · " + c.state + (c.due_in_days < 0 ? ` · ${-c.due_in_days}d overdue` :
+                                          c.due_in_days < 5 ? ` · due in ${c.due_in_days}d` : "") })),
+  ];
+  let best = null, bestD = 16 * 16;
+  for (const c of candidates) {
+    const dx = c.cx * w - mouseX;
+    const dy = c.cy * h - mouseY;
+    const d = dx*dx + dy*dy;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (best) {
+    hover.textContent = best.label;
+    hover.style.left = (mouseX + 14) + "px";
+    hover.style.top  = (mouseY - 8) + "px";
+    hover.classList.add("on");
+  } else {
+    hover.classList.remove("on");
+  }
+}
+
+// ---- Main loop ----
+let lastT = performance.now();
+let obsAccum = 0;
+let flareAccum = 0;
+function tick(t) {
+  const dt = Math.min(64, t - lastT);
+  lastT = t;
+  const T = frozen ? frozenT : t;
+  if (!frozen) frozenT = t;
+  if (!frozen) {
+    obsAccum += dt; flareAccum += dt;
+    // Observation cadence: roughly every 800–1800 ms.
+    if (obsAccum > 800 + Math.random() * 1000) { spawnObservation(); obsAccum = 0; }
+    // Phase event cadence: roughly every 14–22 s.
+    if (flareAccum > 14000 + Math.random() * 8000) { spawnFlare(); flareAccum = 0; }
+  }
+
+  bg(T);
+  drawConstellations(T);
+  drawGhosts(T);
+  drawModels(T);
+  drawDecisions();
+  drawCommitments(T);
+  drawCustomers(T);
+  drawGoals(T);
+  drawActors(T);
+  drawObservations(T, dt);
+  drawFlares(T, dt);
+  drawLabels(T);
+  updateHover();
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// Seed a flare a few seconds in so the page demonstrates the event animation early.
+setTimeout(spawnFlare, 4000);
+</script>
+</body>
+</html>

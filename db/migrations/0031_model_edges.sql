@@ -29,10 +29,6 @@
 -- a single canonicalized row + CHECK. This eliminates source/target
 -- special-casing in every consumer at the cost of negligible storage.
 --
--- See V1_PR_PROMPTS.md ("Unified Model-to-Model Edge Primitive") and
--- /Users/rachinkalakheti/.claude/plans/this-makes-me-think-imperative-gizmo.md
--- for the full design.
---
 -- Idempotent (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS).
 
 BEGIN;

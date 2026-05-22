@@ -1,6 +1,6 @@
-# **Company OS — Comprehensive Architectural Analysis**
+# Fyralis Core Architecture
 
-## Executive Summary
+Last reviewed from the codebase on 2026-05-18.
 
 **Company OS** is an organizational intelligence runtime designed to surface real-time insights to a founder/CEO by combining continuous signal ingestion, probabilistic reasoning (Models), executable commitments (Acts), and resource tracking (Resources). The system is multi-tenant capable and is currently deployed in two modes: a single-tenant dogfood and a public multi-tenant **demo** environment (`demo.fyralis.xyz`) running under Docker Compose with Nginx + Let's Encrypt. It consists of:
 
@@ -16,7 +16,25 @@
 
 The core workflow is: **Ingest signal → Create Observation → Trigger Think → Generate Models / Acts / Recommendations → Cache & Render → Display to CEO across Today / History / Structure surfaces**
 
----
+```text
+React/Vite UI (:5173 in dev)
+  /today, /model, /forecasts, /ledger, /debug
+        |
+        | HTTP /api/*, WS /stream/*
+        v
+FastAPI gateway (:8000)
+  auth, rate limits, ingest, CEO view, query, rendering,
+  demo sessions, today/model/spec routes, history, forecasts,
+  recommendations, conversations, debug, simulation
+        |
+        | asyncpg
+        v
+PostgreSQL 16 + pgvector
+  observations, models, acts, resources, queues, cache,
+  audit/reconciliation/topology/demo/prediction tables
+        |
+        +--> Ollama /api/embeddings (nomic-embed-text, 768 dimensions)
+        +--> LLM providers (Anthropic/OpenAI/DeepSeek)
 
 ## 1. Project Identity
 
@@ -150,20 +168,20 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow: A Request End-to-End
+The core path is:
 
-**Scenario**: Alice (Engineer) posts "shipped rate limiter fix in #2311" in `#eng` Slack channel.
+```text
+source event
+  -> ingestion handler
+  -> observations row
+  -> think_trigger_queue row
+  -> Think retrieval + reasoning + validation
+  -> diff application to Models / Acts / Resources
+  -> audit, reconciliation, cascades, post-commit queue
+  -> cached/rendered CEO views and UI routes
+```
 
-1. **Ingestion** (`services/ingestion/core.py:1-35`):
-   - Gateway receives `POST /ingest/slack:message` with signed payload
-   - Handler extracts: `content_text="shipped rate limiter fix in #2311"`, `source_actor_ref="alice"`, `occurred_at=now()`, `trust_tier="attested_agent"`
-   - Pre-assign `observation_id = uuid7()`
-   - Resolve actor: `ActorRepo.resolve_by_source_actor_ref("slack", "alice")` → `actor_id = <alice's UUID>`
-   - Fast-path entity extraction: tokenize content, lookup known aliases for "rate limiter", "2311" → `entities_mentioned=[{...}]`
-   - Embed via Ollama: `OllamaClient.embed(content_text)` → 768-dim vector
-   - **Inside transaction**: Insert `ObservationRow` into `observations` table (partitioned by occurred_at)
-   - Enqueue T1 trigger in `think_trigger_queue` with `trigger_kind='T1'`, `observation_id`, `seed_entity_ids=[...]`
-   - Emit NOTIFY on channel `observations_new` (for async entity resolver when deployed)
+## 2. Runtime Components
 
 2. **Think** (`services/think/worker.py:1-28`, `reason.py`):
    - Think Worker polls `think_trigger_queue` every 2s (env `THINK_WORKER_POLL_INTERVAL_S`)
@@ -256,35 +274,13 @@ Drawn from `ARCHITECTURE-FINAL.md` and `SCHEMA-LOCK.md`:
 - `lib.shared.db.fetch_all(pool, query, params) → list[Row]`
 - `lib.shared.ids.uuid7() → UUID` (time-ordered)
 
----
+## 3. Cross-Cutting Conventions
 
-### **`services/` — Business Logic Microservices**
+**Tenant boundary.** Almost every persisted domain row carries `tenant_id`. Gateway auth resolves bearer tokens into an actor and tenant, then request handlers use that tenant in queries. Later migrations add tenant FKs and permissive RLS defaults, but application-level tenant scoping is still the main runtime discipline.
 
-The system is organized as a single-process app with logical service boundaries. Each `services/<domain>/` is a module with a repo layer, event handlers, and tests.
+**Identifiers.** Backend-generated IDs use `uuid7()` from [lib/shared/ids.py](lib/shared/ids.py) for time-ordered UUIDs. Demo/session/token code may use database UUID generation in SQL in a few adapter paths.
 
-#### **services/observations** (`/Users/rachinkalakheti/fyraliscore/services/observations/`)
-- **Purpose**: Immutable observation store (append-only signals)
-- **Key Files**:
-  - `repo.py` — `ObservationRepository` class; methods: `insert(ObservationCreate)`, `get_by_id(id)`, `list_by_tenant(tenant_id)`, `list_by_embedding_similarity(...)`
-  - `events.py` — post-insert hooks (NOTIFY, cost recording)
-  - `state_change.py` — specialized handler for state-change observations
-  - `partitions.py` — manages quarterly partitions for observations table
-- **Data Model** (`lib/shared/types.py:135-150`):
-  ```python
-  class ObservationRow:
-    id: UUID
-    tenant_id: UUID
-    occurred_at: datetime
-    ingested_at: datetime
-    kind: ObservationKind  # 'signal' | 'state_change' | 'anomaly_flagged' | ...
-    source_channel: str    # 'slack:eng' | 'github:pr' | 'linear' | ...
-    actor_id: UUID | None
-    content: dict[str, Any]
-    content_text: str
-    embedding: list[float] | None
-    trust_tier: TrustTierValue  # 'authoritative' | 'attested_agent' | ...
-  ```
-- **DB Table**: `observations` (partitioned by `occurred_at`, HNSW index on embedding)
+**Database access.** Python services use `asyncpg` pools and repositories. Tests generally run against real PostgreSQL, not an in-memory fake. The gateway pool registers codecs for JSON/vector compatibility via [services/gateway/db_bootstrap.py](services/gateway/db_bootstrap.py).
 
 #### **services/models** (`/Users/rachinkalakheti/fyraliscore/services/models/`)
 - **Purpose**: Belief store — epistemic models about the organization
@@ -331,61 +327,9 @@ The system is organized as a single-process app with logical service boundaries.
   4. **Applier + validator** ([services/think/applier.py](services/think/applier.py), [services/think/validator.py](services/think/validator.py)) — `_apply_claim_op` adds a `relocate` branch that calls `TopoRepo.relocate`; `_validate_claim_op` adds shape validation via `parse_relocate_target` (UUID parsing, dim checks, alpha range). A relocate emits `state_changes=0` (no Model row mutation) — the `topology_events` row is the audit primary key.
   5. **`lib/topology/relocate.py`** — pure helpers: `RelocateTarget` dataclass; `parse_relocate_target` (claim_op → typed target with validation); `blend_topo(current, target, alpha)` (L2-normalized blend); `select_bounded_neighbors(candidates, max_fanout)` (top-K by centrality); `damped_magnitude(base, hop_depth, gamma)` (geometric damping). All env-tunable: `TOPO_RELOCATE_DEFAULT_ALPHA` (1.0), `TOPO_RELOCATE_CASCADE_MAX_DEPTH` (2), `TOPO_RELOCATE_CASCADE_MAX_FANOUT` (20), `TOPO_RELOCATE_CASCADE_DAMPING` (0.5).
 
-#### **services/acts** (`/Users/rachinkalakheti/fyraliscore/services/acts/`)
-- **Purpose**: Executable declarations — Goals, Commitments, Decisions
-- **Key Files**:
-  - `repo.py` — repos for Goals, Commitments, Decisions
-  - Lifecycle state machines per act type
-- **Data Models**:
-  ```python
-  class GoalRow:
-    id: UUID
-    tenant_id: UUID
-    title: str
-    owner_id: UUID
-    state: GoalState  # 'active' | 'paused' | 'achieved' | 'abandoned'
-    altitude: GoalAltitude  # 'strategic' | 'operational' | 'tactical'
-    metrics: list[dict]
-  
-  class CommitmentRow:
-    id: UUID
-    tenant_id: UUID
-    owner_id: UUID
-    goal_id: UUID  # optional parent
-    description: str
-    state: CommitmentState  # 'proposed' | 'active' | 'blocked' | 'doneunverified' | 'doneverified' | 'closed'
-    due_at: datetime
-    ambition_level: AmbitionLevel  # 'base' | 'stretch' | 'aspirational'
-  
-  class DecisionRow:
-    id: UUID
-    tenant_id: UUID
-    title: str
-    made_at: datetime
-    maker_id: UUID
-    options_considered: list[dict]
-    chosen_option: str
-    state: DecisionState  # 'drafted' | 'active' | 'revisited' | 'archived'
-  ```
+**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). `.env.example` sets DeepSeek as the local default; the provider library itself falls back to Anthropic if no provider env is set.
 
-#### **services/resources** (`/Users/rachinkalakheti/fyraliscore/services/resources/`)
-- **Purpose**: Track organizational assets (financial, IP, relational, etc.)
-- **Data Models**:
-  ```python
-  class ResourceRow:
-    id: UUID
-    kind: ResourceKind  # 'financial' | 'ip' | 'relational' | 'capacity' | 'infrastructure' | 'regulatory'
-    owner_id: UUID
-    description: str
-    utilization_state: ResourceUtilizationState
-  
-  class ResourceTransactionRow:
-    id: UUID
-    resource_id: UUID
-    type: ResourceTransactionType  # 'acquire' | 'deploy' | 'spend' | ...
-    amount: Decimal | None
-    recorded_at: datetime
-  ```
+**Observability records.** Runtime state is heavily persisted: `think_runs`, `think_run_costs`, `think_run_artifacts`, `view_render_costs`, `audit_events`, `reconciliation_events`, `relationship_maintenance_log`, and debug routes all exist to make reasoning inspectable.
 
 #### **services/topology** ([services/topology/](services/topology/)) — S2/S3
 - **Purpose**: Positional embedding layer + materialized neighborhoods + phase-event log. The substrate's emergent geometry, distinct from the relational store ([services/models/](services/models/)).
@@ -484,26 +428,7 @@ The system is organized as a single-process app with logical service boundaries.
     topological_expand_neighborhoods: bool = True
   ```
 
-#### **services/greeting** (`/Users/rachinkalakheti/fyraliscore/services/greeting/`)
-- **Purpose**: Assemble and cache the CEO view (greeting, query grid, cards, close line)
-- **Key Files**:
-  - `scheduler.py` — `GreetingScheduler` class; periodic refresh on interval; triggers for manual refresh
-  - `cache.py` — `ViewCeoCacheRepo` class; methods: `get_all(tenant_id)`, `set(tenant_id, cache_key, content)`, `invalidate(...)`
-  - `snapshot.py` — `SubstrateSnapshot` builder; gathers top Models, active Commitments, anomalies, conversation context
-  - `rendering_adapter.py` — abstraction over rendering backends (HTTP adapter for real RND, mock for fallback)
-  - `api.py` — FastAPI router for `GET /view/ceo/home` and `POST /view/ceo/force-refresh`
-  - `stream.py` — WebSocket manager for `/view/ceo/stream`; broadcasts cache updates
-- **Cache Schema** (`services/greeting/cache.py`, mirrors CONTRACTS §3):
-  ```sql
-  CREATE TABLE view_ceo_cache (
-    tenant_id UUID NOT NULL,
-    cache_key TEXT NOT NULL,  -- 'greeting' | 'cards' | 'query_grid' | 'status' | 'close_line'
-    cached_content JSONB NOT NULL,
-    cached_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    recomputed_reason TEXT,   -- 'scheduled' | 'trigger_fired' | 'manual'
-    PRIMARY KEY (tenant_id, cache_key)
-  );
-  ```
+### Foundation Tables
 
 #### **services/query** (`/Users/rachinkalakheti/fyraliscore/services/query/`)
 - **Purpose**: Handle CEO Ask → Answer pipeline
@@ -1229,33 +1154,17 @@ From `pyproject.toml:12-24`:
 
 | Dependency | Version | Purpose |
 |---|---|---|
-| **asyncpg** | >=0.29 | Async PostgreSQL driver; used throughout for DB access |
-| **pgvector** | >=0.3 | Python bindings for pgvector; vector type support |
-| **pydantic** | >=2.7 | Data validation; all *Row and *Request/Response models |
-| **fastapi** | >=0.110 | Web framework; async routing, dependency injection |
-| **uvicorn[standard]** | >=0.29 | ASGI server; runs the gateway on :8000 |
-| **httpx** | >=0.27 | Async HTTP client; calls LLM APIs, rendering service |
-| **structlog** | >=24.1 | Structured logging; JSON context binding |
-| **python-dotenv** | >=1.0 | .env file loading at startup |
-| **psycopg2-binary** | >=2.9 | Sync PostgreSQL driver (used only by scripts, not main app) |
-| **anthropic** | >=0.34 | Claude API client (fallback LLM provider) |
-| **openai** | >=1.40 | OpenAI API client (fallback LLM provider) |
+| Actors | `actors`, `actor_identity_mappings`, `actor_sessions` | People/agents, source identity mapping, bearer-session auth. |
+| Observations | `observations` | Append-oriented signals, partitioned by `occurred_at`, indexed by actor/channel/kind/entities/vector. |
+| Models | `models`, `model_status_notes`, `model_signal_readings` | Beliefs/propositions with confidence, activation, falsifiers, signal readings, lifecycle, and vector search. |
+| Acts | `goals`, `commitments`, `decisions`, `commitment_contributors` | Executable organizational state. State machines live under [services/acts](services/acts). |
+| Act graph | `contributes_to`, `depends_on`, `constrained_by` | Relationships among goals, commitments, and decisions. |
+| Resources | `resources`, `resource_transactions`, `resource_deployments`, `customer_commitments` | Assets, transactions, deployments, and customer/revenue bridge data. |
+| Entity aliases | `entity_aliases` | Fast-path entity resolution by alias text/vector. |
 
-### **Development Dependencies** (`pyproject.toml:26-38`):
-- **pytest**, **pytest-asyncio**, **pytest-timeout** — test runners
-- **hypothesis** — property-based testing (Wave 4-C precipitation)
-- **respx** — httpx mocking for unit tests
-- **freezegun** — datetime mocking
-- **hdbscan**, **scikit-learn**, **numpy** — clustering for precipitation module
-- **pyyaml** — YAML scenario loader
+### Reasoning and View Tables
 
----
-
-## 7. Configuration & Environment
-
-### **.env.example** (`/Users/rachinkalakheti/fyraliscore/.env.example`)
-
-| Variable | Purpose | Example |
+| Area | Tables | Purpose |
 |---|---|---|
 | `DATABASE_URL` | Postgres connection | `postgresql://company_os:company_os@localhost:5432/company_os` |
 | `OLLAMA_URL` | Embeddings service | `http://localhost:11434` |
@@ -1272,23 +1181,47 @@ From `pyproject.toml:12-24`:
 | `GATEWAY_OWNS_POOL` | Gateway manages DB pool lifetime | `0` (tests inject) / `1` (long-running) |
 | `DEBUG_ARTIFACT_CAPTURE` | Write `think_run_artifacts` rows | `1` (dogfood) |
 
-### **.env.dogfood** (`/Users/rachinkalakheti/fyraliscore/.env.dogfood`)
+## 5. Gateway Architecture
 
-Overrides for the single-gateway dogfood topology:
+[services/gateway/main.py](services/gateway/main.py) is the main process entry point.
 
-| Variable | Value | Purpose |
+Startup through `build_app()`:
+
+1. Configures structlog.
+2. Creates or accepts an asyncpg pool.
+3. Ensures demo seed config exists.
+4. Constructs `ActorRepo`, `EntityAliasRepo`, an optional Ollama client, and `RateLimiter`.
+5. Starts the realtime dispatcher.
+6. Wires the CEO-view stack when `GATEWAY_CEO_VIEW_ENABLED != 0`.
+7. Optionally starts the greeting scheduler.
+8. Closes owned resources on lifespan shutdown.
+
+Middleware order:
+
+| Middleware | Role |
+|---|---|
+| `RequestContextMiddleware` | Creates request IDs, binds tenant/actor context for logs, emits access summaries. |
+| `BearerAuthMiddleware` | Validates bearer tokens against `actor_sessions`; injects auth context and sometimes `X-Tenant-Id` for CEO/demo routes. |
+| `RateLimitMiddleware` | Per-tenant/actor token-bucket limiting. |
+
+Important public or auth-bypassed route families include `/healthz`, `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/simulation/*`, `/debug/*` in dev/test, and the public demo picker/session-start endpoints.
+
+### Mounted Route Families
+
+| Routes | Owner | Notes |
 |---|---|---|
-| `COMPANY_OS_ENV` | `dev` | Enables synthetic-bypass guard, sim mount |
-| `COMPANY_OS_TENANT_ID` | fixed UUID | Single tenant for dogfood |
-| `COMPANY_OS_CEO_ACTOR_ID` | fixed UUID | Rachin's actor ID |
-| `GATEWAY_PORT` | 8000 | Main gateway port |
-| `GATEWAY_OWNS_POOL` | 1 | Gateway manages DB pool |
-| `GATEWAY_START_GRT_SCHEDULER` | 1 | Start greeting scheduler at boot |
-| `GATEWAY_MOUNT_SIM` | 1 | Mount `/simulation/*` routes |
-| `THINK_WORKER_POLL_INTERVAL_S` | 2 | Rapid polling in dogfood |
-| `GREETING_REFRESH_INTERVAL_SECONDS` | 900 | Refresh every 15 min |
-| `GRT_RENDERING_BASE_URL` | `http://127.0.0.1:8000` | Self-call for RND in single-gateway |
-| `DEBUG_ARTIFACT_CAPTURE` | 1 | Enable think_run_artifacts logging |
+| `/ingest/{channel}` | gateway + ingestion | Uniform signal ingestion path. |
+| `/observations`, `/models`, `/commitments`, `/goals`, `/decisions`, `/resources` | gateway | Basic substrate list/read surfaces. |
+| `/dashboard/*`, `/v1/structure/*`, `/v1/recommendations/*`, `/v1/artifacts/*` | gateway | Product/data adapter endpoints. |
+| `/rendering/*` | rendering router | In-process rendering service mounted into gateway. |
+| `/view/ceo/home`, `/view/ceo/force-refresh` | greeting router | Cached CEO view. |
+| `/view/ceo/ask`, turn actions | query router | Ask/query orchestration through retrieval + rendering. |
+| `/v1/cards/{id}/conversation`, `/probe` | conversations | Card-scoped follow-up probes. |
+| `/v1/demo/*`, `/v1/recommendations/stream` | demo | Demo lifecycle, simulator, SSE. |
+| `/v1/decision-deltas/*`, `/today/*` | decision delta / today routes | Today v2 proposed-change workflow. |
+| `/model/*`, `/map/*`, `/v1/model/*` | model/map/model trace | Model page, topology/map, trace. |
+| `/v1/history`, `/v1/forecasts/*`, spec routes | history/forecast/spec routers | Ledger/forecast/spec surfaces. |
+| `/debug/*` | debug router | Dev/test read-only inspector for raw runtime state. |
 
 ### **Demo deployment env**
 
@@ -1342,42 +1275,152 @@ Nine services:
 
 ---
 
-## 8. Tests
+The ingestion implementation lives in [services/ingestion/core.py](services/ingestion/core.py). It normalizes all channels into an `ObservationDraft` and persists an observation.
 
-### **Structure** (`tests/` directory):
+Flow:
 
+1. Gateway receives `POST /ingest/{channel}` and verifies channel-specific requirements such as Slack signatures.
+2. `get_handler(channel)` returns a handler from [services/ingestion/handlers](services/ingestion/handlers).
+3. The handler emits `ObservationDraft`: source channel, content text, raw JSON content, actor ref, external ID, occurred time, trust tier, entity hints, and kind.
+4. Ingestion pre-assigns an observation UUID.
+5. `ActorRepo` maps source actor refs to actor IDs when possible.
+6. `EntityAliasRepo` performs fast-path entity lookup from 1-3 gram candidate phrases.
+7. The embedder generates a 768-dimensional vector. Failures store `embedding_pending=True`.
+8. `ObservationRepository.insert()` writes to the partitioned `observations` table and dedups on source channel/external ID behavior.
+9. A T1 `think_trigger_queue` row is written unless the observation was deduped or trigger enqueueing was disabled.
+10. Post-commit observation notifications are emitted for downstream workers/listeners.
+
+The trust map is centralized in [services/ingestion/handlers/__init__.py](services/ingestion/handlers/__init__.py). Handler files exist for Slack, system/internal, email, GitHub, Linear, calendar, and related channels; confirm import/registration behavior when adding a new production channel.
+
+## 7. Think Pipeline
+
+The core reasoning entry point is [services/think/reason.py](services/think/reason.py). The queue runner is [services/think/worker.py](services/think/worker.py).
+
+### Trigger Kinds
+
+| Kind | Typical source | Meaning |
+|---|---|---|
+| T1 | Ingestion | A new signal arrived. |
+| T2 | Prediction/belief updates | A prediction or belief needs reevaluation. |
+| T3 | Anomaly processor | An anomalous region needs reasoning. |
+| T4 | Background/pattern work | Maintenance or precipitation-driven reasoning. |
+| T6 | Topology events | Neighborhood/graph phase shifts. |
+
+`ThinkWorker` polls `think_trigger_queue`, promotes pending `model_reeval_queue` rows to T4 triggers, applies per-tenant concurrency caps, backs off under queue pressure, and marks failed rows after retry exhaustion.
+
+### Retrieval
+
+Primary retrieval is in [services/retrieval/primary.py](services/retrieval/primary.py).
+
+Pathways:
+
+| Pathway | Role |
+|---|---|
+| A structural | Scope/entity/model graph overlap. |
+| B semantic | Vector similarity against seed text. |
+| C temporal | Recent relevant context. |
+| D pattern | Pattern/background retrieval. |
+| F topological | Topology embedding and neighborhood context. |
+
+Trigger-specific weights combine pathway outputs. Results are merged/ranked, then `ModelsRepo.retrieve()` reconsolidates returned models by increasing retrieval count/activation and updating `last_retrieved_at`.
+
+[services/retrieval/assembler.py](services/retrieval/assembler.py) compresses retrieval results into a bounded context bundle: observations, models, acts, resources, and bridge context. It includes access-control stubs and MMR selection for model diversity under a token budget.
+
+### Reason, Validate, Apply
+
+The Think transaction performs:
+
+1. Insert/update a `think_runs` record.
+2. Retrieve and assemble context.
+3. Route authoritative/deterministic cases to deterministic handlers; otherwise call the configured LLM through `llm_reason`.
+4. Validate the raw diff against [services/think/diff_schema.py](services/think/diff_schema.py) and semantic rules in `validator.py`.
+5. Acquire advisory region locks based on touched tenant/entities.
+6. Reconcile model inserts against existing models before applying.
+7. Apply claim ops, act ops, and resource ops with [services/think/applier.py](services/think/applier.py).
+8. Emit state-change observations, audit events, cascades, and reeval triggers.
+9. Enqueue durable post-commit actions.
+10. Record LLM cost and run status.
+
+Diffs mutate three surfaces:
+
+| Diff bucket | Target |
+|---|---|
+| `claim_ops` | Models: insert, update, archive, relocate. |
+| `act_ops` | Goals, commitments, decisions, and act graph edges. |
+| `resource_ops` | Resources, transactions, deployments, releases. |
+
+Application is idempotent through `applied_triggers`. A duplicate trigger short-circuits rather than re-running side effects.
+
+## 8. Models, Reconciliation, Audit, and Topology
+
+[services/models/repo.py](services/models/repo.py) is the main Models repository. Inserts validate proposition shape, falsifier adequacy above confidence thresholds, scope actor existence, confidence clipping, embeddings, recommendation shape, state-change emission, audit events, typed edges, and topology dirty-queue updates.
+
+Key model-side concepts:
+
+| Concept | Code/schema | Purpose |
+|---|---|---|
+| Proposition kind | generated from `models.proposition` | Type-level discriminator for state, concern, prediction, recommendation, etc. |
+| Confidence | model column + calibration modules | Main strength/credence signal. |
+| Activation | model column | Recency/importance signal raised by retrieval and decayed by maintenance. |
+| Falsifier | [services/models/falsifier.py](services/models/falsifier.py) | Required for strong claims and recommendations. |
+| Signal readings | `model_signal_readings` sidecar | Per-signal evidence contributions. |
+| Typed edges | `model_edges` + [services/models/edges_repo.py](services/models/edges_repo.py) | First-class model graph replacing older array-only relationships. |
+| Topology | [lib/topology](lib/topology), [services/topology](services/topology) | Positional embeddings, neighborhoods, topology events, UMAP projection. |
+
+Reconciliation is first-class in [services/think/reconciler.py](services/think/reconciler.py). Insert claim ops are checked against existing models; decisions are recorded in `reconciliation_events`. Auto-merge decisions convert inserts into updates. Human-review/no-match decisions preserve auditability and avoid silent destructive merges.
+
+Audit events in `audit_events` record model changes, reversals, and reconciliation merge chains. This is the main answer to "why did this belief change?"
+
+## 9. CEO View, Rendering, Query, and Conversations
+
+The CEO-facing product surface is composed from cached backend state rather than issuing a fresh LLM render on every page load.
+
+### Greeting/CEO Cache
+
+[services/greeting/scheduler.py](services/greeting/scheduler.py) keeps `view_ceo_cache` fresh for registered tenants.
+
+Refresh triggers include scheduled intervals, time-of-day boundaries, Postgres `LISTEN view_ceo_refresh`, and polling of post-commit actions as a fallback. The scheduler composes substrate snapshots via [services/greeting/snapshot.py](services/greeting/snapshot.py), sends render requests, writes cache keys, and publishes WebSocket updates.
+
+Cache keys:
+
+| Key | Meaning |
+|---|---|
+| `greeting` | Opening summary. |
+| `query_grid` | Suggested questions. |
+| `cards` | CEO-relevant cards. |
+| `status` | Health/calibration/needs-you summary. |
+| `close_line` | Closing summary line. |
+
+[services/greeting/api.py](services/greeting/api.py) assembles these into `GET /view/ceo/home`. [services/greeting/stream.py](services/greeting/stream.py) exposes WS streaming.
+
+### Rendering
+
+[services/rendering/core.py](services/rendering/core.py) builds prompts for greetings, cards, query chips, card reasoning, and conversation turns. It calls the LLM provider, runs voice-rule checks, retries once on reject-level violations, and writes `view_render_costs` when a pool is configured.
+
+### Query
+
+[services/query/core.py](services/query/core.py) powers Ask flows:
+
+```text
+query
+  -> classifier
+  -> strategy
+  -> retrieval + context assembly
+  -> rendering adapter
+  -> AnswerQueryResponse with retrieval trace and cost
 ```
-tests/
-  unit/              # Fast unit tests (no DB, no LLM)
-  integration/       # Require live Postgres + Ollama
-    test_*.py
-    captures/        # Saved home payloads for regression
-    real_llm/        # Require DEEPSEEK_API_KEY, RUN_REAL_LLM=1
-  e2e/               # Playwright-based browser tests (mock server)
-```
 
-### **Markers** (from `pyproject.toml:66-71`):
-- **`@pytest.mark.integration`** — requires live Postgres (check `DATABASE_URL`)
-- **`@pytest.mark.ollama`** — requires live Ollama (check `OLLAMA_URL`)
-- **`@pytest.mark.slow`** — slow test (> 1s)
-- **`@pytest.mark.real_llm`** — requires DEEPSEEK_API_KEY; runs only with `RUN_REAL_LLM=1` or `-m real_llm`
+Strategies live in [services/query/strategies](services/query/strategies). The gateway wires query routes during CEO-view setup and shares the gateway embedder so semantic retrieval works for `/view/ceo/ask`.
 
-### **Key Test Files**:
+### Conversations
 
-- **tests/integration/test_ceo_view_smoke.py** — smoke test of full `/view/ceo/home` assembly
-- **tests/integration/test_section7_full_scenarios.py** — end-to-end scenario replays (acme_tuesday, two_fires)
-- **tests/integration/test_card_reasoning_live.py** — card reasoning endpoint with real LLM
-- **tests/real_llm/** — real-LLM tests (gated by env flag)
-- **tests/e2e/** — Playwright tests with mock server (can run without Postgres)
+[services/conversations](services/conversations) stores and handles card-scoped probe threads. The Today UI can ask follow-up questions against a specific card without losing card context.
 
-### **Test Conventions**:
-- Fixtures: `@pytest_asyncio.fixture` for async setup; use `respx` for HTTP mocking
-- Database: tests use a real Postgres connection (required by design; see BUILD-PLAN §0)
-- Time: `freezegun` to mock `datetime.now()` for deterministic replay
+## 10. UI Architecture
 
----
+The frontend is a Vite + React + TypeScript app in [ui](ui).
 
-## 9. UI — Tech Stack & Pages
+Routes in [ui/src/main.tsx](ui/src/main.tsx):
 
 ### **Pages** (routes in [ui/src/App.tsx](ui/src/App.tsx) via `react-router`):
 
@@ -1395,14 +1438,7 @@ The legacy single-page "CEO home" surface has been split into Today (recommendat
 - **`WS /view/ceo/stream`** — view-cache updates (`greeting_updated`, `cards_updated`, `query_grid_updated`, `status_updated`); 30s heartbeat
 - **`SSE /v1/recommendations/stream`** — live recommendation `created` / `updated` events (preferred path in demo mode); managed by `useRecommendationStream()`
 
-### **Styling**:
-- **Tailwind CSS** for utility classes
-- **Custom CSS variables**: serif font, highlight tint, citation styling (`.cite`, `.note`)
-- Inline spans from backend prose:
-  - `.serif` — serif-emphasized phrase
-  - `.hl` — highlight tint
-  - `.cite` — evidence citation ("Alice — Sun 03:12")
-  - `.note` — secondary/parenthetical
+API clients live under [ui/src/api](ui/src/api). The Vite dev server proxies `/api/*` to gateway `http://localhost:8000` and `/stream/*` to gateway WebSockets unless `USE_MOCK=1`, in which case [ui/mock-server.ts](ui/mock-server.ts) and fixture data serve the app locally.
 
 ### **Keyboard Shortcuts**:
 - **`/`** — focus AskZone
@@ -1415,20 +1451,20 @@ The legacy single-page "CEO home" surface has been split into Today (recommendat
 - Rendering failure → fallback prose + mock reasoning
 - Demo budget exhausted → banner + read-only fallback
 
----
+The demo system lets anonymous visitors choose a company, provision a fresh tenant, and interact with realistic seeded data.
 
-## 10. Cross-Cutting Concerns
+Flow:
 
-### **Authentication & Authorization**
+1. `GET /v1/demo/companies` lists configured companies.
+2. `POST /v1/demo/sessions/start` creates a new tenant, loads a snapshot, finds/mints the CEO actor, creates an `actor_sessions` token, and returns session metadata.
+3. Authenticated demo calls use that token and tenant.
+4. Reset/end endpoints manage session lifecycle.
+5. Simulator endpoints inject signals and increment demo counters.
+6. `/v1/recommendations/stream` streams recommendation/demo events.
 
-- **Gateway-level** (`services/gateway/auth.py`):
-  - Bearer token validation via `validate_token(token)` → `(actor_id, tenant_id)`
-  - Simple static token map in dev (`DEV_BEARER_TOKEN=dogfood-ceo-token`)
-  - Real auth (OAuth2, SAML, etc.) deferred to Wave 5
+Implementation lives in [services/demo/router.py](services/demo/router.py), [services/demo/sessions.py](services/demo/sessions.py), and [services/demo/snapshot.py](services/demo/snapshot.py). Demo model routing in [services/demo/model_routing.py](services/demo/model_routing.py) can choose cheaper/faster models per tenant/call kind.
 
-- **Per-service** (`services/access_control/`):
-  - Stub layer for future RBAC / field-level ACL
-  - Currently: all authenticated users can read all tenant data
+The gateway can also mount simulation helpers and static Slack UI from [simulation](simulation) when `GATEWAY_MOUNT_SIM=1`.
 
 - **Tenant isolation** (added 2026-05-10 — see §13):
   - `lib/shared/tenant_context.py` — `tenant_transaction(tid)` opens a
@@ -1447,83 +1483,71 @@ The legacy single-page "CEO home" surface has been split into Today (recommendat
 
 ### **Logging & Observability**
 
-- **structlog** with JSON output:
-  - Every request bound with `request_id`, `tenant_id`, `actor_id`
-  - Service logs: e.g., `"ingest_signal", actor_handle="alice", signal_kind="slack_message"`
-  - Metrics: via `services/think/observability.py` (latency, cost, token counts)
+### Deployed by Compose
 
-- **Cost Attribution**:
-  - Every LLM call logs to `view_render_costs`: `{render_kind, model_used, tokens_used, cost_usd, latency_ms}`
-  - Used for budget tracking and cost allocation
+| Worker | Launcher | Behavior |
+|---|---|---|
+| Think | [scripts/run_think_worker.py](scripts/run_think_worker.py) | Creates pool/provider and runs `ThinkWorker.run()`. |
+| Post-commit | [scripts/run_post_commit_worker.py](scripts/run_post_commit_worker.py) | Polls `pending_post_commit_actions`, dispatches handlers, retries with backoff, dead-letters after max attempts. |
 
-- **Logs Output**:
-  - **`/tmp/company_os_logs/{gateway,think_worker,post_commit_worker,ui}.log`** (dogfood)
-  - Structured JSON lines; can be ingested into Datadog/Splunk
+### In-Process in Gateway
 
-### **Error Handling**
+| Worker | Code | Behavior |
+|---|---|---|
+| Realtime dispatcher | [services/realtime](services/realtime) | WebSocket dispatch/replay machinery. |
+| Greeting scheduler | [services/greeting/scheduler.py](services/greeting/scheduler.py) | Scheduled and trigger-driven cache refresh. |
 
-- **Custom Exception Hierarchy** (`lib/shared/errors.py`):
-  - `CompanyOSError` (base)
-  - `ValidationError` (Pydantic-alike)
-  - `RetrievalError`
-  - `PayloadTooLarge`
-  - `SlackSignatureError`
-  - etc.
+### Implemented Worker Modules
 
-- **Error Responses**:
-  - HTTP 4xx for client errors (bad request, auth failure, rate limit)
-  - HTTP 5xx for server errors (should not happen in normal operation)
-  - JSON error body: `{error: "code", detail: "message"}`
+Additional worker packages exist under [services/workers](services/workers):
 
-### **Rate Limiting**
+| Package | Purpose |
+|---|---|
+| `anomaly_processor` | Detects and stages anomalies. |
+| `entity_resolver` | Resolves unresolved actors/entities from observations. |
+| `calibration_updater` | Computes calibration/hit-rate updates. |
+| `deadline_resolver` | Resolves due predictions/deadlines. |
+| `precipitation` | Clusters candidate patterns and proposes background reasoning. |
+| `edge_drift` | Checks typed model edges against legacy relationship arrays. |
+| `topology_updater` | Processes topology dirty queue and cascades positional updates. |
+| `neighborhood_detector` | Detects graph neighborhoods and topology phase events. |
+| `maintenance` | Daily/weekly/monthly maintenance routines. |
 
-- **Token-bucket per (tenant, actor)** (`services/gateway/rate_limit.py`):
-  - Configurable bucket size and refill rate
-  - Enumerated tiers: `free`, `standard`, `premium`
-  - Dogfood: single actor, unlimited tier
+Treat these as available architecture modules, not all as currently deployed services.
 
-### **Data Validation**
+## 13. Security and Access Control
 
-- **Pydantic v2** for all wire protocols:
-  - `strict=False` (coerce types from DB driver)
-  - `extra="forbid"` (reject unknown fields early)
-  - Field validators for domain constraints (e.g., confidence 0.05–0.95)
+Authentication is bearer-token based through `actor_sessions` and [services/gateway/auth.py](services/gateway/auth.py). `/auth/session` can mint sessions, optionally guarded by `AUTH_BOOTSTRAP_SECRET`.
 
----
+Authorization layers:
 
-## 11. Workflows & Lifecycles
+| Layer | Current implementation |
+|---|---|
+| Gateway auth | Bearer token -> `AuthContext(actor_id, tenant_id, expires_at)`. |
+| Rate limiting | Per actor/tenant token buckets. |
+| Request tenant scoping | Request handlers use tenant from auth/header/default env. |
+| Access-control services | [services/access_control](services/access_control) contains role hierarchy, materialized visibility, checks, audit. |
+| RLS | Later migrations enable permissive tenant policies on many tables. |
+| Debug routes | Mounted only for `dev`, `staging`, or `test` environment names. |
 
-### **End-to-End Scenario: The Acme Renewal Risk**
+The current dogfood/demo configuration has deliberate dev shortcuts: default tenant fallback, static CEO tokens, unauthenticated demo picker/session-start, and optional simulation/debug mounts. Shared or production deployments should review those env flags carefully.
 
-Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
+## 14. Deployment and Local Development
 
-**Timeline** (7 days, ending Tuesday morning):
+Local setup is described in [README.md](README.md).
 
-1. **Tuesday -7 days, 15:30** (`T1` trigger)
-   - Tomas (AE) posts in Slack: "Acme calling with renewal decision on the 22nd"
-   - **Ingest**: source_actor_ref="tomas", channel="slack:sales", occurred_at=-7d
-   - **Observe**: ObservationRow inserted; embedding computed
-   - **Think T1**: primary_retrieve() finds Models about customer relationships, revenue commitments
-   - **Reason**: LLM generates Model: "Acme renewal decision is looming (confidence 0.88)"
-   - **Apply**: Insert new Model; update activation on customer_relationship Models
+Important env groups:
 
-2. **Wednesday -6d, 09:15** (`T1` trigger)
-   - Marcus (Head of Eng) posts: "scaling bottleneck in payment service identified"
-   - **Ingest**: channel="slack:eng"
-   - **Think T1**: retrieves Models about scaling, payment service ownership, recent PRs
-   - **Reason**: LLM generates: "Infrastructure health is degrading (confidence 0.72)"
-   - **Apply**: Insert Model; enqueue Goal check
+| Group | Examples |
+|---|---|
+| Database/embedding | `DATABASE_URL`, `OLLAMA_URL`, `OLLAMA_EMBED_MODEL`. |
+| LLM | `LLM_PROVIDER`, `LLM_MODEL`, provider API keys, timeouts. |
+| Tenant identity | `DEFAULT_TENANT_ID`, `COMPANY_OS_CEO_ACTOR_ID`, `DEV_BEARER_TOKEN`, `VIEW_CEO_TOKEN`. |
+| Gateway | `COMPANY_OS_ENV`, `GATEWAY_OWNS_POOL`, `GATEWAY_CEO_VIEW_ENABLED`, `GATEWAY_START_GRT_SCHEDULER`, `GATEWAY_MOUNT_SIM`. |
+| Workers | `THINK_*`, `POST_COMMIT_WORKER_POLL_INTERVAL_S`, `GREETING_REFRESH_INTERVAL_SECONDS`. |
+| Debug | `DEBUG_ARTIFACT_CAPTURE`, `LOG_LEVEL`. |
 
-3. **Friday -4d, 14:20** → **Sunday -2d, 11:45** (multiple T1 triggers)
-   - Alice ships rate limiter fix (#2311)
-   - David (CFO) flags budget overspend
-   - Nora reports payment service still unstable
-   - Priya (CS) notes Acme is concerned about reliability
-   - **Each**: separate ingest + T1 cycle
-   - **Observations** accumulate: 7 events total
-   - **Models**: confidence scores update as new observations arrive
-     - "Payment service scaling is risky" (0.68 → 0.81)
-     - "Acme is at risk due to reliability concerns" (0.55 → 0.89)
+The production-ish compose topology builds the Python gateway image from [Dockerfile](Dockerfile) and the UI from `Dockerfile.ui`, fronts the UI with nginx-proxy/acme, and expects `.env.production` for secrets.
 
 4. **Monday -1d, 09:00** (Manual CEO refresh or scheduled greeting)
    - **Greeting scheduler** wakes up every 15 min
@@ -1547,69 +1571,79 @@ Drawn from `simulation/scenarios/acme_tuesday.yaml:1-38`:
    - **Response**: "Acme decision is this morning at 10 AM. As of Monday morning, payment infrastructure passed Alice's fix and is stabilizing. Sales (Tomas) is prepped with talking points. Priya's team monitors stability through the call."
    - **UI**: renders ConversationTurn with verbs: 'save', 'followup', 'done'
 
-6. **Tuesday 10:00** (Decision recorded)
-   - Rachin records in Slack: "Acme renewed; decided on 3-year term"
-   - **Ingest**: channel="slack:ceo"
-   - **Think T1**: Models about Acme relationship, revenue, trust → Decision: "Acme renewal confirmed (3-year term)"
-   - **Apply**: Insert Decision; update related Models' confidence upward
-   - **Greeting refresh**: next scheduled refresh (15-min interval) includes "Acme renewed" in greeting
+```bash
+pytest
+pytest -m integration
+pytest -m ollama
+RUN_REAL_LLM=1 pytest -m real_llm
+```
 
----
+The suite is organized by service package (`services/*/tests`) plus cross-service tests under [tests](tests). `pyproject.toml` configures pytest, strict markers, async mode, and warning filters.
 
-### **Background Workflow: Model Decay & Calibration**
+UI tests:
 
-(Runs continuously in workers, not event-driven)
+```bash
+cd ui
+npm test
+npm run test:e2e
+npm run typecheck
+```
 
-1. **Calibration updater** (background job):
-   - Daily: query Models with `status='active'` and `created_at > 30 days ago`
-   - For each: compute decay penalty based on age, lack of recent supporting evidence
-   - Update `confidence` downward if no new observations confirm the Model
-   - Mark as 'archived' with reason='decay' if confidence < 0.05
+Playwright E2E uses the in-repo mock backend. The UI can be developed against either gateway proxy mode or `USE_MOCK=1` mode.
 
-2. **Relationship maintenance** (Wave 4-C):
-   - Periodic job: identify Models with shared scope_actors or scope_entities
-   - Insert rows in `signal_memory_fabric` linking related Models
-   - Used by Pathway D (pattern discovery) to find emerging themes
+## 16. How to Extend the System
 
-3. **Anomaly processor** (Wave 4-B):
-   - Monitor incoming observations for outliers (HDBSCAN clustering)
-   - Outliers → queue T3 triggers to Think
-   - Think generates "Anomaly: unusual payment spike" Models
+### Add a New Ingestion Channel
 
----
+1. Add a handler in [services/ingestion/handlers](services/ingestion/handlers).
+2. Register it with `@register("channel:name")`.
+3. Add the channel trust tier to `CHANNEL_TRUST_MAP`.
+4. Ensure the handler module is imported so registration runs.
+5. Add ingestion and gateway tests.
+6. Decide whether the payload needs signature/auth verification in gateway.
 
-## 12. Summary: Key Insights for New Engineers
+### Add a New Model Proposition Kind
 
-1. **Four Foundations Philosophy**: Observations (signals), Models (beliefs), Acts (declarations), Resources (assets) are epistemologically distinct. This structure enables:
-   - Append-only audit trails (Observations)
-   - Evolving confidence scores (Models can be updated, archived, disputed)
-   - Executable commitments (Acts with state machines and deadlines)
-   - Resource tracking (clear attribution of what's deployed vs. available)
+1. Update proposition validation in [services/models/propositions.py](services/models/propositions.py).
+2. Add migration/check constraints if needed.
+3. Update prompts, `diff_schema`, validator/applier logic if the LLM can emit it.
+4. Add retrieval/rendering behavior if it should appear in UI context.
+5. Add tests for insert, validation, retrieval, and rendering.
 
-2. **Universal Flow Rule**: Every signal → Observation → Think pass → (Models always, Acts/Resources sometimes). This is the core cognitive loop.
+### Add a New UI Surface
 
-3. **Retrieval is Critical**: Four pathways (structural, semantic, temporal, pattern) ensure context diversity. Think receives the best-ranked Models from all paths merged and scored.
+1. Add route in [ui/src/main.tsx](ui/src/main.tsx).
+2. Add API client/types in [ui/src/api](ui/src/api).
+3. Prefer a gateway adapter route over direct table-shaped UI coupling.
+4. Add mock fixture support for `USE_MOCK=1`.
+5. Add Vitest and, if user-facing flow matters, Playwright coverage.
 
 4. **Rendering is Separate from Reasoning**: Think (reasoning model, e.g. `claude-opus-4-7` or `deepseek-reasoner`) ≠ Rendering (chat model, e.g. `claude-sonnet-4-5` or `deepseek-chat`). This separation allows:
    - Fast iteration on voice/tone (Rendering)
    - Reuse of reasoning across multiple output formats
    - Cost optimization (reasoning is expensive, rendering is cheaper)
 
-5. **Caching Strategy**: CEO view is cached (`view_ceo_cache` table) and refreshed on a schedule, not regenerated per request. This handles:
-   - High latency of LLM calls (greeting rendering takes 2-5s)
-   - Consistent experience (all users see the same greeting)
-   - Cost control (one render per 15 min, not per user per second)
+1. Keep core work idempotent and safe under multiple worker instances.
+2. Use Postgres queues or clear cursor state.
+3. Prefer `FOR UPDATE SKIP LOCKED` for durable queue drains.
+4. Record observability rows or logs for every meaningful mutation.
+5. Add a launcher script and compose service only when it should run by default.
 
-6. **Single-Tenant Dogfood**: The system is architecturally multi-tenant but currently deployed as single-tenant. All endpoints carry `tenant_id` for future scaling.
+## 17. Architectural Risks and Active Edges
 
-7. **Synthetic Data Guard**: `COMPANY_OS_ENV` env var gates the `services/synthetic` module (simulation injection). Prevents accidental data pollution in production.
+| Risk | Why it matters | Where to look |
+|---|---|---|
+| Gateway is large | Many product adapters and legacy routes live in one file, increasing coupling. | [services/gateway/main.py](services/gateway/main.py), route modules under [services/gateway](services/gateway). |
+| Worker deployment gap | More worker modules exist than are launched by compose. | [services/workers](services/workers), [docker-compose.yml](docker-compose.yml). |
+| Dev auth shortcuts | Static tokens/default tenant are convenient but easy to misconfigure in shared envs. | `.env.example`, gateway public path config. |
+| Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingestion/handlers/__init__.py](services/ingestion/handlers/__init__.py). |
+| Spec references are historical | Many docstrings reference older `ARCHITECTURE-FINAL.md`, `SCHEMA-LOCK.md`, and `CONTRACTS.md` files not present in this checkout. | Code and migrations are the effective source of truth. |
+| Mixed old/new UI API surfaces | `/view/ceo/*`, `/today/*`, `/model/*`, spec routes, and legacy redirects coexist. | [ui/src/main.tsx](ui/src/main.tsx), [services/gateway](services/gateway). |
+| RLS vs app-level tenancy | RLS policies exist, but most correctness still depends on passing tenant IDs through app code. | migrations `0036`-`0041`, repositories. |
 
-8. **Deterministic Retrieval**: Retrieval pathways are designed to be deterministic given the same snapshot of the database. This enables:
-   - Reproducible Think outcomes
-   - Testable reasoning pipelines
-   - Hypothesis-driven debugging
+## 18. Source of Truth
 
----
+When code and docs disagree, prefer this order:
 
 ## 13. Architectural Overhaul — 2026-05-10
 

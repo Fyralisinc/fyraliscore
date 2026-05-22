@@ -362,8 +362,9 @@ CASE_PATH_D = Case(
 
 
 # =====================================================================
-# R5 — RRF fusion: model present in pathway A AND pathway B should rank
-#       above one present only in B at lower rank
+# R5 — Scoped fusion: model present in pathway A AND pathway B should rank
+#       first, while an unscoped semantic-only decoy is excluded by the
+#       production Pathway B scope filter.
 # =====================================================================
 
 
@@ -380,7 +381,7 @@ async def _setup_rrf(pool: asyncpg.Pool, _ctx: dict) -> dict:
                 embed_seed="combined-hit",
                 activation=0.5,
             )
-            # Model Y — only semantically further; no actor scope
+            # Model Y — semantically related but out of event scope.
             y = await F.make_model(
                 conn, tenant,
                 natural="far semantic only",
@@ -411,7 +412,7 @@ async def _run_rrf(pool: asyncpg.Pool, ctx: dict) -> dict:
 def _expected_rrf(ctx: dict) -> dict:
     return {
         "x_first": str(ctx["x"]),
-        "y_present": str(ctx["y"]),
+        "y_excluded": str(ctx["y"]),
     }
 
 
@@ -419,20 +420,15 @@ def _assert_rrf(actual: dict, expected: dict, _ctx: dict) -> tuple[bool, str]:
     ids = actual["ids"]
     if not ids or ids[0] != expected["x_first"]:
         return False, f"X (multi-pathway) not first; ids={ids} scores={actual['scores']}"
-    if expected["y_present"] not in ids:
-        return False, f"Y missing from result; ids={ids}"
-    # Score check
-    sx = actual["scores"].get(expected["x_first"], 0)
-    sy = actual["scores"].get(expected["y_present"], 0)
-    if sx <= sy:
-        return False, f"X score {sx} not strictly > Y {sy}"
+    if expected["y_excluded"] in ids:
+        return False, f"out-of-scope Y leaked into result; ids={ids}"
     return True, ""
 
 
 CASE_RRF = Case(
     stage="retrieval",
-    name="rrf_fusion_multipathway",
-    intent="RRF fusion: A∩B model outranks B-only model with higher activation",
+    name="scoped_fusion_multipathway",
+    intent="Scoped fusion: A∩B model wins and semantic-only out-of-scope decoy is excluded",
     setup=_setup_rrf,
     run=_run_rrf,
     expected=_expected_rrf,

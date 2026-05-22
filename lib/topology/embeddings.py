@@ -65,7 +65,7 @@ Tunable
     threshold to enqueue neighbors. Below this, we treat the
     update as too small to propagate.
 
-See migrations 0032 + V1_PR_PROMPTS.md + the plan file.
+See migration 0032.
 """
 from __future__ import annotations
 

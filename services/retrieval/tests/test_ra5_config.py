@@ -104,12 +104,16 @@ async def test_ra5_semantic_k_change_alters_retrieval_results(
     tx_conn, fresh_db, tenant
 ):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
-    seeds = [{"type": "commitment", "id": str(fs.hero_commitment_id)}]
     vec = make_embedding("alice ships reliably")
     base_trigger_kwargs = dict(
         kind="T1",
         tenant_id=tenant,
-        seed_entity_ids=seeds,
+        # Leave entity scope empty so this test isolates semantic_k.
+        # Primary retrieval now threads seed_entity_ids into Pathway B's
+        # production scope filter; with a single commitment seed the
+        # fixture only has two eligible semantic candidates, so changing
+        # k would correctly have no effect.
+        seed_entity_ids=[],
         seed_natural_text="alice ships reliably",
         seed_occurred_at=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
         precomputed_seed_vector=vec,

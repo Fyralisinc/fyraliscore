@@ -23,7 +23,11 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from lib.llm.provider import LLMProvider, LLMUsageAggregator
+from lib.llm.provider import (
+    LLMProvider,
+    LLMUsageAggregator,
+    using_usage_aggregator,
+)
 from lib.shared.errors import (
     CompanyOSError,
     InvariantViolation,
@@ -42,7 +46,12 @@ from services.retrieval.primary import (
     TriggerContext,
     primary_retrieve,
 )
-from services.retrieval.second_pass import second_pass_expand
+from services.retrieval.config import CONFIG as RETRIEVAL_CONFIG
+from services.retrieval.second_pass import (
+    log_second_pass_decision,
+    second_pass_expand,
+    should_run_second_pass,
+)
 
 from .anomaly_integration import (
     Anomaly,
@@ -172,26 +181,74 @@ async def think(
     # Aggregator is cleared after the run (finally block). Any LLM call
     # made via `provider.structured` records tokens + cost into it.
     usage_agg: LLMUsageAggregator | None = None
+    usage_ctx: Any | None = None
     if llm_provider is not None:
         usage_agg = LLMUsageAggregator()
+        usage_ctx = using_usage_aggregator(usage_agg)
+        usage_ctx.__enter__()
         llm_provider.set_usage_aggregator(usage_agg)
 
     try:
         while True:
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    outcome = await _run_once(
-                        conn=conn,
-                        trigger=trigger,
-                        pool=pool,
-                        llm_provider=llm_provider,
-                        embedder=embedder,
-                        access_context=access_context,
-                        triggering_content=triggering_content,
-                        reason_for_trigger=reason_for_trigger,
-                        record=record,
-                        expanded_region=expanded_region,
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        outcome = await _run_once(
+                            conn=conn,
+                            trigger=trigger,
+                            pool=pool,
+                            llm_provider=llm_provider,
+                            embedder=embedder,
+                            access_context=access_context,
+                            triggering_content=triggering_content,
+                            reason_for_trigger=reason_for_trigger,
+                            record=record,
+                            expanded_region=expanded_region,
+                        )
+            except OutOfRegionError as e:
+                # Re-run retrieval with the missing entities explicitly
+                # allowed. The failed transaction rolls back its
+                # think_runs row, so the same run_id can be reused for
+                # the successful retry.
+                rerun_count += 1
+                if rerun_count > max_retrieval_reruns:
+                    METRICS.inc_failed(trigger_kind_full)
+                    emit(
+                        "think.failed",
+                        run_id=str(run_id),
+                        error="out_of_region_exhausted",
+                        rerun_count=rerun_count,
                     )
+                    out = ThinkRunOutcome(
+                        run_id=run_id,
+                        trigger_id=trigger_id,
+                        trigger_kind=trigger_kind_full,
+                        status="failed",
+                        error=(
+                            f"out_of_region_after_{rerun_count}_reruns: "
+                            f"{e.message}"
+                        ),
+                        exception=e,
+                        elapsed_ms=(time.monotonic() - started_at) * 1000.0,
+                    )
+                    _snapshot_usage(out, usage_agg, llm_provider)
+                    await _record_failed_run(pool, record, out.error)
+                    await _record_cost_for_outcome(
+                        pool, out, trigger.tenant_id,
+                    )
+                    return out
+                emit(
+                    "think.out_of_region",
+                    run_id=str(run_id),
+                    attempt=rerun_count,
+                    missing=e.context.get("missing"),
+                )
+                prev = expanded_region or set()
+                missing = e.context.get("missing") or []
+                prev.update((t, i) for (t, i) in missing)
+                expanded_region = prev
+                continue
+
             outcome.elapsed_ms = (time.monotonic() - started_at) * 1000.0
             METRICS.observe_latency(trigger_kind_full, outcome.elapsed_ms)
             # OP-2: snapshot usage into the outcome + emit the cost record.
@@ -228,59 +285,12 @@ async def think(
                  status=outcome.status,
                  elapsed_ms=outcome.elapsed_ms)
             return outcome
-    except OutOfRegionError as e:
-        # Re-run retrieval with an expanded region, up to max_retrieval_reruns.
-        rerun_count += 1
-        if rerun_count > max_retrieval_reruns:
-            METRICS.inc_failed(trigger_kind_full)
-            emit("think.failed",
-                 run_id=str(run_id),
-                 error="out_of_region_exhausted",
-                 rerun_count=rerun_count)
-            out = ThinkRunOutcome(
-                run_id=run_id,
-                trigger_id=trigger_id,
-                trigger_kind=trigger_kind_full,
-                status="failed",
-                error=f"out_of_region_after_{rerun_count}_reruns: {e.message}",
-                exception=e,
-                elapsed_ms=(time.monotonic() - started_at) * 1000.0,
-            )
-            _snapshot_usage(out, usage_agg, llm_provider)
-            await _record_cost_for_outcome(pool, out, trigger.tenant_id)
-            return out
-        emit("think.out_of_region",
-             run_id=str(run_id),
-             attempt=rerun_count,
-             missing=e.context.get("missing"))
-        # Expand the allowed region by adding the missing entities.
-        prev = expanded_region or set()
-        missing = e.context.get("missing") or []
-        prev.update((t, i) for (t, i) in missing)
-        expanded_region = prev
-        # Fall through: the outer while loop will retry.
-        try:
-            return await think(
-                trigger, pool,
-                llm_provider=llm_provider,
-                access_context=access_context,
-                triggering_content=triggering_content,
-                reason_for_trigger=reason_for_trigger,
-                trigger_kind_subkind=trigger_kind_subkind,
-                max_retrieval_reruns=max_retrieval_reruns - 1,
-            )
-        except Exception as inner:
-            out = _fail_outcome(
-                run_id, trigger_id, trigger_kind_full, inner, started_at
-            )
-            _snapshot_usage(out, usage_agg, llm_provider)
-            await _record_cost_for_outcome(pool, out, trigger.tenant_id)
-            return out
     except CompanyOSError as e:
         out = _fail_outcome(
             run_id, trigger_id, trigger_kind_full, e, started_at
         )
         _snapshot_usage(out, usage_agg, llm_provider)
+        await _record_failed_run(pool, record, out.error)
         await _record_cost_for_outcome(pool, out, trigger.tenant_id)
         return out
     except Exception as e:
@@ -288,10 +298,13 @@ async def think(
             run_id, trigger_id, trigger_kind_full, e, started_at
         )
         _snapshot_usage(out, usage_agg, llm_provider)
+        await _record_failed_run(pool, record, out.error)
         await _record_cost_for_outcome(pool, out, trigger.tenant_id)
         return out
     finally:
         # Always detach the aggregator so it doesn't leak across runs.
+        if usage_ctx is not None:
+            usage_ctx.__exit__(None, None, None)
         if llm_provider is not None:
             llm_provider.set_usage_aggregator(None)
 
@@ -348,6 +361,46 @@ async def _record_cost_for_outcome(
     )
 
 
+async def _record_failed_run(
+    pool: asyncpg.Pool,
+    record: ThinkRunRecord,
+    error: str | None,
+) -> None:
+    """Persist a failed run after the apply transaction rolls back.
+
+    The normal progressive `think_runs` row is written inside the
+    mutation transaction so failed validation/apply attempts roll it
+    back. Production operators still need a durable row explaining the
+    failed invocation, so write a compact failed record out-of-band.
+    """
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO think_runs (
+                  id, tenant_id, trigger_id, trigger_kind,
+                  started_at, ended_at, status, error
+                )
+                VALUES ($1, $2, $3, $4, now(), now(), 'failed', $5)
+                ON CONFLICT (id) DO UPDATE
+                SET ended_at = now(),
+                    status = 'failed',
+                    error = EXCLUDED.error
+                """,
+                record.id,
+                record.tenant_id,
+                record.trigger_id,
+                record.trigger_kind,
+                (error or "failed")[:4000],
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "think.failed_run_record_write_failed",
+            run_id=str(record.id),
+            error=str(exc),
+        )
+
+
 def _fail_outcome(
     run_id: UUID,
     trigger_id: UUID,
@@ -402,6 +455,56 @@ async def _run_once(
     # --- 1. Retrieval ---------------------------------------------
     t0 = time.monotonic()
     first = await primary_retrieve(trigger, conn, embedder=embedder)
+    try:
+        second_pass_decision = should_run_second_pass(
+            first,
+            trigger,
+            sparse_threshold=RETRIEVAL_CONFIG.second_pass_sparse_threshold,
+            bridge_confidence_threshold=(
+                RETRIEVAL_CONFIG.second_pass_bridge_confidence_threshold
+            ),
+            t2_has_authoritative_handler=(
+                trigger.kind == "T2" and is_authoritative(trigger)
+            ),
+        )
+        log_second_pass_decision(
+            second_pass_decision,
+            trigger=trigger,
+            tenant_id=trigger.tenant_id,
+        )
+        first.notes["second_pass_decision"] = {
+            "run": second_pass_decision.run,
+            "trigger_condition": second_pass_decision.trigger_condition,
+            "suggested_dimensions": list(
+                second_pass_decision.suggested_dimensions
+            ),
+            "reason_detail": dict(second_pass_decision.reason_detail),
+        }
+        if second_pass_decision.run:
+            first = await second_pass_expand(
+                first,
+                second_pass_decision.suggested_dimensions,
+                conn,
+            )
+            first.notes["second_pass_decision"] = {
+                "run": second_pass_decision.run,
+                "trigger_condition": second_pass_decision.trigger_condition,
+                "suggested_dimensions": list(
+                    second_pass_decision.suggested_dimensions
+                ),
+                "reason_detail": dict(second_pass_decision.reason_detail),
+            }
+    except Exception as e:  # noqa: BLE001
+        first.notes["second_pass_error"] = {
+            "type": type(e).__name__,
+            "message": str(e),
+        }
+        _log.warning(
+            "think.second_pass_failed",
+            tenant_id=str(trigger.tenant_id),
+            trigger_kind=trigger.kind,
+            error=str(e),
+        )
     emit("think.retrieval_done",
          run_id=str(record.id),
          models=len(first.models),

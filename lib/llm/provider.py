@@ -968,7 +968,10 @@ class DeepSeekProvider(OpenAIProvider):
         max_tokens: int,
     ) -> str:
         strict_schema = _strict_schema_for(schema)
-        if strict_schema is None:
+        if (
+            strict_schema is None
+            or not _deepseek_supports_strict_tool_calling(self.config.model)
+        ):
             return await super()._structured_raw(
                 system=system, user=user, schema=schema,
                 temperature=temperature, max_tokens=max_tokens,
@@ -1040,12 +1043,22 @@ class DeepSeekProvider(OpenAIProvider):
             last_error = err
             repair_note = str(err)
             if attempt == self.config.max_retries:
-                raise LLMParseError(
-                    f"DeepSeek strict-mode output did not validate after "
-                    f"{self.config.max_retries + 1} attempts: {err}",
-                    last_raw=raw[:1000],
-                    schema=schema.__name__,
-                ) from err
+                # Strict function-calling is usually tighter, but live
+                # DeepSeek-chat can still return syntactically malformed
+                # tool arguments after repair. Use ordinary JSON mode as
+                # a rescue path before failing the whole reasoning run.
+                fallback_user = (
+                    f"{base_user}\n\nPrior strict tool-call output failed "
+                    f"validation. Return ordinary JSON matching the schema. "
+                    f"Validation error: {err}."
+                )
+                return await super()._structured_raw(
+                    system=system,
+                    user=fallback_user,
+                    schema=schema,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
 
         raise LLMParseError(
             f"DeepSeek strict-mode exhausted retries: {last_error}"
@@ -1061,6 +1074,20 @@ def _repair_deepseek_strict_json(text: str) -> str:
     """
     import re
     return re.sub(r'"([A-Za-z_][A-Za-z0-9_]*):\s', r'"\1": ', text)
+
+
+def _deepseek_supports_strict_tool_calling(model_name: str | None) -> bool:
+    """DeepSeek reasoner rejects tool_choice/tool-calling requests.
+
+    Keep strict tool-calling for chat-class models where it constrains
+    RawDiff shape server-side, but route reasoner-class models through
+    JSON-mode structured output instead. This lets operators choose
+    reasoner for deeper cognition without tripping a provider-level
+    400 before Think ever reaches validation.
+    """
+    if not model_name:
+        return True
+    return "reasoner" not in model_name.lower()
 
 
 def _strict_schema_for(schema: type[BaseModel]) -> dict | None:

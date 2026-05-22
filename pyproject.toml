@@ -35,6 +35,8 @@ dev = [
     "hdbscan>=0.8.40",          # Wave 4-C precipitation clustering
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
     "numpy>=2.0",               # transitive; model-embedding stacking
+    "umap-learn>=0.5",          # 2D projection for the CEO Map view (preserves local structure;
+                                # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
 ]
 
@@ -58,6 +60,15 @@ filterwarnings = [
     # actionable from test code and surface as PytestUnraisableException.
     "ignore::ResourceWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
+    # umap-learn emits an ImportWarning when tensorflow isn't installed
+    # (parametric variant unavailable) — we don't use parametric UMAP.
+    "ignore::ImportWarning:umap.*",
+    # umap also UserWarns about n_jobs vs random_state — we set both
+    # deliberately for determinism.
+    "ignore::UserWarning:umap.*",
+    # numba emits NumbaDeprecation/PendingDeprecation warnings transitively.
+    "ignore::DeprecationWarning:numba.*",
+    "ignore::PendingDeprecationWarning:numba.*",
 ]
 addopts = [
     "-ra",

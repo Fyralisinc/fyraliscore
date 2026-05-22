@@ -12,7 +12,9 @@ import pytest_asyncio
 from lib.shared.ids import uuid7
 from lib.shared.types import TOPO_EMBEDDING_DIM
 from services.models.edges_repo import EdgesRepo
+from services.retrieval.config import RetrievalConfig
 from services.retrieval.pathways import pathway_f_topological
+from services.retrieval.primary import TriggerContext, primary_retrieve
 from services.topology.neighborhoods_repo import NeighborhoodsRepo
 from services.topology.topo_repo import TopoRepo
 
@@ -216,3 +218,33 @@ async def test_pathway_f_seed_model_missing_topo(tx_conn):
         seed_model_id=bogus,
     )
     assert result.notes["reason"] == "seed_model_missing_topo"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_primary_t6_can_seed_pathway_f_from_neighborhood_only(tx_conn):
+    tenant, a, b, c, d, _ = await _seed_tenant_with_topology(tx_conn)
+    row = await tx_conn.fetchrow(
+        """
+        SELECT neighborhood_id
+        FROM model_neighborhood_membership
+        WHERE tenant_id = $1 AND model_id = $2
+        """,
+        tenant, a,
+    )
+    assert row is not None
+    trigger = TriggerContext(
+        kind="T6",
+        tenant_id=tenant,
+        neighborhood_id=row["neighborhood_id"],
+    )
+    result = await primary_retrieve(
+        trigger,
+        tx_conn,
+        config=RetrievalConfig(topological_k=10),
+    )
+    pr_f = next(p for p in result.pathway_results if p.source_pathway == "F")
+    assert pr_f.notes["vector_source"] == "seed_neighborhood"
+    ids = {m.id for m in pr_f.models}
+    assert a in ids
+    assert b in ids

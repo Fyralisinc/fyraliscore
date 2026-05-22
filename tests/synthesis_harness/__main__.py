@@ -106,6 +106,16 @@ async def main(
     if stages_filter:
         all_cases = [c for c in all_cases if c.stage in stages_filter]
         print(f"Filter: {stages_filter} → {len(all_cases)} cases")
+    case_filter_raw = os.environ.get("HARNESS_CASE_FILTER")
+    if case_filter_raw:
+        needles = [
+            p.strip().lower() for p in case_filter_raw.split(",") if p.strip()
+        ]
+        all_cases = [
+            c for c in all_cases
+            if any(n in c.name.lower() for n in needles)
+        ]
+        print(f"Case filter: {needles} → {len(all_cases)} cases")
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -128,6 +138,14 @@ async def main(
         concurrency = 8
         if any(c.stage == "reconciliation" for c in all_cases) and not os.environ.get("HARNESS_SKIP_LLM"):
             concurrency = 4
+        if any(c.stage.startswith("adversarial.linguistic") for c in all_cases) and not os.environ.get("HARNESS_SKIP_LLM"):
+            concurrency = 2
+        concurrency_override = os.environ.get("HARNESS_CONCURRENCY")
+        if concurrency_override:
+            try:
+                concurrency = max(1, int(concurrency_override))
+            except ValueError:
+                pass
         t0 = time.monotonic()
         results = await run_cases(pool, all_cases, concurrency=concurrency)
         elapsed = time.monotonic() - t0

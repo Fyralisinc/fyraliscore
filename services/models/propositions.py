@@ -133,21 +133,10 @@ class RecommendationProposition(_PropositionBase):
     proposed_change: dict[str, Any]
     expected_impact: float | None = None
     qualitative_impact: str | None = None
-    target_actor_id: str | None = None
+    target_actor_id: str | None = Field(...)
 
     @model_validator(mode="after")
     def _check_recommendation_shape(self) -> "RecommendationProposition":
-        if self.target_act_ref is not None:
-            ref_type = self.target_act_ref.get("type")
-            ref_id = self.target_act_ref.get("id")
-            if ref_type not in _LEGAL_ACT_REF_TYPES:
-                raise ValueError(
-                    f"target_act_ref.type must be one of "
-                    f"{sorted(_LEGAL_ACT_REF_TYPES)}; got {ref_type!r}"
-                )
-            if not isinstance(ref_id, str) or not ref_id:
-                raise ValueError("target_act_ref.id must be a non-empty UUID string")
-
         op = self.proposed_change.get("operation")
         if op not in _LEGAL_PROPOSED_OPS:
             raise ValueError(
@@ -156,6 +145,25 @@ class RecommendationProposition(_PropositionBase):
             )
         if not isinstance(self.proposed_change.get("payload"), dict):
             raise ValueError("proposed_change.payload must be a dict")
+
+        if self.target_act_ref is not None:
+            ref_type = self.target_act_ref.get("type")
+            ref_id = self.target_act_ref.get("id")
+            if ref_type not in _LEGAL_ACT_REF_TYPES:
+                raise ValueError(
+                    f"target_act_ref.type must be one of "
+                    f"{sorted(_LEGAL_ACT_REF_TYPES)}; got {ref_type!r}"
+                )
+            if ref_id is None:
+                if op != "create":
+                    raise ValueError(
+                        "target_act_ref.id may be null only for "
+                        "proposed_change.operation='create'"
+                    )
+            elif not isinstance(ref_id, str) or not ref_id:
+                raise ValueError(
+                    "target_act_ref.id must be a non-empty UUID string"
+                )
 
         if self.expected_impact is None and not (
             self.qualitative_impact and self.qualitative_impact.strip()

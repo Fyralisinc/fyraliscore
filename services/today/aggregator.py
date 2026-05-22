@@ -47,6 +47,9 @@ class TodayPayload:
     ask_suggestions: list[str] = field(default_factory=list)
     calibration_alert: dict[str, Any] | None = None
     empty_state: dict[str, Any] | None = None
+    viewer_state: dict[str, Any] | None = None
+    map: dict[str, Any] | None = None
+    recent_signals: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -67,6 +70,12 @@ class TodayPayload:
             out["calibration_alert"] = self.calibration_alert
         if self.empty_state is not None:
             out["empty_state"] = self.empty_state
+        if self.viewer_state is not None:
+            out["viewer_state"] = self.viewer_state
+        if self.map is not None:
+            out["map"] = self.map
+        if self.recent_signals is not None:
+            out["recent_signals"] = self.recent_signals
         return out
 
 
@@ -143,6 +152,29 @@ def _derive_category(view: RecommendationView, severity: str) -> str:
 # ---------------------------------------------------------------------
 # Kind label derivation
 # ---------------------------------------------------------------------
+
+def _derive_stake_from_view(view: RecommendationView) -> dict[str, Any] | None:
+    """Map a recommendation's expected_impact into a structured stake.
+
+    expected_impact has two regimes (mirrors _derive_severity):
+      * > 1.0  — dollar exposure; stake is USD.
+      * <= 1.0 — normalised impact; combined with confidence into a
+                 1/2/3 risk band so the map can size by stake.
+    """
+    impact = view.expected_impact
+    if impact is None:
+        return None
+    if impact > 1.0:
+        return {"unit": "usd", "value": int(impact)}
+    score = float(impact) * float(view.confidence)
+    if score >= 0.55:
+        return {"unit": "risk", "value": 3}
+    if score >= 0.30:
+        return {"unit": "risk", "value": 2}
+    if score >= 0.12:
+        return {"unit": "risk", "value": 1}
+    return None
+
 
 _OPERATION_TO_KIND_PREFIX = {
     "transition": {
@@ -888,7 +920,14 @@ async def _build_card(
     # Drop None entries from detail
     detail = {k: v for k, v in detail.items() if v is not None}
 
-    return {
+    stake = _derive_stake_from_view(view)
+    truth_freshness = (
+        max(0, int((now - view.created_at).total_seconds()))
+        if view.created_at is not None
+        else None
+    )
+
+    card: dict[str, Any] = {
         "id": str(view.id),
         "severity": severity,
         "category": category,
@@ -905,6 +944,11 @@ async def _build_card(
         "actions": _derive_actions(view),
         "detail": detail,
     }
+    if stake is not None:
+        card["stake"] = stake
+    if truth_freshness is not None:
+        card["truth_freshness_seconds"] = truth_freshness
+    return card
 
 
 def _derive_probe_chips(view: RecommendationView) -> list[dict[str, str]]:
@@ -1570,6 +1614,7 @@ async def build_today(
     limit: int = 12,
     days_since_inception: int = 1,
     cleared_today: int = 0,
+    previous_last_seen_at: datetime | None = None,
 ) -> TodayPayload:
     """Read the substrate; return the full Today payload for one actor."""
     now = datetime.now(timezone.utc)
@@ -1588,6 +1633,11 @@ async def build_today(
         )
         for v in recommendations
     ]
+
+    recs_by_entity: dict[str, str] = {}
+    for v in recommendations:
+        if v.target_entity is not None:
+            recs_by_entity[str(v.target_entity.id)] = str(v.id)
 
     # Fan out per-actor watch subscriptions onto cards in one bulk
     # query, post-loop. Only set is_watched=True on cards that have an
@@ -1656,6 +1706,24 @@ async def build_today(
             )
         }
 
+    # Map deliberately suppressed — page committed to the Command Center
+    # direction (digest tiles + cards + right-rail signals feed). The
+    # map.py module + types are retained so we can revive the index view
+    # later if needed.
+    map_data = None
+
+    recent_signals = await _build_recent_signals(
+        tenant_id=tenant_id, conn=conn, now=now,
+    )
+
+    viewer_state = {
+        "previous_last_seen_at": (
+            previous_last_seen_at.isoformat()
+            if previous_last_seen_at is not None else None
+        ),
+        "current_visit_at": now.isoformat(),
+    }
+
     return TodayPayload(
         brand={
             "name": brand_name,
@@ -1683,7 +1751,114 @@ async def build_today(
                 "body": "Nothing else needs your attention today. I'll surface again if anything material changes.",
             }
         ),
+        viewer_state=viewer_state,
+        map=map_data,
+        recent_signals=recent_signals,
     )
+
+
+# ---------------------------------------------------------------------
+# Recent signals — right-rail feed
+# ---------------------------------------------------------------------
+
+
+_SIGNAL_LIMIT = 8
+
+
+async def _build_recent_signals(
+    *,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Compose the most recent observations into a presentation feed.
+
+    Tone is derived heuristically from the kind / source for v1. The
+    right rail is supposed to give the user a sense of system activity
+    — false-negatives (calling everything neutral) are better than
+    false-positives that alarm.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT id, kind, source_channel, ingested_at, content_text
+        FROM observations
+        WHERE tenant_id = $1
+        ORDER BY ingested_at DESC
+        LIMIT $2
+        """,
+        tenant_id, _SIGNAL_LIMIT,
+    )
+    total = await conn.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        tenant_id,
+    ) or 0
+
+    signals: list[dict[str, Any]] = []
+    for r in rows:
+        kind = (r["kind"] or "").lower()
+        channel = (r["source_channel"] or "").lower()
+        content = (r["content_text"] or "").strip()
+        if not content:
+            continue
+        title = _short_signal_title(content)
+        if not title:
+            continue
+        icon, tone = _signal_icon_tone(kind, content)
+        signals.append({
+            "id": str(r["id"]),
+            "icon": icon,
+            "tone": tone,
+            "title": title,
+            "context": _signal_context(kind, channel),
+            "age_label": _relative_age(now, r["ingested_at"]),
+        })
+
+    if not signals:
+        return None
+    return {
+        "signals": signals,
+        "total": int(total),
+    }
+
+
+def _short_signal_title(text: str) -> str:
+    line = text.splitlines()[0].strip() if text else ""
+    if len(line) > 60:
+        line = line[:57].rstrip() + "…"
+    return line
+
+
+def _signal_icon_tone(kind: str, content: str) -> tuple[str, str]:
+    blob = f"{kind} {content[:200]}".lower()
+    if any(t in blob for t in ("error", "failure", "fail ", "outage", "down ", "blocked", "escalat")):
+        return ("alert", "critical")
+    if any(t in blob for t in ("warn", "drift", "spike", "lag", "stuck", "stale", "delay")):
+        return ("warning", "warning")
+    if any(t in blob for t in ("growth", "expand", "win", "closed", "approved")):
+        return ("trend", "positive")
+    return ("info", "neutral")
+
+
+def _signal_context(kind: str, channel: str) -> str:
+    parts = [p for p in (channel.replace("_", " "), kind.replace("_", " ")) if p]
+    return " · ".join(parts) if parts else "observation"
+
+
+def _relative_age(now: datetime, when: datetime | None) -> str:
+    if when is None:
+        return ""
+    when_utc = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((now - when_utc).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    return f"{days}d ago"
 
 
 # ---------------------------------------------------------------------

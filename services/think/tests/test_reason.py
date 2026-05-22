@@ -414,6 +414,55 @@ async def test_think_second_pass_expansion_does_not_crash(
     assert mc is not None
 
 
+async def test_think_invokes_second_pass_when_retrieval_decision_runs(
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
+):
+    obs = await _seed_observation(fresh_db, tenant)
+    trigger_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        subkind="event_arrival",
+        observation_id=obs,
+        seed_natural_text="x",
+        seed_occurred_at=datetime.now(timezone.utc),
+        seed_signature={"trigger_id": str(trigger_id)},
+    )
+    provider = ScriptedProvider(
+        responses=[_scripted_empty_diff(trigger_id, tenant)],
+    )
+
+    from services.retrieval.second_pass import SecondPassDecision
+    from services.think import reason as reason_mod
+
+    calls = {"n": 0, "dimensions": []}
+
+    def always_run_second_pass(*args, **kwargs):
+        return SecondPassDecision(
+            run=True,
+            trigger_condition="test_forced",
+            suggested_dimensions=["supporting_evidence"],
+            reason_detail={"forced": True},
+        )
+
+    async def fake_second_pass(first_result, dimensions, conn, **kwargs):
+        calls["n"] += 1
+        calls["dimensions"] = list(dimensions)
+        first_result.notes["second_pass"] = {
+            "dimensions_processed": list(dimensions)
+        }
+        return first_result
+
+    monkeypatch.setattr(
+        reason_mod, "should_run_second_pass", always_run_second_pass
+    )
+    monkeypatch.setattr(reason_mod, "second_pass_expand", fake_second_pass)
+
+    outcome = await think(trigger, fresh_db, llm_provider=provider)
+    assert outcome.status == "success", outcome.error
+    assert calls == {"n": 1, "dimensions": ["supporting_evidence"]}
+
+
 # =====================================================================
 # Tenant isolation — two tenants' Think runs don't cross-pollinate
 # =====================================================================

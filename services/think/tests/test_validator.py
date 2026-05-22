@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -86,7 +87,7 @@ async def test_validate_rejects_insert_without_falsifier_when_conf_high(fresh_db
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "state", "text": "x"},
+                    "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [],
@@ -118,7 +119,7 @@ async def test_validate_accepts_insert_with_good_falsifier_at_high_conf(fresh_db
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "prediction", "text": "x"},
+                    "proposition": {"kind": "prediction", "expected": "x", "resolution": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [],
@@ -153,7 +154,7 @@ async def test_validate_clips_confidence(fresh_db, tenant):
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "prediction", "text": "x"},
+                    "proposition": {"kind": "prediction", "expected": "x", "resolution": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [],
@@ -172,6 +173,53 @@ async def test_validate_clips_confidence(fresh_db, tenant):
         )
         validated = await validate(diff, rr, conn, allowed_region=None)
         assert validated.claim_ops[0].entry["confidence"] == 0.95
+
+
+async def test_validate_caps_confidence_for_hedged_source_text(fresh_db, tenant):
+    """
+    A source message can be visibly hedged while the LLM overstates the
+    simplified claim. The validator deterministically caps confidence
+    below the high-confidence threshold so prompt variance does not
+    leak into production calibration.
+    """
+    rr = _retrieval_result(tenant)
+    rr.observations = [
+        SimpleNamespace(
+            content_text=(
+                "If leadership ever funds this team, we'd love to maybe "
+                "ship Q4 multi-region. No promises."
+            )
+        )
+    ]
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "state",
+                        "subject": "multi-region",
+                        "assertion": "team lacks funding",
+                    },
+                    "natural": "The team lacks funding for multi-region.",
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.9,
+                    "confidence_at_assertion": 0.9,
+                    "falsifier": {
+                        "kind": "observation_pattern",
+                        "pattern": "leadership funds multi-region work",
+                        "within_window": "P90D",
+                    },
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+        assert validated.claim_ops[0].entry["confidence"] == 0.69
 
 
 async def test_validate_rejects_update_to_confidence_at_assertion(fresh_db, tenant):
@@ -401,7 +449,7 @@ async def test_validate_all_bad_ops_raises_failure(fresh_db, tenant):
         bad_op = ClaimOp(op="insert", entry={
             "tenant_id": str(tenant),
             "born_from_event_id": str(uuid7()),
-            "proposition": {"kind": "state", "text": "x"},
+            "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
             "natural": "x",
             "embedding": [0.0] * 768,
             "scope_actors": [],
@@ -429,7 +477,7 @@ async def test_validate_partial_accept_keeps_good_ops(fresh_db, tenant):
         bad_op = ClaimOp(op="insert", entry={
             "tenant_id": str(tenant),
             "born_from_event_id": str(uuid7()),
-            "proposition": {"kind": "state", "text": "x"},
+            "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
             "natural": "x",
             "embedding": [0.0] * 768,
             "scope_actors": [],
@@ -458,3 +506,63 @@ async def test_validate_partial_accept_keeps_good_ops(fresh_db, tenant):
         assert len(validated.claim_ops) == 1
         assert validated.dropped_op_count == 1
         assert len(validated.dropped_op_errors) == 1
+
+
+async def test_validate_drops_malformed_proposition_but_keeps_good_claim(
+    fresh_db, tenant,
+):
+    """
+    Live reasoner can emit one malformed recommendation beside a valid
+    claim. The validator should partial-accept instead of letting the
+    applier fail the whole Think transaction.
+    """
+    rr = _retrieval_result(tenant)
+    async with fresh_db.acquire() as conn:
+        bad_recommendation = ClaimOp(op="insert", entry={
+            "tenant_id": str(tenant),
+            "born_from_event_id": str(uuid7()),
+            "proposition": {
+                "kind": "recommendation",
+                "target_act_ref": None,
+                "proposed_change": {
+                    "operation": "create",
+                    "payload": {"title": "Fix latency"},
+                },
+                "qualitative_impact": "Avoid escalation",
+                # Missing required target_actor_id.
+            },
+            "natural": "Someone should fix the latency escalation.",
+            "embedding": [0.0] * 768,
+            "scope_actors": [],
+            "scope_entities": [],
+            "scope_temporal": {},
+            "confidence": 0.5,
+            "confidence_at_assertion": 0.5,
+        })
+        good_claim = ClaimOp(op="insert", entry={
+            "tenant_id": str(tenant),
+            "born_from_event_id": str(uuid7()),
+            "proposition": {
+                "kind": "concern",
+                "about": "ACME latency",
+                "nature": "Escalation risk",
+                "raised_by": "support",
+            },
+            "natural": "ACME latency is creating escalation risk.",
+            "embedding": [0.0] * 768,
+            "scope_actors": [],
+            "scope_entities": [],
+            "scope_temporal": {},
+            "confidence": 0.5,
+            "confidence_at_assertion": 0.5,
+        })
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[bad_recommendation, good_claim],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+        assert [op.entry["proposition"]["kind"] for op in validated.claim_ops] == [
+            "concern"
+        ]
+        assert validated.dropped_op_count == 1
+        assert "recommendation.target_actor_id" in validated.dropped_op_errors[0]

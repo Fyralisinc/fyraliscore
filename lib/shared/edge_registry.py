@@ -54,7 +54,6 @@ See:
   - services/models/edges_repo.py (the only writer)
   - services/think/deterministic.py (consumer of the cause_kinds we
     enqueue)
-  - V1_PR_PROMPTS.md and the plan file for design.
 """
 from __future__ import annotations
 

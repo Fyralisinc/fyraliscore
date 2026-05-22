@@ -111,6 +111,27 @@ async def test_pathway_a_tenant_isolation(
     assert all(c.tenant_id == other_tenant for c in result.acts["commitments"])
 
 
+async def test_pathway_a_skips_one_legacy_bad_commitment_without_losing_models(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await tx_conn.execute(
+        "UPDATE commitments SET state = 'at_risk' WHERE id = $1",
+        fs.hero_commitment_id,
+    )
+    result = await pathway_a_structural(
+        [{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+        tenant,
+        tx_conn,
+        max_hops=0,
+    )
+    assert result.notes["hydration_skipped"]["commitments"] == 1
+    assert fs.hero_commitment_id not in {
+        c.id for c in result.acts["commitments"]
+    }
+    assert result.models
+
+
 # =====================================================================
 # Pathway B — semantic
 # =====================================================================

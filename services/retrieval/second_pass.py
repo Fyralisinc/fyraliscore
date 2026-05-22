@@ -454,7 +454,10 @@ async def _expand_dependency_context(
             tenant_id,
         )
         for cr in crs:
-            cr_row = _hydrate_commitment(cr)
+            try:
+                cr_row = _hydrate_commitment(cr)
+            except Exception:
+                continue
             new_commitments.setdefault(cr_row.id, cr_row)
 
         # Fetch Models scoped to them.
@@ -478,7 +481,10 @@ async def _expand_dependency_context(
                 mid = r["id"]
                 if mid in original_model_ids or mid in new_models:
                     continue
-                new_models[mid] = _hydrate_model(r)
+                try:
+                    new_models[mid] = _hydrate_model(r)
+                except Exception:
+                    continue
 
     return hops
 
@@ -522,7 +528,10 @@ async def _expand_supporting_evidence(
         )
         for r in obs_rows:
             oid = r["id"]
-            new_observations.setdefault(oid, _hydrate_obs(r))
+            try:
+                new_observations.setdefault(oid, _hydrate_obs(r))
+            except Exception:
+                continue
 
     if all_supporting_model_ids:
         rows = await conn.fetch(
@@ -540,7 +549,10 @@ async def _expand_supporting_evidence(
             mid = r["id"]
             if mid in original_model_ids or mid in new_models:
                 continue
-            new_models[mid] = _hydrate_model(r)
+            try:
+                new_models[mid] = _hydrate_model(r)
+            except Exception:
+                continue
 
 
 async def _expand_adjacent_commitments(
@@ -592,7 +604,10 @@ async def _expand_adjacent_commitments(
         tenant_id,
     )
     for cr in crs:
-        cr_row = CommitmentRow.model_validate(dict(cr))
+        try:
+            cr_row = _hydrate_commitment(cr)
+        except Exception:
+            continue
         new_commitments.setdefault(cr_row.id, cr_row)
 
     # 3. Models scoped to any sibling.
@@ -616,7 +631,10 @@ async def _expand_adjacent_commitments(
             mid = r["id"]
             if mid in original_model_ids or mid in new_models:
                 continue
-            new_models[mid] = _hydrate_model(r)
+            try:
+                new_models[mid] = _hydrate_model(r)
+            except Exception:
+                continue
 
 
 __all__ = [

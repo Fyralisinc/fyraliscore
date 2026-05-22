@@ -73,6 +73,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 import asyncpg
+import structlog
 from pgvector.asyncpg import register_vector
 
 from lib.embeddings.ollama import (
@@ -120,6 +121,7 @@ class ModelsRepoError(CompanyOSError):
 _CONFIDENCE_MIN = 0.05
 _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
+_log = structlog.get_logger(__name__)
 
 
 # Columns written on INSERT. `proposition_kind` is GENERATED and
@@ -832,10 +834,17 @@ async def _maybe_auto_accept(
             notes="auto-accepted: low-risk create-commitment",
             conn=conn,
         )
-    except Exception:
+    except Exception as exc:
         # Leave the recommendation active on any failure — Think log
         # surfaces the LLM payload, and the user can dismiss/accept
         # manually from Today.
+        _log.warning(
+            "models.recommendation_auto_accept_failed",
+            recommendation_id=str(hydrated.id),
+            tenant_id=str(hydrated.tenant_id),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return
 
 
@@ -909,9 +918,16 @@ class ModelsRepo:
         proposed: ModelCreate,
         *,
         conn: asyncpg.Connection | None = None,
+        apply_confidence_calibration: bool = True,
     ) -> ModelRow:
         """
         Insert a Model through the full §2 pipeline.
+
+        Think validation already calibrates claim-op inserts so it can
+        enforce falsifier adequacy against the final confidence. That
+        caller passes `apply_confidence_calibration=False` to avoid
+        discounting the same assertion twice; direct repo callers keep
+        the default and get the central calibration step here.
 
         Raises:
           - FalsifierInadequateError (confidence > 0.7 without adequate falsifier)
@@ -944,12 +960,20 @@ class ModelsRepo:
         # any offsets written by a concurrent updater before we commit.
         if conn is not None:
             return await self._insert_core(
-                conn, proposed, prop_kind, conf_at_assertion
+                conn,
+                proposed,
+                prop_kind,
+                conf_at_assertion,
+                apply_confidence_calibration=apply_confidence_calibration,
             )
         async with self._require_pool().acquire() as owned:
             async with owned.transaction():
                 return await self._insert_core(
-                    owned, proposed, prop_kind, conf_at_assertion
+                    owned,
+                    proposed,
+                    prop_kind,
+                    conf_at_assertion,
+                    apply_confidence_calibration=apply_confidence_calibration,
                 )
 
     async def _insert_core(
@@ -958,6 +982,8 @@ class ModelsRepo:
         proposed: ModelCreate,
         prop_kind: PropositionKind,
         conf_at_assertion: float,
+        *,
+        apply_confidence_calibration: bool,
     ) -> ModelRow:
         await _ensure_vector_codec(conn)
 
@@ -983,13 +1009,16 @@ class ModelsRepo:
             )
 
         # -- 4. Apply calibration (Wave 4-C: real DB lookup) -----------
-        calibrated_conf = await apply_calibration(
-            proposed.confidence,
-            proposed.scope_actors,
-            prop_kind,
-            tenant_id=proposed.tenant_id,
-            conn=conn,
-        )
+        if apply_confidence_calibration:
+            calibrated_conf = await apply_calibration(
+                proposed.confidence,
+                proposed.scope_actors,
+                prop_kind,
+                tenant_id=proposed.tenant_id,
+                conn=conn,
+            )
+        else:
+            calibrated_conf = proposed.confidence
 
         # -- 4. Clip confidence ----------------------------------------
         final_conf = _clip_confidence(calibrated_conf)

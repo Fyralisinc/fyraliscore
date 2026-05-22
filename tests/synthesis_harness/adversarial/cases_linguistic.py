@@ -515,6 +515,29 @@ async def _run_threading(pool: asyncpg.Pool, ctx: dict) -> dict:
     )
 
 
+def _assert_threading_no_confident_decision(
+    actual: dict, _e: dict, _c: dict,
+) -> tuple[bool, str]:
+    if _skipped(actual):
+        return True, "skipped"
+    if actual.get("crashed"):
+        return False, f"crashed: {actual.get('error')}"
+    if actual.get("status") not in ("success", "skipped_idempotent"):
+        return False, f"think outcome: {actual.get('status')}"
+    for model in actual.get("models", []):
+        natural = str(model.get("natural") or "").lower()
+        conf = float(model.get("confidence") or 0.0)
+        if conf >= 0.7 and any(
+            phrase in natural
+            for phrase in ("kill the project", "cancel the project")
+        ):
+            return False, (
+                "context-dependent reply produced a high-confidence "
+                f"project-kill Model: {model.get('natural')!r}"
+            )
+    return True, ""
+
+
 CASE_THREADING = Case(
     stage="adversarial.linguistic",
     name="threading_reply_no_context",
@@ -524,7 +547,7 @@ CASE_THREADING = Case(
     setup=_setup_with_actor,
     run=H.safe_pipeline(_run_threading),
     expected=lambda _ctx: {},
-    assertion=H.assert_no_crash,
+    assertion=_assert_threading_no_confident_decision,
     failure_mode_under_test=(
         "engine reads 'kill the project' standalone and emits a "
         "high-confidence kill Decision; the reply's dependence on "
