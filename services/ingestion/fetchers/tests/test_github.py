@@ -135,6 +135,88 @@ async def test_record_envelope_shape(monkeypatch):
     assert rec["action"] == "opened"
 
 
+async def test_issue_comments_reshape(monkeypatch):
+    """issue_comments → issue_comment webhook body. external_id parity =
+    comment.node_id; the parent issue number is parsed from issue_url
+    (the repo-level endpoint omits the issue object)."""
+    fake = _FakeGithubClient(pages=[
+        [{"id": 5, "node_id": "IC_node", "body": "looks good",
+          "user": {"login": "octocat"},
+          "issue_url": "https://api.github.com/repos/a/b/issues/42",
+          "updated_at": "2025-01-01T00:00:00Z"}],
+    ])
+    _patch_client(monkeypatch, fake)
+    result = await fetch_page_github(
+        _FakeInstall(),
+        {"event_type": "issue_comments", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+        cursor=None,
+    )
+    rec = result.records[0]
+    assert set(rec.keys()) == {
+        "action", "comment", "issue", "repository", "sender",
+        "webhook_metadata",
+    }
+    assert rec["webhook_metadata"] == {"X-GitHub-Event": "issue_comment"}
+    assert rec["comment"]["node_id"] == "IC_node"
+    assert rec["issue"]["number"] == 42
+    assert rec["sender"]["login"] == "octocat"
+
+
+async def test_commits_reshape(monkeypatch):
+    """commits → single-commit push body. external_id parity = {repo}@{sha}
+    (after=sha); head_commit.timestamp carries the real author date so the
+    backfilled observation keeps its true occurred_at."""
+    fake = _FakeGithubClient(pages=[
+        [{"sha": "abc123", "node_id": "C_node",
+          "commit": {"author": {"date": "2025-01-01T00:00:00Z"},
+                     "message": "fix the bug"},
+          "author": {"login": "octocat"}}],
+    ])
+    _patch_client(monkeypatch, fake)
+    result = await fetch_page_github(
+        _FakeInstall(),
+        {"event_type": "commits", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+        cursor=None,
+    )
+    rec = result.records[0]
+    assert set(rec.keys()) == {
+        "ref", "after", "commits", "head_commit", "repository", "sender",
+        "webhook_metadata",
+    }
+    assert rec["webhook_metadata"] == {"X-GitHub-Event": "push"}
+    assert rec["after"] == "abc123"
+    assert rec["head_commit"]["timestamp"] == "2025-01-01T00:00:00Z"
+    assert rec["sender"]["login"] == "octocat"
+    # last_seen advances off the commit author date (not updated_at).
+    assert result.next_cursor["last_seen_updated_at"] == "2025-01-01T00:00:00Z"
+
+
+async def test_commit_reshape_flows_through_push_handler(monkeypatch):
+    """End-to-end parity: the reshaped commit record, fed to the live
+    push shaper, yields external_id={repo}@{sha} and the real commit time
+    — so a backfilled commit dedups with its live push twin."""
+    from services.ingestion.handlers.github import _EVENT_SHAPERS
+
+    fake = _FakeGithubClient(pages=[
+        [{"sha": "deadbeef", "node_id": "C_node",
+          "commit": {"author": {"date": "2024-06-01T12:00:00Z"},
+                     "message": "ship it"},
+          "author": {"login": "octocat"}}],
+    ])
+    _patch_client(monkeypatch, fake)
+    result = await fetch_page_github(
+        _FakeInstall(),
+        {"event_type": "commits", "owner": "a", "repo": "b",
+         "installation_id": "42", "repo_full_name": "a/b"},
+        cursor=None,
+    )
+    draft = _EVENT_SHAPERS["push"](result.records[0])
+    assert draft.external_id == "a/b@deadbeef"
+    assert draft.occurred_at.year == 2024 and draft.occurred_at.month == 6
+
+
 async def test_unknown_event_type_raises():
     with pytest.raises(ValueError, match="unknown event_type"):
         await fetch_page_github(

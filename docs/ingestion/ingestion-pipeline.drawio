@@ -52,7 +52,7 @@
           <mxGeometry x="40" y="190" width="1280" height="560" as="geometry" />
         </mxCell>
 
-        <!-- ---- Backfill workflow chain (left) ---- -->
+        <!-- Backfill workflow chain (left) -->
         <mxCell id="z_backfill" value="BACKFILL — Temporal workflow chain (workflows/)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontStyle=1;fontSize=11;fillColor=#EFE6F5;strokeColor=#9673A6;" vertex="1" parent="1">
           <mxGeometry x="60" y="222" width="600" height="510" as="geometry" />
         </mxCell>
@@ -81,7 +81,7 @@
           <mxGeometry x="380" y="640" width="250" height="50" as="geometry" />
         </mxCell>
 
-        <!-- ---- Live ingress (right) ---- -->
+        <!-- Live ingress (right) -->
         <mxCell id="z_live" value="LIVE INGRESS — gateway service (M4)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontStyle=1;fontSize=11;fillColor=#FDEBE6;strokeColor=#B85450;" vertex="1" parent="1">
           <mxGeometry x="690" y="222" width="320" height="190" as="geometry" />
         </mxCell>
@@ -89,7 +89,7 @@
           <mxGeometry x="710" y="254" width="280" height="138" as="geometry" />
         </mxCell>
 
-        <!-- ---- Raw tier ---- -->
+        <!-- Raw tier -->
         <mxCell id="raw_env" value="RawEnvelope (v1)&#10;raw_tier/envelope.py&#10;source · tenant_id · raw_s3_key&#10;content_hash · ingress_kind · idem_hints" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="690" y="450" width="280" height="80" as="geometry" />
         </mxCell>
