@@ -24,9 +24,20 @@ synthetic harness cannot exercise.
 | one-shots | **migrate** (applies migrations), **kafka-init** (topics), **minio-init** (bucket) |
 | ingress | **gateway** (webhooks, Gmail Pub/Sub push, OAuth callbacks) |
 | backfill loops | oauth_poller, tenant_onboarding, source_onboarding, shard_fetch, reconciler |
+| steady-state | **periodic_reconciler** (re-runs per-source gap detection on a schedule) |
 | consumer chain | normalizer, observation_writer, dlq_writer, embedding_worker, **embedding_backlog** |
 | live workers | discord_gateway_worker, gmail_watch_scheduler, gmail_history_poller |
 | app | think_worker, post_commit_worker, ui, nginx, acme |
+
+`periodic_reconciler` is the steady-state completeness safety net. The
+end-of-backfill `reconciler` runs each source's gap detection exactly
+once; `periodic_reconciler` re-runs the SAME per-source algorithm on a
+schedule (default: each settled run re-checked at most every 6h) for
+already-reconciled runs, re-sharing when a live event was missed after
+onboarding. This is what recovers a dropped github/slack/discord
+webhook — those sources have no durable live watermark (Gmail does, via
+`history_id`). Tunable via `PERIODIC_RECONCILE_MIN_AGE_SEC` /
+`PERIODIC_RECONCILE_TICK_SEC` / `PERIODIC_RECONCILE_BATCH`.
 
 Embedding has **two fill paths** and both run: `embedding_worker` drains
 the `ingestion.embedding` topic (fed by the Kafka writer — backfill, and
@@ -90,8 +101,16 @@ workflow (`.github/workflows/deploy-production.yml`) does this on push to
 consumer whose loop wedges). Scrape `/metrics` for throughput / lag /
 DLQ-publish counters if you run Prometheus.
 
-**Alerts:** set `INGESTION_ALERT_WEBHOOK_URL` to receive a POST when the
-per-tenant cutover circuit breaker trips.
+**Alerts:** set `INGESTION_ALERT_WEBHOOK_URL` (a Slack / PagerDuty /
+generic incoming webhook) to receive a JSON POST on operational events.
+Two emitters route through it today: the per-tenant cutover circuit
+breaker (`circuit_breaker.tripped`) and the DLQ-depth monitor
+(`dlq.depth_threshold_exceeded`). The latter is opt-in: set
+`DLQ_DEPTH_ALERT_THRESHOLD` to the unresolved-`ingestion_failures` count
+that should page (0 = gauge-only, no alert). The `dlq_writer` polls the
+depth every `DLQ_DEPTH_CHECK_INTERVAL_SEC` (60s) and re-alerts at most
+once per `DLQ_DEPTH_ALERT_COOLDOWN_SEC` (1h) while over threshold; the
+current depth is always exported as `ingestion_dlq_writer_unresolved_depth`.
 
 ---
 
@@ -170,23 +189,31 @@ event lands → confirm dedup.
 
 ## 5. Known limitations (operate around these)
 
-- **Steady-state completeness relies on live delivery.** Backfill runs a
-  one-shot reconcile at the end; there is no periodic re-reconcile loop
-  for github/slack/discord. If a webhook/gateway event is missed after
-  onboarding, nothing re-fetches it. Gmail is the exception (durable
-  `history_id` watermark + poller safety net). Mitigation: monitor
-  provider webhook delivery dashboards; re-run onboarding to backfill a
-  gap. A periodic reconcile is future work.
-- **Per-shard gap checks are best-effort.** A transient error during the
-  end-of-backfill gap check is treated as "no gap"; a real gap could be
-  missed. Re-running onboarding re-checks.
+- **Steady-state completeness now has a safety net, but it is poll-based.**
+  The `periodic_reconciler` re-runs per-source gap detection for settled
+  runs on a schedule (default min-age 6h per run), so a github/slack/
+  discord event missed by a webhook *is* recovered on the next pass —
+  not instantly, but bounded by `PERIODIC_RECONCILE_MIN_AGE_SEC`. Gmail
+  remains the most timely (durable `history_id` watermark + poller). For
+  tighter recovery on the other sources, lower the min-age (costs more
+  provider-API calls). Still monitor provider webhook delivery
+  dashboards for systemic drops.
+- **Per-shard gap checks are best-effort but self-healing.** A transient
+  error during a gap check is treated as "no gap" for that pass — but
+  the `periodic_reconciler` re-checks the run on its next cycle, so a
+  transient failure no longer means a permanently missed gap (it did
+  when reconcile was one-shot). A persistently failing source surfaces
+  in the `periodic_reconciler.check_errors` metric.
 - **Single-broker Kafka (RF=1).** The default compose runs one KRaft
   broker (`acks=all` guarantees only the lone leader's log). For
   durability use managed Kafka with RF≥3 / min-ISR≥2.
 - **MinIO default credentials.** The single-box default uses fixed
   internal MinIO creds (not host-exposed). For real S3, set
   `S3_ENDPOINT_URL=""` + real IAM creds and drop the minio services.
-- **DLQ depth.** `dlq_writer` lands failures in `ingestion_failures`.
-  Query depth with
-  `SELECT failure_kind, count(*) FROM ingestion_failures GROUP BY 1;`
-  and alert on growth. (`/metrics` exposes DLQ-publish throughput.)
+- **DLQ depth.** `dlq_writer` lands failures in `ingestion_failures` and
+  now polls the unresolved depth itself: set `DLQ_DEPTH_ALERT_THRESHOLD`
+  to page via `INGESTION_ALERT_WEBHOOK_URL` when the backlog grows (see
+  §3 Alerts). For a per-kind breakdown when triaging, query
+  `SELECT failure_kind, count(*) FROM ingestion_failures
+   WHERE resolved_at IS NULL GROUP BY 1;`. Failures stay until an
+  operator stamps `resolved_at` (the alert fires on *unresolved* depth).

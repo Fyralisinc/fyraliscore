@@ -250,7 +250,9 @@ async def poll_dlq_depth(
     a depth poll.
 
     Returns the (possibly updated) `last_alert_monotonic` watermark —
-    advanced only when an alert was actually sent.
+    advanced only when an alert fired. Pass `float("-inf")` to mean
+    "never alerted" so the first breach fires immediately instead of
+    waiting out the cooldown against an epoch-zero watermark.
     """
     try:
         depth = await count_unresolved_failures(pool)
@@ -318,9 +320,11 @@ async def run_dlq_writer(
     ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
     # DLQ-depth monitor state (wall-clock, monotonic): poll on an
     # interval independent of message arrival so a standing backlog is
-    # detected even when the DLQ topic is quiet.
-    last_depth_check = 0.0
-    last_depth_alert = 0.0
+    # detected even when the DLQ topic is quiet. `-inf` means "never
+    # alerted" so the FIRST threshold breach fires immediately rather
+    # than waiting out a cooldown against an epoch-zero watermark.
+    last_depth_check = float("-inf")
+    last_depth_alert = float("-inf")
     try:
         while not stop_event.is_set():
             if config.depth_check_interval_sec > 0:

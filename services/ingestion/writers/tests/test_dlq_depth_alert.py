@@ -81,7 +81,8 @@ async def test_poll_alerts_over_threshold(
 
     config = DLQWriterConfig(depth_alert_threshold=3, depth_alert_cooldown_sec=3600.0)
     new_wm = await poll_dlq_depth(
-        config, fresh_db, last_alert_monotonic=0.0, now_monotonic=1000.0,
+        config, fresh_db,
+        last_alert_monotonic=float("-inf"), now_monotonic=1000.0,
     )
 
     assert get_metrics()["dlq_writer.unresolved_depth"] == 5.0
@@ -108,12 +109,13 @@ async def test_poll_quiet_under_threshold(
 
     config = DLQWriterConfig(depth_alert_threshold=10)
     new_wm = await poll_dlq_depth(
-        config, fresh_db, last_alert_monotonic=0.0, now_monotonic=500.0,
+        config, fresh_db,
+        last_alert_monotonic=float("-inf"), now_monotonic=500.0,
     )
 
     assert get_metrics()["dlq_writer.unresolved_depth"] == 1.0
-    assert sent == []           # under threshold → no alert
-    assert new_wm == 0.0        # watermark not advanced
+    assert sent == []                   # under threshold → no alert
+    assert new_wm == float("-inf")      # watermark not advanced
 
 
 async def test_poll_debounces_within_cooldown(
@@ -136,7 +138,8 @@ async def test_poll_debounces_within_cooldown(
 
     # First poll alerts and sets the watermark at t=1000.
     wm = await poll_dlq_depth(
-        config, fresh_db, last_alert_monotonic=0.0, now_monotonic=1000.0,
+        config, fresh_db,
+        last_alert_monotonic=float("-inf"), now_monotonic=1000.0,
     )
     # Second poll only 100s later — within the 3600s cooldown → quiet.
     wm = await poll_dlq_depth(
