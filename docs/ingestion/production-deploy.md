@@ -20,13 +20,21 @@ synthetic harness cannot exercise.
 
 | Group | Services |
 |---|---|
-| infra | postgres, ollama, **kafka** (KRaft), **minio** (S3) |
+| infra | postgres, ollama, **kafka** (KRaft), **minio** (S3), **redis** |
 | one-shots | **migrate** (applies migrations), **kafka-init** (topics), **minio-init** (bucket) |
 | ingress | **gateway** (webhooks, Gmail Pub/Sub push, OAuth callbacks) |
 | backfill loops | oauth_poller, tenant_onboarding, source_onboarding, shard_fetch, reconciler |
-| consumer chain | normalizer, observation_writer, dlq_writer, embedding_worker |
+| consumer chain | normalizer, observation_writer, dlq_writer, embedding_worker, **embedding_backlog** |
 | live workers | discord_gateway_worker, gmail_watch_scheduler, gmail_history_poller |
 | app | think_worker, post_commit_worker, ui, nginx, acme |
+
+Embedding has **two fill paths** and both run: `embedding_worker` drains
+the `ingestion.embedding` topic (fed by the Kafka writer — backfill, and
+live when the per-tenant `kafka_path_enabled` cutover is on), while
+`embedding_backlog` scans `embedding_pending=TRUE` directly (the
+catch-all for inline-path live observations and any lost topic message;
+rate-limited via `redis`). Both are backend-agnostic via
+`EMBEDDER_BACKEND` (ollama default, openai opt-in).
 
 All app/workers gate on `migrate` + `kafka-init` + `minio-init`
 (`service_completed_successfully`), so migrations + topics + the raw

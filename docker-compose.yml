@@ -36,6 +36,8 @@ x-app-env: &app-env
   S3_REGION_NAME: us-east-1
   AWS_ACCESS_KEY_ID: fyralis
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+  # Redis backs the embedding-backlog drainer's rate limiter.
+  REDIS_URL: redis://redis:6379/0
   # Consumers expose /healthz + /metrics on this port (per container).
   INGESTION_HEALTH_PORT: "9300"
 
@@ -56,6 +58,8 @@ x-app-deps: &app-deps
   kafka:
     condition: service_healthy
   minio:
+    condition: service_healthy
+  redis:
     condition: service_healthy
   migrate:
     condition: service_completed_successfully
@@ -152,6 +156,18 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: company_os_redis
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
 
   # ---- one-shot init (run to completion, then exit) ----------------
   migrate:
@@ -252,6 +268,16 @@ services:
     <<: *worker
     container_name: company_os_embedding_worker
     command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    healthcheck: *consumer-healthcheck
+
+  # DB-scanning safety net: embeds observations left embedding_pending by
+  # the inline live path (and any embedding request lost off the topic).
+  # Rate-limited via redis. Together with embedding_worker this covers
+  # every observation regardless of which ingestion path produced it.
+  embedding_backlog:
+    <<: *worker
+    container_name: company_os_embedding_backlog
+    command: python -m services.ingestion.recovery.embedding_backlog
     healthcheck: *consumer-healthcheck
 
   # ---- live source workers -----------------------------------------
