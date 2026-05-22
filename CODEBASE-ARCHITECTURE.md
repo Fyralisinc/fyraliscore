@@ -1,11 +1,11 @@
 # Fyralis Core Architecture
 
-Last reviewed from the codebase on 2026-05-18.
+Last reviewed from the codebase on 2026-05-22 (after the spec-revamp UI redesign merged into `main`).
 
 **Company OS** is an organizational intelligence runtime designed to surface real-time insights to a founder/CEO by combining continuous signal ingestion, probabilistic reasoning (Models), executable commitments (Acts), and resource tracking (Resources). The system is multi-tenant capable and is currently deployed in two modes: a single-tenant dogfood and a public multi-tenant **demo** environment (`demo.fyralis.xyz`) running under Docker Compose with Nginx + Let's Encrypt. It consists of:
 
 - A **Python FastAPI gateway** ([services/gateway/main.py](services/gateway/main.py), port 8000) that coordinates all backend services
-- A **React/Vite UI** ([ui/src/App.tsx](ui/src/App.tsx)) running on port 5173, organized as a multi-surface cockpit (`/` Today, `/structure`, `/history`, `/mind`, `/demo`)
+- A **React/Vite UI** ([ui/src/main.tsx](ui/src/main.tsx)) running on port 5173, organized as a multi-surface cockpit (`/today`, `/model`, `/forecasts`, `/ledger`, plus `/debug`). Legacy routes (`/structure`, `/map`, `/history`, `/mind`, `/demo`, …) redirect into these four surfaces
 - A **PostgreSQL 16** database with pgvector (vector search)
 - **Ollama** for local embeddings (`nomic-embed-text:v1.5`)
 - A **multi-provider LLM stack** (default **Anthropic `claude-opus-4-7`**, plus OpenAI and DeepSeek) for Think reasoning and Rendering
@@ -14,7 +14,7 @@ Last reviewed from the codebase on 2026-05-18.
 - An **LSOB benchmark suite** (Longitudinal Synthetic-Organization Benchmark) for evaluating reasoning quality
 - A **V1 substrate** track (audit chain, reconciliation, region locks, falsifier predicates) tracked in [services/think/SUBSTRATE_SEMANTICS.md](services/think/SUBSTRATE_SEMANTICS.md) and [V1_PR_PROMPTS.md](V1_PR_PROMPTS.md)
 
-The core workflow is: **Ingest signal → Create Observation → Trigger Think → Generate Models / Acts / Recommendations → Cache & Render → Display to CEO across Today / History / Structure surfaces**
+The core workflow is: **Ingest signal → Create Observation → Trigger Think → Generate Models / Acts / Recommendations → Cache & Render → Display to CEO across Today / Model / Forecasts / Ledger surfaces**
 
 ```text
 React/Vite UI (:5173 in dev)
@@ -641,51 +641,51 @@ source event
 - **TypeScript** 5.5.4
 - **TailwindCSS** 3.4.13 (styling)
 - **react-router-dom** 6.26.2 (multi-page routing)
+- **zustand** 5.0.13 (client state store, [ui/src/lib/store.ts](ui/src/lib/store.ts)) — *added by the spec-revamp redesign; run `npm install` in `ui/` after pulling*
 - **ws** 8.18.0 (WebSocket client; types via `@types/ws`)
 - **Playwright** 1.47.2 (e2e tests)
 - **Vitest** 2.1.2 (unit tests)
 - **autoprefixer**, **postcss** (CSS pipeline)
 
-**Pages** ([ui/src/pages/](ui/src/pages/)):
-- `/` — **Today** (CEO cockpit; default surface)
-- `/structure` — **Structure** (relationship graph, resource aggregates, commitments)
-- `/history` — **History** (chronicle, arcs, predictions)
-- `/mind` — **MyMind** (loops, notes, reminders)
-- `/demo` — **DemoPicker** → **DemoLanding** (VC pitch entry)
+> **2026-05-22 redesign.** The UI was rebuilt around four spec-aligned
+> surfaces (Today v2, Model v2, Forecasts, Ledger). The old single
+> `App.tsx` shell, the `/structure` `/history` `/mind` `/demo` pages, and
+> the `components/history` + most of `components/structure` were removed;
+> their routes now redirect into the four surfaces (see
+> [ui/src/main.tsx](ui/src/main.tsx)).
+
+**Pages** ([ui/src/pages/](ui/src/pages/), routed in [ui/src/main.tsx](ui/src/main.tsx)):
+- `/today` — **Today v2** ([pages/today-v2/Briefing.tsx](ui/src/pages/today-v2/Briefing.tsx)); default surface — CEO briefing, focused-review cards, Ask Fyralis strip
+- `/model` — **Model v2** ([pages/model-v2/ModelPage.tsx](ui/src/pages/model-v2/ModelPage.tsx)); layered topology/belief graph canvas
+- `/forecasts` — **Forecasts** ([pages/forecasts/ForecastsPage.tsx](ui/src/pages/forecasts/ForecastsPage.tsx)); prediction horizons + accuracy
+- `/ledger` — **Ledger** ([pages/ledger/LedgerSpec.tsx](ui/src/pages/ledger/LedgerSpec.tsx)); unified event stream + summary
+- All pages are wrapped in `AutoDemoSession` so an anonymous visitor lands in a live demo tenant. (`pages/model/` and `pages/ledger/Ledger.tsx` hold earlier spec variants of the same surfaces.)
 
 **Key Components** ([ui/src/components/](ui/src/components/)):
-- **App.tsx** — root layout; routes between Today/Structure/History/Mind/Demo via `react-router`; mounts global Sidebar, ShortcutsOverlay, TriageToast, ArtifactDrawer
-- **Sidebar.tsx** — left-rail nav across the five surfaces
-- **PageHeader.tsx**, **FilterBar.tsx**, **JustUpdated.tsx** — shared chrome
-- **RecCard.tsx** — recommendation/card shell (observation, decision, or question kind)
-- **CardExpanded.tsx** — expanded card with reasoning, evidence, action verbs
-- **AskZone.tsx** (formerly GroundInput) — text input for CEO Ask; `/` shortcut to focus
-- **Conversation.tsx**, **ConversationTurn.tsx**, **ThinkingTurn.tsx** — Ask/Answer dialogue rendering
-- **EmptyState.tsx**, **RoutedCoda.tsx**
-- **components/mind/** — `HoldPicker`, `LoopCard`, `NoteCard`, `ReminderCard`, `MindList`, `FilterPanel`, `MindLayerStrip`, `MindNarrativeBand`, `PromoteModal`
-- **components/history/** — `Chronicle`, `Arcs`, `EventPanel`, `Predictions`, `HistoryLayerStrip`, `HistoryNarrativeBand`
-- **components/structure/** — `RelationshipGraph`, `ResourceAggregateView`, `CommitmentList`, `MapControls`
+- **shell/** — [AppShell.tsx](ui/src/shell/AppShell.tsx), `Sidebar.tsx`, `AutoDemoSession.tsx` — global chrome + auto demo-session bootstrap
+- **components/today-v2/** — `FyralisBrief`, `BriefingHeader`, `FocusedReviewCard`, `CompactCard`, `ChangeDiff`, `EvidenceDrawer`, `AskFyralisStrip`, `CorrectionSheet`, `DelegationSheet`, `HandledWithoutYou`
+- **components/model/** — `LayeredGraph`, `GraphControls`, `GraphLegend`, `LensRail`, `NodeInspector`, `NodeTile`, `ModelMetricsStrip`
+- **components/ledger/** — `LedgerTimeline`, `LedgerInspector`, `LedgerSummary`, `LedgerTabs`, `EventRow`, `EvidenceMiniGrid`, `event-taxonomy.ts`
+- **components/forecasts/** — horizon matrix + accuracy widgets
+- **components/spec/** — spec-aligned product views: `Shell`, `Sidebar`, `CommandPalette`, `CausalSpine`, `DecisionDeltaInspector`, `EvidenceTraceView`, `LedgerEventInspector`, `OperatingThreadRow`, `ThreadInspector`, `LensBar`
+- **components/structure/** — `ResourceAggregateView` (sole survivor of the old Structure page)
 - **components/SignalSimulator/** — multi-tab in-UI signal injector (Email, GitHub, Calendar, Slack, Custom, Suggested)
+- **AskZone.tsx**, **Conversation.tsx**, **ThinkingTurn.tsx**, **ArtifactDrawer.tsx**, **TriageToast.tsx**, **ShortcutsOverlay.tsx**, **primitives/** — shared interaction + chrome
 
 **Hooks** ([ui/src/hooks/](ui/src/hooks/)):
-- `useToday()` — fetches `GET /v1/today`; subscribes to `WS /view/ceo/stream` and SSE updates (replaces the legacy `useHome`)
-- `useHistory()` — fetches `GET /v1/history`
-- `useMind()` — loops/notes/reminders state
-- `useConversation()` — per-card probe + dialogue state, posting to `/v1/cards/{id}/conversation` and `/probe`
-- `useRecommendationStream()` — **SSE** subscription to `/v1/recommendations/stream` for live recommendation events (used in demo mode)
-- `useAsk()` — Ask/Answer pipeline; `ask(query)` → `POST /view/ceo/ask`
+- `useTodayPage()` — Today v2 page data (proposed changes + briefing)
+- `useDecisionDeltas()` — decision-delta proposed-change workflow
+- `useForecastsPage()` — forecasts page data
+- `useSpecData()` — spec-aligned product data (operating threads, deltas, ledger events)
 
-**API Layer** ([ui/src/api/](ui/src/api/)):
-- `types.ts`, `client.ts` — base contracts and HTTP client with auth-token injection
-- `stream.ts` — WebSocket subscription manager (`/view/ceo/stream`)
-- `today-types.ts`, `today-client.ts`, `today-mock.ts` — Today payloads
-- `history-client.ts`, `structure-client.ts` — page-specific clients
-- `recommendation-stream.ts` — **SSE** client for `/v1/recommendations/stream`
+**API Layer** ([ui/src/api/](ui/src/api/)) — typed client + matching `*-mock.ts` fixtures per surface:
+- `client.ts`, `types.ts`, `common-types.ts`, `auth.ts` — base HTTP client with auth-token injection
+- `today-page-client.ts` / `today-client.ts`, `decision-deltas-client.ts`, `forecasts-client.ts`, `history-client.ts` (Ledger surface), `model-trace-client.ts`, `map-client.ts`, `spec-client.ts` — per-surface clients
+- `stream.ts` — WebSocket manager (`/view/ceo/stream`); `recommendation-stream.ts` — **SSE** client for `/v1/recommendations/stream`
 - `demo-client.ts`, `demo-picker-client.ts` — demo session lifecycle
-- `auth.ts` — bearer / dev-token bootstrap
-- `mock-data.ts` — fixtures for offline UI dev
+- `mock-data.ts` + `*-mock.ts` — fixtures for offline UI dev (`USE_MOCK=1`)
 
-**Styling**: Tailwind utility classes; custom variables for Company OS colors (serif font, highlight tint, citations).
+**Styling**: Tailwind utility classes plus `styles/spec.css`, `styles/forecasts.css`, and per-page CSS; custom variables for Company OS colors (serif font, highlight tint, citations).
 
 ---
 
@@ -1420,19 +1420,18 @@ Strategies live in [services/query/strategies](services/query/strategies). The g
 
 The frontend is a Vite + React + TypeScript app in [ui](ui).
 
-Routes in [ui/src/main.tsx](ui/src/main.tsx):
-
-### **Pages** (routes in [ui/src/App.tsx](ui/src/App.tsx) via `react-router`):
+### **Pages** (routes in [ui/src/main.tsx](ui/src/main.tsx) via `react-router`):
 
 | Route | Page | Surface |
 |---|---|---|
-| `/` | [Today](ui/src/pages/) (default) | CEO cockpit: recommendations, cards, AskZone, conversation turns |
-| `/structure` | [Structure](ui/src/pages/Structure.tsx) | Relationship graph, resource aggregates, commitments |
-| `/history` | [History](ui/src/pages/History.tsx) | Chronicle, arcs, event panel, predictions |
-| `/mind` | [MyMind](ui/src/pages/MyMind.tsx) | Loops, notes, reminders |
-| `/demo` | [DemoPicker](ui/src/pages/DemoPicker.tsx) → [DemoLanding](ui/src/pages/DemoLanding.tsx) | VC-pitch demo entry; selects company (Pelago/Truss/Northwind/Meridian), opens session |
+| `/` | → redirects to `/today` | — |
+| `/today` | [Today v2](ui/src/pages/today-v2/Briefing.tsx) (default) | CEO briefing: focused-review cards, change diffs, Ask Fyralis strip |
+| `/model` | [Model v2](ui/src/pages/model-v2/ModelPage.tsx) | Layered topology/belief graph canvas with lens rail + node inspector |
+| `/forecasts` | [Forecasts](ui/src/pages/forecasts/ForecastsPage.tsx) | Prediction horizons and accuracy |
+| `/ledger` | [Ledger](ui/src/pages/ledger/LedgerSpec.tsx) | Unified event stream + summary |
+| `/debug/*` | [DebugLayout](ui/src/debug/DebugLayout.tsx) | Dev-only inspector (signals, think-runs, models, acts, renders, cache) |
 
-The legacy single-page "CEO home" surface has been split into Today (recommendations + ground input), Structure (the org graph), and History (the chronicle).
+Every product page is wrapped in `AutoDemoSession`, so an anonymous visitor is dropped into a live demo tenant. Legacy routes — `/structure`, `/map`, `/history`, `/mind`, `/demo`, `/commitments`, `/customers`, `/risks`, `/decisions`, `/ask`, and `/today/review/:deltaId` — all `Navigate`-redirect into one of the four surfaces (see the redirect block in [ui/src/main.tsx](ui/src/main.tsx)).
 
 ### **Real-time Streams**:
 - **`WS /view/ceo/stream`** — view-cache updates (`greeting_updated`, `cards_updated`, `query_grid_updated`, `status_updated`); 30s heartbeat
