@@ -53,19 +53,14 @@ def _requires_db(request: pytest.FixtureRequest) -> str:
 
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
-    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    if not migration_files:
-        raise RuntimeError(f"No migrations found in {MIGRATIONS_DIR}")
-    for path in migration_files:
-        sql = path.read_text()
-        await conn.execute(sql)
+    # T3: each migration runs in its own transaction so partial
+    # failures roll back cleanly instead of poisoning the
+    # connection. See lib/shared/migrations.py.
+    from lib.shared.migrations import apply_migrations_dir
+    await apply_migrations_dir(conn, MIGRATIONS_DIR)
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
-    # Exclude tables that are seeded only by migrations (no test mutates
-    # them) — truncating would wipe the seed and migrations don't re-run
-    # between tests, so dependent tests would see an empty table.
-    seed_only = ("demo_configs",)
     rows = await conn.fetch(
         """
         SELECT c.relname
@@ -74,9 +69,7 @@ async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-          AND c.relname <> ALL($1::text[])
-        """,
-        list(seed_only),
+        """
     )
     return [r["relname"] for r in rows]
 

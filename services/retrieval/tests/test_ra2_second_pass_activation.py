@@ -20,9 +20,10 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -35,6 +36,7 @@ from services.retrieval.primary import (
 )
 from services.retrieval.second_pass import (
     SecondPassDecision,
+    SECOND_PASS_BRIDGE_CONFIDENCE_THRESHOLD,
     SECOND_PASS_SPARSE_THRESHOLD,
     should_run_second_pass,
     log_second_pass_decision,

@@ -4,7 +4,10 @@ Tests the middleware stack end-to-end via httpx.AsyncClient.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -17,6 +20,7 @@ from services.gateway.auth import (
     hash_token,
     new_token,
     revoke_session,
+    validate_token,
 )
 from services.gateway.rate_limit import RateLimiter, RateTier
 
@@ -162,6 +166,7 @@ async def test_tenant_a_cannot_see_tenant_b_observations(
     tenant_id,
     tenant_id_b,
 ):
+    from datetime import datetime, timezone
 
     from lib.shared.ids import uuid7
 

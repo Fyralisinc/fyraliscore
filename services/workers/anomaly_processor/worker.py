@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -46,6 +48,7 @@ from lib.shared.ids import uuid7
 from .debounce import (
     compute_region_hash,
     decide_debounce,
+    most_recent_anomaly_in_region,
 )
 from .detectors import (
     AnomalyCandidate,

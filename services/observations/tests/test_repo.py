@@ -28,6 +28,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import patch
 from uuid import UUID
 
 import asyncpg
@@ -39,8 +40,9 @@ from pydantic import ValidationError
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate
-from services.observations import partitions
+from services.observations import events, partitions
 from services.observations.events import (
+    NewObservationEvent,
     OBSERVATIONS_CHANNEL,
     emit_pending_notifications,
     notify_scope,
@@ -627,6 +629,7 @@ async def test_partition_pruning_explain_occurred_at_filter(
     assert current_partition in plan_text, plan_text
 
     # No prior/future month partitions appear in the plan.
+    from datetime import date
     prior_month = start.date().replace(day=1)
     # pick the month before current
     if prior_month.month == 1:
@@ -891,6 +894,9 @@ async def test_property_observation_roundtrip(
             conn = await pool.acquire()
             tx = conn.transaction()
             await tx.start()
+            # Migration 0037: defer tenant FK so a hypothesis-generated
+            # tenant_id (no tenants row) survives until the rollback.
+            await conn.execute("SET CONSTRAINTS ALL DEFERRED")
             try:
                 tid = uuid7()
                 repo = ObservationRepository(conn, embedder=_NoopEmbedder())

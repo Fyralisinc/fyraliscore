@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import socket
+import threading
 import time
 from typing import Any
 from uuid import UUID
@@ -37,6 +38,7 @@ from services.greeting.stream import (
     ViewCeoStreamManager,
     build_ceo_stream_router,
 )
+from services.greeting.viewer_state_repo import ViewerStateRepo
 from services.greeting.tests.conftest import (
     TENANT_A,
     seed_anomaly,
@@ -70,6 +72,7 @@ DEV_TOKEN = "dogfood-token"
 
 def _build_app(pool) -> tuple[FastAPI, GreetingScheduler, ViewCeoStreamManager]:
     cache = ViewCeoCacheRepo(pool)
+    viewer_state_repo = ViewerStateRepo(pool)
     token_map = StaticTenantTokenMap(tokens={DEV_TOKEN: TENANT_A})
     stream_mgr = ViewCeoStreamManager(token_map=token_map)
     sched = GreetingScheduler(
@@ -87,7 +90,10 @@ def _build_app(pool) -> tuple[FastAPI, GreetingScheduler, ViewCeoStreamManager]:
     app = FastAPI()
     app.include_router(
         build_ceo_api_router(
-            cache=cache, scheduler=sched, stream_manager=stream_mgr
+            cache=cache,
+            scheduler=sched,
+            stream_manager=stream_mgr,
+            viewer_state_repo=viewer_state_repo,
         )
     )
     app.include_router(build_ceo_stream_router(stream_mgr))

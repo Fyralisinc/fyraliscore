@@ -66,9 +66,8 @@ async def greeting_db() -> AsyncGenerator[asyncpg.Pool, None]:
         init=_install_json_codec,
     )
     async with pool.acquire() as conn:
-        for path in sorted((REPO_ROOT / "db" / "migrations").glob("*.sql")):
-            await conn.execute(path.read_text())
-        # Skip `demo_configs` — seeded by migration only. See root conftest.
+        from lib.shared.migrations import apply_migrations_dir
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
         rows = await conn.fetch(
             """
             SELECT c.relname FROM pg_class c
@@ -76,7 +75,6 @@ async def greeting_db() -> AsyncGenerator[asyncpg.Pool, None]:
             WHERE n.nspname = 'public'
               AND c.relkind IN ('r', 'p')
               AND c.relispartition = FALSE
-              AND c.relname <> 'demo_configs'
             """
         )
         tables = [r["relname"] for r in rows]

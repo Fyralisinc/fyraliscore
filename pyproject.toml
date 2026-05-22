@@ -21,7 +21,7 @@ dependencies = [
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)
     "anthropic>=0.34",
     "openai>=1.40",
-    "zstandard>=0.22",
+    "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
 ]
 
 [project.optional-dependencies]
@@ -35,6 +35,8 @@ dev = [
     "hdbscan>=0.8.40",          # Wave 4-C precipitation clustering
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
     "numpy>=2.0",               # transitive; model-embedding stacking
+    "umap-learn>=0.5",          # 2D projection for the CEO Map view (preserves local structure;
+                                # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
 ]
 
@@ -58,6 +60,15 @@ filterwarnings = [
     # actionable from test code and surface as PytestUnraisableException.
     "ignore::ResourceWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
+    # umap-learn emits an ImportWarning when tensorflow isn't installed
+    # (parametric variant unavailable) — we don't use parametric UMAP.
+    "ignore::ImportWarning:umap.*",
+    # umap also UserWarns about n_jobs vs random_state — we set both
+    # deliberately for determinism.
+    "ignore::UserWarning:umap.*",
+    # numba emits NumbaDeprecation/PendingDeprecation warnings transitively.
+    "ignore::DeprecationWarning:numba.*",
+    "ignore::PendingDeprecationWarning:numba.*",
 ]
 addopts = [
     "-ra",
@@ -70,17 +81,3 @@ markers = [
     "slow: slow test (> 1s)",
     "real_llm: real-LLM test (requires DEEPSEEK_API_KEY, runs only with RUN_REAL_LLM=1 or -m real_llm)",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-# Re-export modules: __init__.py files import-and-export public API by
-# convention; the imports look "unused" to ruff but are the entire point.
-"**/__init__.py" = ["F401"]
-# Pytest files import fixtures by name to make them visible to the test
-# collector and then re-bind them as parameters in the test functions.
-# Ruff reads that as F811 (redefined-while-unused) — false positive.
-"**/tests/**/test_*.py" = ["F811"]
-"tests/**/test_*.py" = ["F811"]
-# String type-annotations referencing not-yet-imported modules. The
-# annotation is evaluated lazily; ruff can't tell it's resolved at
-# runtime via __future__ annotations elsewhere.
-"services/realtime/tests/conftest.py" = ["F821"]

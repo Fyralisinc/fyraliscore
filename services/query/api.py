@@ -39,17 +39,20 @@ Agent-GRT's WS auth pass.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Literal, Optional
-from uuid import UUID
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any, Callable, Literal, Optional
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from lib.shared.errors import ValidationError
 
 from .core import (
     AnswerQueryRequest,
+    AnswerQueryResponse,
     CardContext,
     QueryHandler,
     Turn,

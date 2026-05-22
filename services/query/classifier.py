@@ -37,7 +37,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, Field

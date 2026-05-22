@@ -40,6 +40,60 @@ _PERIOD_DAYS = {
 }
 
 
+# ---------------------------------------------------------------------
+# Canonical Ledger event-type taxonomy
+# ---------------------------------------------------------------------
+#
+# The Ledger UI (spec §6.2) groups events into six canonical buckets.
+# Internally the aggregator emits more granular event types (per the
+# commitment / decision / model lifecycle mapping below). This table
+# is the bridge between the two: every internal type maps to exactly
+# one canonical type, and `?types=...` filters operate on the
+# canonical names.
+
+CANONICAL_LEDGER_TYPES: tuple[str, ...] = (
+    "action_taken",
+    "model_update",
+    "prediction_made",
+    "prediction_resolved",
+    "observation_ingested",
+    "contestation",
+)
+
+
+# Internal aggregator event type -> canonical Ledger bucket. Anything
+# not in this map falls into "model_update" by default (since model
+# updates are the broadest internal-state-change bucket).
+_INTERNAL_TO_CANONICAL: dict[str, str] = {
+    # commitments — promised work, decisions to act, executed actions
+    "commitment-completed": "action_taken",
+    "commitment-blocked": "action_taken",
+    # decisions — recorded decisions and revisits / supersessions
+    "decision-made": "action_taken",
+    "decision-ratified": "action_taken",
+    "decision-contested": "contestation",
+    "decision-superseded": "model_update",
+    # predictions
+    "prediction-made": "prediction_made",
+    "prediction-resolved": "prediction_resolved",
+    # patterns — substrate-level model updates
+    "pattern-emerged": "model_update",
+    "pattern-dissolved": "model_update",
+    # observations — direct ingest events (added in the summary path).
+    "observation-ingested": "observation_ingested",
+}
+
+
+def _canonical_type(internal_type: str) -> str:
+    """Map an internal event type to its canonical Ledger bucket.
+
+    Returns "model_update" as the safe default — most unknown internal
+    types are state mutations rather than observations or
+    contestations.
+    """
+    return _INTERNAL_TO_CANONICAL.get(internal_type, "model_update")
+
+
 def _cutoff_for(period: str, now: datetime) -> datetime | None:
     """Return the inclusive lower bound for the period, or None for 'all'."""
     days = _PERIOD_DAYS.get(period)
@@ -800,12 +854,39 @@ async def build_history(
     tenant_id: UUID,
     period: str = "90d",
     conn: asyncpg.Connection,
+    types: list[str] | None = None,
 ) -> HistoryPayload:
-    """Read the substrate; return the full History payload for one tenant."""
+    """Read the substrate; return the full History payload for one tenant.
+
+    Parameters
+    ----------
+    tenant_id, period, conn
+        As before — tenant scope, period bucket, and the asyncpg
+        connection running this read.
+    types
+        Optional filter over the canonical Ledger event types (see
+        `CANONICAL_LEDGER_TYPES`). When provided, only events whose
+        internal type maps to one of the listed canonical types are
+        returned. Unknown canonical types in the list are ignored
+        silently so the caller can be permissive. `None` or an empty
+        list disables the filter.
+    """
     now = datetime.now(timezone.utc)
     if period not in ("7d", "30d", "90d", "365d", "all"):
         period = "90d"
     cutoff = _cutoff_for(period, now)
+
+    # Normalize types filter: drop unknowns, lower-case-trim. None /
+    # empty disables the filter.
+    type_filter: set[str] | None = None
+    if types:
+        type_filter = {
+            t.strip()
+            for t in types
+            if isinstance(t, str) and t.strip() in CANONICAL_LEDGER_TYPES
+        }
+        if not type_filter:
+            type_filter = None
 
     state_change_events = await _fetch_state_change_events(
         tenant_id=tenant_id, cutoff=cutoff, conn=conn,
@@ -816,6 +897,11 @@ async def build_history(
 
     # Combine + sort newest first.
     events = state_change_events + model_events
+    if type_filter is not None:
+        events = [
+            e for e in events
+            if _canonical_type(e.get("type", "")) in type_filter
+        ]
     events.sort(key=lambda e: e["timestamp"], reverse=True)
     # Cap so the page stays snappy. Older events fall out of view.
     events = events[:300]

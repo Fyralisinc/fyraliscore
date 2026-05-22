@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, fields
-from typing import Any
+from dataclasses import dataclass, field, fields
+from typing import Any, Literal
 
 
 _log = logging.getLogger(__name__)
@@ -107,6 +107,16 @@ class RetrievalConfig:
     # ---- Pathway D (predictions) ----
     prediction_eval_window_past_hours: int = 24
     prediction_eval_window_future_days: int = 7
+
+    # ---- Pathway F (topological — S3) ----
+    # k for the topo-NN HNSW query.
+    topological_k: int = 40
+    # Whether F expands neighborhood co-members. Off-by-default for
+    # safety in case a malformed neighborhood blows up token budgets;
+    # turn on once topology coverage is broad enough to be useful.
+    topological_expand_neighborhoods: bool = True
+    # Per-neighborhood expansion cap (top-K members by centrality).
+    topological_max_neighborhood_members: int = 30
 
     # ---- Assembler ----
     # VERIFY against actual LLM limits (audit §7 arg 3); 100K is the

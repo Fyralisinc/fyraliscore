@@ -87,6 +87,17 @@ class OllamaClient:
         await self.close()
 
     # -----------------------------------------------------------------
+    # Embedder Protocol surface
+    # -----------------------------------------------------------------
+    @property
+    def expected_dim(self) -> int:
+        return self.config.expected_dim
+
+    @property
+    def model_name(self) -> str:
+        return self.config.model
+
+    # -----------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------
     async def embed(self, text: str) -> list[float]:
@@ -181,8 +192,15 @@ class OllamaClient:
         raise OllamaError(f"ollama retry loop exhausted: {last_exc}") from last_exc
 
 
+# Alias — the Embedder Protocol uses "OllamaEmbedder" as the canonical
+# name, but existing call sites import OllamaClient. Keep both pointing
+# at the same class so we can do the rename gradually.
+OllamaEmbedder = OllamaClient
+
+
 __all__ = [
     "OllamaClient",
+    "OllamaEmbedder",
     "OllamaConfig",
     "OllamaError",
     "OllamaDimensionMismatch",

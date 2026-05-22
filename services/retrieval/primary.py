@@ -5,11 +5,11 @@ RetrievalResult.
 Spec reference: ARCHITECTURE-FINAL.md §8 "Primary pathway resolver",
 BUILD-PLAN §4 Prompt 3.A item 2.
 
-Per-trigger pathway mix (source of truth: `_TRIGGER_WEIGHTS` below):
-  - T1 (new signal)          : A + B + C, weights 0.4 / 0.4 / 0.2
-  - T2 (prediction due)      : A + B + D, weights 0.4 / 0.4 / 0.2
-  - T3 (anomaly)             : A + B + C, weights 0.5 / 0.3 / 0.2
-  - T4 (background / pattern): D + A,     weights 0.6 / 0.4
+Per-trigger pathway mix:
+  - T1 (new signal)        : A + B + C, weights 0.4 / 0.4 / 0.2
+  - T2 (prediction due)    : A + D
+  - T3 (anomaly)           : A + B + C, weights 0.5 / 0.3 / 0.2
+  - T4 (background / pattern): D + A, weights 0.6 / 0.4
 
 Ranking: each item (Model, Observation, etc.) is scored with
 `pathway_weight * position_decay(position)`. The same Model surfacing
@@ -30,6 +30,7 @@ scoring is trigger-dependent. PathwayResult itself is trigger-agnostic.
 from __future__ import annotations
 
 import math
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -58,20 +59,25 @@ from .pathways import (
     pathway_b_semantic,
     pathway_c_temporal,
     pathway_d_pattern,
+    pathway_f_topological,
 )
 from .scoring import merge_and_rank_rrf
 
 
-TriggerKind = Literal["T1", "T2", "T3", "T4"]
+TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
 
-# Per-spec-§8 weighting mix. These are the fixed weights from
-# BUILD-PLAN §4 Prompt 3.A. If callers want different weights they
-# can call the individual pathways directly.
+# Per-spec-§8 weighting mix. T1-T4 are the original §8 mixes plus a
+# small Pathway F (topology) contribution to integrate the positional
+# layer non-disruptively (S3 default). T6 is the new topology-event
+# trigger and weights F + A heavily — the LLM is being asked about a
+# structural shift, so positional context dominates. Callers that
+# want different weights can call the individual pathways directly.
 _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
-    "T1": {"A": 0.4, "B": 0.4, "C": 0.2},
-    "T2": {"A": 0.4, "B": 0.4, "D": 0.2},
-    "T3": {"A": 0.5, "B": 0.3, "C": 0.2},
-    "T4": {"D": 0.6, "A": 0.4},
+    "T1": {"A": 0.35, "B": 0.35, "C": 0.15, "F": 0.15},
+    "T2": {"A": 0.35, "B": 0.35, "D": 0.15, "F": 0.15},
+    "T3": {"A": 0.4, "B": 0.25, "C": 0.2, "F": 0.15},
+    "T4": {"D": 0.5, "A": 0.35, "F": 0.15},
+    "T6": {"F": 0.5, "A": 0.3, "B": 0.2},
 }
 
 
@@ -117,8 +123,19 @@ class TriggerContext:
     subkind: str | None = None
     seed_signature: dict[str, Any] | None = None
 
+    # T6 — topology phase event (S3)
+    topology_event_id: UUID | None = None
+    topology_event_kind: str | None = None
+    neighborhood_id: UUID | None = None
+    member_model_ids: list[UUID] = field(default_factory=list)
+
     # Pre-computed embedding (optional; tests pass one to skip Ollama)
     precomputed_seed_vector: list[float] | None = None
+
+    # S3 — pre-computed topology vector for Pathway F. When set, F
+    # skips the Ollama embedding round-trip. T6 fills this from the
+    # neighborhood centroid; tests can pass any 128-d vector.
+    precomputed_topo_vector: list[float] | None = None
 
     # Hop cap for pathway A (2 is the spec default)
     max_hops: int = 2
@@ -128,6 +145,12 @@ class TriggerContext:
 
     # Pathway B k
     semantic_k: int = 40
+
+    # S3 — Pathway F k (topo-NN count) and whether to expand
+    # neighborhood co-members. Defaults preserve the F module's own
+    # defaults; trigger plumbing can override per-trigger.
+    topological_k: int = 40
+    topological_expand_neighborhoods: bool = True
 
 
 @dataclass
@@ -242,6 +265,7 @@ def _merge_and_rank_models_rrf(
         DIMENSION_SEMANTIC,
         DIMENSION_STRUCTURAL,
         DIMENSION_TEMPORAL,
+        DIMENSION_TOPOLOGICAL,
         DIMENSION_WEIGHTS,
     )
 
@@ -252,6 +276,7 @@ def _merge_and_rank_models_rrf(
         DIMENSION_SEMANTIC: weights.get("B", 0.0),
         DIMENSION_TEMPORAL: weights.get("C", 0.0),
         DIMENSION_PATTERN: weights.get("D", 0.0),
+        DIMENSION_TOPOLOGICAL: weights.get("F", 0.0),
         # Activation / provenance stay at the scoring module's defaults
         # so RRF's implicit priors don't vanish on 2-pathway triggers.
         DIMENSION_ACTIVATION: DIMENSION_WEIGHTS[DIMENSION_ACTIVATION],
@@ -318,6 +343,110 @@ def _merge_resources(pathway_results: list[PathwayResult]) -> list[ResourceRow]:
     return sorted(seen.values(), key=lambda r: r.last_updated_at, reverse=True)
 
 
+def _append_seed_once(
+    seeds: list[dict[str, Any]],
+    seen: set[tuple[str, str]],
+    seed: dict[str, Any],
+) -> None:
+    if not isinstance(seed, dict):
+        return
+    etype = seed.get("type")
+    eid = seed.get("id")
+    if not etype or eid is None:
+        return
+    key = (str(etype), str(eid))
+    if key in seen:
+        return
+    seen.add(key)
+    seeds.append({"type": str(etype), "id": str(eid)})
+
+
+def _append_actor_once(
+    actors: list[UUID],
+    seen: set[UUID],
+    actor_id: Any,
+) -> None:
+    if actor_id is None:
+        return
+    try:
+        aid = UUID(str(actor_id))
+    except (ValueError, TypeError):
+        return
+    if aid in seen:
+        return
+    seen.add(aid)
+    actors.append(aid)
+
+
+def _coerce_vector(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    try:
+        return [float(x) for x in value]
+    except (TypeError, ValueError):
+        return None
+
+
+async def _derive_trigger_scope(
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+) -> tuple[list[dict[str, Any]], list[UUID], str | None, list[float] | None]:
+    """
+    Build the effective scope once and share it across pathways.
+
+    The queue payload may provide only actor scope, only entity scope,
+    or for T2 just a model_id. Pulling these into one normalized shape
+    prevents Pathway A and Pathway B from seeing different worlds.
+    """
+    seeds: list[dict[str, Any]] = []
+    seen_seeds: set[tuple[str, str]] = set()
+    for e in trigger.seed_entity_ids:
+        _append_seed_once(seeds, seen_seeds, e)
+
+    actors: list[UUID] = []
+    seen_actors: set[UUID] = set()
+    for a in trigger.scope_actors:
+        _append_actor_once(actors, seen_actors, a)
+
+    model_natural: str | None = None
+    model_embedding: list[float] | None = None
+
+    if trigger.kind == "T2" and trigger.model_id is not None:
+        row = await conn.fetchrow(
+            """
+            SELECT scope_entities, scope_actors, "natural", embedding
+            FROM models
+            WHERE id = $1 AND tenant_id = $2
+            """,
+            trigger.model_id,
+            trigger.tenant_id,
+        )
+        if row is not None:
+            raw_se = row["scope_entities"]
+            if isinstance(raw_se, (bytes, bytearray)):
+                raw_se = raw_se.decode()
+            if isinstance(raw_se, str):
+                try:
+                    raw_se = json.loads(raw_se)
+                except json.JSONDecodeError:
+                    raw_se = []
+            if isinstance(raw_se, list):
+                for e in raw_se:
+                    _append_seed_once(seeds, seen_seeds, e)
+            for a in row["scope_actors"] or []:
+                _append_actor_once(actors, seen_actors, a)
+            if isinstance(row["natural"], str) and row["natural"].strip():
+                model_natural = row["natural"]
+            model_embedding = _coerce_vector(row["embedding"])
+
+    return seeds, actors, model_natural, model_embedding
+
+
 # ---------------------------------------------------------------------
 # primary_retrieve
 # ---------------------------------------------------------------------
@@ -370,15 +499,32 @@ async def primary_retrieve(
             "semantic_k": cfg.semantic_k,
             "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
             "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
+            "topological_k": cfg.topological_k,
+            "topological_expand_neighborhoods": cfg.topological_expand_neighborhoods,
+            "topological_max_neighborhood_members": (
+                cfg.topological_max_neighborhood_members
+            ),
             "scoring_mode": cfg.scoring_mode,
             "assembler_use_mmr": cfg.assembler_use_mmr,
         },
     }
 
+    (
+        effective_seed_entities,
+        effective_scope_actors,
+        t2_model_natural,
+        t2_model_embedding,
+    ) = await _derive_trigger_scope(trigger, conn)
+    notes["effective_scope"] = {
+        "seed_entities": len(effective_seed_entities),
+        "scope_actors": len(effective_scope_actors),
+        "t2_model_text_fallback": bool(t2_model_natural),
+        "t2_model_embedding_fallback": bool(t2_model_embedding),
+    }
+
     # ------ Pathway A (all triggers) ------
     if "A" in weights:
-        # For T2, the seed entities come from the model's scope.
-        seeds = list(trigger.seed_entity_ids)
+        seeds = list(effective_seed_entities)
         # For T1 event_arrival the ingestion enqueuer puts the author
         # actor UUID(s) in trigger.scope_actors but does not synthesise
         # seed_entity_ids. Without entity seeds pathway A bails early
@@ -386,37 +532,9 @@ async def primary_retrieve(
         # every user-authored signal. Synthesise actor seeds so short
         # messages ("actually i only need 1 day of work") still retrieve
         # the author's scoped models / commitments.
-        if trigger.kind == "T1" and trigger.scope_actors and not seeds:
-            for a in trigger.scope_actors:
+        if trigger.kind == "T1" and effective_scope_actors and not seeds:
+            for a in effective_scope_actors:
                 seeds.append({"type": "actor", "id": str(a)})
-        if trigger.kind == "T2" and trigger.model_id is not None and not seeds:
-            # Fetch the Model's scope_entities and scope_actors.
-            row = await conn.fetchrow(
-                """
-                SELECT scope_entities, scope_actors
-                FROM models
-                WHERE id = $1 AND tenant_id = $2
-                """,
-                trigger.model_id,
-                trigger.tenant_id,
-            )
-            if row is not None:
-                import json
-                raw_se = row["scope_entities"]
-                if isinstance(raw_se, (bytes, bytearray)):
-                    raw_se = raw_se.decode()
-                if isinstance(raw_se, str):
-                    try:
-                        raw_se = json.loads(raw_se)
-                    except json.JSONDecodeError:
-                        raw_se = []
-                if isinstance(raw_se, list):
-                    for e in raw_se:
-                        if isinstance(e, dict):
-                            seeds.append(e)
-                actors = row["scope_actors"] or []
-                for a in actors:
-                    seeds.append({"type": "actor", "id": str(a)})
 
         try:
             pr_a = await pathway_a_structural(
@@ -432,7 +550,8 @@ async def primary_retrieve(
 
     # ------ Pathway B ------
     if "B" in weights:
-        text = trigger.seed_natural_text or ""
+        text = trigger.seed_natural_text or t2_model_natural or ""
+        vector = trigger.precomputed_seed_vector or t2_model_embedding
         # Resolve k: trigger field wins if it differs from the legacy
         # default; otherwise fall back to the config-supplied k.
         b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
@@ -443,12 +562,14 @@ async def primary_retrieve(
                 conn,
                 k=b_k,
                 embedder=embedder,
-                precomputed_vector=trigger.precomputed_seed_vector,
+                precomputed_vector=vector,
+                event_actors=effective_scope_actors,
+                event_entities=effective_seed_entities,
                 hnsw_ef_search=cfg.semantic_hnsw_ef_search,
             )
             pathway_results.append(pr_b)
             notes["pathways_run"].append("B")
-        except RetrievalPathwayError as e:
+        except (RetrievalPathwayError, ValidationError) as e:
             notes["pathways_skipped"].append({"pathway": "B", "reason": str(e)})
 
     # ------ Pathway C ------
@@ -460,7 +581,7 @@ async def primary_retrieve(
                     trigger.temporal_window,
                     trigger.tenant_id,
                     conn,
-                    scope_actors=trigger.scope_actors,
+                    scope_actors=effective_scope_actors,
                     include_entity_mentions=cfg.temporal_include_entity_mentions,
                 )
                 pathway_results.append(pr_c)
@@ -484,6 +605,61 @@ async def primary_retrieve(
             notes["pathways_run"].append("D")
         except Exception as e:
             notes["pathways_skipped"].append({"pathway": "D", "reason": str(e)})
+
+    # ------ Pathway F (topological) ------
+    # Always attempted when F is in the trigger weights; the pathway
+    # itself returns an empty result on missing seed (notes
+    # 'reason': 'empty_seed') so unconfigured triggers degrade
+    # gracefully.
+    if "F" in weights:
+        try:
+            # T6 prefers neighborhood-centroid as the seed topo vector
+            # (it is what the LLM is being asked about). When F is
+            # called from T1-T4, seed_model_id is usually None and we
+            # fall back to seed_natural_text → content_anchor or to
+            # the precomputed topo vector. Pass model_id (T2's
+            # prediction Model) when set so T2 anchors on its own
+            # arrangement.
+            seed_model_for_f = (
+                trigger.model_id if trigger.kind in ("T2", "T6") else None
+            )
+            if (
+                seed_model_for_f is None
+                and trigger.kind == "T6"
+                and trigger.member_model_ids
+            ):
+                seed_model_for_f = trigger.member_model_ids[0]
+            f_k = (
+                trigger.topological_k
+                if trigger.topological_k != 40
+                else cfg.topological_k
+            )
+            f_expand = (
+                cfg.topological_expand_neighborhoods
+                if trigger.topological_expand_neighborhoods is True
+                else trigger.topological_expand_neighborhoods
+            )
+            pr_f = await pathway_f_topological(
+                trigger.tenant_id,
+                conn,
+                seed_natural_text=trigger.seed_natural_text,
+                seed_model_id=seed_model_for_f,
+                seed_neighborhood_id=(
+                    trigger.neighborhood_id if trigger.kind == "T6" else None
+                ),
+                precomputed_topo_vector=trigger.precomputed_topo_vector,
+                embedder=embedder,
+                k=f_k,
+                expand_neighborhoods=f_expand,
+                max_neighborhood_members=cfg.topological_max_neighborhood_members,
+                hnsw_ef_search=cfg.semantic_hnsw_ef_search,
+            )
+            pathway_results.append(pr_f)
+            notes["pathways_run"].append("F")
+        except RetrievalPathwayError as e:
+            notes["pathways_skipped"].append({"pathway": "F", "reason": str(e)})
+        except Exception as e:
+            notes["pathways_skipped"].append({"pathway": "F", "reason": str(e)})
 
     # ------ Merge + rank ------
     models, scores = _merge_and_rank_models(

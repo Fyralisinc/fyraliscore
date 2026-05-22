@@ -1,14 +1,7 @@
 name: Deploy to Production
 
-# Deploy is gated on a green CI run for the same SHA. The
-# `workflow_run` trigger fires after CI finishes on the production
-# branch; the `if:` below ensures we only deploy on success. Manual
-# `workflow_dispatch` skips the gate so operators can roll-forward
-# from a known-good commit even if CI is red on a later push.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
+  push:
     branches: [production]
   workflow_dispatch:
 
@@ -17,9 +10,6 @@ jobs:
     name: Deploy to AWS Lightsail
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-          github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Deploy via SSH
@@ -29,46 +19,19 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           script: |
-            set -euo pipefail
+            set -e
             cd ~/fyraliscore
-
-            PREV_SHA=$(git rev-parse HEAD)
-            echo "==> Previous SHA: ${PREV_SHA}"
 
             echo "==> Pulling latest code"
             git fetch origin production
             git reset --hard origin/production
 
-            NEW_SHA=$(git rev-parse HEAD)
-            echo "==> New SHA: ${NEW_SHA}"
-
             echo "==> Rebuilding and restarting containers"
+            docker compose pull
             docker compose up -d --build --remove-orphans
 
             echo "==> Waiting for gateway health check"
-            # Gateway uses `expose: 8000` (compose-network only) — host
-            # port 8000 is not bound, so a host-side curl always fails
-            # even when the gateway is healthy. Probe via the gateway
-            # container's own loopback using Python's stdlib (already
-            # in the image; avoids depending on curl/wget being
-            # installed in the runtime image).
-            HEALTHCHECK_CMD='python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/healthz\",timeout=5).status==200 else 1)"'
-            if ! timeout 90 bash -c "until docker compose exec -T gateway sh -c '${HEALTHCHECK_CMD}' >/dev/null 2>&1; do sleep 3; done"; then
-              echo "==> Health check FAILED — capturing container logs before rollback"
-              echo "----- gateway logs (last 200 lines) -----"
-              docker compose logs gateway --tail=200 || true
-              echo "----- think_worker logs (last 50 lines) -----"
-              docker compose logs think_worker --tail=50 || true
-              echo "----- post_commit_worker logs (last 50 lines) -----"
-              docker compose logs post_commit_worker --tail=50 || true
-              echo "----- container ps -----"
-              docker compose ps || true
-              echo "==> Rolling back to ${PREV_SHA}"
-              git reset --hard "${PREV_SHA}"
-              docker compose up -d --build --remove-orphans
-              echo "==> Rolled back. Failing the job so the bad commit is visible."
-              exit 1
-            fi
+            timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'
 
-            echo "==> Deployment complete (live SHA: ${NEW_SHA})"
+            echo "==> Deployment complete"
             docker compose ps

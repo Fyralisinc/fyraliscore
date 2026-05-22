@@ -18,6 +18,7 @@ import os
 import pathlib
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -99,12 +100,8 @@ async def acts_db() -> AsyncGenerator[asyncpg.Pool, None]:
         init=_install_json_codec,
     )
     async with pool.acquire() as conn:
-        migration_files = sorted(
-            (REPO_ROOT / "db" / "migrations").glob("*.sql")
-        )
-        for path in migration_files:
-            await conn.execute(path.read_text())
-        # Skip `demo_configs` — seeded by migration only. See root conftest.
+        from lib.shared.migrations import apply_migrations_dir
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
         rows = await conn.fetch(
             """
             SELECT c.relname FROM pg_class c
@@ -112,7 +109,6 @@ async def acts_db() -> AsyncGenerator[asyncpg.Pool, None]:
             WHERE n.nspname = 'public'
               AND c.relkind IN ('r', 'p')
               AND c.relispartition = FALSE
-              AND c.relname <> 'demo_configs'
             """
         )
         tables = [r["relname"] for r in rows]

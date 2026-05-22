@@ -1,0 +1,161 @@
+[
+  {
+    "stage": "retrieval",
+    "name": "pathway_A_actor_scope",
+    "intent": "T1 with scope_actor seeds pathway A and surfaces actor-scoped Models",
+    "passed": true,
+    "elapsed_ms": 58,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_ids": [
+        "019e3a64-c108-7000-8c26-481267f9276d"
+      ],
+      "scores": {
+        "019e3a64-c108-7000-8c26-481267f9276d": 0.03032786885245902
+      },
+      "pathways_run": [
+        "A",
+        "B",
+        "C"
+      ]
+    },
+    "expected": {
+      "in_scope": "019e3a64-c108-7000-8c26-481267f9276d",
+      "out_scope": "019e3a64-c11a-7000-8940-6c36dad48478"
+    }
+  },
+  {
+    "stage": "retrieval",
+    "name": "pathway_B_semantic_top1",
+    "intent": "Pathway B ranks the cosine-nearest Model first",
+    "passed": true,
+    "elapsed_ms": 56,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_ids": [
+        "019e3a64-c107-7000-9b8f-8d00e484b658",
+        "019e3a64-c11a-7001-abf5-7243ea0bc17a"
+      ]
+    },
+    "expected": {
+      "first_must_be": "019e3a64-c107-7000-9b8f-8d00e484b658"
+    }
+  },
+  {
+    "stage": "retrieval",
+    "name": "pathway_C_temporal_window",
+    "intent": "Pathway C surfaces in-window obs/models and excludes out-of-window",
+    "passed": true,
+    "elapsed_ms": 77,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_ids": [
+        "019e3a64-c111-7000-9cd6-35ed087f6cc0",
+        "019e3a64-c126-7000-9c4f-4bc4190f1249"
+      ],
+      "obs_ids": [
+        "019e3a64-c136-7000-9c80-7566111be915"
+      ],
+      "scores": {
+        "019e3a64-c111-7000-9cd6-35ed087f6cc0": 0.03032786885245902,
+        "019e3a64-c126-7000-9c4f-4bc4190f1249": 0.027419354838709678
+      },
+      "pathway_results": [
+        {
+          "name": "A",
+          "model_ids": [
+            "019e3a64-c111-7000-9cd6-35ed087f6cc0",
+            "019e3a64-c126-7000-9c4f-4bc4190f1249"
+          ]
+        },
+        {
+          "name": "B",
+          "model_ids": [
+            "019e3a64-c111-7000-9cd6-35ed087f6cc0",
+            "019e3a64-c126-7000-9c4f-4bc4190f1249"
+          ]
+        },
+        {
+          "name": "C",
+          "model_ids": [
+            "019e3a64-c111-7000-9cd6-35ed087f6cc0"
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "must_include_obs": [
+        "019e3a64-c136-7000-9c80-7566111be915"
+      ],
+      "must_include_model": "019e3a64-c111-7000-9cd6-35ed087f6cc0",
+      "out_win": "019e3a64-c126-7000-9c4f-4bc4190f1249"
+    }
+  },
+  {
+    "stage": "retrieval",
+    "name": "pathway_D_pattern_signature",
+    "intent": "T4 with seed_signature returns matching pattern and its instances",
+    "passed": true,
+    "elapsed_ms": 70,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "model_ids": [
+        "019e3a64-c110-7000-96a3-2f33a2ec97ad",
+        "019e3a64-c123-7000-a7ee-7fb1c240f1e7"
+      ]
+    },
+    "expected": {
+      "must_include": [
+        "019e3a64-c110-7000-96a3-2f33a2ec97ad",
+        "019e3a64-c123-7000-a7ee-7fb1c240f1e7"
+      ],
+      "must_exclude": [
+        "019e3a64-c131-7000-a649-91a9ba4709ee"
+      ]
+    }
+  },
+  {
+    "stage": "retrieval",
+    "name": "scoped_fusion_multipathway",
+    "intent": "Scoped fusion: A\u2229B model wins and semantic-only out-of-scope decoy is excluded",
+    "passed": true,
+    "elapsed_ms": 70,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "ids": [
+        "019e3a64-c112-7001-b333-36e93c848dae"
+      ],
+      "scores": {
+        "019e3a64-c112-7001-b333-36e93c848dae": 0.03032786885245902
+      }
+    },
+    "expected": {
+      "x_first": "019e3a64-c112-7001-b333-36e93c848dae",
+      "y_excluded": "019e3a64-c128-7001-b81f-160800d93c74"
+    }
+  },
+  {
+    "stage": "retrieval",
+    "name": "second_pass_sparse_activation",
+    "intent": "Sparse primary result triggers second-pass with reason 'sparse'",
+    "passed": true,
+    "elapsed_ms": 69,
+    "diff": "",
+    "error": null,
+    "actual": {
+      "n_primary_models": 2,
+      "should_run": true,
+      "trigger_condition": "sparse_primary"
+    },
+    "expected": {
+      "should_run": true,
+      "expected_condition_substring": "sparse",
+      "max_primary_models": 4
+    }
+  }
+]

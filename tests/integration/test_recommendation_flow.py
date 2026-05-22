@@ -21,6 +21,7 @@ import asyncpg
 import httpx
 import pytest
 
+from lib.shared.ids import uuid7
 
 # Reuse the gateway test fixtures via the recommendations conftest —
 # both modules pull from services/gateway/tests/conftest.py, so the

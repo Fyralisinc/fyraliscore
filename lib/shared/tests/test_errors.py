@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from hypothesis import given, strategies as st
 
 from lib.shared.errors import (

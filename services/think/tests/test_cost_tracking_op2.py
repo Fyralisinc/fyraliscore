@@ -11,6 +11,7 @@ THINK-DESIGN-AUDIT §9.3 — per-trigger cost attribution. Verifies:
 from __future__ import annotations
 
 import uuid
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -27,6 +28,7 @@ from lib.llm.provider import (
 )
 
 from services.think.observability import (
+    METRICS,
     aggregate_costs_for_tenant,
     record_think_run_cost,
 )

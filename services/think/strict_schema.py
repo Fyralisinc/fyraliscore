@@ -68,7 +68,7 @@ _PROPOSITION_KINDS: list[dict] = [
                                 "type": "string",
                                 "enum": ["goal", "commitment", "decision", "resource"],
                             },
-                            "id": _UUID_STR,
+                            "id": {"anyOf": [_UUID_STR, {"type": "null"}]},
                         },
                     },
                     {"type": "null"},

@@ -29,11 +29,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from lib.shared.errors import ValidationError
 
 from services.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
+    HandlerError,
     ObservationDraft,
     register,
 )

@@ -5,6 +5,9 @@ use the real DATABASE_URL pool provided by the root conftest.
 """
 from __future__ import annotations
 
+import asyncio
+import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -14,6 +17,7 @@ from pydantic import BaseModel
 from lib.shared.db import (
     ConnectionPoolNotInitializedError,
     RowHydrationError,
+    close_pool,
     execute,
     get_pool,
     init_pool,
@@ -29,21 +33,14 @@ from lib.shared.ids import uuid7
 # =====================================================================
 
 async def test_get_pool_uninitialised_raises():
-    # Bypass `close_pool()` and null the module-level ref directly. A
-    # prior integration test may have populated `_pool` with a pool
-    # whose event loop has since been torn down by pytest-asyncio's
-    # function-scoped loop; calling `await _pool.close()` on it raises
-    # "Event loop is closed". Nulling the ref is sufficient — the leaked
-    # pool's connections are already dead at that point.
-    import lib.shared.db as db_mod
-    db_mod._pool = None
+    # Start clean — if a prior test left _pool set, clear it.
+    await close_pool()
     with pytest.raises(ConnectionPoolNotInitializedError):
         get_pool()
 
 
 async def test_init_pool_missing_dsn(monkeypatch):
-    import lib.shared.db as db_mod
-    db_mod._pool = None
+    await close_pool()
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(ConnectionPoolNotInitializedError):
         await init_pool()

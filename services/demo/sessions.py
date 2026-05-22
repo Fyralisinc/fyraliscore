@@ -43,7 +43,7 @@ from services.demo.repo import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from services.gateway.auth import AuthContext
 
 
 INACTIVITY_TTL = timedelta(hours=4)

@@ -35,7 +35,7 @@ indexed SELECT without special-casing cold start.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 
 # Spec §9 lines 2644-2645.

@@ -11,7 +11,9 @@ exercised end-to-end (gateway + demo + recommendation list + SSE).
 """
 from __future__ import annotations
 
+import asyncio
 
+import asyncpg
 import httpx
 import pytest
 
@@ -23,15 +25,16 @@ pytestmark = pytest.mark.integration
 async def test_pick_company_lands_on_populated_action_list(
     client: httpx.AsyncClient,
 ):
-    # 1. Public picker lists the single registered company.
+    # 1. Public picker lists three companies.
     resp = await client.get("/v1/demo/companies")
     assert resp.status_code == 200
     companies = resp.json()["items"]
-    assert len(companies) == 1
+    assert len(companies) == 3
 
-    # 2. Start a Pelago session (loads from the shipped SQL snapshot).
+    # 2. Start a Truss session (clone-on-demand, synthetic snapshot
+    #    fallback since no SQL file is shipped in the repo yet).
     start = await client.post(
-        "/v1/demo/sessions/start", json={"company_id": "pelago"},
+        "/v1/demo/sessions/start", json={"company_id": "truss"},
     )
     assert start.status_code == 201, start.text
     payload = start.json()
@@ -50,10 +53,8 @@ async def test_pick_company_lands_on_populated_action_list(
     items = list_resp.json()["items"]
     assert len(items) > 0
     first = items[0]
-    # Recommendation cards carry an id + an impact figure regardless of
-    # how the natural-language hook is exposed.
-    assert "id" in first
-    assert "expected_impact" in first or "natural" in first or "proposition" in first
+    # Recommendation cards carry the natural-language hook + impact.
+    assert "natural" in first or "proposition" in first
 
     # 4. Session info shows zero costs and zero signals before injection.
     info = await client.get(f"/v1/demo/sessions/{sid}", headers=headers)
@@ -76,10 +77,10 @@ async def test_session_isolation_between_two_demos(
     """Starting two demo sessions back-to-back must produce two distinct
     tenant ids — no cross-contamination."""
     a = (await client.post(
-        "/v1/demo/sessions/start", json={"company_id": "pelago"},
+        "/v1/demo/sessions/start", json={"company_id": "northwind"},
     )).json()
     b = (await client.post(
-        "/v1/demo/sessions/start", json={"company_id": "pelago"},
+        "/v1/demo/sessions/start", json={"company_id": "northwind"},
     )).json()
     assert a["tenant_id"] != b["tenant_id"]
     assert a["session_id"] != b["session_id"]
@@ -90,7 +91,7 @@ async def test_reset_keeps_token_valid(
     client: httpx.AsyncClient,
 ):
     start = (await client.post(
-        "/v1/demo/sessions/start", json={"company_id": "pelago"},
+        "/v1/demo/sessions/start", json={"company_id": "meridian"},
     )).json()
     token, tid, sid = start["auth_token"], start["tenant_id"], start["session_id"]
     headers = {"Authorization": f"Bearer {token}", "X-Tenant-Id": tid}
@@ -99,7 +100,8 @@ async def test_reset_keeps_token_valid(
     pre = await client.get(f"/v1/demo/sessions/{sid}", headers=headers)
     assert pre.status_code == 200
 
-    # Reset is idempotent + cheap; allow up to 30s for the snapshot reload.
+    # Reset is idempotent + cheap; allow up to 30s for the snapshot
+    # reload (synthetic path is fast).
     reset = await client.post(
         f"/v1/demo/sessions/{sid}/reset", headers=headers, timeout=30.0,
     )

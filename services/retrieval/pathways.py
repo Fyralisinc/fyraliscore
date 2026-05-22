@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Sequence
 from uuid import UUID
 
@@ -52,7 +52,7 @@ from lib.shared.types import (
 # Constants + types
 # ---------------------------------------------------------------------
 
-PathwayName = Literal["A", "B", "C", "D"]
+PathwayName = Literal["A", "B", "C", "D", "F"]
 
 _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
@@ -60,6 +60,8 @@ _DEFAULT_STRUCTURAL_MAX_HOPS = 2
 _STRUCTURAL_MAX_MODELS = 200
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
+_DEFAULT_K_TOPOLOGICAL = 40
+_TOPOLOGICAL_MAX_NEIGHBORHOOD_EXPANSION = 30
 
 
 class RetrievalPathwayError(CompanyOSError):
@@ -145,6 +147,9 @@ class PathwayResult:
 
 def _hydrate_model(record: asyncpg.Record) -> ModelRow:
     raw = dict(record)
+    for key in list(raw.keys()):
+        if str(key).startswith("_"):
+            raw.pop(key, None)
     for key in (
         "proposition",
         "scope_entities",
@@ -267,6 +272,66 @@ def _hydrate_decision(record: asyncpg.Record) -> DecisionRow:
 
 def _jsonb(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _vector_to_float_list(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    try:
+        return [float(x) for x in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _cosine_distance(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
+    if a is None or b is None:
+        return float("inf")
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        fx = float(x)
+        fy = float(y)
+        dot += fx * fy
+        na += fx * fx
+        nb += fy * fy
+    if na <= 0.0 or nb <= 0.0:
+        return float("inf")
+    return 1.0 - (dot / ((na ** 0.5) * (nb ** 0.5)))
+
+
+def _hydrate_many(
+    records: Sequence[asyncpg.Record],
+    hydrate_fn: Any,
+    notes: dict[str, Any],
+    bucket: str,
+) -> list[Any]:
+    """
+    Hydrate a batch defensively.
+
+    Production snapshots can contain one legacy row whose enum/value
+    drift no longer satisfies the current pydantic row type. Retrieval
+    should not drop an entire pathway because one Act or Model cannot
+    hydrate; it skips the bad row, reports the count, and keeps the
+    rest of the context available.
+    """
+    out: list[Any] = []
+    skipped = 0
+    for r in records:
+        try:
+            out.append(hydrate_fn(r))
+        except Exception:
+            skipped += 1
+    if skipped:
+        notes.setdefault("hydration_skipped", {})[bucket] = skipped
+    return out
 
 
 # =====================================================================
@@ -523,7 +588,7 @@ async def pathway_a_structural(
             list(visited_goals),
             tenant_id,
         )
-        goals_out = [_hydrate_goal(r) for r in grs]
+        goals_out = _hydrate_many(grs, _hydrate_goal, notes, "goals")
 
     commitments_out: list[CommitmentRow] = []
     if visited_commits:
@@ -532,7 +597,7 @@ async def pathway_a_structural(
             list(visited_commits),
             tenant_id,
         )
-        commitments_out = [_hydrate_commitment(r) for r in crs]
+        commitments_out = _hydrate_many(crs, _hydrate_commitment, notes, "commitments")
 
     decisions_out: list[DecisionRow] = []
     if visited_decisions:
@@ -541,7 +606,7 @@ async def pathway_a_structural(
             list(visited_decisions),
             tenant_id,
         )
-        decisions_out = [_hydrate_decision(r) for r in drs]
+        decisions_out = _hydrate_many(drs, _hydrate_decision, notes, "decisions")
 
     resources_out: list[ResourceRow] = []
     touched_resource_ids = visited_customers | visited_resources
@@ -551,7 +616,7 @@ async def pathway_a_structural(
             list(touched_resource_ids),
             tenant_id,
         )
-        resources_out = [_hydrate_resource(r) for r in rrs]
+        resources_out = _hydrate_many(rrs, _hydrate_resource, notes, "resources")
 
     # Scoped Model search — union of (scope_entities @> any touched
     # entity) and (scope_actors && visited actors).
@@ -608,7 +673,11 @@ async def pathway_a_structural(
                 if mid in seen_ids:
                     continue
                 seen_ids.add(mid)
-                models_out.append(_hydrate_model(r))
+                try:
+                    models_out.append(_hydrate_model(r))
+                except Exception:
+                    notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+                    notes["hydration_skipped"]["models"] += 1
 
     notes["entities_touched"] = {
         "commitments": len(visited_commits),
@@ -645,13 +714,13 @@ def _conn_has_vector_codec(conn: asyncpg.Connection) -> bool:
     `_con` to the wrapped Connection, so we identify by that id.
     """
     try:
-        from services.models.repo import _VECTOR_REGISTERED_IDS
+        from services.models.repo import PGVECTOR_REGISTERED_POOL_IDS
     except Exception:
         return False
-    if id(conn) in _VECTOR_REGISTERED_IDS:
+    if id(conn) in PGVECTOR_REGISTERED_POOL_IDS:
         return True
     inner = getattr(conn, "_con", None)
-    if inner is not None and id(inner) in _VECTOR_REGISTERED_IDS:
+    if inner is not None and id(inner) in PGVECTOR_REGISTERED_POOL_IDS:
         return True
     return False
 
@@ -819,7 +888,75 @@ async def pathway_b_semantic(
         """,
         *scope_params,
     )
-    models = [_hydrate_model(r) for r in rows]
+    models = _hydrate_many(rows, _hydrate_model, notes, "models")
+
+    # HNSW is approximate and Postgres applies the JSONB/actor scope
+    # predicate around the vector order. For highly selective event
+    # scopes, the indexed plan can occasionally return too few rows
+    # even when scoped candidates exist. Exact-rank the scoped candidate
+    # pool in Python as a production precision fallback.
+    if scope_clauses and len(models) < min(k, 10):
+        exact_rows = await conn.fetch(
+            f"""
+            WITH _params AS (
+              SELECT $2::vector AS _query_vector, $3::int AS _k
+            )
+            SELECT {_MODEL_SELECT_SQL}
+            FROM models, _params
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND embedding IS NOT NULL
+            {scope_sql}LIMIT LEAST(GREATEST($3::int * 20, 200), 2000)
+            """,
+            *scope_params,
+        )
+        exact_models = _hydrate_many(
+            exact_rows, _hydrate_model, notes, "scope_exact_models"
+        )
+        exact_models.sort(
+            key=lambda m: (
+                _cosine_distance(vec, m.embedding),
+                -m.activation,
+                str(m.id),
+            )
+        )
+        models = exact_models[:k]
+        notes["scope_exact_fallback"] = {
+            "hnsw_rows": len(rows),
+            "candidate_rows": len(exact_models),
+            "returned": len(models),
+        }
+    elif not scope_clauses and len(models) < k:
+        exact_rows = await conn.fetch(
+            f"""
+            WITH _params AS (
+              SELECT $2::vector AS _query_vector, $3::int AS _k
+            )
+            SELECT {_MODEL_SELECT_SQL}
+            FROM models, _params
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND embedding IS NOT NULL
+            LIMIT LEAST(GREATEST($3::int * 20, 200), 5000)
+            """,
+            *scope_params,
+        )
+        exact_models = _hydrate_many(
+            exact_rows, _hydrate_model, notes, "exact_models"
+        )
+        exact_models.sort(
+            key=lambda m: (
+                _cosine_distance(vec, m.embedding),
+                -m.activation,
+                str(m.id),
+            )
+        )
+        models = exact_models[:k]
+        notes["exact_fallback"] = {
+            "hnsw_rows": len(rows),
+            "candidate_rows": len(exact_models),
+            "returned": len(models),
+        }
     notes["models_returned"] = len(models)
 
     return PathwayResult(
@@ -899,7 +1036,7 @@ async def pathway_c_temporal(
             obs_sql += " AND actor_id = ANY($4::uuid[])"
     obs_sql += " ORDER BY occurred_at DESC LIMIT " + str(int(max_observations))
     obs_rows = await conn.fetch(obs_sql, *obs_params)
-    observations = [_hydrate_obs(r) for r in obs_rows]
+    observations = _hydrate_many(obs_rows, _hydrate_obs, notes, "observations")
 
     # Models in the window (active). Overlap is COALESCE(last_retrieved_at,
     # created_at) — if a Model has been reconsolidated inside the window
@@ -914,7 +1051,7 @@ async def pathway_c_temporal(
         model_sql += " AND scope_actors && $4::uuid[]"
     model_sql += " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT 200"
     model_rows = await conn.fetch(model_sql, *model_params)
-    models = [_hydrate_model(r) for r in model_rows]
+    models = _hydrate_many(model_rows, _hydrate_model, notes, "models")
 
     notes["observations_returned"] = len(observations)
     notes["models_returned"] = len(models)
@@ -984,7 +1121,7 @@ async def pathway_d_pattern(
             limit,
         )
 
-    patterns = [_hydrate_model(r) for r in pattern_rows]
+    patterns = _hydrate_many(pattern_rows, _hydrate_model, notes, "patterns")
     notes["patterns_returned"] = len(patterns)
 
     # Fetch instances for each pattern. A pattern_instance Model has
@@ -1008,7 +1145,7 @@ async def pathway_d_pattern(
             pattern_ids_str,
             limit,
         )
-        instances = [_hydrate_model(r) for r in inst_rows]
+        instances = _hydrate_many(inst_rows, _hydrate_model, notes, "instances")
     notes["instances_returned"] = len(instances)
 
     return PathwayResult(
@@ -1021,6 +1158,358 @@ async def pathway_d_pattern(
     )
 
 
+# =====================================================================
+# Pathway F — Topological proximity (HNSW over models.topo_embedding +
+#             materialized-neighborhood expansion)
+# =====================================================================
+#
+# Where Pathway B asks "what does this signal MEAN" (semantic content),
+# Pathway F asks "where does this signal LIVE" (positional arrangement
+# in the substrate's emergent topology). Two queries fold into one
+# PathwayResult:
+#
+#   1. HNSW cosine NN over `topo_embedding` (128d) — topo-nearest
+#      Models, regardless of which neighborhood they sit in. Catches
+#      Models that are positionally adjacent even when their content
+#      embedding diverges (a `state` and a `concern` both centered on
+#      a customer commitment may have low B-similarity but high F-
+#      similarity if the substrate has organized them into the same
+#      neighborhood).
+#
+#   2. Neighborhood expansion: for each Model already surfaced (by
+#      seed model_id, by topo-NN above, or by other pathways the
+#      caller folds in), look up its active neighborhood via
+#      `model_neighborhood_membership` and pull co-members ordered by
+#      centrality DESC. This is what makes Pathway F different from
+#      a parallel Pathway B over a different vector space — it
+#      surfaces the EMERGENT GROUPING, not just the geometric
+#      neighborhood.
+#
+# Seed resolution (in order of preference):
+#   - explicit `precomputed_topo_vector` (caller already projected)
+#   - explicit `seed_model_id` → fetch its topo + membership
+#   - `seed_natural_text` → embed via Ollama → content_anchor projection
+#
+# When no seed can be resolved, Pathway F returns an empty result
+# (notes['reason'] = 'empty_seed') and the caller's other pathways
+# carry the load. This matches Pathway B's contract.
+# =====================================================================
+
+
+async def pathway_f_topological(
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_natural_text: str | None = None,
+    seed_model_id: UUID | None = None,
+    seed_neighborhood_id: UUID | None = None,
+    precomputed_topo_vector: Sequence[float] | None = None,
+    embedder: Any | None = None,
+    k: int = _DEFAULT_K_TOPOLOGICAL,
+    expand_neighborhoods: bool = True,
+    max_neighborhood_members: int = _TOPOLOGICAL_MAX_NEIGHBORHOOD_EXPANSION,
+    hnsw_ef_search: int | None = None,
+) -> PathwayResult:
+    """HNSW over `models.topo_embedding` + neighborhood expansion.
+
+    Returns active Models near the seed in topology space PLUS the
+    co-members of any neighborhoods the surfaced Models belong to.
+    Co-members are ordered by centrality DESC inside each
+    neighborhood; ties on centrality break on join time.
+
+    Operating modes:
+      - precomputed_topo_vector + tenant_id   : pure HNSW
+      - seed_model_id + tenant_id             : HNSW from the model's
+                                                topo + neighborhood
+                                                expansion of that one
+                                                neighborhood
+      - seed_natural_text + embedder + tenant : embed → content_anchor
+                                                projection → HNSW
+
+    The hop_depth equivalent for topology is implicit: neighborhood
+    expansion = 1 hop over membership; the topo-NN query itself is
+    pure positional similarity (no traversal).
+    """
+    from lib.topology.embeddings import content_anchor as _content_anchor
+    from lib.shared.types import TOPO_EMBEDDING_DIM
+
+    notes: dict[str, Any] = {
+        "k_requested": k,
+        "vector_source": None,
+        "expand_neighborhoods": expand_neighborhoods,
+        "seed_model_id": str(seed_model_id) if seed_model_id else None,
+        "seed_neighborhood_id": (
+            str(seed_neighborhood_id) if seed_neighborhood_id else None
+        ),
+    }
+
+    if k <= 0:
+        return PathwayResult(
+            source_pathway="F",
+            notes={**notes, "reason": "non_positive_k"},
+        )
+
+    # --- Resolve seed topo vector (in priority order) ----------------
+    seed_topo: list[float] | None = None
+    seed_membership_id: UUID | None = None
+
+    if precomputed_topo_vector is not None:
+        seed_topo = [float(x) for x in precomputed_topo_vector]
+        if len(seed_topo) != TOPO_EMBEDDING_DIM:
+            raise ValidationError(
+                f"pathway F precomputed_topo_vector dim "
+                f"{len(seed_topo)} != {TOPO_EMBEDDING_DIM}",
+            )
+        notes["vector_source"] = "precomputed"
+    elif seed_model_id is not None:
+        row = await conn.fetchrow(
+            """
+            SELECT m.topo_embedding,
+                   mm.neighborhood_id
+            FROM models m
+            LEFT JOIN model_neighborhood_membership mm
+              ON mm.model_id = m.id
+            WHERE m.id = $1 AND m.tenant_id = $2
+            """,
+            seed_model_id, tenant_id,
+        )
+        if row is None or row["topo_embedding"] is None:
+            return PathwayResult(
+                source_pathway="F",
+                notes={**notes, "reason": "seed_model_missing_topo"},
+            )
+        seed_topo = [float(x) for x in row["topo_embedding"]]
+        seed_membership_id = row["neighborhood_id"]
+        notes["vector_source"] = "seed_model"
+        notes["seed_neighborhood_id"] = (
+            str(seed_membership_id) if seed_membership_id else None
+        )
+    elif seed_neighborhood_id is not None:
+        row = await conn.fetchrow(
+            """
+            SELECT centroid_topo_embedding
+            FROM model_neighborhoods
+            WHERE id = $1
+              AND tenant_id = $2
+              AND status = 'active'
+            """,
+            seed_neighborhood_id, tenant_id,
+        )
+        if row is None or row["centroid_topo_embedding"] is None:
+            return PathwayResult(
+                source_pathway="F",
+                notes={**notes, "reason": "seed_neighborhood_missing_topo"},
+            )
+        seed_topo = [float(x) for x in row["centroid_topo_embedding"]]
+        seed_membership_id = seed_neighborhood_id
+        notes["vector_source"] = "seed_neighborhood"
+    elif seed_natural_text:
+        if embedder is None:
+            raise RetrievalPathwayError(
+                "pathway F requires either a precomputed_topo_vector, a "
+                "seed_model_id, or (seed_natural_text + embedder); "
+                "none was supplied",
+            )
+        try:
+            content_vec = await embedder.embed(seed_natural_text)
+        except OllamaError as e:
+            raise RetrievalPathwayError(
+                f"ollama embedding failed for pathway F: {e}",
+                cause=str(e),
+            ) from e
+        if len(content_vec) != EMBEDDING_DIM:
+            raise ValidationError(
+                f"pathway F content embedding dim "
+                f"{len(content_vec)} != {EMBEDDING_DIM}",
+            )
+        seed_topo = _content_anchor(content_vec)
+        notes["vector_source"] = "ollama_then_anchor"
+    else:
+        return PathwayResult(
+            source_pathway="F",
+            notes={**notes, "reason": "empty_seed"},
+        )
+
+    # --- Optional HNSW ef_search bump --------------------------------
+    if hnsw_ef_search is not None and hnsw_ef_search > 0:
+        try:
+            await conn.execute(
+                f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}"
+            )
+            notes["hnsw_ef_search"] = int(hnsw_ef_search)
+        except asyncpg.PostgresError:
+            notes["hnsw_ef_search"] = None
+
+    # --- Build the HNSW query parameter -----------------------------
+    # Match Pathway B's bind format: numpy array when the codec is
+    # registered, stringified literal otherwise.
+    if _conn_has_vector_codec(conn):
+        import numpy as _np
+        vec_param: Any = _np.asarray(
+            [float(x) for x in seed_topo], dtype="float32"
+        )
+    else:
+        vec_param = (
+            "[" + ",".join(f"{float(x):.8f}" for x in seed_topo) + "]"
+        )
+
+    # --- HNSW NN over topo_embedding --------------------------------
+    nn_rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND topo_embedding IS NOT NULL
+          {"AND id != $4" if seed_model_id is not None else ""}
+        ORDER BY topo_embedding <=> $2::vector
+        LIMIT $3
+        """,
+        *(
+            [tenant_id, vec_param, k, seed_model_id]
+            if seed_model_id is not None
+            else [tenant_id, vec_param, k]
+        ),
+    )
+    nn_models = _hydrate_many(nn_rows, _hydrate_model, notes, "models")
+
+    if len(nn_models) < min(k, 10):
+        exact_rows = await conn.fetch(
+            f"""
+            WITH _params AS (
+              SELECT $2::vector AS _query_vector, $3::int AS _k
+            )
+            SELECT {_MODEL_SELECT_SQL}, topo_embedding AS _topo
+            FROM models, _params
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND topo_embedding IS NOT NULL
+              {"AND id != $4" if seed_model_id is not None else ""}
+            LIMIT LEAST(GREATEST($3::int * 20, 200), 5000)
+            """,
+            *(
+                [tenant_id, vec_param, k, seed_model_id]
+                if seed_model_id is not None
+                else [tenant_id, vec_param, k]
+            ),
+        )
+        scored_exact: list[tuple[float, ModelRow]] = []
+        skipped_exact = 0
+        for r in exact_rows:
+            topo = _vector_to_float_list(r["_topo"])
+            try:
+                model = _hydrate_model(r)
+            except Exception:
+                skipped_exact += 1
+                continue
+            scored_exact.append((_cosine_distance(seed_topo, topo), model))
+        if skipped_exact:
+            notes.setdefault("hydration_skipped", {})[
+                "topology_exact_models"
+            ] = skipped_exact
+        scored_exact.sort(key=lambda pair: (pair[0], -pair[1].activation, str(pair[1].id)))
+        nn_models = [m for _, m in scored_exact[:k]]
+        notes["topology_exact_fallback"] = {
+            "hnsw_rows": len(nn_rows),
+            "candidate_rows": len(scored_exact),
+            "returned": len(nn_models),
+        }
+    notes["nn_returned"] = len(nn_models)
+
+    # --- Neighborhood expansion --------------------------------------
+    expansion_models: list[ModelRow] = []
+    expansion_neighborhood_ids: list[UUID] = []
+    if expand_neighborhoods:
+        # Collect candidate neighborhood ids: the seed's, plus each
+        # NN's. De-dup before fetching members.
+        candidate_neighborhood_ids: list[UUID] = []
+        if seed_membership_id is not None:
+            candidate_neighborhood_ids.append(seed_membership_id)
+
+        # Look up neighborhoods for the NN models in one batch.
+        if nn_models:
+            mem_rows = await conn.fetch(
+                """
+                SELECT DISTINCT neighborhood_id
+                FROM model_neighborhood_membership
+                WHERE tenant_id = $1
+                  AND model_id = ANY($2::uuid[])
+                """,
+                tenant_id,
+                [m.id for m in nn_models],
+            )
+            for mr in mem_rows:
+                nid = mr["neighborhood_id"]
+                if nid not in candidate_neighborhood_ids:
+                    candidate_neighborhood_ids.append(nid)
+
+        if candidate_neighborhood_ids:
+            # Fetch co-members ordered by centrality DESC, joined to
+            # the active neighborhood, only active Models, capped per
+            # neighborhood. We use a window function to keep the
+            # per-neighborhood cap deterministic.
+            already_seen_ids = (
+                {m.id for m in nn_models}
+                | ({seed_model_id} if seed_model_id else set())
+            )
+            exp_rows = await conn.fetch(
+                f"""
+                WITH ranked AS (
+                  SELECT
+                    m.*,
+                    mm.neighborhood_id AS _nh_id,
+                    mm.centrality AS _nh_centrality,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY mm.neighborhood_id
+                      ORDER BY mm.centrality DESC NULLS LAST,
+                               mm.joined_at ASC
+                    ) AS _nh_rnk
+                  FROM model_neighborhood_membership mm
+                  JOIN models m ON m.id = mm.model_id
+                  JOIN model_neighborhoods n
+                    ON n.id = mm.neighborhood_id AND n.status = 'active'
+                  WHERE mm.tenant_id = $1
+                    AND mm.neighborhood_id = ANY($2::uuid[])
+                    AND m.status = 'active'
+                )
+                SELECT {_MODEL_SELECT_SQL}
+                FROM ranked
+                WHERE _nh_rnk <= $3
+                ORDER BY _nh_id, _nh_rnk
+                """,
+                tenant_id,
+                candidate_neighborhood_ids,
+                max_neighborhood_members,
+            )
+            for r in exp_rows:
+                try:
+                    model = _hydrate_model(r)
+                except Exception:
+                    notes.setdefault("hydration_skipped", {}).setdefault(
+                        "expansion_models", 0
+                    )
+                    notes["hydration_skipped"]["expansion_models"] += 1
+                    continue
+                if model.id in already_seen_ids:
+                    continue
+                already_seen_ids.add(model.id)
+                expansion_models.append(model)
+            expansion_neighborhood_ids = candidate_neighborhood_ids
+    notes["expansion_returned"] = len(expansion_models)
+    notes["neighborhoods_expanded"] = [
+        str(n) for n in expansion_neighborhood_ids
+    ]
+
+    return PathwayResult(
+        models=nn_models + expansion_models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="F",
+        notes=notes,
+    )
+
+
 __all__ = [
     "PathwayResult",
     "PathwayName",
@@ -1028,5 +1517,6 @@ __all__ = [
     "pathway_b_semantic",
     "pathway_c_temporal",
     "pathway_d_pattern",
+    "pathway_f_topological",
     "RetrievalPathwayError",
 ]

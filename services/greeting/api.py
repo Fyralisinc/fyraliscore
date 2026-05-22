@@ -15,12 +15,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from services.greeting.cache import CACHE_KEYS, CachedContent, ViewCeoCacheRepo
 from services.greeting.scheduler import GreetingScheduler
 from services.greeting.stream import ViewCeoStreamManager
+from services.greeting.viewer_state_repo import ViewerStateRepo
 
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ def build_ceo_api_router(
     cache: ViewCeoCacheRepo,
     scheduler: GreetingScheduler,
     stream_manager: ViewCeoStreamManager,
+    viewer_state_repo: ViewerStateRepo,
     default_tenant_id: UUID | None = None,
 ) -> APIRouter:
     """Router that exposes:
@@ -41,14 +43,25 @@ def build_ceo_api_router(
     unauthenticated requests fall back to that tenant — used in
     single-tenant dogfood so the UI doesn't need to ship a token while
     real auth is deferred.
+
+    `viewer_state_repo` persists per-viewer last-seen timestamps so the
+    home payload can return a `viewer_state` block — the UI diffs the
+    previous timestamp against the current visit to render delta
+    indicators on the (forthcoming) Map surface.
     """
     router = APIRouter()
 
-    async def _auth(request: Request) -> UUID:
+    async def _auth(request: Request) -> tuple[UUID, str]:
+        """Return (tenant_id, viewer_id).
+
+        viewer_id is the bearer token when present (a stable per-client
+        identifier in the dogfood model). Falls back to "default" for
+        the unauthenticated single-tenant path.
+        """
         token = _extract_token(request)
         if not token:
             if default_tenant_id is not None:
-                return default_tenant_id
+                return default_tenant_id, "default"
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error": "missing_token"},
@@ -56,16 +69,16 @@ def build_ceo_api_router(
         tenant_id = stream_manager.resolve_token(token)
         if tenant_id is None:
             if default_tenant_id is not None:
-                return default_tenant_id
+                return default_tenant_id, "default"
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error": "invalid_token"},
             )
-        return tenant_id
+        return tenant_id, token
 
     @router.get("/view/ceo/home")
     async def get_home(request: Request) -> JSONResponse:
-        tenant_id = await _auth(request)
+        tenant_id, viewer_id = await _auth(request)
         rows = await cache.get_all(tenant_id)
 
         # If any expected key is missing, return a partial with sensible
@@ -81,12 +94,28 @@ def build_ceo_api_router(
                 },
             )
 
+        # Record this visit and capture the previous last-seen (None on
+        # first-ever visit) atomically — the upsert is a single SQL
+        # statement so concurrent GETs from the same viewer can't race.
+        current_visit_at = datetime.now(timezone.utc)
+        previous_last_seen_at = await viewer_state_repo.upsert_last_seen(
+            tenant_id, viewer_id, current_visit_at
+        )
+
         response = _assemble_home_payload(tenant_id, rows)
+        response["viewer_state"] = {
+            "previous_last_seen_at": (
+                _iso(previous_last_seen_at)
+                if previous_last_seen_at is not None
+                else None
+            ),
+            "current_visit_at": _iso(current_visit_at),
+        }
         return JSONResponse(response)
 
     @router.post("/view/ceo/force-refresh")
     async def force_refresh(request: Request) -> JSONResponse:
-        tenant_id = await _auth(request)
+        tenant_id, _ = await _auth(request)
         await scheduler.refresh_tenant(tenant_id, reason="manual")
         return JSONResponse(
             {"ok": True, "tenant_id": str(tenant_id)},

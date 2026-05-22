@@ -21,7 +21,7 @@ import os
 import pathlib
 import threading
 from contextlib import contextmanager
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 import pytest

@@ -5,8 +5,8 @@
 #   1. Sources .env (and .env.dogfood when present) and validates the
 #      DEEPSEEK_API_KEY secret + Postgres + Ollama dependencies.
 #   2. Applies any database migrations that haven't been recorded.
-#   3. Builds + emits the Pelago demo snapshot when the .sql.zst file
-#      doesn't exist yet.
+#   3. Builds + emits the Truss / Northwind / Meridian demo snapshots
+#      when the .sql.zst files don't exist yet.
 #   4. Starts gateway, think_worker, post_commit_worker, and the Vite
 #      UI dev server. PIDs land in /tmp/fyralis_stack.pids so
 #      `scripts/stop.sh` can shut them down cleanly.
@@ -34,8 +34,8 @@ for arg in "$@"; do
 Usage: scripts/start.sh [--no-browser] [--rebuild-snapshots]
 
   --no-browser          Don't open the demo picker in your browser.
-  --rebuild-snapshots   Re-emit the Pelago SQL snapshot even if the
-                        .sql.zst already exists.
+  --rebuild-snapshots   Re-emit Truss/Northwind/Meridian SQL snapshots
+                        even if the .sql.zst files already exist.
 HELP
       exit 0 ;;
     *)
@@ -57,13 +57,7 @@ source .env
 [ -f .env.dogfood ] && source .env.dogfood
 set +a
 
-: "${LLM_PROVIDER:=deepseek}"
-case "$LLM_PROVIDER" in
-  openai)    : "${OPENAI_API_KEY:?OPENAI_API_KEY not set in .env (LLM_PROVIDER=openai)}" ;;
-  anthropic) : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set in .env (LLM_PROVIDER=anthropic)}" ;;
-  deepseek)  : "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY not set in .env (LLM_PROVIDER=deepseek)}" ;;
-  *) fail "Unknown LLM_PROVIDER: $LLM_PROVIDER (expected openai|anthropic|deepseek)" ;;
-esac
+: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY not set in .env}"
 : "${DATABASE_URL:?DATABASE_URL not set in .env}"
 : "${OLLAMA_URL:?OLLAMA_URL not set in .env}"
 GATEWAY_PORT="${GATEWAY_PORT:-8000}"
@@ -72,8 +66,7 @@ UI_PORT="${UI_PORT:-5173}"
 [ -d ".venv" ] || fail ".venv missing — create with: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
 [ -d "ui/node_modules" ] || { log "Installing UI deps…"; (cd ui && npm install --silent); }
 
-pg_isready -d "$DATABASE_URL" -q \
-  || fail "Postgres not reachable via DATABASE_URL (try: docker compose up -d postgres)"
+pg_isready -q || fail "Postgres not running (try: brew services start postgresql)"
 curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null 2>&1 \
   || fail "Ollama not reachable at ${OLLAMA_URL} (try: ollama serve)"
 
@@ -116,13 +109,19 @@ done
 log "Migrations: ${applied} new"
 
 # ----------------------------------------------------------------------
-# 3. Demo snapshot
+# 3. Demo snapshots
 # ----------------------------------------------------------------------
-if [ "$REBUILD_SNAPSHOTS" = "1" ] || [ ! -f "demo/snapshots/pelago-v1.sql.zst" ]; then
-  log "Building Pelago demo snapshot…"
-  .venv/bin/python -m demo.generation.built.pelago --emit --compress >/dev/null
+need_snapshots=0
+for c in truss northwind meridian; do
+  [ -f "demo/snapshots/${c}-v1.sql.zst" ] || need_snapshots=1
+done
+if [ "$REBUILD_SNAPSHOTS" = "1" ] || [ "$need_snapshots" = "1" ]; then
+  log "Building demo snapshots (truss/northwind/meridian)…"
+  .venv/bin/python -m demo.generation.built.truss     --emit --compress >/dev/null
+  .venv/bin/python -m demo.generation.built.northwind --emit --compress --no-spec-counts >/dev/null
+  .venv/bin/python -m demo.generation.built.meridian  --emit --compress --no-spec-counts >/dev/null
 else
-  log "Pelago snapshot already present (use --rebuild-snapshots to refresh)"
+  log "Demo snapshots already present (use --rebuild-snapshots to refresh)"
 fi
 
 # ----------------------------------------------------------------------

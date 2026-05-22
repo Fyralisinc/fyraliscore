@@ -14,6 +14,17 @@ export type QueryChip = {
 export type CardKind = "observation" | "decision" | "question";
 export type CardTagColor = "hot" | "warm" | "soft";
 
+export type CardStake = {
+  unit: "usd" | "fte" | "days" | "risk";
+  value: number;
+};
+
+export type CardCalibrationAnchor = {
+  class: string;
+  hit_rate_30d: number;
+  n_samples: number;
+};
+
 export type CardVerb = {
   id: string;
   label: string;
@@ -41,6 +52,9 @@ export type Card = {
   body_html: string;
   expanded: CardExpanded;
   cached_at: string;
+  stake?: CardStake | null;
+  truth_freshness_seconds?: number | null;
+  calibration?: CardCalibrationAnchor | null;
 };
 
 export type Greeting = {
@@ -74,12 +88,18 @@ export type Status = {
   needs_you_count: number;
 };
 
+export type ViewerState = {
+  previous_last_seen_at: string | null;
+  current_visit_at: string;
+};
+
 export type HomeResponse = {
   greeting: Greeting;
   query_grid: QueryGrid;
   cards: Card[];
   close_line: CloseLine;
   status: Status;
+  viewer_state?: ViewerState;
 };
 
 // POST /view/ceo/ask

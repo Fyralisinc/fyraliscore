@@ -17,7 +17,7 @@ unit back — the recommendation stays active and the user can retry.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 from uuid import UUID
 
@@ -510,11 +510,27 @@ def _optional_dt(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value))
-    except (ValueError, TypeError):
-        return None
+        dt = value
+    elif isinstance(value, date):
+        dt = datetime.combine(value, time.max, tzinfo=timezone.utc)
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+                dt = datetime.combine(
+                    date.fromisoformat(raw),
+                    time.max,
+                    tzinfo=timezone.utc,
+                )
+            else:
+                dt = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _coerce_jsonb(value: Any) -> dict[str, Any]:

@@ -18,6 +18,10 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
+from services.observations.events import (
+    NewObservationEvent,
+    emit_pending_notifications,
+)
 from services.realtime.dispatcher import Dispatcher, EventFrame
 
 
@@ -244,29 +248,23 @@ async def test_backpressure_drops_oldest_and_bumps_counter(
 async def test_replay_since_sequence_num_ordered(
     realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
 ) -> None:
-    # Insert observations BEFORE starting the dispatcher. If the
-    # dispatcher's LISTEN connection is up while these inserts run,
-    # the resulting pg_notify events race with the subsequent
-    # `replay_since` call: any NOTIFY processed after `register_client`
-    # is also pushed to the client's queue, producing duplicates and
-    # out-of-order frames. Inserting first keeps NOTIFY off the wire
-    # for any listener and isolates this test to the replay code path.
-    goal_id = uuid7()
-    ids = []
-    async with realtime_pool.acquire() as c:
-        for _ in range(5):
-            ids.append(
-                await _insert_observation(
-                    c,
-                    tenant_id=tenant_id,
-                    entity_kind="goal",
-                    entity_id=goal_id,
-                )
-            )
-
     disp = Dispatcher(realtime_pool)
     await disp.start()
     try:
+        goal_id = uuid7()
+        # Insert 5 observations BEFORE the client connects.
+        ids = []
+        async with realtime_pool.acquire() as c:
+            for _ in range(5):
+                ids.append(
+                    await _insert_observation(
+                        c,
+                        tenant_id=tenant_id,
+                        entity_kind="goal",
+                        entity_id=goal_id,
+                    )
+                )
+        # Client subscribes.
         state = disp.register_client(
             tenant_id=tenant_id,
             actor_id=seeded_actor,

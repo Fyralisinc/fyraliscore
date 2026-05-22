@@ -58,11 +58,20 @@ async def validate_recommendation(
         tenant, or the entity is in a state that makes the proposed
         change unreachable.
     """
+    change = proposition["proposed_change"]
+    op = change["operation"]
     ref = proposition.get("target_act_ref")
     if ref is None:
         return
     ref_type = ref["type"]
     ref_id_raw = ref["id"]
+    if ref_id_raw is None:
+        if op == "create":
+            return
+        raise ValidationError(
+            "target_act_ref.id is required for non-create recommendations",
+            field="target_act_ref.id",
+        )
     try:
         ref_id = UUID(str(ref_id_raw))
     except (ValueError, TypeError) as e:
@@ -90,8 +99,6 @@ async def validate_recommendation(
             field="target_act_ref",
         )
 
-    change = proposition["proposed_change"]
-    op = change["operation"]
     if op != "transition":
         return
 

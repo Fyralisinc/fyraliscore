@@ -209,7 +209,7 @@ def maybe_inject_create_commitment(
     payload: dict[str, Any] = {
         "title": title,
         "owner_id": str(owner_id),
-        "due_date": due.date().isoformat(),
+        "due_date": due.isoformat(),
     }
     if goal_id_str is not None:
         payload["contributes_to_goal_ids"] = [goal_id_str]
@@ -218,7 +218,7 @@ def maybe_inject_create_commitment(
 
     proposition = {
         "kind": "recommendation",
-        "target_act_ref": None,
+        "target_act_ref": {"type": "commitment", "id": None},
         "proposed_change": {
             "operation": "create",
             "payload": payload,

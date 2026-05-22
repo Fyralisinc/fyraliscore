@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext
@@ -47,6 +48,8 @@ Core discipline:
 - Self-report is not verification; Commitments move to doneverified only on evidence.
 - Every claim must be traceable to an Observation or existing Model.
 - Calibration will be applied to your confidence numbers; assert honestly.
+- Confidence is epistemic, not importance. Direct observed facts can be 0.75-0.9; hearsay, quoted speech, or "apparently" reports should usually be <=0.55; aspirational, conditional, ambiguous, sarcastic, or hedged statements ("maybe", "probably", "eventually", "targeting", "no promises") should stay <0.7 unless independent evidence removes the uncertainty. Context-dependent replies ("+1", "agreed", "what Sarah said", "then?") without the parent message should no-op or stay <=0.55. Never pair a natural sentence that says "non-binding", "hedged", "no promise", "aspirational", or "missing context" with high confidence.
+- Sarcasm is not a reason to no-op. When sarcastic praise is paired with concrete negative facts ("they love us" + "no replies for three weeks"), ignore the surface praise and model the concrete negative fact or concern at calibrated confidence.
 - Every inserted Model MUST be scoped (see "Model Scope" below). scope_actors and scope_entities usually both carry entries; an unscoped Model is invisible to the system.
 - **HARD RULE — new self-reported work MUST become a `create_commitment` recommendation.** When the signal contains "I've started", "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or any equivalent phrase referring to a unit of work, AND `<acts>` contains NO commitment whose title clearly matches that work, you MUST emit a recommendation claim_op with `proposition.proposed_change.operation = "create"` and `proposition.target_act_ref = {"type":"commitment","id":null}`. Self-reports are NOT "purely informational" — they are exactly when the ledger needs a new commitment to track the work. Co-emit the state Model AND the recommendation; they are not redundant. Skipping this rule is a violation of the diff contract. The payload shape and worked example appear below in "Recommendations" — follow it exactly.
 
@@ -95,7 +98,7 @@ Proposition schemas (`proposition` field MUST match one of these exactly based o
 - concern               → {"kind": "concern", "about": "<subject>", "nature": "<what is concerning>", "raised_by": "<actor or role>"}
 - market_assessment     → {"kind": "market_assessment", "subject_external": "<external entity>", "assessment": "<...>"}
 - environmental_trend   → {"kind": "environmental_trend", "signature": "<...>", "direction": "<up|down|mixed>", "strength": "<weak|moderate|strong>"}
-- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid>"} | null (null when no specific existing Act is referenced), "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>" | null (null when no CEO UUID is in context)}
+- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid or null for create>"} | null, "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>" | null (null when no CEO UUID is in context)}
 
 The eleven kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opportunity", or others — map them to the closest valid kind (concern, prediction, etc.).
 
@@ -115,6 +118,8 @@ When a signal contains a phrase like "I've started", "kicking off", "picked up",
 If no goal in `<acts>` plausibly fits, omit `contributes_to_goal_ids` and set `"is_maintenance": true` instead. The presence of an existing `state` Model recording the same fact is NOT a reason to skip the recommendation — `state` Models are epistemic; the recommendation is the ledger-facing counterpart and both should coexist.
 
 Each recommendation MUST set `proposed_change` (operation + payload that the act handler will apply via existing endpoints) and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). Set `target_act_ref` only when you have a confirmed UUID from <acts> — leave it null if no matching Act exists; NEVER invent or guess a UUID. Set `target_actor_id` to the CEO/decision-maker UUID from <actors_in_context> when available, or null if no such UUID is in context. The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
+
+Recommendations are still Models. If a recommendation claim_op has confidence >0.7, include an adequate falsifier on the surrounding entry (for create actions, a `prediction_deadline` like "no matching commitment/goal exists by review time" is usually appropriate). If you cannot write a concrete falsifier, keep confidence <=0.7.
 
 Cap recommendations at FIVE per Think invocation. If the situation surfaces more, pick the highest-impact ones and drop the rest.
 
@@ -269,6 +274,18 @@ claim_ops.update entry shape:
 
 claim_ops.archive entry shape:
 { "op": "archive", "model_id": "<uuid>", "reason": "<brief>" }
+
+claim_ops.relocate entry shape (S4 — DELIBERATE TOPOLOGY REPOSITIONING):
+{ "op": "relocate", "model_id": "<uuid>", "reason": "<brief>",
+  "relocate_target": {
+    "kind": "model_id" | "vector" | "neighborhood_id",
+    "value": "<uuid>" | [<128 floats>] | "<uuid>",
+    "alpha": <float in (0, 1], default 1.0>
+  } }
+Use `relocate` SPARINGLY — only when reasoning explicitly concludes a Model belongs in a different region of the substrate's topology than where its current edge graph has placed it. Examples:
+- A `state` Model that the LLM realizes is structurally a member of a known neighborhood (target.kind="neighborhood_id") even though it has no direct edges to that cluster yet.
+- A `concern` Model that should sit positionally near a specific other Model (target.kind="model_id") because they describe related dynamics, even though the substrate hasn't connected them.
+NEVER emit relocate purely to "tidy up" topology — let the alpha-anchored update rule handle organic positioning. Only use it when the LLM has reasoning the substrate cannot derive from edges alone. Cap relocates at ONE per Think run unless multiple are explicitly required by reasoning.
 
 Do NOT:
 - Propose Commitment state transitions the owner didn't initiate.
@@ -515,6 +532,46 @@ def _build_context_section(
         lines.append("    [no customer counterparty touched]")
     lines.append("  </bridge_context>")
 
+    # Topology context (S3) — surfaces the active neighborhoods the
+    # retrieved Models cluster into, plus recent phase events on the
+    # seed neighborhood for T6 triggers. Only rendered when the
+    # bundle has `topology_context`.
+    lines.append("  <topology_context>")
+    topo = bundle.topology_context
+    if topo and (topo.get("neighborhoods") or topo.get("recent_phase_events")):
+        seed_id = topo.get("seed_neighborhood_id")
+        if seed_id is not None:
+            lines.append(f"    seed_neighborhood_id: {seed_id}")
+        for n in topo.get("neighborhoods", []) or []:
+            density = n.get("density")
+            density_repr = (
+                f"{density:.2f}" if isinstance(density, float) else "n/a"
+            )
+            sig = n.get("named_signature") or "[unnamed]"
+            seed_marker = " (SEED)" if n.get("is_seed") else ""
+            lines.append(
+                f"    - neighborhood id={n.get('id')}{seed_marker} "
+                f"name={_trunc(str(sig), 100)} "
+                f"members={n.get('member_count')} "
+                f"matched_in_bundle={n.get('matched_in_bundle')} "
+                f"density={density_repr}"
+            )
+        evs = topo.get("recent_phase_events") or []
+        if evs:
+            lines.append("    recent_phase_events:")
+            for e in evs:
+                mag = e.get("magnitude")
+                mag_repr = f"{mag:.2f}" if isinstance(mag, float) else "n/a"
+                lines.append(
+                    f"      - kind={e.get('kind')} "
+                    f"at={e.get('occurred_at')} "
+                    f"name={_trunc(str(e.get('named_signature') or '[unnamed]'), 80)} "
+                    f"magnitude={mag_repr}"
+                )
+    else:
+        lines.append("    [no neighborhood context for this trigger]")
+    lines.append("  </topology_context>")
+
     lines.append("</retrieved_context>")
     return "\n".join(lines)
 
@@ -606,6 +663,52 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "re-evaluation. If the trigger carries a cause_model_id and "
             "cause_kind, update the dependent Model's confidence or "
             "archive it as appropriate."
+        )
+    elif trigger.kind == "T6":
+        # T6 is the topology phase-event trigger. The triggering "event"
+        # is structural (a neighborhood emerged / dissolved / split /
+        # merged / drifted). The LLM's job is to:
+        #   - Optionally NAME the neighborhood (overwrite the heuristic).
+        #   - Decide whether the structural shift warrants a CEO-facing
+        #     `recommendation` claim_op.
+        #   - Update confidence / status on Models that no longer fit
+        #     their (former) neighborhood, when warranted.
+        # See the <topology_context> section above for what changed.
+        body.append(
+            "This is a T6 trigger — a TOPOLOGY phase event. The "
+            "substrate's emergent neighborhood structure just shifted; "
+            "see <topology_context> above for details (kind, magnitude, "
+            "members, neighborhood lineage). The seed neighborhood, "
+            "predecessor neighborhoods, and member Model ids are all "
+            "in the trigger payload.\n"
+            "\n"
+            "Decide whether this structural shift warrants any of:\n"
+            "  • Naming the neighborhood — emit a `claim_op.update` on "
+            "    one of the member Models recording a `state` "
+            "    proposition that captures the cluster's theme. The "
+            "    heuristic name is in <topology_context>; if a more "
+            "    accurate human-readable description fits, write a "
+            "    state Model whose subject is the neighborhood theme.\n"
+            "  • Surfacing the shift to the CEO — when the event kind "
+            "    is `emergence`, `merge`, or a high-magnitude `split` "
+            "    (>= 0.5), the structural transition often deserves a "
+            "    CEO-facing `recommendation` Model. Use it to flag "
+            "    \"these Models are now clustering together, here's "
+            "    what that probably means for the org.\"\n"
+            "  • No-op — when the phase event is small or routine "
+            "    (low-magnitude drift, expected dissolution of stale "
+            "    Models), return an empty diff. Topology shifts that "
+            "    do not warrant human or epistemic action are valid.\n"
+            "\n"
+            "STRICT CONSTRAINTS:\n"
+            "  - Do NOT invent member Model ids — use only ids in "
+            "    <models> or in the trigger payload.\n"
+            "  - Do NOT emit cascade-y act_ops just because the "
+            "    cluster shape changed; act_ops require a signal "
+            "    asserting a state transition on a specific Act, not "
+            "    a topology shift.\n"
+            "  - Cap the diff at 2 claim_ops for T6 unless the event "
+            "    explicitly demands more (rarely)."
         )
     body.append("")
     body.append(

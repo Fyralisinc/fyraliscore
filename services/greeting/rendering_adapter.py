@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from services.greeting.snapshot import (
     FounderContext,
     QueryGridSnapshot,
     SubstrateSnapshot,
+    _serialise,
 )
 
 

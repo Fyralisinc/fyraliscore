@@ -2,6 +2,7 @@
 Suppression + per-tenant model routing helpers."""
 from __future__ import annotations
 
+import os
 
 import asyncpg
 import pytest
@@ -29,11 +30,11 @@ async def test_should_suppress_is_false_for_unknown_tenant(
 async def test_should_suppress_is_true_for_demo_tenant(
     fresh_db: asyncpg.Pool,
 ):
-    cfg = await get_demo_config_by_company(fresh_db, "pelago")
+    cfg = await get_demo_config_by_company(fresh_db, "northwind")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-suppress",
+        fresh_db, tenant_id=tid, name="northwind-suppress",
         is_demo=True, demo_config_id=cfg.id,
     )
     assert (await should_suppress(fresh_db, tid)) is True
@@ -72,11 +73,11 @@ async def test_resolve_model_returns_haiku_for_demo_tenant(
     fresh_db: asyncpg.Pool, monkeypatch
 ):
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    cfg = await get_demo_config_by_company(fresh_db, "pelago")
+    cfg = await get_demo_config_by_company(fresh_db, "truss")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-routing",
+        fresh_db, tenant_id=tid, name="truss-routing",
         is_demo=True, demo_config_id=cfg.id,
     )
     out = await resolve_model(
@@ -90,11 +91,11 @@ async def test_resolve_model_returns_haiku_for_demo_tenant(
 
 @pytest.mark.asyncio
 async def test_determinism_seed_resolves_for_demo(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "pelago")
+    cfg = await get_demo_config_by_company(fresh_db, "truss")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-seed",
+        fresh_db, tenant_id=tid, name="truss-seed",
         is_demo=True, demo_config_id=cfg.id,
     )
     seed = await determinism_seed_for_tenant(fresh_db, tid)

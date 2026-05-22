@@ -164,6 +164,70 @@ export type DetailPanel = {
 export type WatchRequest = { recommendation_id: string };
 export type WatchResponse = { ok: boolean; watch_id: string; recommendation_id: string };
 
+export type Stake = {
+  unit: "usd" | "fte" | "days" | "risk";
+  value: number;
+};
+
+export type ViewerState = {
+  previous_last_seen_at: string | null;
+  current_visit_at: string;
+};
+
+// ---- The Map ----------------------------------------------------------
+// Three asymmetric rows that answer the CEO's three questions at glance:
+//   DECIDE   — what requires me, by when, at what stake
+//   MOVED    — what changed since I last looked (named actors)
+//   HANDLED  — what the system did for me while I was away
+// The Map is the index; the cards below are the chapters.
+
+export type MapDelta = "up" | "down";
+
+export type MapDecideRow = {
+  id: string;
+  sentence_html: string;          // serif italic actor inside a sans sentence
+  drill_card_id?: string;
+};
+
+export type MapMovedRow = {
+  id: string;
+  sentence_html: string;
+  delta: MapDelta;
+  drill_card_id?: string;
+};
+
+export type MapHandled = {
+  signals_processed: number;
+  escalated: number;
+  absorbed: number;
+  window_label: string;           // e.g. "since 17:42" or "in the last 18h"
+};
+
+export type MapData = {
+  decide: MapDecideRow[];
+  moved: MapMovedRow[];
+  handled: MapHandled | null;
+  total_moved: number;
+};
+
+// ---- Command Center surfaces (dashboard direction) -------------------
+
+export type DigestTone = "critical" | "warning" | "neutral" | "positive";
+
+export type RecentSignal = {
+  id: string;
+  icon: "alert" | "warning" | "info" | "trend";
+  title: string;
+  context: string;
+  age_label: string;          // "1m ago" / "27m ago"
+  tone: DigestTone;
+};
+
+export type RecentSignalsList = {
+  signals: RecentSignal[];
+  total: number;
+};
+
 // One probe → response exchange in a card-scoped conversation.
 // Mirrors the row shape of card_exchanges (migration 0024).
 export type ProbeFollowUp = ProbeChip;
@@ -221,6 +285,10 @@ export type RecCard = {
   expand_cta?: string;           // "Ask why" | "Inspect" | "Open"
   actions: TriageAction[];       // primary first; UI collapses into Approve / Discuss / Not now
   detail?: DetailPanel;
+  // CEO-map Tier 1 enrichment fields (optional; absent when substrate
+  // can't derive them honestly).
+  stake?: Stake | null;
+  truth_freshness_seconds?: number | null;
 };
 
 export type SignalTone = "default" | "accent" | "warn" | "amber";
@@ -303,6 +371,9 @@ export type TodayResponse = {
   ask_suggestions: AskSuggestion[];
   calibration_alert?: CalibrationAlert;
   empty_state?: { headline: string; body: string };
+  viewer_state?: ViewerState;
+  map?: MapData;
+  recent_signals?: RecentSignalsList;
 };
 
 // Triage write

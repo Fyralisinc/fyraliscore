@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import signal
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -46,7 +47,7 @@ from lib.shared.ids import uuid7
 from services.retrieval.primary import TriggerContext
 
 from .observability import METRICS, emit
-from .reason import think
+from .reason import ThinkRunOutcome, think
 
 
 _log = structlog.get_logger(__name__)
@@ -108,6 +109,37 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
     region_spec = payload.get("region_spec")
     if isinstance(region_spec, dict):
         trigger.region_spec = region_spec
+
+    # S3 — topology phase event (T6) payload fields. The
+    # neighborhood_detector worker writes these into the trigger
+    # payload (see services.workers.neighborhood_detector.worker).
+    tev_id = payload.get("topology_event_id")
+    if isinstance(tev_id, str):
+        try:
+            trigger.topology_event_id = UUID(tev_id)
+        except ValueError:
+            pass
+    tev_kind = payload.get("topology_event_kind")
+    if isinstance(tev_kind, str):
+        trigger.topology_event_kind = tev_kind
+    nh_id = payload.get("neighborhood_id")
+    if isinstance(nh_id, str):
+        try:
+            trigger.neighborhood_id = UUID(nh_id)
+        except ValueError:
+            pass
+    members = payload.get("member_model_ids")
+    if isinstance(members, list):
+        out = []
+        for m in members:
+            if isinstance(m, UUID):
+                out.append(m)
+            elif isinstance(m, str):
+                try:
+                    out.append(UUID(m))
+                except ValueError:
+                    continue
+        trigger.member_model_ids = out
 
 
 # ---------------------------------------------------------------------

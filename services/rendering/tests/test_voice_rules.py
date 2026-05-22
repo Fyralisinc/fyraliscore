@@ -6,6 +6,7 @@ where the rule only fires on appropriate kinds (RequiresSpecificity).
 """
 from __future__ import annotations
 
+import pytest
 
 from services.rendering.voice_rules import (
     NoEmoji,

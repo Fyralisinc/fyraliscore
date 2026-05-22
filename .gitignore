@@ -73,3 +73,7 @@ id_ed25519*
 *.sqlite3
 *.db
 *.dump
+
+
+# Synthesis harness per-run calibration artifacts (the baseline + README are tracked)
+tests/synthesis_harness/runs/

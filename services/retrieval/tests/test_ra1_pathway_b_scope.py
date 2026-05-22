@@ -14,6 +14,8 @@ Verification criteria (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-1):
 """
 from __future__ import annotations
 
+import json
+import uuid
 from uuid import UUID
 
 import pytest
