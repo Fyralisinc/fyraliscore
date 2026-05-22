@@ -249,6 +249,64 @@ async def test_backfill_parity_github_commit_to_push():
     assert webhook_eid == backfill_eid == f"{repo}@{sha}"
 
 
+@pytest.mark.asyncio
+async def test_backfill_parity_github_pr_review():
+    """Class B fan-out: pr_reviews backfill ↔ pull_request_review webhook
+    share review.node_id."""
+    node_id = "PRR_kwDO9"
+    review = {
+        "node_id": node_id, "state": "approved", "body": "LGTM",
+        "user": {"login": "octocat"}, "submitted_at": "2025-02-01T00:00:00Z",
+    }
+    webhook_body = {
+        "action": "submitted",
+        "review": review,
+        "pull_request": {"number": 9, "node_id": "PR_x"},
+        "repository": {"full_name": "acme/api"},
+        "sender": {"login": "octocat"},
+    }
+    from services.ingestion.fetchers.github import _build_review_record
+
+    backfill_record = _build_review_record(
+        "acme/api", {"number": 9, "node_id": "PR_x"}, review,
+    )
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body,
+        {"X-GitHub-Event": "pull_request_review"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == node_id
+
+
+@pytest.mark.asyncio
+async def test_backfill_parity_github_check_run():
+    """Class B fan-out: check_runs backfill ↔ check_run webhook share
+    check.node_id."""
+    node_id = "CR_kwDO5"
+    check = {
+        "node_id": node_id, "name": "ci/build", "status": "completed",
+        "conclusion": "success", "head_sha": "abc123",
+        "completed_at": "2025-02-01T00:00:00Z",
+    }
+    webhook_body = {
+        "action": "completed",
+        "check_run": check,
+        "repository": {"full_name": "acme/api"},
+    }
+    from services.ingestion.fetchers.github import _build_check_run_record
+
+    backfill_record = _build_check_run_record("acme/api", check)
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body, {"X-GitHub-Event": "check_run"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == node_id
+
+
 # =====================================================================
 # Slack.
 # =====================================================================

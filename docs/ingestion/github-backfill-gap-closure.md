@@ -28,10 +28,14 @@ two paths double-count.
 |---|---|---|---|---|
 | Issues | `issues` / `issue.node_id` | `GET /repos/{o}/{r}/issues?state=all` | repo-level list | **done** |
 | Pull requests | `pull_request` / `pr.node_id` | `GET /repos/{o}/{r}/pulls?state=all` | repo-level list | **done** |
-| **Issue/PR comments** | `issue_comment` / `comment.node_id` | `GET /repos/{o}/{r}/issues/comments?sort=updated` | **repo-level list** | **Class A — this PR** |
-| **Commits** | `push` / `{repo}@{after}` (tip SHA) | `GET /repos/{o}/{r}/commits` | **repo-level list** | **Class A — this PR** |
-| **PR reviews** | `pull_request_review` / `review.node_id` | `GET /repos/{o}/{r}/pulls/{n}/reviews` | **per-PR fan-out** | **Class B — next** |
-| **Check results** | `check_run` / `check.node_id` | `GET /repos/{o}/{r}/commits/{sha}/check-runs` | **per-commit fan-out** | **Class B — next** |
+| **Issue/PR comments** | `issue_comment` / `comment.node_id` | `GET /repos/{o}/{r}/issues/comments?sort=updated` | **repo-level list** | **done (Class A)** |
+| **Commits** | `push` / `{repo}@{after}` (tip SHA) | `GET /repos/{o}/{r}/commits` | **repo-level list** | **done (Class A)** |
+| **PR reviews** | `pull_request_review` / `review.node_id` | `GET /repos/{o}/{r}/pulls/{n}/reviews` | **per-PR fan-out** | **done (Class B)** |
+| **Check results** | `check_run` / `check.node_id` | `GET /repos/{o}/{r}/commits/{sha}/check-runs` | **per-commit fan-out** | **done (Class B, opt-in)** |
+
+All six mandatory signals are now backfilled at dedup parity with live.
+`check_runs` is opt-in via `GITHUB_BACKFILL_CHECK_RUNS=1` (default off) and fans
+out over **PR-head SHAs** (bounded by PR count), not all commits.
 
 ### Two classes of endpoint
 
@@ -102,22 +106,39 @@ Current App scope: `issues`, `pull_requests`, `metadata` (read). Add:
      "commits")`. (~4 shards/repo; ~80/tenant at 20 repos — within the ~250 target.)
 5. **Tests** — fetcher reshape per new type, planner shard count, push timestamp.
 
-### Class B — next PR (pr_reviews + check_runs, fan-out)
+### Class B — DONE (pr_reviews + check_runs, fan-out)
 
-6. **Two-level resumable cursor** `GithubFanoutCursor`:
-   `{phase, parent_page, parent_queue: [refs], current_parent, child_page,
-   last_seen_updated_at}`. Each `fetch_page` call does **one unit**: either
-   advance parent enumeration (fetch next page of PRs/commits → fill
-   `parent_queue`, return `[]`), or drain one child page for `current_parent`
-   (fetch reviews/check-runs → return records). Fully restorable from the cursor
-   dict for the N1 invariant.
-7. **Client** read methods: `list_pull_numbers(page)`, `list_pr_reviews(n, page)`,
-   `list_commit_shas(page)`, `list_check_runs(sha, page)`.
-8. **Reshape**: review → `{action:"submitted", review, pull_request:{number,
-   node_id}, repository, sender, webhook_metadata}`; check → `{action:"completed",
-   check_run, repository, webhook_metadata}`.
-9. **Bound check_runs** — per-commit over *all* history is O(commits) API calls
-   and will exhaust rate limits. Restrict to PR-head SHAs or commits within the
-   backfill window; check_runs is the highest-cost / lowest-ROI signal — consider
-   gating it behind an env flag, default off.
-10. **Mock client + tests** for the fan-out paths and dedup parity.
+Implemented as shipped:
+
+6. **Two-level resumable cursor** `GithubFanoutCursor`
+   (`services/ingestion/fetchers/github.py`):
+   `{parent_page, parents_exhausted, parent_queue:[entries], current_parent,
+   child_page, last_seen_updated_at}`. Each `_fetch_page_fanout` call does
+   **one HTTP fetch** — advance PR enumeration (fill `parent_queue`, return `[]`)
+   or drain one child page for `current_parent` (return records) — fully
+   restorable from the cursor dict for the N1 invariant.
+7. **Parents are always PRs** (reusing `list_repo_events(event_type=
+   "pull_requests")`). For `pr_reviews` the parent entry carries `{number,
+   node_id}`; for `check_runs` it carries `{sha}` from `pr.head.sha`.
+8. **Client** read methods added: `list_pr_reviews(pull_number, page)`,
+   `list_check_runs(ref, page)` (unwraps the `{check_runs:[...]}` envelope).
+9. **Reshape**: `_build_review_record` → `{action:"submitted", review,
+   pull_request:{number,node_id}, repository, sender, webhook_metadata}`;
+   `_build_check_run_record` → `{action:"completed", check_run, repository,
+   webhook_metadata}`.
+10. **check_runs bounded** to PR-head SHAs (O(PRs), not O(commits)) and gated by
+    `GITHUB_BACKFILL_CHECK_RUNS=1` (default off). `pr_reviews` is always on.
+11. **Reconciler guard**: `_RECONCILABLE_EVENT_TYPES = {issues, pull_requests,
+    issue_comments}` — commits (no `updated_at`) and fan-out shards (no
+    repo-level endpoint) are skipped rather than KeyError'd; their backfill is
+    one-shot.
+12. **Mock client** gained `list_pr_reviews` / `list_check_runs`; parity +
+    fan-out + gating tests added (fetcher, planner, normalizer parity suites).
+
+### Follow-up (not in scope)
+
+- `pull_request_review_comment` (inline review comments) and `commit_comment`
+  remain tier-2 — they need *new live shapers* (`_EVENT_SHAPERS`) before backfill
+  parity is meaningful.
+- App permission deltas still required operationally: `contents:read` (commits),
+  `checks:read` (check_runs).

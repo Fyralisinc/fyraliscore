@@ -116,5 +116,25 @@ async def test_invalid_repo_name_skipped():
     assert repos == {"valid/repo"}
 
 
+async def test_check_runs_off_by_default():
+    """pr_reviews is always planned; check_runs is gated off by default."""
+    ctx = _ctx(repos=["acme/api"])
+    shards = await plan_shards_github(ctx)
+    types = {s.shard_identifier["event_type"] for s in shards}
+    assert "pr_reviews" in types
+    assert "check_runs" not in types
+    assert len(shards) == len(EVENT_TYPES)
+
+
+async def test_check_runs_enabled_by_env(monkeypatch):
+    """GITHUB_BACKFILL_CHECK_RUNS=1 adds the optional check_runs shard."""
+    monkeypatch.setenv("GITHUB_BACKFILL_CHECK_RUNS", "1")
+    ctx = _ctx(repos=["acme/api"])
+    shards = await plan_shards_github(ctx)
+    types = {s.shard_identifier["event_type"] for s in shards}
+    assert "check_runs" in types
+    assert len(shards) == len(EVENT_TYPES) + 1
+
+
 async def test_dispatch_table_wired():
     assert PLANNER_DISPATCH["github"] is plan_shards_github
