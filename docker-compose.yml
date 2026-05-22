@@ -245,6 +245,16 @@ services:
     container_name: company_os_reconciler
     command: python -m services.ingestion.workflows.reconciler
 
+  # Steady-state safety net: re-runs per-source gap detection for
+  # already-reconciled runs on a schedule, re-sharing when a live event
+  # was missed after onboarding (the one place github/slack/discord
+  # have no durable live watermark). Exposes /healthz + /metrics.
+  periodic_reconciler:
+    <<: *worker
+    container_name: company_os_periodic_reconciler
+    command: python -m services.ingestion.workflows.periodic_reconciler
+    healthcheck: *consumer-healthcheck
+
   # ---- Kafka consumer chain ----------------------------------------
   normalizer:
     <<: *worker

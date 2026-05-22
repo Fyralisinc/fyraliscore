@@ -330,6 +330,56 @@ async def _insert_reshared_shard(
     )
 
 
+async def apply_reshare(
+    conn: asyncpg.Connection, *,
+    run_id: UUID, source: str, tenant_id: UUID,
+    decision: ReconciliationDecision,
+) -> None:
+    """Apply a `has_gaps=True` decision: increment pass_count, flip
+    `status` back to 'in_progress', mark the affected originals
+    `reconciliation_resharded`, INSERT the new gap shards, and emit
+    one `shard_fetch_requested` per new shard. All in the caller's
+    transaction.
+
+    Module-level (Rule 1) so BOTH the at-completion Reconciler
+    (`_handle_reshare_path`) and the PeriodicReconciler share one
+    implementation of the re-share side effect — the two services
+    diverge only on *when* a reshare fires, never on *how*.
+    """
+    # _start_reshare returns the new pass_count; SourceOnboarding reads
+    # it from the row when constructing the next rollup's idempotency_key.
+    await _start_reshare(conn, run_id=run_id, source=source)
+
+    # Per the ResharedShard contract each new shard references one
+    # original; multiple new shards may reference the SAME original
+    # (one original split into N). De-duplicate so the UPDATE runs once
+    # per original.
+    original_ids = {rs.parent_shard_id for rs in decision.new_shards}
+    for orig_id in original_ids:
+        await _mark_original_resharded(conn, shard_id=orig_id)
+
+    for reshared in decision.new_shards:
+        new_shard_id = uuid7()
+        await _insert_reshared_shard(
+            conn, shard_id=new_shard_id,
+            run_id=run_id, tenant_id=tenant_id, source=source,
+            reshared=reshared,
+        )
+        await emit_signal(
+            conn,
+            workflow_kind=SHARD_FETCH_INBOX_KIND,
+            workflow_id=SHARD_FETCH_INBOX_ID,
+            signal_kind=SIGNAL_KIND_SHARD_REQUESTED,
+            idempotency_key=str(new_shard_id),
+            signal_data={
+                "shard_id": str(new_shard_id),
+                "onboarding_run_id": str(run_id),
+                "tenant_id": str(tenant_id),
+                "source": source,
+            },
+        )
+
+
 # ---------------------------------------------------------------------
 # Service.
 # ---------------------------------------------------------------------
@@ -519,46 +569,12 @@ class Reconciler(LongRunningService):
         run_id: UUID, source: str, tenant_id: UUID,
         decision: ReconciliationDecision,
     ) -> None:
-        """Reconciler decided gaps exist. Increment pass_count,
-        transition status back to in_progress, mark originals
-        resharded, INSERT new shards, emit shard_fetch_requested
-        per new shard. All in this transaction."""
-        # _start_reshare returns the new pass_count, but we don't use
-        # it directly here — SourceOnboarding reads it from the row
-        # when constructing the next rollup's idempotency_key.
-        await _start_reshare(conn, run_id=run_id, source=source)
-
-        # Mark the parent shards 'reconciliation_resharded'. Per the
-        # ResharedShard contract, each new shard references one
-        # original; multiple new shards may reference the SAME
-        # original (one original split into N new ones). De-duplicate
-        # via a set so we don't run the UPDATE more than once per
-        # original.
-        original_ids = {rs.parent_shard_id for rs in decision.new_shards}
-        for orig_id in original_ids:
-            await _mark_original_resharded(conn, shard_id=orig_id)
-
-        # INSERT new shards + emit shard_fetch_requested per shard.
-        for reshared in decision.new_shards:
-            new_shard_id = uuid7()
-            await _insert_reshared_shard(
-                conn, shard_id=new_shard_id,
-                run_id=run_id, tenant_id=tenant_id, source=source,
-                reshared=reshared,
-            )
-            await emit_signal(
-                conn,
-                workflow_kind=SHARD_FETCH_INBOX_KIND,
-                workflow_id=SHARD_FETCH_INBOX_ID,
-                signal_kind=SIGNAL_KIND_SHARD_REQUESTED,
-                idempotency_key=str(new_shard_id),
-                signal_data={
-                    "shard_id": str(new_shard_id),
-                    "onboarding_run_id": str(run_id),
-                    "tenant_id": str(tenant_id),
-                    "source": source,
-                },
-            )
+        """Reconciler decided gaps exist. Delegates to the shared
+        module-level `apply_reshare` (also used by PeriodicReconciler)."""
+        await apply_reshare(
+            conn, run_id=run_id, source=source,
+            tenant_id=tenant_id, decision=decision,
+        )
 
     async def _emit_source_completed(
         self, conn: asyncpg.Connection, *,
@@ -685,8 +701,10 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
+    "RECONCILER_DISPATCH_TIMEOUT_S",
     "Reconciler",
     "ReconcilerConfig",
+    "apply_reshare",
     "SHARD_FETCH_INBOX_ID",
     "SHARD_FETCH_INBOX_KIND",
     "SIGNAL_KIND_SHARDS_COMPLETED",
