@@ -84,10 +84,14 @@ async def _relax_tenant_fks(conn: asyncpg.Connection) -> None:
         DO $$
         DECLARE r record;
         BEGIN
+          -- conislocal = true selects the constraint as defined on the
+          -- parent (or a standalone table); partitioned children carry
+          -- an inherited copy (conislocal = false) that cannot be
+          -- dropped directly — dropping the parent's cascades to them.
           FOR r IN
             SELECT conrelid::regclass AS tbl, conname
             FROM pg_constraint
-            WHERE contype = 'f' AND conname ~ '_tenant_fk$'
+            WHERE contype = 'f' AND conname ~ '_tenant_fk$' AND conislocal
           LOOP
             EXECUTE format(
               'ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname
