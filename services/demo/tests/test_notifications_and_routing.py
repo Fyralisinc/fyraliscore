@@ -2,7 +2,6 @@
 Suppression + per-tenant model routing helpers."""
 from __future__ import annotations
 
-import os
 
 import asyncpg
 import pytest

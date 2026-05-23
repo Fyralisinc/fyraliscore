@@ -18,7 +18,6 @@ LLM and are deterministic.
 """
 from __future__ import annotations
 
-from datetime import timedelta
 from uuid import UUID
 
 import asyncpg

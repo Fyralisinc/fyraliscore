@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import pathlib
-from collections.abc import Iterable
 
 import asyncpg
 

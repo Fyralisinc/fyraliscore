@@ -5,10 +5,8 @@ that no Model row is mutated.
 """
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from services.retrieval.maintenance import (

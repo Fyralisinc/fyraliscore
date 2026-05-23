@@ -14,7 +14,6 @@ Ollama for the path-routing assertions. The E2E integration test
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from uuid import UUID

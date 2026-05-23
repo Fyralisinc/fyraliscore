@@ -25,12 +25,9 @@ Request flow:
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import Any
-from uuid import UUID
 
-import asyncpg
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse

@@ -42,7 +42,6 @@ def fake_strategies(monkeypatch):
     }
     monkeypatch.setattr(strat_pkg, "STRATEGIES", replacements, raising=True)
     # Also patch the import in strategies package used by core.get_strategy.
-    from services.query import core as core_mod
     from services.query import strategies as strategies_mod
     monkeypatch.setattr(strategies_mod, "STRATEGIES", replacements, raising=True)
     yield replacements

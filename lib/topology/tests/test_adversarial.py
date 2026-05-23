@@ -18,8 +18,6 @@ from lib.topology.naming import (
     member_summaries_from_rows,
 )
 from lib.topology.relocate import (
-    RELOCATE_CASCADE_MAX_FANOUT,
-    RelocateTarget,
     blend_topo,
     damped_magnitude,
     parse_relocate_target,

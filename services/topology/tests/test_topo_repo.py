@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from lib.shared.ids import uuid7
 from lib.topology.embeddings import (
-    ALPHA_DEFAULT,
     TOPO_EMBEDDING_DIM,
     content_anchor,
     delta_magnitude,

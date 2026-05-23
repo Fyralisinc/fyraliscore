@@ -5,7 +5,6 @@ fallthrough to None.
 """
 from __future__ import annotations
 
-import pytest
 
 from services.calibration import classify_card
 

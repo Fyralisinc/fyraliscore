@@ -50,11 +50,8 @@ from lib.shared.db import transaction
 from lib.shared.errors import InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import (
-    ResourceKind,
-    ResourceRow,
     ResourceTransactionRow,
     ResourceTransactionType,
-    ResourceUtilizationState,
 )
 from services.observations.state_change import emit_state_change
 from services.resources.partitions import ensure_partition_for

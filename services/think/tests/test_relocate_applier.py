@@ -7,7 +7,6 @@ services/topology/tests/conftest.py."""
 from __future__ import annotations
 
 import os
-import sys
 from uuid import uuid4
 
 import asyncpg

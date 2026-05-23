@@ -11,8 +11,6 @@ THINK-DESIGN-AUDIT §8.2. Verifies:
 from __future__ import annotations
 
 import asyncio
-import time
-import uuid
 
 import pytest
 

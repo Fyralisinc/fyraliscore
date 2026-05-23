@@ -14,16 +14,13 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
 
-import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
 
 from services.think.observability import (
-    METRICS, Metrics, ThinkRunRecord, emit,
+    Metrics, ThinkRunRecord, emit,
     insert_think_run, update_think_run, write_region_lock_log,
 )
 

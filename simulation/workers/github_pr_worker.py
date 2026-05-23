@@ -22,7 +22,6 @@ if str(_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_ROOT))
 
 import argparse
-import json
 
 from simulation.personas import get_persona
 from simulation.workers._common import (

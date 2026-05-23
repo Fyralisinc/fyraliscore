@@ -29,7 +29,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from uuid import UUID, uuid4
 
@@ -45,7 +44,7 @@ from services.entity_aliases.repo import EntityAliasRepo
 from services.gateway.db_bootstrap import _register_codecs
 from services.synthetic.core import SyntheticSignal, inject
 
-from simulation.personas import Persona, get_persona, load_personas_cached
+from simulation.personas import load_personas_cached
 
 
 DEFAULT_TENANT_ENV = "SIMULATION_TENANT_ID"

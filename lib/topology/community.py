@@ -81,7 +81,6 @@ See:
 """
 from __future__ import annotations
 
-import math
 import os
 from collections import defaultdict
 from typing import Iterable, Sequence

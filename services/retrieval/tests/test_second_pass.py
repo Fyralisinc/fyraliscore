@@ -3,10 +3,8 @@ Second-pass expansion tests.
 """
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from services.retrieval.primary import TriggerContext, primary_retrieve
@@ -54,7 +52,6 @@ async def test_second_pass_supporting_evidence_adds_observations(
     # Build a Model with a supporting_event_id to exercise this
     # dimension. Pick one of the first-pass models and UPDATE it in
     # the test tx to point at a specific observation.
-    import json
     if not first.models:
         pytest.skip("no first-pass models")
     target = first.models[0]

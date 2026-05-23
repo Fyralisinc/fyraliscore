@@ -41,9 +41,8 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 
-from lib.shared.ids import uuid7
 from services.realtime.dispatcher import Dispatcher, _ClientState
 
 

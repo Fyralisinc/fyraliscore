@@ -18,7 +18,6 @@ These are added to `_PUBLIC_PATH_PREFIXES` in gateway/main.py via the
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import UUID
 
@@ -27,7 +26,6 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.demo.repo import (
-    end_demo_session,
     get_demo_session,
     list_demo_configs,
     touch_demo_session,

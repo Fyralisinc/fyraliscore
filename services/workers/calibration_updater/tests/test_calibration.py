@@ -17,13 +17,10 @@ from datetime import datetime, timedelta, timezone
 import asyncpg
 import pytest
 
-from lib.shared.ids import uuid7
 
 from services.models.calibration import apply_calibration
 from services.workers.calibration_updater.compute import (
-    CONFIDENCE_BUCKETS,
     DEFAULT_OFFSETS,
-    MIN_SAMPLES_PER_TUPLE,
     OFFSET_MAX,
     OFFSET_MIN,
     Stat,
@@ -32,10 +29,7 @@ from services.workers.calibration_updater.compute import (
     cold_start_offsets,
     compute_offsets_for_tuple,
 )
-from services.workers.calibration_updater.worker import run_once
 from services.workers.calibration_updater.tests.conftest import (
-    insert_actor,
-    insert_observation,
     insert_model,
 )
 

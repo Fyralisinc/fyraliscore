@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-import pytest
 
 from services.query.strategies import get_strategy
 from services.query.strategies.base import (

@@ -23,9 +23,9 @@ That makes the demo seed reproducible and the test surface trivial.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any
 from uuid import UUID
 
 import asyncpg

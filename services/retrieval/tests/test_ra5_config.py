@@ -15,8 +15,6 @@ Verification (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-5):
 from __future__ import annotations
 
 import json
-import os
-import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -25,7 +23,6 @@ import pytest
 from lib.shared.ids import uuid7
 
 from services.retrieval.config import (
-    CONFIG,
     RetrievalConfig,
     reload_config,
 )

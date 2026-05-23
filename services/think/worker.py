@@ -32,7 +32,6 @@ import asyncio
 import json
 import os
 import signal
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -47,7 +46,7 @@ from lib.shared.ids import uuid7
 from services.retrieval.primary import TriggerContext
 
 from .observability import METRICS, emit
-from .reason import ThinkRunOutcome, think
+from .reason import think
 
 
 _log = structlog.get_logger(__name__)

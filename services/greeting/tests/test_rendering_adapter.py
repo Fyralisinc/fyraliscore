@@ -6,11 +6,9 @@ under development.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import pytest
 
 from services.greeting.rendering_adapter import MockRenderingAdapter
 from services.greeting.snapshot import (
@@ -18,9 +16,7 @@ from services.greeting.snapshot import (
     CommitmentRef,
     ConversationContext,
     FounderContext,
-    ModelRef,
     QueryGridSnapshot,
-    ResourceRef,
     StateChange,
     SubstrateSnapshot,
 )

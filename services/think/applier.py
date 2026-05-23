@@ -26,7 +26,6 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import CompanyOSError, ValidationError
-from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.acts import commitments as commitments_svc
 from services.acts import decisions as decisions_svc

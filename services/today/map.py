@@ -16,7 +16,7 @@ renders `sentence_html` with the actor in serif italic via `<em>`.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 

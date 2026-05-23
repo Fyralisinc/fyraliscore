@@ -18,10 +18,8 @@ back at teardown) and tenant UUID isolation.
 """
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -42,7 +40,6 @@ async def make_model(tx_conn, tenant, born_from_event, embedding):
     so we can stage many Models without spinning the full 9-step
     pipeline). Returns a callable that creates one Model and yields
     its id."""
-    import json
     async def _make(natural: str = "test model") -> UUID:
         mid = uuid7()
         await tx_conn.execute(

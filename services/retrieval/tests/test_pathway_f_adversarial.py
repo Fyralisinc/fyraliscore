@@ -12,7 +12,6 @@ import pytest_asyncio
 
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
-from lib.shared.types import TOPO_EMBEDDING_DIM
 from services.models.edges_repo import EdgesRepo
 from services.retrieval.pathways import (
     RetrievalPathwayError,

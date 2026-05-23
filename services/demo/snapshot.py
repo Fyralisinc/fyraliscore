@@ -21,8 +21,7 @@ mint a token bound to that actor.
 from __future__ import annotations
 
 import gzip
-import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID

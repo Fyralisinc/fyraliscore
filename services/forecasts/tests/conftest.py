@@ -14,7 +14,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
-import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7

@@ -14,16 +14,14 @@ populated naturally.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.models.repo import ModelsRepo
-from services.observations.state_change import emit_state_change
 from services.think.applier import apply_diff
 from services.think.audit import (
     CAUSE_ARCHIVE,

@@ -12,8 +12,6 @@ is the failure mode.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from uuid import UUID
 
 import asyncpg
 

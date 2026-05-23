@@ -37,7 +37,7 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -52,7 +52,6 @@ from services.gateway.auth import (
     validate_token,
 )
 from services.gateway.db_bootstrap import (
-    _register_codecs,
     close_gateway_pool,
     create_gateway_pool,
 )
@@ -64,7 +63,7 @@ from services.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
-from services.ingestion.handlers import CHANNEL_TRUST_MAP, HandlerNotFound
+from services.ingestion.handlers import HandlerNotFound
 from services.ingestion.handlers.slack import (
     SlackSignatureError,
     verify_slack_signature,
@@ -1965,35 +1964,6 @@ def _register_routes(app: FastAPI) -> None:
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 
-    # ---------------- /v1/history (History page aggregator) -------
-    # Returns events / predictions / arcs / calibration / layer_counts
-    # for the period requested. services.history.aggregator owns the
-    # substrate→UI mapping; this handler is just the HTTP shell.
-    @app.get("/v1/history")
-    async def history_endpoint(request: Request) -> JSONResponse:
-        from services.history import build_history
-
-        auth: AuthContext | None = getattr(request.state, "auth", None)
-        if auth is None:  # pragma: no cover — middleware enforces
-            return _unauth("missing_bearer")
-
-        period = request.query_params.get("period") or "90d"
-        if period not in ("7d", "30d", "90d", "365d", "all"):
-            return JSONResponse(
-                {"error": "invalid_period",
-                 "reason": "expected one of 7d/30d/90d/365d/all"},
-                status_code=400,
-            )
-
-        deps = _deps(request)
-        async with deps.pool.acquire() as conn:
-            payload = await build_history(
-                tenant_id=auth.tenant_id,
-                period=period,
-                conn=conn,
-            )
-        return JSONResponse(payload.to_dict(), status_code=200)
-
     @app.post("/v1/today/brand")
     async def today_brand_endpoint(request: Request) -> JSONResponse:
         """Persist a per-tenant brand-name override (the user clicks the
@@ -2334,7 +2304,6 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     stream_manager = ViewCeoStreamManager(token_map=token_map)
 
     # Tie stream → scheduler so cache writes publish to WS clients.
-    from dataclasses import dataclass as _dc
     scheduler.set_stream_publisher(
         type("_SP", (), {"publish": staticmethod(stream_manager.publish)})()
     )

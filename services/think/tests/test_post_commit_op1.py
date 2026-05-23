@@ -12,9 +12,8 @@ THINK-DESIGN-AUDIT §8.1, §10 arg 1. Verifies:
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 import asyncpg
@@ -25,13 +24,8 @@ from services.think.diff_schema import ClaimOp, ValidatedDiff
 from services.think.post_commit import (
     BACKOFF_BASE_SECONDS,
     MAX_ATTEMPTS,
-    PendingAction,
-    WorkerStats,
     enqueue_post_commit_actions,
     fetch_pending_actions,
-    increment_attempts,
-    mark_action_processed,
-    move_to_dead_letter,
     process_batch,
     register_handler,
     reset_handlers,

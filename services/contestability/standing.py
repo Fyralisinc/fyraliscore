@@ -27,7 +27,7 @@ granted standing for the audit log.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
 import asyncpg

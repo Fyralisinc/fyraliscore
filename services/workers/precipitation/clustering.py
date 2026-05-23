@@ -31,7 +31,6 @@ produces the same clusters.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
 from uuid import UUID
 
 import asyncpg

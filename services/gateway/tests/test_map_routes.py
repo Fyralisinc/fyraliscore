@@ -20,7 +20,6 @@ import json
 import math
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID
 
 import asyncpg

@@ -74,7 +74,6 @@ from lib.topology.community import (
 from lib.topology.naming import MemberSummary, derive_signature
 
 from .events_repo import (
-    PhaseEvent,
     PrevSnapshot,
     TopologyEventsRepo,
     detect_phase_events,

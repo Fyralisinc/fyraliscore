@@ -13,8 +13,6 @@ breaker (the breaker raises it before invoking the wrapped fn).
 """
 from __future__ import annotations
 
-import os
-from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +26,6 @@ from services.think.circuit_breaker import (
     CircuitOpenError,
     CircuitState,
     LLMCircuitBreaker,
-    get_breaker,
     register_breaker,
     reset_breakers,
 )

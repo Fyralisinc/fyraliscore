@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -10,7 +10,6 @@ from lib.shared.errors import ValidationError
 from lib.shared.types import TOPO_EMBEDDING_DIM
 from lib.topology.relocate import (
     RELOCATE_CASCADE_MAX_FANOUT,
-    RelocateTarget,
     blend_topo,
     damped_magnitude,
     parse_relocate_target,

@@ -9,7 +9,7 @@ Verifies:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext

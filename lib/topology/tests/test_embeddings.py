@@ -11,7 +11,6 @@ import math
 import pytest
 
 from lib.topology.embeddings import (
-    ALPHA_DEFAULT,
     TOPO_EMBEDDING_DIM,
     compute_topo_embedding,
     content_anchor,

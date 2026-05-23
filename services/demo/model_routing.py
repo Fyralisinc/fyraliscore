@@ -19,7 +19,6 @@ canonical Anthropic model id so the JSON is human-friendly.
 from __future__ import annotations
 
 import os
-from typing import Any
 from uuid import UUID
 
 import asyncpg

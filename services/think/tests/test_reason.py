@@ -16,20 +16,16 @@ Covers Wave 3-B Outstanding #1 + #10 + #11:
 """
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone, timedelta
-from uuid import UUID, uuid4
+from datetime import datetime, timezone
+from uuid import UUID
 
-import asyncpg
 import pytest
 
-from lib.llm.provider import LLMConfig
 from lib.shared.ids import uuid7
 
-from services.retrieval.assembler import AccessContext
 from services.retrieval.primary import TriggerContext
-from services.think.reason import ThinkRunOutcome, think
+from services.think.reason import think
 from services.think.tests.conftest import ScriptedProvider, make_embedding
 
 

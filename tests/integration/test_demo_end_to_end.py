@@ -11,9 +11,7 @@ exercised end-to-end (gateway + demo + recommendation list + SSE).
 """
 from __future__ import annotations
 
-import asyncio
 
-import asyncpg
 import httpx
 import pytest
 

@@ -5,8 +5,7 @@ for a dogfood tenant with fixture data.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from datetime import datetime, timezone
 
 import pytest
 
@@ -23,7 +22,6 @@ from services.greeting.tests.conftest import (
     seed_commitment,
     seed_goal,
     seed_model,
-    seed_observation,
     seed_resource,
     seed_state_change,
 )

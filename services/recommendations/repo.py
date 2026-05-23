@@ -23,7 +23,7 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.errors import CompanyOSError
 
 
 # ---------------------------------------------------------------------

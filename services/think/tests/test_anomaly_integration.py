@@ -14,15 +14,12 @@ Also covers publish_anomalies writing to think_anomalies_raw.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
 from lib.shared.ids import uuid7
-from lib.shared.types import ModelCreate
 
-from services.models.repo import ModelsRepo
 from services.think.anomaly_integration import (
     Anomaly, check_anomalies, publish_anomalies,
 )

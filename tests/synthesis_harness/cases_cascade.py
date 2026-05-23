@@ -1,11 +1,10 @@
 """Cascade stage — three branches + BFS depth bound + visited dedup."""
 from __future__ import annotations
 
-from uuid import UUID
 
 import asyncpg
 
-from services.think.cascade import CascadeEvent, MAX_CASCADE_DEPTH, cascade
+from services.think.cascade import CascadeEvent, cascade
 from services.think.observability import METRICS
 from lib.shared.ids import uuid7
 

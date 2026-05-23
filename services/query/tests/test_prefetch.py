@@ -8,16 +8,14 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import time
-from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
 from services.query import strategies as strat_pkg
 from services.query.adapters import InMemoryCacheAdapter
-from services.query.core import AnswerQueryRequest, QueryHandler
+from services.query.core import QueryHandler
 from services.query.prefetch import (
     PrefetchChip,
     QueryPrefetcher,
