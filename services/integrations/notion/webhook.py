@@ -252,6 +252,21 @@ async def _shadow_write_page(
                 "entity_id": entity_id,
             },
         )
+        # The gateway is a request/response service: unlike the always-on
+        # ingestion workers, nothing else drives the producer's delivery
+        # queue. `produce()` only enqueues into librdkafka's LOCAL buffer
+        # (returns before broker-ack), so flush here to DURABLY deliver
+        # before we 200 Notion — otherwise the event could be lost in the
+        # local queue on a gateway restart (backfill/poll would reconcile,
+        # but we avoid the gap). Bounded; remaining>0 ⇒ delivery in doubt.
+        remaining = await ndp.producer.flush(timeout_seconds=10.0)
+        if remaining:
+            log.warning(
+                "notion_webhook_kafka_flush_incomplete",
+                event_type=event_type,
+                remaining=remaining,
+            )
+            return False
         log.info(
             "notion_webhook_shadow_written",
             event_type=event_type,

@@ -71,6 +71,9 @@ class _FakeProducer:
     async def produce(self, *, topic, value, key):
         self.produced.append({"topic": topic, "value": value, "key": key})
 
+    async def flush(self, timeout_seconds: float = 10.0) -> int:
+        return 0  # all delivered
+
 
 class _FakeS3:
     def __init__(self) -> None:
