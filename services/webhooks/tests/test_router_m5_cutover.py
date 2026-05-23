@@ -490,6 +490,12 @@ class _CaptureProducer:
     ) -> None:
         self.published.append((topic, value, key))
 
+    async def flush(self, timeout_seconds: float = 10.0) -> int:
+        # Messages are captured synchronously, so nothing is left in the
+        # delivery queue: 0 remaining. The router cutover flushes after
+        # produce() to durably deliver before returning 202.
+        return 0
+
 
 async def test_double_ingestion_safe_during_cutover(
     fresh_db: asyncpg.Pool,

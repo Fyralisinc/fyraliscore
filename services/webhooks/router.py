@@ -189,6 +189,25 @@ async def _attempt_kafka_path(
             content_hash=compute_content_hash(raw_body).encode("ascii"),
             kafka_producer=kafka_producer,
         )
+        # CRITICAL (request/response gateway): `produce()` only enqueues
+        # into librdkafka's LOCAL buffer and returns before broker-ack.
+        # Unlike the always-on workers, an HTTP handler has nothing
+        # driving the delivery queue — a produced message would sit in
+        # the local buffer indefinitely and never land on `ingestion.raw`.
+        # Flush so we only return the 202 once the event is DURABLY on the
+        # broker (the correct webhook semantic: don't ack the provider and
+        # then lose the event). On incomplete flush, return False so the
+        # caller falls back to inline ingest() — idempotent via S3
+        # PutIfAbsent + observation-layer dedup, so a late-delivered
+        # duplicate is harmless. Mirrors the Notion handler's flush.
+        remaining = await kafka_producer.flush(timeout_seconds=10.0)
+        if remaining:
+            log.warning(
+                "router.kafka_path_flush_incomplete",
+                provider=provider,
+                remaining=remaining,
+            )
+            return False
         return True
     except Exception as exc:  # noqa: BLE001
         log.warning(

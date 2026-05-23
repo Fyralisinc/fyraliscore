@@ -29,6 +29,12 @@ from lib.shared.secrets import build_secret_store  # noqa: E402
 from services.actors.repo import ActorRepo  # noqa: E402
 from services.entity_aliases.repo import EntityAliasRepo  # noqa: E402
 from services.gateway.db_bootstrap import _register_codecs  # noqa: E402
+from services.ingestion.feature_flags import TenantFlags  # noqa: E402
+from services.ingestion.kafka.producer import (  # noqa: E402
+    IdempotentProducer,
+    ProducerConfig,
+)
+from services.ingestion.raw_tier.s3 import S3Client  # noqa: E402
 from services.integrations.discord.gateway.dispatch import DispatchDeps  # noqa: E402
 from services.integrations.discord.gateway.worker import GatewayWorker  # noqa: E402
 from services.webhooks.tenant_resolver import (  # noqa: E402
@@ -71,6 +77,46 @@ async def _main() -> int:
         except Exception:  # noqa: BLE001
             embedder = None
 
+        # Ingestion data plane: when KAFKA_BOOTSTRAP_SERVERS is set, wire a
+        # Kafka producer + raw-tier S3 client + per-tenant flag reader so
+        # MESSAGE_CREATE frames traverse the full pipeline (shadow_write →
+        # ingestion.raw → normalizer → observation_writer) for tenants with
+        # `ingestion.kafka_path_enabled=TRUE`, instead of inline ingest().
+        # The Gateway client's dispatch loop drives delivery (it flushes the
+        # producer every batch — services/integrations/discord/gateway/
+        # client.py), so no explicit flush is needed here. Guarded +
+        # swallow-on-failure: a Kafka/S3 outage must not stop the worker
+        # consuming Discord events (it falls back to inline ingest()).
+        kafka_producer: IdempotentProducer | None = None
+        s3_raw_client: S3Client | None = None
+        tenant_flags: TenantFlags | None = None
+        brokers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+        if brokers:
+            try:
+                kafka_producer = IdempotentProducer(
+                    ProducerConfig(
+                        bootstrap_servers=brokers,
+                        client_id="discord-gateway-worker",
+                    )
+                )
+                await kafka_producer.start()
+                s3_raw_client = S3Client(
+                    os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
+                    endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+                )
+                await s3_raw_client.connect()
+                tenant_flags = TenantFlags(pool)
+                log.info("discord_gateway_data_plane_wired", brokers=brokers)
+            except Exception as exc:  # noqa: BLE001 — never block the worker
+                log.error(
+                    "discord_gateway_data_plane_wiring_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                kafka_producer = None
+                s3_raw_client = None
+                tenant_flags = None
+
         deps = DispatchDeps(
             pool=pool,
             tenant_resolver=tenant_resolver,
@@ -78,6 +124,9 @@ async def _main() -> int:
             alias_repo=alias_repo,
             embedder=embedder,
             application_id=application_id,
+            s3_raw_client=s3_raw_client,
+            kafka_producer=kafka_producer,
+            tenant_flags=tenant_flags,
         )
         worker = GatewayWorker(bot_token=bot_token, deps=deps)
         log.info(
@@ -86,6 +135,16 @@ async def _main() -> int:
         )
         return await worker.run_forever()
     finally:
+        if "kafka_producer" in locals() and kafka_producer is not None:
+            try:
+                await kafka_producer.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if "s3_raw_client" in locals() and s3_raw_client is not None:
+            try:
+                await s3_raw_client.close()
+            except Exception:  # noqa: BLE001
+                pass
         await pool.close()
         if "secret_store" in locals() and hasattr(secret_store, "aclose"):
             try:
