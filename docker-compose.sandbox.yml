@@ -1,0 +1,77 @@
+# =====================================================================
+# docker-compose.sandbox.yml — local real-API sandbox overlay
+# =====================================================================
+# Overlay on top of docker-compose.yml for testing the ingestion
+# pipeline (backfill + live, concurrently) against the REAL GitHub /
+# Slack / Discord APIs while every Fyralis service runs locally.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+#   (or just: scripts/sandbox_up.sh)
+#
+# What it changes vs the base prod stack:
+#   1. env_file → [.env, .env.sandbox] (REPLACES the base's required
+#      .env.production via the `!override` tag). Reuses the real creds +
+#      MASTER_KEK already in .env; .env.sandbox supplies the overrides.
+#   2. Publishes the gateway on host :8000 so `ngrok http 8000` (run on
+#      the host) can give it a public HTTPS URL for webhooks + OAuth.
+#   3. Disables the services a non-Gmail local sandbox does not need:
+#      the gmail_* live workers (no Gmail creds → would crash-loop), and
+#      the demo UI / nginx-proxy / acme / think workers (the cloud-deploy
+#      edge + reasoning layer, irrelevant to ingestion validation). They
+#      are parked under the `full` profile — bring them in deliberately
+#      with `--profile full` if ever needed.
+#
+# Gmail is intentionally absent: with no Gmail env set, the gateway does
+# not mount its Gmail routers, so the public gateway still boots clean.
+
+x-sb-envfile: &sb-envfile
+  # `!override` tells Compose to REPLACE the base service's env_file
+  # (.env.production, which need not exist here) rather than append to it.
+  env_file: !override
+    - .env
+    - .env.sandbox
+
+services:
+  # ---- ingress: publish to host so host-side ngrok can reach it ------
+  gateway:
+    <<: *sb-envfile
+    ports:
+      - "8000:8000"
+
+  # ---- backfill / onboarding loops -----------------------------------
+  oauth_poller: { <<: *sb-envfile }
+  tenant_onboarding: { <<: *sb-envfile }
+  source_onboarding: { <<: *sb-envfile }
+  shard_fetch: { <<: *sb-envfile }
+  reconciler: { <<: *sb-envfile }
+  periodic_reconciler: { <<: *sb-envfile }
+
+  # ---- Kafka consumer chain ------------------------------------------
+  normalizer: { <<: *sb-envfile }
+  observation_writer: { <<: *sb-envfile }
+  dlq_writer: { <<: *sb-envfile }
+  embedding_worker: { <<: *sb-envfile }
+  embedding_backlog: { <<: *sb-envfile }
+
+  # ---- live source worker (real Discord gateway WSS) -----------------
+  discord_gateway_worker: { <<: *sb-envfile }
+
+  # ---- one-shots that load creds (env_file) --------------------------
+  migrate: { <<: *sb-envfile }
+  kafka-init: { <<: *sb-envfile }
+
+  # ---- parked under `full` profile: not started by default ----------
+  gmail_watch_scheduler:
+    profiles: ["full"]
+  gmail_history_poller:
+    profiles: ["full"]
+  think_worker:
+    profiles: ["full"]
+  post_commit_worker:
+    profiles: ["full"]
+  ui:
+    profiles: ["full"]
+  nginx-proxy:
+    profiles: ["full"]
+  acme-companion:
+    profiles: ["full"]
