@@ -57,49 +57,10 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
     # failures roll back cleanly instead of poisoning the
     # connection. See lib/shared/migrations.py.
     from lib.shared.migrations import apply_migrations_dir
+    # apply_migrations_dir relaxes the tenant_id FKs when
+    # COMPANY_OS_ENV=test (see lib/shared/migrations.py), so every
+    # test bootstrap — root and per-package pools alike — gets it.
     await apply_migrations_dir(conn, MIGRATIONS_DIR)
-    await _relax_tenant_fks(conn)
-
-
-async def _relax_tenant_fks(conn: asyncpg.Connection) -> None:
-    """Drop the tenant_id foreign keys (added in 0037) in the *test*
-    database only.
-
-    0037 makes every tenant_id `REFERENCES tenants(id) DEFERRABLE
-    INITIALLY IMMEDIATE`. Its own header documents the contract: the
-    FK is "never realized in tests" — tests are expected to wrap the
-    body in a transaction and ROLLBACK with `SET CONSTRAINTS ALL
-    DEFERRED`. Most of the existing suite predates that and uses the
-    autocommit + TRUNCATE pattern (see `fresh_db`), so the IMMEDIATE
-    check fires on the first INSERT of a uuid7() tenant_id that has no
-    tenants row.
-
-    Production migrations are untouched (this runs only against the
-    test DB, after migrations are applied). No test asserts FK-firing
-    behavior. apply_migrations_dir re-adds the FK on every re-run, so
-    this drop has to follow each migration application.
-    """
-    await conn.execute(
-        """
-        DO $$
-        DECLARE r record;
-        BEGIN
-          -- conislocal = true selects the constraint as defined on the
-          -- parent (or a standalone table); partitioned children carry
-          -- an inherited copy (conislocal = false) that cannot be
-          -- dropped directly — dropping the parent's cascades to them.
-          FOR r IN
-            SELECT conrelid::regclass AS tbl, conname
-            FROM pg_constraint
-            WHERE contype = 'f' AND conname ~ '_tenant_fk$' AND conislocal
-          LOOP
-            EXECUTE format(
-              'ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname
-            );
-          END LOOP;
-        END $$;
-        """
-    )
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
