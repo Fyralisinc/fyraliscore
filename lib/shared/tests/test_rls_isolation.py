@@ -27,12 +27,49 @@ from lib.shared.tenant_context import bind_tenant, tenant_transaction
 pytestmark = pytest.mark.integration
 
 
+_RLS_ROLE = "rls_test_user"
+
+
 @pytest_asyncio.fixture
 async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("DATABASE_URL not set")
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+    # RLS is bypassed for superusers and table owners. CI (and local dev)
+    # connect as a superuser, so these proof tests must run as a plain
+    # login role that owns nothing and lacks BYPASSRLS — otherwise the
+    # policies never fire and the isolation assertions are meaningless.
+    # Create the role + grant it DML with the bootstrap connection, then
+    # hand back a pool connected AS that restricted role.
+    admin = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+    try:
+        async with admin.acquire() as c:
+            await c.execute(
+                f"""
+                DO $$ BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM pg_roles WHERE rolname = '{_RLS_ROLE}'
+                  ) THEN
+                    CREATE ROLE {_RLS_ROLE} LOGIN PASSWORD '{_RLS_ROLE}'
+                      NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+                  END IF;
+                END $$;
+                """
+            )
+            await c.execute(f"GRANT USAGE ON SCHEMA public TO {_RLS_ROLE}")
+            await c.execute(
+                "GRANT SELECT, INSERT, UPDATE, DELETE "
+                f"ON ALL TABLES IN SCHEMA public TO {_RLS_ROLE}"
+            )
+            await c.execute(
+                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
+                f"TO {_RLS_ROLE}"
+            )
+    finally:
+        await admin.close()
+    pool = await asyncpg.create_pool(
+        dsn, user=_RLS_ROLE, password=_RLS_ROLE, min_size=1, max_size=3
+    )
     try:
         yield pool
     finally:
