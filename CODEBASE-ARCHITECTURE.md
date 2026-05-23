@@ -2225,4 +2225,63 @@ Spec: `specs/IN-14-notion-signal-source/plan.md`.
 
 ---
 
+## §19 IN-15 — Google Calendar signal source (DWD, poll-based ingestion)
+
+**Scope.** Google Calendar as the *sixth* ingestion source — the
+*attention-allocation / operating-rhythm / relationship* layer. Where GitHub
+records what *happened* and Notion records what is *declared/planned*, the
+calendar records **where leadership and team time actually goes, and who meets
+whom about what.** Cross-source, this unlocks intent-vs-attention-vs-reality
+drift reasoning (roadmap says Atlas; calendar shows zero hours on it; GitHub
+shows no PRs).
+
+**The structural difference from the OAuth sources (slack/github/discord/notion):**
+Google Calendar is a Google Workspace API, so it **reuses the Gmail
+Domain-Wide-Delegation auth substrate** (`services/integrations/gmail/dwd.py:
+get_minter()`, `GoogleHttpClient`, `DirectoryClient`, `resolve_inclusion`) —
+NOT the per-workspace OAuth-bot-token flow. It mirrors the *Gmail* shape: its
+own workspace-install + per-resource tables, a DB-state planner with
+`source_client=None`, and the DWD minter for outbound calls. No push-webhook
+in v1 (poll-only, like Notion).
+
+```
+services/integrations/google_calendar/
+├── client.py      # GoogleCalendarClient over the shared GoogleHttpClient: list_events (full + syncToken), has_updates_since probe
+├── onboarding.py  # resolve workspace users -> calendars (shared DirectoryClient); finalize_install (UPSERT install + calendars + onboarding trigger)
+└── metrics.py     # gcal_provision_* + gcal_fetch_* counters
+
+services/ingestion/{planners,fetchers,reconcilers,handlers}/google_calendar.py
+db/migrations/0060_google_calendar.sql   # 2 tables (installations + calendars) + widen four source CHECKs
+```
+
+Key decisions (see `specs/IN-15-google-calendar-signal-source/plan.md`):
+
+1. **D1 — reuse Gmail DWD auth.** One Google auth path; the same service
+   account is granted the Calendar scope. Calendar gets its own
+   `google_calendar_installations` + `google_calendar_calendars` tables
+   (independent lifecycle / scope auditing) but shares the minter.
+2. **D2 — incremental via Google's native `syncToken`.** `events.list`
+   returns a `nextSyncToken` on the last page of a full sync; the poll re-run
+   passes it for deltas only. On `410 GONE` the fetcher reseeds a windowed full
+   sync. Strictly better than a hand-rolled high-water mark.
+3. **D3 — ONE channel `google_calendar:event`**, handler branches on `status`
+   (`cancelled` -> `kind=state_change`, else `signal`). Mirrors the
+   github:webhook / notion:object one-channel-many-types precedent.
+4. **D4 — trust `authoritative`.** A calendar event is the system of record
+   for scheduling (matching the pre-existing `calendar:sync` channel); the
+   intended-vs-actual-attendance nuance is a downstream Think concern.
+5. **D5/D6 — windowed backfill** (`GOOGLE_CALENDAR_BACKFILL_DAYS`, default 180,
+   `singleEvents=true`); **one shard per included user's primary calendar**.
+
+`external_id = gcal:{calendar_id}:{event_id}` is identical across the backfill
+walk and the incremental poll, so the `observations` UNIQUE index collapses
+twins. Onboarding emits an `onboarding_triggers` row (source=`google_calendar`,
+DWD-style) that flows the existing oauth_poller -> tenant_onboarding ->
+source_onboarding chain; `tenant_onboarding._determine_applicable_sources` and
+both `VALID_SOURCES` tuples UNION the new install table.
+
+Spec: `specs/IN-15-google-calendar-signal-source/plan.md`.
+
+---
+
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.

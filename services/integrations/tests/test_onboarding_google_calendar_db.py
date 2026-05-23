@@ -22,6 +22,26 @@ from services.integrations.google_calendar.onboarding import finalize_install
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.fixture(autouse=True)
+async def _clean_gcal_rows(fresh_db):
+    """Remove any `google_calendar` rows this test leaves behind.
+
+    The conftest `db_pool` fixture re-applies ALL migrations at the start of
+    every test, BEFORE `fresh_db` truncates. Migration 0059's source CHECK
+    predates `google_calendar`, so a `google_calendar` row surviving into the
+    next test's migration re-run makes 0059's ADD CONSTRAINT fail validation.
+    `google_calendar` is the first source added after the last widening
+    migration, so it is the first to hit this. Production is forward-only and
+    unaffected; this teardown keeps the shared test DB re-migratable.
+    """
+    yield
+    await fresh_db.execute(
+        "DELETE FROM onboarding_triggers WHERE source = 'google_calendar'",
+    )
+    await fresh_db.execute("DELETE FROM google_calendar_calendars")
+    await fresh_db.execute("DELETE FROM google_calendar_installations")
+
+
 async def _seed_tenant(pool: asyncpg.Pool):
     tid = uuid4()
     await pool.execute(
