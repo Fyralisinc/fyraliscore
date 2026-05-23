@@ -95,16 +95,18 @@ async def _run(args: argparse.Namespace) -> int:
         if not rows:
             print("  (none)")
 
-        _hdr("onboarding_shards (fetch units; status breakdown)")
+        _hdr("onboarding_shards (fetch units; state + progress)")
         rows = await pool.fetch(
-            f"""SELECT s.status, count(*) n
-                  FROM onboarding_shards s
-                  {("JOIN onboarding_runs r ON r.id = s.onboarding_run_id WHERE r.tenant_id = $1" if tid else "")}
-                 GROUP BY s.status ORDER BY s.status""",
+            f"""SELECT source, state, count(*) n,
+                       coalesce(sum(pages_fetched),0) pages,
+                       coalesce(sum(observations_seen),0) seen
+                  FROM onboarding_shards {twhere}
+                 GROUP BY source, state ORDER BY source, state""",
             *targs,
         )
         for r in rows:
-            print(f"  shard.status={r['status']:<16} n={r['n']}")
+            print(f"  {r['source']:<8} state={r['state']:<22} n={r['n']:<4} "
+                  f"pages={r['pages']:<5} obs_seen={r['seen']}")
         if not rows:
             print("  (none)")
 
