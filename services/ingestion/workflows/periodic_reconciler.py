@@ -330,10 +330,12 @@ async def _run_service() -> None:
     from services.ingestion.reconcilers import github as github_mod
     from services.ingestion.reconcilers import slack as slack_mod
     from services.ingestion.reconcilers import discord as discord_mod
+    from services.ingestion.reconcilers import notion as notion_mod
     gmail_mod.set_pool_provider(pool)
     github_mod.set_pool_provider(pool)
     slack_mod.set_pool_provider(pool)
     discord_mod.set_pool_provider(pool)
+    notion_mod.set_pool_provider(pool)
 
     config = PeriodicReconcilerConfig(
         tick_interval_seconds=float(

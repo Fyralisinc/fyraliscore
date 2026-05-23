@@ -193,7 +193,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion")
 
 
 # ---------------------------------------------------------------------
@@ -387,6 +387,8 @@ async def _build_source_client(
         return await _clients.build_slack_client(install, pool=pool)
     if source == "discord":
         return await _clients.build_discord_client(install, pool=pool)
+    if source == "notion":
+        return await _clients.build_notion_client(install, pool=pool)
     return None
 
 

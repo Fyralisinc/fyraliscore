@@ -50,6 +50,18 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # (`gmail:{install}:{message_id}`) is identical — cross-path dedup
     # collapses a backfilled message and its live "poll" twin to one row.
     ("gmail", "poll"): "gmail:",
+    # Notion — backfill + poll (IN-14, D3). Notion has no reliable
+    # content push, so there is no `webhook`/`gateway` ingress: backfill
+    # walks the workspace once, and the incremental driver re-runs the
+    # same fetcher under ingress_kind="poll" on a cadence. BOTH route to
+    # the single `notion:object` channel; the handler branches on the
+    # Notion object's native `object` field (page/block/comment) and sets
+    # kind + content.object_type per record (mirrors the github:webhook
+    # one-channel/many-event-types shape). external_id parity across the
+    # two paths (`notion:{object}:{id}`) collapses a backfilled object and
+    # its live "poll" twin to one observation.
+    ("notion", "backfill"): "notion:object",
+    ("notion", "poll"): "notion:object",
 }
 
 

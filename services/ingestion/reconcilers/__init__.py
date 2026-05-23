@@ -171,6 +171,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "github":  _not_implemented_reconciler("github",  "M6.4"),
     "slack":   _not_implemented_reconciler("slack",   "M6.5"),
     "discord": _not_implemented_reconciler("discord", "M6.6"),
+    "notion":  _not_implemented_reconciler("notion",  "IN-14"),
 }
 
 
@@ -188,3 +189,4 @@ from services.ingestion.reconcilers import gmail as _gmail  # noqa: E402,F401
 from services.ingestion.reconcilers import github as _github  # noqa: E402,F401
 from services.ingestion.reconcilers import slack as _slack  # noqa: E402,F401
 from services.ingestion.reconcilers import discord as _discord  # noqa: E402,F401
+from services.ingestion.reconcilers import notion as _notion  # noqa: E402,F401

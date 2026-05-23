@@ -172,6 +172,32 @@ async def build_discord_client(
     return client
 
 
+async def build_notion_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Notion read-client. Bot token is long-lived: resolved once from the
+    secret store via `install['secret_ref']` (or preset in spammer mode).
+    `installation_id` carries the workspace id. The base URL routes through
+    the endpoint resolver so backfill can point at the local spammer."""
+    from lib.integrations.endpoints import endpoint
+    from services.integrations.notion.client import NotionClient
+
+    spammer = _spammer_mode()
+    workspace_id = str(install["installation_id"])
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = NotionClient(
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        workspace_id=workspace_id,
+        bot_token=(f"spam-notion::{workspace_id}" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("notion_api") if not spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------

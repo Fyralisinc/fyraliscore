@@ -194,10 +194,12 @@ async def _run_service(name: str) -> None:
         from services.ingestion.reconcilers import github as github_reconciler
         from services.ingestion.reconcilers import slack as slack_reconciler
         from services.ingestion.reconcilers import discord as discord_reconciler
+        from services.ingestion.reconcilers import notion as notion_reconciler
         gmail_reconciler.set_pool_provider(pool)
         github_reconciler.set_pool_provider(pool)
         slack_reconciler.set_pool_provider(pool)
         discord_reconciler.set_pool_provider(pool)
+        notion_reconciler.set_pool_provider(pool)
 
         service = Reconciler(
             pool,

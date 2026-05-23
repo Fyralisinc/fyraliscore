@@ -201,6 +201,11 @@ _PUBLIC_PATHS = frozenset({
     "/integrations/github/callback",
     "/integrations/github/installed",
     "/integrations/github/install-error",
+    # IN-14: Notion OAuth callback + redirect targets. /install stays
+    # Bearer-required.
+    "/integrations/notion/callback",
+    "/integrations/notion/installed",
+    "/integrations/notion/install-error",
 })
 
 # Path prefixes that bypass the gateway's bearer-session middleware.

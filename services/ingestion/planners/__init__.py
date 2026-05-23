@@ -128,6 +128,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "github":  _not_implemented_planner("github",  "M6.4"),
     "slack":   _not_implemented_planner("slack",   "M6.5"),
     "discord": _not_implemented_planner("discord", "M6.6"),
+    "notion":  _not_implemented_planner("notion",  "IN-14"),
 }
 
 
@@ -147,3 +148,4 @@ from services.ingestion.planners import gmail as _gmail  # noqa: E402,F401
 from services.ingestion.planners import github as _github  # noqa: E402,F401
 from services.ingestion.planners import slack as _slack  # noqa: E402,F401
 from services.ingestion.planners import discord as _discord  # noqa: E402,F401
+from services.ingestion.planners import notion as _notion  # noqa: E402,F401
