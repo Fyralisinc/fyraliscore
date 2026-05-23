@@ -43,7 +43,11 @@ services:
   # containers (docker compose exec gateway ...), so no host DB/ollama
   # port is needed. (`!override []` replaces the base service's ports.)
   postgres:
-    ports: !override []
+    # Published on host :5434 (not 5432) so a host pgAdmin/psql can
+    # connect without colliding with the dev stack. Internal port stays
+    # 5432 (what the workers use over the compose network).
+    ports: !override
+      - "5434:5432"
   ollama:
     ports: !override []
 
