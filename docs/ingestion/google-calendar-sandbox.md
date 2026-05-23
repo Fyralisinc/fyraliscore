@@ -91,6 +91,55 @@ The bare event id is preserved in `content.event_id`. See decision **D7** in
   delta with a 410-expiry mode, and the `updatedMin` reconciler probe). Fixtures
   are plain Calendar v3 event objects, so you control exactly what lands.
 
+## Full worker-topology sandbox (Kafka + S3 + the real workers)
+
+The in-process sandbox above proves the ingestion *logic*, but drives `ingest()`
+directly. To exercise the **full M6 worker chain** —
+
+```
+onboarding_triggers
+  -> oauth_poller -> tenant_onboarding -> source_onboarding
+  -> shard_fetch        (raw blob -> S3, publish -> Kafka ingestion.raw)
+  -> normalizer         (consume ingestion.raw, run handler, publish ingestion.normalized)
+  -> observation_writer (consume ingestion.normalized, write observations)
+  -> reconciler
+```
+
+— run:
+
+```bash
+python scripts/sandbox_google_calendar_full.py        # stands up + tears down everything
+python scripts/sandbox_google_calendar_full.py --keep # keep the DB + kafka container
+```
+
+It stands up the infra and runs the existing `BackfillHarness` (the 7 workers as
+**real subprocesses on this branch's code**) for a `google_calendar` tenant:
+
+- **Kafka** — a throwaway single-node KRaft container on host `:29092` (the
+  compose Kafka advertises `kafka:9092` internally and isn't host-reachable, so
+  the runner uses its own; the running stack is untouched). Requires Docker.
+- **S3** — moto, in-process, bucket `fyralis-raw`.
+- **Postgres** — a throwaway DB on `SANDBOX_ADMIN_URL` (default `:5434`),
+  migrated + partitioned, dropped on exit.
+
+The `google_calendar` source is mocked in-process at the `_open_calendar_client`
+seam by the X3 helper (injected into each subprocess) — no Google creds; the
+rest is the real chain. Expected: **6 observations** (2 calendars × 3 events),
+all 4 harness assertions PASS.
+
+This required wiring `google_calendar` into the harness (a fixture builder, a
+`MockGoogleCalendarClient`, helper-template factory registration, install
+seeding, scenario support) and registering the `google_calendar` reconciler
+pool provider in `services/ingestion/workflows/reconciler.py` (the harness runs
+that worker's `main()` directly, not `workflows/__main__.py`). The
+default-skipped CI test lives at
+`services/synthetic/backfill_harness/tests/test_harness_e2e_google_calendar.py`
+(gate it with `X3_HARNESS_E2E=1` + Kafka + moto).
+
+Note: a single-node broker can emit transient `Coordinator load in progress`
+warnings at startup; the runner settles Kafka (~10s) and uses a 120s consumer
+drain so the chain reliably completes.
+
 ## Extending it
 
 - **More / different events**: edit `_build_fixtures()` in the driver. Add a

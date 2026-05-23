@@ -651,11 +651,15 @@ async def _run_service() -> None:
     from services.ingestion.reconcilers import slack as slack_reconciler_mod
     from services.ingestion.reconcilers import discord as discord_reconciler_mod
     from services.ingestion.reconcilers import notion as notion_reconciler_mod
+    from services.ingestion.reconcilers import (
+        google_calendar as google_calendar_reconciler_mod,
+    )
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
     discord_reconciler_mod.set_pool_provider(pool)
     notion_reconciler_mod.set_pool_provider(pool)
+    google_calendar_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

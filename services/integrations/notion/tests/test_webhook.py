@@ -64,15 +64,15 @@ class _FakeClient:
         self.closed = True
 
 
-def _request_with_shadow_deps() -> SimpleNamespace:
-    """A request whose app.state has shadow deps wired and no flag store
-    (so the shadow write is attempted)."""
-    state = SimpleNamespace(
-        kafka_producer=object(),
-        s3_raw_client=object(),
-        tenant_flags=None,
+def _request_with_deps() -> SimpleNamespace:
+    """A request whose app.state.deps carries the inline-ingest deps."""
+    deps = SimpleNamespace(
+        pool=object(),
+        actor_repo=object(),
+        alias_repo=object(),
+        embedder=None,
     )
-    return SimpleNamespace(app=SimpleNamespace(state=state))
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(deps=deps)))
 
 
 def _outcome() -> SimpleNamespace:
@@ -92,15 +92,19 @@ def patch_client(monkeypatch):
 
 
 @pytest.fixture
-def capture_shadow(monkeypatch):
-    """Capture shadow_write_raw kwargs instead of touching S3/Kafka."""
+def capture_ingest(monkeypatch):
+    """Capture inline ingest() calls instead of touching the DB."""
     calls: list[dict] = []
 
-    async def _fake(**kwargs):
-        calls.append(kwargs)
-        return "s3://fake/key"
+    async def _fake(channel, payload, **kwargs):
+        calls.append({"channel": channel, "payload": payload, **kwargs})
+        return SimpleNamespace(
+            observation=SimpleNamespace(id=UUID("11111111-1111-1111-1111-111111111111")),
+            deduped=False,
+            trigger_queue_id=None,
+        )
 
-    monkeypatch.setattr(webhook, "shadow_write_raw", _fake)
+    monkeypatch.setattr(webhook, "ingest", _fake)
     return calls
 
 
@@ -109,13 +113,13 @@ def capture_shadow(monkeypatch):
 # ---------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_page_event_fetches_and_shadow_writes(patch_client, capture_shadow) -> None:
+async def test_page_event_fetches_and_ingests(patch_client, capture_ingest) -> None:
     page = {"object": "page", "id": "page-123", "last_edited_time": "2026-05-01T00:00:00Z"}
     client = _FakeClient(page=page)
     patch_client(client)
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_shadow_deps(),
+        request=_request_with_deps(),
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -127,29 +131,28 @@ async def test_page_event_fetches_and_shadow_writes(patch_client, capture_shadow
     assert resp.status_code == 200
     body = json.loads(resp.body)
     assert body["handled"] == "event"
-    assert body["shadow_write"] is True
+    assert body["observation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert body["deduped"] is False
     assert client.requested_id == "page-123"
     assert client.closed is True
 
-    # One shadow write of the fetched page, enriched with workspace id.
-    assert len(capture_shadow) == 1
-    call = capture_shadow[0]
-    assert call["source"] == "notion"
-    assert call["ingress_kind"] == "webhook"
+    # One inline ingest of the fetched page through the notion:object
+    # handler, enriched with the workspace id (matches the fetcher).
+    assert len(capture_ingest) == 1
+    call = capture_ingest[0]
+    assert call["channel"] == "notion:object"
     assert call["tenant_id"] == TENANT
-    written = json.loads(call["raw_body"])
-    assert written["id"] == "page-123"
-    assert written["_fyralis_workspace_id"] == "ws-1"
-    assert call["ingress_metadata"]["event_type"] == "page.content_updated"
+    assert call["payload"]["id"] == "page-123"
+    assert call["payload"]["_fyralis_workspace_id"] == "ws-1"
 
 
 @pytest.mark.asyncio
-async def test_non_page_entity_ignored(patch_client, capture_shadow) -> None:
+async def test_non_page_entity_ignored(patch_client, capture_ingest) -> None:
     client = _FakeClient(page={})
     patch_client(client)
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_shadow_deps(),
+        request=_request_with_deps(),
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -160,18 +163,18 @@ async def test_non_page_entity_ignored(patch_client, capture_shadow) -> None:
     assert resp.status_code == 200
     assert json.loads(resp.body)["reason"] == "unsupported_entity"
     assert client.requested_id is None  # never fetched
-    assert capture_shadow == []  # never shadow-written
+    assert capture_ingest == []  # never ingested
 
 
 @pytest.mark.asyncio
-async def test_fetch_404_acks_without_shadow_write(patch_client, capture_shadow) -> None:
+async def test_fetch_404_acks_without_ingest(patch_client, capture_ingest) -> None:
     client = _FakeClient(error=NotionApiError(
         "not found", code="notion_api_not_found", context={"http_status": 404},
     ))
     patch_client(client)
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_shadow_deps(),
+        request=_request_with_deps(),
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -182,24 +185,30 @@ async def test_fetch_404_acks_without_shadow_write(patch_client, capture_shadow)
     assert resp.status_code == 200
     assert json.loads(resp.body)["reason"] == "fetch_failed"
     assert client.closed is True
-    assert capture_shadow == []
+    assert capture_ingest == []
 
 
 @pytest.mark.asyncio
-async def test_shadow_skipped_when_deps_unwired(patch_client, capture_shadow) -> None:
-    """No kafka/s3 on app.state ⇒ shadow_write is skipped, still 200."""
-    page = {"object": "page", "id": "p9"}
+async def test_deduped_page_reports_dedup(patch_client, monkeypatch) -> None:
+    """A page already ingested (e.g. via backfill) dedups on
+    notion:page:{id}; the response surfaces deduped=true."""
+    page = {"object": "page", "id": "p-dup"}
     client = _FakeClient(page=page)
     patch_client(client)
 
-    state = SimpleNamespace(kafka_producer=None, s3_raw_client=None, tenant_flags=None)
-    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    async def _fake(channel, payload, **kwargs):
+        return SimpleNamespace(
+            observation=SimpleNamespace(id=UUID("22222222-2222-2222-2222-222222222222")),
+            deduped=True,
+            trigger_queue_id=None,
+        )
+
+    monkeypatch.setattr(webhook, "ingest", _fake)
 
     resp = await webhook.handle_notion_event(
-        request=request,
+        request=_request_with_deps(),
         outcome=_outcome(),
-        payload={"workspace_id": "ws", "type": "page.created", "entity": {"id": "p9", "type": "page"}},
+        payload={"workspace_id": "ws", "type": "page.content_updated", "entity": {"id": "p-dup", "type": "page"}},
     )
     assert resp.status_code == 200
-    assert json.loads(resp.body)["shadow_write"] is False
-    assert capture_shadow == []
+    assert json.loads(resp.body)["deduped"] is True
