@@ -195,6 +195,41 @@ curl -s -D- -o /dev/null -H "Authorization: Bearer $TOKEN" \
 5. **Live:** post in a guild text channel. The gateway `MESSAGE_CREATE`
    lands as an observation (`source_channel='discord:message'`).
 
+### 4.4 Notion (IN-14)
+
+Notion is the **simplest** source here: no webhook, no signing secret, no
+seed step. The live path is a **poll** (Notion has no reliable content
+push), so there is nothing to register a webhook URL for.
+
+1. **Create a Notion integration** (https://www.notion.so/my-integrations):
+   - Type **Public** (so OAuth works). Redirect URI:
+     `$PUBLIC/integrations/notion/callback`.
+   - Copy the **OAuth client ID** and **client secret**.
+2. **Map to `.env.sandbox`:** `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET`,
+   `NOTION_REDIRECT_URI`. Re-run `scripts/sandbox_up.sh` if changed.
+3. **Share content with the integration** — this is the step people miss:
+   open each database/page → **•••** → **Connections** → add your
+   integration. Notion's API only returns objects explicitly shared with it.
+4. **Install:** `…/integrations/notion/install` (Bearer) → authorize and
+   pick the workspace. The callback stores the long-lived **bot token**
+   straight into the encrypted store and sets `secret_ref` automatically
+   (no `sandbox_seed_secret.py` needed), then emits an `install` trigger.
+5. **Backfill (automatic):** the planner enumerates databases
+   (`POST /v1/search`) → one `notion_database` shard per DB + one
+   `notion_page_tree` shard for loose pages → the fetcher walks rows →
+   blocks (depth ≤ `NOTION_BLOCK_DEPTH_CAP`, default 3) → comments. Objects
+   land as observations with `source_channel='notion:object'` (a DB row
+   with a status property → `kind='state_change'`).
+6. **Live (poll):** the `periodic_reconciler` re-runs the fetcher every
+   `NOTION_POLL_INTERVAL_SECONDS` (default 900s). Edit a shared page in
+   Notion, wait one interval, and the changed object reappears as a new
+   observation (dedup keeps the unchanged ones to a single row via
+   `external_id = notion:{object}:{id}`).
+
+> No webhook URL is registered for Notion, and `WEBHOOK_SECRET_NOTION`
+> does not exist — if you find yourself looking for one, you're on the
+> wrong source.
+
 ## 5. Validate (the oracle)
 
 ```bash
