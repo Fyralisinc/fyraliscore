@@ -43,9 +43,11 @@ if [ -z "$ok" ]; then
   exit 1
 fi
 
-# ---- Seed the sandbox tenant (CEO actor + personas) -----------------
+# ---- Seed the sandbox tenant (tenant + CEO actor) -------------------
+# Uses the synthetic-free seeder: the dogfood seeder imports the
+# simulation personas, which refuse to load under COMPANY_OS_ENV=prod.
 echo "Seeding sandbox tenant (idempotent)..."
-"${COMPOSE[@]}" exec -T gateway python scripts/seed_dogfood_tenant.py || {
+"${COMPOSE[@]}" exec -T gateway python scripts/sandbox_seed_tenant.py || {
   echo "  WARNING: tenant seed failed — you can re-run it manually (see runbook)."; }
 
 cat <<'EOF'
