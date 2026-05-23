@@ -60,6 +60,14 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # one-channel/many-event-types shape). external_id parity across the
     # two paths (`notion:{object}:{id}`) collapses a backfilled object and
     # its live "poll" twin to one observation.
+    #
+    # IN-14 webhooks ADD a third ingress: Notion subscriptions deliver a
+    # thin change event (entity.id + type); the webhook handler fetches the
+    # full object via the per-workspace bot token and shadow-writes it under
+    # ingress_kind="webhook". Same `notion:object` channel and same
+    # `notion:{object}:{id}` external_id, so a webhook-delivered object and
+    # its backfill/poll twin collapse to one observation.
+    ("notion", "webhook"): "notion:object",
     ("notion", "backfill"): "notion:object",
     ("notion", "poll"): "notion:object",
     # Google Calendar — backfill + poll (IN-15, D3). A Google Workspace

@@ -14,7 +14,7 @@ from services.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
 
 
 # Sources the harness supports. Mirrors the M6 dispatch keys.
-_VALID_SOURCES = frozenset(("gmail", "slack", "github", "discord"))
+_VALID_SOURCES = frozenset(("gmail", "slack", "github", "discord", "google_calendar"))
 
 
 @dataclass(frozen=True)

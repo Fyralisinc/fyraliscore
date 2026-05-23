@@ -22,6 +22,7 @@ from services.webhooks.signatures import (
     discord,
     github,
     linear,
+    notion,
     slack,
     stripe,
 )
@@ -34,6 +35,7 @@ VERIFIERS: dict[str, Verifier] = {
     "linear": linear.verifier,
     "stripe": stripe.verifier,
     "discord": discord.verifier,
+    "notion": notion.verifier,
 }
 
 

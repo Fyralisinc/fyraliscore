@@ -60,6 +60,7 @@ from services.synthetic.fixtures import (
     make_discord_guild,
     make_github_repos,
     make_gmail_mailbox,
+    make_google_calendar,
     make_slack_workspace,
 )
 
@@ -128,6 +129,8 @@ def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
         return make_slack_workspace(**params)
     if source == "discord":
         return make_discord_guild(**params)
+    if source == "google_calendar":
+        return make_google_calendar(**params)
     raise ValueError(f"unknown source: {source!r}")
 
 
@@ -151,7 +154,8 @@ from uuid import UUID
 
 from services.synthetic.fault_profiles import FaultProfile
 from services.synthetic.mock_clients import (
-    MockDiscordClient, MockGithubClient, MockGmailClient, MockSlackClient,
+    MockDiscordClient, MockGithubClient, MockGmailClient,
+    MockGoogleCalendarClient, MockSlackClient,
 )
 
 
@@ -194,6 +198,8 @@ def _make_mock(source: str, fixture: dict[str, Any],
         return MockSlackClient(fixture=fixture, profile=profile)
     if source == "discord":
         return MockDiscordClient(fixture=fixture, profile=profile)
+    if source == "google_calendar":
+        return MockGoogleCalendarClient(fixture=fixture, profile=profile)
     raise ValueError(f"unknown source: {{source!r}}")
 
 
@@ -207,15 +213,12 @@ def _install_factories() -> None:
     from services.ingestion.reconcilers import github as ghr
     from services.ingestion.reconcilers import slack as sr
     from services.ingestion.reconcilers import discord as dr
+    from services.ingestion.fetchers import google_calendar as gcf
+    from services.ingestion.reconcilers import google_calendar as gcr
     from services.ingestion.workflows import source_onboarding as so
 
-    for source, modules in (
-        ("gmail", (gf, gr)),
-        ("github", (ghf, ghr)),
-        ("slack", (sf, sr)),
-        ("discord", (df, dr)),
-    ):
-        async def _factory(install, _source=source):  # noqa: B023
+    def _factory_for(_source):
+        async def _factory(install):
             entry = _lookup_by_tenant_id(install["tenant_id"])
             if entry is None or entry["source"] != _source:
                 raise RuntimeError(
@@ -228,8 +231,23 @@ def _install_factories() -> None:
             )
             async def _close() -> None: return None
             return mock, _close
+        return _factory
+
+    for source, modules in (
+        ("gmail", (gf, gr)),
+        ("github", (ghf, ghr)),
+        ("slack", (sf, sr)),
+        ("discord", (df, dr)),
+    ):
         for mod in modules:
-            setattr(mod, f"_open_{{source}}_client", _factory)
+            setattr(mod, f"_open_{{source}}_client", _factory_for(source))
+
+    # google_calendar (IN-15) is a DWD source like gmail (planner reads DB
+    # state → source_client=None), but its client seam is `_open_calendar_client`
+    # (not `_open_google_calendar_client`), so wire it explicitly.
+    _gcal_factory = _factory_for("google_calendar")
+    setattr(gcf, "_open_calendar_client", _gcal_factory)
+    setattr(gcr, "_open_calendar_client", _gcal_factory)
 
     # source_onboarding builds a source_client via _build_source_client
     # for the planners that enumerate resources at plan time. GitHub
@@ -652,6 +670,53 @@ class BackfillHarness:
                         ON CONFLICT (tenant_id, source,
                                      gmail_installation_id)
                             WHERE gmail_installation_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "google_calendar":
+                    # DWD source (like gmail): workspace install + one
+                    # google_calendar_calendars row per calendar so the
+                    # planner's loader (_LOAD_GCAL_INSTALL_SQL) aggregates a
+                    # non-empty `calendars` list → one shard each. Trigger
+                    # carries installation_row_id (no FK; dedup-index only).
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO google_calendar_installations (
+                          id, tenant_id, workspace_domain,
+                          service_account_email, scope
+                        ) VALUES ($1, $2, $3, $4, 'calendar.readonly')
+                        ON CONFLICT (tenant_id, workspace_domain)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        f"x3-{outcome.scenario.tenant_slug}.example",
+                        "sa@x3-test.iam.gserviceaccount.com",
+                    )
+                    for cal in outcome.scenario.fixture_params.get(
+                        "calendars", ["alice@acme.com", "bob@acme.com"],
+                    ):
+                        await conn.execute(
+                            """
+                            INSERT INTO google_calendar_calendars (
+                                id, tenant_id, google_calendar_installation_id,
+                                calendar_id, owner_email, state
+                            ) VALUES ($1, $2, $3, $4, $5, 'active')
+                            ON CONFLICT (google_calendar_installation_id,
+                                         calendar_id) DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id, cal, cal,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'google_calendar', 'install', $3,
+                                  '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
                             DO NOTHING
                         """,
                         uuid7(), outcome.tenant_id, install_id,

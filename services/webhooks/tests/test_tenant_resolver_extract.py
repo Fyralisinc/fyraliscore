@@ -120,6 +120,25 @@ def test_discord_missing_both_returns_none() -> None:
 
 
 # =====================================================================
+# Notion (IN-14)
+# =====================================================================
+
+def test_notion_extracts_workspace_id() -> None:
+    payload = {
+        "workspace_id": "ws-acme-123",
+        "type": "page.content_updated",
+        "entity": {"id": "p1", "type": "page"},
+    }
+    assert PROVIDER_EXTRACTORS["notion"](payload, {}) == "ws-acme-123"
+
+
+def test_notion_missing_workspace_id_returns_none() -> None:
+    assert PROVIDER_EXTRACTORS["notion"]({}, {}) is None
+    assert PROVIDER_EXTRACTORS["notion"]({"workspace_id": ""}, {}) is None
+    assert PROVIDER_EXTRACTORS["notion"]({"workspace_id": None}, {}) is None
+
+
+# =====================================================================
 # _str_or_none corner cases
 # =====================================================================
 
