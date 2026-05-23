@@ -88,12 +88,10 @@ async def start(request: Request) -> JSONResponse:
     except Exception:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
     company_id = body.get("company_id") if isinstance(body, dict) else None
-    if not isinstance(company_id, str) or company_id not in (
-        "truss", "northwind", "meridian", "pelago"
-    ):
+    if not isinstance(company_id, str) or company_id not in ("pelago",):
         return JSONResponse(
             {"error": "invalid_company_id",
-             "allowed": ["truss", "northwind", "meridian", "pelago"]},
+             "allowed": ["pelago"]},
             status_code=400,
         )
 

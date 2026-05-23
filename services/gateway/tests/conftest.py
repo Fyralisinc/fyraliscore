@@ -124,6 +124,10 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
+    # demo_configs is seeded only by migrations (the single pelago demo
+    # company) and the ASGI test transport doesn't run the app lifespan
+    # that would re-seed it, so wiping it leaves /v1/demo/companies empty.
+    # Exclude it — no test mutates it.
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -131,6 +135,7 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
+          AND c.relname <> 'demo_configs'
         """
     )
     tables = [r["relname"] for r in rows]

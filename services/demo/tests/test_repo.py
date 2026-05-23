@@ -32,8 +32,8 @@ pytestmark = pytest.mark.integration
 async def test_demo_configs_seeded_by_migration(fresh_db: asyncpg.Pool):
     rows = await list_demo_configs(fresh_db)
     company_ids = {r.company_id for r in rows}
-    assert company_ids == {"truss", "northwind", "meridian"}
-    truss = await get_demo_config_by_company(fresh_db, "truss")
+    assert company_ids == {"pelago"}
+    truss = await get_demo_config_by_company(fresh_db, "pelago")
     assert truss is not None
     assert truss.cost_cap_usd_per_session == Decimal("5.0000")
     assert truss.notifications_suppressed is True
@@ -43,7 +43,7 @@ async def test_demo_configs_seeded_by_migration(fresh_db: asyncpg.Pool):
 @pytest.mark.asyncio
 async def test_tenant_upsert_marks_is_demo(fresh_db: asyncpg.Pool):
     tid = uuid7()
-    cfg = await get_demo_config_by_company(fresh_db, "northwind")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     await upsert_tenant(
         fresh_db, tenant_id=tid, name="northwind-demo",
@@ -63,7 +63,7 @@ async def test_tenant_absent_returns_none(fresh_db: asyncpg.Pool):
 
 @pytest.mark.asyncio
 async def test_session_lifecycle_active_then_ended(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
@@ -98,7 +98,7 @@ async def test_session_lifecycle_active_then_ended(fresh_db: asyncpg.Pool):
 
 @pytest.mark.asyncio
 async def test_record_cost_updates_session_total(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "northwind")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(

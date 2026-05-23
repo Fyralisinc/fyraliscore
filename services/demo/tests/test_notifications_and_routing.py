@@ -29,7 +29,7 @@ async def test_should_suppress_is_false_for_unknown_tenant(
 async def test_should_suppress_is_true_for_demo_tenant(
     fresh_db: asyncpg.Pool,
 ):
-    cfg = await get_demo_config_by_company(fresh_db, "northwind")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
@@ -72,7 +72,7 @@ async def test_resolve_model_returns_haiku_for_demo_tenant(
     fresh_db: asyncpg.Pool, monkeypatch
 ):
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
@@ -90,7 +90,7 @@ async def test_resolve_model_returns_haiku_for_demo_tenant(
 
 @pytest.mark.asyncio
 async def test_determinism_seed_resolves_for_demo(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(

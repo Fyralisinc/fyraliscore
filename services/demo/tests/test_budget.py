@@ -30,7 +30,7 @@ async def test_budget_for_unknown_session_returns_none(
 
 @pytest.mark.asyncio
 async def test_budget_starts_under_cap(fresh_db: asyncpg.Pool):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
@@ -51,7 +51,7 @@ async def test_budget_starts_under_cap(fresh_db: asyncpg.Pool):
 async def test_budget_flush_persists_costs_and_advances_spent(
     fresh_db: asyncpg.Pool,
 ):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
@@ -84,7 +84,7 @@ async def test_budget_flush_persists_costs_and_advances_spent(
 async def test_budget_trips_when_cumulative_spend_exceeds_cap(
     fresh_db: asyncpg.Pool,
 ):
-    cfg = await get_demo_config_by_company(fresh_db, "truss")  # cap=5.0
+    cfg = await get_demo_config_by_company(fresh_db, "pelago")  # cap=5.0
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
