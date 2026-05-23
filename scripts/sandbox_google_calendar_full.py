@@ -156,11 +156,15 @@ async def run(args) -> int:
 
         # 2. moto S3 (in-process; reachable by the worker subprocesses).
         print("==== S3 (moto) ====")
+        import socket
         from moto.server import ThreadedMotoServer
         import boto3
-        moto = ThreadedMotoServer(port=0)
+        _s = socket.socket()
+        _s.bind(("127.0.0.1", 0))
+        s3_port = _s.getsockname()[1]
+        _s.close()
+        moto = ThreadedMotoServer(port=s3_port)
         moto.start()
-        s3_host, s3_port = moto._server.server_address  # bound address
         s3_endpoint = f"http://127.0.0.1:{s3_port}"
         os.environ["S3_ENDPOINT_URL"] = s3_endpoint
         os.environ["S3_RAW_BUCKET"] = "fyralis-raw"
