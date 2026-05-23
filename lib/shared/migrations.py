@@ -122,11 +122,57 @@ async def apply_migrations_dir(
                 },
             )
 
-    # Test-environment only: relax the tenant_id foreign keys.
+    # Test-environment only: relax schema invariants the test suite
+    # predates (tenant FKs + monthly partitions).
     if os.environ.get("COMPANY_OS_ENV") == "test":
-        await _relax_tenant_fks_for_tests(conn)
+        await _prepare_test_schema(conn)
 
     return applied
+
+
+async def _prepare_test_schema(conn: asyncpg.Connection) -> None:
+    """Test-DB-only schema relaxations (gated on COMPANY_OS_ENV=test).
+
+    Two adjustments the existing suite needs but production must not:
+    1. Drop the tenant_id foreign keys (0037) — see below.
+    2. Add a DEFAULT partition to each range-partitioned table
+       (observations, resource_transactions). Production creates
+       monthly partitions on a schedule; tests insert rows across
+       arbitrary months and otherwise hit "no partition of relation
+       X found for row".
+    """
+    await _relax_tenant_fks_for_tests(conn)
+    await _ensure_default_partitions_for_tests(conn)
+
+
+async def _ensure_default_partitions_for_tests(conn: asyncpg.Connection) -> None:
+    """Attach a DEFAULT partition to every partitioned table lacking
+    one, so out-of-range INSERTs route somewhere instead of raising
+    'no partition found'. TEST DB ONLY."""
+    await conn.execute(
+        """
+        DO $$
+        DECLARE r record;
+        BEGIN
+          FOR r IN
+            SELECT c.relname AS tbl
+            FROM pg_class c
+            WHERE c.relkind = 'p'
+              AND NOT EXISTS (
+                SELECT 1 FROM pg_inherits i
+                JOIN pg_class p ON p.oid = i.inhrelid
+                WHERE i.inhparent = c.oid
+                  AND pg_get_expr(p.relpartbound, p.oid) = 'DEFAULT'
+              )
+          LOOP
+            EXECUTE format(
+              'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I DEFAULT',
+              r.tbl || '_test_default', r.tbl
+            );
+          END LOOP;
+        END $$;
+        """
+    )
 
 
 async def _relax_tenant_fks_for_tests(conn: asyncpg.Connection) -> None:
