@@ -73,7 +73,9 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 # Types
 # =====================================================================
 
-ResolverProvider = Literal["slack", "github", "linear", "stripe", "discord"]
+ResolverProvider = Literal[
+    "slack", "github", "linear", "stripe", "discord", "notion",
+]
 
 
 class Installation(BaseModel):
@@ -283,6 +285,16 @@ def _extract_discord(payload: Mapping[str, Any], headers: Mapping[str, str]) -> 
     return _str_or_none(payload.get("application_id"))
 
 
+def _extract_notion(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-14: Notion event deliveries carry the originating workspace id
+    # at the top level as `workspace_id`. Installations are registered
+    # keyed by workspace_id (the per-workspace `provider_installations`
+    # row holds the bot token in `secret_ref`, used to fetch the changed
+    # object). The app-level signing token is resolved separately in
+    # services/webhooks/secrets.py.
+    return _str_or_none(payload.get("workspace_id"))
+
+
 PROVIDER_EXTRACTORS: dict[
     ResolverProvider,
     Callable[[Mapping[str, Any], Mapping[str, str]], str | None],
@@ -292,6 +304,7 @@ PROVIDER_EXTRACTORS: dict[
     "linear": _extract_linear,
     "stripe": _extract_stripe,
     "discord": _extract_discord,
+    "notion": _extract_notion,
 }
 
 

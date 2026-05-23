@@ -56,6 +56,7 @@ from services.ingestion.feature_flags.traffic_signal import (
 from services.ingestion.handlers import HandlerNotFound
 from services.ingestion.raw_tier.s3 import compute_content_hash
 from services.ingestion.shadow_write import shadow_write_raw
+from services.integrations.notion import webhook as notion_webhook
 from services.webhooks import metrics
 from services.webhooks.signatures import VERIFIERS
 from services.webhooks.secrets import load_secrets
@@ -614,6 +615,16 @@ def build_webhooks_router() -> APIRouter:
             _is_slack_url_verification(payload) if provider == "slack" else None
         )
 
+        # IN-14: Notion's one-time subscription verification POST is
+        # UNSIGNED (the verification_token it delivers is the very secret
+        # later events are signed with). Intercept it BEFORE tenant
+        # resolution + signature verification — there is nothing to verify
+        # against yet, and the handshake names no workspace.
+        if provider == "notion" and notion_webhook.is_verification_handshake(
+            payload,
+        ):
+            return notion_webhook.handle_verification_handshake(payload)
+
         # Step 5: resolve tenant via the IN-07 DB-backed resolver.
         # `payload or {}` keeps the API contract clean for Stripe
         # (header-only id extraction) and for malformed bodies.
@@ -767,6 +778,20 @@ def build_webhooks_router() -> APIRouter:
                 provider=provider,
             )
             return _err_response(err)
+
+        # IN-14: Notion events are thin (entity.id + dotted type); there
+        # is no inline ingest path and no `_PROVIDER_CHANNEL` entry. The
+        # handler fetches the full page via the per-workspace bot token
+        # and shadow-writes it onto the data plane (ingress_kind=webhook),
+        # then returns 200. Returning here short-circuits the inline /
+        # cutover / `_PROVIDER_CHANNEL` block below (which has no notion
+        # key) entirely.
+        if provider == "notion":
+            return await notion_webhook.handle_notion_event(
+                request=request,
+                outcome=outcome,
+                payload=payload or {},
+            )
 
         # IN-08 US4: dispatch Slack lifecycle events (app_uninstalled /
         # tokens_revoked) to the uninstall handler BEFORE ingestion.

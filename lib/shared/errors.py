@@ -413,6 +413,65 @@ class GithubApiError(CompanyOSError):
             self._code = code
 
 
+class NotionOAuthError(CompanyOSError):
+    """
+    Notion OAuth install/callback failure surface (IN-14).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - notion_oauth_token_exchange_failed: POST /v1/oauth/token non-2xx
+      - notion_oauth_missing_workspace_id: token response lacked workspace_id
+      - notion_oauth_unconfigured: NOTION_CLIENT_ID / _SECRET / _REDIRECT_URI unset
+
+    `context` carries `{tenant_id, http_status?, notion_error?}`. The raw
+    workspace_id is hashed (`workspace_id_hash`) before it touches logs.
+    """
+    default_code = "notion_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class NotionApiError(CompanyOSError):
+    """
+    Outbound Notion REST call failure (IN-14).
+
+    Stable `code` values:
+      - notion_api_unauthorized: 401 — bot token revoked / integration removed
+      - notion_api_not_found: 404 — object no longer accessible
+      - notion_api_rate_limited: 429 with retry budget exhausted
+      - notion_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, notion_code?, retry_after?}`. No bot
+    token is ever placed on context.
+    """
+    default_code = "notion_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -433,4 +492,6 @@ __all__ = [
     "GithubJWTError",
     "GithubOAuthError",
     "GithubApiError",
+    "NotionOAuthError",
+    "NotionApiError",
 ]

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request
 
 from services.integrations.discord import oauth as discord_oauth
 from services.integrations.github import oauth as github_oauth
+from services.integrations.notion import oauth as notion_oauth
 from services.integrations.slack import oauth as slack_oauth
 
 
@@ -51,6 +52,14 @@ def build_integrations_router() -> APIRouter:
     @router.get("/github/callback")
     async def github_callback(request: Request):
         return await github_oauth.callback_handler(request)
+
+    @router.get("/notion/install")
+    async def notion_install(request: Request):
+        return await notion_oauth.install_handler(request)
+
+    @router.get("/notion/callback")
+    async def notion_callback(request: Request):
+        return await notion_oauth.callback_handler(request)
 
     return router
 

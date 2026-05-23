@@ -29,6 +29,9 @@ Wiring at test time:
 from services.synthetic.mock_clients.discord import MockDiscordClient
 from services.synthetic.mock_clients.gmail import MockGmailClient
 from services.synthetic.mock_clients.github import MockGithubClient
+from services.synthetic.mock_clients.google_calendar import (
+    MockGoogleCalendarClient,
+)
 from services.synthetic.mock_clients.slack import MockSlackClient
 
 
@@ -36,5 +39,6 @@ __all__ = [
     "MockDiscordClient",
     "MockGithubClient",
     "MockGmailClient",
+    "MockGoogleCalendarClient",
     "MockSlackClient",
 ]

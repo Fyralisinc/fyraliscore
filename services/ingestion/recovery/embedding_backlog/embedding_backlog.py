@@ -248,7 +248,7 @@ def _source_family(source_channel: str) -> str | None:
     from source_channel. Returns None for non-source-family channels
     (internal:*, synthetic:*) — those skip DLQ publish."""
     family = source_channel.split(":", 1)[0]
-    if family in ("slack", "github", "discord", "gmail"):
+    if family in ("slack", "github", "discord", "gmail", "notion", "google_calendar"):
         return family
     return None
 

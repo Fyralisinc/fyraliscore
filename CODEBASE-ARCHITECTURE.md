@@ -2161,4 +2161,139 @@ Spec: `specs/IN-13-github-integration/`.
 
 ---
 
+## §18 IN-14 — Notion signal source (poll-based ingestion)
+
+**Scope.** Notion as the fifth ingestion source — the *declared-intent /
+canonical-state* layer (databases, pages, comments) that lets Think
+reason about intent-vs-reality drift against github/slack actuals.
+Self-serve OAuth install (`/integrations/notion/install` → `/callback`),
+poll-based backfill + incremental, and DB-row / page-content / comment
+objects landing as Observations.
+
+**The structural difference from slack/github/discord:** Notion has no
+reliable content push, so there is **no webhook ingress**. The live path
+is the existing `PeriodicReconciler` re-running the backfill fetcher under
+`ingress_kind="poll"` (cadence `NOTION_POLL_INTERVAL_SECONDS`, default
+900s). No `services/webhooks/` changes.
+
+### Files
+
+```
+services/integrations/notion/
+├── oauth.py    # /install + /callback; long-lived bot token (no JWT/refresh)
+├── client.py   # NotionClient — search / db-query / blocks / comments; 429 Retry-After
+└── metrics.py  # notion_install_* + notion_fetch_* counters
+services/ingestion/fetchers/notion.py      # resumable work-stack tree walk (cursor IS the stack)
+services/ingestion/planners/notion.py      # one notion_database shard/DB + one notion_page_tree shard
+services/ingestion/reconcilers/notion.py   # gap probe: live latest edit vs cursor high-water
+services/ingestion/handlers/notion.py      # ONE channel notion:object; branch on object field
+```
+
+Wired into `services/integrations/router.py`, `services/gateway/main.py`
+(public-paths), `lib/integrations/endpoints.py` (`notion_api`),
+`services/ingestion/fetchers/_clients.py` (`build_notion_client`),
+`source_onboarding.VALID_SOURCES`, and the three reconciler
+`set_pool_provider` sites.
+
+### Migration
+
+- `0059_notion_source_check.sql` — widens the inline `source` CHECK on
+  four tables (`onboarding_shards`, `ingestion_failures`,
+  `onboarding_triggers`, `source_onboarding_runs`) to admit `'notion'`.
+  Idempotent (DROP IF EXISTS + re-add), additive (no destructive change).
+  `provider_installations.provider` is free TEXT — no change needed.
+
+### Key invariants / decisions
+
+1. **One channel `notion:object`** (decision D3). The normalizer routes
+   `(source, ingress_kind) → one channel`; the handler branches on the
+   Notion object's native `object` field (page/block/comment), setting
+   `kind` + `content.object_type` per record — the github:webhook pattern.
+2. **Trust = `attested_agent`** for all Notion objects. Notion declares
+   intent (human-authored via an authenticated integration), it does not
+   verify reality. A DB row with a `status` property → `state_change`.
+3. **external_id parity** (`notion:{object}:{id}`) across backfill and
+   poll re-runs ⇒ the observation dedup index collapses twins.
+4. **Block recursion depth cap** `NOTION_BLOCK_DEPTH_CAP` (default 3) with
+   an explicit `content._truncated` marker beyond the cap (D2).
+5. **Resumable tree walk**: the fetcher cursor carries a work stack;
+   one Notion API list call per fetcher invocation; `end_of_data` when the
+   stack empties. 429 re-pushes the current item with its cursor
+   unadvanced; a 404 on one object skips it and keeps walking.
+
+Spec: `specs/IN-14-notion-signal-source/plan.md`.
+
+---
+
+## §19 IN-15 — Google Calendar signal source (DWD, poll-based ingestion)
+
+**Scope.** Google Calendar as the *sixth* ingestion source — the
+*attention-allocation / operating-rhythm / relationship* layer. Where GitHub
+records what *happened* and Notion records what is *declared/planned*, the
+calendar records **where leadership and team time actually goes, and who meets
+whom about what.** Cross-source, this unlocks intent-vs-attention-vs-reality
+drift reasoning (roadmap says Atlas; calendar shows zero hours on it; GitHub
+shows no PRs).
+
+**The structural difference from the OAuth sources (slack/github/discord/notion):**
+Google Calendar is a Google Workspace API, so it **reuses the Gmail
+Domain-Wide-Delegation auth substrate** (`services/integrations/gmail/dwd.py:
+get_minter()`, `GoogleHttpClient`, `DirectoryClient`, `resolve_inclusion`) —
+NOT the per-workspace OAuth-bot-token flow. It mirrors the *Gmail* shape: its
+own workspace-install + per-resource tables, a DB-state planner with
+`source_client=None`, and the DWD minter for outbound calls. No push-webhook
+in v1 (poll-only, like Notion).
+
+```
+services/integrations/google_calendar/
+├── client.py      # GoogleCalendarClient over the shared GoogleHttpClient: list_events (full + syncToken), has_updates_since probe
+├── onboarding.py  # resolve workspace users -> calendars (shared DirectoryClient); finalize_install (UPSERT install + calendars + onboarding trigger)
+└── metrics.py     # gcal_provision_* + gcal_fetch_* counters
+
+services/ingestion/{planners,fetchers,reconcilers,handlers}/google_calendar.py
+db/migrations/0060_google_calendar.sql   # 2 tables (installations + calendars) + widen four source CHECKs
+```
+
+Key decisions (see `specs/IN-15-google-calendar-signal-source/plan.md`):
+
+1. **D1 — reuse Gmail DWD auth.** One Google auth path; the same service
+   account is granted the Calendar scope. Calendar gets its own
+   `google_calendar_installations` + `google_calendar_calendars` tables
+   (independent lifecycle / scope auditing) but shares the minter.
+2. **D2 — incremental via Google's native `syncToken`.** `events.list`
+   returns a `nextSyncToken` on the last page of a full sync; the poll re-run
+   passes it for deltas only. On `410 GONE` the fetcher reseeds a windowed full
+   sync. Strictly better than a hand-rolled high-water mark.
+3. **D3 — ONE channel `google_calendar:event`**, handler branches on `status`
+   (`cancelled` -> `kind=state_change`, else `signal`). Mirrors the
+   github:webhook / notion:object one-channel-many-types precedent.
+4. **D4 — trust `authoritative`.** A calendar event is the system of record
+   for scheduling (matching the pre-existing `calendar:sync` channel); the
+   intended-vs-actual-attendance nuance is a downstream Think concern.
+5. **D5/D6 — windowed backfill** (`GOOGLE_CALENDAR_BACKFILL_DAYS`, default 180,
+   `singleEvents=true`); **one shard per included user's primary calendar**.
+
+6. **D7 — versioned `external_id`.** The observations repo dedups on
+   `(source_channel, external_id)` ignoring `occurred_at`, which suits immutable
+   sources but calendar events mutate. `external_id =
+   gcal:{calendar_id}:{event_id}:{status}:{start_instant}` collapses identical
+   re-fetches (backfill twin == poll twin) and RSVP-only churn, while a
+   cancellation or reschedule lands as a distinct observation (preserving the
+   `state_change` signal). Surfaced by the sandbox.
+
+Onboarding emits an `onboarding_triggers` row (source=`google_calendar`,
+DWD-style) that flows the existing oauth_poller -> tenant_onboarding ->
+source_onboarding chain; `tenant_onboarding._determine_applicable_sources` and
+both `VALID_SOURCES` tuples UNION the new install table.
+
+**Sandbox**: `scripts/sandbox_google_calendar.py` stands up a local mock of the
+DWD token + Calendar v3 API (`services/synthetic/mock_servers/google_calendar.py`)
+and drives the real minter -> fetcher -> ingest pipeline end-to-end (backfill,
+incremental syncToken delta incl. a cancellation, dedup, reconciler probe)
+against a throwaway Postgres. See `docs/ingestion/google-calendar-sandbox.md`.
+
+Spec: `specs/IN-15-google-calendar-signal-source/plan.md`.
+
+---
+
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.

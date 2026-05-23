@@ -50,6 +50,37 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # (`gmail:{install}:{message_id}`) is identical — cross-path dedup
     # collapses a backfilled message and its live "poll" twin to one row.
     ("gmail", "poll"): "gmail:",
+    # Notion — backfill + poll (IN-14, D3). Notion has no reliable
+    # content push, so there is no `webhook`/`gateway` ingress: backfill
+    # walks the workspace once, and the incremental driver re-runs the
+    # same fetcher under ingress_kind="poll" on a cadence. BOTH route to
+    # the single `notion:object` channel; the handler branches on the
+    # Notion object's native `object` field (page/block/comment) and sets
+    # kind + content.object_type per record (mirrors the github:webhook
+    # one-channel/many-event-types shape). external_id parity across the
+    # two paths (`notion:{object}:{id}`) collapses a backfilled object and
+    # its live "poll" twin to one observation.
+    #
+    # IN-14 webhooks ADD a third ingress: Notion subscriptions deliver a
+    # thin change event (entity.id + type); the webhook handler fetches the
+    # full object via the per-workspace bot token and shadow-writes it under
+    # ingress_kind="webhook". Same `notion:object` channel and same
+    # `notion:{object}:{id}` external_id, so a webhook-delivered object and
+    # its backfill/poll twin collapse to one observation.
+    ("notion", "webhook"): "notion:object",
+    ("notion", "backfill"): "notion:object",
+    ("notion", "poll"): "notion:object",
+    # Google Calendar — backfill + poll (IN-15, D3). A Google Workspace
+    # API on the shared Gmail DWD auth substrate; no push-webhook in v1, so
+    # there is no `webhook`/`gateway` ingress. Backfill walks each calendar
+    # once (events.list windowed by timeMin); the incremental driver re-runs
+    # the same fetcher under ingress_kind="poll" using Google's native
+    # syncToken. BOTH route to the single `google_calendar:event` channel;
+    # the handler branches on the event `status` (cancelled -> state_change).
+    # external_id parity across the two paths (`gcal:{calendar_id}:{event_id}`)
+    # collapses a backfilled event and its live "poll" twin to one observation.
+    ("google_calendar", "backfill"): "google_calendar:event",
+    ("google_calendar", "poll"): "google_calendar:event",
 }
 
 

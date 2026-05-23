@@ -21,7 +21,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-SourceLiteral = Literal["slack", "github", "discord", "gmail"]
+SourceLiteral = Literal[
+    "slack", "github", "discord", "gmail", "notion", "google_calendar",
+]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT
 # the Pub/Sub notification) and publishes it here instead of ingesting

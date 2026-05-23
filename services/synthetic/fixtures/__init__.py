@@ -7,6 +7,9 @@ mock client constructors.
 from services.synthetic.fixtures.discord_generator import make_discord_guild
 from services.synthetic.fixtures.gmail_generator import make_gmail_mailbox
 from services.synthetic.fixtures.github_generator import make_github_repos
+from services.synthetic.fixtures.google_calendar_generator import (
+    make_google_calendar,
+)
 from services.synthetic.fixtures.slack_generator import make_slack_workspace
 
 
@@ -14,5 +17,6 @@ __all__ = [
     "make_discord_guild",
     "make_github_repos",
     "make_gmail_mailbox",
+    "make_google_calendar",
     "make_slack_workspace",
 ]

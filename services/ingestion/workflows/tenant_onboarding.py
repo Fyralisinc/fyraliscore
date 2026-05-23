@@ -163,7 +163,7 @@ BRIDGE_INBOX_ID = "bridge"
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar")
 
 
 # ---------------------------------------------------------------------
@@ -182,10 +182,15 @@ SELECT provider AS source
   FROM provider_installations
  WHERE tenant_id = $1
    AND enabled = TRUE
-   AND provider IN ('slack', 'github', 'discord')
+   AND provider IN ('slack', 'github', 'discord', 'notion')
 UNION
 SELECT 'gmail' AS source
   FROM gmail_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'google_calendar' AS source
+  FROM google_calendar_installations
  WHERE tenant_id = $1
    AND disabled_at IS NULL
 """

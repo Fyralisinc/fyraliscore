@@ -147,6 +147,8 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "github":  _not_implemented_fetcher("github",  "M6.4"),
     "slack":   _not_implemented_fetcher("slack",   "M6.5"),
     "discord": _not_implemented_fetcher("discord", "M6.6"),
+    "notion":  _not_implemented_fetcher("notion",  "IN-14"),
+    "google_calendar": _not_implemented_fetcher("google_calendar", "IN-15"),
 }
 
 
@@ -163,3 +165,5 @@ from services.ingestion.fetchers import gmail as _gmail  # noqa: E402,F401
 from services.ingestion.fetchers import github as _github  # noqa: E402,F401
 from services.ingestion.fetchers import slack as _slack  # noqa: E402,F401
 from services.ingestion.fetchers import discord as _discord  # noqa: E402,F401
+from services.ingestion.fetchers import notion as _notion  # noqa: E402,F401
+from services.ingestion.fetchers import google_calendar as _google_calendar  # noqa: E402,F401

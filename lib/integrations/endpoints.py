@@ -36,6 +36,12 @@ _PROD: dict[str, str] = {
     "slack_api": "https://slack.com/api",
     "discord_api": "https://discord.com/api/v10",
     "discord_gateway_bot": "https://discord.com/api/v10/gateway/bot",
+    # IN-14 Notion: single host; the /v1 prefix lives on each request path
+    # in services/integrations/notion/client.py.
+    "notion_api": "https://api.notion.com",
+    # IN-15 Google Calendar: the v3 REST base. Uses the same DWD service
+    # account as Gmail (auth lives in services/integrations/gmail/dwd.py).
+    "google_calendar_api": "https://www.googleapis.com/calendar/v3",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -47,6 +53,8 @@ _ENV: dict[str, str] = {
     "slack_api": "SLACK_API_BASE_URL",
     "discord_api": "DISCORD_API_BASE_URL",
     "discord_gateway_bot": "DISCORD_GATEWAY_BOT_URL",
+    "notion_api": "NOTION_API_BASE_URL",
+    "google_calendar_api": "GOOGLE_CALENDAR_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -59,6 +67,8 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "slack_api": "/slack/api",
     "discord_api": "/discord/api/v10",
     "discord_gateway_bot": "/discord/api/v10/gateway/bot",
+    "notion_api": "/notion",
+    "google_calendar_api": "/gcal/calendar/v3",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

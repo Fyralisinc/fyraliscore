@@ -238,6 +238,9 @@ async def load_secrets(
     if provider == "github":
         return _load_github_app_secrets()
 
+    if provider == "notion":
+        return _load_notion_app_secrets()
+
     if app_state is not None and tenant_id is not None:
         db_secrets = await _load_from_db(provider, tenant_id, app_state)
         if db_secrets:
@@ -277,6 +280,46 @@ def _load_github_app_secrets() -> list[Secret]:
                 value=previous,
                 tenant_id=None,
                 label="app:previous",
+            )
+        )
+    return out
+
+
+def _load_notion_app_secrets() -> list[Secret]:
+    """IN-14: load the Notion webhook verification token + optional
+    previous token (rotation overlap window).
+
+    Notion subscriptions are App-level (one subscription per integration;
+    every workspace's events arrive on the one endpoint signed with the
+    one `verification_token`), so the token is a single deployment-wide
+    value — same shape as the GitHub App webhook secret. The
+    `provider_installations.secret_ref` column is NOT used here; it holds
+    the per-workspace bot token (outbound API), a different secret.
+
+    Env vars:
+      - NOTION_WEBHOOK_VERIFICATION_TOKEN       — current token (required)
+      - NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV  — previous (optional, rotation)
+
+    The token is delivered once by Notion's verification POST (logged by
+    services/integrations/notion/webhook.py for the operator to copy here).
+    """
+    current = os.environ.get("NOTION_WEBHOOK_VERIFICATION_TOKEN", "").strip()
+    previous = os.environ.get(
+        "NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV", "",
+    ).strip()
+    out: list[Secret] = []
+    if current:
+        out.append(
+            Secret(
+                provider="notion", value=current,
+                tenant_id=None, label="app:current",
+            )
+        )
+    if previous:
+        out.append(
+            Secret(
+                provider="notion", value=previous,
+                tenant_id=None, label="app:previous",
             )
         )
     return out
