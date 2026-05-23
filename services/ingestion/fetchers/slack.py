@@ -70,9 +70,29 @@ async def fetch_page_slack(
 
     client, close = await _open_slack_client(install)
     try:
-        messages, next_cursor = await client.conversations_history(
-            channel=channel_id, cursor=cur.next_cursor,
-        )
+        from services.integrations.slack.client import SlackApiError
+        try:
+            messages, next_cursor = await client.conversations_history(
+                channel=channel_id, cursor=cur.next_cursor,
+            )
+        except SlackApiError as e:
+            slack_error = (getattr(e, "context", None) or {}).get("slack_error")
+            # The bot is not a member of this (public) channel, so Slack
+            # refuses to serve its history. A bot is rarely in every
+            # channel of a real workspace — skip the channel as a
+            # terminal empty page rather than failing the whole backfill
+            # run. Live coverage for such a channel only begins once the
+            # bot is invited (its message.* events then flow).
+            if slack_error in ("not_in_channel", "channel_not_found"):
+                log.info(
+                    "slack_backfill_skip_inaccessible_channel",
+                    extra={"channel_id": channel_id, "slack_error": slack_error},
+                )
+                return FetchResult(
+                    records=[], next_cursor=_encode_cursor(cur),
+                    end_of_data=True,
+                )
+            raise
         is_end = not next_cursor
 
         # A27.3: emit the event_callback shape the slack:message handler
