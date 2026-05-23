@@ -32,6 +32,16 @@ x-sb-envfile: &sb-envfile
     - .env.sandbox
 
 services:
+  # ---- infra: keep host ports UNPUBLISHED so the sandbox can coexist
+  # with a dev stack already holding :5432 / :11434. The sandbox is
+  # self-contained on its own network; helper scripts run INSIDE the
+  # containers (docker compose exec gateway ...), so no host DB/ollama
+  # port is needed. (`!override []` replaces the base service's ports.)
+  postgres:
+    ports: !override []
+  ollama:
+    ports: !override []
+
   # ---- ingress: publish to host so host-side ngrok can reach it ------
   gateway:
     <<: *sb-envfile
