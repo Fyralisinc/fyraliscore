@@ -358,7 +358,7 @@ SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
 """
 
 _LOAD_PROVIDER_INSTALL_SQL = """
-SELECT id, tenant_id, provider, installation_id, enabled
+SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
   FROM provider_installations
  WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
  LIMIT 1

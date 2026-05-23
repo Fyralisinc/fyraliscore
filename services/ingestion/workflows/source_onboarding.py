@@ -206,7 +206,7 @@ SELECT onboarding_run_id, source, tenant_id, status
 """
 
 _LOAD_PROVIDER_INSTALL_SQL = """
-SELECT id, tenant_id, provider, installation_id, enabled
+SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
   FROM provider_installations
  WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
  LIMIT 1
