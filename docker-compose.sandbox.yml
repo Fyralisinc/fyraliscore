@@ -30,6 +30,11 @@ x-sb-envfile: &sb-envfile
   env_file: !override
     - .env
     - .env.sandbox
+  # GitHub App private key (multi-line PEM can't live in env_file) — mount
+  # it read-only from the gitignored .secrets/ dir; .env.sandbox points
+  # GITHUB_APP_PRIVATE_KEY_PATH here. Harmless on workers that don't read it.
+  volumes:
+    - ./.secrets/github_app.pem:/run/secrets/github_app.pem:ro
 
 services:
   # ---- infra: keep host ports UNPUBLISHED so the sandbox can coexist
