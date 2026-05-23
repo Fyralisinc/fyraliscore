@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import random
 
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
@@ -19,7 +20,14 @@ log = logging.getLogger(__name__)
 
 SHARD_KIND_CHANNEL_WINDOW = "discord_channel_window"
 SAMPLING_VERSION = "v1"  # bump if changing the algorithm
-SAMPLING_RATE = 0.05
+# Fraction of a guild's text channels to backfill. Defaults to the
+# LLD §3.4 production value (0.05 = 5% sparse sampling); override via
+# DISCORD_BACKFILL_SAMPLING_RATE — e.g. 1.0 for full reconciliation
+# against a source mock. NB: changing the rate changes WHICH channels
+# are sampled (random.sample is not nested across k), so bump
+# SAMPLING_VERSION if you need stable subsets across differing rates;
+# the full-coverage case (1.0) is order-independent and unaffected.
+SAMPLING_RATE = float(os.environ.get("DISCORD_BACKFILL_SAMPLING_RATE", "0.05"))
 
 
 def _stable_seed(tenant_id: str) -> int:
