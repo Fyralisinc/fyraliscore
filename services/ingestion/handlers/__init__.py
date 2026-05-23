@@ -162,6 +162,7 @@ from services.ingestion.handlers import stripe  # noqa: E402,F401
 from services.ingestion.handlers import discord  # noqa: E402,F401
 from services.ingestion.handlers import gmail  # noqa: E402,F401
 from services.ingestion.handlers import notion  # noqa: E402,F401
+from services.ingestion.handlers import google_calendar  # noqa: E402,F401
 
 
 __all__ = [

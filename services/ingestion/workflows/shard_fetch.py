@@ -372,6 +372,18 @@ SELECT id, tenant_id, workspace_domain, service_account_email,
  LIMIT 1
 """
 
+# IN-15: Google Calendar is a DWD source like Gmail (not in
+# provider_installations). The fetcher works one calendar at a time via
+# shard_identifier, so the install row only needs scope + id + tenant_id;
+# the impersonated owner_email comes from the shard.
+_LOAD_GCAL_INSTALL_SQL = """
+SELECT id, tenant_id, workspace_domain, service_account_email,
+       scope, disabled_at
+  FROM google_calendar_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -450,6 +462,8 @@ async def _load_install(
     """Load the active install row for this (tenant, source)."""
     if source == "gmail":
         return await pool.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
+    if source == "google_calendar":
+        return await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

@@ -62,6 +62,17 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # its live "poll" twin to one observation.
     ("notion", "backfill"): "notion:object",
     ("notion", "poll"): "notion:object",
+    # Google Calendar — backfill + poll (IN-15, D3). A Google Workspace
+    # API on the shared Gmail DWD auth substrate; no push-webhook in v1, so
+    # there is no `webhook`/`gateway` ingress. Backfill walks each calendar
+    # once (events.list windowed by timeMin); the incremental driver re-runs
+    # the same fetcher under ingress_kind="poll" using Google's native
+    # syncToken. BOTH route to the single `google_calendar:event` channel;
+    # the handler branches on the event `status` (cancelled -> state_change).
+    # external_id parity across the two paths (`gcal:{calendar_id}:{event_id}`)
+    # collapses a backfilled event and its live "poll" twin to one observation.
+    ("google_calendar", "backfill"): "google_calendar:event",
+    ("google_calendar", "poll"): "google_calendar:event",
 }
 
 

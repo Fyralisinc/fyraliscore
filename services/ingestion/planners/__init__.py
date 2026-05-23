@@ -129,6 +129,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "slack":   _not_implemented_planner("slack",   "M6.5"),
     "discord": _not_implemented_planner("discord", "M6.6"),
     "notion":  _not_implemented_planner("notion",  "IN-14"),
+    "google_calendar": _not_implemented_planner("google_calendar", "IN-15"),
 }
 
 
