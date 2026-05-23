@@ -18,21 +18,24 @@ a one-time handshake and the steady-state event path:
     included. We fetch the full page via the per-workspace bot token
     (resolved from the resolved installation's ``secret_ref``), inject the
     ``_fyralis_workspace_id`` private key to mirror the backfill/poll
-    fetcher exactly, and ``ingest()`` it INLINE through the
-    ``notion:object`` handler — the same inline path the slack/github/
-    discord webhooks take in the gateway. The handler keys on the
-    object's native ``object`` field and derives
-    ``external_id = notion:page:{id}`` — the SAME id the backfill/poll
-    paths emit, so the dedup UNIQUE index collapses a webhook-delivered
-    page and its backfill twin to one observation.
+    fetcher exactly, and ``shadow_write_raw`` it onto the real data plane
+    (``ingress_kind="webhook"``): S3 PutIfAbsent → Kafka ``ingestion.raw``
+    → normalizer (``("notion","webhook") → notion:object``) →
+    observation_writer. The handler keys on the object's native
+    ``object`` field and derives ``external_id = notion:page:{id}`` — the
+    SAME id the backfill/poll paths emit, so the dedup UNIQUE index
+    collapses a webhook-delivered page and its backfill twin to one
+    observation.
 
-    Why inline and not shadow-write: the gateway process does NOT wire the
-    Kafka producer / S3 raw client (those live only in the ingestion
-    workers — backfill/poll feed the data plane). All gateway webhook
-    ingress is inline ``ingest()`` against the DB; the M2 shadow path
-    no-ops here. Inline write also means the observation lands
-    immediately, independent of the ``ingestion.kafka_path_enabled``
-    cutover flag.
+    Why the data plane and not inline ``ingest()``: Notion has no inline
+    handler wired in the gateway, and we deliberately route Notion through
+    the full pipeline. The producer + S3 client come from
+    ``app.state.notion_data_plane`` (wired in
+    services/gateway/main.py::_wire_notion_data_plane), scoped so the
+    slack/github cutover stays inline. The observation lands once the
+    tenant's ``ingestion.kafka_path_enabled`` flag is on (the
+    observation_writer full-mode gate) — the same gate backfill lives
+    behind.
 
 Scope (v1): PAGE entities only. The NotionClient's single-object getter is
 ``retrieve_page``; pages are the high-value surface and the only entity a
@@ -46,13 +49,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+import orjson
 import structlog
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from lib.shared.errors import CompanyOSError, NotionApiError, ValidationError
-from services.ingestion.core import IngestResult, ingest
-from services.ingestion.handlers import HandlerNotFound
+from lib.shared.errors import NotionApiError
+from services.ingestion.shadow_write import shadow_write_raw
 from services.integrations.notion.client import short_workspace_hash
 
 
@@ -137,23 +140,16 @@ async def _build_workspace_client(outcome: Any, workspace_id: str | None) -> Any
     return await build_notion_client(install)
 
 
-def _gateway_deps(request: Request) -> Any:
-    """Resolve the gateway's shared ingest deps (pool / repos / embedder)
-    off ``app.state.deps`` — the same container the router uses for the
-    other providers' inline ingest."""
-    return getattr(request.app.state, "deps", None)
-
-
 async def handle_notion_event(
     *,
     request: Request,
     outcome: Any,
     payload: Mapping[str, Any],
 ) -> JSONResponse:
-    """Fetch the changed page and ingest it inline. Always returns 200 —
-    Notion retries non-2xx, and an unsupported entity / transient fetch
-    miss is not worth a retry storm. The periodic backfill/poll reconcile
-    is the correctness backstop.
+    """Fetch the changed page and shadow-write it onto the data plane.
+    Always returns 200 — Notion retries non-2xx, and an unsupported
+    entity / transient fetch miss is not worth a retry storm. The periodic
+    backfill/poll reconcile is the correctness backstop.
     """
     workspace_id = payload.get("workspace_id")
     event_type = payload.get("type") if isinstance(payload.get("type"), str) else None
@@ -203,54 +199,73 @@ async def handle_notion_event(
     # `content.workspace_id` is populated identically across ingress kinds.
     page["_fyralis_workspace_id"] = workspace_id
 
-    deps = _gateway_deps(request)
-    if deps is None:  # pragma: no cover — gateway misconfiguration
-        log.error("notion_webhook_deps_missing", event_type=event_type)
-        return JSONResponse(
-            {"handled": "ignored", "reason": "deps_unavailable"},
-            status_code=200,
-        )
-
-    try:
-        result: IngestResult = await ingest(
-            "notion:object",
-            page,
-            pool=deps.pool,
-            tenant_id=outcome.tenant_id,
-            actor_repo=deps.actor_repo,
-            alias_repo=deps.alias_repo,
-            embedder=deps.embedder,
-            request_headers={},
-        )
-    except (HandlerNotFound, ValidationError, CompanyOSError) as exc:
-        # A malformed page (missing id, unsupported object) is not worth a
-        # Notion retry — ack and let reconcile re-fetch. Log for the
-        # operator. CompanyOSError covers the typed ingestion failures.
-        log.warning(
-            "notion_webhook_ingest_rejected",
-            error_type=type(exc).__name__,
-            event_type=event_type,
-        )
-        return JSONResponse(
-            {"handled": "ignored", "reason": "ingest_rejected"},
-            status_code=200,
-        )
-
-    log.info(
-        "notion_webhook_ingested",
+    written = await _shadow_write_page(
+        request,
+        tenant_id=outcome.tenant_id,
+        page=page,
         event_type=event_type,
-        observation_id=str(result.observation.id),
-        deduped=result.deduped,
+        entity_id=entity_id,
     )
     return JSONResponse(
         {
             "handled": "event",
             "event_type": event_type,
-            "observation_id": str(result.observation.id),
-            "deduped": result.deduped,
+            "shadow_write": written,
         },
         status_code=200,
     )
+
+
+async def _shadow_write_page(
+    request: Request,
+    *,
+    tenant_id: Any,
+    page: dict[str, Any],
+    event_type: str | None,
+    entity_id: str,
+) -> bool:
+    """Publish the fetched page onto the data plane via ``shadow_write_raw``.
+
+    Uses the Notion-scoped producer + S3 client wired at
+    ``app.state.notion_data_plane`` (see
+    services/gateway/main.py::_wire_notion_data_plane). Returns True when
+    the write was attempted, False when the data plane is unwired
+    (KAFKA_BOOTSTRAP_SERVERS unset / startup failed). A failure mid-write
+    propagates the exception to the caller's 200 path only via the log —
+    the function swallows it (Notion must not retry a transient S3/Kafka
+    hiccup; backfill/poll reconciles).
+    """
+    ndp = getattr(request.app.state, "notion_data_plane", None)
+    if ndp is None:
+        log.error("notion_webhook_data_plane_unwired", event_type=event_type)
+        return False
+    try:
+        s3_key = await shadow_write_raw(
+            tenant_id=tenant_id,
+            source="notion",
+            ingress_kind="webhook",
+            raw_body=orjson.dumps(page),
+            s3_client=ndp.s3_client,
+            kafka_producer=ndp.producer,
+            ingress_metadata={
+                "event_type": event_type or "unknown",
+                "entity_id": entity_id,
+            },
+        )
+        log.info(
+            "notion_webhook_shadow_written",
+            event_type=event_type,
+            raw_s3_key=s3_key,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — M2 prime directive
+        log.warning(
+            "notion_webhook_shadow_write_failed",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+            event_type=event_type,
+        )
+        return False
 
 
 __all__ = [

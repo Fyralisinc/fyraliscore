@@ -64,15 +64,29 @@ class _FakeClient:
         self.closed = True
 
 
-def _request_with_deps() -> SimpleNamespace:
-    """A request whose app.state.deps carries the inline-ingest deps."""
-    deps = SimpleNamespace(
-        pool=object(),
-        actor_repo=object(),
-        alias_repo=object(),
-        embedder=None,
-    )
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(deps=deps)))
+class _FakeProducer:
+    def __init__(self) -> None:
+        self.produced: list[dict] = []
+
+    async def produce(self, *, topic, value, key):
+        self.produced.append({"topic": topic, "value": value, "key": key})
+
+
+class _FakeS3:
+    def __init__(self) -> None:
+        self.puts: list[tuple[str, bytes]] = []
+
+    async def put_if_absent(self, key: str, body: bytes) -> None:
+        self.puts.append((key, body))
+
+
+def _request_with_data_plane() -> tuple[SimpleNamespace, _FakeProducer, _FakeS3]:
+    """A request whose app.state.notion_data_plane carries fake producer +
+    S3 client (the Notion-scoped data plane)."""
+    producer, s3 = _FakeProducer(), _FakeS3()
+    ndp = SimpleNamespace(producer=producer, s3_client=s3)
+    state = SimpleNamespace(notion_data_plane=ndp)
+    return SimpleNamespace(app=SimpleNamespace(state=state)), producer, s3
 
 
 def _outcome() -> SimpleNamespace:
@@ -91,35 +105,19 @@ def patch_client(monkeypatch):
     return _install
 
 
-@pytest.fixture
-def capture_ingest(monkeypatch):
-    """Capture inline ingest() calls instead of touching the DB."""
-    calls: list[dict] = []
-
-    async def _fake(channel, payload, **kwargs):
-        calls.append({"channel": channel, "payload": payload, **kwargs})
-        return SimpleNamespace(
-            observation=SimpleNamespace(id=UUID("11111111-1111-1111-1111-111111111111")),
-            deduped=False,
-            trigger_queue_id=None,
-        )
-
-    monkeypatch.setattr(webhook, "ingest", _fake)
-    return calls
-
-
 # ---------------------------------------------------------------------
 # Event path — cases
 # ---------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_page_event_fetches_and_ingests(patch_client, capture_ingest) -> None:
+async def test_page_event_fetches_and_shadow_writes(patch_client) -> None:
     page = {"object": "page", "id": "page-123", "last_edited_time": "2026-05-01T00:00:00Z"}
     client = _FakeClient(page=page)
     patch_client(client)
+    request, producer, s3 = _request_with_data_plane()
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_deps(),
+        request=request,
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -131,28 +129,29 @@ async def test_page_event_fetches_and_ingests(patch_client, capture_ingest) -> N
     assert resp.status_code == 200
     body = json.loads(resp.body)
     assert body["handled"] == "event"
-    assert body["observation_id"] == "11111111-1111-1111-1111-111111111111"
-    assert body["deduped"] is False
+    assert body["shadow_write"] is True
     assert client.requested_id == "page-123"
     assert client.closed is True
 
-    # One inline ingest of the fetched page through the notion:object
-    # handler, enriched with the workspace id (matches the fetcher).
-    assert len(capture_ingest) == 1
-    call = capture_ingest[0]
-    assert call["channel"] == "notion:object"
-    assert call["tenant_id"] == TENANT
-    assert call["payload"]["id"] == "page-123"
-    assert call["payload"]["_fyralis_workspace_id"] == "ws-1"
+    # The fetched page (enriched with workspace id) was PUT to S3 and the
+    # envelope published to ingestion.raw keyed by tenant.
+    assert len(s3.puts) == 1
+    written = json.loads(s3.puts[0][1])
+    assert written["id"] == "page-123"
+    assert written["_fyralis_workspace_id"] == "ws-1"
+    assert len(producer.produced) == 1
+    assert producer.produced[0]["topic"] == "ingestion.raw"
+    assert producer.produced[0]["key"] == str(TENANT).encode()
 
 
 @pytest.mark.asyncio
-async def test_non_page_entity_ignored(patch_client, capture_ingest) -> None:
+async def test_non_page_entity_ignored(patch_client) -> None:
     client = _FakeClient(page={})
     patch_client(client)
+    request, producer, s3 = _request_with_data_plane()
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_deps(),
+        request=request,
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -163,18 +162,19 @@ async def test_non_page_entity_ignored(patch_client, capture_ingest) -> None:
     assert resp.status_code == 200
     assert json.loads(resp.body)["reason"] == "unsupported_entity"
     assert client.requested_id is None  # never fetched
-    assert capture_ingest == []  # never ingested
+    assert producer.produced == [] and s3.puts == []  # never written
 
 
 @pytest.mark.asyncio
-async def test_fetch_404_acks_without_ingest(patch_client, capture_ingest) -> None:
+async def test_fetch_404_acks_without_write(patch_client) -> None:
     client = _FakeClient(error=NotionApiError(
         "not found", code="notion_api_not_found", context={"http_status": 404},
     ))
     patch_client(client)
+    request, producer, s3 = _request_with_data_plane()
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_deps(),
+        request=request,
         outcome=_outcome(),
         payload={
             "workspace_id": "ws-1",
@@ -185,30 +185,23 @@ async def test_fetch_404_acks_without_ingest(patch_client, capture_ingest) -> No
     assert resp.status_code == 200
     assert json.loads(resp.body)["reason"] == "fetch_failed"
     assert client.closed is True
-    assert capture_ingest == []
+    assert producer.produced == [] and s3.puts == []
 
 
 @pytest.mark.asyncio
-async def test_deduped_page_reports_dedup(patch_client, monkeypatch) -> None:
-    """A page already ingested (e.g. via backfill) dedups on
-    notion:page:{id}; the response surfaces deduped=true."""
-    page = {"object": "page", "id": "p-dup"}
+async def test_data_plane_unwired_acks_without_write(patch_client) -> None:
+    """No notion_data_plane on app.state ⇒ shadow_write skipped, still 200."""
+    page = {"object": "page", "id": "p9"}
     client = _FakeClient(page=page)
     patch_client(client)
 
-    async def _fake(channel, payload, **kwargs):
-        return SimpleNamespace(
-            observation=SimpleNamespace(id=UUID("22222222-2222-2222-2222-222222222222")),
-            deduped=True,
-            trigger_queue_id=None,
-        )
-
-    monkeypatch.setattr(webhook, "ingest", _fake)
+    state = SimpleNamespace(notion_data_plane=None)
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
 
     resp = await webhook.handle_notion_event(
-        request=_request_with_deps(),
+        request=request,
         outcome=_outcome(),
-        payload={"workspace_id": "ws", "type": "page.content_updated", "entity": {"id": "p-dup", "type": "page"}},
+        payload={"workspace_id": "ws", "type": "page.created", "entity": {"id": "p9", "type": "page"}},
     )
     assert resp.status_code == 200
-    assert json.loads(resp.body)["deduped"] is True
+    assert json.loads(resp.body)["shadow_write"] is False

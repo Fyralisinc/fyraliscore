@@ -512,6 +512,84 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
         app_.state.github_replay_cache = make_replay_cache()
 
 
+async def _wire_notion_data_plane(app_: FastAPI) -> None:
+    """Wire a Notion-scoped ingestion data plane onto ``app.state``.
+
+    Notion webhook events have NO inline ingest handler in the gateway
+    (unlike slack/github/discord) — the changed object must traverse the
+    real data plane: ``shadow_write`` → Kafka ``ingestion.raw`` →
+    normalizer → observation_writer. This builds the Kafka producer +
+    raw-tier S3 client the Notion webhook handler hands to
+    ``shadow_write_raw``.
+
+    SCOPING (deliberate): stored under ``app.state.notion_data_plane``,
+    NOT the canonical ``app.state.kafka_producer`` / ``s3_raw_client``.
+    The slack/github M5.3 cutover branch and the gmail Pub/Sub endpoint
+    key off those canonical names; leaving them unset keeps those
+    providers on their existing inline path. Only Notion uses the data
+    plane here. (The ``ingestion.kafka_path_enabled`` flag that the
+    observation_writer needs for full-mode is the SAME flag that would
+    trip the slack/github cutover — scoping by attribute name is what
+    decouples the two.) See services/webhooks/router.py cutover branch.
+
+    Guarded: when ``KAFKA_BOOTSTRAP_SERVERS`` is unset (unit tests,
+    minimal deployments) this is a no-op; the Notion webhook handler then
+    acks the event without writing (logged). A producer/S3 startup
+    failure is logged and swallowed so it never blocks gateway startup.
+    """
+    if getattr(app_.state, "notion_data_plane", None) is not None:
+        return
+    brokers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+    if not brokers:
+        return
+    try:
+        from types import SimpleNamespace
+
+        from services.ingestion.kafka.producer import (
+            IdempotentProducer,
+            ProducerConfig,
+        )
+        from services.ingestion.raw_tier.s3 import S3Client
+
+        producer = IdempotentProducer(
+            ProducerConfig(
+                bootstrap_servers=brokers,
+                client_id="gateway-notion-ingress",
+            )
+        )
+        await producer.start()
+        s3_client = S3Client(
+            os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
+            endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        )
+        await s3_client.connect()
+        app_.state.notion_data_plane = SimpleNamespace(
+            producer=producer, s3_client=s3_client,
+        )
+        log.info("notion_data_plane_wired", brokers=brokers)
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        log.error(
+            "notion_data_plane_wiring_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
+async def _close_notion_data_plane(app_: FastAPI) -> None:
+    """Tear down the Notion data plane wired by ``_wire_notion_data_plane``."""
+    ndp = getattr(app_.state, "notion_data_plane", None)
+    if ndp is None:
+        return
+    try:
+        await ndp.producer.stop()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await ndp.s3_client.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def build_app(
     *,
     pool: asyncpg.Pool | None = None,
@@ -626,9 +704,14 @@ def build_app(
                     error=str(_ceo_exc),
                     error_type=type(_ceo_exc).__name__,
                 )
+        # IN-14: Notion webhook events traverse the real data plane (no
+        # inline handler). Wire the Notion-scoped Kafka producer + S3 raw
+        # client. Guarded + swallow-on-failure (see helper docstring).
+        await _wire_notion_data_plane(app_)
         try:
             yield
         finally:
+            await _close_notion_data_plane(app_)
             # IN-08: cancel the oauth_install_states sweep task.
             sweep_task = getattr(app_.state, "oauth_sweep_task", None)
             if sweep_task is not None:
