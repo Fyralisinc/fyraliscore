@@ -17,9 +17,23 @@ matching the pre-existing `calendar:sync` channel — `authoritative`. (It
 records *intended* attendance, not verified attendance; that nuance is a
 downstream Think concern.)
 
-external_id parity (Risk #3): both the backfill walk and the incremental
-`syncToken` poll route here and derive `gcal:{calendar_id}:{event_id}`, so the
-`observations` UNIQUE index collapses a backfilled event and its live twin.
+external_id — VERSIONED (Risk #3 + mutation semantics): the observations repo
+dedups on `(source_channel, external_id)` IGNORING occurred_at, i.e. one stable
+observation per external_id. That fits immutable sources (a sent email, a
+merged PR) but calendar events MUTATE — they get cancelled, rescheduled, and
+re-RSVP'd. So the external_id encodes the event VERSION:
+
+    gcal:{calendar_id}:{event_id}:{status}:{start_instant}
+
+This means:
+  - identical re-fetches (backfill twin == incremental poll twin) collapse to
+    one observation (same status + start);
+  - a cancellation (status confirmed -> cancelled) lands as a NEW observation
+    with kind=state_change — the deprioritization signal is preserved;
+  - a reschedule (start changes) lands as a NEW signal so the temporal signal
+    stays current;
+  - RSVP-only churn (attendee responseStatus flips; status + start unchanged)
+    dedups, so attendee ticks don't spam observations.
 """
 from __future__ import annotations
 
@@ -143,6 +157,12 @@ async def handle_google_calendar_event(
     start_dt = _parse_event_time(payload.get("start"))
     end_dt = _parse_event_time(payload.get("end"))
 
+    # Version discriminator (see module docstring): status + start instant so a
+    # cancellation / reschedule is a distinct observation while identical
+    # re-fetches and RSVP-only churn dedup.
+    start_key = start_dt.isoformat() if start_dt else "none"
+    external_id = f"gcal:{calendar_id}:{event_id}:{status}:{start_key}"
+
     attendees = payload.get("attendees")
     attendee_emails: list[str] = []
     if isinstance(attendees, list):
@@ -221,7 +241,7 @@ async def handle_google_calendar_event(
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
         source_actor_ref=(f"email:{organizer_email}" if organizer_email else None),
-        external_id=f"gcal:{calendar_id}:{event_id}",
+        external_id=external_id,
         entities_hint=entities,
         raw_payload=payload,
     )

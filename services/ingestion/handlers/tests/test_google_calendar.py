@@ -42,7 +42,10 @@ async def test_confirmed_event_is_signal_with_rich_content():
     assert draft.source_channel == "google_calendar:event"
     assert draft.trust_tier == "authoritative"
     assert draft.kind == "signal"
-    assert draft.external_id == "gcal:alice@acme.com:evt-1"
+    # external_id is versioned (status + start instant) so mutations land as
+    # distinct observations; the bare event id lives in content.
+    assert draft.external_id == "gcal:alice@acme.com:evt-1:confirmed:2026-04-22T21:00:00+00:00"
+    assert draft.content["event_id"] == "evt-1"
     assert draft.content["object_type"] == "event"
     assert draft.content["summary"] == "Q3 roadmap review"
     assert draft.content["attendee_count"] == 3
@@ -92,13 +95,36 @@ async def test_cancelled_event_without_start_falls_back_to_updated():
     draft = await handle_google_calendar_event(ev, {})
     assert draft.kind == "state_change"
     assert draft.occurred_at.isoformat().startswith("2026-04-25T12:00:00")
+    assert draft.external_id == "gcal:alice@acme.com:evt-9:cancelled:none"
 
 
-async def test_external_id_stable_across_calls():
-    """Backfill + poll twins must derive the same external_id (dedup)."""
+async def test_external_id_stable_across_identical_refetch():
+    """Backfill + poll twins of the SAME version derive the same external_id
+    (so the dedup index collapses them)."""
     a = await handle_google_calendar_event(_event(), {})
     b = await handle_google_calendar_event(_event(), {})
-    assert a.external_id == b.external_id == "gcal:alice@acme.com:evt-1"
+    assert a.external_id == b.external_id
+
+
+async def test_cancellation_gets_distinct_external_id_from_confirmed():
+    """The core mutation guarantee: a cancellation of the same event id does
+    NOT collapse onto the confirmed observation, so the state_change lands."""
+    confirmed = await handle_google_calendar_event(_event(), {})
+    cancelled = await handle_google_calendar_event(_event(status="cancelled"), {})
+    assert confirmed.external_id != cancelled.external_id
+    assert confirmed.content["event_id"] == cancelled.content["event_id"] == "evt-1"
+    assert confirmed.kind == "signal" and cancelled.kind == "state_change"
+
+
+async def test_reschedule_gets_distinct_external_id():
+    """A start-time change (reschedule) lands as a new observation rather than
+    deduping onto the stale time."""
+    original = await handle_google_calendar_event(_event(), {})
+    moved = await handle_google_calendar_event(
+        _event(start={"dateTime": "2026-04-22T16:00:00-07:00"},
+               end={"dateTime": "2026-04-22T17:00:00-07:00"}), {},
+    )
+    assert original.external_id != moved.external_id
 
 
 async def test_missing_id_raises():

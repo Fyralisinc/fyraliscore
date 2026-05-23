@@ -97,13 +97,13 @@ async def test_workspace_install_yields_observations(monkeypatch):
     assert {d.source_channel for d in drafts} == {"google_calendar:event"}
     assert {d.trust_tier for d in drafts} == {"authoritative"}
 
-    by_id = {d.external_id: d for d in drafts}
-    assert "gcal:alice@acme.com:alice@acme.com-evt1" in by_id
-    assert by_id["gcal:alice@acme.com:alice@acme.com-evt1"].kind == "signal"
-    # the cancelled event is a state_change.
-    assert by_id["gcal:bob@acme.com:bob@acme.com-evt2"].kind == "state_change"
+    by_event = {d.content["event_id"]: d for d in drafts}
+    assert by_event["alice@acme.com-evt1"].kind == "signal"
+    # the cancelled event is a state_change with a versioned external_id.
+    assert by_event["bob@acme.com-evt2"].kind == "state_change"
+    assert by_event["bob@acme.com-evt2"].external_id.endswith(":cancelled:none")
     # external attendee detected against the calendar owner's domain.
-    confirmed = by_id["gcal:alice@acme.com:alice@acme.com-evt1"]
+    confirmed = by_event["alice@acme.com-evt1"]
     ext = {e["id"]: e for e in confirmed.entities_hint if e["type"] == "email_address"}
     assert ext["ext@vc.com"]["external"] is True
 

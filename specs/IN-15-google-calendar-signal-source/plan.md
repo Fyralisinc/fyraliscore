@@ -73,7 +73,7 @@ The CEO's calendar is the single richest unobtrusive signal of **how the company
 
 **Constraints**:
 - `singleEvents=true` is required to (a) expand recurrences into datable instances and (b) make `syncToken` usable; without it Calendar rejects `syncToken`. The fetcher always sets it.
-- `external_id` MUST be identical across backfill and poll for the dedup UNIQUE index to collapse twins: `gcal:{calendar_id}:{event_id}` (the per-instance `event_id` is stable across syncs).
+- `external_id` is **versioned**: `gcal:{calendar_id}:{event_id}:{status}:{start_instant}`. The observations repo dedups on `(source_channel, external_id)` *ignoring* `occurred_at` (it assumes one stable observation per external_id) — which suits immutable sources but NOT mutable calendar events. Encoding status+start means identical re-fetches (backfill twin == poll twin) collapse, while a cancellation (`confirmed`→`cancelled`) or a reschedule (start changes) lands as a distinct observation; RSVP-only churn dedups. See D7. (This was caught by the sandbox — see `docs/ingestion/google-calendar-sandbox.md`.)
 - `FYRALIS_ENV=prod` reuses the Gmail DWD prod-safety posture (service-account JSON must be configured); no new webhook secret to assert (poll-only).
 
 **Scale/Scope**: Per-tenant workspaces in the low hundreds of users; one calendar shard per included user's primary calendar. Shared/secondary calendars are an additive follow-up.
@@ -88,7 +88,7 @@ The CEO's calendar is the single richest unobtrusive signal of **how the company
 | §IV Integration tests, real DB | PASS | The pipeline test runs on live Postgres; pure layers use fakes. |
 | §V Reasoning vs rendering | N/A | Pure ingestion plumbing; observations trigger Think via the existing `ingest()` path. |
 | §VI Trust/confidence/falsifiers | PASS | Calendar observations carry `trust_tier='authoritative'` per `CHANNEL_TRUST_MAP` (system-of-record for scheduling). No Model writes ⇒ no falsifier obligation. |
-| §VII Determinism + audit | PASS | `uuid7()` for new substrate rows. Observation idempotency via the existing UNIQUE index; `external_id = gcal:{calendar_id}:{event_id}` stable across backfill + poll. |
+| §VII Determinism + audit | PASS | `uuid7()` for new substrate rows. Observation idempotency via the existing dedup; versioned `external_id = gcal:{calendar_id}:{event_id}:{status}:{start}` stable across backfill + poll for a given event version (D7). |
 | §VIII Structured errors | PASS | Reuses `GoogleApiError` / `GoogleRateLimited` (shared Google client). No new error classes needed (simpler than Notion, which needed bespoke OAuth errors). |
 | §IX Dual-write until proven | PASS — N/A | No hot-path field, no existing Calendar data, no parallel writer. CHECK widening is backward-compatible. |
 | §X Simplicity / YAGNI | PASS | No push-webhook in v1. No SDK. Reuses the Gmail DWD substrate rather than a second Google auth path. One channel, not three. Each deferral is listed in Out of Scope. |
@@ -166,7 +166,7 @@ Full history is unbounded and low-value; the last ~6 months captures current cad
 
 1. **`syncToken` expiry (`410 GONE`).** Steady-state poll fails if the token aged out. **Mitigation**: the fetcher catches 410 and reseeds a windowed full sync; dedup makes the re-walk idempotent.
 2. **Recurring-event explosion.** `singleEvents=true` on a many-year recurrence inflates instance count. **Mitigation**: `timeMin` window (D5) bounds expansion to the backfill horizon.
-3. **`external_id` parity across backfill vs poll.** **Mitigation**: both paths go through the same handler → `gcal:{calendar_id}:{event_id}`; tested.
+3. **`external_id` parity across backfill vs poll, AND mutation capture.** Because the observations repo dedups on `(source_channel, external_id)` ignoring `occurred_at`, a naive `gcal:{calendar_id}:{event_id}` would silently drop cancellations/reschedules (they'd dedup onto the original). **Mitigation**: versioned external_id `…:{status}:{start}` (D7) — twins collapse, mutations land. Caught by the sandbox; tested.
 4. **Quota / rate limits.** **Mitigation**: shared `GoogleRateLimited` handling → cursor-preserving empty page; conservative page size.
 5. **Cancelled events in a sync delta carry no `start`.** **Mitigation**: handler falls back to `updated`/`originalStartTime` for `occurred_at` when `start` is absent.
 6. **Trust over-claiming attendance.** `accepted` ≠ attended. **Mitigation**: `authoritative` covers *scheduling*, not attendance; documented for Think.

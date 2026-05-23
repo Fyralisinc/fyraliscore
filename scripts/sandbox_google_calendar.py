@@ -46,6 +46,12 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# This is a dev/test harness: it loads services/synthetic (which refuses to
+# import under a prod env) and must not engage prod-only safety guards. Declare
+# the env before any service import.
+os.environ.setdefault("COMPANY_OS_ENV", "test")
+os.environ.setdefault("FYRALIS_ENV", "test")
+
 import asyncpg
 
 
@@ -342,17 +348,27 @@ async def run(args) -> int:
         incr_ids, _ = await _drain_shard_into_observations(pool, install_row, incr_shard)
         print(f"  incremental ingested: {incr_ids}")
         new_board = await pool.fetchrow(
-            "SELECT kind FROM observations WHERE tenant_id=$1 AND external_id=$2",
-            _TENANT_ID, "gcal:alice@acme.com:a-board",
+            "SELECT kind FROM observations WHERE tenant_id=$1 AND content->>'event_id'=$2",
+            _TENANT_ID, "a-board",
         )
+        # a-standup now has TWO observations: the confirmed (backfill, signal)
+        # and the cancellation (incremental, state_change) — the versioned
+        # external_id keeps them distinct.
         cancelled = await pool.fetchrow(
-            "SELECT kind FROM observations WHERE tenant_id=$1 AND external_id=$2",
-            _TENANT_ID, "gcal:alice@acme.com:a-standup",
+            "SELECT kind FROM observations WHERE tenant_id=$1 "
+            "AND content->>'event_id'=$2 AND kind='state_change'",
+            _TENANT_ID, "a-standup",
+        )
+        standup_versions = await pool.fetchval(
+            "SELECT count(*) FROM observations WHERE tenant_id=$1 AND content->>'event_id'=$2",
+            _TENANT_ID, "a-standup",
         )
         _check("new event from delta ingested as signal",
                new_board is not None and new_board["kind"] == "signal")
-        _check("cancelled event ingested as state_change",
+        _check("cancellation lands as a distinct state_change observation",
                cancelled is not None and cancelled["kind"] == "state_change")
+        _check("a-standup has both confirmed + cancelled observations (versioned id)",
+               standup_versions == 2)
 
         # 8. Dedup: re-ingest a backfilled event (poll twin) -> deduped, no new row.
         _hr("DEDUP (backfill vs poll twin)")
@@ -392,7 +408,9 @@ async def run(args) -> int:
             print(f"  [{r['kind']:<12} {r['trust_tier']:<13}] {r['external_id']}")
             print(f"       {r['content_text']}")
         print(f"\n  total observations: {len(rows)}")
-        _check("final observation count is 4 (3 backfill + 1 new from delta)", len(rows) == 4)
+        # 3 backfill + 2 from the alice delta (new board signal + standup
+        # cancellation state_change).
+        _check("final observation count is 5 (3 backfill + 2 from delta)", len(rows) == 5)
         _check("all observations are authoritative google_calendar:event",
                all(r["source_channel"] == "google_calendar:event"
                    and r["trust_tier"] == "authoritative" for r in rows))
