@@ -209,8 +209,27 @@ No dual-write / reader-cutover phase (§IX N/A — backward-compatible CHECK wid
 - **Per-block-type structured extraction** (tables, embeds, synced blocks): v1 captures text content + properties; richer block typing deferred.
 - **`spec.md` / `tasks.md` / `data-model.md`**: this plan is the anchoring artifact written ahead of the formal speckit sequence; backfill `spec.md` before implement if running the full SDD gate.
 
-## Open Questions
+## Decisions (locked — implementation phase, 2026-05-23)
 
-1. Poll cadence for incremental — propose 15 min (matches greeting refresh). Confirm during spec.
-2. Block-recursion depth cap — propose ≤3. Confirm during spec.
-3. Should `notion:page_content` be a separate channel or folded into `notion:page` content? Plan keeps them separate so a page's body edits and its property changes are distinct observations; revisit if it produces noise.
+The three open questions are resolved as follows. Decision 3 was **revised** after reading the normalizer routing layer.
+
+### D1 — Poll cadence: 15 min, env-overridable
+Incremental staleness ≤ 15 min, matching `GREETING_REFRESH_INTERVAL_SECONDS=900` (no point ingesting faster than the UI renders). Implemented as env var `NOTION_POLL_INTERVAL_SECONDS` (default `900`) read by the incremental driver, so ops can tune without a deploy. **Rationale**: balances Notion's ~3 req/s rate limit against drift-detection freshness; the render cadence is the natural ceiling.
+
+### D2 — Block-recursion depth cap: 3, with explicit truncation marker
+Page-body block trees are walked to depth ≤ 3. Beyond that, the handler stamps `content["_truncated"] = {"reason": "depth_cap", "depth": 3}` rather than silently dropping. Env var `NOTION_BLOCK_DEPTH_CAP` (default `3`) for tuning. **Rationale**: the signal (title, top-level prose, first bullet layer) lives in the first 2–3 levels; deeper descent is diminishing-value API spend against the rate limit. The truncation marker preserves epistemic honesty (§VI) — a reasoner knows the body was clipped.
+
+### D3 — Channel model: ONE channel `notion:object`, internal branching (REVISED from three channels)
+**Original plan**: three channels `notion:page` / `notion:page_content` / `notion:comment`.
+**Revised decision**: a **single** registered channel `notion:object`, with the handler branching on the Notion object's native `object` field (`"page"` | `"block"` | `"comment"`) to set `kind` and `content["object_type"]` per record.
+
+**Why the revision**: the Kafka-path normalizer ([services/ingestion/normalizer/channel_mapping.py](../../services/ingestion/normalizer/channel_mapping.py)) routes `(source, ingress_kind) → exactly one channel` via `resolve_channel`. A single source+`backfill`/`poll` pair therefore *cannot* fan out to three separately-registered handler channels. The established precedent is GitHub: one channel `github:webhook` whose handler branches on `X-GitHub-Event` across 6 event types, assigning per-record `trust_tier`/`kind`. Notion follows that exactly — and Notion objects self-describe via their `object` field, so no injected header is even needed (cleaner than GitHub).
+
+The downstream distinction I wanted (a status flip vs. a body edit vs. a comment) is preserved without fighting the router:
+- `object="page"` → `content.object_type="page"`; `kind="state_change"` when a tracked status property changed, else `"signal"`.
+- `object="block"` → `content.object_type="block"` (page-body content); `kind="signal"`.
+- `object="comment"` → `content.object_type="comment"`; `kind="signal"`.
+
+All carry `source_channel="notion:object"` and `trust_tier="attested_agent"`. This supersedes every "three channels" / `notion:page_content` mention elsewhere in this plan.
+
+**Routing wiring**: `resolve_channel` gains `(notion, backfill) → "notion:object"` and `(notion, poll) → "notion:object"`. `SourceLiteral` in the raw envelope gains `"notion"`.
