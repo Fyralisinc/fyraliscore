@@ -70,10 +70,19 @@ async def handle_push(
     *,
     pool: Any,  # asyncpg.Pool — typed loose to avoid import cycle
     envelope: dict[str, Any],
+    s3_raw_client: Any = None,
+    kafka_producer: Any = None,
+    tenant_flags: Any = None,
 ) -> dict[str, Any]:
     """Top-level entry. Returns a small status dict for the webhook to
     return 200 with. Errors are swallowed for non-2xx-worthy reasons
-    (transient API failures); only programmer errors raise."""
+    (transient API failures); only programmer errors raise.
+
+    Live-via-Kafka cutover: when the shadow deps are wired AND
+    `ingestion.kafka_path_enabled=TRUE` for the resolved tenant, the
+    drained messages publish to `ingestion.raw` (ingress_kind="poll")
+    instead of ingesting inline. default=False keeps unflagged tenants
+    inline. The deps are threaded straight through to the fetcher's drain."""
     subscription_name, decoded = decode_pubsub_message(envelope)
     email_address = decoded.get("emailAddress")
     history_id_seen = decoded.get("historyId")
@@ -115,6 +124,9 @@ async def handle_push(
             tenant_id=tenant_id,
             gmail_installation_id=gmail_installation_id,
             email_address=email_address.lower(),
+            s3_raw_client=s3_raw_client,
+            kafka_producer=kafka_producer,
+            tenant_flags=tenant_flags,
         )
         # _drain_history returns its own status dict; augment with
         # tenant_id without overwriting any existing key.
@@ -139,6 +151,9 @@ async def _drain_history(
     tenant_id: UUID,
     gmail_installation_id: UUID,
     email_address: str,
+    s3_raw_client: Any = None,
+    kafka_producer: Any = None,
+    tenant_flags: Any = None,
 ) -> dict[str, Any]:
     # Local import to avoid an import cycle (handlers/gmail.py imports
     # threading which imports tenant_context; push_handler is also
@@ -155,6 +170,9 @@ async def _drain_history(
             gmail_installation_id=gmail_installation_id,
             email_address=email_address,
             read_path="push",
+            s3_raw_client=s3_raw_client,
+            kafka_producer=kafka_producer,
+            tenant_flags=tenant_flags,
         )
     return result
 

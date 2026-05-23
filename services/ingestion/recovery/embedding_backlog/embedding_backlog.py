@@ -53,11 +53,13 @@ from uuid import UUID
 import asyncpg
 from redis.asyncio import Redis as AsyncRedis
 
-from lib.embeddings.ollama import (
-    OllamaClient,
-    OllamaConfig,
-    OllamaDimensionMismatch,
-    OllamaError,
+from lib.embeddings.base import Embedder, EmbedderError
+from lib.embeddings.factory import make_embedder
+from lib.embeddings.ollama import OllamaClient, OllamaConfig
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
 )
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
@@ -255,7 +257,7 @@ async def _process_row(
     *,
     row: asyncpg.Record,
     pool: asyncpg.Pool,
-    ollama: OllamaClient,
+    embedder: Embedder,
     dlq_producer: IdempotentProducer,
 ) -> None:
     """Embed + update ONE row. Failures publish DLQ but do not raise.
@@ -277,11 +279,11 @@ async def _process_row(
         return
 
     try:
-        vec = await ollama.embed(content_text)
-    except (OllamaError, OllamaDimensionMismatch) as exc:
+        vec = await embedder.embed(content_text)
+    except EmbedderError as exc:
         _bump("backlog.rows_failed")
         log.warning(
-            "backlog.ollama_failed",
+            "backlog.embed_failed",
             extra={
                 "observation_id": str(obs_id),
                 "tenant_id": str(tenant_id),
@@ -337,7 +339,8 @@ async def run_backlog_service(
     pool: asyncpg.Pool,
     redis: AsyncRedis,
     *,
-    ollama: OllamaClient | None = None,
+    embedder: Embedder | None = None,
+    ollama: Embedder | None = None,
     dlq_producer: IdempotentProducer | None = None,
     stop_event: asyncio.Event | None = None,
     max_iterations: int | None = None,
@@ -352,8 +355,11 @@ async def run_backlog_service(
     """
     rl = RateLimiter(redis)
     stop_event = stop_event or asyncio.Event()
-    own_ollama = ollama is None
-    ollama_client = ollama or OllamaClient(OllamaConfig.from_env())
+    # Backend-agnostic embedder via the factory (EMBEDDER_BACKEND;
+    # default 'ollama'). `ollama=` is the back-compat injection alias.
+    injected = embedder or ollama
+    own_embedder = injected is None
+    embedder_obj: Embedder = injected or make_embedder()
     own_dlq = dlq_producer is None
     if dlq_producer is None:
         dlq_producer = IdempotentProducer(ProducerConfig(
@@ -365,6 +371,11 @@ async def run_backlog_service(
         await dlq_producer.start()
 
     cursor = await _load_cursor(pool, config.instance_name)
+
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
 
     iterations = 0
     try:
@@ -439,7 +450,7 @@ async def run_backlog_service(
             # ---- Embed + UPDATE. --------------------------------------
             await _process_row(
                 row=row, pool=pool,
-                ollama=ollama_client, dlq_producer=dlq_producer,
+                embedder=embedder_obj, dlq_producer=dlq_producer,
             )
 
             # ---- Advance + persist cursor BEFORE the next iteration. --
@@ -450,8 +461,11 @@ async def run_backlog_service(
             cursor = _Cursor(ingested_at=row["ingested_at"], id=row["id"])
             await _persist_cursor(pool, config.instance_name, cursor)
     finally:
-        if own_ollama:
-            await ollama_client.close()
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
+        if own_embedder:
+            await embedder_obj.close()
         if own_dlq:
             await dlq_producer.stop()
 

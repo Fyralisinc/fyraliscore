@@ -13,30 +13,33 @@ repos via Octokit's `/installation/repositories` endpoint (per
 [GithubClient.list_installation_repositories](../../../services/integrations/github/client.py)).
 
 ============================================================
-EVENT TYPES (M6.4 — 2 types initially, extensible later)
+EVENT TYPES (gap-closure — full mandatory signal set)
 ============================================================
-Backfill scope: one shard per (repo, event_type). M6.4 ships TWO
-event types — issues + pull_requests — which together cover the
-high-signal observation density per the LLD. Other event types
-(issue_comments, pr_review_comments, commits) are deferred; their
-shards can be added later by extending `EVENT_TYPES`.
+Backfill scope: one shard per (repo, event_type), covering the
+mandatory CompanyOS GitHub signal set at parity with the live handler:
 
-With ~20 repos/tenant typical and 2 event_types = ~40 shards/tenant.
-The settled-decision target of ~250 leaves headroom for additional
-event_types in future work.
+  - Class A (repo-level list): issues, pull_requests, issue_comments,
+    commits.
+  - Class B (PR-parent fan-out): pr_reviews (always on; bounded by PR
+    count), check_runs (OPTIONAL — gated by GITHUB_BACKFILL_CHECK_RUNS=1,
+    default off, because per-PR-head check-run fan-out is the
+    highest-cost / lowest-ROI signal).
+
+With ~20 repos/tenant typical and 5 always-on event_types =
+~100 shards/tenant (~120 with check_runs). The settled-decision target
+of ~250 leaves headroom. See docs/ingestion/github-backfill-gap-closure.md.
 
 ============================================================
 ALL-REPOS vs SELECTED-REPOS MODE
 ============================================================
-GitHub's `list_installation_repositories` returns:
-  - `list[str]` (selected mode) — explicit selection in the App's
-    installation grant.
-  - `None` (all-repos mode) — App was granted org-wide access.
-
-In all-repos mode the planner cannot enumerate from this endpoint
-alone; for M6.4 we mark the install with a `failure_reason` calling
-out the unsupported mode. Per-source policy improvement (e.g., use
-`/search/repositories?q=org:<name>`) is future work, NOT M6.4 scope.
+`GET /installation/repositories` enumerates the repos accessible to the
+installation in BOTH selected and all-repos (org-wide) mode. The planner
+uses `list_repositories_for_backfill`, which fully paginates that
+endpoint and returns the concrete repo list regardless of mode — so an
+org-wide grant is supported and a large selection is not silently
+truncated. (`list_installation_repositories`, which returns None as the
+all-repos signal, remains for the OAuth callback's
+`selected_repositories` column.)
 
 ============================================================
 WIRE-IN
@@ -48,6 +51,7 @@ module to trigger the assignment.
 from __future__ import annotations
 
 import logging
+import os
 
 from services.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingestion.planners.context import PlannerContext
@@ -57,18 +61,27 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_REPO_EVENTS = "github_repo_events"
-EVENT_TYPES = ("issues", "pull_requests")
+# Always-on event types (one shard per (repo, event_type)).
+EVENT_TYPES = (
+    "issues", "pull_requests", "issue_comments", "commits", "pr_reviews",
+)
+# Opt-in via GITHUB_BACKFILL_CHECK_RUNS=1 — expensive per-PR-head fan-out.
+OPTIONAL_EVENT_TYPES = ("check_runs",)
+
+
+def _effective_event_types() -> tuple[str, ...]:
+    """`EVENT_TYPES` plus any opt-in types whose env flag is set."""
+    if os.environ.get("GITHUB_BACKFILL_CHECK_RUNS", "") == "1":
+        return EVENT_TYPES + OPTIONAL_EVENT_TYPES
+    return EVENT_TYPES
 
 
 async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
     """One Shard per (repo, event_type) for this install.
 
-    Uses `ctx.source_client.list_installation_repositories(installation_id)`
-    to enumerate repos. Each repo gets `len(EVENT_TYPES)` shards.
-
-    All-repos mode (returns None) is not yet supported; raises
-    `NotImplementedError` (caught by SourceOnboarding → run marked
-    failed with a clear reason).
+    Uses `ctx.source_client.list_repositories_for_backfill(installation_id)`
+    to enumerate every accessible repo (selected OR all-repos mode, fully
+    paginated). Each repo gets `len(EVENT_TYPES)` shards.
     """
     install = ctx.install
     installation_id = str(install["installation_id"])
@@ -78,16 +91,14 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
             "PlannerContext factory must supply a GithubClient. "
             "See _build_source_client in source_onboarding.py."
         )
-    repos = await ctx.source_client.list_installation_repositories(
+    # `list_repositories_for_backfill` fully enumerates the installation's
+    # accessible repos regardless of selected/all-repos mode (org-wide
+    # grants included) and is not capped at 90 — so a customer who
+    # installs the App org-wide, or on >90 repos, backfills completely.
+    repos = await ctx.source_client.list_repositories_for_backfill(
         installation_id,
     )
-    if repos is None:
-        raise NotImplementedError(
-            "GitHub planner: all-repositories mode is not yet supported "
-            "in M6.4. Install has org-wide grant; per-repo enumeration "
-            "via search endpoint is deferred. Mark install as scoped "
-            "via the GitHub App settings to unblock backfill."
-        )
+    event_types = _effective_event_types()
     shards: list[Shard] = []
     for repo_full_name in repos:
         if "/" not in repo_full_name:
@@ -97,7 +108,7 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
             )
             continue
         owner, repo = repo_full_name.split("/", 1)
-        for event_type in EVENT_TYPES:
+        for event_type in event_types:
             shards.append(Shard(
                 shard_kind=SHARD_KIND_REPO_EVENTS,
                 shard_identifier={
@@ -117,4 +128,9 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
 PLANNER_DISPATCH["github"] = plan_shards_github
 
 
-__all__ = ["EVENT_TYPES", "SHARD_KIND_REPO_EVENTS", "plan_shards_github"]
+__all__ = [
+    "EVENT_TYPES",
+    "OPTIONAL_EVENT_TYPES",
+    "SHARD_KIND_REPO_EVENTS",
+    "plan_shards_github",
+]

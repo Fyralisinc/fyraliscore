@@ -45,9 +45,8 @@ def _get_pool():  # noqa: ANN202
 
 
 async def _open_slack_client(install: asyncpg.Record):  # noqa: ANN202
-    raise RuntimeError(
-        "reconcilers.slack._open_slack_client not configured; tests rebind."
-    )
+    from services.ingestion.fetchers._clients import open_slack_client
+    return await open_slack_client(install)
 
 
 def _decode_id(raw: Any) -> dict[str, Any]:

@@ -137,9 +137,20 @@ class GmailPubSubGenerator:
         tenant_slugs: dict[str, str] | None = None,
         replay_probability: float = 0.0,
         rng_seed: int = 0,
+        s3_raw_client: Any = None,
+        kafka_producer: Any = None,
+        tenant_flags: Any = None,
     ) -> None:
         self._app = app
         self._pool = pool
+        # Live-via-Kafka cutover deps (Run 4). When wired, the
+        # monkeypatched drain threads them into `drain_mailbox_history`,
+        # so a tenant with `kafka_path_enabled=TRUE` publishes the fetched
+        # message to `ingestion.raw` instead of ingesting inline. None
+        # (the Run 1 default) keeps the inline path.
+        self._s3_raw_client = s3_raw_client
+        self._kafka_producer = kafka_producer
+        self._tenant_flags = tenant_flags
         self._mock_clients = {
             email.lower(): client for email, client in mailboxes.items()
         }
@@ -298,7 +309,12 @@ class GmailPubSubGenerator:
 
         async def _mock_drain_history(
             *, pool, tenant_id, gmail_installation_id, email_address,
+            s3_raw_client=None, kafka_producer=None, tenant_flags=None,
         ):
+            # Accept (and override with the generator's own) the cutover
+            # deps that the production `_drain_history` now forwards, so
+            # the monkeypatch signature stays compatible with handle_push.
+            _ = (s3_raw_client, kafka_producer, tenant_flags)
             from services.integrations.gmail.fetcher import (
                 drain_mailbox_history,
             )
@@ -312,6 +328,9 @@ class GmailPubSubGenerator:
                 gmail_installation_id=gmail_installation_id,
                 email_address=email_address,
                 read_path="push",
+                s3_raw_client=self._s3_raw_client,
+                kafka_producer=self._kafka_producer,
+                tenant_flags=self._tenant_flags,
             )
 
         webhook_mod.verify_pubsub_oidc_token = _noop_verify

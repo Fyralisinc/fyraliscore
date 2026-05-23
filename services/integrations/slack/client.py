@@ -55,7 +55,11 @@ class SlackClient:
         team_id: str,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
+        base_url: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
+        from lib.integrations.endpoints import endpoint
+        self._api_base = (base_url or endpoint("slack_api")).rstrip("/")
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
@@ -64,7 +68,7 @@ class SlackClient:
         self._max_attempts = max_attempts
         self._wall_budget_s = wall_budget_s
         self._bot_token: str | None = None  # lazy
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx.AsyncClient | None = http_client
 
     async def _resolve_bot_token(self) -> str:
         if self._bot_token is not None:
@@ -119,7 +123,7 @@ class SlackClient:
         raises `SlackApiError` on `ok=false` or budget exhaustion.
         """
         token = await self._resolve_bot_token()
-        url = f"{_SLACK_API_BASE}/{endpoint}"
+        url = f"{self._api_base}/{endpoint}"
         client = self._httpx()
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -218,6 +222,86 @@ class SlackClient:
             method="GET",
             params={"channel": channel_id},
         )
+
+    # -----------------------------------------------------------------
+    # Backfill read surface (M6.5) — mirrors MockSlackClient so the
+    # planner / fetcher / reconciler exercise the real Web API the same
+    # way they exercise the in-process mock.
+    # -----------------------------------------------------------------
+
+    async def conversations_list(self) -> list[dict[str, Any]]:
+        """List the workspace's channels (planner shard source).
+
+        Cursor-paginated to completion, so a workspace with >1000
+        channels is not silently truncated. Public channels by default;
+        set SLACK_BACKFILL_INCLUDE_PRIVATE=1 (requires the app's
+        groups:read scope) to also enumerate private channels, or
+        SLACK_BACKFILL_CHANNEL_TYPES to set the comma-separated types
+        explicitly. Each entry carries at least `id` and `name`;
+        `team_id` is injected for mock-client parity.
+        """
+        import os
+
+        types = os.environ.get(
+            "SLACK_BACKFILL_CHANNEL_TYPES", "public_channel"
+        )
+        if (
+            os.environ.get("SLACK_BACKFILL_INCLUDE_PRIVATE", "") == "1"
+            and "private_channel" not in types
+        ):
+            types = f"{types},private_channel"
+
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"types": types, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._call(
+                "conversations.list", method="GET", params=params,
+            )
+            for c in data.get("channels") or []:
+                if isinstance(c, dict):
+                    out.append({
+                        "id": c.get("id"),
+                        "name": c.get("name"),
+                        "team_id": c.get("context_team_id") or self._team_id,
+                    })
+            cursor = (
+                (data.get("response_metadata") or {}).get("next_cursor")
+                or None
+            )
+            if not cursor:
+                break
+        return out
+
+    async def conversations_history(
+        self,
+        *,
+        channel: str,
+        cursor: str | None = None,
+        oldest: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """One page of a channel's messages. Returns
+        `(messages, next_cursor)` — `next_cursor` is None when Slack
+        reports no further page (`response_metadata.next_cursor` empty).
+        """
+        params: dict[str, Any] = {"channel": channel}
+        if cursor:
+            params["cursor"] = cursor
+        if oldest is not None:
+            params["oldest"] = oldest
+        if limit is not None:
+            params["limit"] = limit
+        data = await self._call(
+            "conversations.history", method="GET", params=params,
+        )
+        messages = data.get("messages") or []
+        next_cursor = (
+            (data.get("response_metadata") or {}).get("next_cursor") or None
+        )
+        return messages, next_cursor
 
 
 def _parse_retry_after(value: str | None) -> float | None:

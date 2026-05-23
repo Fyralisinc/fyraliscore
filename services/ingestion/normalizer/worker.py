@@ -45,7 +45,6 @@ import asyncio
 import datetime as dt
 import logging
 import os
-import signal
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +59,12 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 from services.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingestion.normalizer.invariants import (
     EnvelopeInvariantError,
@@ -193,24 +198,21 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
     consumed = 0
     produced = 0
-    stop = False
 
-    def _handle_signal(*_args: Any) -> None:
-        nonlocal stop
-        stop = True
+    # Ticket #45: a SIGTERM/SIGINT sets this event and the racing
+    # `next_or_stop` returns None, breaking the loop into its normal
+    # teardown (rc=0) instead of dying mid-poll (rc=-15/-9).
+    stop_event = install_shutdown_event()
 
-    # signal.signal() only works on the main thread; in worker
-    # processes started by the supervisor this IS the main thread.
-    # In test harnesses we may run off-main-thread, so guard.
-    try:
-        signal.signal(signal.SIGTERM, _handle_signal)
-        signal.signal(signal.SIGINT, _handle_signal)
-    except (ValueError, OSError):
-        pass
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
 
     try:
-        async for msg in consumer:
-            if stop:
+        while True:
+            msg = await next_or_stop(consumer, stop_event)
+            if msg is None:
                 break
 
             consumed += 1
@@ -325,6 +327,9 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
             ):
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
         await producer.stop()
         await s3.close()
@@ -412,6 +417,18 @@ async def _normalize_one_with_envelope(
     if envelope.ingress_kind == "backfill" and isinstance(payload, dict):
         headers = payload.get("webhook_metadata") or {}
         payload = payload.get("record", payload)
+    elif envelope.source == "github":
+        # Live-via-Kafka github (ingress_kind="webhook"): the handler keys
+        # the event on the `X-GitHub-Event` header, NOT the body. The
+        # webhook-router cutover (and any live producer) records the event
+        # type in `ingress_metadata["event_type"]`; reconstruct the header
+        # here so the live cutover path derives the SAME draft the inline
+        # ingest() would (which received the real header). Backfill carries
+        # it via webhook_metadata above; other sources read the body and
+        # ignore headers.
+        event_type = envelope.ingress_metadata.get("event_type")
+        if event_type:
+            headers = {"X-GitHub-Event": event_type}
 
     # Dispatch — the handler is a pure (payload, headers) → draft
     # function. For live ingress, headers={} (the verified-at-ingress
@@ -477,6 +494,10 @@ def main() -> None:
         s3_region_name=os.environ.get("S3_REGION_NAME", "auto"),
     )
     asyncio.run(run_worker(config))
+
+
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    main()
 
 
 # Re-export the channel resolver as a module attribute so the

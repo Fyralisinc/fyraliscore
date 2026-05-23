@@ -293,12 +293,38 @@ class BackfillHarness:
         concurrency: int = 4,
         completion_deadline_s: float = 60.0,
         kafka_bootstrap_servers: str = "localhost:9092",
+        drain_timeout_s: float = 30.0,
+        drain_poll_interval_s: float = 2.0,
+        real_clients: bool = False,
+        spammer_rate_limit_every: int = 0,
     ) -> None:
         self._pool = pool
         self._scenarios = scenarios
         self._concurrency = max(1, concurrency)
         self._deadline_s = completion_deadline_s
         self._kafka_bootstrap = kafka_bootstrap_servers
+        # Real-client mode (A30.7): instead of monkeypatching in-process
+        # mock clients, spawn the source-mock SPAMMER on a real port and
+        # let the subprocesses' REAL source clients hit it over HTTP
+        # (token exchange → authed request → pagination → 429 backoff).
+        # The X3 mock helper is NOT installed; backfill resolves
+        # `*_API_BASE_URL` → the spammer via lib.integrations.endpoints.
+        # Gmail is the proven vertical (clean email-keyed identity); the
+        # spammer is seeded from the SAME registry so counts match.
+        self._real_clients = real_clients
+        self._spammer_rate_limit_every = spammer_rate_limit_every
+        self._spammer: Any = None
+        self._sa_json_path: str | None = None
+        # Configurable consumer-drain window (A30.6): the 30s default
+        # matches the historical hardcode (Runs 1-3); the concurrent
+        # runner raises it so a higher-volume backfill+live soak can
+        # fully drain. `run()` uses these; `drain()` accepts overrides.
+        self._drain_timeout_s = drain_timeout_s
+        self._drain_poll_interval_s = drain_poll_interval_s
+        # Populated by `setup()`; the concurrent orchestrator reads
+        # these tenant_ids/slugs to address the same installs live.
+        self._outcomes: list[TenantOutcome] | None = None
+        self._start: float = 0.0
         # Raw-tier (S3) wiring for the M6.7 backfill producer + normalizer.
         self._s3_endpoint = os.environ.get("S3_ENDPOINT_URL")
         self._s3_bucket = os.environ.get("S3_RAW_BUCKET", _DEFAULT_S3_BUCKET)
@@ -312,8 +338,31 @@ class BackfillHarness:
         self._procs: dict[str, subprocess.Popen | None] = {}
 
     async def run(self) -> HarnessResult:
-        start = time.monotonic()
-        outcomes = [
+        """Backward-compatible sequential composition (Runs 1-3):
+        setup → spawn → wait-backfill → drain → collect → teardown.
+
+        The concurrent orchestrator (Run 4) calls the phase methods
+        directly so it can interleave the live phase with the backfill
+        producer drive and drain the shared consumer chain ONCE."""
+        await self.setup()
+        try:
+            self.start_services()
+            await self.wait_for_backfill()
+            await self.drain()
+            await self.collect()
+        finally:
+            stderrs = self._teardown_services()
+            self._last_elapsed = time.monotonic() - self._start
+        return self.build_result(stderrs)
+
+    # ---- Decomposed phases (used directly by the concurrent runner) ----
+    async def setup(self) -> list[TenantOutcome]:
+        """Phase A: seed tenants + fixtures + flags, ensure S3 bucket,
+        write helper + registry, write install/onboarding rows. Returns
+        (and stores) the outcomes so a caller can read tenant_ids before
+        the producer/live phases run."""
+        self._start = time.monotonic()
+        self._outcomes = [
             TenantOutcome(
                 scenario=s,
                 tenant_id=uuid4(),
@@ -321,32 +370,111 @@ class BackfillHarness:
             )
             for s in self._scenarios
         ]
-
         self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
-        try:
-            await self._setup_tenants_and_fixtures(outcomes)
-            await self._ensure_s3_bucket()
+        await self._setup_tenants_and_fixtures(self._outcomes)
+        await self._ensure_s3_bucket()
+        self._registry_path = self._write_registry(self._outcomes)
+        if self._real_clients:
+            # No mock helper: the real source clients hit the spammer,
+            # seeded from the registry we just wrote.
+            self._start_spammer()
+        else:
             self._helpers_dir = _write_helper(
                 self._workdir, self._helper_module,
             )
-            self._registry_path = self._write_registry(outcomes)
-            await self._invoke_oauth_callbacks(outcomes)
-            self._spawn_services()
-            await self._wait_for_completions(outcomes)
-            await self._wait_for_observations_to_drain(outcomes)
-            await self._collect_state(outcomes)
-        finally:
-            stderrs = self._teardown_services()
-            elapsed = time.monotonic() - start
+        await self._invoke_oauth_callbacks(self._outcomes)
+        return self._outcomes
 
+    def _start_spammer(self) -> None:
+        """Spawn the spammer on a real port + write the gmail DWD service-
+        account JSON whose token_uri points at it (real-client mode)."""
+        from services.synthetic.spammer.process import SpammerProcess
+
+        self._spammer = SpammerProcess(
+            registry_path=self._registry_path,
+            rate_limit_every=self._spammer_rate_limit_every,
+        ).start()
+        self._sa_json_path = self._write_spammer_sa_json(
+            f"{self._spammer.base_url}/gmail/token",
+        )
+
+    def _write_spammer_sa_json(self, token_uri: str) -> str:
+        """A throwaway service-account JSON (real RSA key so the DWD
+        minter signs a valid RS256 JWT) whose token_uri is the spammer."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        sa = {
+            "type": "service_account", "project_id": "x3-spammer",
+            "private_key_id": "k1", "private_key": pem,
+            "client_email": "sa@x3-test.iam.gserviceaccount.com",
+            "client_id": "1", "token_uri": token_uri,
+        }
+        path = os.path.join(self._workdir, "spammer_sa.json")
+        with open(path, "w") as f:
+            json.dump(sa, f)
+        return path
+
+    @property
+    def outcomes(self) -> list[TenantOutcome]:
+        if self._outcomes is None:
+            raise RuntimeError("BackfillHarness.setup() not called yet")
+        return self._outcomes
+
+    def start_services(self) -> None:
+        """Phase B(i): spawn the 7 shared subprocesses (producer chain +
+        normalizer + observation_writer consumers). The consumers drain
+        BOTH backfill and live-via-Kafka envelopes from `ingestion.raw`."""
+        self._spawn_services()
+
+    async def wait_for_backfill(self) -> None:
+        """Phase B(ii): wait for every tenant's `tenant_onboarding_completed`
+        producer signal."""
+        await self._wait_for_completions(self.outcomes)
+
+    async def drain(
+        self,
+        *,
+        timeout_s: float | None = None,
+        poll_interval_s: float | None = None,
+    ) -> None:
+        """Phase B(iii): wait for the consumer chain to materialize
+        observations. Timeout defaults to the configured drain window
+        (A30.6) but the concurrent runner may override per call."""
+        await self._wait_for_observations_to_drain(
+            self.outcomes,
+            timeout_s=timeout_s if timeout_s is not None else self._drain_timeout_s,
+            poll_interval_s=(
+                poll_interval_s if poll_interval_s is not None
+                else self._drain_poll_interval_s
+            ),
+        )
+
+    async def collect(self) -> None:
+        """Phase C(i): collect per-tenant observations + state snapshots."""
+        await self._collect_state(self.outcomes)
+
+    def teardown(self) -> dict[str, str]:
+        """Phase C(ii): SIGTERM the subprocesses; return stderr tails."""
+        stderrs = self._teardown_services()
+        self._last_elapsed = time.monotonic() - self._start
+        return stderrs
+
+    def build_result(self, stderrs: dict[str, str]) -> HarnessResult:
         return HarnessResult(
-            outcomes=outcomes,
+            outcomes=self.outcomes,
             subprocess_returncodes={
                 k: (v.returncode if v else -999)
                 for k, v in self._procs.items()
             },
             subprocess_stderr_tails=stderrs,
-            wall_time_seconds=elapsed,
+            wall_time_seconds=getattr(self, "_last_elapsed", 0.0),
         )
 
     # ---- Phase A: Setup ----
@@ -401,13 +529,31 @@ class BackfillHarness:
                 ):
                     log.warning("x3.s3_bucket_create_failed: %r", exc)
 
+    def _align_identity(
+        self, outcome: TenantOutcome, params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Real-client mode: make the fixture's source-native identity match
+        the install row's `installation_id` (`x3-{slug}-{source}`), so the
+        spammer (seeded from this registry), the backfill client's token, and
+        the live targets all address the same tenant. Gmail keys on email
+        (already unique) and needs no alignment."""
+        source = outcome.scenario.source
+        ident = f"x3-{outcome.scenario.tenant_slug}-{source}"
+        if source == "github":
+            return {**params, "installation_id": ident}
+        if source == "slack":
+            return {**params, "team_id": ident}
+        if source == "discord":
+            return {**params, "guild_id": ident}
+        return params
+
     def _write_registry(self, outcomes: list[TenantOutcome]) -> str:
         entries = []
         for outcome in outcomes:
-            fixture = _build_fixture(
-                outcome.scenario.source,
-                outcome.scenario.fixture_params,
-            )
+            params = outcome.scenario.fixture_params
+            if self._real_clients:
+                params = self._align_identity(outcome, params)
+            fixture = _build_fixture(outcome.scenario.source, params)
             entries.append({
                 "tenant_id": str(outcome.tenant_id),
                 "tenant_slug": outcome.scenario.tenant_slug,
@@ -545,16 +691,31 @@ class BackfillHarness:
         env = os.environ.copy()
         env["KAFKA_BOOTSTRAP_SERVERS"] = self._kafka_bootstrap
         env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
-        env["PYTHONPATH"] = (
-            (self._helpers_dir or "") + os.pathsep + env.get("PYTHONPATH", "")
-        )
-        env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path or ""
+        if self._real_clients:
+            # Point the REAL source clients at the spammer (config-only).
+            base = self._spammer.base_url
+            env["SYNTHETIC_SOURCE_API_BASE"] = base
+            env["GMAIL_API_BASE_URL"] = f"{base}/gmail/gmail/v1"
+            env["GMAIL_SERVICE_ACCOUNT_JSON_FILE"] = self._sa_json_path or ""
+        else:
+            env["PYTHONPATH"] = (
+                (self._helpers_dir or "") + os.pathsep
+                + env.get("PYTHONPATH", "")
+            )
+            env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path or ""
         # A27.4 — S3 raw-tier wiring for the shard_fetch producer + the
         # normalizer. INGESTION_ENV pins the key prefix on both sides.
         env["S3_RAW_BUCKET"] = self._s3_bucket
         env["INGESTION_ENV"] = self._ingestion_env
         if self._s3_endpoint:
             env["S3_ENDPOINT_URL"] = self._s3_endpoint
+            # moto accepts any creds, but botocore still requires SOME to
+            # be resolvable. Supply dummy creds (matching _ensure_s3_bucket)
+            # unless the operator already exported real ones — so the
+            # producer's S3 write doesn't NoCredentialsError out of the box.
+            env.setdefault("AWS_ACCESS_KEY_ID", "test")
+            env.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+            env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         return env
 
     def _service_specs(self) -> dict[str, tuple[str, dict[str, str]]]:
@@ -618,11 +779,15 @@ class BackfillHarness:
         for name, (mod, extra_env) in self._service_specs().items():
             penv = env.copy()
             penv.update(extra_env)
-            cmd = [
-                sys.executable, "-c",
-                f"import {self._helper_module}; "
-                f"from {mod} import main; main()",
-            ]
+            if self._real_clients:
+                # No mock helper import — the default real openers run.
+                code = f"from {mod} import main; main()"
+            else:
+                code = (
+                    f"import {self._helper_module}; "
+                    f"from {mod} import main; main()"
+                )
+            cmd = [sys.executable, "-c", code]
             self._procs[name] = subprocess.Popen(
                 cmd,
                 env=penv,
@@ -758,6 +923,14 @@ class BackfillHarness:
                     )[-2000:]
             except Exception as exc:  # noqa: BLE001
                 stderrs[name] = f"teardown error: {exc!r}"
+        if self._spammer is not None:
+            try:
+                tail = self._spammer.stop()
+                if tail:
+                    stderrs["spammer"] = tail
+            except Exception as exc:  # noqa: BLE001
+                stderrs["spammer"] = f"spammer teardown error: {exc!r}"
+            self._spammer = None
         return stderrs
 
     async def _collect_state(

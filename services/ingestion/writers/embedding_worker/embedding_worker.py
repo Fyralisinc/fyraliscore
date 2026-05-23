@@ -1,5 +1,5 @@
 """services/ingestion/writers/embedding_worker/embedding_worker.py
-   — live Ollama embedding worker.
+   — live embedding worker.
 
 Per ingestion LLD §5.4. M3.2.
 
@@ -7,16 +7,21 @@ This worker is the second Path A surface in the new pipeline (after
 M3.1's DLQ writer). It:
 
   1. Consumes `ingestion.embedding` (group: `ingestion-embedder`).
-  2. For each envelope: SELECTs the observation, calls Ollama embed,
-     UPDATEs the row under the load-bearing guard
-     `WHERE id = $1 AND embedding_pending = TRUE` (LLD §5.4).
-  3. On terminal OllamaError (after the OllamaClient's internal retry
-     loop — default 3 attempts with exponential backoff), publishes
-     a DLQ envelope with failure_kind="embedding.ollama_failure" and
-     commits the offset (the message MUST NOT be redelivered — the
-     client already burned its retries; a Kafka redelivery would
-     pile on more retries against an Ollama instance that is already
-     refusing).
+  2. For each envelope: SELECTs the observation, calls the configured
+     embedder (`Embedder` Protocol — Ollama by default, OpenAI when
+     EMBEDDER_BACKEND=openai), UPDATEs the row under the load-bearing
+     guard `WHERE id = $1 AND embedding_pending = TRUE` (LLD §5.4).
+  3. On a terminal `EmbedderError` (after the backend's own internal
+     retry loop — e.g. the Ollama client's default 3 attempts with
+     exponential backoff), publishes a DLQ envelope with
+     failure_kind="embedding.ollama_failure" and commits the offset
+     (the message MUST NOT be redelivered — the client already burned
+     its retries; a Kafka redelivery would pile on more retries against
+     a backend that is already refusing).
+
+The worker is backend-agnostic: it depends only on the `Embedder`
+Protocol and builds the concrete backend via `lib.embeddings.factory.
+make_embedder` (env-selectable), so swapping providers is config-only.
 
 === LLD §5.4 guard rationale ===
 The guard `WHERE embedding_pending = TRUE` is load-bearing for TWO
@@ -44,9 +49,10 @@ statement_cache_size=0)`. This worker can run behind a pgbouncer
 sidecar in transaction mode. Same pattern as M3.1's dlq_writer.
 
 === Retry semantics ===
-OllamaClient internally retries on transient errors (5xx, connection,
-timeout) with exponential backoff — default 3 attempts. The worker
-treats `OllamaError` raised after that loop as terminal:
+The embedder backend internally retries on transient errors (5xx,
+connection, timeout) with exponential backoff — the Ollama client's
+default is 3 attempts. The worker treats an `EmbedderError` raised
+after that loop as terminal:
 
   - DLQ publish (so ops surfaces the failure)
   - Commit the Kafka offset (do NOT loop)
@@ -72,15 +78,18 @@ import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
 
-from lib.embeddings.ollama import (
-    OllamaClient,
-    OllamaConfig,
-    OllamaDimensionMismatch,
-    OllamaError,
-)
+from lib.embeddings.base import Embedder, EmbedderError
+from lib.embeddings.factory import make_embedder
+from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 
 
 log = logging.getLogger(__name__)
@@ -145,7 +154,7 @@ async def embed_and_update(
     *,
     env: EmbeddingEnvelope,
     pool: asyncpg.Pool,
-    ollama: OllamaClient,
+    embedder: Embedder,
     dlq_producer: IdempotentProducer,
 ) -> str:
     """Process one envelope. Returns a short status code for tests:
@@ -153,9 +162,11 @@ async def embed_and_update(
       - "guard_no_op"         — row no longer pending (inline won, or
                                 worker ran twice; UPDATE matched 0)
       - "observation_missing" — observation row not found
-      - "ollama_failed"       — terminal OllamaError; DLQ published
+      - "embed_failed"        — terminal EmbedderError; DLQ published
 
-    Caller is responsible for offset commits.
+    `embedder` is any backend satisfying the Embedder Protocol (Ollama
+    by default, OpenAI when EMBEDDER_BACKEND=openai). Caller is
+    responsible for offset commits.
     """
     # RLS context (per the project's tenant_isolation policy). The
     # observations table has FORCE ROW LEVEL SECURITY, so without
@@ -202,14 +213,16 @@ async def embed_and_update(
             _bump("embedding_worker.guard_no_op")
             return "guard_no_op"
 
-    # Ollama call OUTSIDE the conn-acquired block so we don't hold
-    # the pool slot during a remote network call.
+    # Embedder call OUTSIDE the conn-acquired block so we don't hold
+    # the pool slot during a remote network call. EmbedderError covers
+    # any backend's terminal failure (Ollama or OpenAI), incl. a
+    # dimension mismatch (EmbedderDimensionMismatch is an EmbedderError).
     try:
-        vec = await ollama.embed(content_text)
-    except (OllamaError, OllamaDimensionMismatch) as exc:
+        vec = await embedder.embed(content_text)
+    except EmbedderError as exc:
         _bump("embedding_worker.embeds_failed")
         log.warning(
-            "embedding_worker.ollama_failed",
+            "embedding_worker.embed_failed",
             extra={
                 "tenant_id": str(env.tenant_id),
                 "observation_id": str(env.observation_id),
@@ -219,6 +232,9 @@ async def embed_and_update(
         )
         await publish_dlq(
             producer=dlq_producer,
+            # Wire failure_kind is stable (DLQ mapping + ingestion_failures
+            # CHECK); it denotes "the embedder backend failed" regardless
+            # of which backend is configured.
             failure_kind="embedding.ollama_failure",
             error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
             tenant_id=env.tenant_id,
@@ -228,7 +244,7 @@ async def embed_and_update(
             on_failure=lambda: _bump("embedding_worker.dlq_publish.failure"),
             on_skipped=lambda: _bump("embedding_worker.dlq_publish.skipped"),
         )
-        return "ollama_failed"
+        return "embed_failed"
 
     # Write the embedding under the LLD §5.4 guard.
     async with pool.acquire() as conn:
@@ -277,7 +293,12 @@ class EmbeddingWorkerConfig:
     # DLQ producer config. Defaults are the idempotent/zstd/acks=all
     # set from LLD §5.2.
     dlq_producer_config: ProducerConfig | None = None
-    # Ollama client config. Defaults to env-driven (OLLAMA_URL etc.).
+    # Embedder backend: None → resolve from EMBEDDER_BACKEND env (default
+    # 'ollama', local + free). Set 'openai' for the cloud backend.
+    embedder_backend: str | None = None
+    # Legacy Ollama-specific config override. Honored only when no
+    # explicit embedder is injected and the backend resolves to ollama;
+    # prefer OLLAMA_URL / OLLAMA_EMBED_MODEL env for the factory path.
     ollama_config: OllamaConfig | None = None
 
 
@@ -285,10 +306,20 @@ async def run_embedding_worker(
     config: EmbeddingWorkerConfig,
     pool: asyncpg.Pool,
     *,
-    ollama: OllamaClient | None = None,
+    embedder: Embedder | None = None,
+    ollama: Embedder | None = None,
 ) -> dict[str, int]:
     """Main loop. Caller owns the pool (tests inject a fixture pool;
     production uses init_pool).
+
+    Embedder resolution (first match wins):
+      1. `embedder=` — explicit Protocol instance (preferred).
+      2. `ollama=`   — back-compat alias (any Embedder; tests use it).
+      3. `config.ollama_config` — legacy Ollama override.
+      4. `make_embedder(config.embedder_backend)` — env/default (ollama).
+
+    An injected embedder is owned by the caller (not closed here);
+    a factory-built one is closed on teardown.
 
     Returns a stats dict for tests.
     """
@@ -305,8 +336,23 @@ async def run_embedding_worker(
         )
     )
 
-    own_ollama = ollama is None
-    ollama_client = ollama or OllamaClient(config.ollama_config)
+    injected = embedder or ollama
+    if injected is not None:
+        embedder_obj: Embedder = injected
+        own_embedder = False
+    elif config.ollama_config is not None:
+        embedder_obj = OllamaClient(config.ollama_config)
+        own_embedder = True
+    else:
+        embedder_obj = make_embedder(config.embedder_backend)
+        own_embedder = True
+    log.info(
+        "embedding_worker.embedder_ready",
+        extra={
+            "model": getattr(embedder_obj, "model_name", "unknown"),
+            "expected_dim": getattr(embedder_obj, "expected_dim", None),
+        },
+    )
 
     await consumer.start()
     await dlq_producer.start()
@@ -314,8 +360,15 @@ async def run_embedding_worker(
 
     consumed = 0
     embedded = 0
+    # Ticket #45: getmany returns every poll_timeout_ms, so checking the
+    # stop event each iteration gives a clean rc=0 exit on SIGTERM.
+    stop_event = install_shutdown_event()
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
     try:
-        while True:
+        while not stop_event.is_set():
             batches = await consumer.getmany(
                 timeout_ms=config.poll_timeout_ms,
             )
@@ -360,7 +413,7 @@ async def run_embedding_worker(
                     status = await embed_and_update(
                         env=env,
                         pool=pool,
-                        ollama=ollama_client,
+                        embedder=embedder_obj,
                         dlq_producer=dlq_producer,
                     )
                     if status == "embedded":
@@ -388,10 +441,13 @@ async def run_embedding_worker(
             ):
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
         await dlq_producer.stop()
-        if own_ollama:
-            await ollama_client.close()
+        if own_embedder:
+            await embedder_obj.close()
 
     return {"consumed": consumed, "embedded": embedded}
 
@@ -426,6 +482,10 @@ def main() -> None:
             await pool.close()
 
     asyncio.run(_run())
+
+
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    main()
 
 
 __all__ = [

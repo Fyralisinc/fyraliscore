@@ -494,7 +494,7 @@ EXPECTED_TABLES: dict[str, Table] = {
         },
     ),
     "model_edges": Table(
-        # 0031_model_edges.sql — S1 of the self-organizing-substrate
+        # 0026_model_edges.sql — S1 of the self-organizing-substrate
         # plan. Unified Model-to-Model edge primitive. Replaces the
         # seven ad-hoc connection mechanisms (supporting_model_ids
         # array, contributing_models array, pattern back-link,

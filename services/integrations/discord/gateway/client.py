@@ -270,8 +270,9 @@ class DiscordGatewayClient:
         )
 
     async def _fetch_gateway_url(self) -> str:
+        from lib.integrations.endpoints import endpoint
         r = await self._http.get(
-            _GATEWAY_BOT_URL,
+            endpoint("discord_gateway_bot"),
             headers={"Authorization": f"Bot {self._bot_token}"},
         )
         r.raise_for_status()

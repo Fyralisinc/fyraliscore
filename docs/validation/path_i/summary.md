@@ -1,7 +1,7 @@
-# M-Validate — synthetic validation summary (A30)
+# M-Validate — synthetic validation summary (A30 + Concurrent)
 
-Consolidated verdict across the three composed validation runs. Each run
-is operator-invokable: `python -m services.synthetic.validation_runs.runner --run={1,2,3}`
+Consolidated verdict across the composed validation runs. Each run
+is operator-invokable: `python -m services.synthetic.validation_runs.runner --run={1,2,3,4,all}`
 (needs `COMPANY_OS_ENV=test`, `DATABASE_URL`, `KAFKA_BOOTSTRAP_SERVERS`; the
 runner brings up its own moto-S3 and resets Kafka topics).
 
@@ -9,13 +9,16 @@ runner brings up its own moto-S3 and resets Kafka topics).
 
 The M6 ingestion pipeline is empirically validated end-to-end across all
 four sources for **both backfill and live** paths, with cross-path dedup
-proven for the three sources where it is substantively testable.
+proven for the three sources where it is substantively testable, and
+(Run 4) with **backfill + live running concurrently and live routed
+through Kafka for all four sources at 50 tenants**.
 
 | Run | Scope | Verdict |
 |---|---|---|
 | Run 1 | E2E backfill + live, 16 tenants, all 4 sources | **READY** ✅ |
 | Run 2 | Fault injection (FLAKY 10% 5xx) + partition-missing injection, 16 tenants | **PARTIAL** ⚠️ (expected under FLAKY) |
 | Run 3 | Concurrency stress, 50 tenants @ concurrency=10, backfill-only | **READY** ✅ |
+| Run 4 | Concurrent backfill + **live-via-Kafka**, 50 tenants, all 4 sources | **READY** ✅ |
 
 ## Run 1 — E2E backfill + live (READY)
 
@@ -67,6 +70,42 @@ the stress dimension is tenant concurrency, independent of per-tenant
 volume. A higher-volume soak would need the harness to expose a
 configurable drain timeout (follow-up — see A30.6).
 
+## Run 4 — concurrent backfill + live-via-Kafka (READY)
+
+50 tenants (15 gmail / 15 github / 10 slack / 10 discord). The decomposed
+backfill harness runs the 7 shared M6 subprocesses; backfill producers and
+the four live generators run **concurrently** (`asyncio.gather`), and live
+ingestion is routed **through Kafka** (not inline) for all four sources:
+
+- **slack / github** — webhook-router cutover (`_attempt_kafka_path`,
+  `kafka_path_enabled=TRUE`) → HTTP **202**, publish to `ingestion.raw`.
+- **discord** — Gateway MESSAGE_CREATE cutover (new; the M5.4 deferral was
+  webhook-interaction-only — the Gateway frame has no sync-response
+  constraint), `("discord","gateway")` → `discord:message`.
+- **gmail** — push-handler cutover: the fetched message publishes to
+  `ingestion.raw` with the new `ingress_kind="poll"` → `("gmail","poll")`
+  → `gmail:`, byte-identical to the backfill record (external_id parity).
+
+All assertions pass: per-tenant isolation exact for the COMBINED
+backfill+live count (gmail 150, github 165, slack 100, discord 100 — 515
+total), **concurrency overlap observed** (peak 50 simultaneous backfill
+`in_progress` with live firing during backfill), **live-routed-through-Kafka**
+(slack/github 202), zero duplicate `(source_channel, external_id,
+occurred_at)` groups under concurrent load, working signals drain to 0,
+and zero `partition_missing` DLQ envelopes. Framework subprocesses rc=0;
+normalizer/observation_writer rc=-9/-15 (ticket #45, expected).
+
+This closes M-Validate fidelity gaps **#1** (live bypassed Kafka), **#2**
+(backfill/live were sequential), **#4** (live only at 16 tenants), and the
+**A30.6** fixed-30s-drain limitation (the harness drain window is now a
+parameter). Building Run 4 surfaced and fixed two real defects in the
+never-before-exercised live-via-Kafka path: (a) the normalizer dropped
+live github events because it only reconstructed the `X-GitHub-Event`
+header for `backfill` ingress — now reconstructed from
+`ingress_metadata.event_type` for live github too; (b) the gmail
+generator's monkeypatched `_drain_history` signature didn't accept the
+cutover deps the production `handle_push` now forwards.
+
 ## Per-source × per-dimension coverage
 
 | Source | Backfill | Live | Cross-path dedup | Signature gate | Replay idempotency |
@@ -81,6 +120,13 @@ Discord exclusions are **architectural, not gaps**: its live ids
 has no HTTP signature surface; and no replay surface per A24. Discord's
 per-path dedup is covered by A27.5 parity (M6.7).
 
+| Source | Live-via-Kafka cutover (Run 4) | Concurrent w/ backfill @ 50 |
+|---|---|---|
+| gmail | ✅ push-handler → `ingress_kind=poll` | ✅ |
+| github | ✅ webhook router (202) | ✅ |
+| slack | ✅ webhook router (202) | ✅ |
+| discord | ✅ gateway MESSAGE_CREATE cutover | ✅ |
+
 ## Queued production tickets (out of scope, remain open)
 
 - **#44** — partition coverage operational decision.
@@ -89,9 +135,46 @@ per-path dedup is covered by A27.5 parity (M6.7).
   and auto-greens when #45 ships).
 - **#46** — writer permanent-failure invalid `failure_kind`.
 
+## Fidelity gaps — status after Run 4
+
+- **#1 live bypassed Kafka** — CLOSED. Run 4 routes all four sources' live
+  ingestion through Kafka (the same normalizer → observation_writer chain
+  as backfill).
+- **#2 backfill/live sequential** — CLOSED. Run 4 runs them concurrently
+  (`asyncio.gather`); the monitor observed live landing while 50 tenants'
+  backfill was `in_progress`.
+- **#4 live only at 16 tenants** — CLOSED. Run 4 drives live at 50.
+- **A30.6 fixed 30s drain** — CLOSED. The harness drain window is now a
+  parameter (`drain_timeout_s`).
+- **#6 nothing touches a real API** — STILL OPEN (by design). Everything is
+  synthetic (mock clients + fixtures). Run 4 validates the pipeline's
+  internal correctness under concurrent live-via-Kafka load; it does NOT
+  validate real OAuth / real provider webhook signatures / real API
+  pagination/quotas. One sandbox run per source remains the next step.
+
+## Scope note — what Run 4 does and does NOT cover
+
+DOES: all four sources, backfill + live **concurrently**, live **through
+Kafka**, at 50 tenants, on synthetic inputs; proves per-tenant isolation
+on the combined count, true producer/live overlap, the cutover path
+(202 / poll / gateway), and that the dedup index collapses nothing
+erroneously under concurrent load (zero duplicate groups).
+
+DOES NOT: real APIs (#6); cross-path twin engineered collision under a
+true race (Run 1 covers the engineered single twin sequentially; Run 4
+relies on the global no-duplicate invariant instead, which holds for any
+interleaving); fault injection under concurrency (a natural Run 5).
+
+## Queued production tickets (out of scope, remain open)
+
+- **#44** — partition coverage operational decision.
+- **#45** — consumer graceful-shutdown (normalizer/observation_writer
+  rc=-9/-15 in every run, including Run 4, is this gap; the runner's rc
+  policy accepts it and auto-greens when #45 ships).
+- **#46** — writer permanent-failure invalid `failure_kind`.
+
 ## Chain closeout
 
-Z1 → Q1-minimal → M6.7 → X3 fixes → M-Validate-spine → **M-Validate-Live**.
-The synthetic-testability chain is complete (A30.5). Suggested merge
-sequence: spine (`feat/ingestion-validation-runs-spine`) → this branch
-(`feat/ingestion-validation-runs-live-composition`).
+Z1 → Q1-minimal → M6.7 → X3 fixes → M-Validate-spine → M-Validate-Live →
+**M-Validate-Concurrent (Run 4)**. The synthetic-testability chain now
+covers concurrent backfill + live-via-Kafka for all four sources.

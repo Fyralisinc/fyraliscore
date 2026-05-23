@@ -106,8 +106,9 @@ def build_secret_store(
 
     if not raw:
         # No KEK configured. Behavior split on environment.
-        env = os.environ.get("FYRALIS_ENV", "").lower()
-        if env == "prod":
+        from lib.shared.env import is_prod
+
+        if is_prod():
             raise SecretStoreError(
                 "MASTER_KEK is unset or empty in production environment",
                 reason="missing_kek",

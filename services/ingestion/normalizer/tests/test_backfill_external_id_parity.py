@@ -180,6 +180,133 @@ async def test_backfill_record_produces_same_external_id_as_webhook_github():
     assert webhook_eid == backfill_eid == node_id
 
 
+@pytest.mark.asyncio
+async def test_backfill_parity_github_issue_comment():
+    """Gap-closure: issue_comments backfill ↔ issue_comment webhook share
+    comment.node_id. The repo-level endpoint omits the issue object; the
+    fetcher parses the number from issue_url and parity still holds because
+    external_id is the comment node_id, not the issue's."""
+    node_id = "IC_kwDO123"
+    comment_rest = {
+        "id": 55, "node_id": node_id, "body": "ship it",
+        "user": {"login": "octocat"},
+        "issue_url": "https://api.github.com/repos/acme/api/issues/7",
+        "updated_at": "2025-01-02T00:00:00Z",
+    }
+    webhook_body = {
+        "action": "created",
+        "comment": comment_rest,
+        "issue": {"number": 7, "node_id": "I_parent"},
+        "repository": {"full_name": "acme/api"},
+        "sender": {"login": "octocat"},
+    }
+    from services.ingestion.fetchers.github import _build_record
+
+    backfill_record = _build_record(
+        event_type="issue_comments", repo_full_name="acme/api",
+        payload=comment_rest,
+    )
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body, {"X-GitHub-Event": "issue_comment"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == node_id
+
+
+@pytest.mark.asyncio
+async def test_backfill_parity_github_commit_to_push():
+    """Gap-closure: a commit backfilled as a single-commit push shares the
+    `{repo}@{sha}` external_id with the live push whose tip is that sha."""
+    sha = "deadbeefcafe"
+    repo = "acme/api"
+    # Live push whose tip commit IS this sha.
+    webhook_body = {
+        "ref": "refs/heads/main",
+        "after": sha,
+        "commits": [{"id": sha, "timestamp": "2024-06-01T12:00:00Z"}],
+        "head_commit": {"id": sha, "timestamp": "2024-06-01T12:00:00Z"},
+        "repository": {"full_name": repo},
+        "sender": {"login": "octocat"},
+    }
+    commit_rest = {
+        "sha": sha, "node_id": "C_node",
+        "commit": {"author": {"date": "2024-06-01T12:00:00Z"}, "message": "x"},
+        "author": {"login": "octocat"},
+    }
+    from services.ingestion.fetchers.github import _build_record
+
+    backfill_record = _build_record(
+        event_type="commits", repo_full_name=repo, payload=commit_rest,
+    )
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body, {"X-GitHub-Event": "push"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == f"{repo}@{sha}"
+
+
+@pytest.mark.asyncio
+async def test_backfill_parity_github_pr_review():
+    """Class B fan-out: pr_reviews backfill ↔ pull_request_review webhook
+    share review.node_id."""
+    node_id = "PRR_kwDO9"
+    review = {
+        "node_id": node_id, "state": "approved", "body": "LGTM",
+        "user": {"login": "octocat"}, "submitted_at": "2025-02-01T00:00:00Z",
+    }
+    webhook_body = {
+        "action": "submitted",
+        "review": review,
+        "pull_request": {"number": 9, "node_id": "PR_x"},
+        "repository": {"full_name": "acme/api"},
+        "sender": {"login": "octocat"},
+    }
+    from services.ingestion.fetchers.github import _build_review_record
+
+    backfill_record = _build_review_record(
+        "acme/api", {"number": 9, "node_id": "PR_x"}, review,
+    )
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body,
+        {"X-GitHub-Event": "pull_request_review"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == node_id
+
+
+@pytest.mark.asyncio
+async def test_backfill_parity_github_check_run():
+    """Class B fan-out: check_runs backfill ↔ check_run webhook share
+    check.node_id."""
+    node_id = "CR_kwDO5"
+    check = {
+        "node_id": node_id, "name": "ci/build", "status": "completed",
+        "conclusion": "success", "head_sha": "abc123",
+        "completed_at": "2025-02-01T00:00:00Z",
+    }
+    webhook_body = {
+        "action": "completed",
+        "check_run": check,
+        "repository": {"full_name": "acme/api"},
+    }
+    from services.ingestion.fetchers.github import _build_check_run_record
+
+    backfill_record = _build_check_run_record("acme/api", check)
+    webhook_eid = await _webhook_external_id(
+        "github:webhook", webhook_body, {"X-GitHub-Event": "check_run"},
+    )
+    backfill_eid = await _backfill_external_id(
+        source="github", fetcher_record=backfill_record,
+    )
+    assert webhook_eid == backfill_eid == node_id
+
+
 # =====================================================================
 # Slack.
 # =====================================================================

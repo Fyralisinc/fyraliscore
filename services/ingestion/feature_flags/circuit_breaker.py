@@ -391,13 +391,34 @@ async def _sample_active_tenants_default(
 
 
 async def _default_alert(tenant_id: UUID, payload: dict[str, Any]) -> None:
-    """Default alert: structlog warning. Production wires a real
-    ops-alerts channel (PagerDuty / Slack webhook / etc.) here.
+    """Default alert: a structlog warning, plus a best-effort POST to an
+    ops-alerts webhook when `INGESTION_ALERT_WEBHOOK_URL` is configured
+    (a Slack/PagerDuty/generic incoming webhook). The POST is
+    fire-and-forget and never raises — alerting must not perturb the
+    breaker tick.
     """
     log.warning(
         "circuit_breaker.tripped",
         extra={"tenant_id": str(tenant_id), **payload},
     )
+    webhook = os.environ.get("INGESTION_ALERT_WEBHOOK_URL", "").strip()
+    if not webhook:
+        return
+    try:
+        import httpx
+
+        body = {
+            "event": "circuit_breaker.tripped",
+            "tenant_id": str(tenant_id),
+            **payload,
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(webhook, json=body)
+    except Exception as exc:  # noqa: BLE001 — alerting is best-effort
+        log.warning(
+            "circuit_breaker.alert_webhook_failed",
+            extra={"error": str(exc)[:200]},
+        )
 
 
 # ---------------------------------------------------------------------

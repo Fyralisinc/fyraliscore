@@ -71,6 +71,36 @@ async def test_sampling_deterministic_per_tenant():
     assert ids_a == ids_b
 
 
+async def test_sampling_seed_is_process_stable():
+    """The seed must derive from a stable hash (sha256), not Python's
+    per-process-salted builtin hash() — otherwise the sampled set would
+    change after every restart."""
+    import hashlib
+
+    from services.ingestion.planners.discord import _stable_seed
+
+    tid = "tenant-xyz"
+    expected = int.from_bytes(
+        hashlib.sha256(f"{tid}:{SAMPLING_VERSION}".encode("utf-8")).digest()[:8],
+        "big",
+    )
+    assert _stable_seed(tid) == expected
+
+
+async def test_sampling_order_independent():
+    """Same channel universe in a different order → same sampled set."""
+    tid = uuid4()
+    channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
+                for i in range(40)]
+    ctx_a = _ctx(tid, [{"id": "g1"}], {"g1": channels})
+    ctx_b = _ctx(tid, [{"id": "g1"}], {"g1": list(reversed(channels))})
+    sa = await plan_shards_discord(ctx_a)
+    sb = await plan_shards_discord(ctx_b)
+    assert {s.shard_identifier["channel_id"] for s in sa} == {
+        s.shard_identifier["channel_id"] for s in sb
+    }
+
+
 async def test_sampling_differs_across_tenants():
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(100)]

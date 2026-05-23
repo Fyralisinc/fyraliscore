@@ -4,6 +4,21 @@
 # Requires DATABASE_URL to be set (done via docker-compose environment).
 set -euo pipefail
 
+# Fail fast on duplicate numeric prefixes. Two files sharing a prefix
+# (e.g. 0014_a.sql and 0014_b.sql) make apply-order depend on locale
+# collation, which can diverge across environments and produce
+# non-deterministic schemas. Reject before applying anything.
+dupes="$(
+  for f in db/migrations/*.sql; do
+    basename "$f" | sed -E 's/^([0-9]+)_.*/\1/'
+  done | sort | uniq -d
+)"
+if [ -n "$dupes" ]; then
+  echo "ERROR: duplicate migration prefixes detected: ${dupes}" >&2
+  echo "Each db/migrations/*.sql must have a unique numeric prefix." >&2
+  exit 1
+fi
+
 psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
 CREATE TABLE IF NOT EXISTS schema_migrations (
   filename text PRIMARY KEY,

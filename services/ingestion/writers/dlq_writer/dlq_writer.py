@@ -55,7 +55,14 @@ import orjson
 from aiokafka import AIOKafkaConsumer
 
 from lib.shared.ids import uuid7
+from services.ingestion.alerts import send_ops_alert
 from services.ingestion.dlq.models import DLQEnvelope
+from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 
 
 log = logging.getLogger(__name__)
@@ -93,7 +100,21 @@ _metrics: dict[str, float] = {
     "dlq_writer.parse_failure":         0.0,
     "dlq_writer.db_error":              0.0,
     "dlq_writer.consumer_lag_seconds":  0.0,
+    # Gauge: unresolved ingestion_failures rows at the last depth poll.
+    # Scrapeable; the writer also fires an ops alert when it crosses
+    # the configured threshold (see DLQWriterConfig.depth_alert_*).
+    "dlq_writer.unresolved_depth":      0.0,
+    "dlq_writer.depth_alerts_sent":     0.0,
 }
+
+
+# Cheap with the migration-0046 partial index
+# `ingestion_failures_failure_kind_idx WHERE resolved_at IS NULL`. No
+# tenant context is set, so the table's NULL-current_tenant RLS policy
+# returns the global unresolved total (the ops-wide backlog depth).
+_COUNT_UNRESOLVED_SQL = """
+SELECT count(*) FROM ingestion_failures WHERE resolved_at IS NULL
+"""
 
 
 def get_metrics() -> dict[str, float]:
@@ -196,6 +217,77 @@ class DLQWriterConfig:
     batch_max_size: int = 50
     # Idle timeout — flush partial batch when no new messages arrive.
     batch_idle_ms: int = 500
+    # --- DLQ-depth monitoring (gap #5: alert on backlog growth) ---
+    # Alert when unresolved ingestion_failures rows reach this count.
+    # 0 disables the alert (the gauge is still exported). Default off
+    # so it must be opted into per deployment.
+    depth_alert_threshold: int = 0
+    # How often to poll the unresolved count (seconds). 0 disables the
+    # poll entirely.
+    depth_check_interval_sec: float = 60.0
+    # Minimum seconds between repeat alerts while over threshold, so a
+    # standing backlog doesn't spam the on-call channel every poll.
+    depth_alert_cooldown_sec: float = 3600.0
+
+
+async def count_unresolved_failures(pool: asyncpg.Pool) -> int:
+    """Global count of unresolved ingestion_failures rows (the ops-wide
+    DLQ backlog depth). No tenant context → RLS returns all tenants."""
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(_COUNT_UNRESOLVED_SQL))
+
+
+async def poll_dlq_depth(
+    config: DLQWriterConfig,
+    pool: asyncpg.Pool,
+    *,
+    last_alert_monotonic: float,
+    now_monotonic: float,
+) -> float:
+    """Poll the unresolved-failure depth, update the gauge, and fire a
+    threshold alert (cooldown-debounced). Best-effort: any error is
+    logged and swallowed so the DLQ writer's main loop never stalls on
+    a depth poll.
+
+    Returns the (possibly updated) `last_alert_monotonic` watermark —
+    advanced only when an alert fired. Pass `float("-inf")` to mean
+    "never alerted" so the first breach fires immediately instead of
+    waiting out the cooldown against an epoch-zero watermark.
+    """
+    try:
+        depth = await count_unresolved_failures(pool)
+    except Exception as exc:  # noqa: BLE001 — monitoring must not crash the sink
+        log.warning(
+            "dlq_writer.depth_poll_failed",
+            extra={"error_type": type(exc).__name__, "error": str(exc)[:200]},
+        )
+        return last_alert_monotonic
+
+    _metrics["dlq_writer.unresolved_depth"] = float(depth)
+
+    if config.depth_alert_threshold <= 0 or depth < config.depth_alert_threshold:
+        return last_alert_monotonic
+    if (now_monotonic - last_alert_monotonic) < config.depth_alert_cooldown_sec:
+        return last_alert_monotonic
+
+    log.warning(
+        "dlq_writer.depth_threshold_exceeded",
+        extra={"depth": depth, "threshold": config.depth_alert_threshold},
+    )
+    sent = await send_ops_alert(
+        "dlq.depth_threshold_exceeded",
+        {
+            "unresolved_depth": depth,
+            "threshold": config.depth_alert_threshold,
+        },
+    )
+    if sent:
+        _bump("dlq_writer.depth_alerts_sent")
+    # Advance the cooldown watermark whether or not the webhook was
+    # configured/succeeded — the log line above is itself the alert of
+    # record, and we don't want a missing webhook to turn every poll
+    # into a repeated warning storm.
+    return now_monotonic
 
 
 async def run_dlq_writer(
@@ -219,8 +311,31 @@ async def run_dlq_writer(
     consumed = 0
     upserted = 0
 
+    # Ticket #45: getmany returns every batch_idle_ms, so checking the
+    # stop event each iteration gives a clean rc=0 exit on SIGTERM.
+    stop_event = install_shutdown_event()
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
+    # DLQ-depth monitor state (wall-clock, monotonic): poll on an
+    # interval independent of message arrival so a standing backlog is
+    # detected even when the DLQ topic is quiet. `-inf` means "never
+    # alerted" so the FIRST threshold breach fires immediately rather
+    # than waiting out a cooldown against an epoch-zero watermark.
+    last_depth_check = float("-inf")
+    last_depth_alert = float("-inf")
     try:
-        while True:
+        while not stop_event.is_set():
+            if config.depth_check_interval_sec > 0:
+                mono = time.monotonic()
+                if (mono - last_depth_check) >= config.depth_check_interval_sec:
+                    last_depth_check = mono
+                    last_depth_alert = await poll_dlq_depth(
+                        config, pool,
+                        last_alert_monotonic=last_depth_alert,
+                        now_monotonic=mono,
+                    )
             # getmany returns a dict[TopicPartition, list[record]].
             # max_records caps the batch size; timeout_ms is the
             # idle flush deadline.
@@ -302,6 +417,9 @@ async def run_dlq_writer(
             if config.stop_after is not None and consumed >= config.stop_after:
                 break
     finally:
+        ticker.cancel()
+        if health is not None:
+            health.shutdown()
         await consumer.stop()
 
     return {"consumed": consumed, "upserted": upserted}
@@ -319,6 +437,15 @@ def main() -> None:
         ),
         postgres_pool_size=int(
             os.environ.get("POSTGRES_POOL_SIZE", "5")
+        ),
+        depth_alert_threshold=int(
+            os.environ.get("DLQ_DEPTH_ALERT_THRESHOLD", "0")
+        ),
+        depth_check_interval_sec=float(
+            os.environ.get("DLQ_DEPTH_CHECK_INTERVAL_SEC", "60")
+        ),
+        depth_alert_cooldown_sec=float(
+            os.environ.get("DLQ_DEPTH_ALERT_COOLDOWN_SEC", "3600")
         ),
     )
 
@@ -341,10 +468,16 @@ def main() -> None:
     asyncio.run(_run())
 
 
+if __name__ == "__main__":  # pragma: no cover - process entrypoint
+    main()
+
+
 __all__ = [
     "DLQWriterConfig",
+    "count_unresolved_failures",
     "get_metrics",
     "main",
+    "poll_dlq_depth",
     "reset_metrics",
     "run_dlq_writer",
     "upsert_failure",
