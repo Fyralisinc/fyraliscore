@@ -17,6 +17,7 @@ from lib.llm.provider import (
     LLMProvider,
     OpenAIProvider,
     build_provider,
+    get_timeout_for_model,
 )
 
 
@@ -74,7 +75,10 @@ def test_config_from_env_defaults(monkeypatch):
     assert cfg.provider == "anthropic"
     assert cfg.api_key == "k"
     assert cfg.model == "claude-opus-4-7"
-    assert cfg.timeout_s == 30.0
+    # TK-1: with no LLM_TIMEOUT_SECONDS set, from_env derives the timeout
+    # from the per-model tier (get_timeout_for_model), not the flat 30s
+    # default. claude-opus-4-7 is a think-tier model → 60s.
+    assert cfg.timeout_s == get_timeout_for_model("claude-opus-4-7")
 
 
 def test_config_from_env_openai(monkeypatch):
