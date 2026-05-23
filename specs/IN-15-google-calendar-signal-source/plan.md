@@ -162,6 +162,9 @@ Full history is unbounded and low-value; the last ~6 months captures current cad
 ### D6 — One shard per included user's primary calendar
 `resolve_inclusion` (shared) expands the admin inclusion spec to user emails; each user's primary calendar is addressed by their email as `calendarId`. Shared/secondary calendars (`calendarList`) are an additive follow-up.
 
+### D7 — Versioned `external_id` so event mutations land (added after sandbox validation)
+The observations repo dedups on `(source_channel, external_id)` **ignoring `occurred_at`** (`services/observations/repo.py` — "ingestion assigns a stable occurred_at per (channel, external_id)"). That's correct for immutable sources but calendar events mutate. `external_id = gcal:{calendar_id}:{event_id}:{status}:{start_instant}` makes a cancellation (`confirmed`→`cancelled`) and a reschedule (start changes) land as **distinct** observations (preserving the `state_change` / updated-time signals), while identical re-fetches and RSVP-only churn (status+start unchanged) still dedup. The bare `event_id` is preserved in `content.event_id`. **Rationale**: realizes the cancellation/reschedule signal value that a single-event-id key would silently discard; surfaced by the sandbox (`docs/ingestion/google-calendar-sandbox.md`).
+
 ## Risk Register
 
 1. **`syncToken` expiry (`410 GONE`).** Steady-state poll fails if the token aged out. **Mitigation**: the fetcher catches 410 and reseeds a windowed full sync; dedup makes the re-walk idempotent.

@@ -2273,12 +2273,24 @@ Key decisions (see `specs/IN-15-google-calendar-signal-source/plan.md`):
 5. **D5/D6 — windowed backfill** (`GOOGLE_CALENDAR_BACKFILL_DAYS`, default 180,
    `singleEvents=true`); **one shard per included user's primary calendar**.
 
-`external_id = gcal:{calendar_id}:{event_id}` is identical across the backfill
-walk and the incremental poll, so the `observations` UNIQUE index collapses
-twins. Onboarding emits an `onboarding_triggers` row (source=`google_calendar`,
+6. **D7 — versioned `external_id`.** The observations repo dedups on
+   `(source_channel, external_id)` ignoring `occurred_at`, which suits immutable
+   sources but calendar events mutate. `external_id =
+   gcal:{calendar_id}:{event_id}:{status}:{start_instant}` collapses identical
+   re-fetches (backfill twin == poll twin) and RSVP-only churn, while a
+   cancellation or reschedule lands as a distinct observation (preserving the
+   `state_change` signal). Surfaced by the sandbox.
+
+Onboarding emits an `onboarding_triggers` row (source=`google_calendar`,
 DWD-style) that flows the existing oauth_poller -> tenant_onboarding ->
 source_onboarding chain; `tenant_onboarding._determine_applicable_sources` and
 both `VALID_SOURCES` tuples UNION the new install table.
+
+**Sandbox**: `scripts/sandbox_google_calendar.py` stands up a local mock of the
+DWD token + Calendar v3 API (`services/synthetic/mock_servers/google_calendar.py`)
+and drives the real minter -> fetcher -> ingest pipeline end-to-end (backfill,
+incremental syncToken delta incl. a cancellation, dedup, reconciler probe)
+against a throwaway Postgres. See `docs/ingestion/google-calendar-sandbox.md`.
 
 Spec: `specs/IN-15-google-calendar-signal-source/plan.md`.
 
