@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 
 _DLQ_TOPIC = "ingestion.dlq"
-_VALID_SOURCES = frozenset({"slack", "github", "discord", "gmail"})
+_VALID_SOURCES = frozenset({"slack", "github", "discord", "gmail", "notion"})
 
 
 def extract_dlq_fields_best_effort(

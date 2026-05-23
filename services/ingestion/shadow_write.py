@@ -84,7 +84,7 @@ def _bump(key: str, by: int = 1) -> None:
 async def shadow_write_raw(
     *,
     tenant_id: UUID,
-    source: Literal["slack", "github", "discord", "gmail"],
+    source: Literal["slack", "github", "discord", "gmail", "notion"],
     ingress_kind: IngressKind,
     raw_body: bytes,
     s3_client: S3Client,

@@ -424,7 +424,7 @@ async def ingest_from_draft(
             publish_embedding_request,
         )
         family = draft.source_channel.split(":", 1)[0]
-        if family in ("slack", "github", "discord", "gmail"):
+        if family in ("slack", "github", "discord", "gmail", "notion"):
             await publish_embedding_request(
                 producer=embedding_producer,
                 tenant_id=tenant_id,

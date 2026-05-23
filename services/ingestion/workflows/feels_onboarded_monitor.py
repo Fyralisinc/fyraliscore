@@ -291,7 +291,7 @@ class FeelsOnboardedMonitor(LongRunningService):
             sources_enabled: list[str] = list(run["sources_enabled"])
 
             for source in sources_enabled:
-                if source not in ("slack", "github", "discord", "gmail"):
+                if source not in ("slack", "github", "discord", "gmail", "notion"):
                     # Defensive: the migration's CHECK constraint
                     # should prevent unknown sources, but skip
                     # rather than crash if one leaks in.
