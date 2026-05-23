@@ -150,3 +150,4 @@ from services.ingestion.planners import github as _github  # noqa: E402,F401
 from services.ingestion.planners import slack as _slack  # noqa: E402,F401
 from services.ingestion.planners import discord as _discord  # noqa: E402,F401
 from services.ingestion.planners import notion as _notion  # noqa: E402,F401
+from services.ingestion.planners import google_calendar as _google_calendar  # noqa: E402,F401

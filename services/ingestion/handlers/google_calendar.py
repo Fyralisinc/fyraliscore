@@ -65,7 +65,7 @@ def _parse_event_time(node: Any) -> datetime | None:
         return None
     dt = _parse_iso(node.get("dateTime"))
     if dt is not None:
-        return dt
+        return dt.astimezone(timezone.utc)
     date = node.get("date")
     if isinstance(date, str) and date:
         parsed = _parse_iso(f"{date}T00:00:00+00:00")
@@ -166,14 +166,22 @@ async def handle_google_calendar_event(
 
     # entities_hint — emails (for actor/entity resolution) + the topic.
     entities: list[dict[str, Any]] = []
+    owner_dom = owner_email if isinstance(owner_email, str) else None
     if organizer_email:
-        entities.append({"type": "email_address", "id": organizer_email, "role": "organizer"})
+        entities.append({
+            "type": "email_address",
+            "id": organizer_email,
+            "role": "organizer",
+            "external": _is_external(organizer_email, owner_dom),
+        })
     for em in attendee_emails:
+        if em == organizer_email:
+            continue  # already emitted as the organizer (avoid a dup hint)
         entities.append({
             "type": "email_address",
             "id": em,
             "role": "attendee",
-            "external": _is_external(em, owner_email if isinstance(owner_email, str) else None),
+            "external": _is_external(em, owner_dom),
         })
     if isinstance(summary, str) and summary and summary != "(no title)":
         entities.append({"type": "meeting_topic", "id": summary})
