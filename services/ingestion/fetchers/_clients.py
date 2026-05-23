@@ -223,7 +223,13 @@ async def open_discord_client(install: asyncpg.Record) -> Opener:
     return await build_discord_client(install), _noop
 
 
+async def open_notion_client(install: asyncpg.Record) -> Opener:
+    return await build_notion_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_discord_client",
+    "build_notion_client",
     "open_github_client", "open_slack_client", "open_discord_client",
+    "open_notion_client",
 ]

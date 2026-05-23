@@ -160,3 +160,13 @@ async def test_dispatch_and_routing_wired():
     assert FETCHER_DISPATCH["notion"] is fetch_page_notion
     assert resolve_channel("notion", "backfill") == "notion:object"
     assert resolve_channel("notion", "poll") == "notion:object"
+
+
+async def test_real_client_opener_is_importable():
+    """Real-path guard: the worker resolves the client via
+    _clients.open_notion_client (the unit tests monkeypatch the seam, so
+    this asserts the production opener actually exists)."""
+    from services.ingestion.fetchers._clients import (  # noqa: F401
+        build_notion_client,
+        open_notion_client,
+    )
