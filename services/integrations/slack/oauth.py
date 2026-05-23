@@ -62,8 +62,8 @@ log = structlog.get_logger("integrations.slack.oauth")
 # Slack scopes per FR-013. Bot-token scopes only (user scopes can be
 # added later under IN-10).
 _SLACK_SCOPES = (
-    "channels:history,groups:history,im:history,mpim:history,"
-    "users:read,team:read"
+    "channels:read,channels:history,groups:read,groups:history,"
+    "im:history,mpim:history,users:read,team:read"
 )
 
 _SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
