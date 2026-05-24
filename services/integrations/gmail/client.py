@@ -115,12 +115,48 @@ class GoogleHttpClient:
             return self._handle_response(resp)
         raise GoogleApiError("unreachable: retry loop fell through")
 
-    @staticmethod
-    def _handle_response(resp: httpx.Response) -> dict[str, Any]:
+    async def request_bytes(
+        self,
+        method: str,
+        url: str,
+        *,
+        user_email: str,
+        scopes: Iterable[str],
+        params: dict[str, Any] | None = None,
+    ) -> bytes:
+        """Like `request`, but returns the raw response body bytes instead of
+        parsed JSON — for endpoints that return non-JSON content (Drive's
+        `files.export` / `alt=media`, which return text/plain, text/csv, …).
+        Shares the same DWD auth, 401-retry, and typed-error mapping."""
+        scopes_t = tuple(scopes)
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        for attempt in (1, 2):
+            token = await self._minter.mint(user_email=user_email, scopes=list(scopes_t))
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = await self._client.request(
+                method, url, params=params, headers=headers,
+            )
+            if resp.status_code == 401 and attempt == 1:
+                self._minter.invalidate(user_email=user_email, scopes=list(scopes_t))
+                continue
+            if 200 <= resp.status_code < 300:
+                return resp.content
+            self._raise_for_error(resp)
+        raise GoogleApiError("unreachable: retry loop fell through")
+
+    @classmethod
+    def _handle_response(cls, resp: httpx.Response) -> dict[str, Any]:
         if 200 <= resp.status_code < 300:
             if not resp.content:
                 return {}
             return resp.json()
+        cls._raise_for_error(resp)
+        raise GoogleApiError("unreachable")  # pragma: no cover
+
+    @staticmethod
+    def _raise_for_error(resp: httpx.Response) -> None:
+        """Map a non-2xx Google response to a typed error. NEVER returns."""
         if resp.status_code == 429 or resp.status_code in (500, 502, 503, 504):
             retry_after = resp.headers.get("Retry-After")
             try:

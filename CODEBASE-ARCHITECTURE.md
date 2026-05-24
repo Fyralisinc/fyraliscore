@@ -2296,4 +2296,53 @@ Spec: `specs/IN-15-google-calendar-signal-source/plan.md`.
 
 ---
 
+## §20 IN-16 — Google Drive signal source (DWD, poll-based, content extraction)
+
+Seventh ingestion source, modeled on IN-15 (same shared Gmail DWD substrate,
+one shard kind, two sync modes, mutable entities → versioned external_id). The
+new capability over Calendar is **document text extraction** + **two target
+kinds** (My Drive + Shared Drives).
+
+```
+services/integrations/google_drive/           # client (+ text export) / onboarding / metrics
+services/ingestion/{planners,fetchers,reconcilers,handlers}/google_drive.py
+db/migrations/0061_google_drive.sql            # 2 tables (installations + targets) + widen four source CHECKs
+```
+
+Key decisions (see `specs/IN-16-google-drive/plan.md`):
+
+1. **D1 — reuse the Gmail DWD substrate**; scope `drive.readonly` (needed to
+   export Doc/Sheet/Slide bodies, not just metadata).
+2. **D2 — the Changes API is the syncToken analog.** Backfill captures
+   `changes.getStartPageToken` UP FRONT (so edits during the window aren't
+   lost), then walks `files.list`; poll runs `changes.list?pageToken=…`.
+3. **D6 — two target kinds**: `my_drive` (per resolved user) + `shared_drive`
+   (enumerated via `drives.list?useDomainAdminAccess`).
+4. **D8 — content extraction in the FETCHER** (handlers stay pure): Doc→text,
+   Sheet→csv, Slides→text, **PDF→pypdf**, `text/*`→media; other binary types are
+   metadata-only; truncated to `GOOGLE_DRIVE_EXTRACT_MAX_BYTES` (+ file-size and
+   PDF-page caps). A small `request_bytes` was added to the shared
+   `GoogleHttpClient` for the non-JSON export/media bodies.
+5. **D9 — comments + revision history** are pulled per file and emitted as extra
+   record types. The normalizer routes one channel per source and `core.ingest`
+   requires `draft.source_channel == channel`, so file/comment/revision all
+   share `source_channel=google_drive:file`, distinguished by
+   `content.object_type` + external_id namespace (`gdrive:` / `gdrive-comment:` /
+   `gdrive-revision:`). A resolved comment → `state_change`.
+6. **`authoritative`** trust; `kind=state_change` for removed/trashed files,
+   else `signal`. **Versioned external_id** `gdrive:{file_id}:{version}` (Drive's
+   monotonic `version`) so an edit lands a new observation while identical
+   re-fetches dedup.
+
+Onboarding emits an `onboarding_triggers` row (source=`google_drive`) so the M6
+backfill chain fires. **Sandbox**: `scripts/sandbox_google_drive.py` +
+`services/synthetic/mock_servers/google_drive.py` drive the real minter →
+fetcher (with text export) → ingest pipeline end-to-end (backfill, incremental
+Changes delta incl. an edit version-bump + a trash, dedup) against a throwaway
+Postgres — 11/11 checks. See `docs/ingestion/google-drive-sandbox.md`.
+
+Spec: `specs/IN-16-google-drive/plan.md`.
+
+---
+
 This concludes the comprehensive architectural analysis. The codebase is well-structured for its phase (MVP/dogfood), with clear separation of concerns, extensive type safety (Pydantic), and intentional deferral of production concerns (auth, multi-tenancy UI, observability ingestion) to later waves.
