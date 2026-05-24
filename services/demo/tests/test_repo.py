@@ -34,7 +34,7 @@ pytestmark = pytest.mark.integration
 async def test_demo_configs_seeded_by_migration(fresh_db: asyncpg.Pool):
     rows = await list_demo_configs(fresh_db)
     company_ids = {r.company_id for r in rows}
-    assert company_ids == {"truss", "northwind", "meridian"}
+    assert company_ids == {"truss", "northwind", "meridian", "pelago"}
     truss = await get_demo_config_by_company(fresh_db, "truss")
     assert truss is not None
     assert truss.cost_cap_usd_per_session == Decimal("5.0000")

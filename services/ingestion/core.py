@@ -330,6 +330,7 @@ async def ingest(
                                 "trust_tier": row.trust_tier,
                                 "seed_occurred_at": row.occurred_at.isoformat(),
                                 "seed_natural_text": (row.content_text or "")[:2000],
+                                "seed_entity_ids": row.entities_mentioned,
                                 "scope_actors": (
                                     [str(row.actor_id)] if row.actor_id else []
                                 ),

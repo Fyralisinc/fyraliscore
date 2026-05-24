@@ -25,11 +25,16 @@ pytestmark = pytest.mark.integration
 async def test_pick_company_lands_on_populated_action_list(
     client: httpx.AsyncClient,
 ):
-    # 1. Public picker lists three companies.
+    # 1. Public picker lists the seeded demo companies.
     resp = await client.get("/v1/demo/companies")
     assert resp.status_code == 200
     companies = resp.json()["items"]
-    assert len(companies) == 3
+    assert {c["company_id"] for c in companies} == {
+        "truss",
+        "northwind",
+        "meridian",
+        "pelago",
+    }
 
     # 2. Start a Truss session (clone-on-demand, synthetic snapshot
     #    fallback since no SQL file is shipped in the repo yet).
@@ -54,7 +59,8 @@ async def test_pick_company_lands_on_populated_action_list(
     assert len(items) > 0
     first = items[0]
     # Recommendation cards carry the natural-language hook + impact.
-    assert "natural" in first or "proposition" in first
+    assert first.get("proposition_text")
+    assert "expected_impact" in first
 
     # 4. Session info shows zero costs and zero signals before injection.
     info = await client.get(f"/v1/demo/sessions/{sid}", headers=headers)

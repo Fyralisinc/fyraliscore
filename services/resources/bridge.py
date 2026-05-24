@@ -52,6 +52,29 @@ OWNER_COMMITMENT_WARN_THRESHOLD = 5
 CAPACITY_UTILIZATION_WARN_RATIO = 0.95
 
 
+def arr_usd_from_current_value(current_value: dict[str, Any] | None) -> Decimal:
+    """Return ARR as USD from either canonical cents or legacy USD fields.
+
+    Most Bridge paths use `arr_cents`, but demo/real-LLM scenario fixtures
+    historically wrote `arr_usd`. Production readers should tolerate both
+    shapes because both already exist in repository data.
+    """
+    cv = dict(current_value or {})
+    if cv.get("arr_cents") is not None:
+        try:
+            cents = Decimal(str(cv.get("arr_cents") or 0))
+        except Exception:  # noqa: BLE001
+            cents = Decimal("0")
+        return (cents / Decimal(100)).quantize(Decimal("0.01"))
+    if cv.get("arr_usd") is not None:
+        try:
+            usd = Decimal(str(cv.get("arr_usd") or 0))
+        except Exception:  # noqa: BLE001
+            usd = Decimal("0")
+        return usd.quantize(Decimal("0.01"))
+    return Decimal("0.00")
+
+
 # =====================================================================
 # revenue_at_risk_for_customer
 # =====================================================================
@@ -80,9 +103,8 @@ async def revenue_at_risk_for_customer(
             return Decimal("0")
         if r["kind"] != "relational":
             return Decimal("0")
-        cv = dict(r["current_value"] or {})
-        arr_cents = int(cv.get("arr_cents", 0) or 0)
-        if arr_cents == 0:
+        arr_usd = arr_usd_from_current_value(r["current_value"])
+        if arr_usd == 0:
             return Decimal("0")
 
         at_risk = await c.fetchval(
@@ -99,8 +121,7 @@ async def revenue_at_risk_for_customer(
         )
         if at_risk is None:
             return Decimal("0")
-        # Convert cents to USD with two-decimal precision.
-        return (Decimal(arr_cents) / Decimal(100)).quantize(Decimal("0.01"))
+        return arr_usd
 
     if conn is not None:
         return await _do(conn)
@@ -127,13 +148,19 @@ async def revenue_at_risk_all(
         total_cents = await c.fetchval(
             """
             SELECT COALESCE(SUM(
-              (r.current_value ->> 'arr_cents')::bigint
+              CASE
+                WHEN r.current_value ? 'arr_cents'
+                  THEN (r.current_value ->> 'arr_cents')::numeric / 100
+                WHEN r.current_value ? 'arr_usd'
+                  THEN (r.current_value ->> 'arr_usd')::numeric
+                ELSE 0
+              END
             ), 0)
             FROM resources r
             WHERE r.tenant_id = $1
               AND r.kind = 'relational'
               AND r.archived_at IS NULL
-              AND r.current_value ? 'arr_cents'
+              AND (r.current_value ? 'arr_cents' OR r.current_value ? 'arr_usd')
               AND EXISTS (
                 SELECT 1
                 FROM customer_commitments cc
@@ -145,7 +172,7 @@ async def revenue_at_risk_all(
             tenant_id,
             list(AT_RISK_COMMITMENT_STATES),
         )
-        return (Decimal(int(total_cents or 0)) / Decimal(100)).quantize(Decimal("0.01"))
+        return Decimal(str(total_cents or 0)).quantize(Decimal("0.01"))
 
     if conn is not None:
         return await _do(conn)

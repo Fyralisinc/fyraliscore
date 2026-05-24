@@ -27,7 +27,7 @@ Input sources
 Two modes, selectable at construction time:
     - LISTEN mode (default when asyncpg.Pool is given): SUBSCRIBE
       to `observations_new` channel; on each wakeup, scan the
-      referenced observation for `content.metadata._unresolved_phrases`.
+      referenced observation for unresolved phrases emitted by ingestion.
     - POLL mode: a scheduled `process_pending()` walks the last N
       observations since a watermark. Used by the end-to-end test
       fixture + by operators manually re-running resolution.
@@ -335,6 +335,12 @@ class EntityResolverWorker:
             "You are an entity resolver for an organizational "
             "intelligence system. Given a phrase that appeared in a "
             "message, determine what canonical entity it refers to. "
+            "Prefer canonical_ref values already present in "
+            "source_entities_mentioned, prior_alias_matches, or "
+            "known_entity_candidates. Do not invent IDs. "
+            "When the source text defines an alias, for example "
+            "'<entity name> as <phrase>', resolve the phrase to that "
+            "mentioned entity and copy its exact canonical_ref. "
             "Return canonical_ref as a JSON object like "
             '{"type": "<entity-kind>", "id": "<stable-id>"} or null '
             "when the phrase does not refer to any known entity. "
@@ -479,11 +485,12 @@ class EntityResolverWorker:
         *,
         conn: asyncpg.Connection | None,
     ) -> list[str]:
-        """Load observation.content.metadata._unresolved_phrases.
+        """Load unresolved phrases from observation content.
 
-        This is the shape Agent 2-A's ingestion core is expected to
-        produce per Prompt 2.A. The resolver reads it defensively:
-        missing metadata or wrong types return [] rather than crashing.
+        Ingestion stores actual-content candidates at top-level
+        `content._unresolved_phrases`. Older fixtures and notes used
+        `content.metadata._unresolved_phrases` (or `_metadata`). Read
+        all of them defensively and preserve first-seen order.
         """
         row = await self._fetchrow(
             conn,
@@ -506,13 +513,7 @@ class EntityResolverWorker:
                 return []
         if not isinstance(content, dict):
             return []
-        metadata = content.get("metadata") or content.get("_metadata") or {}
-        if not isinstance(metadata, dict):
-            return []
-        phrases = metadata.get("_unresolved_phrases")
-        if not isinstance(phrases, list):
-            return []
-        return [p for p in phrases if isinstance(p, str) and p.strip()]
+        return _extract_unresolved_phrases(content)
 
     async def _append_entities_mentioned(
         self,
@@ -729,12 +730,37 @@ class EntityResolverWorker:
                 """
                 SELECT o.id, o.tenant_id
                 FROM observations o
-                WHERE jsonb_array_length(
-                        COALESCE(
-                            o.content -> 'metadata' -> '_unresolved_phrases',
-                            '[]'::jsonb
+                WHERE (
+                    CASE
+                        WHEN jsonb_typeof(
+                            o.content -> '_unresolved_phrases'
+                        ) = 'array'
+                        THEN jsonb_array_length(
+                            o.content -> '_unresolved_phrases'
                         )
-                      ) > 0
+                        ELSE 0
+                    END
+                    +
+                    CASE
+                        WHEN jsonb_typeof(
+                            o.content -> 'metadata' -> '_unresolved_phrases'
+                        ) = 'array'
+                        THEN jsonb_array_length(
+                            o.content -> 'metadata' -> '_unresolved_phrases'
+                        )
+                        ELSE 0
+                    END
+                    +
+                    CASE
+                        WHEN jsonb_typeof(
+                            o.content -> '_metadata' -> '_unresolved_phrases'
+                        ) = 'array'
+                        THEN jsonb_array_length(
+                            o.content -> '_metadata' -> '_unresolved_phrases'
+                        )
+                        ELSE 0
+                    END
+                ) > 0
                 ORDER BY o.occurred_at DESC
                 LIMIT $1
                 """,
@@ -746,6 +772,30 @@ class EntityResolverWorker:
                 )
                 processed += 1
         return processed
+
+
+def _extract_unresolved_phrases(content: dict[str, Any]) -> list[str]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        if not isinstance(raw, list):
+            return
+        for phrase in raw:
+            if not isinstance(phrase, str):
+                continue
+            cleaned = phrase.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            phrases.append(cleaned)
+
+    add(content.get("_unresolved_phrases"))
+    for metadata_key in ("metadata", "_metadata"):
+        metadata = content.get(metadata_key)
+        if isinstance(metadata, dict):
+            add(metadata.get("_unresolved_phrases"))
+    return phrases
 
 
 __all__ = [

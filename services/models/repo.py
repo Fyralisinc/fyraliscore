@@ -330,6 +330,147 @@ def _clip_confidence(value: float) -> float:
     return float(value)
 
 
+def _scope_entity_uuid(entry: dict[str, Any]) -> UUID | None:
+    try:
+        return UUID(str(entry.get("id")))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def _expand_scope_entities_via_customer_commitments(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scope_entities: Sequence[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Expand a single customer/commitment scope across customer_commitments.
+
+    A live customer memory often lands on the linked commitment ("Renew
+    Globex contract") even when callers ask from the customer ("Globex").
+    This bridge keeps customer and commitment memory discoverable without
+    forcing the LLM to duplicate every scope perfectly.
+    """
+    if not scope_entities or len(scope_entities) != 1:
+        return list(scope_entities or [])
+    entry = dict(scope_entities[0])
+    entity_id = _scope_entity_uuid(entry)
+    if entity_id is None:
+        return [entry]
+
+    entity_type = str(entry.get("type") or "").casefold()
+    expanded: list[dict[str, Any]] = [entry]
+
+    if entity_type in {"", "customer", "resource", "relational"}:
+        rows = await conn.fetch(
+            """
+            SELECT commitment_id
+            FROM customer_commitments
+            WHERE tenant_id = $1
+              AND customer_resource_id = $2
+            """,
+            tenant_id,
+            entity_id,
+        )
+        expanded.extend(
+            {"type": "commitment", "id": str(r["commitment_id"])}
+            for r in rows
+        )
+        identity = await conn.fetchval(
+            """
+            SELECT identity
+            FROM resources
+            WHERE tenant_id = $1
+              AND id = $2
+              AND kind = 'relational'
+              AND archived_at IS NULL
+            """,
+            tenant_id,
+            entity_id,
+        )
+        if identity:
+            aliases = _customer_identity_aliases(str(identity))
+            if aliases:
+                like_patterns = [f"%{alias}%" for alias in aliases]
+                rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM commitments
+                    WHERE tenant_id = $1
+                      AND (
+                        title ILIKE ANY($2::text[])
+                        OR COALESCE(description, '') ILIKE ANY($2::text[])
+                      )
+                    """,
+                    tenant_id,
+                    like_patterns,
+                )
+                expanded.extend(
+                    {"type": "commitment", "id": str(r["id"])}
+                    for r in rows
+                )
+        if entity_type == "resource":
+            expanded.append({"type": "customer", "id": str(entity_id)})
+
+    if entity_type in {"", "commitment"}:
+        rows = await conn.fetch(
+            """
+            SELECT customer_resource_id
+            FROM customer_commitments
+            WHERE tenant_id = $1
+              AND commitment_id = $2
+            """,
+            tenant_id,
+            entity_id,
+        )
+        expanded.extend(
+            {"type": "customer", "id": str(r["customer_resource_id"])}
+            for r in rows
+        )
+
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in expanded:
+        key = _jsonb(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _customer_identity_aliases(identity: str) -> list[str]:
+    cleaned = " ".join(identity.split()).strip()
+    if not cleaned:
+        return []
+    aliases = [cleaned]
+    suffixes = (" inc", " corp", " llc", " ltd", " incorporated")
+    folded = cleaned.casefold()
+    for suffix in suffixes:
+        if folded.endswith(suffix):
+            aliases.append(cleaned[: -len(suffix)].strip())
+            break
+    return [a for a in aliases if a]
+
+
+def _append_scope_entities_filter(
+    where: list[str],
+    params: list[Any],
+    scope_entities: Sequence[dict[str, Any]] | None,
+    expanded_scope_entities: Sequence[dict[str, Any]],
+) -> None:
+    if not scope_entities:
+        return
+    if len(scope_entities) != 1:
+        params.append(_jsonb(list(scope_entities)))
+        where.append(f"scope_entities @> ${len(params)}::jsonb")
+        return
+    clauses: list[str] = []
+    for entry in expanded_scope_entities:
+        params.append(_jsonb([entry]))
+        clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+    where.append("(" + " OR ".join(clauses) + ")")
+
+
 # S1 (migration 0031): cause_kind mapping moved to lib/shared/edge_registry.py
 # inside the supports cascade callback. The registry owns this mapping
 # now because cause_kind is a per-edge_kind concern, not a per-archive
@@ -750,6 +891,78 @@ async def _sync_array_columns(
         )
 
 
+async def _sync_model_scope_sidecars(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    tenant_id: UUID,
+    scope_actors: Sequence[UUID],
+    scope_entities: Sequence[dict[str, Any]],
+    source: str = "model_scope",
+) -> None:
+    """Mirror Model scope JSON/arrays into normalized retrieval sidecars."""
+    await conn.execute(
+        "DELETE FROM model_scope_actors WHERE tenant_id = $1 AND model_id = $2",
+        tenant_id,
+        model_id,
+    )
+    await conn.execute(
+        "DELETE FROM model_scope_entities WHERE tenant_id = $1 AND model_id = $2",
+        tenant_id,
+        model_id,
+    )
+    actor_ids = []
+    seen_actors: set[UUID] = set()
+    for actor_id in scope_actors or []:
+        if actor_id in seen_actors:
+            continue
+        seen_actors.add(actor_id)
+        actor_ids.append(actor_id)
+    if actor_ids:
+        await conn.executemany(
+            """
+            INSERT INTO model_scope_actors
+              (model_id, tenant_id, actor_id, source, confidence)
+            VALUES ($1, $2, $3, $4, 1.0)
+            ON CONFLICT (model_id, actor_id) DO UPDATE
+              SET source = EXCLUDED.source,
+                  confidence = EXCLUDED.confidence
+            """,
+            [(model_id, tenant_id, actor_id, source) for actor_id in actor_ids],
+        )
+
+    entity_rows: list[tuple[UUID, UUID, str, UUID, str]] = []
+    seen_entities: set[tuple[str, UUID]] = set()
+    for raw in scope_entities or []:
+        if not isinstance(raw, dict):
+            continue
+        entity_type = raw.get("type")
+        entity_id = raw.get("id")
+        if not entity_type or entity_id is None:
+            continue
+        try:
+            entity_uuid = entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id))
+        except (ValueError, TypeError):
+            continue
+        key = (str(entity_type), entity_uuid)
+        if key in seen_entities:
+            continue
+        seen_entities.add(key)
+        entity_rows.append((model_id, tenant_id, str(entity_type), entity_uuid, source))
+    if entity_rows:
+        await conn.executemany(
+            """
+            INSERT INTO model_scope_entities
+              (model_id, tenant_id, entity_type, entity_id, source, confidence)
+            VALUES ($1, $2, $3, $4, $5, 1.0)
+            ON CONFLICT (model_id, entity_type, entity_id) DO UPDATE
+              SET source = EXCLUDED.source,
+                  confidence = EXCLUDED.confidence
+            """,
+            entity_rows,
+        )
+
+
 async def _read_array_part(
     conn: asyncpg.Connection,
     model_id: UUID,
@@ -1026,7 +1239,11 @@ class ModelsRepo:
         # 5. scope_actors existence check.
         if proposed.scope_actors:
             existing = await conn.fetch(
-                "SELECT id FROM actors WHERE id = ANY($1::uuid[])",
+                """
+                SELECT id FROM actors
+                WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+                """,
+                proposed.tenant_id,
                 list(proposed.scope_actors),
             )
             existing_ids = {r["id"] for r in existing}
@@ -1104,6 +1321,14 @@ class ModelsRepo:
         assert row is not None
 
         hydrated = _hydrate_row(row)
+
+        await _sync_model_scope_sidecars(
+            conn,
+            model_id=hydrated.id,
+            tenant_id=hydrated.tenant_id,
+            scope_actors=hydrated.scope_actors,
+            scope_entities=hydrated.scope_entities,
+        )
 
         # 7b. Dual-write typed edges to mirror the array columns just
         # written. Goes through the chokepoint helper so the drift
@@ -1530,28 +1755,37 @@ class ModelsRepo:
                 f"search vec dim {len(vec_list)} != {EMBEDDING_DIM}"
             )
 
-        params: list[Any] = [vec_list, tenant_id, k]
-        where = ["status = 'active'", "tenant_id = $2"]
-        if scope_actors:
-            params.append(list(scope_actors))
-            where.append(f"scope_actors && ${len(params)}::uuid[]")
-        if scope_entities:
-            params.append(_jsonb(list(scope_entities)))
-            where.append(f"scope_entities @> ${len(params)}::jsonb")
-        if kind is not None:
-            params.append(kind)
-            where.append(f"proposition_kind = ${len(params)}")
-
-        sql = f"""
-            SELECT {_SELECT_COLS_SQL}
-            FROM models
-            WHERE {" AND ".join(where)}
-            ORDER BY embedding <=> $1::vector
-            LIMIT $3
-        """
-
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             await _ensure_vector_codec(c)
+            params: list[Any] = [vec_list, tenant_id, k]
+            where = ["status = 'active'", "tenant_id = $2"]
+            if scope_actors:
+                params.append(list(scope_actors))
+                where.append(f"scope_actors && ${len(params)}::uuid[]")
+            expanded_scope_entities = (
+                await _expand_scope_entities_via_customer_commitments(
+                    c,
+                    tenant_id=tenant_id,
+                    scope_entities=scope_entities,
+                )
+            )
+            _append_scope_entities_filter(
+                where,
+                params,
+                scope_entities,
+                expanded_scope_entities,
+            )
+            if kind is not None:
+                params.append(kind)
+                where.append(f"proposition_kind = ${len(params)}")
+
+            sql = f"""
+                SELECT {_SELECT_COLS_SQL}
+                FROM models
+                WHERE {" AND ".join(where)}
+                ORDER BY embedding <=> $1::vector
+                LIMIT $3
+            """
             rows = await c.fetch(sql, *params)
             return [_hydrate_row(r) for r in rows]
 
@@ -1573,28 +1807,37 @@ class ModelsRepo:
         limit: int = 100,
         conn: asyncpg.Connection | None = None,
     ) -> list[ModelRow]:
-        params: list[Any] = [tenant_id]
-        where = ["tenant_id = $1"]
-        if status is not None:
-            params.append(status)
-            where.append(f"status = ${len(params)}")
-        if scope_actors:
-            params.append(list(scope_actors))
-            where.append(f"scope_actors && ${len(params)}::uuid[]")
-        if scope_entities:
-            params.append(_jsonb(list(scope_entities)))
-            where.append(f"scope_entities @> ${len(params)}::jsonb")
-        params.append(limit)
-        sql = f"""
-            SELECT {_SELECT_COLS_SQL}
-            FROM models
-            WHERE {" AND ".join(where)}
-            ORDER BY created_at DESC, id DESC
-            LIMIT ${len(params)}
-        """
-
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             await _ensure_vector_codec(c)
+            params: list[Any] = [tenant_id]
+            where = ["tenant_id = $1"]
+            if status is not None:
+                params.append(status)
+                where.append(f"status = ${len(params)}")
+            if scope_actors:
+                params.append(list(scope_actors))
+                where.append(f"scope_actors && ${len(params)}::uuid[]")
+            expanded_scope_entities = (
+                await _expand_scope_entities_via_customer_commitments(
+                    c,
+                    tenant_id=tenant_id,
+                    scope_entities=scope_entities,
+                )
+            )
+            _append_scope_entities_filter(
+                where,
+                params,
+                scope_entities,
+                expanded_scope_entities,
+            )
+            params.append(limit)
+            sql = f"""
+                SELECT {_SELECT_COLS_SQL}
+                FROM models
+                WHERE {" AND ".join(where)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ${len(params)}
+            """
             rows = await c.fetch(sql, *params)
             return [_hydrate_row(r) for r in rows]
 

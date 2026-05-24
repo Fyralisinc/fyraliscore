@@ -1,6 +1,6 @@
 """
 services/models/tests/test_propositions.py — Pydantic discriminated-union
-tests over all 10 proposition kinds.
+tests over proposition kinds.
 
 These are unit tests (no DB) so they don't need the `integration`
 marker; they run offline and in <100ms.
@@ -20,7 +20,7 @@ from services.models.propositions import (
 from .conftest import every_kind_proposition
 
 
-def test_all_ten_proposition_kinds_validate_and_round_trip() -> None:
+def test_all_base_proposition_kinds_validate_and_round_trip() -> None:
     """Every spec kind in `every_kind_proposition()` must validate
     and round-trip its discriminator. The Stage-1 `recommendation`
     kind is exercised separately in test_recommendations.py because
@@ -32,13 +32,13 @@ def test_all_ten_proposition_kinds_validate_and_round_trip() -> None:
         dumped = parsed.model_dump()
         assert dumped["kind"] == raw["kind"]
         seen.add(raw["kind"])
-    # The 10 base kinds covered exactly once; recommendation lives
+    # The base kinds covered exactly once; recommendation lives
     # in a dedicated test file because of its DB-backed validators.
     assert seen == LEGAL_KINDS - {"recommendation"}
 
 
 def test_legal_kinds_matches_spec() -> None:
-    """Original Wave-0 set, plus the Stage-1 recommendation kind.
+    """Original Wave-0 set, plus recommendation and situation.
     Changing this set requires a SCHEMA-LOCK amendment + migration."""
     assert LEGAL_KINDS == frozenset(
         {
@@ -53,6 +53,7 @@ def test_legal_kinds_matches_spec() -> None:
             "market_assessment",
             "environmental_trend",
             "recommendation",
+            "situation",
         }
     )
 

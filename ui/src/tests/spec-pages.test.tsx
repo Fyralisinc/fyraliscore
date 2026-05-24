@@ -11,7 +11,7 @@ import {
   FORECASTS_PAGE_FIXTURE,
   PATTERNS_FIXTURE,
 } from "@/api/forecasts-page-mock";
-import LedgerSpec from "@/pages/ledger/LedgerSpec";
+import LedgerPage from "@/pages/ledger-v2/LedgerPage";
 
 // Today v2 talks to /api/today; back the page with the same mock the
 // dedicated today-v2.test.tsx suite uses so the smoke test renders the
@@ -117,10 +117,18 @@ describe("Forecasts (spec v1.0)", () => {
   });
 });
 
-describe("Ledger (spec)", () => {
-  it("renders ledger events grouped by day", () => {
-    render(wrap(<LedgerSpec />));
-    expect(screen.getByRole("heading", { name: /Ledger/i })).toBeTruthy();
-    expect(screen.getAllByText(/Customer Reliability moved/i).length).toBeGreaterThan(0);
+describe("Ledger (spec v1.0)", () => {
+  it("renders Memory River with chains and a selected Chain Inspector", () => {
+    render(wrap(<LedgerPage />, "/ledger"));
+    expect(screen.getByRole("heading", { name: /^Ledger$/ })).toBeTruthy();
+    // Brief copy is the spec's exemplar statement.
+    expect(
+      screen.getAllByText(/customer reliability moved from active risk/i).length,
+    ).toBeGreaterThan(0);
+    // Default-selected chain renders in the inspector.
+    expect(
+      screen.getAllByRole("heading", { name: /Customer Reliability Escalation/i })
+        .length,
+    ).toBeGreaterThan(0);
   });
 });

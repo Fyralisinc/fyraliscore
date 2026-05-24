@@ -10,8 +10,7 @@ Coverage matrix (Stage 0 acceptance gate):
   * dual-write convergence (array + edges in lockstep)
   * pattern promotion writes both `instance_of` edge AND
     legacy back-link in supporting_model_ids
-  * symmetric edge_kind: skipped in v1 (`contradicts` is reserved
-    and rejected at the repo layer)
+  * symmetric and signed edge_kinds (`contradicts`, `weakens`)
 
 All tests use the conftest's `tx_conn` fixture (transaction rolled
 back at teardown) and tenant UUID isolation.
@@ -143,19 +142,154 @@ async def test_link_rejects_self_edge(tx_conn, tenant, make_model):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_link_rejects_reserved_kind(tx_conn, tenant, make_model):
-    """contradicts is reserved in v1; repo refuses to write it
-    until a producer ships."""
+async def test_link_contradicts_writes_symmetric_weighted_edges(
+    tx_conn, tenant, make_model,
+):
+    """contradicts is now a signed, symmetric graph edge."""
     a = await make_model("A")
     b = await make_model("B")
     repo = EdgesRepo()
-    with pytest.raises(EdgeRegistryError) as exc:
+    ids = await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="contradicts",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.5,
+        confidence=0.8,
+        explanation="A and B assert incompatible states",
+    )
+    assert len(ids) == 2
+    rows = await tx_conn.fetch(
+        """
+        SELECT source_model_id, target_model_id, edge_kind, weight,
+               confidence, explanation
+        FROM model_edges
+        WHERE edge_kind = 'contradicts'
+        """
+    )
+    assert {
+        (r["source_model_id"], r["target_model_id"]) for r in rows
+    } == {(a, b), (b, a)}
+    assert {r["weight"] for r in rows} == {0.5}
+    assert {r["confidence"] for r in rows} == {0.8}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_link_reconfirms_existing_edge_with_evidence(
+    tx_conn, tenant, make_model,
+):
+    a = await make_model("A")
+    b = await make_model("B")
+    e1 = uuid7()
+    e2 = uuid7()
+    repo = EdgesRepo()
+    ids1 = await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="weakens",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.4,
+        confidence=0.3,
+        evidence_event_ids=[e1],
+        explanation="First weak signal",
+    )
+    ids2 = await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="weakens",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.6,
+        confidence=0.9,
+        evidence_event_ids=[e2],
+        explanation="Second weak signal",
+    )
+    assert ids1 == ids2
+    row = await tx_conn.fetchrow(
+        """
+        SELECT weight, confidence, evidence_event_ids, confirmed_count,
+               explanation
+        FROM model_edges
+        WHERE source_model_id = $1 AND target_model_id = $2
+          AND edge_kind = 'weakens'
+        """,
+        a,
+        b,
+    )
+    assert row["weight"] == 0.6
+    assert row["confidence"] == 0.9
+    assert set(row["evidence_event_ids"]) == {e1, e2}
+    assert row["confirmed_count"] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_link_reconfirm_does_not_downgrade_review_status(
+    tx_conn, tenant, make_model,
+):
+    a = await make_model("A")
+    b = await make_model("B")
+    repo = EdgesRepo()
+    await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="weakens",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.4,
+        review_status="accepted",
+        explanation="Accepted counter-evidence",
+    )
+    await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="weakens",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.3,
+        review_status="candidate",
+        explanation="Weaker reconfirmation should not demote review status",
+    )
+    review_status = await tx_conn.fetchval(
+        """
+        SELECT review_status
+        FROM model_edges
+        WHERE source_model_id = $1 AND target_model_id = $2
+          AND edge_kind = 'weakens'
+        """,
+        a,
+        b,
+    )
+    assert review_status == "accepted"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_link_rejects_support_and_contradiction_same_pair(
+    tx_conn, tenant, make_model,
+):
+    a = await make_model("A")
+    b = await make_model("B")
+    repo = EdgesRepo()
+    await repo.link(
+        tx_conn, source=a, target=b, kind="supports",
+        tenant_id=tenant, detected_by="manual",
+    )
+    with pytest.raises(EdgeRegistryError):
         await repo.link(
             tx_conn, source=a, target=b, kind="contradicts",
             tenant_id=tenant, detected_by="manual",
-            weight=0.5,  # required for contradicts
+            weight=0.5,
+            explanation="Cannot support and contradict same target",
         )
-    assert "reserved" in str(exc.value)
 
 
 @pytest.mark.integration

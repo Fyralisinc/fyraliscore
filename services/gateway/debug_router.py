@@ -245,6 +245,48 @@ def build_debug_router() -> APIRouter:
             "artifacts": [_jsonify(r) for r in artifacts],
         }
 
+    @router.get("/think-quality")
+    async def get_think_quality_report(
+        req: Request,
+        since_hours: int = Query(24, ge=1, le=720),
+        limit: int = Query(200, ge=1, le=1000),
+        low_context_ratio: float = Query(0.20, ge=0.0, le=1.0),
+    ):
+        tid = _resolve_tenant(req)
+        pool = await _pool_from_request(req)
+        from services.think.quality_report import build_think_quality_report
+
+        async with pool.acquire() as conn:
+            return await build_think_quality_report(
+                conn,
+                tenant_id=tid,
+                since_hours=since_hours,
+                limit=limit,
+                low_context_ratio=low_context_ratio,
+            )
+
+    @router.get("/think-quality/cases")
+    async def get_think_quality_cases(
+        req: Request,
+        since_hours: int = Query(24, ge=1, le=720),
+        limit: int = Query(25, ge=1, le=100),
+        low_context_ratio: float = Query(0.20, ge=0.0, le=1.0),
+        include_artifacts: bool = Query(True),
+    ):
+        tid = _resolve_tenant(req)
+        pool = await _pool_from_request(req)
+        from services.think.quality_report import build_think_quality_cases
+
+        async with pool.acquire() as conn:
+            return await build_think_quality_cases(
+                conn,
+                tenant_id=tid,
+                since_hours=since_hours,
+                limit=limit,
+                low_context_ratio=low_context_ratio,
+                include_artifacts=include_artifacts,
+            )
+
     # ---------- Models -------------------------------------------
     @router.get("/models")
     async def list_models(
@@ -334,7 +376,7 @@ def build_debug_router() -> APIRouter:
     @router.get("/acts")
     async def list_acts(
         req: Request,
-        kind: str = Query(..., regex="^(commitment|goal|decision|resource)$"),
+        kind: str = Query(..., pattern="^(commitment|goal|decision|resource)$"),
         limit: int = Query(100, ge=1, le=500),
     ):
         tid = _resolve_tenant(req)

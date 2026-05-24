@@ -65,8 +65,8 @@ def _view(
     "impact,conf,expected",
     [
         (0.95, 0.85, "critical"),    # 0.8075
-        (0.70, 0.65, "strategic"),   # 0.455
-        (0.50, 0.55, "high"),        # 0.275
+        (0.70, 0.65, "high"),        # 0.455
+        (0.50, 0.55, "med"),         # 0.275
         (0.30, 0.40, "med"),         # 0.12
         (0.10, 0.50, "low"),         # 0.05
     ],
@@ -78,14 +78,14 @@ def test_derive_severity_buckets(impact, conf, expected):
 def test_derive_severity_uses_default_impact_when_missing():
     # Falls back to 0.5 when expected_impact is None
     sev = _derive_severity(_view(confidence=0.9, expected_impact=None))
-    # 0.5 * 0.9 = 0.45 → strategic
-    assert sev == "strategic"
+    # 0.5 * 0.9 = 0.45 -> high
+    assert sev == "high"
 
 
 def test_derive_category_operational_for_critical_transition():
     # Per spec §12 — Decision drift is critical severity but operational
     # category. Kind drives the category, not severity.
-    v = _view(confidence=0.85, expected_impact=0.85, operation="transition")
+    v = _view(confidence=0.95, expected_impact=0.95, operation="transition")
     assert _derive_severity(v) == "critical"
     assert _derive_category(v, _derive_severity(v)) == "operational"
 

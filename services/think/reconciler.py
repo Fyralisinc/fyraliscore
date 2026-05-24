@@ -13,9 +13,11 @@ The pipeline runs this between validate and apply:
 For each `claim_op.insert` proposed by the LLM, the reconciler:
 
   1. Looks for existing active Models in the same tenant that match
-     on FOUR signals: embedding cosine ≥ HUMAN_REVIEW_COSINE,
+     on FOUR signals: embedding cosine >= HUMAN_REVIEW_COSINE,
      overlapping scope, identical proposition_kind, and created
-     within the recency window.
+     within the recency window. If the LLM omitted an embedding, the
+     reconciler uses the same deterministic fallback the applier uses
+     before insert, so strict-schema live output can still deduplicate.
   2. Decides:
        * cosine ≥ AUTO_MERGE_COSINE     → 'auto_merge': convert
          the insert to a confidence update against the matched Model.
@@ -38,6 +40,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -47,6 +50,7 @@ import structlog
 from lib.shared.ids import uuid7
 
 from .diff_schema import ClaimOp
+from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
 _log = structlog.get_logger(__name__)
@@ -160,6 +164,93 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
+def _candidate_embedding(entry: dict[str, Any]) -> list[float]:
+    """Return a vector usable against the `models.embedding` index.
+
+    Live strict-schema providers are instructed not to emit embeddings. The
+    applier would fill a deterministic lexical fallback right before insert;
+    reconciliation needs the same fallback earlier or it cannot stop duplicate
+    inserts.
+    """
+    raw = entry.get("embedding")
+    if hasattr(raw, "tolist"):
+        raw = raw.tolist()
+    if isinstance(raw, (list, tuple)) and len(raw) == 768:
+        try:
+            vec = [float(x) for x in raw]
+            if not is_zero_embedding(vec):
+                return vec
+        except (TypeError, ValueError):
+            pass
+    natural = str(
+        entry.get("natural")
+        or json.dumps(entry.get("proposition") or {}, sort_keys=True)
+    )
+    return deterministic_text_embedding(natural)
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_uuid_list(value: Any) -> list[UUID]:
+    out: list[UUID] = []
+    if not isinstance(value, (list, tuple)):
+        return out
+    for item in value:
+        mid = _coerce_uuid(item)
+        if mid is not None and mid not in out:
+            out.append(mid)
+    return out
+
+
+def _append_uuid_once(values: list[UUID], item: UUID) -> list[UUID]:
+    return values if item in values else [*values, item]
+
+
+def _normalize_signal_readings(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = json.loads(value.decode())
+        except (ValueError, UnicodeDecodeError):
+            return []
+    elif isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _confirmation_reading(
+    entry: dict[str, Any],
+    source_event_id: UUID,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    reading: dict[str, Any] = {
+        "kind": "confirm",
+        "at": observed_at.isoformat(),
+        "source_event_id": str(source_event_id),
+        "confidence": float(entry.get("confidence", 0.5)),
+        "natural": str(entry.get("natural") or "")[:500],
+    }
+    scope_actors = entry.get("scope_actors") or []
+    if scope_actors:
+        actor_id = _coerce_uuid(scope_actors[0])
+        if actor_id is not None:
+            reading["actor_id"] = str(actor_id)
+    return reading
+
+
 # =====================================================================
 # Candidate search
 # =====================================================================
@@ -227,7 +318,8 @@ async def _find_candidates(
 
     sql = f"""
         SELECT id, embedding, scope_actors, scope_entities,
-               confidence, proposition_kind, "natural", created_at
+               confidence, proposition_kind, "natural", created_at,
+               supporting_event_ids, signal_readings, confirmed_count
         FROM models
         WHERE {' AND '.join(where)}
         ORDER BY embedding <=> $LIMITSEED::vector
@@ -370,29 +462,7 @@ async def _reconcile_inner(
     config: ReconcilerConfig,
 ) -> ReconcileResult:
     entry = op.entry or {}
-    candidate_embedding = entry.get("embedding")
-    if not isinstance(candidate_embedding, list) or not candidate_embedding:
-        # Inserts without an embedding (e.g. think.applier's zero-vector
-        # placeholder) cannot be reconciled by cosine. Skip cleanly.
-        return ReconcileResult(
-            decision="skipped",
-            matched_model_id=None,
-            cosine_similarity=None,
-            replacement_op=None,
-            event_id=None,
-        )
-    # Skip placeholder zero-vectors — they would match every other
-    # zero-vector in the system, which would be a catastrophic false
-    # positive. The applier writes zero-vectors when the LLM omitted
-    # an embedding; those Models are unreconcilable until backfilled.
-    if not any(abs(float(x)) > 1e-9 for x in candidate_embedding):
-        return ReconcileResult(
-            decision="skipped",
-            matched_model_id=None,
-            cosine_similarity=None,
-            replacement_op=None,
-            event_id=None,
-        )
+    candidate_embedding = _candidate_embedding(entry)
 
     proposition = entry.get("proposition") or {}
     prop_kind = (
@@ -479,10 +549,32 @@ async def _reconcile_inner(
         candidate_conf = float(entry.get("confidence", 0.5))
         existing_conf = float(best_row["confidence"])
         new_conf = max(candidate_conf, existing_conf)
+        now = datetime.now(timezone.utc)
+        source_event_id = _coerce_uuid(entry.get("born_from_event_id"))
+        existing_events = _normalize_uuid_list(
+            best_row.get("supporting_event_ids"),
+        )
+        existing_readings = _normalize_signal_readings(
+            best_row.get("signal_readings"),
+        )
+        changes: dict[str, Any] = {
+            "confidence": new_conf,
+            "last_confirmed_at": now,
+            "confirmed_count": int(best_row.get("confirmed_count") or 0) + 1,
+        }
+        if source_event_id is not None:
+            changes["supporting_event_ids"] = _append_uuid_once(
+                existing_events,
+                source_event_id,
+            )
+            changes["signal_readings"] = [
+                *existing_readings,
+                _confirmation_reading(entry, source_event_id, now),
+            ]
         replacement = ClaimOp(
             op="update",
             model_id=matched_id,
-            changes={"confidence": new_conf},
+            changes=changes,
         )
         event_id = await _record_event(
             conn,

@@ -52,7 +52,7 @@ from lib.shared.types import (
 # Constants + types
 # ---------------------------------------------------------------------
 
-PathwayName = Literal["A", "B", "C", "D", "F"]
+PathwayName = Literal["A", "B", "C", "D", "F", "G"]
 
 _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
@@ -62,6 +62,26 @@ _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
 _DEFAULT_K_TOPOLOGICAL = 40
 _TOPOLOGICAL_MAX_NEIGHBORHOOD_EXPANSION = 30
+_DEFAULT_EDGE_MAX_HOPS = 2
+_EDGE_MAX_MODELS = 120
+_EDGE_TRAVERSAL_KINDS = (
+    "contradicts",
+    "weakens",
+    "blocks",
+    "early_warning_for",
+    "same_issue_as",
+    "causes",
+    "explains",
+    "predicts",
+    "enables",
+    "supports",
+    "instance_of",
+    "co_occurs_with",
+    "analogous_to",
+    "alternative_to",
+    "contributes_to_resolution",
+    "superseded_by",
+)
 
 
 class RetrievalPathwayError(CompanyOSError):
@@ -340,8 +360,19 @@ def _hydrate_many(
 
 
 _SEED_ENTITY_TYPES = frozenset(
-    {"commitment", "goal", "decision", "actor", "customer_resource", "resource"}
+    {"commitment", "goal", "decision", "actor", "customer", "customer_resource", "resource"}
 )
+
+
+def _canonical_seed_type(raw_type: Any) -> str | None:
+    if raw_type is None:
+        return None
+    value = str(raw_type)
+    if value == "customer":
+        return "customer_resource"
+    if value in _SEED_ENTITY_TYPES:
+        return value
+    return None
 
 
 async def pathway_a_structural(
@@ -385,9 +416,9 @@ async def pathway_a_structural(
     for raw in seed_entity_ids:
         if not isinstance(raw, dict):
             continue
-        t = raw.get("type")
+        t = _canonical_seed_type(raw.get("type"))
         rid = raw.get("id")
-        if t not in _SEED_ENTITY_TYPES:
+        if t is None:
             continue
         if rid is None:
             continue
@@ -412,6 +443,7 @@ async def pathway_a_structural(
     # the last hop); used to limit per-hop cost.
     frontier_commits: set[UUID] = set(seeds["commitment"])
     frontier_goals: set[UUID] = set(seeds["goal"])
+    frontier_decisions: set[UUID] = set(seeds["decision"])
     frontier_customers: set[UUID] = set(seeds["customer_resource"])
     frontier_actors: set[UUID] = set(seeds["actor"])
 
@@ -515,6 +547,24 @@ async def pathway_a_structural(
                 if cid not in visited_commits:
                     new_commits.add(cid)
 
+        # From decisions: walk back to the commitments constrained by
+        # the decision. This makes decision-seeded signals useful for
+        # operating-memory retrieval instead of only supporting the
+        # commitment -> decision direction.
+        if frontier_decisions:
+            decision_list = list(frontier_decisions)
+            commit_from_decisions = await conn.fetch(
+                """
+                SELECT DISTINCT commitment_id FROM constrained_by
+                WHERE decision_id = ANY($1::uuid[])
+                """,
+                decision_list,
+            )
+            for r in commit_from_decisions:
+                cid = r["commitment_id"]
+                if cid not in visited_commits:
+                    new_commits.add(cid)
+
         # From customer resources: follow customer_commitments to
         # Commitments → their Goals (the spine).
         if frontier_customers:
@@ -571,13 +621,19 @@ async def pathway_a_structural(
         # walk; that would be a distinct semantic).
         frontier_commits = new_commits
         frontier_goals = new_goals
+        frontier_decisions = new_decisions
         frontier_customers = new_customers
         frontier_actors = set()  # never expand beyond hop 0 for actors
 
         notes["hops_executed"] = hop + 1
 
         # Early exit if frontier is empty.
-        if not (frontier_commits or frontier_goals or frontier_customers):
+        if not (
+            frontier_commits
+            or frontier_goals
+            or frontier_decisions
+            or frontier_customers
+        ):
             break
 
     # Fetch full rows for the touched entities (tenant-filtered).
@@ -628,6 +684,7 @@ async def pathway_a_structural(
     for did in visited_decisions:
         scope_entity_filters.append({"type": "decision", "id": str(did)})
     for crid in visited_customers:
+        scope_entity_filters.append({"type": "customer", "id": str(crid)})
         scope_entity_filters.append({"type": "customer_resource", "id": str(crid)})
         # Models may use 'resource' instead of 'customer_resource' for the
         # scope entity type depending on how Think writes them. Surface
@@ -635,6 +692,92 @@ async def pathway_a_structural(
         scope_entity_filters.append({"type": "resource", "id": str(crid)})
     for rid in visited_resources:
         scope_entity_filters.append({"type": "resource", "id": str(rid)})
+
+    if visited_customers:
+        rows = await conn.fetch(
+            """
+            SELECT commitment_id
+            FROM customer_commitments
+            WHERE tenant_id = $1
+              AND customer_resource_id = ANY($2::uuid[])
+            """,
+            tenant_id,
+            list(visited_customers),
+        )
+        for row in rows:
+            scope_entity_filters.append(
+                {"type": "commitment", "id": str(row["commitment_id"])}
+            )
+        identity_rows = await conn.fetch(
+            """
+            SELECT id, identity
+            FROM resources
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+              AND kind = 'relational'
+              AND archived_at IS NULL
+            """,
+            tenant_id,
+            list(visited_customers),
+        )
+        like_patterns: list[str] = []
+        for row in identity_rows:
+            identity = " ".join(str(row["identity"]).split()).strip()
+            if not identity:
+                continue
+            like_patterns.append(f"%{identity}%")
+            folded = identity.casefold()
+            for suffix in (" inc", " corp", " llc", " ltd", " incorporated"):
+                if folded.endswith(suffix):
+                    like_patterns.append(f"%{identity[: -len(suffix)].strip()}%")
+                    break
+        if like_patterns:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM commitments
+                WHERE tenant_id = $1
+                  AND (
+                    title ILIKE ANY($2::text[])
+                    OR COALESCE(description, '') ILIKE ANY($2::text[])
+                  )
+                """,
+                tenant_id,
+                like_patterns,
+            )
+            for row in rows:
+                scope_entity_filters.append(
+                    {"type": "commitment", "id": str(row["id"])}
+                )
+    if visited_commits:
+        rows = await conn.fetch(
+            """
+            SELECT customer_resource_id
+            FROM customer_commitments
+            WHERE tenant_id = $1
+              AND commitment_id = ANY($2::uuid[])
+            """,
+            tenant_id,
+            list(visited_commits),
+        )
+        for row in rows:
+            cid = row["customer_resource_id"]
+            scope_entity_filters.append({"type": "customer", "id": str(cid)})
+            scope_entity_filters.append(
+                {"type": "customer_resource", "id": str(cid)}
+            )
+            scope_entity_filters.append({"type": "resource", "id": str(cid)})
+
+    if scope_entity_filters:
+        deduped_scope_filters: list[dict[str, Any]] = []
+        seen_scope_filters: set[str] = set()
+        for entry in scope_entity_filters:
+            key = _jsonb(entry)
+            if key in seen_scope_filters:
+                continue
+            seen_scope_filters.add(key)
+            deduped_scope_filters.append(entry)
+        scope_entity_filters = deduped_scope_filters
 
     models_out: list[ModelRow] = []
     if scope_entity_filters or visited_actors:
@@ -678,6 +821,61 @@ async def pathway_a_structural(
                 except Exception:
                     notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
                     notes["hydration_skipped"]["models"] += 1
+
+        sidecar_entity_types: list[str] = []
+        sidecar_entity_ids: list[UUID] = []
+        for f in scope_entity_filters:
+            try:
+                sidecar_entity_types.append(str(f["type"]))
+                sidecar_entity_ids.append(UUID(str(f["id"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        sidecar_rows: list[asyncpg.Record] = []
+        if sidecar_entity_ids or visited_actors:
+            sidecar_rows = await conn.fetch(
+                f"""
+                WITH seeded_entities AS (
+                  SELECT * FROM unnest($2::text[], $3::uuid[])
+                    AS e(entity_type, entity_id)
+                ),
+                scoped_models AS (
+                  SELECT mse.model_id
+                  FROM model_scope_entities mse
+                  JOIN seeded_entities se
+                    ON se.entity_type = mse.entity_type
+                   AND se.entity_id = mse.entity_id
+                  WHERE mse.tenant_id = $1
+                  UNION
+                  SELECT msa.model_id
+                  FROM model_scope_actors msa
+                  WHERE msa.tenant_id = $1
+                    AND msa.actor_id = ANY($4::uuid[])
+                )
+                SELECT {_MODEL_SELECT_SQL}
+                FROM models m
+                JOIN scoped_models sm ON sm.model_id = m.id
+                WHERE m.tenant_id = $1
+                  AND m.status = 'active'
+                ORDER BY m.activation DESC, m.created_at DESC
+                LIMIT {_STRUCTURAL_MAX_MODELS}
+                """,
+                tenant_id,
+                sidecar_entity_types,
+                sidecar_entity_ids,
+                list(visited_actors),
+            )
+        if sidecar_rows:
+            seen_ids = {m.id for m in models_out}
+            for r in sidecar_rows:
+                if r["id"] in seen_ids:
+                    continue
+                seen_ids.add(r["id"])
+                try:
+                    models_out.append(_hydrate_model(r))
+                except Exception:
+                    notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+                    notes["hydration_skipped"]["models"] += 1
+            notes["scope_sidecar_rows"] = len(sidecar_rows)
 
     notes["entities_touched"] = {
         "commitments": len(visited_commits),
@@ -1124,24 +1322,47 @@ async def pathway_d_pattern(
     patterns = _hydrate_many(pattern_rows, _hydrate_model, notes, "patterns")
     notes["patterns_returned"] = len(patterns)
 
-    # Fetch instances for each pattern. A pattern_instance Model has
-    # proposition.kind='pattern_instance' AND proposition.pattern_id
-    # = the pattern's id (as string).
+    # Fetch instances for each pattern. The typed `instance_of` edge is
+    # canonical; proposition.pattern_id remains a legacy/fallback shape.
     instances: list[ModelRow] = []
     if patterns:
         pattern_ids_str = [str(p.id) for p in patterns]
+        pattern_ids = [p.id for p in patterns]
         inst_rows = await conn.fetch(
             f"""
+            WITH edge_instances AS (
+              SELECT DISTINCT e.source_model_id AS model_id
+              FROM model_edges e
+              WHERE e.tenant_id = $1
+                AND e.status = 'active'
+                AND e.review_status IN ('accepted', 'candidate', 'needs_review')
+                AND (e.expires_at IS NULL OR e.expires_at > now())
+                AND e.edge_kind = 'instance_of'
+                AND e.target_model_id = ANY($2::uuid[])
+            ),
+            json_instances AS (
+              SELECT m.id AS model_id
+              FROM models m
+              WHERE m.tenant_id = $1
+                AND m.status = 'active'
+                AND m.proposition_kind = 'pattern_instance'
+                AND (m.proposition ->> 'pattern_id') = ANY($3::text[])
+            ),
+            instance_ids AS (
+              SELECT model_id FROM edge_instances
+              UNION
+              SELECT model_id FROM json_instances
+            )
             SELECT {_MODEL_SELECT_SQL}
-            FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND proposition_kind = 'pattern_instance'
-              AND (proposition ->> 'pattern_id') = ANY($2::text[])
-            ORDER BY activation DESC, created_at DESC
-            LIMIT $3
+            FROM models m
+            JOIN instance_ids i ON i.model_id = m.id
+            WHERE m.tenant_id = $1
+              AND m.status = 'active'
+            ORDER BY m.activation DESC, m.created_at DESC
+            LIMIT $4
             """,
             tenant_id,
+            pattern_ids,
             pattern_ids_str,
             limit,
         )
@@ -1154,6 +1375,186 @@ async def pathway_d_pattern(
         acts={"goals": [], "commitments": [], "decisions": []},
         resources=[],
         source_pathway="D",
+        notes=notes,
+    )
+
+
+# =====================================================================
+# Pathway G — Model-edge traversal (typed memory graph expansion)
+# =====================================================================
+
+
+async def pathway_g_model_edges(
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_model_ids: Sequence[UUID] | None = None,
+    seed_entity_ids: Sequence[dict[str, Any]] | None = None,
+    scope_actors: Sequence[UUID] | None = None,
+    edge_kinds: Sequence[str] = _EDGE_TRAVERSAL_KINDS,
+    max_hops: int = _DEFAULT_EDGE_MAX_HOPS,
+    limit: int = _EDGE_MAX_MODELS,
+) -> PathwayResult:
+    """Traverse the typed Model graph around known seed Models.
+
+    This is the retrieval path for hidden/non-obvious links: a Model can be
+    semantically distant yet relevant because it contradicts, blocks,
+    explains, predicts, or shares an underlying issue with the seed.
+    """
+    notes: dict[str, Any] = {
+        "seed_model_ids": len(seed_model_ids or []),
+        "seed_entity_ids": len(seed_entity_ids or []),
+        "scope_actors": len(scope_actors or []),
+        "edge_kinds": list(edge_kinds),
+        "max_hops": max_hops,
+        "limit": limit,
+    }
+    if max_hops < 0:
+        raise ValidationError("max_hops must be >= 0", max_hops=max_hops)
+    if limit <= 0:
+        return PathwayResult(source_pathway="G", notes={**notes, "reason": "non_positive_limit"})
+
+    seeds: set[UUID] = set(seed_model_ids or [])
+    entity_types: list[str] = []
+    entity_ids: list[UUID] = []
+    for raw in seed_entity_ids or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            entity_type = _canonical_seed_type(raw["type"]) or str(raw["type"])
+            entity_types.append(entity_type)
+            entity_ids.append(UUID(str(raw["id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if entity_ids or scope_actors:
+        scoped_seed_rows = await conn.fetch(
+            f"""
+            WITH seeded_entities AS (
+              SELECT * FROM unnest($2::text[], $3::uuid[])
+                AS e(entity_type, entity_id)
+            ),
+            scoped_models AS (
+              SELECT mse.model_id
+              FROM model_scope_entities mse
+              JOIN seeded_entities se
+                ON se.entity_type = mse.entity_type
+               AND se.entity_id = mse.entity_id
+              WHERE mse.tenant_id = $1
+              UNION
+              SELECT msa.model_id
+              FROM model_scope_actors msa
+              WHERE msa.tenant_id = $1
+                AND msa.actor_id = ANY($4::uuid[])
+            )
+            SELECT m.id
+            FROM models m
+            JOIN scoped_models sm ON sm.model_id = m.id
+            WHERE m.tenant_id = $1 AND m.status = 'active'
+            ORDER BY m.activation DESC, m.created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            entity_types,
+            entity_ids,
+            list(scope_actors or []),
+            min(limit, 50),
+        )
+        seeds.update(r["id"] for r in scoped_seed_rows)
+        notes["scope_seed_models"] = len(scoped_seed_rows)
+
+    if not seeds:
+        return PathwayResult(source_pathway="G", notes={**notes, "reason": "empty_seed"})
+
+    edge_kinds = [str(k) for k in edge_kinds]
+    visited: set[UUID] = set(seeds)
+    frontier: set[UUID] = set(seeds)
+    rank_by_model: dict[UUID, tuple[int, int, str]] = {
+        mid: (0, 0, "seed") for mid in seeds
+    }
+    edge_rows_seen = 0
+
+    for hop in range(1, max_hops + 1):
+        if not frontier or len(visited) >= limit:
+            break
+        rows = await conn.fetch(
+            """
+            SELECT source_model_id, target_model_id, edge_kind, confidence,
+                   weight, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND review_status IN ('accepted', 'candidate', 'needs_review')
+              AND (expires_at IS NULL OR expires_at > now())
+              AND edge_kind = ANY($2::text[])
+              AND (source_model_id = ANY($3::uuid[])
+                OR target_model_id = ANY($3::uuid[]))
+            ORDER BY
+              CASE edge_kind
+                WHEN 'contradicts' THEN 0
+                WHEN 'weakens' THEN 1
+                WHEN 'blocks' THEN 2
+                WHEN 'early_warning_for' THEN 3
+                WHEN 'same_issue_as' THEN 4
+                ELSE 10
+              END,
+              confidence DESC,
+              created_at DESC
+            LIMIT $4
+            """,
+            tenant_id,
+            edge_kinds,
+            list(frontier),
+            limit * 4,
+        )
+        edge_rows_seen += len(rows)
+        next_frontier: set[UUID] = set()
+        for pos, row in enumerate(rows):
+            source = row["source_model_id"]
+            target = row["target_model_id"]
+            other = target if source in frontier else source
+            if other in visited:
+                continue
+            visited.add(other)
+            next_frontier.add(other)
+            rank_by_model[other] = (hop, pos, row["edge_kind"])
+            if len(visited) >= limit:
+                break
+        frontier = next_frontier
+
+    if not visited:
+        return PathwayResult(source_pathway="G", notes={**notes, "reason": "no_reachable_models"})
+
+    model_rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(visited),
+    )
+    models = _hydrate_many(model_rows, _hydrate_model, notes, "edge_models")
+    models.sort(
+        key=lambda m: (
+            rank_by_model.get(m.id, (999, 999, ""))[0],
+            rank_by_model.get(m.id, (999, 999, ""))[1],
+            -m.activation,
+            str(m.id),
+        )
+    )
+    notes["edge_rows_seen"] = edge_rows_seen
+    notes["models_returned"] = len(models)
+    notes["hops_executed"] = max((rank_by_model.get(m.id, (0, 0, ""))[0] for m in models), default=0)
+
+    return PathwayResult(
+        models=models[:limit],
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="G",
         notes=notes,
     )
 
@@ -1518,5 +1919,6 @@ __all__ = [
     "pathway_c_temporal",
     "pathway_d_pattern",
     "pathway_f_topological",
+    "pathway_g_model_edges",
     "RetrievalPathwayError",
 ]

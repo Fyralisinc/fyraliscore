@@ -8,7 +8,7 @@ Polls:
     rows into T4 triggers with subkind='model_reeval'.
 
 Per-tenant concurrency cap via asyncio.Semaphore keyed by tenant_id
-(default 4; env `THINK_MAX_CONCURRENCY_PER_TENANT`).
+(default 1; env `THINK_MAX_CONCURRENCY_PER_TENANT`).
 
 Backpressure: if queue depth > `THINK_QUEUE_BACKPRESSURE_LIMIT`
 (default 500), log a warning and slow polling. Newly-enqueued rows
@@ -151,7 +151,7 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
 class WorkerConfig:
     poll_interval_s: float = 2.0
     poll_batch: int = 10
-    max_concurrency_per_tenant: int = 4
+    max_concurrency_per_tenant: int = 1
     backpressure_limit: int = 500
     trigger_max_attempts: int = 5
     reeval_max_attempts: int = 5
@@ -163,7 +163,7 @@ class WorkerConfig:
             poll_interval_s=float(os.environ.get("THINK_POLL_INTERVAL_S", 2.0)),
             poll_batch=int(os.environ.get("THINK_POLL_BATCH", 10)),
             max_concurrency_per_tenant=int(os.environ.get(
-                "THINK_MAX_CONCURRENCY_PER_TENANT", 4
+                "THINK_MAX_CONCURRENCY_PER_TENANT", 1
             )),
             backpressure_limit=int(os.environ.get(
                 "THINK_QUEUE_BACKPRESSURE_LIMIT", 500
@@ -331,6 +331,9 @@ class ThinkWorker:
     # -----------------------------------------------------------------
 
     async def _poll_and_dispatch(self) -> None:
+        available_slots = max(0, self.config.poll_batch - len(self._in_flight))
+        if available_slots <= 0:
+            return
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 rows = await conn.fetch(
@@ -347,7 +350,7 @@ class ThinkWorker:
                     LIMIT $2
                     """,
                     self.config.trigger_max_attempts,
-                    self.config.poll_batch,
+                    available_slots,
                 )
                 leased_ids = [r["id"] for r in rows]
                 if leased_ids:

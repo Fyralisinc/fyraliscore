@@ -259,6 +259,14 @@ def touched_entity_ids_from_diff(
             if mid is not None:
                 entities.add(("model", str(mid)))
 
+    for op in (getattr(diff, "edge_ops", []) or []):
+        source_id = getattr(op, "source_model_id", None)
+        target_id = getattr(op, "target_model_id", None)
+        if source_id is not None:
+            entities.add(("model", str(source_id)))
+        if target_id is not None:
+            entities.add(("model", str(target_id)))
+
     for op in (getattr(diff, "act_ops", []) or []):
         ent = getattr(op, "entity", None) or {}
         op_kind = getattr(op, "op", "") or ""

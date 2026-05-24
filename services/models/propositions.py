@@ -1,6 +1,6 @@
 """
 services/models/propositions.py — Pydantic v2 discriminated union over
-the 10 Model proposition kinds per spec §2.
+the Model proposition kinds per spec §2.
 
 The `kind` field on every proposition is the discriminator. Each
 proposition kind has a fixed, known set of required fields:
@@ -16,6 +16,8 @@ proposition kind has a fixed, known set of required fields:
     concern               — {kind, about, nature, raised_by}
     market_assessment     — {kind, subject_external, assessment}
     environmental_trend   — {kind, signature, direction, strength}
+    situation             — {kind, situation, summary, member_model_ids,
+                              relationship_summary, status}
 
 Use `validate_proposition(raw: dict) -> PropositionModel` to parse any
 raw JSONB payload into its typed counterpart. A missing or unknown
@@ -48,7 +50,7 @@ class _PropositionBase(BaseModel):
 
 
 # ---------------------------------------------------------------------
-# Ten kinds
+# Kinds
 # ---------------------------------------------------------------------
 
 class StateProposition(_PropositionBase):
@@ -113,6 +115,35 @@ class EnvironmentalTrendProposition(_PropositionBase):
     signature: str | dict[str, Any]
     direction: str
     strength: str | float
+
+
+class SituationProposition(_PropositionBase):
+    """Composite operational belief backed by multiple Models/edges.
+
+    A situation is the memory primitive for "many things are jointly true
+    in a way that matters." Pairwise relationships should stay in
+    `model_edges`; a situation summarizes a subgraph humans would struggle
+    to hold at once.
+    """
+
+    kind: Literal["situation"] = "situation"
+    situation: str
+    summary: str
+    member_model_ids: list[str] = Field(default_factory=list)
+    relationship_summary: str
+    status: str | None = None
+
+    @model_validator(mode="after")
+    def _check_situation_shape(self) -> "SituationProposition":
+        if not self.situation.strip():
+            raise ValueError("situation must be non-empty")
+        if not self.summary.strip():
+            raise ValueError("summary must be non-empty")
+        if not self.relationship_summary.strip():
+            raise ValueError("relationship_summary must be non-empty")
+        if len(set(self.member_model_ids)) != len(self.member_model_ids):
+            raise ValueError("member_model_ids must not contain duplicates")
+        return self
 
 
 # Recommendation proposition — Stage 1 decision support.
@@ -195,6 +226,7 @@ PropositionModel = Annotated[
         ConcernProposition,
         MarketAssessmentProposition,
         EnvironmentalTrendProposition,
+        SituationProposition,
         RecommendationProposition,
     ],
     Field(discriminator="kind"),
@@ -219,6 +251,7 @@ _KIND_TO_CLASS: dict[str, type[_PropositionBase]] = {
     "concern": ConcernProposition,
     "market_assessment": MarketAssessmentProposition,
     "environmental_trend": EnvironmentalTrendProposition,
+    "situation": SituationProposition,
     "recommendation": RecommendationProposition,
 }
 

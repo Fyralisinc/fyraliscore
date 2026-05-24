@@ -55,10 +55,10 @@ to via an active edge — regardless of edge direction or kind. We treat
 the edge graph as undirected for the purposes of topology, because
 arrangement is a symmetric concept (if A is positionally near B, B
 is positionally near A). The edge_kind contributes weight (a
-`supports` edge counts more than a future `co_activates_with` edge)
+    `supports` edge counts more than a weak `co_occurs_with` edge)
 but doesn't determine direction of influence.
 
-For asymmetric kinds where polarity matters (future `contradicts`),
+For kinds where polarity matters (`contradicts`, `weakens`, `blocks`),
 the contributed weight is NEGATIVE — the contradicting Model
 pushes this Model AWAY in topo space rather than toward.
 
@@ -112,11 +112,18 @@ _TOPO_EDGE_WEIGHTS: dict[str, float] = {
     "instance_of": 1.0,
     "contributes_to_resolution": 0.6,
     "superseded_by": 0.0,
-    # Reserved (S4): contradicts contributes NEGATIVE weight; the
-    # contradicting Model's topo pushes this Model AWAY.
-    # Implementation deferred until contradicts producer ships.
-    "contradicts": 0.0,
-    "weakens": 0.0,
+    "contradicts": -1.0,
+    "weakens": -0.7,
+    "blocks": -0.5,
+    "alternative_to": -0.3,
+    "same_issue_as": 0.95,
+    "causes": 0.8,
+    "explains": 0.75,
+    "predicts": 0.7,
+    "early_warning_for": 0.7,
+    "enables": 0.65,
+    "co_occurs_with": 0.5,
+    "analogous_to": 0.4,
 }
 
 
@@ -249,6 +256,8 @@ class TopoRepo:
             FROM model_edges
             WHERE tenant_id = $2
               AND status = 'active'
+              AND review_status IN ('accepted', 'candidate', 'needs_review')
+              AND (expires_at IS NULL OR expires_at > now())
               AND (source_model_id = $1 OR target_model_id = $1)
             """,
             model_id,
@@ -405,10 +414,12 @@ class TopoRepo:
         # purposes (see module docstring).
         neighbor_rows = await conn.fetch(
             """
-            SELECT DISTINCT ON (neighbor_id)
+            SELECT
               neighbor_id,
               neighbor_topo,
-              edge_kind
+              edge_kind,
+              edge_weight,
+              edge_confidence
             FROM (
               SELECT
                 CASE
@@ -416,7 +427,9 @@ class TopoRepo:
                   ELSE e.source_model_id
                 END AS neighbor_id,
                 m.topo_embedding AS neighbor_topo,
-                e.edge_kind
+                e.edge_kind,
+                e.weight AS edge_weight,
+                e.confidence AS edge_confidence
               FROM model_edges e
               JOIN models m ON m.id = (
                 CASE
@@ -426,6 +439,8 @@ class TopoRepo:
               )
               WHERE e.tenant_id = $2
                 AND e.status = 'active'
+                AND e.review_status IN ('accepted', 'candidate', 'needs_review')
+                AND (e.expires_at IS NULL OR e.expires_at > now())
                 AND (e.source_model_id = $1 OR e.target_model_id = $1)
                 AND m.status = 'active'
                 AND m.topo_embedding IS NOT NULL
@@ -435,16 +450,30 @@ class TopoRepo:
             tenant_id,
         )
 
-        neighbor_topos: list[list[float]] = []
-        weights: list[float] = []
+        by_neighbor: dict[UUID, tuple[list[float], float]] = {}
         for nr in neighbor_rows:
             kind = nr["edge_kind"]
-            weight = _TOPO_EDGE_WEIGHTS.get(kind, 0.0)
+            base_weight = _TOPO_EDGE_WEIGHTS.get(kind, 0.0)
+            if nr["edge_weight"] is not None:
+                base_weight *= float(nr["edge_weight"])
+            if nr["edge_confidence"] is not None:
+                base_weight *= float(nr["edge_confidence"])
+            weight = base_weight
             if weight == 0.0:
                 continue
             neighbor_topo = [float(x) for x in nr["neighbor_topo"]]
-            neighbor_topos.append(neighbor_topo)
-            weights.append(weight)
+            neighbor_id = nr["neighbor_id"]
+            prev = by_neighbor.get(neighbor_id)
+            if prev is None:
+                by_neighbor[neighbor_id] = (neighbor_topo, weight)
+            else:
+                # Multiple edge kinds between the same pair combine into one
+                # signed force, clipped to keep a dense pair from dominating.
+                combined = max(-1.5, min(1.5, prev[1] + weight))
+                by_neighbor[neighbor_id] = (prev[0], combined)
+
+        neighbor_topos = [v[0] for v in by_neighbor.values()]
+        weights = [v[1] for v in by_neighbor.values()]
 
         new_topo = compute_topo_embedding(
             anchor,
@@ -735,7 +764,10 @@ class TopoRepo:
                     END
                   )
                   AND mm.tenant_id = $2
-                WHERE e.tenant_id = $2 AND e.status = 'active'
+                WHERE e.tenant_id = $2
+                  AND e.status = 'active'
+                  AND e.review_status IN ('accepted', 'candidate', 'needs_review')
+                  AND (e.expires_at IS NULL OR e.expires_at > now())
                 """,
                 frontier, tenant_id,
             )

@@ -74,6 +74,7 @@ from .observability import (
     write_region_lock_log,
 )
 from .post_commit import enqueue_post_commit_actions
+from .reasoning_frame import ReasoningFrame
 from .region_locks import (
     RegionLockAcquisition,
     acquire_region_lock,
@@ -505,6 +506,11 @@ async def _run_once(
             trigger_kind=trigger.kind,
             error=str(e),
         )
+    reasoning_frame = ReasoningFrame.from_trigger(
+        trigger,
+        retrieval_result=first,
+    )
+    first.notes["reasoning_frame"] = reasoning_frame.to_dict()
     emit("think.retrieval_done",
          run_id=str(record.id),
          models=len(first.models),
@@ -522,6 +528,7 @@ async def _run_once(
                 if getattr(trigger, "observation_id", None) else None,
             "triggering_content": triggering_content,
             "reason_for_trigger": reason_for_trigger,
+            "reasoning_frame": reasoning_frame.to_dict(),
         },
     )
     await debug_capture(
@@ -650,6 +657,41 @@ async def _run_once(
             allowed_region = sorted(
                 set(allowed_region) | {("commitment", str(r["id"]))}
             )
+
+        existing_decision_ids = {
+            getattr(d, "id", None)
+            for d in bundle.acts_summary.get("decisions", [])
+        }
+        decision_rows = await conn.fetch(
+            """
+            SELECT id, tenant_id, title, state, created_at,
+                   last_state_change_at
+            FROM decisions
+            WHERE tenant_id = $1
+              AND archived_at IS NULL
+              AND state != 'archived'
+            ORDER BY last_state_change_at DESC NULLS LAST,
+                     created_at DESC
+            LIMIT 25
+            """,
+            trigger.tenant_id,
+        )
+        for r in decision_rows:
+            if r["id"] in existing_decision_ids:
+                continue
+            stub = SimpleNamespace(
+                id=r["id"],
+                tenant_id=r["tenant_id"],
+                title=r["title"],
+                state=r["state"],
+                created_at=r["created_at"],
+                last_state_change_at=r["last_state_change_at"],
+            )
+            bundle.acts_summary.setdefault("decisions", []).append(stub)
+            existing_decision_ids.add(r["id"])
+            allowed_region = sorted(
+                set(allowed_region) | {("decision", str(r["id"]))}
+            )
     except Exception as _aug_err:  # noqa: BLE001
         await debug_capture(
             conn,
@@ -688,6 +730,7 @@ async def _run_once(
             trigger, bundle, llm_provider,
             triggering_content=triggering_content,
             reason_for_trigger=reason_for_trigger,
+            reasoning_frame=reasoning_frame,
         )
     # Ensure trigger_ref / tenant_id match what the caller expects —
     # even if the LLM hallucinated the fields, we overwrite for safety.
@@ -706,10 +749,18 @@ async def _run_once(
     from .auto_create_commitment import (
         maybe_inject_block_transition,
         maybe_inject_create_commitment,
+        maybe_inject_customer_risk,
+        maybe_inject_decision_revisit,
+        maybe_inject_future_prediction,
     )
 
     raw_diff = maybe_inject_create_commitment(raw_diff, trigger, bundle)
     raw_diff = maybe_inject_block_transition(raw_diff, trigger, bundle)
+    raw_diff = maybe_inject_decision_revisit(raw_diff, trigger, bundle)
+    raw_diff = maybe_inject_future_prediction(raw_diff, trigger, bundle)
+    raw_diff = maybe_inject_customer_risk(raw_diff, trigger, bundle)
+    from .context_use import summarize_context_use
+    raw_context_use = summarize_context_use(bundle, raw_diff)
     # Extend allowed_region for any transition target the deterministic
     # block injector picked, so the validator doesn't reject it.
     for op in raw_diff.act_ops:
@@ -719,6 +770,13 @@ async def _run_once(
             if tid:
                 allowed_region = sorted(
                     set(allowed_region) | {("commitment", str(tid))}
+                )
+        elif op.op == "transition_decision":
+            ent = op.entity or {}
+            tid = ent.get("id")
+            if tid:
+                allowed_region = sorted(
+                    set(allowed_region) | {("decision", str(tid))}
                 )
 
     if llm_latency_ms is not None:
@@ -732,6 +790,8 @@ async def _run_once(
             "llm_latency_ms": llm_latency_ms,
             "is_authoritative": is_authoritative(trigger),
             "raw_diff": raw_diff,
+            "reasoning_frame": reasoning_frame.to_dict(),
+            "context_use": raw_context_use,
         },
     )
 
@@ -741,9 +801,29 @@ async def _run_once(
         allowed_region=allowed_region,
         strict_region=True,
     )
+    validated_context_use = summarize_context_use(bundle, validated)
+    METRICS.observe_context_use(trigger_kind_full, validated_context_use)
+    emit(
+        "think.context_use",
+        run_id=str(record.id),
+        grade=validated_context_use.get("context_use_grade"),
+        selected_context_reference_ratio=validated_context_use.get(
+            "selected_context_reference_ratio"
+        ),
+        selected_model_reference_ratio=validated_context_use.get(
+            "selected_model_reference_ratio"
+        ),
+        graph_selected_reference_ratio=validated_context_use.get(
+            "graph_selected_reference_ratio"
+        ),
+        selected_context_used=validated_context_use.get(
+            "selected_context_used"
+        ),
+    )
     emit("think.validation_done",
          run_id=str(record.id),
          claim_ops=len(validated.claim_ops),
+         edge_ops=len(validated.edge_ops),
          act_ops=len(validated.act_ops),
          resource_ops=len(validated.resource_ops),
          dropped_ops=validated.dropped_op_count)
@@ -763,10 +843,12 @@ async def _run_once(
         stage="validation",
         payload={
             "claim_ops": validated.claim_ops,
+            "edge_ops": validated.edge_ops,
             "act_ops": validated.act_ops,
             "resource_ops": validated.resource_ops,
             "dropped_op_count": validated.dropped_op_count,
             "dropped_op_errors": list(validated.dropped_op_errors[:20]),
+            "context_use": validated_context_use,
         },
     )
 
@@ -798,8 +880,15 @@ async def _run_once(
 
     emit("think.apply_done",
          run_id=str(record.id),
-         ops_applied=len(applied["claim_ops"]) + len(applied["act_ops"]) + len(applied["resource_ops"]),
+         ops_applied=(
+             len(applied["claim_ops"])
+             + len(applied["edge_ops"])
+             + len(applied["act_ops"])
+             + len(applied["resource_ops"])
+         ),
          state_changes=applied.get("state_changes_emitted", 0))
+    applied["context_use"] = validated_context_use
+    applied["reasoning_frame"] = reasoning_frame.to_dict()
     await debug_capture(
         conn,
         run_id=record.id,
@@ -811,6 +900,8 @@ async def _run_once(
     # Track ops metrics per kind.
     for summary in applied.get("claim_ops", []):
         METRICS.inc_op(f"claim_{summary.get('op')}")
+    for summary in applied.get("edge_ops", []):
+        METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
     for summary in applied.get("act_ops", []):
         METRICS.inc_op(summary.get("op", "act_unknown"))
     for summary in applied.get("resource_ops", []):
@@ -860,11 +951,13 @@ async def _run_once(
                     """
                     SELECT id FROM observations
                     WHERE kind = 'state_change'
+                      AND tenant_id = $2
                       AND entities_mentioned @> $1::jsonb
                     ORDER BY occurred_at DESC
                     LIMIT 1
                     """,
                     _entities_filter("commitment", cid),
+                    trigger.tenant_id,
                 )
                 seed_event = CascadeEvent(
                     id=uuid7(),
@@ -883,11 +976,13 @@ async def _run_once(
                     """
                     SELECT id FROM observations
                     WHERE kind = 'state_change'
+                      AND tenant_id = $2
                       AND entities_mentioned @> $1::jsonb
                     ORDER BY occurred_at DESC
                     LIMIT 1
                     """,
                     _entities_filter("decision", did),
+                    trigger.tenant_id,
                 )
                 seed_event = CascadeEvent(
                     id=uuid7(),
@@ -918,7 +1013,10 @@ async def _run_once(
         trigger_kind=trigger_kind_full,
         status="success",
         ops_applied_count=(
-            len(applied["claim_ops"]) + len(applied["act_ops"]) + len(applied["resource_ops"])
+            len(applied["claim_ops"])
+            + len(applied["edge_ops"])
+            + len(applied["act_ops"])
+            + len(applied["resource_ops"])
         ),
         cascade_depth=cascade_depth,
         anomalies_flagged=len(anomalies),

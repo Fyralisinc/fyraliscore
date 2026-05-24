@@ -38,7 +38,8 @@ from services.resources import repo as resources_repo
 from services.resources.transactions import record_transaction
 from services.resources.deployments import release as release_deployment
 
-from .diff_schema import ActOp, ClaimOp, RawDiff, ResourceOp, ValidatedDiff
+from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
+from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
 class ApplierError(CompanyOSError):
@@ -65,6 +66,7 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
         "trigger_ref": str(diff.trigger_ref),
         "tenant_id": str(diff.tenant_id),
         "claim_ops": [op.model_dump(mode="json") for op in diff.claim_ops],
+        "edge_ops": [op.model_dump(mode="json") for op in diff.edge_ops],
         "act_ops": [op.model_dump(mode="json") for op in diff.act_ops],
         "resource_ops": [op.model_dump(mode="json") for op in diff.resource_ops],
     }
@@ -114,6 +116,18 @@ async def apply_diff(
         acquire_region_lock as _acquire_region_lock,
         touched_entity_ids_from_diff as _touched_from_diff,
     )
+    # The retrieval/validation region lock keeps the LLM inside its legal
+    # evidence boundary, but concurrent diffs can still reconcile or edge-sync
+    # into the same `models` rows through production side effects that were not
+    # explicit in the raw diff. Serialize the short model-write critical
+    # section per tenant so parallel Think runs can keep doing expensive
+    # retrieval/LLM work without deadlocking while mutating the memory graph.
+    await _acquire_region_lock(
+        conn,
+        diff.tenant_id,
+        [("tenant_model_write", str(diff.tenant_id))],
+    )
+
     _diff_entities = _touched_from_diff(diff)
     if _diff_entities:
         await _acquire_region_lock(conn, diff.tenant_id, _diff_entities)
@@ -153,10 +167,12 @@ async def apply_diff(
     state_changes_emitted = 0
     ops_summary: dict[str, Any] = {
         "claim_ops": [],
+        "edge_ops": [],
         "act_ops": [],
         "resource_ops": [],
         "diff_hash": diff_hash,
     }
+    pending_model_ids_by_event_id: dict[UUID, UUID] = {}
 
     if models_repo is None:
         models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
@@ -220,6 +236,13 @@ async def apply_diff(
         ops_summary["claim_ops"].append(result["summary"])
         if result.get("model_id") is not None:
             applied_model_ids.append(result["model_id"])
+            if original_op.op == "insert" and isinstance(original_op.entry, dict):
+                for key in ("born_from_event_id", "model_id", "id"):
+                    placeholder_id = _coerce_uuid(original_op.entry.get(key))
+                    if placeholder_id is not None:
+                        pending_model_ids_by_event_id[placeholder_id] = (
+                            result["model_id"]
+                        )
             if (
                 op.op == "insert"
                 and result["summary"].get("proposition_kind") in _T2_BELIEF_KINDS
@@ -228,8 +251,34 @@ async def apply_diff(
         state_changes_emitted += result.get("state_changes", 0)
     ops_summary["reconcile_summary"] = reconcile_summary
 
-    # --- 2. act_ops -----------------------------------------------
+    # --- 2. edge_ops ----------------------------------------------
+    for op in diff.edge_ops:
+        op = _resolve_pending_edge_model_refs(op, pending_model_ids_by_event_id)
+        if op.source_model_id == op.target_model_id:
+            ops_summary["edge_ops"].append({
+                "op": "skip",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "reason": "resolved_to_same_model_after_reconciliation",
+            })
+            continue
+        result = await _apply_edge_op(
+            op, conn, diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+        )
+        ops_summary["edge_ops"].append(result["summary"])
+
+    # --- 3. act_ops -----------------------------------------------
     for op in diff.act_ops:
+        if op.confidence_basis in pending_model_ids_by_event_id:
+            op = op.model_copy(
+                update={
+                    "confidence_basis": pending_model_ids_by_event_id[
+                        op.confidence_basis
+                    ]
+                }
+            )
         result = await _apply_act_op(
             op, conn, diff.tenant_id,
             cause_event_id=trigger_cause_event_id,
@@ -237,7 +286,7 @@ async def apply_diff(
         ops_summary["act_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
-    # --- 3. resource_ops ------------------------------------------
+    # --- 4. resource_ops ------------------------------------------
     for op in diff.resource_ops:
         result = await _apply_resource_op(
             op, conn, diff.tenant_id,
@@ -246,7 +295,7 @@ async def apply_diff(
         ops_summary["resource_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
-    # --- 4. Enqueue T2:belief_updated for each new state/concern model ----
+    # --- 5. Enqueue T2:belief_updated for each new state/concern model ----
     if _belief_updated_model_ids:
         from services.think.cascade import enqueue_t2_belief_updated
         for mid in _belief_updated_model_ids:
@@ -257,7 +306,7 @@ async def apply_diff(
                 source_observation_id=trigger_cause_event_id,
             )
 
-    # --- 5. Mark applied_triggers success (still in same tx) ------
+    # --- 6. Mark applied_triggers success (still in same tx) ------
     await conn.execute(
         "UPDATE applied_triggers SET outcome = 'success' WHERE trigger_id = $1",
         diff.trigger_ref,
@@ -274,6 +323,48 @@ async def apply_diff(
 # ---------------------------------------------------------------------
 # Per-op appliers
 # ---------------------------------------------------------------------
+
+
+def _resolve_pending_edge_model_refs(
+    op: EdgeOp,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> EdgeOp:
+    source_was_pending = op.source_model_id in pending_model_ids_by_event_id
+    target_was_pending = op.target_model_id in pending_model_ids_by_event_id
+    source_model_id = pending_model_ids_by_event_id.get(
+        op.source_model_id,
+        op.source_model_id,
+    )
+    target_model_id = pending_model_ids_by_event_id.get(
+        op.target_model_id,
+        op.target_model_id,
+    )
+    metadata = dict(op.metadata or {})
+
+    # Canonical supersession direction is old -> replacement. Live LLMs
+    # commonly phrase "new claim supersedes old Model" and emit
+    # new -> old. When exactly one endpoint is a same-diff insert, the
+    # newly inserted Model is almost always the replacement, so flip to the
+    # storage/traversal direction before EdgesRepo persists it.
+    if (
+        op.edge_kind == "superseded_by"
+        and source_was_pending
+        and not target_was_pending
+    ):
+        source_model_id, target_model_id = target_model_id, source_model_id
+        metadata.setdefault(
+            "canonicalized_direction",
+            "existing_model_superseded_by_same_diff_insert",
+        )
+
+    updates: dict[str, Any] = {}
+    if source_model_id != op.source_model_id:
+        updates["source_model_id"] = source_model_id
+    if target_model_id != op.target_model_id:
+        updates["target_model_id"] = target_model_id
+    if metadata != (op.metadata or {}):
+        updates["metadata"] = metadata
+    return op.model_copy(update=updates) if updates else op
 
 
 def _audit_jsonable(v: Any) -> Any:
@@ -333,7 +424,7 @@ async def _apply_claim_op(
         # LLM-invented fields that aren't part of ModelCreate.
         if "born_from_event_id" not in entry and cause_event_id is not None:
             entry["born_from_event_id"] = cause_event_id
-        for stray in ("title", "description", "id"):
+        for stray in ("title", "description", "id", "model_id"):
             entry.pop(stray, None)
         # scope_temporal is required; default to an open-ended present window.
         if "scope_temporal" not in entry:
@@ -341,16 +432,14 @@ async def _apply_claim_op(
                 "valid_from": datetime.now(timezone.utc).isoformat(),
                 "valid_until": None,
             }
-        # Embedding is computed post-hoc from `natural` by the embedding
-        # pipeline if available; for now, if the LLM didn't produce one,
-        # use a zero-vector so the insert doesn't fail on NOT NULL. Think
-        # runs are not in the semantic-search hot path yet; retrieval by
-        # activation/temporal still works with zero embeddings.
-        if "embedding" not in entry:
-            # Ollama nomic-embed-text produces 768-dim vectors; use a zero
-            # vector as a placeholder. Embeddings can be backfilled later by
-            # an offline reembedding job.
-            entry["embedding"] = [0.0] * 768
+        # Never insert an active Model with a zero embedding. If the LLM did
+        # not provide one, use a deterministic lexical fallback so semantic
+        # retrieval/reconciliation/topology have a usable anchor until a
+        # production embedding backfill refreshes it.
+        if "embedding" not in entry or is_zero_embedding(entry.get("embedding")):
+            entry["embedding"] = deterministic_text_embedding(
+                str(entry.get("natural") or entry.get("proposition") or "")
+            )
         proposed = ModelCreate.model_validate(entry)
         row = await models_repo.insert(
             proposed,
@@ -559,6 +648,68 @@ async def _apply_claim_op(
             "state_changes": 0,
         }
     raise ValidationError(f"unknown claim_op: {op.op!r}")
+
+
+async def _apply_edge_op(
+    op: EdgeOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any]:
+    from services.models.edges_repo import EdgesRepo
+
+    repo = EdgesRepo()
+    if op.op == "add":
+        ids = await repo.link(
+            conn,
+            source=op.source_model_id,
+            target=op.target_model_id,
+            kind=op.edge_kind,
+            tenant_id=tenant_id,
+            detected_by=op.detected_by or "think_edge_op",
+            weight=op.weight,
+            metadata=op.metadata,
+            created_by_event_id=cause_event_id,
+            confidence=op.confidence,
+            evidence_event_ids=op.evidence_event_ids,
+            evidence_model_ids=op.evidence_model_ids,
+            explanation=op.explanation,
+            review_status=op.review_status,
+            decay_after=op.decay_after,
+            expires_at=op.expires_at,
+        )
+        return {
+            "summary": {
+                "op": "add",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "edge_ids": [str(edge_id) for edge_id in ids],
+                "review_status": op.review_status,
+            },
+            "state_changes": 0,
+        }
+    if op.op == "retire":
+        count = await repo.retire(
+            conn,
+            source=op.source_model_id,
+            target=op.target_model_id,
+            kind=op.edge_kind,
+            tenant_id=tenant_id,
+            reason=op.reason or "edge_op_retire",
+        )
+        return {
+            "summary": {
+                "op": "retire",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "retired_edges": count,
+            },
+            "state_changes": 0,
+        }
+    raise ValidationError(f"unknown edge_op: {op.op!r}")
 
 
 async def _apply_act_op(

@@ -1,0 +1,325 @@
+scenario_id: fintech_risk
+scenario_name: "Fintech risk and compliance SaaS corpus"
+description: |
+  A synthetic fintech infrastructure company serving card processors, credit
+  unions, payroll platforms, remittance apps, marketplaces, and brokerages.
+  This corpus stresses payment incidents, KYC drift, fraud rings, regulatory
+  exams, ledger reconciliation, partner API failures, and forecast truth.
+
+foundation:
+  actors:
+    - {name: "Leah Moreno", role: "ceo", slack: "slack:U06LEAH", email_alias: "email:leah@aurapay.test", kind: "human_internal"}
+    - {name: "Darius Cole", role: "cto", slack: "slack:U06DARIUS", github: "github:dcole", kind: "human_internal"}
+    - {name: "Iris Zhang", role: "chief_risk_officer", slack: "slack:U06IRIS", email_alias: "email:iris@aurapay.test", kind: "human_internal"}
+    - {name: "Nolan Price", role: "vp_sales", slack: "slack:U06NOLAN", email_alias: "email:nolan@aurapay.test", kind: "human_internal"}
+    - {name: "Amara Okafor", role: "head_of_product", slack: "slack:U06AMARA", github: "github:aokafor", kind: "human_internal"}
+    - {name: "Vikram Mehta", role: "payments_lead", slack: "slack:U06VIKRAM", github: "github:vmehta", kind: "human_internal"}
+    - {name: "Cass Lee", role: "ledger_engineer", slack: "slack:U06CASS", github: "github:clee", kind: "human_internal"}
+    - {name: "Bianca Rossi", role: "compliance_lead", slack: "slack:U06BIANCA", email_alias: "email:bianca@aurapay.test", kind: "human_internal"}
+    - {name: "Mateo Silva", role: "fraud_science_lead", slack: "slack:U06MATEO", github: "github:msilva", kind: "human_internal"}
+    - {name: "Quinn Hart", role: "sre_lead", slack: "slack:U06QUINN", github: "github:qhart", kind: "human_internal"}
+    - {name: "June Park", role: "customer_success", slack: "slack:U06JUNE", email_alias: "email:june@aurapay.test", kind: "human_internal"}
+    - {name: "Sasha Patel", role: "legal_counsel", slack: "slack:U06SASHA", email_alias: "email:sasha@aurapay.test", kind: "human_internal"}
+    - {name: "Mina Cho", role: "revops", slack: "slack:U06MINA", email_alias: "email:mina@aurapay.test", kind: "human_internal"}
+    - {name: "Jon Bell", role: "partner_engineer", slack: "slack:U06JON", github: "github:jbell", kind: "human_internal"}
+
+  customers:
+    - {name: "Atlas Card Services", arr_usd: 2600000, health: "at_risk", contract_start_days_ago: 700, description: "Enterprise card processor using AuralPay for dispute memory, ledger reconciliation, and network incident detection."}
+    - {name: "BlueRiver Credit Union", arr_usd: 1300000, health: "stable", contract_start_days_ago: 530, description: "Credit union under regulatory exam for KYC/AML controls."}
+    - {name: "CrownPay", arr_usd: 900000, health: "healthy", contract_start_days_ago: 310, description: "Payments app using fraud-ring graphing and chargeback prediction."}
+    - {name: "DeltaRemit", arr_usd: 780000, health: "at_risk", contract_start_days_ago: 260, description: "Remittance platform with partner API latency and regulator concerns."}
+    - {name: "Ember Marketplaces Inc", arr_usd: 1150000, health: "stable", contract_start_days_ago: 410, description: "Marketplace needing seller-risk and payout-exception memory."}
+    - {name: "Northline Brokerage", arr_usd: 640000, health: "trial", contract_start_days_ago: 45, description: "Brokerage trial blocked by auditability and data residency concerns."}
+    - {name: "Orbit Payroll LLC", arr_usd: 520000, health: "healthy", contract_start_days_ago: 180, description: "Payroll customer expanding if ledger reconciliation is explainable."}
+
+  goals:
+    - {title: "Protect regulated fintech renewals", altitude: "strategic", target_days_from_start: 75, success_criteria: {criteria: "Atlas and BlueRiver risk is explained with evidence before renewal or exam deadlines."}}
+    - {title: "Make ledger and fraud memory auditable", altitude: "strategic", target_days_from_start: 70, success_criteria: {criteria: "Every high-risk ledger/fraud recommendation cites source transactions, models, and contestations."}}
+    - {title: "Reduce payment incident detection below three minutes", altitude: "operational", target_days_from_start: 40, success_criteria: {criteria: "p95 network incident to customer-risk action below three minutes."}}
+    - {title: "Improve KYC model drift handling", altitude: "operational", target_days_from_start: 45, success_criteria: {criteria: "KYC drift is separated from customer policy changes and source-feed delays."}}
+    - {title: "Stabilize partner API and replay dedupe", altitude: "tactical", target_days_from_start: 30, success_criteria: {criteria: "Partner API replays do not create duplicate ledger or fraud evidence."}}
+    - {title: "Build fintech board-risk narrative", altitude: "strategic", target_days_from_start: 25, success_criteria: {criteria: "Board narrative ties ARR exposure to ledger, fraud, compliance, and partner failures."}}
+
+  commitments:
+    - {title: "Resolve Atlas card-network incident memory", owner: "Vikram Mehta", state: "active", due_days_from_start: 5, priority: 1, contributes_to_goal: "Protect regulated fintech renewals"}
+    - {title: "Ship Atlas ledger reconciliation evidence", owner: "Cass Lee", state: "active", due_days_from_start: 12, priority: 1, contributes_to_goal: "Make ledger and fraud memory auditable"}
+    - {title: "Prepare BlueRiver regulatory exam packet", owner: "Bianca Rossi", state: "active", due_days_from_start: 18, priority: 1, contributes_to_goal: "Protect regulated fintech renewals"}
+    - {title: "Correct BlueRiver KYC drift classifier", owner: "Mateo Silva", state: "active", due_days_from_start: 14, priority: 2, contributes_to_goal: "Improve KYC model drift handling"}
+    - {title: "Backfill fintech customer aliases", owner: "June Park", state: "active", due_days_from_start: 8, priority: 2, contributes_to_goal: "Protect regulated fintech renewals"}
+    - {title: "Harden partner replay dedupe", owner: "Jon Bell", state: "active", due_days_from_start: 10, priority: 2, contributes_to_goal: "Stabilize partner API and replay dedupe"}
+    - {title: "Stabilize DeltaRemit partner API latency", owner: "Quinn Hart", state: "active", due_days_from_start: 9, priority: 1, contributes_to_goal: "Reduce payment incident detection below three minutes"}
+    - {title: "Create CrownPay fraud-ring explanation export", owner: "Amara Okafor", state: "active", due_days_from_start: 20, priority: 2, contributes_to_goal: "Make ledger and fraud memory auditable"}
+    - {title: "Resolve Ember payout exception merge", owner: "Cass Lee", state: "active", due_days_from_start: 13, priority: 3, contributes_to_goal: "Stabilize partner API and replay dedupe"}
+    - {title: "Draft Northline data residency addendum", owner: "Sasha Patel", state: "active", due_days_from_start: 17, priority: 3, contributes_to_goal: "Protect regulated fintech renewals"}
+    - {title: "Prepare Orbit ledger expansion review", owner: "June Park", state: "active", due_days_from_start: 16, priority: 3, contributes_to_goal: "Make ledger and fraud memory auditable"}
+    - {title: "Publish fintech board-risk narrative", owner: "Mina Cho", state: "active", due_days_from_start: 6, priority: 2, contributes_to_goal: "Build fintech board-risk narrative"}
+    - {title: "Cut incident-to-risk p95 below three minutes", owner: "Quinn Hart", state: "active", due_days_from_start: 21, priority: 2, contributes_to_goal: "Reduce payment incident detection below three minutes"}
+    - {title: "Red-team fraud and ledger retrieval", owner: "Mateo Silva", state: "active", due_days_from_start: 19, priority: 2, contributes_to_goal: ["Make ledger and fraud memory auditable", "Improve KYC model drift handling"]}
+
+  decisions:
+    - title: "Prioritize regulated-account memory over self-serve growth"
+      decision_text: "Engineering capacity favors regulated customer memory, ledger evidence, and compliance proof over self-serve funnel work."
+      state: "active"
+      scope: {area: "strategy"}
+      revisit_triggers: {triggers: ["regulated renewal miss", "exam packet failure", "ledger evidence cannot explain high-risk action"]}
+    - title: "Ledger evidence is first-class memory"
+      decision_text: "Ledger rows, replay exclusions, and reconciliation evidence should anchor retrieval and Think, not live only in finance reports."
+      state: "active"
+      scope: {area: "memory"}
+    - title: "KYC drift requires human-readable source boundaries"
+      decision_text: "KYC model changes must distinguish source feed drift, policy change, and model false positive behavior."
+      state: "active"
+      scope: {area: "risk"}
+    - title: "Pause marketplace self-serve connectors"
+      decision_text: "Marketplace connectors stay paused until replay dedupe and payout exception merges are trustworthy."
+      state: "active"
+      scope: {area: "platform"}
+    - title: "Fraud insights must expose falsifiers"
+      decision_text: "Fraud-ring recommendations should say what evidence would make the insight wrong."
+      state: "active"
+      scope: {area: "product"}
+
+  customer_commitments:
+    - {customer: "Atlas Card Services", commitment: "Resolve Atlas card-network incident memory", relationship_kind: "delivers", revenue_at_risk_usd: 2600000, criticality: "must_have"}
+    - {customer: "Atlas Card Services", commitment: "Ship Atlas ledger reconciliation evidence", relationship_kind: "delivers", revenue_at_risk_usd: 2600000, criticality: "must_have"}
+    - {customer: "BlueRiver Credit Union", commitment: "Prepare BlueRiver regulatory exam packet", relationship_kind: "delivers", revenue_at_risk_usd: 1300000, criticality: "must_have"}
+    - {customer: "BlueRiver Credit Union", commitment: "Correct BlueRiver KYC drift classifier", relationship_kind: "delivers", revenue_at_risk_usd: 1300000, criticality: "high"}
+    - {customer: "DeltaRemit", commitment: "Stabilize DeltaRemit partner API latency", relationship_kind: "delivers", revenue_at_risk_usd: 780000, criticality: "high"}
+    - {customer: "CrownPay", commitment: "Create CrownPay fraud-ring explanation export", relationship_kind: "delivers", revenue_at_risk_usd: 900000, criticality: "high"}
+    - {customer: "Ember Marketplaces Inc", commitment: "Resolve Ember payout exception merge", relationship_kind: "delivers", revenue_at_risk_usd: 1150000, criticality: "medium"}
+    - {customer: "Northline Brokerage", commitment: "Draft Northline data residency addendum", relationship_kind: "delivers", revenue_at_risk_usd: 640000, criticality: "medium"}
+    - {customer: "Orbit Payroll LLC", commitment: "Prepare Orbit ledger expansion review", relationship_kind: "delivers", revenue_at_risk_usd: 520000, criticality: "medium"}
+
+signal_sequences:
+
+  atlas_network_and_ledger_incident:
+    description: "Card-network incident, Atlas alias, ledger evidence, and renewal risk."
+    signals:
+      - channel: "pagerduty:incidents"
+        actor: "Quinn Hart"
+        content: "Atlas Card Services incident opened: card-network settlement delay caused dispute memory gaps for 19 merchants. Atlas is also called ACS in support notes."
+        delay_minutes: 0
+        trust_tier: "authoritative"
+      - channel: "slack:customer-atlas"
+        actor: "June Park"
+        content: "ACS means Atlas Card Services. Keep ACS, Atlas, ledger reconciliation, network delay, and renewal risk connected."
+        delay_minutes: 9
+      - channel: "support:zendesk"
+        actor: "external:atlas.risk"
+        content: "Atlas Card Services says renewal approval depends on proving which disputes were delayed by the network incident versus internal ledger replay."
+        delay_minutes: 30
+        trust_tier: "authoritative_external"
+      - channel: "github:aurapay/ledger"
+        actor: "Cass Lee"
+        content: "Opened ledger reconciliation evidence PR for Atlas: separates network settlement delay, internal replay, and merchant dispute updates."
+        delay_minutes: 88
+        trust_tier: "authoritative"
+      - channel: "linear:PAY"
+        actor: "Vikram Mehta"
+        content: "Resolve Atlas card-network incident memory now includes settlement-delay evidence and merchant-impact timeline."
+        delay_minutes: 135
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Leah Moreno"
+        content: "Atlas is our regulated-memory proof: incident, ledger, customer risk, and ACS alias all need to converge before renewal."
+        delay_minutes: 240
+      - channel: "email:thread"
+        actor: "external:atlas.risk"
+        content: "Atlas Card Services confirms the incident is contained. Remaining blocker is ledger evidence clarity for renewal committee."
+        delay_minutes: 720
+        trust_tier: "authoritative_external"
+
+  blueriver_kyc_drift_exam:
+    description: "KYC drift, credit union alias, and regulatory exam pressure."
+    signals:
+      - channel: "email:thread"
+        actor: "external:blueriver.compliance"
+        content: "BlueRiver Credit Union exam team found KYC false positives rose after the sanctions-list feed changed. They abbreviate the account as BRCU."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:risk"
+        actor: "Iris Zhang"
+        content: "BRCU is BlueRiver Credit Union. The important split is source feed drift versus model drift versus policy change."
+        delay_minutes: 14
+      - channel: "slack:fraud"
+        actor: "Mateo Silva"
+        content: "BlueRiver KYC drift classifier overreacted to new sanctions-list aliases. Customer policy did not change."
+        delay_minutes: 55
+      - channel: "linear:RISK"
+        actor: "Bianca Rossi"
+        content: "Prepare BlueRiver regulatory exam packet now includes sanctions-feed timeline, model drift evidence, and human override samples."
+        delay_minutes: 110
+        trust_tier: "authoritative"
+      - channel: "github:aurapay/risk"
+        actor: "Mateo Silva"
+        content: "Added drift decomposition report: source feed, policy config, and model score distribution for BRCU."
+        delay_minutes: 200
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Iris Zhang"
+        content: "BlueRiver is where KYC drift source boundaries either become credible or fail the exam."
+        delay_minutes: 360
+
+  crownpay_fraud_ring:
+    description: "Fraud-ring graph, falsifiers, and explanation pressure."
+    signals:
+      - channel: "support:zendesk"
+        actor: "external:crownpay.risk"
+        content: "CrownPay says the fraud-ring graph caught linked sellers, but one cluster looks like a false positive caused by a shared shipping warehouse."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:fraud"
+        actor: "Mateo Silva"
+        content: "CrownPay needs fraud insights with falsifiers. Shared warehouse is a plausible non-fraud explanation."
+        delay_minutes: 35
+      - channel: "github:aurapay/fraud"
+        actor: "Mateo Silva"
+        content: "Added fraud-ring falsifier payload: shared warehouse, common payment facilitator, and low chargeback rate reduce confidence."
+        delay_minutes: 115
+        trust_tier: "authoritative"
+      - channel: "linear:PROD"
+        actor: "Amara Okafor"
+        content: "Create CrownPay fraud-ring explanation export now includes supporting evidence and disconfirming evidence."
+        delay_minutes: 180
+        trust_tier: "authoritative"
+      - channel: "slack:customer-crownpay"
+        actor: "external:crownpay.risk"
+        content: "CrownPay says falsifier language makes the graph actionable because risk teams can challenge it."
+        delay_minutes: 540
+        trust_tier: "authoritative_external"
+      - channel: "slack:exec"
+        actor: "Leah Moreno"
+        content: "Fraud insights must be humble. A confident wrong graph is worse than no graph."
+        delay_minutes: 700
+
+  deltaremit_partner_latency:
+    description: "Partner API latency and replay dedupe under remittance pressure."
+    signals:
+      - channel: "datadog:alerts"
+        actor: "external:datadog"
+        content: "DeltaRemit partner API p95 hit 14 minutes. Incident-to-risk p95 breached target for remittance corridor BR-MX."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:payments"
+        actor: "Jon Bell"
+        content: "DeltaRemit latency is partner API plus replay duplicates. Stabilize DeltaRemit partner API latency and Harden partner replay dedupe are connected."
+        delay_minutes: 22
+      - channel: "support:zendesk"
+        actor: "external:deltaremit.ops"
+        content: "DeltaRemit says customers saw duplicate remittance status updates. They need proof duplicates are replays, not fresh failures."
+        delay_minutes: 70
+        trust_tier: "authoritative_external"
+      - channel: "github:aurapay/partners"
+        actor: "Jon Bell"
+        content: "Replay dedupe PR keys partner status updates by partner_event_id plus original settlement timestamp."
+        delay_minutes: 140
+        trust_tier: "authoritative"
+      - channel: "linear:SRE"
+        actor: "Quinn Hart"
+        content: "Stabilize DeltaRemit partner API latency now tracks corridor-specific p95 and replay exclusion counts."
+        delay_minutes: 220
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Darius Cole"
+        content: "DeltaRemit shows why replay dedupe is a customer-memory issue, not just integration plumbing."
+        delay_minutes: 360
+
+  ember_payout_exception_merge:
+    description: "Marketplace payout exceptions, duplicate identities, and self-serve connector pause."
+    signals:
+      - channel: "salesforce:accounts"
+        actor: "Mina Cho"
+        content: "Ember Marketplaces Inc has duplicate customer records: Ember, Ember Marketplaces, and Ember Mkt. Payout exceptions are split across all three."
+        delay_minutes: 0
+        trust_tier: "authoritative"
+      - channel: "slack:revops"
+        actor: "Mina Cho"
+        content: "If Ember payout exceptions stay split, renewal and partner API risk will look artificially low."
+        delay_minutes: 24
+      - channel: "linear:LEDGER"
+        actor: "Cass Lee"
+        content: "Resolve Ember payout exception merge now uses canonical account id plus source aliases from Salesforce and support."
+        delay_minutes: 95
+        trust_tier: "authoritative"
+      - channel: "slack:product"
+        actor: "Amara Okafor"
+        content: "Pause marketplace self-serve connectors still makes sense until Ember-style payout exception merges stop creating duplicate memory."
+        delay_minutes: 180
+      - channel: "email:thread"
+        actor: "external:ember.finance"
+        content: "Ember Marketplaces Inc will continue expansion review after payout exceptions are explainable by seller and settlement batch."
+        delay_minutes: 450
+        trust_tier: "authoritative_external"
+      - channel: "slack:exec"
+        actor: "Nolan Price"
+        content: "Ember is not currently churn risk, but it is connector-readiness evidence."
+        delay_minutes: 600
+
+  northline_and_orbit_auditability:
+    description: "Data residency and ledger expansion issues that should stay distinct."
+    signals:
+      - channel: "email:thread"
+        actor: "external:northline.legal"
+        content: "Northline Brokerage trial requires EU data residency and proof fraud insights do not include other customers' seller patterns."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "email:thread"
+        actor: "external:orbit.finance"
+        content: "Orbit Payroll LLC wants ledger expansion if reconciliation can show source payroll file, replay exclusion, and payout status."
+        delay_minutes: 20
+        trust_tier: "authoritative_external"
+      - channel: "slack:legal"
+        actor: "Sasha Patel"
+        content: "Northline data residency is legal/security. Orbit ledger expansion is evidence clarity. Do not merge these into generic auditability."
+        delay_minutes: 65
+      - channel: "linear:LEGAL"
+        actor: "Sasha Patel"
+        content: "Draft Northline data residency addendum is 60 percent done; blocked on cross-tenant fraud insight wording."
+        delay_minutes: 140
+        trust_tier: "authoritative"
+      - channel: "linear:CS"
+        actor: "June Park"
+        content: "Prepare Orbit ledger expansion review now includes payroll-file source, replay exclusion, payout status, and finance signoff."
+        delay_minutes: 190
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Iris Zhang"
+        content: "Northline and Orbit are both auditability, but their evidence shapes differ. Retrieval should keep them distinct."
+        delay_minutes: 380
+
+  fintech_board_noise:
+    description: "Board-pressure and low-signal notes that should be reconciled against authoritative risk."
+    signals:
+      - channel: "slack:random"
+        actor: "Nolan Price"
+        content: "Noisy, ambiguous Atlas thing probably okay now? This contradicts the authoritative renewal evidence and should not erase ledger risk."
+        delay_minutes: 0
+        trust_tier: "inferential"
+      - channel: "slack:customer-atlas"
+        actor: "June Park"
+        content: "Clarifying Atlas: incident is contained, but ledger evidence remains the renewal blocker."
+        delay_minutes: 12
+      - channel: "slack:exec"
+        actor: "Mina Cho"
+        content: "Fintech board-risk narrative: Atlas is ledger evidence, BlueRiver is KYC exam, DeltaRemit is partner latency, CrownPay is fraud falsifiers."
+        delay_minutes: 60
+      - channel: "slack:exec"
+        actor: "Darius Cole"
+        content: "Capacity truth: payments, ledger, fraud, and compliance all need the same senior engineers this week."
+        delay_minutes: 90
+      - channel: "linear:FIN"
+        actor: "Mina Cho"
+        content: "Publish fintech board-risk narrative draft groups risks by customer and evidence type, not by team status."
+        delay_minutes: 150
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Leah Moreno"
+        content: "Our moat is memory that explains regulated risk before a customer or examiner asks the second question."
+        delay_minutes: 300
+
+expected_behaviors:
+  - "ACS resolves to Atlas Card Services when the signal defines the alias."
+  - "BRCU resolves to BlueRiver Credit Union and keeps KYC source-feed drift distinct from policy change."
+  - "CrownPay fraud-ring retrieval includes falsifiers, not just supporting evidence."
+  - "DeltaRemit retrieval connects partner API latency, replay dedupe, and remittance customer impact."
+  - "Northline and Orbit auditability signals stay distinct despite shared compliance vocabulary."

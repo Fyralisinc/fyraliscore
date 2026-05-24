@@ -117,6 +117,63 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
     assert n == 2
 
 
+async def test_poll_does_not_overlease_when_in_flight_is_full(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Repeated polls should not lock unbounded rows while tasks wait."""
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    for _ in range(5):
+        await _enqueue_trigger_row(fresh_db, tenant, obs)
+    worker_id = "overlease-test-worker"
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=3, worker_id=worker_id),
+    )
+    release = asyncio.Event()
+    dispatched: list[UUID] = []
+
+    async def blocked_dispatch(row):
+        dispatched.append(row["id"])
+        await release.wait()
+
+    worker._dispatch_trigger = blocked_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    for _ in range(50):
+        if len(dispatched) == 3:
+            break
+        await asyncio.sleep(0.01)
+
+    await worker._poll_and_dispatch()
+
+    async with fresh_db.acquire() as conn:
+        locked = await conn.fetchval(
+            """
+            SELECT COUNT(*)::int
+            FROM think_trigger_queue
+            WHERE locked_by = $1
+            """,
+            worker_id,
+        )
+
+    release.set()
+    if worker._in_flight:
+        await asyncio.gather(*worker._in_flight, return_exceptions=True)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = NULL, locked_at = NULL
+            WHERE locked_by = $1
+            """,
+            worker_id,
+        )
+
+    assert len(dispatched) == 3
+    assert locked == 3
+
+
 async def test_two_workers_pick_different_rows(fresh_db, tenant, tenant_cleanup):
     """FOR UPDATE SKIP LOCKED ensures the two pollers don't grab the
     same row."""

@@ -64,12 +64,11 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
     result = await primary_retrieve(trigger, tx_conn, models_repo=repo)
 
     assert isinstance(result, RetrievalResult)
-    # T1 runs A + B + C (S3: also F whenever it can produce a seed,
-    # but the test bundle has no topology so F skips with 'empty_seed'
-    # and still returns a PathwayResult — included in pathways_run).
+    # T1 runs A + B + C plus the topology/model-edge expansions when
+    # they have enough seed context.
     run = set(result.notes["pathways_run"])
     assert {"A", "B", "C"}.issubset(run)
-    assert run.issubset({"A", "B", "C", "F"})
+    assert run.issubset({"A", "B", "C", "F", "G"})
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
@@ -92,10 +91,7 @@ async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    # T2: A + B + D in the original spec, plus F (S3); F may
-    # short-circuit when no topology seed resolves but is still
-    # recorded in pathways_run.
-    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "F"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "F", "G"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
@@ -111,8 +107,7 @@ async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
     )
     result = await primary_retrieve(trigger, tx_conn)
     assert "A" in result.notes["pathways_run"]
-    # Weights differ from T1: T3's A is heavier (0.4 vs 0.35 in S3).
-    assert result.notes["weights"]["A"] == 0.4
+    assert result.notes["weights"]["G"] == 0.20
 
 
 async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
@@ -124,8 +119,7 @@ async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
         seed_signature={"regex": "^hotfix"},
     )
     result = await primary_retrieve(trigger, tx_conn)
-    # T4: D + A, plus F (S3) — F often skips on empty seed.
-    assert set(result.notes["pathways_run"]).issubset({"A", "D", "F"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "D", "F", "G"})
 
 
 # =====================================================================
@@ -269,6 +263,38 @@ async def test_primary_threads_event_scope_into_semantic_pathway(
     assert pr_b.models
     for m in pr_b.models:
         assert seed in m.scope_entities
+
+
+async def test_t1_backfills_scope_from_triggering_observation(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    obs_id = fs.observation_ids[0]
+    customer_seed = {"type": "customer_resource", "id": str(fs.hero_customer_id)}
+    await tx_conn.execute(
+        """
+        UPDATE observations
+        SET entities_mentioned = $1::jsonb
+        WHERE id = $2 AND tenant_id = $3
+        """,
+        '[{"type":"customer","id":"%s"}]' % fs.hero_customer_id,
+        obs_id,
+        tenant,
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=obs_id,
+        seed_natural_text="customer-0 renewal risk",
+        seed_occurred_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding("customer-0 renewal risk"),
+    )
+
+    result = await primary_retrieve(trigger, tx_conn)
+
+    assert customer_seed in trigger.seed_entity_ids
+    assert result.notes["effective_scope"]["seed_entities"] >= 1
+    assert any(r.id == fs.hero_customer_id for r in result.resources)
 
 
 async def test_primary_t2_uses_due_model_scope_text_and_embedding_without_embedder(

@@ -16,7 +16,7 @@ async def test_list_companies_is_public(client: httpx.AsyncClient):
     assert resp.status_code == 200
     body = resp.json()
     company_ids = {c["company_id"] for c in body["items"]}
-    assert company_ids == {"truss", "northwind", "meridian"}
+    assert company_ids == {"truss", "northwind", "meridian", "pelago"}
     for item in body["items"]:
         assert item["name"]
         assert item["description"]

@@ -381,7 +381,8 @@ async def test_snapshot_health_enum_for_each_case(
     )
 
     resp = await client.get(
-        "/map/snapshot?include_archived=true", headers=_auth(token),
+        "/map/snapshot?include_archived=true&lens=commitment",
+        headers=_auth(token),
     )
     assert resp.status_code == 200, resp.text
     by_id = {n["id"]: n for n in resp.json()["nodes"]}

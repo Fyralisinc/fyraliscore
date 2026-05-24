@@ -77,8 +77,13 @@ async def close_pool() -> None:
     global _pool
     if _pool is None:
         return
-    await _pool.close()
+    pool = _pool
     _pool = None
+    try:
+        await pool.close()
+    except RuntimeError as exc:
+        if "Event loop is closed" not in str(exc):
+            raise
 
 
 def get_pool() -> asyncpg.Pool:

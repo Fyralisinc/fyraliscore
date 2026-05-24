@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import pathlib
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -52,6 +53,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401
 
 from lib.shared.ids import uuid7
 from services.models.repo import ModelsRepo
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------
@@ -87,6 +90,10 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     if not dsn:
         pytest.skip("DATABASE_URL not set; skipping integration test.")
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
+    async with pool.acquire() as conn:
+        from lib.shared.migrations import apply_migrations_dir
+
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:
@@ -299,6 +306,20 @@ def every_kind_proposition() -> list[dict]:
             "signature": "regulation:ai-act",
             "direction": "tightening",
             "strength": "moderate",
+        },
+        {
+            "kind": "situation",
+            "situation": "Beacon renewal risk is becoming cross-functional",
+            "summary": (
+                "Implementation delay, owner ambiguity, and pricing mismatch "
+                "are jointly raising Beacon renewal risk."
+            ),
+            "member_model_ids": [str(uuid7()), str(uuid7())],
+            "relationship_summary": (
+                "The member claims reinforce one operational condition rather "
+                "than isolated facts."
+            ),
+            "status": "forming",
         },
     ]
 

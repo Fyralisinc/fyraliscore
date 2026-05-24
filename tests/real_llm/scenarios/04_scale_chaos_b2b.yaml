@@ -1,0 +1,972 @@
+scenario_id: scale_chaos_b2b
+scenario_name: "Scale-chaos B2B SaaS customer corpus"
+description: |
+  A synthetic but production-shaped corpus for a mid-market B2B SaaS company
+  called Fyralis. It is designed to stress the memory and retrieval system as
+  customer data grows: more actors, more customers, more commitments, more
+  aliases, more cross-functional drift, and more contradictions.
+
+  Test focus: customer-context retrieval at volume, hidden relationship
+  discovery, alias drift, revenue-at-risk reasoning, cross-functional causal
+  chains, noisy but important signals, stale decisions, and multi-week chaos.
+
+foundation:
+  actors:
+    - {name: "Maya Chen", role: "ceo", slack: "slack:U04MAYA", email_alias: "email:maya@fyralis.test", kind: "human_internal"}
+    - {name: "Ravi Patel", role: "cto", slack: "slack:U04RAVI", github: "github:rpatel", email_alias: "email:ravi@fyralis.test", kind: "human_internal"}
+    - {name: "Elena Park", role: "vp_sales", slack: "slack:U04ELENA", email_alias: "email:elena@fyralis.test", kind: "human_internal"}
+    - {name: "Jonah Brooks", role: "vp_customer_success", slack: "slack:U04JONAH", email_alias: "email:jonah@fyralis.test", kind: "human_internal"}
+    - {name: "Priya Iyer", role: "head_of_product", slack: "slack:U04PRIYA", github: "github:piyer", email_alias: "email:priya@fyralis.test", kind: "human_internal"}
+    - {name: "Sam Ortiz", role: "product_manager", slack: "slack:U04SAM", linear: "linear:sam.ortiz", kind: "human_internal"}
+    - {name: "Amina Diallo", role: "platform_engineering_manager", slack: "slack:U04AMINA", github: "github:adiallo", kind: "human_internal"}
+    - {name: "Luca Romano", role: "platform_tech_lead", slack: "slack:U04LUCA", github: "github:lromano", kind: "human_internal"}
+    - {name: "Zoe Kim", role: "data_infra_lead", slack: "slack:U04ZOE", github: "github:zkim", kind: "human_internal"}
+    - {name: "Marcus Reed", role: "sre_lead", slack: "slack:U04MARCUS", github: "github:mreed", kind: "human_internal"}
+    - {name: "Nia Shah", role: "security_lead", slack: "slack:U04NIA", email_alias: "email:nia@fyralis.test", kind: "human_internal"}
+    - {name: "Talia Morgan", role: "support_lead", slack: "slack:U04TALIA", email_alias: "email:talia@fyralis.test", kind: "human_internal"}
+    - {name: "Chris Ford", role: "account_executive", slack: "slack:U04CHRIS", email_alias: "email:chris@fyralis.test", kind: "human_internal"}
+    - {name: "Grace Liu", role: "solutions_engineer", slack: "slack:U04GRACE", github: "github:gliu", kind: "human_internal"}
+    - {name: "Omar Haddad", role: "finance_lead", slack: "slack:U04OMAR", email_alias: "email:omar@fyralis.test", kind: "human_internal"}
+    - {name: "Lena Fischer", role: "revops_manager", slack: "slack:U04LENA", email_alias: "email:lena@fyralis.test", kind: "human_internal"}
+    - {name: "Victor Stein", role: "legal_counsel", slack: "slack:U04VICTOR", email_alias: "email:victor@fyralis.test", kind: "human_internal"}
+    - {name: "Anika Rao", role: "data_scientist", slack: "slack:U04ANIKA", github: "github:arao", kind: "human_internal"}
+    - {name: "Ben Wallace", role: "implementation_lead", slack: "slack:U04BEN", linear: "linear:ben.wallace", kind: "human_internal"}
+    - {name: "Sofia Alvarez", role: "marketing_lead", slack: "slack:U04SOFIA", email_alias: "email:sofia@fyralis.test", kind: "human_internal"}
+    - {name: "Mei Tan", role: "qa_lead", slack: "slack:U04MEI", github: "github:mtan", kind: "human_internal"}
+    - {name: "Noah Singh", role: "billing_engineer", slack: "slack:U04NOAH", github: "github:nsingh", kind: "human_internal"}
+
+  customers:
+    - {name: "Nimbus Bank", arr_usd: 2400000, health: "at_risk", contract_start_days_ago: 710, description: "Regulated banking customer using Fyralis for executive memory, audit exports, and renewal-risk forecasting."}
+    - {name: "Harbor Health Network", arr_usd: 1100000, health: "stable", contract_start_days_ago: 420, description: "Healthcare network piloting clinical workflow memory across operations and finance."}
+    - {name: "Summit Retail Group", arr_usd: 850000, health: "healthy", contract_start_days_ago: 260, description: "Retail customer in the Insights Graph beta with many cross-functional users."}
+    - {name: "Axion Robotics Inc", arr_usd: 600000, health: "at_risk", contract_start_days_ago: 190, description: "Robotics customer with duplicate CRM records and noisy support history."}
+    - {name: "Meridian Energy Corp", arr_usd: 1800000, health: "stable", contract_start_days_ago: 540, description: "Energy customer negotiating a data-residency expansion."}
+    - {name: "Clearpath Logistics LLC", arr_usd: 420000, health: "healthy", contract_start_days_ago: 160, description: "Logistics customer asking for ROI reporting before expanding."}
+    - {name: "Evergreen University", arr_usd: 300000, health: "stable", contract_start_days_ago: 360, description: "University customer with slow-moving security and procurement cycles."}
+    - {name: "Northstar Insurance", arr_usd: 950000, health: "at_risk", contract_start_days_ago: 610, description: "Insurance customer approaching renewal while adoption is uneven."}
+    - {name: "ParcelPilot", arr_usd: 120000, health: "trial", contract_start_days_ago: 24, description: "High-growth trial account blocked by billing and usage-ledger trust issues."}
+    - {name: "Kestrel Labs", arr_usd: 700000, health: "healthy", contract_start_days_ago: 95, description: "Strategic AI lab trial with a high bar for explanation quality."}
+
+  goals:
+    - {title: "Protect enterprise renewals through audit-grade reliability", altitude: "strategic", target_days_from_start: 75, success_criteria: {criteria: "No preventable churn from Nimbus Bank, Northstar Insurance, or Meridian Energy Corp."}}
+    - {title: "Launch Insights Graph GA", altitude: "strategic", target_days_from_start: 90, success_criteria: {criteria: "GA only after beta customers trust hidden-connection retrieval and explanation quality."}}
+    - {title: "Reduce ingestion-to-insight latency below five minutes", altitude: "operational", target_days_from_start: 45, success_criteria: {criteria: "p95 observation-to-action latency below 5 minutes under burst load."}}
+    - {title: "Raise retrieval precision and recall for customer context", altitude: "operational", target_days_from_start: 45, success_criteria: {criteria: "Customer-risk retrieval includes the right customer, commitment, decision, and recent contradictory signal."}}
+    - {title: "Complete regulated-enterprise security package", altitude: "operational", target_days_from_start: 60, success_criteria: {criteria: "SOC2 evidence export, data-residency addendum, and audit explanation template accepted by regulated prospects."}}
+    - {title: "Improve onboarding time to value", altitude: "tactical", target_days_from_start: 35, success_criteria: {criteria: "New customers reach a meaningful executive-memory review in under 14 days."}}
+    - {title: "Stabilize billing and usage ledger", altitude: "tactical", target_days_from_start: 30, success_criteria: {criteria: "No active trial or expansion blocked by usage-ledger disputes."}}
+    - {title: "Build executive forecast confidence", altitude: "strategic", target_days_from_start: 40, success_criteria: {criteria: "Board forecast narrative matches pipeline, renewal risk, and product delivery truth."}}
+
+  commitments:
+    - {title: "Finish Nimbus audit export rollout", owner: "Sam Ortiz", state: "active", due_days_from_start: 14, priority: 1, contributes_to_goal: "Protect enterprise renewals through audit-grade reliability"}
+    - {title: "Stabilize Nimbus SAML incident response", owner: "Luca Romano", state: "active", due_days_from_start: 7, priority: 1, contributes_to_goal: "Protect enterprise renewals through audit-grade reliability"}
+    - {title: "Deliver Harbor clinical workflow mapping", owner: "Ben Wallace", state: "active", due_days_from_start: 21, priority: 3, contributes_to_goal: "Improve onboarding time to value"}
+    - {title: "Ship Insights Graph beta for Summit", owner: "Priya Iyer", state: "active", due_days_from_start: 28, priority: 2, contributes_to_goal: "Launch Insights Graph GA"}
+    - {title: "Resolve Axion duplicate customer merge", owner: "Zoe Kim", state: "active", due_days_from_start: 10, priority: 1, contributes_to_goal: "Raise retrieval precision and recall for customer context"}
+    - {title: "Complete SOC2 evidence export pack", owner: "Nia Shah", state: "active", due_days_from_start: 30, priority: 2, contributes_to_goal: "Complete regulated-enterprise security package"}
+    - {title: "Cut ingestion latency p95 to five minutes", owner: "Marcus Reed", state: "active", due_days_from_start: 21, priority: 2, contributes_to_goal: "Reduce ingestion-to-insight latency below five minutes"}
+    - {title: "Backfill customer alias dictionary", owner: "Talia Morgan", state: "active", due_days_from_start: 12, priority: 2, contributes_to_goal: "Raise retrieval precision and recall for customer context"}
+    - {title: "Build ledger reconciliation view", owner: "Noah Singh", state: "active", due_days_from_start: 18, priority: 2, contributes_to_goal: "Stabilize billing and usage ledger"}
+    - {title: "Reprice Meridian expansion proposal", owner: "Elena Park", state: "active", due_days_from_start: 9, priority: 2, contributes_to_goal: "Build executive forecast confidence"}
+    - {title: "Prepare Northstar renewal risk review", owner: "Jonah Brooks", state: "active", due_days_from_start: 5, priority: 1, contributes_to_goal: "Protect enterprise renewals through audit-grade reliability"}
+    - {title: "Launch in-app ROI report for Clearpath", owner: "Sofia Alvarez", state: "proposed", due_days_from_start: 24, priority: 4, contributes_to_goal: "Improve onboarding time to value"}
+    - {title: "Harden webhook idempotency under burst load", owner: "Ravi Patel", state: "active", due_days_from_start: 16, priority: 2, contributes_to_goal: "Reduce ingestion-to-insight latency below five minutes"}
+    - {title: "Create audit-safe model explanation template", owner: "Anika Rao", state: "active", due_days_from_start: 20, priority: 2, contributes_to_goal: ["Launch Insights Graph GA", "Complete regulated-enterprise security package"]}
+    - {title: "Finish Kestrel trial success plan", owner: "Grace Liu", state: "active", due_days_from_start: 8, priority: 2, contributes_to_goal: "Improve onboarding time to value"}
+    - {title: "Migrate support triage to severity rubric", owner: "Talia Morgan", state: "active", due_days_from_start: 15, priority: 3, contributes_to_goal: "Protect enterprise renewals through audit-grade reliability"}
+    - {title: "Publish executive forecast narrative", owner: "Omar Haddad", state: "active", due_days_from_start: 6, priority: 2, contributes_to_goal: "Build executive forecast confidence"}
+    - {title: "Run Insights Graph red-team retrieval eval", owner: "Mei Tan", state: "active", due_days_from_start: 17, priority: 2, contributes_to_goal: "Raise retrieval precision and recall for customer context"}
+    - {title: "Clear ParcelPilot billing blocker", owner: "Noah Singh", state: "blocked", due_days_from_start: 4, priority: 1, contributes_to_goal: "Stabilize billing and usage ledger"}
+    - {title: "Lock Meridian data residency addendum", owner: "Victor Stein", state: "active", due_days_from_start: 13, priority: 2, contributes_to_goal: "Complete regulated-enterprise security package"}
+    - {title: "Refresh strategic roadmap with customer evidence", owner: "Maya Chen", state: "active", due_days_from_start: 10, priority: 2, contributes_to_goal: "Build executive forecast confidence"}
+    - {title: "Instrument Think cost-performance dashboard", owner: "Anika Rao", state: "proposed", due_days_from_start: 25, priority: 4, contributes_to_goal: "Reduce ingestion-to-insight latency below five minutes"}
+    - {title: "Draft customer ontology v2 migration plan", owner: "Zoe Kim", state: "active", due_days_from_start: 22, priority: 2, contributes_to_goal: "Raise retrieval precision and recall for customer context"}
+    - {title: "Decommission stale segment sync", owner: "Lena Fischer", state: "active", due_days_from_start: 19, priority: 3, contributes_to_goal: "Raise retrieval precision and recall for customer context"}
+
+  decisions:
+    - title: "Prioritize retrieval robustness over short-term UI polish"
+      decision_text: "For the next release window, engineering capacity goes first to retrieval correctness, model memory quality, and customer-context coherence."
+      state: "active"
+      scope: {area: "company"}
+      revisit_triggers: {triggers: ["material customer miss", "retrieval precision below launch threshold", "enterprise renewal risk caused by stale context"]}
+    - title: "Make Insights Graph the operating memory spine"
+      decision_text: "Insights Graph is the core system concept: observations, models, commitments, customers, decisions, and recommendations should be connected around it."
+      state: "active"
+      scope: {area: "product"}
+    - title: "Use customer commitments as first-class retrieval anchors"
+      decision_text: "Customer commitments are retrieval anchors for revenue risk and action generation, not just CRM decoration."
+      state: "active"
+      scope: {area: "memory"}
+    - title: "Keep DeepSeek as primary real-LLM test provider"
+      decision_text: "DeepSeek remains the default real-LLM regression provider until provider-neutral test calibration is complete."
+      state: "active"
+      scope: {area: "testing"}
+    - title: "Gate GA on regulated-enterprise auditability"
+      decision_text: "GA is blocked until regulated-enterprise audit explanations are understandable, cite relevant signals, and avoid hallucinated commitments."
+      state: "active"
+      scope: {area: "release"}
+    - title: "Revisit high-cardinality model splitting"
+      decision_text: "The team will revisit whether the model layer should split customer memory, product memory, and operational memory more aggressively at scale."
+      state: "drafted"
+      scope: {area: "architecture"}
+    - title: "Pause self-serve plan until billing ledger is trustworthy"
+      decision_text: "Self-serve launch stays paused until usage ledger disputes can be reconciled from source evidence."
+      state: "active"
+      scope: {area: "gtm"}
+    - title: "Standardize severity and revenue-at-risk language"
+      decision_text: "All incident, support, sales, and success signals should use shared severity and revenue-at-risk language."
+      state: "active"
+      scope: {area: "operations"}
+
+  customer_commitments:
+    - {customer: "Nimbus Bank", commitment: "Finish Nimbus audit export rollout", relationship_kind: "delivers", revenue_at_risk_usd: 2400000, criticality: "must_have"}
+    - {customer: "Nimbus Bank", commitment: "Stabilize Nimbus SAML incident response", relationship_kind: "delivers", revenue_at_risk_usd: 2400000, criticality: "must_have"}
+    - {customer: "Harbor Health Network", commitment: "Deliver Harbor clinical workflow mapping", relationship_kind: "delivers", revenue_at_risk_usd: 1100000, criticality: "high"}
+    - {customer: "Summit Retail Group", commitment: "Ship Insights Graph beta for Summit", relationship_kind: "delivers", revenue_at_risk_usd: 850000, criticality: "high"}
+    - {customer: "Axion Robotics Inc", commitment: "Resolve Axion duplicate customer merge", relationship_kind: "delivers", revenue_at_risk_usd: 600000, criticality: "high"}
+    - {customer: "Meridian Energy Corp", commitment: "Lock Meridian data residency addendum", relationship_kind: "delivers", revenue_at_risk_usd: 1800000, criticality: "high"}
+    - {customer: "Meridian Energy Corp", commitment: "Reprice Meridian expansion proposal", relationship_kind: "impacts", revenue_at_risk_usd: 1800000, criticality: "high"}
+    - {customer: "Clearpath Logistics LLC", commitment: "Launch in-app ROI report for Clearpath", relationship_kind: "delivers", revenue_at_risk_usd: 420000, criticality: "medium"}
+    - {customer: "Northstar Insurance", commitment: "Prepare Northstar renewal risk review", relationship_kind: "delivers", revenue_at_risk_usd: 950000, criticality: "must_have"}
+    - {customer: "ParcelPilot", commitment: "Clear ParcelPilot billing blocker", relationship_kind: "delivers", revenue_at_risk_usd: 120000, criticality: "high"}
+    - {customer: "Kestrel Labs", commitment: "Finish Kestrel trial success plan", relationship_kind: "delivers", revenue_at_risk_usd: 700000, criticality: "high"}
+
+signal_sequences:
+
+  nimbus_audit_and_saml_pressure:
+    description: "High-value regulated customer pressure with account aliases, incident chatter, audit export scope, and recovery."
+    signals:
+      - channel: "support:zendesk"
+        actor: "external:nimbus.bank.cio"
+        content: |
+          Nimbus Bank escalation: SAML login failures hit the Risk Ops group again this morning. The CIO says the audit export is now tied to renewal approval and asked whether Fyralis can provide proof that the export covers all model revisions.
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+        content_dict: {ticket_id: "Z-9001", severity: "sev1", customer_alias: "NBI", revenue_at_risk_usd: 2400000}
+
+      - channel: "slack:customer-nimbus"
+        actor: "Jonah Brooks"
+        content: |
+          Nimbus Bank is not just angry about SAML. They are connecting SAML reliability, the audit export rollout, and renewal confidence. Please treat "Finish Nimbus audit export rollout" and "Stabilize Nimbus SAML incident response" as one revenue-risk story.
+        delay_minutes: 8
+        thread_of: 0
+
+      - channel: "pagerduty:incidents"
+        actor: "Marcus Reed"
+        content: |
+          Nimbus Bank SAML incident opened as SEV1. Current hypothesis is cert rotation drift between auth-edge and legacy metadata cache. Customer-facing impact started 08:42 UTC.
+        delay_minutes: 12
+        trust_tier: "authoritative"
+        entities_hint:
+          - {type: "incident", id: "PD-NIMBUS-SAML-2026-05"}
+
+      - channel: "github:fyralis/core"
+        actor: "Luca Romano"
+        content: |
+          Nimbus Bank hotfix PR opened: force auth-edge to invalidate SAML metadata cache on cert rotation. This is a minimal patch for the incident; it does not solve the audit export scope question.
+        delay_minutes: 34
+        trust_tier: "authoritative"
+        content_dict: {repo: "fyralis/core", pr: 1827, risk: "incident-hotfix"}
+
+      - channel: "slack:eng-platform"
+        actor: "Ravi Patel"
+        content: |
+          Good distinction from Luca: SAML recovery is today; audit export proof is the renewal blocker. Sam, can the Nimbus export include model revisions and source observations by Friday, or do we need to tell Jonah a narrower scope?
+        delay_minutes: 48
+        thread_of: 3
+
+      - channel: "linear:PROD"
+        actor: "Sam Ortiz"
+        content: |
+          Updating Finish Nimbus audit export rollout: scope now includes model revision history, triggering observations, and decision provenance. Risk is the explanation template, not export plumbing.
+        delay_minutes: 95
+        trust_tier: "authoritative"
+        content_dict: {issue_id: "PROD-441", state: "in_progress"}
+
+      - channel: "email:thread"
+        actor: "Nia Shah"
+        content: |
+          Nimbus Bank audit asks are compatible with the SOC2 evidence export pack if we avoid exposing private chain-of-thought. We can show sources, model revisions, confidence, and contestations.
+        delay_minutes: 210
+        trust_tier: "attested_agent"
+
+      - channel: "slack:customer-nimbus"
+        actor: "Talia Morgan"
+        content: |
+          Support update for Nimbus Bank: SAML login failures stopped after Luca's patch. Three users still report stale sessions, but that appears client-side. I am leaving SEV1 open until their CIO confirms.
+        delay_minutes: 330
+        thread_of: 0
+
+      - channel: "salesforce:renewals"
+        actor: "Elena Park"
+        content: |
+          Nimbus Bank renewal record moved from "procurement" to "technical risk". Next executive checkpoint is Monday. Renewal owner says audit export proof matters more than price.
+        delay_minutes: 420
+        trust_tier: "authoritative"
+        content_dict: {account: "Nimbus Bank", opportunity_stage: "technical_risk", renewal_date_days: 32}
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          Nimbus Bank is the right stress test for our whole premise. I want the system to connect SAML reliability, audit export proof, renewal risk, and product scope without a human stitching it manually.
+        delay_minutes: 480
+
+      - channel: "support:zendesk"
+        actor: "external:nimbus.bank.cio"
+        content: |
+          Nimbus Bank confirms SAML recovery. The remaining renewal blocker is whether the audit export can demonstrate why a model changed and which source signals caused the revision.
+        delay_minutes: 1380
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:customer-nimbus"
+        actor: "Sam Ortiz"
+        content: |
+          Nimbus Bank audit export dry run passed for model revisions and source observations. Missing piece: contested-model explanations are still too verbose for their audit team.
+        delay_minutes: 1560
+        thread_of: 10
+
+  harbor_onboarding_and_clinical_scope:
+    description: "Onboarding ambiguity for healthcare workflows that should connect product scope, implementation, and regulated-enterprise security."
+    signals:
+      - channel: "calendar:events"
+        actor: "Ben Wallace"
+        content: |
+          Harbor Health Network kickoff: clinical ops wants daily staffing risk summaries, finance wants reimbursement exposure, and the CIO wants no patient-level data in Fyralis.
+        delay_minutes: 0
+        trust_tier: "authoritative"
+        content_dict: {meeting: "Harbor kickoff", attendees: 9}
+
+      - channel: "slack:customer-harbor"
+        actor: "Grace Liu"
+        content: |
+          Harbor Health Network said "clinical workflow" but they really mean three workflows. If we model it as one onboarding commitment, retrieval will blur staffing, reimbursement, and privacy concerns.
+        delay_minutes: 30
+
+      - channel: "slack:product"
+        actor: "Priya Iyer"
+        content: |
+          For Harbor Health Network, split the work into workflow mapping and security boundary proof. The customer cares that Fyralis remembers decisions without retaining PHI.
+        delay_minutes: 75
+        thread_of: 1
+
+      - channel: "linear:IMPL"
+        actor: "Ben Wallace"
+        content: |
+          Deliver Harbor clinical workflow mapping now has three sub-maps: staffing-risk signals, reimbursement-risk signals, and privacy-boundary assumptions. Keeping one commitment but tagging sub-domains explicitly.
+        delay_minutes: 120
+        trust_tier: "authoritative"
+
+      - channel: "email:thread"
+        actor: "external:harbor.health.cio"
+        content: |
+          Harbor Health Network will not send raw patient notes. We can send de-identified operational summaries and decisions from department leads. Please confirm your memory layer will not infer patient identities.
+        delay_minutes: 260
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:security"
+        actor: "Nia Shah"
+        content: |
+          Harbor Health Network is a privacy boundary test, not just onboarding. The SOC2 evidence export pack should include a "no PHI in memory" control, or the implementation will stall.
+        delay_minutes: 330
+
+      - channel: "slack:customer-harbor"
+        actor: "Ben Wallace"
+        content: |
+          Harbor mapping v1 is useful but incomplete. We captured staffing-risk and reimbursement-risk owners. Privacy-boundary assumptions need legal signoff before customer training.
+        delay_minutes: 1440
+
+      - channel: "email:thread"
+        actor: "Victor Stein"
+        content: |
+          Legal review: Harbor Health Network can proceed if training materials say "operational memory" and avoid "clinical record". Do not describe Fyralis as storing patient context.
+        delay_minutes: 1510
+        trust_tier: "attested_agent"
+
+      - channel: "slack:customer-harbor"
+        actor: "Jonah Brooks"
+        content: |
+          Harbor Health Network is trending positive because we clarified scope. Risk moved from product fit to security language. Please keep the commitment anchored to onboarding time-to-value.
+        delay_minutes: 1700
+
+      - channel: "linear:IMPL"
+        actor: "Ben Wallace"
+        content: |
+          Deliver Harbor clinical workflow mapping moved to 65 percent complete. Blocker is the privacy-language review, not customer availability.
+        delay_minutes: 1830
+        trust_tier: "authoritative"
+
+  platform_latency_and_burst_load:
+    description: "Systems pressure that should connect ingestion latency, webhook idempotency, customer-facing reliability, and engineering capacity."
+    signals:
+      - channel: "datadog:alerts"
+        actor: "external:datadog"
+        content: |
+          Fyralis ingestion p95 exceeded 11 minutes for 34 minutes. Burst source: Salesforce renewal backfill plus Zendesk import. Tenant symptoms include Nimbus Bank and Northstar Insurance delayed risk updates.
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+        entities_hint:
+          - {type: "metric", id: "ingestion_p95_minutes"}
+
+      - channel: "slack:eng-platform"
+        actor: "Marcus Reed"
+        content: |
+          Ingestion latency alert is real. The queue is healthy, but embedding calls are serialized behind large Zendesk payloads. This threatens "Reduce ingestion-to-insight latency below five minutes".
+        delay_minutes: 11
+
+      - channel: "github:fyralis/core"
+        actor: "Ravi Patel"
+        content: |
+          Opened PR to harden webhook idempotency under burst load. It adds per-source dedup partitions and keeps Salesforce replays from blocking support incidents.
+        delay_minutes: 45
+        trust_tier: "authoritative"
+        content_dict: {repo: "fyralis/core", pr: 1834, component: "ingestion"}
+
+      - channel: "slack:eng-platform"
+        actor: "Amina Diallo"
+        content: |
+          Ravi's idempotency patch helps dedup, but latency is still embedding-bound. We need either bounded concurrency or a priority lane for high-revenue customer incidents.
+        delay_minutes: 62
+        thread_of: 2
+
+      - channel: "slack:sre"
+        actor: "Marcus Reed"
+        content: |
+          Priority lane sounds right, but we need a policy. Nimbus Bank SEV1 should outrank marketing imports. Northstar Insurance renewal updates should outrank old support backfill.
+        delay_minutes: 91
+
+      - channel: "slack:product"
+        actor: "Priya Iyer"
+        content: |
+          This is exactly why customer commitments must be retrieval anchors. The system should know which events have revenue-at-risk and route Think attention accordingly.
+        delay_minutes: 105
+
+      - channel: "linear:ENG"
+        actor: "Marcus Reed"
+        content: |
+          Cut ingestion latency p95 to five minutes is now split into: priority lane for critical customers, embedder concurrency cap, and replay-safe idempotency. Target stays this week.
+        delay_minutes: 150
+        trust_tier: "authoritative"
+
+      - channel: "slack:exec"
+        actor: "Omar Haddad"
+        content: |
+          For board narrative: do not say "latency solved." Say we discovered a scaling bottleneck under realistic customer chaos and moved critical revenue signals into the fast lane.
+        delay_minutes: 240
+
+      - channel: "datadog:alerts"
+        actor: "external:datadog"
+        content: |
+          Ingestion p95 recovered to 4.6 minutes for priority-tagged events, but bulk backfill remains at 18 minutes. Error budget impact limited to non-critical replays.
+        delay_minutes: 540
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:eng-platform"
+        actor: "Amina Diallo"
+        content: |
+          Good news: priority-tagged critical customer events are under target. Bad news: our dashboards hide the bulk-backfill pain, and bulk replays still create stale memory for lower-ARR customers.
+        delay_minutes: 590
+
+      - channel: "slack:customer-clearpath"
+        actor: "Talia Morgan"
+        content: |
+          Clearpath Logistics LLC noticed their support summary lagged by half a day. Not a renewal crisis, but proof that "critical fast lane" cannot become "everyone else gets stale memory."
+        delay_minutes: 900
+
+      - channel: "linear:ENG"
+        actor: "Ravi Patel"
+        content: |
+          Harden webhook idempotency under burst load moved to review. Remaining concern: replay ordering can still make older Salesforce notes appear newer if source timestamps are missing.
+        delay_minutes: 1320
+        trust_tier: "authoritative"
+
+  insights_graph_beta_feedback:
+    description: "Beta customer feedback that tests hidden-connection quality, explanation clarity, and the GA gate."
+    signals:
+      - channel: "calendar:events"
+        actor: "Priya Iyer"
+        content: |
+          Summit Retail Group beta review: users loved the hidden connection between merchandising delays and support churn, but disliked that the explanation did not cite the customer commitment explicitly.
+        delay_minutes: 0
+        trust_tier: "authoritative"
+
+      - channel: "slack:product"
+        actor: "Sam Ortiz"
+        content: |
+          Summit Retail Group said the graph "felt smart" but not trustworthy enough. They want every insight to show source signals, the related commitment, and why the system considers the link non-obvious.
+        delay_minutes: 20
+
+      - channel: "slack:design-research"
+        actor: "Sofia Alvarez"
+        content: |
+          The premium feeling is precision, not decoration. Summit cared less about visual polish than whether the graph explained why a hidden connection mattered now.
+        delay_minutes: 52
+
+      - channel: "slack:product"
+        actor: "Anika Rao"
+        content: |
+          For Kestrel Labs and Summit Retail Group, explanation quality should separate "observed evidence" from "model inference". Otherwise audit-safe model explanation template will be too vague.
+        delay_minutes: 84
+        thread_of: 1
+
+      - channel: "linear:QA"
+        actor: "Mei Tan"
+        content: |
+          Run Insights Graph red-team retrieval eval created cases for hidden connections, false connections, stale customer context, and customer alias ambiguity. Summit Retail Group is the anchor account.
+        delay_minutes: 140
+        trust_tier: "authoritative"
+
+      - channel: "slack:customer-summit"
+        actor: "external:summit.ops"
+        content: |
+          Summit Retail Group feedback: the graph connected returns backlog to checkout staffing and we did not expect that. But please show which conversations and commitments created that recommendation.
+        delay_minutes: 240
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:product"
+        actor: "Priya Iyer"
+        content: |
+          This validates "Make Insights Graph the operating memory spine", but also raises the GA bar. Hidden connections only matter if the customer can audit the path.
+        delay_minutes: 300
+
+      - channel: "github:fyralis/core"
+        actor: "Anika Rao"
+        content: |
+          Added explanation payload fields: evidence_observations, inferred_bridge, customer_commitment_refs, and confidence_reason. This supports audit-safe model explanation template.
+        delay_minutes: 620
+        trust_tier: "authoritative"
+        content_dict: {repo: "fyralis/core", pr: 1841, component: "explanations"}
+
+      - channel: "slack:customer-kestrel"
+        actor: "Grace Liu"
+        content: |
+          Kestrel Labs asked a sharper version of Summit's question: "What would make this insight wrong?" We need explanations that expose falsifiers, not just supporting evidence.
+        delay_minutes: 820
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          The GA gate is not "does it generate insight"; the gate is "does it generate insight with enough precision and humility that a serious operator trusts it."
+        delay_minutes: 1000
+
+      - channel: "linear:PROD"
+        actor: "Priya Iyer"
+        content: |
+          Ship Insights Graph beta for Summit remains active, but GA gate now explicitly depends on explanation auditability and red-team retrieval eval pass rate.
+        delay_minutes: 1230
+        trust_tier: "authoritative"
+
+  retrieval_alias_drift_and_duplicate_customers:
+    description: "The hardest retrieval data quality path: acronyms, duplicate CRM identities, stale syncs, and customer aliases."
+    signals:
+      - channel: "salesforce:accounts"
+        actor: "Lena Fischer"
+        content: |
+          Axion Robotics Inc has duplicate CRM records: "Axion Robotics", "Axion Robotics Inc", and "AXN Robotics". Support is attached to AXN Robotics, while renewal notes are on Axion Robotics Inc.
+        delay_minutes: 0
+        trust_tier: "authoritative"
+        content_dict: {source: "salesforce", duplicate_count: 3}
+
+      - channel: "slack:revops"
+        actor: "Lena Fischer"
+        content: |
+          This is the exact failure mode for retrieval. If the system sees AXN Robotics as separate from Axion Robotics Inc, it will miss support pain when sales asks for renewal risk.
+        delay_minutes: 18
+        thread_of: 0
+
+      - channel: "support:zendesk"
+        actor: "external:axion.robotics.ops"
+        content: |
+          AXN Robotics ticket volume doubled after the duplicate-customer merge. The customer says Fyralis keeps forgetting their robot fleet rollout context.
+        delay_minutes: 50
+        trust_tier: "authoritative_external"
+        entities_hint:
+          - {type: "external_account_alias", id: "AXN Robotics"}
+
+      - channel: "linear:DATA"
+        actor: "Zoe Kim"
+        content: |
+          Resolve Axion duplicate customer merge is now P0. We need canonical customer identity, alias backfill, and migration notes so old observations do not vanish from customer-context retrieval.
+        delay_minutes: 96
+        trust_tier: "authoritative"
+
+      - channel: "slack:support"
+        actor: "Talia Morgan"
+        content: |
+          Backfill customer alias dictionary should include Nimbus Bank as NBI, Northstar Insurance as NSI, Axion Robotics Inc as AXN Robotics, and Meridian Energy Corp as Meridian.
+        delay_minutes: 130
+
+      - channel: "slack:data"
+        actor: "Anika Rao"
+        content: |
+          Alias dictionary alone is not enough. Retrieval should penalize stale segment syncs when a newer authoritative customer merge exists, or the system will resurrect old identities.
+        delay_minutes: 175
+
+      - channel: "linear:REVOPS"
+        actor: "Lena Fischer"
+        content: |
+          Decommission stale segment sync moved up. Segment still sends "AXN Robotics" and "North Star Insurance" even after Salesforce canonicalized the accounts.
+        delay_minutes: 230
+        trust_tier: "authoritative"
+
+      - channel: "slack:customer-northstar"
+        actor: "Jonah Brooks"
+        content: |
+          Northstar Insurance adoption looks worse than reality because half the usage is under "North Star Insurance". Renewal review will be wrong unless retrieval joins both identities.
+        delay_minutes: 310
+
+      - channel: "github:fyralis/core"
+        actor: "Zoe Kim"
+        content: |
+          Draft customer ontology v2 migration plan: canonical resource id remains stable; aliases store source-specific account ids; retrieval uses recency plus trust tier to choose the canonical customer.
+        delay_minutes: 510
+        trust_tier: "authoritative"
+
+      - channel: "slack:product"
+        actor: "Priya Iyer"
+        content: |
+          This also tests the decision "Use customer commitments as first-class retrieval anchors". If Axion's duplicate merge works, risk retrieval should surface the commitment, support pain, and revenue value together.
+        delay_minutes: 620
+
+      - channel: "salesforce:accounts"
+        actor: "Lena Fischer"
+        content: |
+          Axion Robotics Inc merge completed in Salesforce. Historical tickets still carry AXN Robotics labels, and Segment will continue sending old names until Thursday.
+        delay_minutes: 1200
+        trust_tier: "authoritative"
+
+      - channel: "slack:data"
+        actor: "Zoe Kim"
+        content: |
+          Axion merge is complete in source of truth but not in every downstream signal. Retrieval should now prefer Axion Robotics Inc while keeping AXN Robotics evidence attached as history.
+        delay_minutes: 1260
+
+  billing_ledger_and_parcelpilot_blocker:
+    description: "Usage-ledger trust issues that block a trial and should connect billing, product decisions, and self-serve gating."
+    signals:
+      - channel: "support:zendesk"
+        actor: "external:parcelpilot.finance"
+        content: |
+          ParcelPilot says the usage ledger shows 4.2 million processed signals, but their own logs show 2.8 million. They will not convert trial until the invoice math is explainable.
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+        content_dict: {ticket_id: "Z-9120", disputed_usage: 4200000, customer_claimed_usage: 2800000}
+
+      - channel: "slack:billing"
+        actor: "Noah Singh"
+        content: |
+          ParcelPilot blocker is real. The ledger counted replayed Zendesk imports as billable because replay rows used fresh external_ids. This relates to "Pause self-serve plan until billing ledger is trustworthy".
+        delay_minutes: 20
+
+      - channel: "github:fyralis/billing"
+        actor: "Noah Singh"
+        content: |
+          PR opened: mark replayed synthetic and support imports non-billable when original source timestamp and external source id match. Adds ledger reconciliation view row-level evidence.
+        delay_minutes: 70
+        trust_tier: "authoritative"
+        content_dict: {repo: "fyralis/billing", pr: 611, component: "ledger"}
+
+      - channel: "slack:exec"
+        actor: "Omar Haddad"
+        content: |
+          Do not treat ParcelPilot as a tiny trial. Billing trust is a product trust issue. If we cannot reconcile usage evidence, self-serve is still not ready.
+        delay_minutes: 110
+
+      - channel: "linear:BILL"
+        actor: "Noah Singh"
+        content: |
+          Clear ParcelPilot billing blocker remains blocked until reconciliation view ships and finance can show billable versus non-billable source evidence.
+        delay_minutes: 150
+        trust_tier: "authoritative"
+
+      - channel: "email:thread"
+        actor: "external:parcelpilot.finance"
+        content: |
+          ParcelPilot is open to converting if Fyralis can show exact replay exclusions and cap the first invoice while we verify their source logs.
+        delay_minutes: 480
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:sales"
+        actor: "Chris Ford"
+        content: |
+          ParcelPilot wants a trust gesture, not a discount fight. A capped invoice plus the ledger reconciliation view could save the conversion.
+        delay_minutes: 520
+
+      - channel: "slack:billing"
+        actor: "Noah Singh"
+        content: |
+          Reconciliation view now separates billable production signals, replayed imports, synthetic tests, and failed retries. ParcelPilot disputed usage drops from 4.2M to 2.93M.
+        delay_minutes: 900
+
+      - channel: "salesforce:opportunities"
+        actor: "Elena Park"
+        content: |
+          ParcelPilot trial conversion probability moved from 20 percent to 55 percent after billing reconciliation demo was scheduled. Still blocked on final invoice cap.
+        delay_minutes: 1040
+        trust_tier: "authoritative"
+
+      - channel: "linear:BILL"
+        actor: "Noah Singh"
+        content: |
+          Clear ParcelPilot billing blocker moved from blocked to active. Remaining action: finance approval for capped first invoice.
+        delay_minutes: 1160
+        trust_tier: "authoritative"
+
+  security_legal_enterprise_pack:
+    description: "Legal and security signals that should connect regulated-enterprise launch gates, Meridian expansion, Harbor privacy, and Nimbus auditability."
+    signals:
+      - channel: "email:thread"
+        actor: "external:meridian.procurement"
+        content: |
+          Meridian Energy Corp expansion requires EU data residency language and proof that model explanations do not leak other customer context.
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:legal-security"
+        actor: "Victor Stein"
+        content: |
+          Meridian Energy Corp data residency addendum is not boilerplate. The buyer wants tenant isolation, explanation boundaries, and incident notification windows in one package.
+        delay_minutes: 28
+
+      - channel: "slack:security"
+        actor: "Nia Shah"
+        content: |
+          The regulated-enterprise package now has three live customers pulling on it: Nimbus Bank auditability, Harbor Health Network privacy boundary, and Meridian Energy Corp data residency.
+        delay_minutes: 64
+
+      - channel: "linear:SEC"
+        actor: "Nia Shah"
+        content: |
+          Complete SOC2 evidence export pack expanded to include tenant-isolation proof, model-explanation export, and source-observation redaction rules.
+        delay_minutes: 140
+        trust_tier: "authoritative"
+
+      - channel: "email:thread"
+        actor: "Victor Stein"
+        content: |
+          Draft Meridian addendum includes EU data residency, 24-hour incident notice for confirmed tenant-boundary violations, and audit export limits. Legal risk is acceptable if engineering confirms implementation.
+        delay_minutes: 250
+        trust_tier: "attested_agent"
+
+      - channel: "slack:eng-platform"
+        actor: "Ravi Patel"
+        content: |
+          Engineering can confirm tenant isolation for stored observations and models. We cannot yet guarantee every generated explanation avoids cross-tenant examples unless explanation retrieval is tenant-scoped by construction.
+        delay_minutes: 315
+        thread_of: 4
+
+      - channel: "slack:product"
+        actor: "Anika Rao"
+        content: |
+          Audit-safe model explanation template should include a tenant-scope assertion. Kestrel Labs and Meridian will both ask why an insight is grounded only in their memory.
+        delay_minutes: 420
+
+      - channel: "slack:sales"
+        actor: "Elena Park"
+        content: |
+          Meridian Energy Corp expansion proposal is still alive, but price is no longer the main objection. Data residency and explanation boundaries are now the gate.
+        delay_minutes: 700
+
+      - channel: "linear:LEGAL"
+        actor: "Victor Stein"
+        content: |
+          Lock Meridian data residency addendum is 80 percent done. Waiting on engineering wording for explanation retrieval scope and on Nia's SOC2 export annex.
+        delay_minutes: 980
+        trust_tier: "authoritative"
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          The enterprise story is converging: memory that finds hidden connections inside a company, without leaking context across companies. That has to be structurally true, not just promised in legal language.
+        delay_minutes: 1320
+
+  sales_forecast_and_renewal_risk:
+    description: "Pipeline and renewal truth with contradictory optimistic and pessimistic signals."
+    signals:
+      - channel: "salesforce:opportunities"
+        actor: "Elena Park"
+        content: |
+          Meridian Energy Corp expansion: forecast amount 480k, close date in 24 days, stage legal review. Main risk is data residency addendum, not budget.
+        delay_minutes: 0
+        trust_tier: "authoritative"
+        content_dict: {account: "Meridian Energy Corp", forecast_amount_usd: 480000, stage: "legal_review"}
+
+      - channel: "salesforce:renewals"
+        actor: "Elena Park"
+        content: |
+          Northstar Insurance renewal: forecast amount 950k, stage executive sponsor risk. Usage is improving but champions are split between claims and finance.
+        delay_minutes: 20
+        trust_tier: "authoritative"
+
+      - channel: "slack:customer-northstar"
+        actor: "Jonah Brooks"
+        content: |
+          Northstar Insurance risk review found a retrieval gap: finance users never see claims-team wins because aliases split Northstar and North Star. Adoption looks worse than reality.
+        delay_minutes: 75
+
+      - channel: "slack:sales"
+        actor: "Chris Ford"
+        content: |
+          I think Northstar Insurance is saveable. The sponsor likes the product; they just need proof that memory across departments is not fragmented.
+        delay_minutes: 120
+
+      - channel: "slack:exec"
+        actor: "Omar Haddad"
+        content: |
+          Forecast risk: if we count Meridian and Northstar as committed, board narrative is too optimistic. If we exclude both, it is too conservative. Need evidence-weighted forecast, not vibes.
+        delay_minutes: 170
+
+      - channel: "email:thread"
+        actor: "external:northstar.cfo"
+        content: |
+          Northstar Insurance CFO says renewal is contingent on seeing a cross-department memory review next week. Price is acceptable if claims and finance both trust the retrieved context.
+        delay_minutes: 360
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:customer-northstar"
+        actor: "Jonah Brooks"
+        content: |
+          Prepare Northstar renewal risk review now has a clear test: show claims wins, finance concerns, and the alias issue in one coherent timeline.
+        delay_minutes: 430
+
+      - channel: "salesforce:opportunities"
+        actor: "Elena Park"
+        content: |
+          Kestrel Labs expansion interest added: 700k trial has exec sponsor, but their decision depends on falsifier-aware explanations.
+        delay_minutes: 520
+        trust_tier: "authoritative"
+
+      - channel: "slack:sales"
+        actor: "Grace Liu"
+        content: |
+          Kestrel Labs is a product-quality bet, not a procurement slog. They will expand only if we can explain hidden connections with "what could disprove this".
+        delay_minutes: 575
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          Refresh strategic roadmap with customer evidence should use Nimbus, Summit, Kestrel, Northstar, and ParcelPilot as separate proof paths. Do not blend them into a generic enterprise story.
+        delay_minutes: 820
+
+      - channel: "linear:FIN"
+        actor: "Omar Haddad"
+        content: |
+          Publish executive forecast narrative draft: Nimbus renewal is technical-risk weighted, Meridian expansion is legal-risk weighted, Northstar renewal is retrieval-quality weighted, ParcelPilot is billing-trust weighted.
+        delay_minutes: 970
+        trust_tier: "authoritative"
+
+      - channel: "slack:exec"
+        actor: "Elena Park"
+        content: |
+          Forecast update after evidence review: keep Meridian at commit only if addendum ships this week; keep Northstar at best-case until alias retrieval demo succeeds.
+        delay_minutes: 1260
+
+  incident_postmortem_and_capacity_truth:
+    description: "Postmortem reality and capacity constraints that should stop the system from over-promising."
+    signals:
+      - channel: "slack:sre"
+        actor: "Marcus Reed"
+        content: |
+          Postmortem draft for Nimbus Bank SAML: proximate cause was cert rotation cache drift. Deeper cause was missing canary coverage for customer-specific SAML metadata.
+        delay_minutes: 0
+
+      - channel: "github:fyralis/core"
+        actor: "Mei Tan"
+        content: |
+          Added regression test for customer-specific SAML metadata cache invalidation. Nimbus Bank fixture covers cert rotation plus stale-session behavior.
+        delay_minutes: 45
+        trust_tier: "authoritative"
+
+      - channel: "slack:eng-platform"
+        actor: "Amina Diallo"
+        content: |
+          Capacity truth: platform owns SAML cleanup, priority ingestion lane, replay idempotency, and explanation tenant-scope wording this week. That is too much for Luca and Marcus alone.
+        delay_minutes: 100
+
+      - channel: "slack:exec"
+        actor: "Ravi Patel"
+        content: |
+          I am moving one engineer from non-critical UI polish to platform reliability for the week. This follows the decision to prioritize retrieval robustness over short-term UI polish.
+        delay_minutes: 150
+
+      - channel: "slack:product"
+        actor: "Priya Iyer"
+        content: |
+          Product accepts the tradeoff. But we should tell Summit Retail Group that one beta visualization improvement slips because explanation and retrieval reliability are higher leverage.
+        delay_minutes: 220
+
+      - channel: "slack:customer-summit"
+        actor: "Sam Ortiz"
+        content: |
+          Summit Retail Group update: timeline shift is about explanation quality, not deprioritization. We are shipping fewer visual tweaks so hidden connections are more auditable.
+        delay_minutes: 360
+
+      - channel: "linear:ENG"
+        actor: "Amina Diallo"
+        content: |
+          Platform capacity adjustment recorded. Luca owns SAML cleanup; Marcus owns priority lane metrics; Ravi owns replay idempotency review. UI polish moved out of this sprint.
+        delay_minutes: 420
+        trust_tier: "authoritative"
+
+      - channel: "slack:sre"
+        actor: "Marcus Reed"
+        content: |
+          Postmortem action item: customer-specific SAML canaries should trigger a Think signal tied to the customer and revenue-at-risk, not just an SRE alert.
+        delay_minutes: 560
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          This is the system behavior I want: incidents should become memory that changes customer-risk reasoning, not documents that disappear after we close the ticket.
+        delay_minutes: 620
+
+      - channel: "linear:SRE"
+        actor: "Marcus Reed"
+        content: |
+          Nimbus Bank SAML incident postmortem closed. Two action items remain: canary coverage and customer-risk Think trigger wiring.
+        delay_minutes: 980
+        trust_tier: "authoritative"
+
+  board_week_conflicting_exec_narrative:
+    description: "Executive-pressure signals that force reconciliation across product, sales, reliability, and memory quality."
+    signals:
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          Board-week ask: what have we learned that changes strategy? My answer is that memory quality, not dashboard breadth, is the product moat.
+        delay_minutes: 0
+
+      - channel: "slack:exec"
+        actor: "Omar Haddad"
+        content: |
+          Finance view: ARR risk is concentrated in four different failure modes. Nimbus is audit/reliability, Meridian is legal/security, Northstar is retrieval identity, ParcelPilot is billing trust.
+        delay_minutes: 24
+
+      - channel: "slack:exec"
+        actor: "Elena Park"
+        content: |
+          Sales view: if we communicate that clearly, the board will understand why self-serve is paused and enterprise reliability is the current focus.
+        delay_minutes: 45
+
+      - channel: "slack:exec"
+        actor: "Priya Iyer"
+        content: |
+          Product view: Insights Graph should stay central, but the story is not "graph visualization". It is "hidden company connections converted into timely action with evidence."
+        delay_minutes: 70
+
+      - channel: "slack:exec"
+        actor: "Ravi Patel"
+        content: |
+          Engineering view: system is strong enough to expose our chaos now. It still needs better alias handling, priority lanes, and explanation boundaries before we can call it GA-grade.
+        delay_minutes: 110
+
+      - channel: "email:thread"
+        actor: "external:board.member"
+        content: |
+          Board prep question: are the customer issues separate execution misses, or do they point to one architectural gap in the product?
+        delay_minutes: 280
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          The answer is one architectural thesis: connections are the product. Every miss is a connection miss: alias to customer, incident to renewal, legal constraint to expansion, billing evidence to trust.
+        delay_minutes: 330
+        thread_of: 5
+
+      - channel: "linear:CEO"
+        actor: "Maya Chen"
+        content: |
+          Refresh strategic roadmap with customer evidence: organize board narrative by connection failures and connection wins, not by department status updates.
+        delay_minutes: 410
+        trust_tier: "authoritative"
+
+      - channel: "slack:exec"
+        actor: "Omar Haddad"
+        content: |
+          For the model layer, I want a board-ready view that shows which claims are backed by authoritative signals versus inferred from weaker chatter.
+        delay_minutes: 600
+
+      - channel: "slack:exec"
+        actor: "Maya Chen"
+        content: |
+          Final board framing: we are not selling note search. We are building the company memory that notices the non-obvious connection in time to change action.
+        delay_minutes: 900
+
+  low_signal_noise_and_edge_cases:
+    description: "Small, weird, duplicated, stale, and ambiguous signals that retrieval should not overfit or ignore blindly."
+    signals:
+      - channel: "slack:random"
+        actor: "Chris Ford"
+        content: "NSI thing maybe okay now? I heard finance liked it."
+        delay_minutes: 0
+        trust_tier: "inferential"
+
+      - channel: "slack:sales"
+        actor: "Elena Park"
+        content: |
+          Clarifying Chris's NSI note: Northstar Insurance finance liked the dashboard, but the CFO still requires cross-department memory proof before renewal.
+        delay_minutes: 8
+        thread_of: 0
+
+      - channel: "email:thread"
+        actor: "external:clearpath.ops"
+        content: |
+          Clearpath Logistics LLC still wants the in-app ROI report, but it is not blocking renewal. It is blocking expansion from 420k to roughly 620k.
+        delay_minutes: 70
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:product"
+        actor: "Sofia Alvarez"
+        content: |
+          Clearpath Logistics LLC ROI ask is being misclassified as marketing copy. It is actually expansion evidence. We should keep "Launch in-app ROI report for Clearpath" linked to onboarding and expansion.
+        delay_minutes: 95
+
+      - channel: "support:zendesk"
+        actor: "external:evergreen.procurement"
+        content: |
+          Evergreen University procurement delayed security review by two weeks. Not a product objection; their legal committee meets monthly.
+        delay_minutes: 160
+        trust_tier: "authoritative_external"
+
+      - channel: "slack:sales"
+        actor: "Chris Ford"
+        content: |
+          Evergreen University delay should not be counted as churn risk. It is calendar mechanics. Please do not let this pollute the enterprise-risk forecast.
+        delay_minutes: 190
+
+      - channel: "slack:data"
+        actor: "Anika Rao"
+        content: |
+          Edge case for retrieval eval: "Meridian" alone usually means Meridian Energy Corp, but in some internal docs it means the old Meridian embedding experiment. Need local context.
+        delay_minutes: 240
+
+      - channel: "github:fyralis/core"
+        actor: "Mei Tan"
+        content: |
+          Added adversarial retrieval eval case: ambiguous "Meridian" must resolve to Meridian Energy Corp in sales/legal context and not to the legacy Meridian experiment in engineering docs.
+        delay_minutes: 300
+        trust_tier: "authoritative"
+
+      - channel: "slack:support"
+        actor: "Talia Morgan"
+        content: |
+          Duplicate support import warning: Zendesk replay resent 119 old ParcelPilot tickets. Treat as historical evidence, not fresh customer pain.
+        delay_minutes: 500
+
+      - channel: "slack:exec"
+        actor: "Ravi Patel"
+        content: |
+          This low-signal stream matters. A robust system should ignore vague chatter until clarified, preserve authoritative corrections, and avoid mistaking stale replays for new risk.
+        delay_minutes: 720
+
+expected_behaviors:
+  - "Materialization creates a large but coherent tenant with actors, customers, goals, commitments, decisions, aliases, and customer-commitment links."
+  - "Customer-risk retrieval for Nimbus Bank surfaces SAML incident evidence, audit export scope, renewal risk, SOC2/security constraints, and the relevant commitments."
+  - "Customer-risk retrieval for Axion Robotics Inc joins AXN Robotics and Axion Robotics Inc evidence without treating them as separate customer worlds."
+  - "Northstar Insurance retrieval connects alias drift, adoption reality, CFO renewal requirement, and the renewal-risk review commitment."
+  - "Meridian Energy Corp retrieval distinguishes legal/security expansion risk from generic sales optimism."
+  - "ParcelPilot retrieval connects disputed usage, replay idempotency, ledger reconciliation, and the self-serve pause decision."
+  - "Insights Graph retrieval separates observed evidence from inference and includes falsifier expectations for Kestrel Labs and Summit Retail Group."
+  - "Latency retrieval connects infrastructure alerts with customer impact and does not hide bulk-backfill staleness behind priority-lane recovery."
+  - "Forecast reasoning weighs contradictory signals by source trust, recency, customer revenue, and commitment state."
+  - "Noisy low-confidence signals are preserved but should be dominated by authoritative clarifications when producing action recommendations."

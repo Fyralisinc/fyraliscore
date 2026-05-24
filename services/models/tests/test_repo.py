@@ -964,6 +964,59 @@ async def test_search_by_scope_returns_models_for_actor(
     assert found[0].scope_actors == [actor_id]
 
 
+async def test_insert_syncs_normalized_scope_sidecars(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    entity_id = uuid7()
+    with notify_scope():
+        inserted = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=state_proposition(subject="scope", assertion="mirrored"),
+                natural="scope sidecar mirror",
+                embedding=embedding,
+                confidence=0.5,
+                scope_entities=[
+                    {"type": "commitment", "id": str(entity_id)},
+                    {"type": "commitment", "id": str(entity_id)},
+                    {"type": "legacy-string", "id": "not-a-uuid"},
+                ],
+            ),
+            conn=tx_conn,
+        )
+
+    actor_rows = await tx_conn.fetchval(
+        """
+        SELECT count(*)
+        FROM model_scope_actors
+        WHERE tenant_id = $1 AND model_id = $2 AND actor_id = $3
+        """,
+        tenant,
+        inserted.id,
+        actor_id,
+    )
+    entity_rows = await tx_conn.fetch(
+        """
+        SELECT entity_type, entity_id
+        FROM model_scope_entities
+        WHERE tenant_id = $1 AND model_id = $2
+        """,
+        tenant,
+        inserted.id,
+    )
+    assert actor_rows == 1
+    assert [(r["entity_type"], r["entity_id"]) for r in entity_rows] == [
+        ("commitment", entity_id)
+    ]
+
+
 async def test_search_by_scope_entity_gin(
     repo: ModelsRepo,
     tx_conn: asyncpg.Connection,
@@ -992,6 +1045,106 @@ async def test_search_by_scope_entity_gin(
         conn=tx_conn,
     )
     assert inserted.id in {m.id for m in found}
+
+
+async def test_search_by_scope_expands_customer_to_linked_commitments(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    customer_id = uuid7()
+    commitment_id = uuid7()
+    await tx_conn.execute(
+        """
+        INSERT INTO resources (
+            id, tenant_id, kind, identity, description, current_value,
+            utilization_state, controllability, temporal_character,
+            metadata, created_at, last_updated_at
+        ) VALUES (
+            $1, $2, 'relational', 'Globex Inc', 'Customer: Globex Inc',
+            '{}'::jsonb, 'available', 'owned', 'permanent',
+            '{}'::jsonb, now(), now()
+        )
+        """,
+        customer_id,
+        tenant,
+    )
+    await tx_conn.execute(
+        """
+        INSERT INTO commitments (
+            id, tenant_id, title, state, owner_id, created_by_event_id
+        ) VALUES ($1, $2, 'Renew Globex contract', 'active', $3, $4)
+        """,
+        commitment_id,
+        tenant,
+        actor_id,
+        born_from_event,
+    )
+    await tx_conn.execute(
+        """
+        INSERT INTO customer_commitments (
+            id, tenant_id, customer_resource_id, commitment_id,
+            relationship_kind, criticality
+        ) VALUES ($1, $2, $3, $4, 'renews', 'high')
+        """,
+        uuid7(),
+        tenant,
+        customer_id,
+        commitment_id,
+    )
+    with notify_scope():
+        inserted = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=state_proposition(
+                    subject="Globex renewal",
+                    assertion="is at risk",
+                ),
+                natural="Globex renewal is at risk",
+                embedding=embedding,
+                confidence=0.6,
+                scope_entities=[
+                    {"type": "commitment", "id": str(commitment_id)}
+                ],
+            ),
+            conn=tx_conn,
+        )
+
+    found = await repo.search_by_scope(
+        tenant_id=tenant,
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+        conn=tx_conn,
+    )
+    found_id_only = await repo.search_by_scope(
+        tenant_id=tenant,
+        scope_entities=[{"id": str(customer_id)}],
+        conn=tx_conn,
+    )
+    assert inserted.id in {m.id for m in found}
+    assert inserted.id in {m.id for m in found_id_only}
+
+    await tx_conn.execute(
+        """
+        DELETE FROM customer_commitments
+        WHERE tenant_id = $1
+          AND customer_resource_id = $2
+          AND commitment_id = $3
+        """,
+        tenant,
+        customer_id,
+        commitment_id,
+    )
+    found_by_title_fallback = await repo.search_by_scope(
+        tenant_id=tenant,
+        scope_entities=[{"id": str(customer_id)}],
+        conn=tx_conn,
+    )
+    assert inserted.id in {m.id for m in found_by_title_fallback}
 
 
 async def test_search_by_embedding_clusters_similar(

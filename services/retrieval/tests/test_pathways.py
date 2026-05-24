@@ -20,12 +20,14 @@ import pytest
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 
+from services.models.edges_repo import EdgesRepo
 from services.retrieval.pathways import (
     RetrievalPathwayError,
     pathway_a_structural,
     pathway_b_semantic,
     pathway_c_temporal,
     pathway_d_pattern,
+    pathway_g_model_edges,
 )
 
 from services.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -81,6 +83,10 @@ async def test_pathway_a_customer_seed_surfaces_commitments(
     commit_ids = {c.id for c in result.acts["commitments"]}
     assert len(commit_ids) >= 1
     assert len(result.resources) >= 1
+    # Customer-scoped retrieval must cross the customer_commitments bridge
+    # and surface Models scoped to the linked commitment.
+    linked_model_ids = set(fs.scope_by_commitment[fs.hero_commitment_id])
+    assert linked_model_ids & {m.id for m in result.models}
 
 
 async def test_pathway_a_empty_seed_graceful(tx_conn, fresh_db, tenant):
@@ -275,3 +281,108 @@ async def test_pathway_d_no_signature_returns_all_patterns(
     # Should surface at least the 10 pattern Models.
     pattern_models = [m for m in result.models if m.proposition_kind == "pattern"]
     assert len(pattern_models) >= 10
+
+
+async def test_pathway_d_uses_instance_of_edge_as_canonical_link(
+    tx_conn, fresh_db, tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    pattern_id = fs.pattern_model_ids[0]
+    instance_id = fs.pattern_instance_model_ids[0]
+    # Break the legacy JSON backlink so the assertion proves the typed
+    # edge path, not the fallback proposition.pattern_id path.
+    await tx_conn.execute(
+        """
+        UPDATE models
+        SET proposition = jsonb_set(
+          proposition,
+          '{pattern_id}',
+          to_jsonb($2::text),
+          true
+        )
+        WHERE id = $1
+        """,
+        instance_id,
+        str(uuid.uuid4()),
+    )
+    await EdgesRepo().link(
+        tx_conn,
+        source=instance_id,
+        target=pattern_id,
+        kind="instance_of",
+        tenant_id=tenant,
+        detected_by="precipitation",
+    )
+
+    result = await pathway_d_pattern(
+        {"regex": "^hotfix", "group": "p0"},
+        tenant,
+        tx_conn,
+    )
+    ids = {m.id for m in result.models}
+    assert pattern_id in ids
+    assert instance_id in ids
+
+
+# =====================================================================
+# Pathway G — typed Model-edge traversal
+# =====================================================================
+
+
+async def test_pathway_g_traverses_non_semantic_model_edges(
+    tx_conn, fresh_db, tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    seed_id = fs.hero_model_id
+    target_id = fs.model_ids[75]
+    await EdgesRepo().link(
+        tx_conn,
+        source=seed_id,
+        target=target_id,
+        kind="blocks",
+        tenant_id=tenant,
+        detected_by="manual",
+        confidence=0.8,
+        explanation="The seed operating fact blocks the target outcome.",
+    )
+
+    result = await pathway_g_model_edges(
+        tenant,
+        tx_conn,
+        seed_model_ids=[seed_id],
+        max_hops=1,
+    )
+    ids = [m.id for m in result.models]
+    assert result.source_pathway == "G"
+    assert seed_id in ids
+    assert target_id in ids
+    assert result.notes["edge_rows_seen"] >= 1
+
+
+async def test_pathway_g_ignores_expired_edges(
+    tx_conn, fresh_db, tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    seed_id = fs.hero_model_id
+    target_id = fs.model_ids[76]
+    await EdgesRepo().link(
+        tx_conn,
+        source=seed_id,
+        target=target_id,
+        kind="early_warning_for",
+        tenant_id=tenant,
+        detected_by="manual",
+        confidence=0.9,
+        explanation="Historical warning that should no longer retrieve.",
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+
+    result = await pathway_g_model_edges(
+        tenant,
+        tx_conn,
+        seed_model_ids=[seed_id],
+        max_hops=1,
+    )
+    ids = {m.id for m in result.models}
+    assert seed_id in ids
+    assert target_id not in ids

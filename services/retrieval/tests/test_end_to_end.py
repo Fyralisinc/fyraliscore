@@ -167,8 +167,8 @@ async def test_pathway_results_distinct_per_trigger_kind(
         ),
         tx_conn,
     )
-    assert set(r1.notes["pathways_run"]) == {"A", "B", "C"}
+    assert set(r1.notes["pathways_run"]) == {"A", "B", "C", "G"}
     assert "D" in r4.notes["pathways_run"]
-    # T4 weights should have D; T1 does not.
+    # T1 now includes typed model-edge expansion; T4 still uniquely carries D.
     assert "D" not in r1.notes["weights"]
     assert "D" in r4.notes["weights"]

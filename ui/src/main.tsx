@@ -11,7 +11,7 @@ import {
 import TodayBriefing from "./pages/today-v2/Briefing";
 import ModelPageV2 from "./pages/model-v2/ModelPage";
 import ForecastsPage from "./pages/forecasts/ForecastsPage";
-import LedgerSpec from "./pages/ledger/LedgerSpec";
+import LedgerPage from "./pages/ledger-v2/LedgerPage";
 import { AutoDemoSession } from "./shell/AutoDemoSession";
 import { DebugLayout } from "./debug/DebugLayout";
 import { SignalsList } from "./debug/pages/SignalsList";
@@ -68,7 +68,7 @@ ReactDOM.createRoot(root).render(
           path="/ledger"
           element={
             <AutoDemoSession>
-              <LedgerSpec />
+              <LedgerPage />
             </AutoDemoSession>
           }
         />

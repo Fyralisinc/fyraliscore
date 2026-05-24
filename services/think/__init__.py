@@ -1,6 +1,6 @@
 """services/think — the cognitive pipeline (BUILD-PLAN §4 Prompt 3.B).
 
-Four triggers invoke Think; operation is uniform:
+Five triggers invoke Think; operation is uniform:
     retrieve → reason → validate → apply → cascade.
 
 Public surface (import these from callers):
@@ -10,10 +10,11 @@ Public surface (import these from callers):
     by tests.
   * TriggerContext — the common trigger payload.
   * ThinkRunOutcome — the return shape from think().
-  * ValidatedDiff / ClaimOp / ActOp / ResourceOp — the validated diff
+  * ValidatedDiff / ClaimOp / EdgeOp / ActOp / ResourceOp — the validated diff
     schema. LLM is asked to produce this exact shape.
   * region_lock_key — pure function producing (tenant_hash, entity_hash)
     integers for pg_advisory_xact_lock.
+  * ReasoningFrame — the trigger-normalized question/focus object.
 
 Internals (do NOT import these from outside services/think):
 
@@ -36,10 +37,12 @@ from __future__ import annotations
 from .diff_schema import (
     ActOp,
     ClaimOp,
+    EdgeOp,
     ResourceOp,
     ValidatedDiff,
 )
 from .reason import ThinkRunOutcome, think
+from .reasoning_frame import ReasoningFrame
 from .region_locks import region_lock_key
 
 # TriggerContext lives in services.retrieval.primary — re-export so
@@ -50,10 +53,12 @@ from services.retrieval.primary import TriggerContext
 __all__ = [
     "ActOp",
     "ClaimOp",
+    "EdgeOp",
     "ResourceOp",
     "ValidatedDiff",
     "ThinkRunOutcome",
     "TriggerContext",
+    "ReasoningFrame",
     "region_lock_key",
     "think",
 ]

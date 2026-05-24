@@ -48,6 +48,10 @@ from services.gateway.db_bootstrap import _register_codecs
 from services.gateway.main import GatewayDeps, build_app
 from services.gateway.rate_limit import RateLimiter
 from services.ingestion.handlers.slack import verify_slack_signature
+from tests.db_baseline import (
+    install_test_tenant_auto_register,
+    seed_test_baseline,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -201,7 +205,9 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     try:
         async with pool.acquire() as conn:
             await _run_migrations(conn)
+            await install_test_tenant_auto_register(conn)
             await _truncate_all(conn)
+            await seed_test_baseline(conn)
         yield pool
     finally:
         # Force-terminate to release all server-side locks immediately.

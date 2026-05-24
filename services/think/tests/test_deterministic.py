@@ -74,6 +74,13 @@ async def test_is_authoritative_t2_prediction_deadline_true():
     assert is_authoritative(t) is True
 
 
+async def test_is_authoritative_t2_belief_updated_true():
+    t = TriggerContext(
+        kind="T2", tenant_id=uuid7(), subkind="belief_updated",
+    )
+    assert is_authoritative(t) is True
+
+
 async def test_is_authoritative_t3_false():
     t = TriggerContext(kind="T3", tenant_id=uuid7(), subkind="anomaly")
     assert is_authoritative(t) is False

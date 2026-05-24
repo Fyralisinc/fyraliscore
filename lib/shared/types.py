@@ -79,7 +79,7 @@ PropositionKind = Literal[
     "state", "relation", "prediction", "pattern", "pattern_instance",
     "capability_assessment", "hypothesis", "concern",
     "market_assessment", "environmental_trend",
-    "recommendation",
+    "recommendation", "situation",
 ]
 
 GoalState = Literal["active", "paused", "achieved", "abandoned"]
@@ -135,32 +135,45 @@ ActorStatus = Literal["active", "inactive", "departed"]
 # 'disputed' is reserved for future contradiction-resolution flows.
 EdgeStatus = Literal["active", "inert", "disputed"]
 
-# Provenance: who wrote the edge. New v1 producers populate the first
-# four; reconciler / falsifier_overlap / cascade are reserved for
-# follow-on stages and the contradicts producer.
+# Provenance: who wrote the edge. The first group is currently used by
+# Think, deterministic miners, retrieval feedback, precipitation, manual
+# tools, and backfills; the remaining names are staged for follow-on
+# automated producers.
 EdgeDetectedBy = Literal[
     "llm_explicit",       # LLM emitted the edge in a claim_op
+    "think_edge_op",      # LLM emitted a first-class edge_op
+    "link_miner",         # deterministic / LLM-assisted latent-link miner
+    "tension_miner",      # contradiction / weakening miner
+    "retrieval_critic",   # retrieval-eval feedback created or confirmed it
     "precipitation",      # T4 pattern promotion produced an instance_of edge
     "manual",             # operator / debug path
     "backfill",           # one-shot scripts/backfill_model_edges.py
-    "reconciler",         # reserved (Stage 4: contradicts producer)
-    "falsifier_overlap",  # reserved (future)
-    "cascade",            # reserved (future: derived from another edge)
+    "reconciler",         # future reconciliation producer
+    "falsifier_overlap",  # future falsifier-derived producer
+    "cascade",            # future derived-from-edge producer
 ]
 
 # Edge kind discriminator. The registry in lib/shared/edge_registry.py
 # is the single source of truth for per-kind semantics (DAG scope,
 # cascade callbacks, weight rules, mutually-exclusive-with). v1
-# enables writes for the first four; the rest are reserved names for
-# follow-on stages and rejected at the repo layer until a producer
-# ships.
+# enables writes according to the registry, not this type alias.
 EdgeKind = Literal[
     "supports",                   # source supports target (was supporting_model_ids)
     "contributes_to_resolution",  # source's state resolves target prediction (was contributing_models)
     "instance_of",                # source is an instance of target pattern (was pattern back-link)
     "superseded_by",              # source was replaced by target (was archive_reason='superseded')
-    "contradicts",                # reserved: symmetric, polarity-inverted cascade
-    "weakens",                    # reserved: directed, partial counter-evidence
+    "contradicts",                # symmetric, high-signal tension / conflict
+    "weakens",                    # directed, partial counter-evidence
+    "causes",                     # source is an observed cause of target
+    "explains",                   # source explains why target is true
+    "predicts",                   # source is an early predictor of target
+    "blocks",                     # source blocks target from becoming true
+    "enables",                    # source enables target
+    "same_issue_as",              # symmetric shared underlying issue
+    "co_occurs_with",             # symmetric recurrent co-occurrence
+    "analogous_to",               # symmetric useful analogy
+    "alternative_to",             # symmetric mutually exclusive option
+    "early_warning_for",          # source is an early warning for target
 ]
 
 

@@ -7,7 +7,7 @@
 -- shape upstream, but the DB had no defense against drift.
 --
 -- This migration adds:
---   1. A CHECK constraint pinning proposition_kind to the 11 known
+--   1. A CHECK constraint pinning proposition_kind to the known
 --      values from PropositionKind in lib/shared/types.py. IN (...)
 --      implicitly rejects NULL, so this enforces non-null + value-set
 --      membership in one constraint.
@@ -44,7 +44,8 @@ ALTER TABLE models
       'concern',
       'market_assessment',
       'environmental_trend',
-      'recommendation'
+      'recommendation',
+      'situation'
     )
   );
 

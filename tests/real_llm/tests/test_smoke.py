@@ -168,3 +168,63 @@ async def test_scenario_03_materializes_and_injects_first_signal(
         alias_repo=alias_repo,
         embedder=embedder,
     )
+
+
+@pytest.mark.asyncio
+@real_llm_test(attempts=1, pass_threshold=1)
+async def test_scenario_04_materializes_and_injects_first_signal(
+    scenario_04: Scenario,
+    fresh_db: asyncpg.Pool,
+    actor_repo: ActorRepo,
+    alias_repo: EntityAliasRepo,
+    embedder: OllamaClient,
+) -> None:
+    """Scenario 04 (scale_chaos_b2b): materialize + first Nimbus signal."""
+    await _smoke_check(
+        scenario_04,
+        "nimbus_audit_and_saml_pressure",
+        fresh_db=fresh_db,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+    )
+
+
+@pytest.mark.asyncio
+@real_llm_test(attempts=1, pass_threshold=1)
+async def test_scenario_05_materializes_and_injects_first_signal(
+    scenario_05: Scenario,
+    fresh_db: asyncpg.Pool,
+    actor_repo: ActorRepo,
+    alias_repo: EntityAliasRepo,
+    embedder: OllamaClient,
+) -> None:
+    """Scenario 05 (industrial_ops): materialize + first Titan signal."""
+    await _smoke_check(
+        scenario_05,
+        "titan_furnace_outage",
+        fresh_db=fresh_db,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+    )
+
+
+@pytest.mark.asyncio
+@real_llm_test(attempts=1, pass_threshold=1)
+async def test_scenario_06_materializes_and_injects_first_signal(
+    scenario_06: Scenario,
+    fresh_db: asyncpg.Pool,
+    actor_repo: ActorRepo,
+    alias_repo: EntityAliasRepo,
+    embedder: OllamaClient,
+) -> None:
+    """Scenario 06 (fintech_risk): materialize + first Atlas signal."""
+    await _smoke_check(
+        scenario_06,
+        "atlas_network_and_ledger_incident",
+        fresh_db=fresh_db,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+    )

@@ -272,7 +272,11 @@ async def insert_minimal_model(
     natural: str = "Test belief",
 ) -> UUID:
     mid = uuid7()
-    proposition = proposition or {"kind": "belief", "text": natural}
+    proposition = proposition or {
+        "kind": "state",
+        "subject": "test",
+        "assertion": natural,
+    }
     scope_temporal = {"kind": "indefinite"}
     emb = make_embedding(natural)
     await conn.execute(

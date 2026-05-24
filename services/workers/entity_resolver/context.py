@@ -61,6 +61,13 @@ class RecentAlias:
 
 
 @dataclass
+class KnownEntityCandidate:
+    alias_text: str
+    resolved_entity_ref: dict[str, Any]
+    confidence: float
+
+
+@dataclass
 class ResolverContext:
     observation_id: UUID
     phrase: str
@@ -68,6 +75,8 @@ class ResolverContext:
     recent_observations: list[RecentObservation] = field(default_factory=list)
     scoped_models: list[ScopedModel] = field(default_factory=list)
     recent_aliases: list[RecentAlias] = field(default_factory=list)
+    known_entity_candidates: list[KnownEntityCandidate] = field(default_factory=list)
+    source_entities_mentioned: list[dict[str, Any]] = field(default_factory=list)
     source_channel: str = ""
     content_text: str = ""
 
@@ -77,6 +86,7 @@ class ResolverContext:
             "phrase": self.phrase,
             "source_channel": self.source_channel,
             "source_content_excerpt": self.content_text[:500],
+            "source_entities_mentioned": self.source_entities_mentioned[:10],
             "recent_observations": [
                 {
                     "channel": o.source_channel,
@@ -100,6 +110,14 @@ class ResolverContext:
                 }
                 for a in self.recent_aliases
             ],
+            "known_entity_candidates": [
+                {
+                    "alias": c.alias_text,
+                    "entity_ref": c.resolved_entity_ref,
+                    "confidence": c.confidence,
+                }
+                for c in self.known_entity_candidates[:30]
+            ],
         }
         return json.dumps(out, default=str, separators=(",", ":"))
 
@@ -112,6 +130,7 @@ async def build_context(
     phrase: str,
     recent_n: int = _DEFAULT_RECENT_OBS,
     scoped_models_n: int = _DEFAULT_SCOPED_MODELS,
+    known_entities_n: int = 30,
 ) -> ResolverContext:
     """Assemble the context bundle used by the resolver LLM prompt.
 
@@ -130,7 +149,8 @@ async def build_context(
         # occurred_at for the context-window query.
         src = await conn.fetchrow(
             """
-            SELECT id, source_channel, content_text, occurred_at
+            SELECT id, source_channel, content_text, occurred_at,
+                   entities_mentioned
             FROM observations
             WHERE id = $1 AND tenant_id = $2
             """,
@@ -147,6 +167,9 @@ async def build_context(
         source_channel = src["source_channel"]
         content_text = src["content_text"]
         occurred_at = src["occurred_at"]
+        source_entities_mentioned = (
+            _parse_jsonb(src["entities_mentioned"]) or []
+        )
 
         # 20 most recent observations in the same channel BEFORE this
         # one, same tenant. We exclude the current observation itself.
@@ -231,15 +254,34 @@ async def build_context(
             for r in alias_rows
         ]
 
+        candidate_rows = await conn.fetch(
+            """
+            SELECT alias_text, resolved_entity_ref, confidence
+            FROM entity_aliases
+            WHERE tenant_id = $1
+            ORDER BY confidence DESC, confirmed_count DESC, last_used_at DESC
+            LIMIT 200
+            """,
+            tenant_id,
+        )
+        known_entity_candidates = _rank_known_entity_candidates(
+            phrase=phrase,
+            content_text=content_text,
+            rows=candidate_rows,
+            limit=known_entities_n,
+        )
+
         return ResolverContext(
             observation_id=observation_id,
             phrase=phrase,
             tenant_id=tenant_id,
             source_channel=source_channel,
             content_text=content_text,
+            source_entities_mentioned=source_entities_mentioned,
             recent_observations=recent_observations,
             scoped_models=scoped_models,
             recent_aliases=recent_aliases,
+            known_entity_candidates=known_entity_candidates,
         )
     finally:
         if conn_owned is not None:
@@ -261,10 +303,106 @@ def _parse_jsonb(v: Any) -> Any:
     return v
 
 
+def _rank_known_entity_candidates(
+    *,
+    phrase: str,
+    content_text: str,
+    rows: list[Any],
+    limit: int,
+) -> list[KnownEntityCandidate]:
+    """Return a small, ranked alias candidate set for the resolver prompt.
+
+    This is intentionally lexical and cheap. It gives the LLM real canonical
+    IDs to choose from without turning every vague phrase into a large RAG call.
+    """
+    phrase_norm = _norm(phrase)
+    phrase_compact = _compact(phrase)
+    content_norm = _norm(content_text)
+    phrase_tokens = set(_tokens(phrase))
+
+    scored: list[tuple[float, int, KnownEntityCandidate]] = []
+    for idx, row in enumerate(rows):
+        alias_text = row["alias_text"]
+        alias_norm = _norm(alias_text)
+        alias_compact = _compact(alias_text)
+        alias_tokens = set(_tokens(alias_text))
+        ref = _parse_jsonb(row["resolved_entity_ref"]) or {}
+        confidence = float(row["confidence"])
+
+        score = confidence
+        if phrase_norm and phrase_norm == alias_norm:
+            score += 100.0
+        elif phrase_norm and (
+            phrase_norm in alias_norm or alias_norm in phrase_norm
+        ):
+            score += 20.0
+
+        overlap = phrase_tokens & alias_tokens
+        score += 5.0 * len(overlap)
+
+        acronym = "".join(tok[0] for tok in _tokens(alias_text))
+        if phrase_compact and acronym and phrase_compact == acronym:
+            score += 35.0
+        elif phrase_compact and acronym and (
+            phrase_compact.startswith(acronym)
+            or acronym.startswith(phrase_compact)
+        ):
+            score += 12.0
+
+        if phrase_compact and _is_subsequence(phrase_compact, alias_compact):
+            score += 10.0
+
+        if alias_norm and alias_norm in content_norm:
+            score += 25.0
+
+        if ref.get("type") == "customer":
+            score += 2.0
+
+        scored.append((
+            score,
+            -idx,
+            KnownEntityCandidate(
+                alias_text=alias_text,
+                resolved_entity_ref=ref,
+                confidence=confidence,
+            ),
+        ))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [candidate for _, _, candidate in scored[:limit]]
+
+
+def _norm(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _compact(value: str) -> str:
+    return "".join(ch for ch in _norm(value) if ch.isalnum())
+
+
+def _tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in _norm(value).replace("-", " ").split()
+        if token and any(ch.isalpha() for ch in token)
+    ]
+
+
+def _is_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return False
+    pos = 0
+    for ch in haystack:
+        if pos < len(needle) and needle[pos] == ch:
+            pos += 1
+    return pos == len(needle)
+
+
 __all__ = [
     "RecentObservation",
     "ScopedModel",
     "RecentAlias",
+    "KnownEntityCandidate",
     "ResolverContext",
     "build_context",
 ]

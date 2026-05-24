@@ -51,6 +51,25 @@ async def test_revenue_at_risk_blocked_commitment_returns_arr(resources_db, even
     assert rar == Decimal("100000.00")
 
 
+async def test_revenue_at_risk_accepts_legacy_arr_usd(resources_db, event_id):
+    customer = await repo.create(
+        kind="relational",
+        identity="customer:legacy-arr",
+        current_value={
+            "counterparty_id": "legacy-arr",
+            "arr_usd": 12345,
+            "strength": "strong",
+        },
+        tenant_id=TENANT_A,
+        created_by_event_id=event_id,
+    )
+    cmt = await make_commitment(resources_db)
+    await cc.link_commitment(customer.id, cmt, tenant_id=TENANT_A)
+    await set_commitment_state(resources_db, cmt, "blocked")
+
+    assert await bridge.revenue_at_risk_for_customer(customer.id) == Decimal("12345.00")
+
+
 async def test_revenue_at_risk_paused_returns_arr(resources_db, event_id):
     customer = await _make_customer(resources_db, event_id, arr_cents=2_500_00)
     cmt = await make_commitment(resources_db)
