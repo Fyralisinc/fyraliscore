@@ -60,6 +60,36 @@ _TRANSIENT_ERRORS = (
 )
 
 
+def pytest_configure(config):
+    """Pay UMAP's one-time numba JIT cold-start before any test runs.
+
+    The CEO Map tests fit a real UMAP model (services/topology/
+    umap_projector.py). The first fit in a process JIT-compiles numba
+    kernels, which can take tens of seconds. If that cost lands inside a
+    test it can blow the per-test timeout (pyproject: timeout = 30) — and
+    *which* test absorbs it depends on collection order, so the timeout
+    failure is flaky. Warming here (a configure hook, outside any test
+    item's timeout window) makes the subsequent real fits fast and the
+    suite order-independent. Best-effort: never fail collection on it.
+    """
+    try:
+        import numpy as np
+        import umap
+
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=4,
+            min_dist=0.1,
+            metric="cosine",
+            random_state=42,
+        )
+        reducer.fit_transform(
+            np.random.default_rng(0).normal(size=(8, 8)).astype(float)
+        )
+    except Exception:
+        pass
+
+
 def pytest_runtest_protocol(item, nextitem):
     from _pytest.runner import runtestprotocol
 
