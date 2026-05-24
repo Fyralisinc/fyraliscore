@@ -301,7 +301,11 @@ async def build_fixture(
     rng = random.Random(rng_seed)
     fs = FixtureSet(tenant_id=tenant_id)
     obs_repo = ObservationRepository(pool=pool, embedder=None)
-    mod_repo = ModelsRepo(pool=pool, embedder=None)
+    mod_repo = ModelsRepo(
+        pool=pool,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
 
     # ---- Actors ----
     for i in range(n_actors):

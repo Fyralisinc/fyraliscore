@@ -6,6 +6,7 @@
 #   - gateway         (uvicorn services.gateway.main:app on :8000)
 #   - think_worker    (services.think.worker.ThinkWorker)
 #   - post_commit_worker (services.think.post_commit.process_batch loop)
+#   - topology_sweeper (latent relationship-field refresh loop)
 #   - ui              (vite dev server on :5173)
 #
 # The gateway spawns the GRT scheduler and realtime dispatcher in-process;
@@ -18,7 +19,7 @@ cd "$ROOT"
 
 # ---- Env ------------------------------------------------------------
 if [ ! -f .env ]; then
-  echo "ERROR: .env not found (DEEPSEEK_API_KEY lives there)."
+  echo "ERROR: .env not found (LLM credentials live there)."
   exit 1
 fi
 set -a
@@ -27,10 +28,35 @@ source .env
 if [ -f .env.dogfood ]; then source .env.dogfood; fi
 set +a
 
-if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-  echo "ERROR: DEEPSEEK_API_KEY not set in .env"
-  exit 1
-fi
+case "${LLM_PROVIDER:-deepseek}" in
+  deepseek)
+    [ -n "${DEEPSEEK_API_KEY:-${LLM_API_KEY:-}}" ] \
+      || { echo "ERROR: DEEPSEEK_API_KEY or LLM_API_KEY not set"; exit 1; }
+    ;;
+  openai)
+    [ -n "${OPENAI_API_KEY:-${LLM_API_KEY:-}}" ] \
+      || { echo "ERROR: OPENAI_API_KEY or LLM_API_KEY not set"; exit 1; }
+    ;;
+  anthropic)
+    [ -n "${ANTHROPIC_API_KEY:-${LLM_API_KEY:-}}" ] \
+      || { echo "ERROR: ANTHROPIC_API_KEY or LLM_API_KEY not set"; exit 1; }
+    ;;
+  codex)
+    CODEX_AUTH_PATH="${CODEX_AUTH_FILE:-${CODEX_HOME:-$HOME/.codex}/auth.json}"
+    if [ "${CODEX_TRANSPORT:-auto}" = "responses" ]; then
+      [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
+        || { echo "ERROR: Codex Responses auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY"; exit 1; }
+    else
+      [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
+        || [ -f "$CODEX_AUTH_PATH" ] \
+        || { echo "ERROR: Codex auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or run codex login"; exit 1; }
+    fi
+    ;;
+  *)
+    echo "ERROR: Unsupported LLM_PROVIDER=${LLM_PROVIDER}"
+    exit 1
+    ;;
+esac
 
 # ---- Sanity checks --------------------------------------------------
 pg_isready >/dev/null || { echo "ERROR: Postgres not running"; exit 1; }
@@ -48,6 +74,7 @@ mkdir -p "$LOGDIR"
 : > "$LOGDIR/gateway.log"
 : > "$LOGDIR/think_worker.log"
 : > "$LOGDIR/post_commit_worker.log"
+: > "$LOGDIR/topology_sweeper.log"
 : > "$LOGDIR/ui.log"
 
 PIDS=()
@@ -73,6 +100,10 @@ PIDS+=($!)
 
 echo "Starting post_commit worker..."
 "$PY" scripts/run_post_commit_worker.py > "$LOGDIR/post_commit_worker.log" 2>&1 &
+PIDS+=($!)
+
+echo "Starting topology sweeper..."
+"$PY" scripts/run_topology_sweeper.py > "$LOGDIR/topology_sweeper.log" 2>&1 &
 PIDS+=($!)
 
 # ---- UI -------------------------------------------------------------

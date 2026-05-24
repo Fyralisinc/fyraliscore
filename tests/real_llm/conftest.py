@@ -5,15 +5,21 @@ import os
 
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 
-# Real-LLM tests target DeepSeek when DEEPSEEK_API_KEY is set, regardless of
-# what LLM_PROVIDER / LLM_MODEL is configured for the rest of the system.
-if os.environ.get("DEEPSEEK_API_KEY"):
+# Real-LLM tests follow the configured provider. For older local setups where
+# only DEEPSEEK_API_KEY exists and no provider is configured, keep the historic
+# DeepSeek default. If .env explicitly says `LLM_PROVIDER=codex`, do not
+# silently swap the test run back to DeepSeek.
+configured_provider = (os.environ.get("LLM_PROVIDER") or "").lower()
+if os.environ.get("DEEPSEEK_API_KEY") and configured_provider in {"", "deepseek"}:
     os.environ["LLM_PROVIDER"] = "deepseek"
-    # The default LLM_MODEL in .env is for the production provider (e.g.,
-    # claude-opus-4-7). DeepSeek won't recognize that. Use the deepseek
-    # default model for the test session unless explicitly overridden via
-    # REAL_LLM_MODEL.
-    os.environ["LLM_MODEL"] = os.environ.get("REAL_LLM_MODEL", "deepseek-chat")
+    configured_model = os.environ.get("LLM_MODEL") or ""
+    if os.environ.get("REAL_LLM_MODEL"):
+        os.environ["LLM_MODEL"] = os.environ["REAL_LLM_MODEL"]
+    elif (
+        not configured_model
+        or configured_model.startswith(("claude-", "gpt-"))
+    ):
+        os.environ["LLM_MODEL"] = "deepseek-chat"
 
 import asyncio
 from collections.abc import AsyncGenerator
@@ -105,8 +111,8 @@ def provider(response_cache: LLMResponseCache) -> LLMProvider:
         pytest.skip(f"LLM provider not configured: {e}")
     if not cfg.api_key:
         pytest.skip(
-            "LLM API key not set; export DEEPSEEK_API_KEY or LLM_API_KEY "
-            "to run real-LLM tests."
+            "LLM auth not configured; export a provider API key or run "
+            "`codex login` for LLM_PROVIDER=codex."
         )
     return build_provider(cfg)
 

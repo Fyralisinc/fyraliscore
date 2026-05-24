@@ -99,6 +99,61 @@ async def test_build_prompt_triggering_kind_instructions():
         assert needle in pair.user, f"T-kind {kind} missing '{needle}'"
 
 
+async def test_build_prompt_adds_source_tuned_reasoning_profile():
+    """T1 prompts include provenance/type metadata and a matching stance."""
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid7(),
+        observation_id=uuid7(),
+        seed_signature={
+            "source_channel": "github:webhook",
+            "signal_type": "github:webhook/pull_request.closed",
+            "observation_kind": "state_change",
+            "trust_tier": "authoritative",
+        },
+    )
+    pair = build_prompt(trigger, ContextBundle(), claims_only=True)
+
+    assert "Reasoning profile for this call" in pair.system
+    assert "Working personality: ledger clerk" in pair.system
+    assert "Model surface: claim triage" in pair.system
+    assert "Abstraction level: low and exact" in pair.system
+    assert "source_channel: github:webhook" in pair.user
+    assert "signal_type: github:webhook/pull_request.closed" in pair.user
+    assert "trust_tier: authoritative" in pair.user
+
+
+async def test_build_prompt_profiles_graph_aware_surface():
+    tenant_id = uuid7()
+    graph_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_signature={
+            "source_channel": "slack:message",
+            "signal_type": "slack:message/message",
+            "observation_kind": "signal",
+            "trust_tier": "attested_agent",
+        },
+    )
+    bundle = ContextBundle(
+        notes={
+            "model_selection": {
+                "selected_model_ids": [str(graph_id)],
+                "pathway_survival": {
+                    "G": {"selected_model_ids": [str(graph_id)]},
+                },
+            }
+        }
+    )
+
+    pair = build_prompt(trigger, bundle)
+
+    assert "Working personality: contextual listener" in pair.system
+    assert "Model surface: graph cartographer" in pair.system
+    assert "Abstraction level: relationship level" in pair.system
+
+
 async def test_build_prompt_respects_char_truncation():
     """Long content_text is truncated so the per-item char limit holds."""
     huge_text = "x" * 5000

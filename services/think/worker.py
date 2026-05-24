@@ -110,9 +110,9 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
     if isinstance(region_spec, dict):
         trigger.region_spec = region_spec
 
-    # S3 — topology phase event (T6) payload fields. The
-    # neighborhood_detector worker writes these into the trigger
-    # payload (see services.workers.neighborhood_detector.worker).
+    # Legacy T6 topology phase-event payload fields. The accepted-memory
+    # neighborhood worker is retired, but old queued rows may still carry
+    # this shape and should hydrate cleanly.
     tev_id = payload.get("topology_event_id")
     if isinstance(tev_id, str):
         try:

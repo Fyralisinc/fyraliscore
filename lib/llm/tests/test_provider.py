@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from lib.llm.provider import (
     AnthropicProvider,
+    CodexProvider,
     DeepSeekProvider,
     LLMConfig,
     LLMConfigError,
@@ -17,6 +20,8 @@ from lib.llm.provider import (
     LLMProvider,
     OpenAIProvider,
     build_provider,
+    _codex_transport,
+    _codex_should_use_cli_transport,
 )
 
 
@@ -69,21 +74,120 @@ def _valid_payload() -> str:
 def test_config_from_env_defaults(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
     assert cfg.provider == "anthropic"
     assert cfg.api_key == "k"
     assert cfg.model == "claude-opus-4-7"
-    assert cfg.timeout_s == 30.0
+    assert cfg.timeout_s == 60.0
 
 
 def test_config_from_env_openai(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     cfg = LLMConfig.from_env()
     assert cfg.provider == "openai"
     assert cfg.model == "gpt-4o"
+
+
+def test_config_from_env_openai_prefers_provider_key(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-key")
+    monkeypatch.setenv("LLM_API_KEY", "generic-key")
+    cfg = LLMConfig.from_env()
+    assert cfg.api_key == "provider-key"
+
+
+def test_config_from_env_codex_api_key(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    cfg = LLMConfig.from_env()
+    assert cfg.provider == "codex"
+    assert cfg.api_key == "codex-key"
+    assert cfg.model
+
+
+def test_config_from_env_codex_reads_auth_json(monkeypatch, tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({
+            "OPENAI_API_KEY": None,
+            "tokens": {
+                "access_token": "oauth-token",
+                "account_id": "acct_123",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_AUTH_FILE", str(auth_file))
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    cfg = LLMConfig.from_env()
+
+    assert cfg.api_key == "oauth-token"
+
+
+def test_config_from_env_codex_rejects_deepseek_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-chat")
+
+    with pytest.raises(LLMConfigError, match="LLM_PROVIDER=codex"):
+        LLMConfig.from_env()
+
+
+def test_codex_transport_auto_uses_cli_for_oauth_auth_json(monkeypatch, tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("CODEX_AUTH_FILE", str(auth_file))
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_TRANSPORT", raising=False)
+
+    assert _codex_transport() == "app-server"
+    assert _codex_should_use_cli_transport() is False
+
+
+def test_codex_transport_auto_uses_responses_for_api_key(monkeypatch, tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("CODEX_AUTH_FILE", str(auth_file))
+    monkeypatch.setenv("CODEX_API_KEY", "platform-key")
+    monkeypatch.delenv("CODEX_TRANSPORT", raising=False)
+
+    assert _codex_should_use_cli_transport() is False
+
+
+def test_codex_transport_override(monkeypatch):
+    monkeypatch.setenv("CODEX_TRANSPORT", "cli")
+    assert _codex_should_use_cli_transport() is True
+
+    monkeypatch.setenv("CODEX_TRANSPORT", "responses")
+    assert _codex_transport() == "responses"
+    assert _codex_should_use_cli_transport() is False
+
+    monkeypatch.setenv("CODEX_TRANSPORT", "app-server")
+    assert _codex_transport() == "app-server"
+    assert _codex_should_use_cli_transport() is False
 
 
 def test_config_from_env_unknown_provider(monkeypatch):
@@ -105,6 +209,290 @@ def test_build_provider_openai(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "k")
     provider = build_provider()
     assert isinstance(provider, OpenAIProvider)
+
+
+def test_build_provider_codex(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-codex")
+    provider = build_provider()
+    assert isinstance(provider, CodexProvider)
+
+
+async def test_codex_provider_uses_responses_api(monkeypatch):
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+    monkeypatch.setenv("CODEX_TRANSPORT", "responses")
+    monkeypatch.setenv("CODEX_ACCOUNT_ID", "acct_123")
+
+    captured: dict = {}
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(
+                output_text=_valid_payload(),
+                usage=SimpleNamespace(input_tokens=13, output_tokens=5),
+            )
+
+    class FakeOpenAIClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.responses = FakeResponses()
+
+    import openai
+    from lib.llm.provider import _schema_hint
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeOpenAIClient)
+    provider = CodexProvider(LLMConfig(
+        provider="codex",
+        api_key="codex-key",
+        model="gpt-5.3-codex",
+    ))
+
+    raw = await provider._raw_call(
+        system="s",
+        user="u",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint=_schema_hint(Claim),
+    )
+
+    assert json.loads(raw)["claim"] == "Alice ships fast"
+    assert captured["client"]["api_key"] == "codex-key"
+    assert captured["client"]["default_headers"] == {
+        "ChatGPT-Account-Id": "acct_123",
+    }
+    assert captured["request"]["model"] == "gpt-5.3-codex"
+    assert captured["request"]["text"]["format"]["type"] == "json_schema"
+    assert captured["request"]["text"]["format"]["strict"] is False
+
+
+async def test_codex_provider_uses_cli_transport(monkeypatch):
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+    monkeypatch.setenv("CODEX_TRANSPORT", "cli")
+    captured: dict = {}
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            captured["stdin"] = input.decode("utf-8")
+            args = captured["args"]
+            output_path = Path(args[args.index("--output-last-message") + 1])
+            output_path.write_text(_valid_payload(), encoding="utf-8")
+            return b"codex\n", b""
+
+        def kill(self):
+            captured["killed"] = True
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    from lib.llm.provider import _schema_hint
+
+    monkeypatch.setattr(
+        "lib.llm.provider.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    provider = CodexProvider(LLMConfig(
+        provider="codex",
+        api_key="oauth-token",
+        model="gpt-5.3-codex",
+    ))
+
+    raw = await provider._raw_call(
+        system="system prompt",
+        user="user prompt",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint=_schema_hint(Claim),
+    )
+
+    assert json.loads(raw)["claim"] == "Alice ships fast"
+    assert captured["args"][:4] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "exec",
+    ]
+    assert "--output-schema" not in captured["args"]
+    assert "system prompt" in captured["stdin"]
+    assert "user prompt" in captured["stdin"]
+    assert "Alice ships fast" not in captured["stdin"]
+    assert '"properties"' in captured["stdin"]
+
+
+async def test_codex_provider_reuses_app_server_transport(monkeypatch):
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+    monkeypatch.setenv("CODEX_TRANSPORT", "app-server")
+    monkeypatch.setenv("CODEX_REASONING_EFFORT", "low")
+
+    import lib.llm.provider as provider_module
+
+    provider_module._CODEX_APP_SERVER_CLIENT = None
+    captured: dict = {"spawns": 0, "turns": []}
+
+    class FakeStdout:
+        def __init__(self):
+            self.queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+        async def readline(self):
+            return await self.queue.get()
+
+        def push(self, obj):
+            self.queue.put_nowait((json.dumps(obj) + "\n").encode("utf-8"))
+
+    class FakeStderr:
+        async def readline(self):
+            return b""
+
+    class FakeStdin:
+        def __init__(self, stdout: FakeStdout):
+            self.stdout = stdout
+
+        def write(self, data):
+            msg = json.loads(data.decode("utf-8"))
+            method = msg["method"]
+            request_id = msg.get("id")
+            if method == "initialize":
+                self.stdout.push({"id": request_id, "result": {"protocolVersion": "0.1"}})
+            elif method == "thread/start":
+                self.stdout.push({
+                    "id": request_id,
+                    "result": {"thread": {"id": f"thread-{request_id}"}},
+                })
+            elif method == "turn/start":
+                captured["turns"].append(msg["params"])
+                self.stdout.push({
+                    "id": request_id,
+                    "result": {"turn": {"id": f"turn-{request_id}"}},
+                })
+                self.stdout.push({
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": _valid_payload(),
+                        }
+                    },
+                })
+                self.stdout.push({
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": f"turn-{request_id}",
+                            "status": "completed",
+                        }
+                    },
+                })
+
+        async def drain(self):
+            return None
+
+    class FakeAppServerProc:
+        returncode = None
+
+        def __init__(self):
+            self.stdout = FakeStdout()
+            self.stdin = FakeStdin(self.stdout)
+            self.stderr = FakeStderr()
+
+        def kill(self):
+            self.returncode = -9
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args, **_kwargs):
+        captured["spawns"] += 1
+        captured["args"] = list(args)
+        return FakeAppServerProc()
+
+    monkeypatch.setattr(
+        "lib.llm.provider.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    codex = CodexProvider(LLMConfig(
+        provider="codex",
+        api_key="oauth-token",
+        model="gpt-5.3-codex",
+    ))
+
+    first = await codex._raw_call(
+        system="system prompt",
+        user="user prompt",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint="",
+    )
+    second = await codex._raw_call(
+        system="system prompt",
+        user="user prompt 2",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint="",
+    )
+
+    assert json.loads(first)["claim"] == "Alice ships fast"
+    assert json.loads(second)["claim"] == "Alice ships fast"
+    assert captured["spawns"] == 1
+    assert captured["args"] == ["codex", "app-server", "--listen", "stdio://"]
+    assert captured["turns"][0]["effort"] == "low"
+    assert captured["turns"][0]["sandboxPolicy"] == {"type": "readOnly"}
+
+    if provider_module._CODEX_APP_SERVER_CLIENT is not None:
+        await provider_module._CODEX_APP_SERVER_CLIENT._restart()
+        provider_module._CODEX_APP_SERVER_CLIENT = None
+
+
+async def test_codex_provider_does_not_infer_account_header_for_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+    monkeypatch.setenv("CODEX_TRANSPORT", "responses")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({"tokens": {"account_id": "acct_from_local_login"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_AUTH_FILE", str(auth_file))
+
+    captured: dict = {}
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(output_text=_valid_payload())
+
+    class FakeOpenAIClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.responses = FakeResponses()
+
+    import openai
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeOpenAIClient)
+    provider = CodexProvider(LLMConfig(
+        provider="codex",
+        api_key="codex-key",
+        model="gpt-5.3-codex",
+    ))
+
+    raw = await provider._raw_call(
+        system="s",
+        user="u",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint="",
+    )
+
+    assert json.loads(raw)["claim"] == "Alice ships fast"
+    assert captured["client"]["api_key"] == "codex-key"
+    assert "default_headers" not in captured["client"]
 
 
 def test_deepseek_reasoner_uses_json_mode_not_strict_tools(monkeypatch):

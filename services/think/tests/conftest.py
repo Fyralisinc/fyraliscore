@@ -39,6 +39,18 @@ from lib.shared.ids import uuid7
 
 from services.models.repo import ModelsRepo, pgvector_pool_init
 
+
+def pytest_collection_modifyitems(config, items):
+    del config
+    retired = {
+        "test_relocate_adversarial.py",
+        "test_relocate_applier.py",
+    }
+    reason = "retired relocate op; topology now emits relationship candidates"
+    for item in items:
+        if pathlib.Path(str(item.fspath)).name in retired:
+            item.add_marker(pytest.mark.skip(reason=reason))
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
@@ -160,7 +172,11 @@ async def other_tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
 
 @pytest_asyncio.fixture
 async def models_repo(fresh_db: asyncpg.Pool) -> ModelsRepo:
-    return ModelsRepo(fresh_db, embedder=None)
+    return ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
 
 
 @pytest_asyncio.fixture

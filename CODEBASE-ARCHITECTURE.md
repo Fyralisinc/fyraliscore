@@ -60,12 +60,13 @@ source event
 | LLM | [lib/llm/provider.py](lib/llm/provider.py) | Structured-output provider abstraction over Anthropic, OpenAI, and DeepSeek, with retry and cost tracking. |
 | Think worker | [services/think/worker.py](services/think/worker.py) | Polls reasoning queues and invokes the `think()` pipeline. |
 | Post-commit worker | [services/think/post_commit.py](services/think/post_commit.py) | Durable at-least-once side effects after reasoning commits. |
+| Topology sweeper | [services/workers/topology_sweeper](services/workers/topology_sweeper) | Periodically refreshes latent relationship candidates over a bounded high-activation frontier. |
 | Judgment scoring | [services/judgment](services/judgment) | Shared leverage scoring for relationship/situation candidates and future attention-ranking surfaces. |
 | Rendering | [services/rendering](services/rendering) | LLM-backed UI prose generation with voice-rule checks and render cost records. |
 | CEO view cache | [services/greeting](services/greeting) | Snapshot composition, cache writes, `/view/ceo/home`, and WS streaming. |
 | Demo subsystem | [services/demo](services/demo) | Demo companies, per-session tenants, snapshots, auth tokens, simulator, SSE. |
 
-Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_worker`, `post_commit_worker`, `ui`, `nginx-proxy`, and `acme-companion` in [docker-compose.yml](docker-compose.yml). Several worker packages are implemented but are not first-class compose services yet.
+Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_worker`, `post_commit_worker`, `topology_sweeper`, `ui`, `nginx-proxy`, and `acme-companion` in [docker-compose.yml](docker-compose.yml). Several worker packages are implemented but are not first-class compose services yet.
 
 ## 3. Cross-Cutting Conventions
 
@@ -77,7 +78,7 @@ Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_wor
 
 **Vectors.** `observations`, `models`, and `entity_aliases` store `VECTOR(768)`. Ollama's `nomic-embed-text` is the default local backend; [lib/embeddings/factory.py](lib/embeddings/factory.py) can choose OpenAI when configured.
 
-**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's DeepSeek strict-mode schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. `.env.example` sets DeepSeek as the local default; the provider library itself falls back to Anthropic if no provider env is set.
+**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's DeepSeek strict-mode schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. Each Think system prompt also starts with a source-tuned reasoning profile: ingestion carries normalized `signal_type`/trust metadata into the queue, and [services/think/prompt.py](services/think/prompt.py) chooses a working stance and abstraction level based on signal provenance, trigger kind, and whether the call can touch claims, graph edges, Acts, Resources, or topology. `.env.example` sets DeepSeek as the local default; `LLM_PROVIDER=codex` uses OpenAI Responses when API-key auth is present and a persistent Codex app-server for local ChatGPT/Codex login auth, with `CODEX_TRANSPORT=cli` kept as a fallback. The provider library itself falls back to Anthropic if no provider env is set.
 
 **Observability records.** Runtime state is heavily persisted: `think_runs`, `think_run_costs`, `think_run_artifacts`, `view_render_costs`, `audit_events`, `reconciliation_events`, `relationship_maintenance_log`, and debug routes all exist to make reasoning inspectable.
 
@@ -101,7 +102,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 
 | Area | Tables | Purpose |
 |---|---|---|
-| Queues | `think_trigger_queue`, `model_reeval_queue`, `pending_post_commit_actions`, `topo_dirty_queue` | Durable work queues polled with `FOR UPDATE SKIP LOCKED`. |
+| Queues | `think_trigger_queue`, `model_reeval_queue`, `pending_post_commit_actions` | Durable work queues polled with `FOR UPDATE SKIP LOCKED`; `topo_dirty_queue` remains only as legacy schema compatibility and is not part of active processing. |
 | Idempotency | `applied_triggers`, `dedup_keys_seen` | Prevent duplicate application of the same trigger/diff. |
 | Think observability | `think_runs`, `think_run_costs`, `think_run_artifacts`, `think_anomalies_raw` | Run status, cost, debug capture, anomaly staging. |
 | Reconciliation/audit | `reconciliation_events`, `audit_events` | Duplicate-model decisions and model state-change chain. |
@@ -109,7 +110,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 | Recommendations | `model_watchers`; recommendation columns on `models`; `decision_deltas` and evidence | Recommendation workflow and Today review surface. |
 | Forecasts | `predictions`, `prediction_signals`, calibration tables | Forecast creation, resolution, and hit-rate/cost views. |
 | Demo | `tenants`, `demo_configs`, `demo_sessions`, `demo_session_costs` | Per-demo tenant provisioning and cost/session accounting. |
-| Topology and relationship intelligence | `model_edges`, `model_neighborhoods`, `model_neighborhood_membership`, `topology_events`, `relationship_candidates` | Typed, evidence-backed model graph, topology embeddings, neighborhoods, phase events, and pre-truth relationship/situation candidates. |
+| Topology and relationship intelligence | `relationship_candidates`, `model_edges`; legacy `model_neighborhoods`, `model_neighborhood_membership`, `topology_events` | Active topology is the latent relationship field that creates pre-truth relationship/situation candidates from impact signatures. Typed edges store accepted pairwise meaning. Legacy accepted-memory topology tables remain for compatibility and map history. |
 
 ## 5. Gateway Architecture
 
@@ -185,8 +186,8 @@ The core reasoning entry point is [services/think/reason.py](services/think/reas
 | T1 | Ingestion | A new signal arrived. |
 | T2 | Prediction/belief updates | A prediction or belief needs reevaluation. |
 | T3 | Anomaly processor | An anomalous region needs reasoning. |
-| T4 | Background/pattern work | Maintenance or precipitation-driven reasoning. |
-| T6 | Topology events | Neighborhood/graph phase shifts. |
+| T4 | Background/pattern/topology-candidate work | Maintenance, precipitation, or latent relationship candidate interpretation. |
+| T6 | Legacy topology events | Retired accepted-memory neighborhood/graph phase shifts. |
 
 `ThinkWorker` polls `think_trigger_queue`, promotes pending `model_reeval_queue` rows to T4 triggers, applies per-tenant concurrency caps, backs off under queue pressure, and marks failed rows after retry exhaustion. The poller only leases as many rows as it has local in-flight capacity left, so a large single-tenant backlog does not get locked by tasks waiting behind that tenant's semaphore. The safe default is one in-flight Think transaction per tenant. Higher `THINK_MAX_CONCURRENCY_PER_TENANT` values are treated as explicit stress settings because the current Think transaction still spans retrieval, LLM reasoning, validation, and apply; large real-LLM durability runs exposed model-row deadlocks when multiple long Think transactions mutated the same tenant memory graph concurrently.
 
@@ -202,7 +203,6 @@ Pathways:
 | B semantic | Vector similarity against seed text. |
 | C temporal | Recent relevant context. |
 | D pattern | Pattern/background retrieval. |
-| F topological | Topology embedding and neighborhood context, filtered to active non-expired graph relationships. |
 | G model-edge | Typed Model graph traversal over support, tension, causal, blocking, analogy, co-occurrence, and warning edges; explicit Model triggers traverse from the Model itself, while entity-only triggers derive graph seeds from normalized scope sidecars. Rejected/retired/expired edges do not retrieve. |
 
 Trigger-specific weights combine pathway outputs. T1 retrieval uses entity seeds supplied by ingestion and also backfills `entities_mentioned`, actor, text, and embedding from the triggering Observation row, so older/sparse queue payloads still retrieve against the real customer/commitment/resource scope that ingestion resolved. T2/model-triggered retrieval is intentionally graph-forward so typed Model edges can outrank generic semantic or structural neighbors when evaluating an existing belief. Results are merged/ranked, then `ModelsRepo.retrieve()` reconsolidates returned models by increasing retrieval count/activation and updating `last_retrieved_at`.
@@ -215,7 +215,7 @@ The Think transaction performs:
 
 1. Insert/update a `think_runs` record.
 2. Retrieve and assemble context.
-3. Build a `ReasoningFrame` from the trigger and retrieved Models. The frame normalizes T1/T2/T3/T4/T6 into the concrete question the run should answer, records seed/candidate Model ids, sets allowed op surfaces and small budgets, includes ephemeral dynamic signals when detectors find them, and is stored in retrieval/debug/apply artifacts.
+3. Build a `ReasoningFrame` from the trigger and retrieved Models. The frame normalizes T1/T2/T3/T4/T6 into the concrete question the run should answer, with `T4:latent_relationship_candidate` dedicated to topology candidate interpretation. It records seed/candidate Model ids, sets allowed op surfaces and small budgets, includes ephemeral dynamic signals when detectors find them, and is stored in retrieval/debug/apply artifacts.
 4. Route authoritative/deterministic cases to deterministic handlers; otherwise call the configured LLM through `llm_reason`. `T2:belief_updated` is deterministic bookkeeping, so belief-update cascades drain without a secondary LLM call unless the trigger has prediction-resolution shape.
 5. Validate the raw diff against [services/think/diff_schema.py](services/think/diff_schema.py) and semantic rules in `validator.py`. Same-diff Model placeholders are allowed through `born_from_event_id`, `entry.model_id`, or `entry.id` so live LLMs can refer to a newly inserted Model from edge/action ops in the same response.
 6. Compute context-use telemetry for the validated diff against the assembled prompt context.
@@ -230,7 +230,7 @@ Diffs mutate four surfaces:
 
 | Diff bucket | Target |
 |---|---|
-| `claim_ops` | Models: insert, update, archive, relocate. |
+| `claim_ops` | Models: insert, update, archive. |
 | `edge_ops` | Model graph relationships: add/reconfirm/retire typed edges with evidence and explanations. |
 | `act_ops` | Goals, commitments, decisions, and act graph edges. |
 | `resource_ops` | Resources, transactions, deployments, releases. |
@@ -243,13 +243,13 @@ For LLM ergonomics, validation and apply support same-diff references: an `edge_
 
 [services/actors/operating_context.py](services/actors/operating_context.py) derives actor operating context from existing substrate data instead of introducing an `actor_model` proposition kind. It summarizes actor-scoped Models, owned commitments, blocked work, recent observations, capability assessments, concerns, patterns, and relations into the existing `<actor_context>` prompt section. Actor operating claims remain ordinary Models scoped through `scope_actors`: capability assessments, concerns, relations, patterns, hypotheses, or states depending on the evidence.
 
-[services/dynamics/detectors.py](services/dynamics/detectors.py) similarly keeps organizational dynamics ephemeral. It reads existing `audit_events`, `topology_events`, observations, and active Models to surface signals such as oscillation, recurring updates, stale memory, topology phase shifts, and high actor activity into the `ReasoningFrame`. Important dynamics can be promoted through existing proposition kinds (`pattern`, `pattern_instance`, `environmental_trend`, `concern`, or `situation`) rather than a separate dynamics table.
+[services/dynamics/detectors.py](services/dynamics/detectors.py) similarly keeps organizational dynamics ephemeral. It reads existing `audit_events`, legacy `topology_events`, observations, and active Models to surface signals such as oscillation, recurring updates, stale memory, legacy graph phase shifts, and high actor activity into the `ReasoningFrame`. Important dynamics can be promoted through existing proposition kinds (`pattern`, `pattern_instance`, `environmental_trend`, `concern`, or `situation`) rather than a separate dynamics table.
 
 Application is idempotent through `applied_triggers`. A duplicate trigger short-circuits rather than re-running side effects.
 
 ## 8. Models, Reconciliation, Audit, and Topology
 
-[services/models/repo.py](services/models/repo.py) is the main Models repository. Inserts validate proposition shape, falsifier adequacy above confidence thresholds, scope actor existence, confidence clipping, embeddings, recommendation shape, state-change emission, audit events, typed edges, and topology dirty-queue updates.
+[services/models/repo.py](services/models/repo.py) is the main Models repository. Inserts validate proposition shape, falsifier adequacy above confidence thresholds, scope actor existence, confidence clipping, embeddings, recommendation shape, state-change emission, audit events, typed edges, and latent topology candidate generation.
 
 Key model-side concepts:
 
@@ -265,8 +265,9 @@ Key model-side concepts:
 | Normalized scope | `model_scope_entities`, `model_scope_actors` | Insert-time sidecars mirror `models.scope_entities` / `scope_actors` so retrieval and graph expansion can anchor Models without JSONB-only scans; malformed legacy non-UUID entity ids stay in JSONB but are skipped by the sidecar. |
 | Scope bridge | `customer_commitments` + Pathway A + `ModelsRepo.search_by_scope` + Think prompt resource context | Customer lookups normalize `customer` and `customer_resource`, expand across linked commitments, and commitment lookups can expand back to customers. When the explicit bridge is missing, customer lookup falls back to obvious commitment-title matches against the customer identity. Think prompts render resource identity/description and instruct customer-linked commitment Models to carry both scopes, preserving precise commitment workflows while making customer-level memory retrieval robust. |
 | Revenue bridge compatibility | [services/resources/bridge.py](services/resources/bridge.py), [services/bridge/queries.py](services/bridge/queries.py) | Customer health and revenue-at-risk queries accept both canonical `arr_cents` resources and legacy/demo `arr_usd` resources, and Bridge state-change queries understand both `metadata.new_state` and older `to_state` observation shapes. |
-| Topology | [lib/topology](lib/topology), [services/topology](services/topology) | Positional embeddings, neighborhoods, topology events, UMAP projection. Signed edges can push related Models apart; rejected/retired/expired edges are ignored by topology propagation. |
-| Relationship candidates | [services/relationships](services/relationships), `relationship_candidates` | Ranked pre-acceptance hypotheses for new edges or situation Models, scored by shared judgment leverage. Causal candidates require an explicit mechanism summary and can carry intervention surface, expected delay, and confounders in metadata before promotion. |
+| Topology | [services/topology/field.py](services/topology/field.py), [services/topology/eval_harness.py](services/topology/eval_harness.py), [services/workers/topology_sweeper](services/workers/topology_sweeper), `relationship_candidates` | Active latent relationship field. Each new/changed Model is converted into an impact signature over flows, pressures, surfaces, stakes, time shape, evidence, and action/falsifier surface. The field searches bounded semantic, surface, consequence, and evidence pools, scores consequence interactions, persists only high-yield edge/situation candidates, and enqueues at most a small T4 Think pass for top candidates. The sweeper periodically revisits high-activation Models so older memory can connect to newer memory without a full all-pairs recompute. The eval harness measures whether expected hidden pairs/situations are found before accepted typed edges exist. |
+| Accepted-memory topology (legacy schema) | `model_neighborhoods`, `model_neighborhood_membership`, `topology_events`, `topo_dirty_queue` | Retired graph-derived positional embeddings, neighborhoods, topology events, and projection helpers. The Python repos/workers for this engine have been removed; database tables remain for compatibility/history and current map/Today/decision-delta surfaces that read historical rows. |
+| Relationship candidates | [services/relationships](services/relationships), `relationship_candidates` | Ranked pre-acceptance hypotheses for new edges or situation Models, scored by shared judgment leverage. Topology candidates carry score components and impact signatures in metadata. Candidate adjudication marks each row accepted, rejected, or needs-review after T4 Think interprets the proposal. Causal candidates require an explicit mechanism summary and can carry intervention surface, expected delay, and confounders in metadata before promotion. |
 
 Reconciliation is first-class in [services/think/reconciler.py](services/think/reconciler.py). Insert claim ops are checked against existing models; decisions are recorded in `reconciliation_events`. Auto-merge decisions convert inserts into evidence-preserving updates: confidence is updated, `supporting_event_ids` gains the new event, `signal_readings` records a confirmation reading, and confirmation timestamps/counts advance. Human-review/no-match decisions preserve auditability and avoid silent destructive merges. Live strict-schema LLM outputs usually omit embeddings, so the reconciler uses the same deterministic lexical fallback as the applier before insert; this lets production-like diffs deduplicate before duplicate Models land.
 
@@ -362,6 +363,7 @@ The gateway can also mount simulation helpers and static Slack UI from [simulati
 |---|---|---|
 | Think | [scripts/run_think_worker.py](scripts/run_think_worker.py) | Creates pool/provider and runs `ThinkWorker.run()`. |
 | Post-commit | [scripts/run_post_commit_worker.py](scripts/run_post_commit_worker.py) | Polls `pending_post_commit_actions`, dispatches handlers, retries with backoff, dead-letters after max attempts. |
+| Topology sweeper | [scripts/run_topology_sweeper.py](scripts/run_topology_sweeper.py) | Runs the latent relationship field on a bounded high-activation frontier and logs candidate lifecycle metrics. |
 
 ### In-Process in Gateway
 
@@ -382,8 +384,7 @@ Additional worker packages exist under [services/workers](services/workers):
 | `deadline_resolver` | Resolves due predictions/deadlines. |
 | `precipitation` | Clusters candidate patterns and proposes background reasoning. |
 | `edge_drift` | Checks typed model edges against legacy relationship arrays. |
-| `topology_updater` | Processes topology dirty queue and cascades positional updates. |
-| `neighborhood_detector` | Detects graph neighborhoods and topology phase events. |
+| `topology_sweeper` | Periodically reruns the latent relationship field over a bounded high-activation frontier. |
 | `maintenance` | Daily/weekly/monthly maintenance routines. |
 
 Treat these as available architecture modules, not all as currently deployed services.
@@ -414,7 +415,7 @@ Important env groups:
 | Group | Examples |
 |---|---|
 | Database/embedding | `DATABASE_URL`, `OLLAMA_URL`, `OLLAMA_EMBED_MODEL`. |
-| LLM | `LLM_PROVIDER`, `LLM_MODEL`, provider API keys, timeouts. |
+| LLM | `LLM_PROVIDER`, `LLM_MODEL`, provider API keys, Codex auth file overrides, timeouts. |
 | Tenant identity | `DEFAULT_TENANT_ID`, `COMPANY_OS_CEO_ACTOR_ID`, `DEV_BEARER_TOKEN`, `VIEW_CEO_TOKEN`. |
 | Gateway | `COMPANY_OS_ENV`, `GATEWAY_OWNS_POOL`, `GATEWAY_CEO_VIEW_ENABLED`, `GATEWAY_START_GRT_SCHEDULER`, `GATEWAY_MOUNT_SIM`. |
 | Workers | `THINK_*`, `POST_COMMIT_WORKER_POLL_INTERVAL_S`, `GREETING_REFRESH_INTERVAL_SECONDS`. |
@@ -486,7 +487,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 | Risk | Why it matters | Where to look |
 |---|---|---|
 | Gateway is large | Many product adapters and legacy routes live in one file, increasing coupling. | [services/gateway/main.py](services/gateway/main.py), route modules under [services/gateway](services/gateway). |
-| Worker deployment gap | More worker modules exist than are launched by compose. | [services/workers](services/workers), [docker-compose.yml](docker-compose.yml). |
+| Worker deployment gap | Some worker modules still exist as available packages before becoming default compose services. Topology sweeper is now launched by compose and local scripts. | [services/workers](services/workers), [docker-compose.yml](docker-compose.yml). |
 | Dev auth shortcuts | Static tokens/default tenant are convenient but easy to misconfigure in shared envs. | `.env.example`, gateway public path config. |
 | Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingestion/handlers/__init__.py](services/ingestion/handlers/__init__.py). |
 | Spec references are historical | Many docstrings reference older `ARCHITECTURE-FINAL.md`, `SCHEMA-LOCK.md`, and `CONTRACTS.md` files not present in this checkout. | Code and migrations are the effective source of truth. |

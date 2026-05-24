@@ -423,6 +423,10 @@ async def test_think_trigger_enqueued_on_new_observation(
     assert row["trigger_kind"] == "T1"
     assert row["trigger_subkind"] == "event_arrival"
     assert row["observation_id"] == r.observation.id
+    assert row["payload"]["source_channel"] == "slack:message"
+    assert row["payload"]["observation_kind"] == "signal"
+    assert row["payload"]["signal_type"] == "slack:message/message"
+    assert row["payload"]["trust_tier"] == "attested_agent"
     assert {"type": "commitment", "id": str(entity_id)} in (
         row["payload"].get("seed_entity_ids") or []
     )

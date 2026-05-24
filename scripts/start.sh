@@ -3,11 +3,12 @@
 #
 # What this does, in order:
 #   1. Sources .env (and .env.dogfood when present) and validates the
-#      DEEPSEEK_API_KEY secret + Postgres + Ollama dependencies.
+#      configured LLM secret + Postgres + Ollama dependencies.
 #   2. Applies any database migrations that haven't been recorded.
 #   3. Builds + emits the Truss / Northwind / Meridian demo snapshots
 #      when the .sql.zst files don't exist yet.
-#   4. Starts gateway, think_worker, post_commit_worker, and the Vite
+#   4. Starts gateway, think_worker, post_commit_worker, topology_sweeper,
+#      and the Vite
 #      UI dev server. PIDs land in /tmp/fyralis_stack.pids so
 #      `scripts/stop.sh` can shut them down cleanly.
 #   5. Waits for /healthz, prints the URLs, and (optionally) opens the
@@ -51,17 +52,48 @@ fail() { printf "\033[1;31m[start]\033[0m %s\n" "$*" >&2; exit 1; }
 # ----------------------------------------------------------------------
 # 1. Env + dependency sanity
 # ----------------------------------------------------------------------
-[ -f .env ] || fail ".env missing — copy from .env.example and fill in DEEPSEEK_API_KEY"
+[ -f .env ] || fail ".env missing — copy from .env.example and fill in your LLM key"
 set -a
 source .env
 [ -f .env.dogfood ] && source .env.dogfood
 set +a
 
-: "${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY not set in .env}"
 : "${DATABASE_URL:?DATABASE_URL not set in .env}"
 : "${OLLAMA_URL:?OLLAMA_URL not set in .env}"
 GATEWAY_PORT="${GATEWAY_PORT:-8000}"
 UI_PORT="${UI_PORT:-5173}"
+
+require_llm_auth() {
+  local provider="${LLM_PROVIDER:-deepseek}"
+  case "$provider" in
+    deepseek)
+      [ -n "${DEEPSEEK_API_KEY:-${LLM_API_KEY:-}}" ] \
+        || fail "DEEPSEEK_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=deepseek"
+      ;;
+    openai)
+      [ -n "${OPENAI_API_KEY:-${LLM_API_KEY:-}}" ] \
+        || fail "OPENAI_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=openai"
+      ;;
+    anthropic)
+      [ -n "${ANTHROPIC_API_KEY:-${LLM_API_KEY:-}}" ] \
+        || fail "ANTHROPIC_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=anthropic"
+      ;;
+    codex)
+      local codex_auth="${CODEX_AUTH_FILE:-${CODEX_HOME:-$HOME/.codex}/auth.json}"
+      if [ "${CODEX_TRANSPORT:-auto}" = "responses" ]; then
+        [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
+          || fail "Codex Responses auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY"
+      else
+        [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] || [ -f "$codex_auth" ] \
+          || fail "Codex auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or run codex login"
+      fi
+      ;;
+    *)
+      fail "Unsupported LLM_PROVIDER=${provider}"
+      ;;
+  esac
+}
+require_llm_auth
 
 [ -d ".venv" ] || fail ".venv missing — create with: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
 [ -d "ui/node_modules" ] || { log "Installing UI deps…"; (cd ui && npm install --silent); }
@@ -132,6 +164,7 @@ mkdir -p "$LOGDIR"
 : > "$LOGDIR/gateway.log"
 : > "$LOGDIR/think_worker.log"
 : > "$LOGDIR/post_commit_worker.log"
+: > "$LOGDIR/topology_sweeper.log"
 : > "$LOGDIR/ui.log"
 
 PIDFILE="/tmp/fyralis_stack.pids"
@@ -155,6 +188,11 @@ record_pid $!
 log "Starting post-commit worker…"
 .venv/bin/python scripts/run_post_commit_worker.py \
   > "$LOGDIR/post_commit_worker.log" 2>&1 &
+record_pid $!
+
+log "Starting topology sweeper…"
+.venv/bin/python scripts/run_topology_sweeper.py \
+  > "$LOGDIR/topology_sweeper.log" 2>&1 &
 record_pid $!
 
 log "Starting UI on :${UI_PORT}…"

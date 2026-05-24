@@ -527,10 +527,9 @@ EXPECTED_TABLES: dict[str, Table] = {
         },
     ),
     "topo_dirty_queue": Table(
-        # 0032_topology_layer.sql — S2 propagation queue. Drained by
-        # services.workers.topology_updater. NULLS NOT DISTINCT dedup
-        # collapses unprocessed duplicates the same way
-        # model_reeval_queue does.
+        # 0032_topology_layer.sql — retired S2 propagation queue.
+        # Kept for schema compatibility; active topology now emits
+        # relationship_candidates from services.topology.field.
         columns=dict([
             _col("id", UUID, False),
             _col("tenant_id", UUID, False),
@@ -551,10 +550,8 @@ EXPECTED_TABLES: dict[str, Table] = {
         },
     ),
     "model_neighborhoods": Table(
-        # 0032_topology_layer.sql — S2 materialized communities.
-        # Detected by services.workers.neighborhood_detector via
-        # connected-components on the active edge graph; matched to
-        # prior neighborhoods for stable IDs.
+        # 0032_topology_layer.sql — retired S2 materialized
+        # communities. Kept for map/history compatibility.
         columns=dict([
             _col("id", UUID, False),
             _col("tenant_id", UUID, False),

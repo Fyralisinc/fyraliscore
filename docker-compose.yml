@@ -86,6 +86,19 @@ services:
       DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
     env_file: .env.production
 
+  topology_sweeper:
+    build: .
+    container_name: company_os_topology_sweeper
+    command: python scripts/run_topology_sweeper.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+    env_file: .env.production
+
   ui:
     build:
       context: .

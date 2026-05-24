@@ -48,14 +48,17 @@ cp .env.example .env
 Open `.env` and set, at minimum:
 
 - `DEEPSEEK_API_KEY` — required when `LLM_PROVIDER=deepseek` (the default).
-  If you prefer Anthropic or OpenAI, set `LLM_PROVIDER` and the matching
-  `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` instead.
+  If you prefer Anthropic, OpenAI, or Codex, set `LLM_PROVIDER` and the
+  matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CODEX_API_KEY` instead.
+  For local Codex dogfood, `LLM_PROVIDER=codex` can also reuse
+  `~/.codex/auth.json` after `codex login`; `CODEX_TRANSPORT=app-server`
+  keeps one Codex app-server process warm for faster repeated Think calls.
 - All other variables ship with sensible local-dev defaults. Review them
   if you've changed Postgres or Ollama ports.
 
 Optional: create a second overlay file `.env.dogfood` for values that
 differ between your day-to-day env and the dogfood stack (model choices,
-worker poll intervals, the dev bearer token, etc.). `scripts/dogfood_up.sh`
+worker/sweeper intervals, the dev bearer token, etc.). `scripts/dogfood_up.sh`
 sources `.env` first and `.env.dogfood` last, so dogfood values win.
 Both files are gitignored.
 
@@ -170,8 +173,9 @@ cd ..
 
 ## 8. Bring up the full stack
 
-The dogfood script starts the gateway, the two workers, and the Vite
-dev server. It writes logs to `/tmp/company_os_logs/` and PIDs to
+The dogfood script starts the gateway, Think worker, post-commit worker,
+topology sweeper, and the Vite dev server. It writes logs to
+`/tmp/company_os_logs/` and PIDs to
 `/tmp/company_os_dogfood.pids`.
 
 ```bash
@@ -260,6 +264,9 @@ python scripts/run_think_worker.py
 # Post-commit worker
 python scripts/run_post_commit_worker.py
 
+# Topology sweeper
+python scripts/run_topology_sweeper.py
+
 # UI dev server (with API mocks, no backend required)
 cd ui && npm run dev:mock
 ```
@@ -269,7 +276,11 @@ cd ui && npm run dev:mock
 ## 11. Common issues
 
 **`ERROR: .env not found`** — copy `.env.example` to `.env` and fill in
-`DEEPSEEK_API_KEY` (or your chosen provider's key).
+`DEEPSEEK_API_KEY` or your chosen provider's key. For Codex dogfood, set
+`LLM_PROVIDER=codex` and either provide `CODEX_API_KEY`/`OPENAI_API_KEY` or
+run `codex login` so `~/.codex/auth.json` exists. ChatGPT-style Codex login
+uses `CODEX_TRANSPORT=app-server`; platform API keys should use
+`CODEX_TRANSPORT=responses`.
 
 **`ERROR: Postgres not running`** — `docker compose up -d postgres` and
 wait for the healthcheck. `pg_isready` must succeed.

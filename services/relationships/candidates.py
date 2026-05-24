@@ -122,6 +122,7 @@ def make_edge_candidate(
     expected_delay: str | None = None,
     confounders: tuple[str, ...] = (),
     metadata: dict[str, Any] | None = None,
+    source: str = "relationship_candidate_service",
     review_status: ReviewStatus = "candidate",
 ) -> RelationshipCandidate:
     if source_model_id == target_model_id:
@@ -157,6 +158,7 @@ def make_edge_candidate(
         evidence_event_ids=evidence_event_ids,
         explanation=explanation,
         scores=scores,
+        source=source,
         metadata=candidate_metadata,
         review_status=review_status,
     )
@@ -173,6 +175,7 @@ def make_situation_candidate(
     scores: JudgmentScores,
     evidence_event_ids: tuple[UUID, ...] = (),
     metadata: dict[str, Any] | None = None,
+    source: str = "relationship_candidate_service",
     review_status: ReviewStatus = "candidate",
 ) -> RelationshipCandidate:
     members = tuple(dict.fromkeys(member_model_ids))
@@ -197,6 +200,7 @@ def make_situation_candidate(
         proposed_proposition=proposition,
         explanation=relationship_summary,
         scores=scores,
+        source=source,
         metadata=metadata or {},
         review_status=review_status,
     )

@@ -336,7 +336,11 @@ def every_kind_proposition() -> list[dict]:
 
 @pytest.fixture
 def repo(fresh_db: asyncpg.Pool) -> ModelsRepo:
-    return ModelsRepo(fresh_db, embedder=None)
+    return ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
 
 
 @pytest_asyncio.fixture

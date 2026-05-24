@@ -78,5 +78,5 @@ markers = [
     "integration: requires live Postgres (DATABASE_URL)",
     "ollama: requires live Ollama (OLLAMA_URL)",
     "slow: slow test (> 1s)",
-    "real_llm: real-LLM test (requires DEEPSEEK_API_KEY, runs only with RUN_REAL_LLM=1 or -m real_llm)",
+    "real_llm: real-LLM test (requires configured provider auth, runs only with RUN_REAL_LLM=1 or -m real_llm)",
 ]

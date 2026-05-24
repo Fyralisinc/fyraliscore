@@ -1,7 +1,6 @@
-"""Prompt-rendering adversarials for the S3 <topology_context>
+"""Prompt-rendering adversarials for legacy <topology_context>
 section + T6 instruction injection. Targets unicode, very large
-contexts, malformed shapes that the assembler might produce, and
-the relocate-doc presence in the system prompt."""
+contexts, and malformed shapes that the assembler might produce."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -23,12 +22,10 @@ def _bundle(topology_context=None) -> ContextBundle:
     )
 
 
-def test_relocate_documented_in_system_prompt():
-    """The system prompt MUST mention the relocate op shape so the
-    LLM knows it can emit one."""
+def test_relocate_not_documented_in_system_prompt():
+    """The retired relocate op must not be offered to the LLM."""
     pair = build_prompt(TriggerContext(kind="T1", tenant_id=uuid4()), _bundle())
-    assert "claim_ops.relocate" in pair.system or "relocate" in pair.system
-    assert "relocate_target" in pair.system
+    assert "relocate_target" not in pair.system
 
 
 def test_topology_context_handles_huge_neighborhood_list():
@@ -167,7 +164,7 @@ def test_t6_instruction_block_includes_kind_specific_guidance():
         ),
         _bundle(),
     ).user
-    assert "TOPOLOGY phase event" in user
+    assert "legacy accepted-memory graph phase event" in user
     assert "Naming the neighborhood" in user
     assert "Surfacing the shift to the CEO" in user
     assert "No-op" in user

@@ -57,6 +57,27 @@ def test_reasoning_frame_renders_dynamic_signals() -> None:
     assert "re-asserted" in section
 
 
+def test_reasoning_frame_normalizes_latent_topology_candidate() -> None:
+    member_a = uuid7()
+    member_b = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=uuid7(),
+        member_model_ids=[member_a, member_b],
+    )
+
+    frame = ReasoningFrame.from_trigger(trigger)
+
+    assert frame.frame_kind == "topology_candidate_interpretation"
+    assert frame.stimulus_kind == "T4:latent_relationship_candidate"
+    assert str(member_a) in frame.seed_model_ids
+    assert str(member_b) in frame.seed_model_ids
+    assert "impact_signature_interaction" in frame.priority_dimensions
+    assert frame.policy["treat_topology_as_evidence_not_truth"] is True
+    assert frame.budget["act_ops"] == 0
+
+
 def test_build_prompt_renders_reasoning_frame_section() -> None:
     tenant_id = uuid7()
     trigger = TriggerContext(
@@ -77,3 +98,40 @@ def test_build_prompt_renders_reasoning_frame_section() -> None:
     assert "composite_situations" in user
     assert "situation_requires_multiple_existing_models" in user
     assert user.index("<reasoning_frame>") < user.index("<retrieved_context>")
+
+
+def test_build_prompt_renders_relationship_candidate_section() -> None:
+    candidate_id = uuid7()
+    left = uuid7()
+    right = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=uuid7(),
+        member_model_ids=[left, right],
+        seed_signature={
+            "relationship_candidate_id": str(candidate_id),
+            "relationship_candidate": {
+                "id": str(candidate_id),
+                "candidate_kind": "edge",
+                "basis": "topology_suggested",
+                "edge_kind": "blocks",
+                "source_model_id": str(left),
+                "target_model_id": str(right),
+                "member_model_ids": [str(left), str(right)],
+                "explanation": "Shared revenue and compliance pressure.",
+                "metadata": {
+                    "topology": {
+                        "kind": "latent_relationship_field",
+                        "score_components": {"total": 0.81},
+                    }
+                },
+            },
+        },
+    )
+
+    user = build_prompt(trigger, ContextBundle()).user
+
+    assert "<relationship_candidate>" in user
+    assert "edge_kind: blocks" in user
+    assert "latent_relationship_field" in user

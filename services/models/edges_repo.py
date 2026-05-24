@@ -90,14 +90,11 @@ from lib.shared.ids import uuid7
 from lib.shared.types import EdgeDetectedBy
 
 
-# Edge-graph mutations affect the topology layer (S2): both
-# endpoints' positional embeddings need to be recomputed. We enqueue
-# rows in topo_dirty_queue here via raw SQL rather than importing
-# TopoRepo, to avoid a circular dependency
-# (services.topology.topo_repo imports nothing from services.models,
-# but adding the reverse direction would create a cycle when
-# ModelsRepo is loaded before TopoRepo). The SQL is identical to
-# TopoRepo.enqueue.
+# Legacy accepted-memory topology used to recompute positional graph
+# embeddings after edge mutations. Topology is now the upstream latent
+# relationship field, so edge writes no longer enqueue graph-geometry
+# propagation. Keep this helper as a compatibility no-op for call sites
+# that still converge model_edges.
 async def _enqueue_topo_dirty(
     conn: asyncpg.Connection,
     *,
@@ -106,26 +103,8 @@ async def _enqueue_topo_dirty(
     cause_model_id: UUID | None = None,
     hop_depth: int = 0,
 ) -> None:
-    """Same shape as TopoRepo.enqueue. Inlined here to break the
-    services.models ↔ services.topology import cycle. The dedup
-    UNIQUE NULLS NOT DISTINCT collapses duplicates. delta_magnitude
-    NULL = "first-time / unknown magnitude" — worker treats this as
-    high priority."""
-    await conn.execute(
-        """
-        INSERT INTO topo_dirty_queue
-          (id, tenant_id, model_id, cause_model_id, hop_depth,
-           delta_magnitude)
-        VALUES ($1, $2, $3, $4, $5, NULL)
-        ON CONFLICT ON CONSTRAINT topo_dirty_queue_dedup
-        DO NOTHING
-        """,
-        uuid7(),
-        tenant_id,
-        model_id,
-        cause_model_id,
-        hop_depth,
-    )
+    del conn, model_id, tenant_id, cause_model_id, hop_depth
+    return None
 
 
 class EdgesRepoError(CompanyOSError):
@@ -326,10 +305,8 @@ class EdgesRepo:
             )
             ids.extend(mirror_ids)
 
-        # S2 topology: both endpoints' neighborhoods just changed →
-        # enqueue both for topo_embedding recompute. Inline helper
-        # to break the services.models ↔ services.topology import
-        # cycle. Idempotent on the dirty queue's dedup constraint.
+        # Retired accepted-memory topology hook. Kept as a no-op so
+        # edge writes no longer mutate graph-derived layout.
         await _enqueue_topo_dirty(
             conn,
             model_id=source,
@@ -555,8 +532,7 @@ class EdgesRepo:
                 target,
             )
         if count and int(count) > 0:
-            # S2 topology: removing an edge changes both endpoints'
-            # positions; enqueue both for recompute.
+            # Retired accepted-memory topology hook.
             await _enqueue_topo_dirty(
                 conn,
                 model_id=source,
@@ -632,6 +608,7 @@ class EdgesRepo:
                 reason,
             )
         if rows:
+            # Retired accepted-memory topology hook.
             await _enqueue_topo_dirty(
                 conn,
                 model_id=source,
@@ -743,6 +720,7 @@ class EdgesRepo:
         # (the archived Model itself doesn't need a recompute — it's
         # being archived).
         for row in rows:
+            # Retired accepted-memory topology hook.
             other = (
                 row["target_model_id"]
                 if row["source_model_id"] == model_id

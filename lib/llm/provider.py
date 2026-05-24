@@ -17,9 +17,9 @@ Shape:
     )
 
 The provider picks up config from env:
-    LLM_PROVIDER   = "anthropic" | "openai"
-    LLM_API_KEY    = ...
-    LLM_MODEL      = "claude-opus-4-7" | "gpt-4o" | ...
+    LLM_PROVIDER   = "anthropic" | "openai" | "deepseek" | "codex"
+    LLM_API_KEY    = ...   # or provider-specific key
+    LLM_MODEL      = "claude-opus-4-7" | "gpt-4o" | "gpt-5.3-codex" | ...
     LLM_TIMEOUT_SECONDS = 30
 
 Implements retry-on-parse-failure per Prompt 0.2 + TK-5. After
@@ -44,8 +44,11 @@ import contextvars
 import enum
 import json
 import os
+import tempfile
+import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
 from pydantic import BaseModel, ValidationError as PydanticValidationError
@@ -76,6 +79,11 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     # OpenAI — rough placeholders; update with the live pricing page before
     # relying on cost numbers in dashboards.
     "gpt-4o": {"input_per_mtok": 2.5, "output_per_mtok": 10.0},
+    # Codex / GPT-5 models. Keep these on fallback pricing until the
+    # deployed API pricing table is intentionally pinned for Fyralis.
+    "gpt-5.3-codex": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
+    "gpt-5.3-codex-spark": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
+    "gpt-5.5": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
     # Fallback — conservative enough that an unknown model is not free.
     "default": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
 }
@@ -208,13 +216,21 @@ def _extract_anthropic_usage(response: Any) -> tuple[int, int]:
 
 
 def _extract_openai_usage(response: Any) -> tuple[int, int]:
-    """OpenAI-compatible response `.usage.prompt_tokens` / `.completion_tokens`."""
+    """OpenAI-compatible usage from Chat Completions or Responses."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return 0, 0
-    return int(getattr(usage, "prompt_tokens", 0) or 0), int(
-        getattr(usage, "completion_tokens", 0) or 0
+    input_tokens = (
+        getattr(usage, "prompt_tokens", None)
+        or getattr(usage, "input_tokens", None)
+        or 0
     )
+    output_tokens = (
+        getattr(usage, "completion_tokens", None)
+        or getattr(usage, "output_tokens", None)
+        or 0
+    )
+    return int(input_tokens), int(output_tokens)
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -440,6 +456,10 @@ def retry_policy_for(exc: BaseException) -> RetryPolicy:
 MODEL_TIMEOUTS: dict[str, int] = {
     "deepseek-reasoner": 120,
     "deepseek-chat": 45,
+    "gpt-5.3-codex": 180,
+    "gpt-5.3-codex-spark": 120,
+    "gpt-5.5": 180,
+    "gpt-5": 180,
     "default": 60,
 }
 
@@ -480,7 +500,7 @@ def get_timeout_for_model(model_name: str | None) -> int:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    provider: str                  # "anthropic" | "openai"
+    provider: str                  # "anthropic" | "openai" | "deepseek" | "codex"
     api_key: str
     model: str
     timeout_s: float = 30.0
@@ -494,10 +514,25 @@ class LLMConfig:
     def from_env(cls) -> "LLMConfig":
         provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
         if provider == "deepseek":
-            api_key = os.environ.get("DEEPSEEK_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
+            api_key = (
+                os.environ.get("DEEPSEEK_API_KEY", "")
+                or os.environ.get("LLM_API_KEY", "")
+            )
+        elif provider == "anthropic":
+            api_key = (
+                os.environ.get("ANTHROPIC_API_KEY", "")
+                or os.environ.get("LLM_API_KEY", "")
+            )
+        elif provider == "openai":
+            api_key = (
+                os.environ.get("OPENAI_API_KEY", "")
+                or os.environ.get("LLM_API_KEY", "")
+            )
+        elif provider == "codex":
+            api_key = _codex_api_key_from_env()
         else:
             api_key = os.environ.get("LLM_API_KEY", "")
-        model = os.environ.get("LLM_MODEL", _default_model(provider))
+        model = os.environ.get("LLM_MODEL") or _default_model(provider)
         # TK-1: if LLM_TIMEOUT_SECONDS is explicitly set, honour it (back-compat);
         # otherwise derive from per-model tier. `get_timeout_for_model` itself
         # respects LLM_TIMEOUT_OVERRIDE_MS for test forcing.
@@ -506,10 +541,17 @@ class LLMConfig:
             timeout = float(explicit)
         else:
             timeout = float(get_timeout_for_model(model))
-        if provider not in ("anthropic", "openai", "deepseek"):
+        if provider not in ("anthropic", "openai", "deepseek", "codex"):
             raise LLMConfigError(
                 f"unknown LLM_PROVIDER: {provider!r}",
                 provider=provider,
+            )
+        if provider == "codex" and model.startswith(("deepseek-", "claude-")):
+            raise LLMConfigError(
+                "LLM_PROVIDER=codex requires an OpenAI/Codex model; "
+                "set LLM_MODEL=gpt-5.3-codex or CODEX_MODEL",
+                provider=provider,
+                model=model,
             )
         return cls(
             provider=provider,
@@ -524,7 +566,139 @@ def _default_model(provider: str) -> str:
         "anthropic": "claude-opus-4-7",
         "openai": "gpt-4o",
         "deepseek": "deepseek-reasoner",
+        "codex": os.environ.get("CODEX_MODEL")
+        or _codex_config_model()
+        or "gpt-5.3-codex",
     }.get(provider, "claude-opus-4-7")
+
+
+def _codex_home() -> Path:
+    raw = os.environ.get("CODEX_HOME")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".codex"
+
+
+def _codex_auth_path() -> Path:
+    raw = os.environ.get("CODEX_AUTH_FILE")
+    if raw:
+        return Path(raw).expanduser()
+    return _codex_home() / "auth.json"
+
+
+def _read_codex_auth_file() -> dict[str, Any]:
+    path = _codex_auth_path()
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LLMConfigError(
+            f"failed to read Codex auth file at {path}: {exc}",
+            path=str(path),
+        ) from exc
+    return data if isinstance(data, dict) else {}
+
+
+def _codex_api_key_from_env() -> str:
+    """Resolve a credential for `LLM_PROVIDER=codex`.
+
+    Order:
+      1. Explicit Fyralis/Codex env keys.
+      2. OpenAI platform key envs.
+      3. `~/.codex/auth.json` API key.
+      4. `~/.codex/auth.json` ChatGPT OAuth access token.
+
+    The final OAuth form lets a local dogfood Think worker reuse the
+    same Codex login as the CLI. Production should prefer an API key or
+    an access token mounted by secret management.
+    """
+    for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    auth = _read_codex_auth_file()
+    api_key = auth.get("OPENAI_API_KEY")
+    if isinstance(api_key, str) and api_key:
+        return api_key
+    tokens = auth.get("tokens")
+    if isinstance(tokens, dict):
+        access_token = tokens.get("access_token")
+        if isinstance(access_token, str) and access_token:
+            return access_token
+    return ""
+
+
+def _codex_account_id_from_env() -> str | None:
+    value = os.environ.get("CODEX_ACCOUNT_ID")
+    if value:
+        return value
+    if any(
+        os.environ.get(name)
+        for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY")
+    ):
+        return None
+    tokens = _read_codex_auth_file().get("tokens")
+    if isinstance(tokens, dict):
+        account_id = tokens.get("account_id")
+        if isinstance(account_id, str) and account_id:
+            return account_id
+    return None
+
+
+def _codex_transport() -> str:
+    transport = os.environ.get("CODEX_TRANSPORT", "auto").strip().lower()
+    if transport == "appserver":
+        transport = "app-server"
+    if transport in {"responses", "app-server", "cli"}:
+        return transport
+    if transport != "auto":
+        raise LLMConfigError(
+            "CODEX_TRANSPORT must be one of: auto, responses, app-server, cli",
+            transport=transport,
+        )
+    if any(
+        os.environ.get(name)
+        for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY")
+    ):
+        return "responses"
+    auth = _read_codex_auth_file()
+    api_key = auth.get("OPENAI_API_KEY")
+    if isinstance(api_key, str) and api_key:
+        return "responses"
+    tokens = auth.get("tokens")
+    if isinstance(tokens, dict):
+        access_token = tokens.get("access_token")
+        if isinstance(access_token, str) and access_token:
+            return "app-server"
+    return "responses"
+
+
+def _codex_should_use_cli_transport() -> bool:
+    return _codex_transport() == "cli"
+
+
+def _codex_reasoning_effort() -> str:
+    value = os.environ.get("CODEX_REASONING_EFFORT", "medium").strip().lower()
+    allowed = {"low", "medium", "high", "xhigh"}
+    if value not in allowed:
+        raise LLMConfigError(
+            "CODEX_REASONING_EFFORT must be one of: low, medium, high, xhigh",
+            effort=value,
+        )
+    return value
+
+
+def _codex_config_model() -> str | None:
+    path = _codex_home() / "config.toml"
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        return None
+    model = data.get("model") if isinstance(data, dict) else None
+    return model if isinstance(model, str) and model else None
 
 
 # ---------------------------------------------------------------------
@@ -947,6 +1121,546 @@ class OpenAIProvider(LLMProvider):
         return content
 
 
+class CodexProvider(LLMProvider):
+    """Codex / GPT-5-family provider.
+
+    API-key auth uses OpenAI's Responses API. Local ChatGPT/Codex auth
+    uses a persistent `codex app-server`, because those access tokens are
+    valid for Codex but may not carry direct `api.responses.write` scope.
+    """
+
+    async def _raw_call(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        schema_hint: str,
+    ) -> str:
+        transport = _codex_transport()
+        if transport == "app-server":
+            return await self._raw_call_app_server(
+                system=system,
+                user=user,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                schema_hint=schema_hint,
+            )
+        if transport == "cli":
+            return await self._raw_call_cli(
+                system=system,
+                user=user,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                schema_hint=schema_hint,
+            )
+        return await self._raw_call_responses(
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            schema_hint=schema_hint,
+        )
+
+    async def _raw_call_responses(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        schema_hint: str,
+    ) -> str:
+        import openai
+
+        if not self.config.api_key:
+            raise LLMConfigError(
+                "Codex auth is missing; set CODEX_API_KEY, OPENAI_API_KEY, "
+                "LLM_API_KEY, or run `codex login` so ~/.codex/auth.json exists"
+            )
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": self.config.api_key,
+            "timeout": self.config.timeout_s,
+        }
+        account_id = _codex_account_id_from_env()
+        if account_id:
+            client_kwargs["default_headers"] = {
+                "ChatGPT-Account-Id": account_id,
+            }
+
+        client = openai.AsyncOpenAI(**client_kwargs)
+        system_full = system
+        call_kwargs: dict[str, Any] = {}
+        if schema_hint:
+            system_full = (
+                f"{system}\n\nRespond with a single JSON object matching "
+                f"this schema:\n{schema_hint}"
+            )
+            call_kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "fyralis_structured_response",
+                    "schema": json.loads(schema_hint),
+                    # Keep validation client-side too. Some Think schemas
+                    # contain flexible unions that are safer as non-strict
+                    # Responses JSON schema hints.
+                    "strict": False,
+                }
+            }
+
+        async def _do_call() -> Any:
+            return await client.responses.create(
+                model=self.config.model,
+                instructions=system_full,
+                input=user,
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+                **call_kwargs,
+            )
+
+        response = await _through_breaker(self.config.provider, _do_call)
+        inp, outp = _extract_openai_usage(response)
+        self._record_usage(inp, outp)
+        content = _responses_output_text(response)
+        if not content:
+            raise LLMError("empty response from codex", model=self.config.model)
+        return content
+
+    async def _raw_call_app_server(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        schema_hint: str,
+    ) -> str:
+        del temperature, max_tokens  # The app-server turn owns these controls.
+
+        client = _codex_app_server_client()
+        return await _through_breaker(
+            self.config.provider,
+            lambda: client.call(
+                model=self.config.model,
+                system=system,
+                user=user,
+                schema_hint=schema_hint,
+                timeout_s=self.config.timeout_s,
+            ),
+        )
+
+    async def _raw_call_cli(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        schema_hint: str,
+    ) -> str:
+        del temperature, max_tokens  # The CLI owns these controls.
+
+        prompt = (
+            "You are serving as the Fyralis structured LLM provider.\n"
+            "Follow the system instructions exactly, answer only the user "
+            "request, and do not mention this wrapper.\n\n"
+            "<system>\n"
+            f"{system}\n"
+            "</system>\n\n"
+            "<user>\n"
+            f"{user}\n"
+            "</user>\n"
+        )
+        if schema_hint:
+            prompt += (
+                "\nYour final answer must be a single JSON object matching "
+                "this JSON schema. Do not wrap it in Markdown.\n"
+                f"{schema_hint}\n"
+            )
+
+        async def _do_call() -> str:
+            with tempfile.TemporaryDirectory(prefix="fyralis-codex-") as tmp:
+                tmpdir = Path(tmp)
+                output_path = tmpdir / "last_message.txt"
+                args = [
+                    "codex",
+                    "--ask-for-approval",
+                    "never",
+                    "exec",
+                    "--ephemeral",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    self.config.model,
+                    "--output-last-message",
+                    str(output_path),
+                ]
+                args.append("-")
+
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                except FileNotFoundError as exc:
+                    raise LLMConfigError(
+                        "Codex CLI not found; install Codex or set "
+                        "CODEX_TRANSPORT=responses with a platform API key"
+                    ) from exc
+
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(prompt.encode("utf-8")),
+                        timeout=self.config.timeout_s,
+                    )
+                except TimeoutError as exc:
+                    proc.kill()
+                    await proc.communicate()
+                    raise LLMError(
+                        f"codex cli timed out after {self.config.timeout_s:.0f}s",
+                        model=self.config.model,
+                    ) from exc
+
+                if proc.returncode != 0:
+                    combined = (stderr + stdout).decode("utf-8", errors="replace")
+                    raise LLMError(
+                        f"codex cli exited {proc.returncode}: {combined[-1200:]}",
+                        model=self.config.model,
+                    )
+
+                content = ""
+                if output_path.exists():
+                    content = output_path.read_text(encoding="utf-8").strip()
+                if not content:
+                    content = _codex_cli_stdout_fallback(stdout)
+                if not content:
+                    raise LLMError("empty response from codex cli", model=self.config.model)
+                return content
+
+        return await _through_breaker(self.config.provider, _do_call)
+
+
+def _responses_output_text(response: Any) -> str:
+    direct = getattr(response, "output_text", None)
+    if isinstance(direct, str) and direct:
+        return direct
+
+    chunks: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        for content in getattr(item, "content", None) or []:
+            text = getattr(content, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+                continue
+            if isinstance(content, dict):
+                text = content.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+    return "".join(chunks)
+
+
+class _CodexAppServerClient:
+    """Small stdio JSON-RPC client for `codex app-server`.
+
+    This is intentionally narrow: Fyralis only needs text-in/text-out
+    structured reasoning, so we keep one managed app-server process alive
+    and serialize turns through it.
+    """
+
+    def __init__(self) -> None:
+        self._proc: asyncio.subprocess.Process | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._stderr_tail: list[str] = []
+        self._next_id = 1
+        self._pending: dict[int, str] = {}
+        self._lock = asyncio.Lock()
+
+    async def call(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        schema_hint: str,
+        timeout_s: float,
+    ) -> str:
+        async with self._lock:
+            try:
+                return await asyncio.wait_for(
+                    self._call_unlocked(
+                        model=model,
+                        system=system,
+                        user=user,
+                        schema_hint=schema_hint,
+                    ),
+                    timeout=timeout_s,
+                )
+            except TimeoutError as exc:
+                await self._restart()
+                raise LLMError(
+                    f"codex app-server timed out after {timeout_s:.0f}s",
+                    model=model,
+                ) from exc
+
+    async def _call_unlocked(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        schema_hint: str,
+    ) -> str:
+        await self._ensure_started()
+        assert self._proc is not None
+
+        thread = await self._request(
+            "thread/start",
+            {
+                "ephemeral": True,
+                "model": model,
+                "cwd": os.getcwd(),
+                "approvalPolicy": "never",
+                "sandbox": "read-only",
+                "developerInstructions": _codex_system_prompt(system),
+                "baseInstructions": None,
+            },
+        )
+        thread_id = _codex_json_path(thread, "thread", "id")
+        if not isinstance(thread_id, str) or not thread_id:
+            raise LLMError(
+                f"codex app-server returned invalid thread/start response: {thread!r}",
+                model=model,
+            )
+
+        turn = await self._request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": _codex_user_prompt(user, schema_hint)}],
+                "model": model,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "readOnly"},
+                "effort": _codex_reasoning_effort(),
+                "summary": "none",
+            },
+        )
+        turn_id = _codex_json_path(turn, "turn", "id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise LLMError(
+                f"codex app-server returned invalid turn/start response: {turn!r}",
+                model=model,
+            )
+
+        content = await self._wait_for_turn(turn_id=turn_id, model=model)
+        if not content:
+            raise LLMError("empty response from codex app-server", model=model)
+        return content
+
+    async def _ensure_started(self) -> None:
+        if self._proc is not None and self._proc.returncode is None:
+            return
+        self._proc = await asyncio.create_subprocess_exec(
+            "codex",
+            "app-server",
+            "--listen",
+            "stdio://",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._stderr_tail.clear()
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+        await self._request(
+            "initialize",
+            {
+                "capabilities": {
+                    "optOutNotificationMethods": ["item/agentMessage/delta"],
+                },
+                "clientInfo": {
+                    "name": "fyralis",
+                    "title": "Fyralis",
+                    "version": "0.1",
+                },
+            },
+        )
+        await self._notify("initialized", {})
+
+    async def _restart(self) -> None:
+        proc = self._proc
+        self._proc = None
+        self._pending.clear()
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            self._stderr_task = None
+
+    async def _request(self, method: str, params: dict[str, Any]) -> Any:
+        request_id = await self._send(method, params, notify=False)
+        while True:
+            message = await self._read_message()
+            if message.get("id") != request_id:
+                continue
+            self._pending.pop(request_id, None)
+            if "error" in message:
+                raise LLMError(
+                    f"codex app-server {method} failed: {message['error']!r}"
+                )
+            return message.get("result")
+
+    async def _notify(self, method: str, params: dict[str, Any]) -> None:
+        await self._send(method, params, notify=True)
+
+    async def _send(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        notify: bool,
+    ) -> int:
+        assert self._proc is not None
+        if self._proc.stdin is None:
+            raise LLMError("codex app-server stdin is unavailable")
+        message: dict[str, Any] = {"method": method, "params": params}
+        request_id = 0
+        if not notify:
+            request_id = self._next_id
+            self._next_id += 1
+            message["id"] = request_id
+            self._pending[request_id] = method
+        self._proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        await self._proc.stdin.drain()
+        return request_id
+
+    async def _read_message(self) -> dict[str, Any]:
+        assert self._proc is not None
+        if self._proc.stdout is None:
+            raise LLMError("codex app-server stdout is unavailable")
+        line = await self._proc.stdout.readline()
+        if not line:
+            stderr = "\n".join(self._stderr_tail[-20:])
+            await self._restart()
+            raise LLMError(f"codex app-server exited unexpectedly: {stderr}")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise LLMError(
+                f"codex app-server returned non-JSON line: {line[:500]!r}"
+            ) from exc
+        return message if isinstance(message, dict) else {}
+
+    async def _wait_for_turn(self, *, turn_id: str, model: str) -> str:
+        final_text = ""
+        while True:
+            message = await self._read_message()
+            if "id" in message:
+                self._pending.pop(int(message["id"]), None)
+                continue
+            method = message.get("method")
+            params = message.get("params") or {}
+            if method == "item/completed":
+                item = params.get("item") if isinstance(params, dict) else None
+                if isinstance(item, dict) and item.get("type") == "agentMessage":
+                    text = item.get("text")
+                    if isinstance(text, str) and text:
+                        final_text = text
+            elif method == "turn/completed":
+                turn = params.get("turn") if isinstance(params, dict) else None
+                if isinstance(turn, dict) and turn.get("id") not in {None, turn_id}:
+                    continue
+                status = turn.get("status") if isinstance(turn, dict) else None
+                if status not in {None, "completed"}:
+                    raise LLMError(
+                        f"codex app-server turn ended with status {status!r}",
+                        model=model,
+                    )
+                return final_text.strip()
+
+    async def _drain_stderr(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                return
+            self._stderr_tail.append(line.decode("utf-8", errors="replace").strip())
+            if len(self._stderr_tail) > 50:
+                del self._stderr_tail[:25]
+
+
+_CODEX_APP_SERVER_CLIENT: _CodexAppServerClient | None = None
+
+
+def _codex_app_server_client() -> _CodexAppServerClient:
+    global _CODEX_APP_SERVER_CLIENT
+    if _CODEX_APP_SERVER_CLIENT is None:
+        _CODEX_APP_SERVER_CLIENT = _CodexAppServerClient()
+    return _CODEX_APP_SERVER_CLIENT
+
+
+def _codex_system_prompt(system: str) -> str:
+    return (
+        "You are serving as the Fyralis structured LLM provider. Follow "
+        "the system instructions exactly, answer only the user request, "
+        "and do not mention this wrapper.\n\n"
+        "<system>\n"
+        f"{system}\n"
+        "</system>"
+    )
+
+
+def _codex_user_prompt(user: str, schema_hint: str) -> str:
+    prompt = f"<user>\n{user}\n</user>"
+    if schema_hint:
+        prompt += (
+            "\n\nYour final answer must be a single JSON object matching "
+            "this JSON schema. Do not wrap it in Markdown.\n"
+            f"{schema_hint}"
+        )
+    return prompt
+
+
+def _codex_json_path(obj: Any, *path: str) -> Any:
+    cur = obj
+    for part in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _codex_cli_stdout_fallback(stdout: bytes) -> str:
+    lines = [
+        line.strip()
+        for line in stdout.decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+    skip = {"tokens used", "codex"}
+    for line in reversed(lines):
+        lower = line.lower()
+        if lower in skip:
+            continue
+        if lower.startswith(("openai codex", "workdir:", "model:", "provider:")):
+            continue
+        if lower.startswith(("approval:", "sandbox:", "reasoning ", "session id:")):
+            continue
+        if line.replace(",", "").isdigit():
+            continue
+        return line
+    return ""
+
+
 class DeepSeekProvider(OpenAIProvider):
     """OpenAI-API-compatible provider targeting the DeepSeek endpoint.
 
@@ -1119,6 +1833,8 @@ def build_provider(config: LLMConfig | None = None) -> LLMProvider:
         return OpenAIProvider(cfg)
     if cfg.provider == "deepseek":
         return DeepSeekProvider(cfg)
+    if cfg.provider == "codex":
+        return CodexProvider(cfg)
     raise LLMConfigError(
         f"unknown provider: {cfg.provider!r}", provider=cfg.provider
     )
@@ -1129,6 +1845,7 @@ __all__ = [
     "LLMProvider",
     "AnthropicProvider",
     "OpenAIProvider",
+    "CodexProvider",
     "DeepSeekProvider",
     "build_provider",
     "set_response_cache",

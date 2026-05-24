@@ -80,7 +80,13 @@ class ReasoningFrame:
             "emit_situation_for_composite_conditions": True,
             "do_not_invent_ids": True,
             "minimize_diff": True,
-            "treat_topology_as_evidence_not_truth": trigger.kind == "T6",
+            "treat_topology_as_evidence_not_truth": (
+                trigger.kind == "T6"
+                or (
+                    trigger.kind == "T4"
+                    and trigger.subkind == "latent_relationship_candidate"
+                )
+            ),
             "situation_requires_multiple_existing_models": True,
         }
         priority_dimensions = _priority_dimensions(trigger)
@@ -216,6 +222,8 @@ def _frame_kind(trigger: TriggerContext) -> str:
     if trigger.kind == "T3":
         return "anomaly_explanation"
     if trigger.kind == "T4":
+        if trigger.subkind == "latent_relationship_candidate":
+            return "topology_candidate_interpretation"
         return "maintenance_rethink"
     if trigger.kind == "T6":
         return "topology_shift"
@@ -252,6 +260,12 @@ def _question(trigger: TriggerContext) -> str:
             "best explains this anomalous region?"
         )
     if trigger.kind == "T4":
+        if trigger.subkind == "latent_relationship_candidate":
+            return (
+                "Does this topology candidate represent a real "
+                "relationship, composite situation, situation update, "
+                "or noise?"
+            )
         return (
             "Which stale, dependent, recurring, or weakly supported belief "
             "should be revised, merged, promoted, or retired?"
@@ -279,6 +293,8 @@ def _allowed_ops(trigger: TriggerContext) -> tuple[str, ...]:
 def _budget(trigger: TriggerContext) -> dict[str, int]:
     if trigger.kind == "T6":
         return {"claim_ops": 2, "edge_ops": 2, "act_ops": 0, "resource_ops": 0}
+    if trigger.kind == "T4" and trigger.subkind == "latent_relationship_candidate":
+        return {"claim_ops": 2, "edge_ops": 2, "act_ops": 0, "resource_ops": 0}
     if trigger.kind in {"T3", "T4"}:
         return {"claim_ops": 3, "edge_ops": 3, "act_ops": 0, "resource_ops": 0}
     if trigger.kind == "T2" and trigger.subkind == "belief_updated":
@@ -295,7 +311,11 @@ def _priority_dimensions(trigger: TriggerContext) -> tuple[str, ...]:
     if trigger.kind in {"T3", "T6"}:
         base.insert(0, "structural_explanation")
     if trigger.kind == "T4":
-        base.insert(0, "memory_quality")
+        if trigger.subkind == "latent_relationship_candidate":
+            base.insert(0, "structural_explanation")
+            base.insert(1, "impact_signature_interaction")
+        else:
+            base.insert(0, "memory_quality")
     if trigger.kind == "T2":
         base.insert(0, "downstream_consequences")
     return tuple(dict.fromkeys(base))

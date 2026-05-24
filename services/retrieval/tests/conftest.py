@@ -125,4 +125,8 @@ def other_tenant() -> uuid.UUID:
 @pytest_asyncio.fixture
 async def models_repo(fresh_db: asyncpg.Pool) -> ModelsRepo:
     # No embedder — we pass precomputed embeddings everywhere in tests.
-    return ModelsRepo(fresh_db, embedder=None)
+    return ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )

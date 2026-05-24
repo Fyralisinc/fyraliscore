@@ -4,8 +4,8 @@ Retrieval quality is only useful if the LLM-facing context is actually
 used by the resulting diff. This module computes a lightweight,
 JSON-safe summary from a ContextBundle plus a RawDiff/ValidatedDiff.
 It is intentionally conservative: referencing a Model means the diff
-uses its id as an updated/archive/relocate target, an edge endpoint, an
-edge evidence model, or an act confidence basis.
+uses its id as an updated/archive target, an edge endpoint, an edge
+evidence model, or an act confidence basis.
 """
 from __future__ import annotations
 

@@ -327,6 +327,10 @@ async def ingest(
                             {
                                 "source_channel": draft.source_channel,
                                 "kind": row.kind,
+                                "observation_kind": row.kind,
+                                "signal_type": _signal_type_for_prompt(
+                                    draft, content
+                                ),
                                 "trust_tier": row.trust_tier,
                                 "seed_occurred_at": row.occurred_at.isoformat(),
                                 "seed_natural_text": (row.content_text or "")[:2000],
@@ -376,6 +380,39 @@ def _looks_like_entity(phrase: str) -> bool:
     if "-" in phrase:
         return True
     return any(c.isupper() for c in phrase)
+
+
+def _signal_type_for_prompt(
+    draft: ObservationDraft,
+    content: dict[str, Any],
+) -> str:
+    """Return a compact type label for downstream prompt profiling.
+
+    Handlers use channel-specific content keys (`event_type`, `action`,
+    sometimes only an observation `kind`). The Think prompt should not need
+    to know every webhook shape, so ingestion normalizes those hints once.
+    """
+    event_type = _stringish(content.get("event_type")) or _stringish(
+        content.get("type")
+    )
+    action = _stringish(content.get("action"))
+
+    if event_type and action:
+        return f"{draft.source_channel}/{event_type}.{action}"
+    if event_type:
+        return f"{draft.source_channel}/{event_type}"
+    if action:
+        return f"{draft.source_channel}/{action}"
+    return f"{draft.source_channel}/{draft.kind}"
+
+
+def _stringish(value: Any) -> str | None:
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
 
 
 class _PrecomputedEmbedder:

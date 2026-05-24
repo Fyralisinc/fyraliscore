@@ -6,6 +6,8 @@ may later become accepted `model_edges` or composite `situation` Models.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -126,6 +128,98 @@ class RelationshipCandidatesRepo:
         )
         return [_row_to_dict(row) for row in rows]
 
+    async def get(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        candidate_id: UUID,
+        tenant_id: UUID,
+    ) -> dict[str, Any] | None:
+        row = await conn.fetchrow(
+            f"""
+            SELECT {_SELECT_COLUMNS}
+            FROM relationship_candidates
+            WHERE id = $1
+              AND tenant_id = $2
+            """,
+            candidate_id,
+            tenant_id,
+        )
+        return _row_to_dict(row) if row is not None else None
+
+    async def metrics(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID | None = None,
+        since: datetime | None = None,
+    ) -> "RelationshipCandidateMetrics":
+        """Summarize candidate lifecycle health for observability."""
+        clauses: list[str] = []
+        args: list[Any] = []
+        if tenant_id is not None:
+            args.append(tenant_id)
+            clauses.append(f"tenant_id = ${len(args)}")
+        if since is not None:
+            args.append(since)
+            clauses.append(f"created_at >= ${len(args)}")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+
+        summary = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(*)::int AS total,
+              COALESCE(AVG(judgment_leverage_score), 0.0)::float AS avg_score,
+              COUNT(*) FILTER (
+                WHERE expires_at IS NOT NULL AND expires_at <= now()
+              )::int AS expired_count,
+              COALESCE(MAX(EXTRACT(EPOCH FROM now() - created_at)) FILTER (
+                WHERE review_status IN ('candidate', 'needs_review')
+              ), 0.0)::float AS oldest_open_age_seconds
+            FROM relationship_candidates
+            {where}
+            """,
+            *args,
+        )
+        status_rows = await conn.fetch(
+            f"""
+            SELECT review_status, COUNT(*)::int AS n
+            FROM relationship_candidates
+            {where}
+            GROUP BY review_status
+            """,
+            *args,
+        )
+        kind_rows = await conn.fetch(
+            f"""
+            SELECT candidate_kind, COUNT(*)::int AS n
+            FROM relationship_candidates
+            {where}
+            GROUP BY candidate_kind
+            """,
+            *args,
+        )
+        source_rows = await conn.fetch(
+            f"""
+            SELECT source, COUNT(*)::int AS n
+            FROM relationship_candidates
+            {where}
+            GROUP BY source
+            """,
+            *args,
+        )
+        return RelationshipCandidateMetrics(
+            total=int(summary["total"] if summary else 0),
+            avg_score=float(summary["avg_score"] if summary else 0.0),
+            expired_count=int(summary["expired_count"] if summary else 0),
+            oldest_open_age_seconds=float(
+                summary["oldest_open_age_seconds"] if summary else 0.0
+            ),
+            by_status={r["review_status"]: int(r["n"]) for r in status_rows},
+            by_kind={r["candidate_kind"]: int(r["n"]) for r in kind_rows},
+            by_source={r["source"]: int(r["n"]) for r in source_rows},
+        )
+
     async def mark_decided(
         self,
         conn: asyncpg.Connection,
@@ -135,6 +229,7 @@ class RelationshipCandidatesRepo:
         review_status: str,
         accepted_model_id: UUID | None = None,
         accepted_edge_ids: Sequence[UUID] = (),
+        decision_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if review_status not in {
             "accepted",
@@ -147,12 +242,18 @@ class RelationshipCandidatesRepo:
                 "invalid relationship candidate review_status",
                 review_status=review_status,
             )
+        metadata_patch = (
+            {"latest_adjudication": decision_metadata}
+            if decision_metadata is not None
+            else {}
+        )
         row = await conn.fetchrow(
             f"""
             UPDATE relationship_candidates
             SET review_status = $3,
                 accepted_model_id = $4,
                 accepted_edge_ids = $5::uuid[],
+                metadata = metadata || $6::jsonb,
                 decided_at = CASE
                   WHEN $3 IN ('accepted', 'rejected', 'contested', 'retired')
                   THEN now()
@@ -167,6 +268,7 @@ class RelationshipCandidatesRepo:
             review_status,
             accepted_model_id,
             list(accepted_edge_ids),
+            _jsonb(metadata_patch),
         )
         return _row_to_dict(row) if row is not None else None
 
@@ -190,4 +292,56 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     return out
 
 
-__all__ = ["RelationshipCandidatesRepo"]
+@dataclass(frozen=True)
+class RelationshipCandidateMetrics:
+    total: int = 0
+    avg_score: float = 0.0
+    expired_count: int = 0
+    oldest_open_age_seconds: float = 0.0
+    by_status: dict[str, int] = field(default_factory=dict)
+    by_kind: dict[str, int] = field(default_factory=dict)
+    by_source: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def accepted(self) -> int:
+        return self.by_status.get("accepted", 0)
+
+    @property
+    def rejected(self) -> int:
+        return self.by_status.get("rejected", 0)
+
+    @property
+    def needs_review(self) -> int:
+        return self.by_status.get("needs_review", 0)
+
+    @property
+    def open_count(self) -> int:
+        return self.by_status.get("candidate", 0) + self.needs_review
+
+    @property
+    def decided_count(self) -> int:
+        return self.accepted + self.rejected + self.by_status.get("retired", 0)
+
+    @property
+    def acceptance_rate(self) -> float:
+        decided = self.accepted + self.rejected
+        if decided <= 0:
+            return 0.0
+        return self.accepted / decided
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "avg_score": self.avg_score,
+            "expired_count": self.expired_count,
+            "oldest_open_age_seconds": self.oldest_open_age_seconds,
+            "by_status": dict(self.by_status),
+            "by_kind": dict(self.by_kind),
+            "by_source": dict(self.by_source),
+            "open_count": self.open_count,
+            "decided_count": self.decided_count,
+            "acceptance_rate": self.acceptance_rate,
+        }
+
+
+__all__ = ["RelationshipCandidateMetrics", "RelationshipCandidatesRepo"]

@@ -103,10 +103,6 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
 - archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
-- relocate: {"op":"relocate","model_id":"<uuid>","reason":"<brief>",
-  "relocate_target":{"kind":"model_id|vector|neighborhood_id","value":...,
-  "alpha":0.0-1.0}}. Use relocate sparingly only when topology placement
-  itself is the conclusion; cap at one per run.
 
 Proposition kinds and required payloads:
 - state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
@@ -371,6 +367,230 @@ class PromptPair:
     user: str
 
 
+def _profiled_system_prompt(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    claims_only: bool,
+) -> str:
+    base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
+    profile = _build_reasoning_profile(
+        trigger,
+        bundle,
+        claims_only=claims_only,
+    )
+    return f"{profile}\n\n{base}"
+
+
+def _trigger_metadata(trigger: TriggerContext) -> dict[str, str]:
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+
+    def _get(*names: str) -> str | None:
+        for name in names:
+            value = signature.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    source_channel = _get("source_channel")
+    observation_kind = _get("observation_kind")
+    if not observation_kind and trigger.kind == "T1":
+        # Older T1 queue payloads used `kind` for the Observation kind.
+        observation_kind = _get("kind")
+    trust_tier = _get("trust_tier")
+    signal_type = _get("signal_type")
+
+    if not signal_type and trigger.kind == "T6" and trigger.topology_event_kind:
+        signal_type = f"topology/{trigger.topology_event_kind}"
+    if not signal_type:
+        signal_type = trigger.subkind or trigger.kind
+
+    out: dict[str, str] = {"signal_type": signal_type}
+    if source_channel:
+        out["source_channel"] = source_channel
+    if observation_kind:
+        out["observation_kind"] = observation_kind
+    if trust_tier:
+        out["trust_tier"] = trust_tier
+    return out
+
+
+def _build_reasoning_profile(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    claims_only: bool,
+) -> str:
+    meta = _trigger_metadata(trigger)
+    source = meta.get("source_channel", "unknown-source")
+    signal_type = meta.get("signal_type", trigger.subkind or trigger.kind)
+    trust = meta.get("trust_tier", "unknown-trust")
+    observation_kind = meta.get("observation_kind", trigger.kind)
+
+    body = [
+        "Reasoning profile for this call:",
+        f"- Signal: source={source}; type={signal_type}; "
+        f"observation_kind={observation_kind}; trust={trust}.",
+        f"- Working personality: {_source_personality(trigger, meta)}",
+        f"- Model surface: {_surface_personality(trigger, bundle, claims_only)}",
+        "- Abstraction level: "
+        f"{_abstraction_guidance(trigger, meta, bundle, claims_only)}",
+        "Use this profile to choose what to preserve versus compress. It does "
+        "not override the diff schema, scoping rules, confidence calibration, "
+        "or JSON-only output requirement.",
+    ]
+    return "\n".join(body)
+
+
+def _source_personality(
+    trigger: TriggerContext,
+    meta: dict[str, str],
+) -> str:
+    source = meta.get("source_channel", "")
+    trust = meta.get("trust_tier", "")
+    observation_kind = meta.get("observation_kind", "")
+
+    if trigger.kind == "T6":
+        return (
+            "systems cartographer; reason about structural movement among "
+            "Models before naming or escalating it."
+        )
+    if trigger.kind == "T3":
+        return (
+            "forensic investigator; inspect anomaly evidence for contestation, "
+            "drift, or missing causal links."
+        )
+    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
+        return (
+            "decision reviewer; decide whether the new Model requires CEO "
+            "action instead of recapping the belief."
+        )
+
+    if trust in {
+        "reputable",
+        "inferential_external",
+        "unvetted",
+    } or source.startswith(("news:", "social:", "market:", "regulatory:", "analyst:")):
+        return (
+            "outside analyst; separate external facts from internal implications "
+            "and keep confidence bounded by provenance."
+        )
+
+    authoritative = trust == "authoritative"
+    if authoritative or observation_kind in {
+        "state_change",
+        "prediction_resolution",
+    }:
+        return (
+            "ledger clerk; preserve exact system-of-record state transitions "
+            "and avoid adding motivation or strategy that the signal did not say."
+        )
+    if (
+        source.startswith(("slack:", "email:", "discord:"))
+        or trust == "attested_agent"
+    ):
+        return (
+            "contextual listener; extract commitments, blockers, concerns, and "
+            "stances while preserving hedging and social nuance."
+        )
+    return (
+        "conservative memory editor; turn only durable, evidenced meaning into "
+        "Models and leave weak implications out."
+    )
+
+
+def _surface_personality(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    claims_only: bool,
+) -> str:
+    _selected, graph_models = _selected_model_sets(bundle)
+    has_acts = _has_acts(bundle)
+    has_resources = bool(bundle.resources_summary)
+
+    if claims_only:
+        return (
+            "claim triage; emit scoped claim inserts or a justified empty diff, "
+            "and mention omitted action/edge reasoning only in reasoning_trace."
+        )
+    if trigger.kind == "T4" and trigger.subkind == "latent_relationship_candidate":
+        return (
+            "topology candidate interpreter; decide whether latent "
+            "consequence signals deserve an edge, situation, situation update, "
+            "or no-op."
+        )
+    if trigger.kind == "T6":
+        return (
+            "legacy graph-transition review; prefer edge-aware interpretation "
+            "or a no-op over unrelated Act mutations."
+        )
+    if graph_models:
+        return (
+            "graph cartographer; test selected graph anchors for confirmation, "
+            "weakening, contradiction, blocking, enabling, or explanation before "
+            "creating sibling Models."
+        )
+    if has_acts or has_resources:
+        return (
+            "operator; map concrete handles to Acts/Resources and emit mutations "
+            "only when the signal itself warrants them."
+        )
+    if bundle.models:
+        return (
+            "memory reconciler; update, archive, or carefully distinguish existing "
+            "Models before inserting new ones."
+        )
+    return "first-pass extractor; create only the durable belief the signal supports."
+
+
+def _abstraction_guidance(
+    trigger: TriggerContext,
+    meta: dict[str, str],
+    bundle: ContextBundle,
+    claims_only: bool,
+) -> str:
+    observation_kind = meta.get("observation_kind", "")
+    trust = meta.get("trust_tier", "")
+    _selected, graph_models = _selected_model_sets(bundle)
+
+    if trigger.kind in {"T3", "T6"}:
+        return (
+            "high, but still evidence-bound: describe the pattern, anomaly, or "
+            "neighborhood shift only as far as retrieved context supports it."
+        )
+    if observation_kind in {"state_change", "prediction_resolution"} or trust in {
+        "authoritative",
+        "authoritative_external",
+    }:
+        return (
+            "low and exact: one source event should become the narrowest useful "
+            "state, transition, or resolution."
+        )
+    if graph_models:
+        return (
+            "relationship level: explain how this signal changes existing Models "
+            "or edges before abstracting into a new situation."
+        )
+    if claims_only:
+        return (
+            "atomic claim level: one scoped Model per materially new fact, with "
+            "no pattern/situation unless the signal itself directly asserts it."
+        )
+    return (
+        "middle level: compress chatty wording into durable business meaning "
+        "without inventing a broader pattern from one signal."
+    )
+
+
+def _has_acts(bundle: ContextBundle) -> bool:
+    for rows in (bundle.acts_summary or {}).values():
+        if rows:
+            return True
+    return False
+
+
 def build_prompt(
     trigger: TriggerContext,
     bundle: ContextBundle,
@@ -401,7 +621,11 @@ def build_prompt(
         parts.append(frame)
     parts.extend([context, instructions])
     user_msg = "\n\n".join(parts)
-    system_prompt = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
+    system_prompt = _profiled_system_prompt(
+        trigger,
+        bundle,
+        claims_only=claims_only,
+    )
     return PromptPair(system=system_prompt, user=user_msg)
 
 
@@ -421,6 +645,15 @@ def _build_triggering_section(
     lines.append(f"  kind: {trigger.kind}")
     if trigger.subkind:
         lines.append(f"  subkind: {trigger.subkind}")
+    meta = _trigger_metadata(trigger)
+    if "source_channel" in meta:
+        lines.append(f"  source_channel: {meta['source_channel']}")
+    if "signal_type" in meta:
+        lines.append(f"  signal_type: {meta['signal_type']}")
+    if "observation_kind" in meta:
+        lines.append(f"  observation_kind: {meta['observation_kind']}")
+    if "trust_tier" in meta:
+        lines.append(f"  trust_tier: {meta['trust_tier']}")
     if trigger.observation_id:
         lines.append(f"  observation_id: {trigger.observation_id}")
     if trigger.model_id:
@@ -434,10 +667,64 @@ def _build_triggering_section(
             f"  seed_natural_text: "
             f"{_trunc(trigger.seed_natural_text, _PER_ITEM_CHAR_LIMIT)}"
         )
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    candidate = signature.get("relationship_candidate")
+    if isinstance(candidate, dict):
+        lines.extend(_relationship_candidate_lines(candidate))
     if reason:
         lines.append(f"  reason: {reason}")
     lines.append("</triggering_event>")
     return "\n".join(lines)
+
+
+def _relationship_candidate_lines(candidate: dict[str, Any]) -> list[str]:
+    lines = ["  <relationship_candidate>"]
+    for key in (
+        "id",
+        "candidate_kind",
+        "basis",
+        "edge_kind",
+        "source_model_id",
+        "target_model_id",
+        "member_model_ids",
+        "evidence_model_ids",
+        "judgment_leverage_score",
+    ):
+        value = candidate.get(key)
+        if value not in (None, [], {}):
+            lines.append(f"    {key}: {_trunc(str(value), _PER_ITEM_CHAR_LIMIT)}")
+    explanation = candidate.get("explanation")
+    if explanation:
+        lines.append(
+            f"    explanation: {_trunc(str(explanation), _PER_ITEM_CHAR_LIMIT)}"
+        )
+    proposed = candidate.get("proposed_proposition")
+    if proposed:
+        lines.append(
+            "    proposed_proposition: "
+            f"{_trunc(json.dumps(proposed, sort_keys=True, default=str), 1200)}"
+        )
+    metadata = candidate.get("metadata")
+    topology = metadata.get("topology") if isinstance(metadata, dict) else None
+    if isinstance(topology, dict):
+        compact = {
+            key: topology.get(key)
+            for key in (
+                "kind",
+                "object_type",
+                "score_components",
+                "impact_signatures",
+            )
+            if topology.get(key) not in (None, [], {})
+        }
+        lines.append(
+            "    topology_evidence: "
+            f"{_trunc(json.dumps(compact, sort_keys=True, default=str), 2200)}"
+        )
+    lines.append("  </relationship_candidate>")
+    return lines
 
 
 def _build_context_section(
@@ -621,10 +908,9 @@ def _build_context_section(
         lines.append("    [no customer counterparty touched]")
     lines.append("  </bridge_context>")
 
-    # Topology context (S3) — surfaces the active neighborhoods the
-    # retrieved Models cluster into, plus recent phase events on the
-    # seed neighborhood for T6 triggers. Only rendered when the
-    # bundle has `topology_context`.
+    # Legacy accepted-memory topology context. Active topology now
+    # reaches this prompt through relationship_candidates carried in
+    # trigger.seed_signature / member_model_ids.
     lines.append("  <topology_context>")
     topo = bundle.topology_context
     if topo and (topo.get("neighborhoods") or topo.get("recent_phase_events")):
@@ -658,7 +944,7 @@ def _build_context_section(
                     f"magnitude={mag_repr}"
                 )
     else:
-        lines.append("    [no neighborhood context for this trigger]")
+        lines.append("    [no legacy accepted-memory topology context]")
     lines.append("  </topology_context>")
 
     lines.append("</retrieved_context>")
@@ -891,16 +1177,42 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "where appropriate."
         )
     elif trigger.kind == "T4":
-        body.append(
-            "This is a T4 trigger — background / maintenance / dependent "
-            "re-evaluation. If the trigger carries a cause_model_id and "
-            "cause_kind, update the dependent Model's confidence or "
-            "archive it as appropriate."
-        )
+        if trigger.subkind == "latent_relationship_candidate":
+            body.append(
+                "This is a T4 trigger from the topology layer — a latent "
+                "relationship candidate. Topology here means a "
+                "consequence-sensitive discovery field, not accepted graph "
+                "layout. Treat it as evidence, not truth.\n"
+                "\n"
+                "Your job is to inspect the candidate member Models and "
+                "decide whether the topology signal should become durable "
+                "knowledge:\n"
+                "  - emit an edge_op or edge candidate when a precise "
+                "pairwise relation is real;\n"
+                "  - emit a `situation` Model when the members are symptoms "
+                "of one operational condition;\n"
+                "  - update/archive only when an existing Model is clearly "
+                "changed by this candidate;\n"
+                "  - return an empty diff when the relationship is merely "
+                "surface similarity or shared noise.\n"
+                "\n"
+                "STRICT CONSTRAINTS:\n"
+                "  - Use only member Model ids from <models>, "
+                "<reasoning_frame>, or the trigger payload.\n"
+                "  - Do not create action mutations from topology alone.\n"
+                "  - Explain the consequence: which flow/pressure/customer/"
+                "actor/commitment changes meaning if this candidate is true."
+            )
+        else:
+            body.append(
+                "This is a T4 trigger — background / maintenance / dependent "
+                "re-evaluation. If the trigger carries a cause_model_id and "
+                "cause_kind, update the dependent Model's confidence or "
+                "archive it as appropriate."
+            )
     elif trigger.kind == "T6":
-        # T6 is the topology phase-event trigger. The triggering "event"
-        # is structural (a neighborhood emerged / dissolved / split /
-        # merged / drifted). The LLM's job is to:
+        # T6 is retained for legacy accepted-memory graph phase events.
+        # New topology candidates arrive as T4 latent_relationship_candidate.
         #   - Optionally NAME the neighborhood (overwrite the heuristic).
         #   - Decide whether the structural shift warrants a CEO-facing
         #     `recommendation` claim_op.
@@ -908,8 +1220,8 @@ def _build_instructions(trigger: TriggerContext) -> str:
         #     their (former) neighborhood, when warranted.
         # See the <topology_context> section above for what changed.
         body.append(
-            "This is a T6 trigger — a TOPOLOGY phase event. The "
-            "substrate's emergent neighborhood structure just shifted; "
+            "This is a T6 trigger — a legacy accepted-memory graph phase "
+            "event. A stored neighborhood structure just shifted; "
             "see <topology_context> above for details (kind, magnitude, "
             "members, neighborhood lineage). The seed neighborhood, "
             "predecessor neighborhoods, and member Model ids are all "

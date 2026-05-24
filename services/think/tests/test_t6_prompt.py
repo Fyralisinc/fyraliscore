@@ -46,7 +46,7 @@ def test_t6_instructions_appended():
     pair = build_prompt(trigger, _empty_bundle())
     user = pair.user
     assert "T6 trigger" in user
-    assert "TOPOLOGY phase event" in user
+    assert "legacy accepted-memory graph phase event" in user
     assert "<topology_context>" in user
     # The instructions reference recommendation surfacing for emergence
     # / merge / high-magnitude split.
@@ -107,7 +107,7 @@ def test_topology_context_section_renders_empty_marker_when_none():
     bundle = _empty_bundle(topology_context=None)
     trigger = TriggerContext(kind="T1", tenant_id=uuid4())
     user = build_prompt(trigger, bundle).user
-    assert "[no neighborhood context for this trigger]" in user
+    assert "[no legacy accepted-memory topology context]" in user
 
 
 def test_topology_context_handles_no_density():

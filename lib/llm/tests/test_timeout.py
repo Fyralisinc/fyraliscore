@@ -54,6 +54,10 @@ def test_substring_match_resolves_chat_variants():
     assert get_timeout_for_model("deepseek-chat-20240101") == 45
 
 
+def test_codex_tier_timeout_is_longer():
+    assert get_timeout_for_model("gpt-5.3-codex") == 180
+
+
 def test_none_model_returns_default():
     assert get_timeout_for_model(None) == MODEL_TIMEOUTS["default"]
 

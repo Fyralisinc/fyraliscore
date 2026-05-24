@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This suite exercises Company OS end-to-end against a real LLM (DeepSeek) across
+This suite exercises Company OS end-to-end against a configured real LLM across
 six hand-authored company scenarios. It is the only test layer that drives
 the cognitive path (Ingestion → Think → Acts → Bridge) with a non-deterministic
 model rather than a script. Coverage is intentionally narrow — six scenarios,
@@ -15,7 +15,8 @@ than strict equality so LLM variance doesn't become noise. Full design is in
 
 ```bash
 # Required env (export or place in .env):
-#   DEEPSEEK_API_KEY  — DeepSeek API key
+#   provider auth    — e.g. DEEPSEEK_API_KEY, OPENAI_API_KEY, or codex login
+#   LLM_PROVIDER     — deepseek, openai, anthropic, or codex
 #   DATABASE_URL      — postgres://... (matches docker-compose default)
 #   OLLAMA_URL        — http://localhost:11434
 

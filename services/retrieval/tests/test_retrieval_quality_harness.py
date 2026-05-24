@@ -246,7 +246,7 @@ async def test_quality_model_edge_entrypoint_reaches_hidden_blocker(
             precomputed_seed_vector=make_embedding("hidden blocker graph traversal"),
         ),
         expected_model_ids={seed_id, blocker_id},
-        required_pathways={"A", "B", "D", "G", "F"},
+        required_pathways={"A", "B", "D", "G"},
         rationale=(
             "Typed model edges are the memory graph's non-obvious connection "
             "surface; a T2 model entry point must traverse them."
@@ -599,7 +599,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             expected_model_ids={graph_seed_id, graph_bridge_id, graph_target_id},
             expected_top_model_ids={graph_target_id},
             excluded_model_ids={rejected_neighbor_id, archived_neighbor_id},
-            required_pathways={"A", "B", "D", "F", "G"},
+            required_pathways={"A", "B", "D", "G"},
             top_n=80,
             max_expected_rank=25,
             rationale="Non-obvious two-hop warning edges are core memory value.",

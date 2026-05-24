@@ -64,11 +64,12 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
     result = await primary_retrieve(trigger, tx_conn, models_repo=repo)
 
     assert isinstance(result, RetrievalResult)
-    # T1 runs A + B + C plus the topology/model-edge expansions when
-    # they have enough seed context.
+    # T1 runs A + B + C plus typed model-edge expansion when it has
+    # enough seed context. Latent topology reaches Think through T4
+    # candidate triggers, not primary retrieval.
     run = set(result.notes["pathways_run"])
     assert {"A", "B", "C"}.issubset(run)
-    assert run.issubset({"A", "B", "C", "F", "G"})
+    assert run.issubset({"A", "B", "C", "G"})
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
@@ -91,7 +92,7 @@ async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "F", "G"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "G"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
@@ -107,7 +108,7 @@ async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
     )
     result = await primary_retrieve(trigger, tx_conn)
     assert "A" in result.notes["pathways_run"]
-    assert result.notes["weights"]["G"] == 0.20
+    assert result.notes["weights"]["G"] == 0.22
 
 
 async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
@@ -119,7 +120,7 @@ async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
         seed_signature={"regex": "^hotfix"},
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D", "F", "G"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "D", "G"})
 
 
 # =====================================================================

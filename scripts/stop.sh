@@ -32,11 +32,13 @@ else
   pkill -TERM -f "uvicorn services.gateway.main:app" 2>/dev/null || true
   pkill -TERM -f "scripts/run_think_worker.py"        2>/dev/null || true
   pkill -TERM -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
+  pkill -TERM -f "scripts/run_topology_sweeper.py"    2>/dev/null || true
   pkill -TERM -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
   sleep 2
   pkill -KILL -f "uvicorn services.gateway.main:app" 2>/dev/null || true
   pkill -KILL -f "scripts/run_think_worker.py"        2>/dev/null || true
   pkill -KILL -f "scripts/run_post_commit_worker.py"  2>/dev/null || true
+  pkill -KILL -f "scripts/run_topology_sweeper.py"    2>/dev/null || true
   pkill -KILL -f "vite --host 127.0.0.1 --strictPort" 2>/dev/null || true
 fi
 

@@ -491,6 +491,15 @@ async def _run_once(
     """
     trigger_kind_full = record.trigger_kind
 
+    from services.relationships.adjudication import (
+        adjudicate_candidate_for_trigger,
+        load_candidate_for_trigger,
+    )
+    loaded_relationship_candidate = await load_candidate_for_trigger(
+        conn,
+        trigger,
+    )
+
     # --- 1. Retrieval ---------------------------------------------
     t0 = time.monotonic()
     first = await primary_retrieve(trigger, conn, embedder=embedder)
@@ -593,6 +602,7 @@ async def _run_once(
             "triggering_content": triggering_content,
             "reason_for_trigger": reason_for_trigger,
             "reasoning_frame": reasoning_frame.to_dict(),
+            "relationship_candidate": loaded_relationship_candidate,
         },
     )
     await debug_capture(
@@ -965,6 +975,28 @@ async def _run_once(
             region_acquisition=acquisition,
             llm_latency_ms=llm_latency_ms,
         )
+
+    candidate_adjudication = await adjudicate_candidate_for_trigger(
+        conn,
+        trigger=trigger,
+        diff=validated,
+        applied=applied,
+    )
+    if candidate_adjudication is not None:
+        applied["relationship_candidate_adjudication"] = {
+            "candidate_id": str(candidate_adjudication.candidate_id),
+            "review_status": candidate_adjudication.review_status,
+            "reason": candidate_adjudication.reason,
+            "accepted_model_id": (
+                str(candidate_adjudication.accepted_model_id)
+                if candidate_adjudication.accepted_model_id else None
+            ),
+            "accepted_edge_ids": [
+                str(edge_id)
+                for edge_id in candidate_adjudication.accepted_edge_ids
+            ],
+            "metadata": candidate_adjudication.metadata,
+        }
 
     emit("think.apply_done",
          run_id=str(record.id),
