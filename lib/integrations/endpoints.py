@@ -42,6 +42,13 @@ _PROD: dict[str, str] = {
     # IN-15 Google Calendar: the v3 REST base. Uses the same DWD service
     # account as Gmail (auth lives in services/integrations/gmail/dwd.py).
     "google_calendar_api": "https://www.googleapis.com/calendar/v3",
+    # IN-17 Jira: NOTE — Jira Cloud has NO single global host; each tenant's
+    # site is its own `https://<site>.atlassian.net`, carried per-install on
+    # jira_installations.base_url and used directly in production. This entry
+    # exists ONLY so the local spammer sub-path convention (`/jira`) resolves
+    # uniformly; the prod default is intentionally empty (never used in
+    # production — build_jira_client passes the per-install base_url instead).
+    "jira_api": "",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -55,6 +62,7 @@ _ENV: dict[str, str] = {
     "discord_gateway_bot": "DISCORD_GATEWAY_BOT_URL",
     "notion_api": "NOTION_API_BASE_URL",
     "google_calendar_api": "GOOGLE_CALENDAR_API_BASE_URL",
+    "jira_api": "JIRA_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -69,6 +77,7 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "discord_gateway_bot": "/discord/api/v10/gateway/bot",
     "notion_api": "/notion",
     "google_calendar_api": "/gcal/calendar/v3",
+    "jira_api": "/jira",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

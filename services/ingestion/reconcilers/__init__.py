@@ -173,6 +173,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "discord": _not_implemented_reconciler("discord", "M6.6"),
     "notion":  _not_implemented_reconciler("notion",  "IN-14"),
     "google_calendar": _not_implemented_reconciler("google_calendar", "IN-15"),
+    "jira":    _not_implemented_reconciler("jira",    "IN-17"),
 }
 
 
@@ -192,3 +193,4 @@ from services.ingestion.reconcilers import slack as _slack  # noqa: E402,F401
 from services.ingestion.reconcilers import discord as _discord  # noqa: E402,F401
 from services.ingestion.reconcilers import notion as _notion  # noqa: E402,F401
 from services.ingestion.reconcilers import google_calendar as _google_calendar  # noqa: E402,F401
+from services.ingestion.reconcilers import jira as _jira  # noqa: E402,F401

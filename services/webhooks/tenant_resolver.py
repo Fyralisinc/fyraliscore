@@ -74,7 +74,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 # =====================================================================
 
 ResolverProvider = Literal[
-    "slack", "github", "linear", "stripe", "discord", "notion",
+    "slack", "github", "linear", "stripe", "discord", "notion", "jira",
 ]
 
 
@@ -295,6 +295,30 @@ def _extract_notion(payload: Mapping[str, Any], headers: Mapping[str, str]) -> s
     return _str_or_none(payload.get("workspace_id"))
 
 
+def _extract_jira(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-17: a Jira webhook body carries no cloudId, but the affected
+    # entity's `self` URL embeds the site host (e.g.
+    # "https://acme.atlassian.net/rest/api/2/issue/10001"). The site host is
+    # the installation_id the seed/onboarding step registers in
+    # provider_installations (provider='jira'). Check issue, then comment,
+    # then any top-level object with a `self`.
+    for key in ("issue", "comment"):
+        obj = payload.get(key)
+        if isinstance(obj, Mapping):
+            host = _host_from_self(obj.get("self"))
+            if host is not None:
+                return host
+    # Fallback: a top-level `matchedWebhookIds` / `self` some events carry.
+    return _host_from_self(payload.get("self"))
+
+
+def _host_from_self(self_url: Any) -> str | None:
+    if not isinstance(self_url, str) or "://" not in self_url:
+        return None
+    host = self_url.split("://", 1)[1].split("/", 1)[0].strip()
+    return host or None
+
+
 PROVIDER_EXTRACTORS: dict[
     ResolverProvider,
     Callable[[Mapping[str, Any], Mapping[str, str]], str | None],
@@ -305,6 +329,7 @@ PROVIDER_EXTRACTORS: dict[
     "stripe": _extract_stripe,
     "discord": _extract_discord,
     "notion": _extract_notion,
+    "jira": _extract_jira,
 }
 
 

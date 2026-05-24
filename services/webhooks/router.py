@@ -79,6 +79,7 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     "slack": "slack",
     "github": "github",
     "discord": "discord",
+    "jira": "jira",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -92,6 +93,9 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
 _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     "slack": "slack",
     "github": "github",
+    # IN-17: Jira webhooks route through the full pipeline (the 202 cutover
+    # contract fits — no synchronous-response-shape constraint like Discord).
+    "jira": "jira",
 }
 
 
@@ -325,6 +329,9 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     "linear": "linear:webhook",
     "stripe": "stripe:webhook",
     "discord": "discord:interaction",
+    # IN-17: inline-ingest fallback channel (used only when the tenant's
+    # kafka_path_enabled flag is off; otherwise the cutover 202 path runs).
+    "jira": "jira:issue",
 }
 
 

@@ -193,7 +193,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "jira")
 
 
 # ---------------------------------------------------------------------
@@ -272,6 +272,33 @@ SELECT gi.id, gi.tenant_id, gi.workspace_domain, gi.service_account_email,
     ON cc.google_calendar_installation_id = gi.id AND cc.state = 'active'
  WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
  GROUP BY gi.id
+ LIMIT 1
+"""
+
+# IN-17: Jira mirrors the Gmail/Calendar loader (A18.2) — the planner needs
+# the 1-to-N active-project list aggregated onto the site install so it can
+# emit one shard per project (no DB I/O in the planner). The api_token lives
+# in encrypted_secrets behind secret_ref; base_url + account_email are needed
+# by the client.
+_LOAD_JIRA_INSTALL_SQL = """
+SELECT ji.id, ji.tenant_id, ji.base_url, ji.account_email, ji.secret_ref,
+       ji.cloud_id, ji.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'project_key', jp.project_key,
+             'project_id', jp.project_id,
+             'project_name', jp.project_name,
+             'updated_cursor', jp.updated_cursor
+           ) ORDER BY jp.project_key
+         ) FILTER (WHERE jp.id IS NOT NULL),
+         '[]'::json
+       ) AS projects
+  FROM jira_installations ji
+  LEFT JOIN jira_projects jp
+    ON jp.jira_installation_id = ji.id AND jp.state = 'active'
+ WHERE ji.tenant_id = $1 AND ji.disabled_at IS NULL
+ GROUP BY ji.id
  LIMIT 1
 """
 
@@ -384,6 +411,8 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
     if source == "google_calendar":
         return await conn.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
+    if source == "jira":
+        return await conn.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
