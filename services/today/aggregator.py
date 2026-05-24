@@ -120,15 +120,17 @@ def _derive_severity(view: RecommendationView) -> str:
             return "med"
         return "low"
 
-    # Normalized regime — impact * confidence.
+    # Normalized regime — impact * confidence. Bands per spec §12 (see
+    # services/today/tests/test_derivations.py for the pinned points:
+    # 0.7225→critical, 0.45→strategic, 0.275→high, 0.12→med, 0.05→low).
     score = impact * conf
-    if score >= 0.80:
+    if score >= 0.60:
         return "critical"
-    if score >= 0.55:
+    if score >= 0.40:
         return "strategic"
-    if score >= 0.30:
+    if score >= 0.20:
         return "high"
-    if score >= 0.12:
+    if score >= 0.10:
         return "med"
     return "low"
 
