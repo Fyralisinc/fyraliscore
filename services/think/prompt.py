@@ -137,6 +137,11 @@ Proposition kind rubric:
   condition that matters as a composite. Situation member_model_ids must be
   existing Model ids from <models>; do not use situations for simple pairwise
   links that should be edge_ops.
+- Use existing proposition kinds for actor operating context:
+  capability_assessment for evidenced skill/capacity/trust, concern for
+  overload or missing support, relation for ownership/reporting/dependency,
+  pattern for repeated behavior, and hypothesis for uncertain motive or
+  constraint explanations.
 - Use `hypothesis` for uncertain explanations that need investigation.
 - Do not flatten every claim into `state`; the proposition kind is part of
   retrieval quality and should preserve the signal's semantics.
@@ -162,6 +167,9 @@ Model Scope:
 - scope_actors: actor UUIDs the Model is about. Use observation actor_id,
   existing Model scope_actors, commitment owner, or <actors_in_context>. External
   senders use scope_actors=[] unless an internal actor is explicitly named.
+- Actor claims must be evidenced. Do not psychologize from a single signal:
+  write capability/constraint/support claims only when the signal directly says
+  so or the retrieved actor context shows a repeated pattern.
 - scope_entities: {"type":"customer|commitment|goal|decision|resource",
   "id":"<uuid>"} from <acts>, <resources>, or bridge_context. Resolve PR/ticket
   handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
@@ -220,6 +228,11 @@ edge_ops:
 - Prefer the sharpest true edge. Use co_occurs_with/same_issue_as/analogous_to
   only when the evidence does not justify a causal, blocking, explanatory,
   weakening, contradiction, warning, enabling, or resolution relationship.
+- Causal edges (`causes`, `explains`, `blocks`, `enables`) require a concrete
+  mechanism in `explanation`. If the mechanism is plausible but unconfirmed,
+  set `review_status` to `candidate` or `needs_review` and put causal metadata
+  under `metadata.causal` when known: mechanism_summary, intervention_surface,
+  expected_delay, confounders. Do not turn mere co-occurrence into causality.
 - `weakens` means source_model_id is counterevidence that reduces confidence in
   target_model_id. If a new signal adds evidence for a risk/concern, use
   supports or explains instead of weakens.
@@ -329,6 +342,8 @@ Recommendations:
 Scope:
 - scope_actors comes from observation actor_id, existing Model scope_actors,
   commitment owner, or <actors_in_context>. External senders usually use [].
+- Actor claims must be directly evidenced or supported by repeated actor
+  context; do not infer motives or hidden psychology from one message.
 - scope_entities comes from <acts>, <resources>, or bridge_context. Resolve PR
   numbers and ticket IDs to matching commitment UUIDs in <acts>; customer names
   to relational resources; goal phrases to goals. Never invent UUIDs.

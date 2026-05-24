@@ -26,6 +26,7 @@ class ReasoningFrame:
     time_window_days: float | None = None
     topology_event_kind: str | None = None
     neighborhood_id: str | None = None
+    dynamic_signals: tuple[dict[str, Any], ...] = ()
     allowed_ops: tuple[str, ...] = (
         "claim_ops",
         "edge_ops",
@@ -117,11 +118,34 @@ class ReasoningFrame:
             "time_window_days": self.time_window_days,
             "topology_event_kind": self.topology_event_kind,
             "neighborhood_id": self.neighborhood_id,
+            "dynamic_signals": [dict(v) for v in self.dynamic_signals],
             "allowed_ops": list(self.allowed_ops),
             "priority_dimensions": list(self.priority_dimensions),
             "budget": dict(self.budget),
             "policy": dict(self.policy),
         }
+
+    def with_dynamic_signals(
+        self,
+        dynamic_signals: list[dict[str, Any]],
+    ) -> "ReasoningFrame":
+        return ReasoningFrame(
+            frame_kind=self.frame_kind,
+            trigger_kind=self.trigger_kind,
+            stimulus_kind=self.stimulus_kind,
+            question_to_answer=self.question_to_answer,
+            seed_model_ids=self.seed_model_ids,
+            seed_entity_ids=self.seed_entity_ids,
+            candidate_model_ids=self.candidate_model_ids,
+            time_window_days=self.time_window_days,
+            topology_event_kind=self.topology_event_kind,
+            neighborhood_id=self.neighborhood_id,
+            dynamic_signals=tuple(dynamic_signals),
+            allowed_ops=self.allowed_ops,
+            priority_dimensions=self.priority_dimensions,
+            budget=self.budget,
+            policy=self.policy,
+        )
 
     def to_prompt_section(self) -> str:
         lines = [
@@ -151,6 +175,20 @@ class ReasoningFrame:
             lines.append(f"  neighborhood_id: {self.neighborhood_id}")
         if self.time_window_days is not None:
             lines.append(f"  time_window_days: {self.time_window_days:.2f}")
+        if self.dynamic_signals:
+            lines.append("  dynamic_signals:")
+            for signal in self.dynamic_signals[:6]:
+                kind = signal.get("dynamic_kind", "dynamic")
+                strength = signal.get("strength")
+                confidence = signal.get("confidence")
+                summary = str(signal.get("summary") or "")[:240]
+                score = ""
+                if strength is not None and confidence is not None:
+                    score = (
+                        f" strength={float(strength):.2f}"
+                        f" confidence={float(confidence):.2f}"
+                    )
+                lines.append(f"    - {kind}:{score} {summary}")
         lines.append("  allowed_ops: " + ", ".join(self.allowed_ops))
         lines.append(
             "  priority_dimensions: " + ", ".join(self.priority_dimensions)

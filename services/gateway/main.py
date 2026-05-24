@@ -189,6 +189,7 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # /sessions/start endpoint mints the auth token for everything else.
     "/v1/demo/companies",
     "/v1/demo/sessions/start",
+    "/webhooks/",
 )
 
 
@@ -508,11 +509,13 @@ def build_app(
     from services.forecasts import build_router as build_forecasts_router
     from services.model_trace.router import router as model_trace_router
     from services.history.router import router as history_router
+    from services.webhooks.router import build_webhooks_router
 
     app.include_router(build_decision_deltas_router())
     app.include_router(build_forecasts_router())
     app.include_router(model_trace_router)
     app.include_router(history_router)
+    app.include_router(build_webhooks_router())
 
     # Spec-aligned product routes (Operating Threads, Decision Deltas
     # spec view, Forecasts spec view, unified Ledger Events). The UI

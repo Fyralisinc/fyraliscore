@@ -1,0 +1,289 @@
+"""Derived actor operating context.
+
+This module does not create a new Model kind. It summarizes existing
+actor-scoped Models, owned commitments, and recent observations so Think
+can reason about people as constrained organizational actors without
+turning every person into a separate schema product.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable
+from uuid import UUID
+
+import asyncpg
+
+
+@dataclass(frozen=True)
+class ActorOperatingContext:
+    actor_id: UUID
+    display_name: str | None = None
+    active_model_count: int = 0
+    recent_observation_count: int = 0
+    active_commitment_count: int = 0
+    blocked_commitment_count: int = 0
+    constraints: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
+    support_needs: tuple[str, ...] = ()
+    risk_factors: tuple[str, ...] = ()
+    relationship_context: tuple[str, ...] = ()
+    model_ids: tuple[UUID, ...] = ()
+    commitment_ids: tuple[UUID, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "actor_id": str(self.actor_id),
+            "display_name": self.display_name,
+            "active_model_count": self.active_model_count,
+            "recent_observation_count": self.recent_observation_count,
+            "active_commitment_count": self.active_commitment_count,
+            "blocked_commitment_count": self.blocked_commitment_count,
+            "constraints": list(self.constraints),
+            "capabilities": list(self.capabilities),
+            "support_needs": list(self.support_needs),
+            "risk_factors": list(self.risk_factors),
+            "relationship_context": list(self.relationship_context),
+            "model_ids": [str(v) for v in self.model_ids],
+            "commitment_ids": [str(v) for v in self.commitment_ids],
+        }
+
+
+async def load_actor_operating_context(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    actor_ids: Iterable[UUID],
+    max_models_per_actor: int = 8,
+    max_commitments_per_actor: int = 8,
+    observation_window: timedelta = timedelta(days=14),
+    reference_time: datetime | None = None,
+) -> list[ActorOperatingContext]:
+    ids = tuple(dict.fromkeys(actor_ids))
+    if not ids:
+        return []
+    ref = reference_time or datetime.now(timezone.utc)
+    window_start = ref - observation_window
+
+    actor_rows = await conn.fetch(
+        """
+        SELECT id, display_name
+        FROM actors
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(ids),
+    )
+    names = {r["id"]: r["display_name"] for r in actor_rows}
+
+    model_rows = await conn.fetch(
+        """
+        SELECT id, "natural", proposition_kind, confidence, activation,
+               scope_actors, created_at
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND scope_actors && $2::uuid[]
+        ORDER BY activation * confidence DESC, created_at DESC
+        LIMIT $3
+        """,
+        tenant_id,
+        list(ids),
+        max(1, int(max_models_per_actor) * len(ids)),
+    )
+
+    commitment_rows = await conn.fetch(
+        """
+        SELECT id, title, state, owner_id, due_date, priority, created_at
+        FROM commitments
+        WHERE tenant_id = $1
+          AND owner_id = ANY($2::uuid[])
+          AND terminal_at IS NULL
+          AND state != 'closed'
+        ORDER BY
+          CASE WHEN state = 'blocked' THEN 0 ELSE 1 END,
+          due_date ASC NULLS LAST,
+          priority ASC NULLS LAST,
+          created_at DESC
+        LIMIT $3
+        """,
+        tenant_id,
+        list(ids),
+        max(1, int(max_commitments_per_actor) * len(ids)),
+    )
+
+    observation_rows = await conn.fetch(
+        """
+        SELECT actor_id, count(*) AS n
+        FROM observations
+        WHERE tenant_id = $1
+          AND actor_id = ANY($2::uuid[])
+          AND occurred_at >= $3
+          AND occurred_at <= $4
+          AND kind != 'state_change'
+        GROUP BY actor_id
+        """,
+        tenant_id,
+        list(ids),
+        window_start,
+        ref,
+    )
+    obs_counts = {r["actor_id"]: int(r["n"]) for r in observation_rows}
+
+    out: list[ActorOperatingContext] = []
+    for actor_id in ids:
+        actor_models = [
+            r for r in model_rows
+            if actor_id in set(r["scope_actors"] or [])
+        ][:max_models_per_actor]
+        actor_commitments = [
+            r for r in commitment_rows
+            if r["owner_id"] == actor_id
+        ][:max_commitments_per_actor]
+
+        capabilities: list[str] = []
+        constraints: list[str] = []
+        support_needs: list[str] = []
+        risk_factors: list[str] = []
+        relationship_context: list[str] = []
+
+        for row in actor_models:
+            natural = str(row["natural"] or "").strip()
+            if not natural:
+                continue
+            item = _model_line(row)
+            kind = str(row["proposition_kind"] or "")
+            text = natural.lower()
+            if kind == "capability_assessment":
+                capabilities.append(item)
+            elif kind == "relation":
+                relationship_context.append(item)
+            elif kind == "concern":
+                if _looks_like_support_need(text):
+                    support_needs.append(item)
+                else:
+                    risk_factors.append(item)
+            elif kind in {"pattern", "pattern_instance"}:
+                constraints.append(item)
+            elif _looks_like_constraint(text):
+                constraints.append(item)
+            elif _looks_like_support_need(text):
+                support_needs.append(item)
+
+        blocked = [r for r in actor_commitments if r["state"] == "blocked"]
+        if blocked:
+            for row in blocked[:3]:
+                support_needs.append(
+                    f"blocked commitment {row['id']}: {row['title']}"
+                )
+        if len(actor_commitments) >= 5:
+            constraints.append(
+                f"owns {len(actor_commitments)} active commitments in current context"
+            )
+
+        out.append(
+            ActorOperatingContext(
+                actor_id=actor_id,
+                display_name=names.get(actor_id),
+                active_model_count=len(actor_models),
+                recent_observation_count=obs_counts.get(actor_id, 0),
+                active_commitment_count=len(actor_commitments),
+                blocked_commitment_count=len(blocked),
+                constraints=tuple(dict.fromkeys(constraints[:5])),
+                capabilities=tuple(dict.fromkeys(capabilities[:5])),
+                support_needs=tuple(dict.fromkeys(support_needs[:5])),
+                risk_factors=tuple(dict.fromkeys(risk_factors[:5])),
+                relationship_context=tuple(
+                    dict.fromkeys(relationship_context[:5])
+                ),
+                model_ids=tuple(r["id"] for r in actor_models),
+                commitment_ids=tuple(r["id"] for r in actor_commitments),
+            )
+        )
+    return out
+
+
+def summarize_actor_operating_context(
+    contexts: list[ActorOperatingContext],
+    *,
+    max_chars: int = 1800,
+) -> str | None:
+    if not contexts:
+        return None
+    lines: list[str] = []
+    for ctx in contexts:
+        label = ctx.display_name or "actor"
+        lines.append(f"- actor {label} ({ctx.actor_id})")
+        lines.append(
+            "  load: "
+            f"{ctx.active_commitment_count} active commitments, "
+            f"{ctx.blocked_commitment_count} blocked, "
+            f"{ctx.recent_observation_count} recent observations"
+        )
+        _append_group(lines, "capabilities", ctx.capabilities)
+        _append_group(lines, "constraints", ctx.constraints)
+        _append_group(lines, "support_needs", ctx.support_needs)
+        _append_group(lines, "risk_factors", ctx.risk_factors)
+        _append_group(lines, "relationships", ctx.relationship_context)
+    summary = "\n".join(lines)
+    if len(summary) <= max_chars:
+        return summary
+    return summary[: max_chars - 3] + "..."
+
+
+def _append_group(lines: list[str], label: str, values: tuple[str, ...]) -> None:
+    if not values:
+        return
+    lines.append(f"  {label}:")
+    for value in values[:3]:
+        lines.append(f"    - {value}")
+
+
+def _model_line(row: asyncpg.Record) -> str:
+    return (
+        f"model {row['id']} ({row['proposition_kind']}, "
+        f"conf={float(row['confidence']):.2f}): {row['natural']}"
+    )
+
+
+def _looks_like_constraint(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "blocked",
+            "overload",
+            "overloaded",
+            "capacity",
+            "waiting on",
+            "depends on",
+            "ambiguous",
+            "unclear owner",
+            "ownership",
+            "stuck",
+            "delay",
+        )
+    )
+
+
+def _looks_like_support_need(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "needs support",
+            "needs help",
+            "needs decision",
+            "waiting on",
+            "blocked",
+            "unblock",
+            "approval",
+            "escalat",
+        )
+    )
+
+
+__all__ = [
+    "ActorOperatingContext",
+    "load_actor_operating_context",
+    "summarize_actor_operating_context",
+]

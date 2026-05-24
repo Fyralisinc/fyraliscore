@@ -62,6 +62,19 @@ def test_edge_candidate_rejects_self_edge() -> None:
         )
 
 
+def test_causal_candidate_requires_mechanism() -> None:
+    with pytest.raises(ValueError):
+        make_edge_candidate(
+            tenant_id=uuid7(),
+            source_model_id=uuid7(),
+            target_model_id=uuid7(),
+            edge_kind="blocks",
+            basis="causal_hypothesis",
+            explanation="causal but underspecified",
+            scores=JudgmentScores(),
+        )
+
+
 def test_generate_scope_overlap_candidates_prioritizes_warning_edges() -> None:
     tenant_id = uuid7()
     customer_id = uuid7()
@@ -104,6 +117,36 @@ def test_generate_scope_overlap_candidates_prioritizes_warning_edges() -> None:
         "type": "customer",
         "id": str(customer_id),
     }
+
+
+def test_scope_overlap_blocker_includes_causal_metadata() -> None:
+    tenant_id = uuid7()
+    commitment_id = uuid7()
+    blocker = ModelSignal(
+        id=uuid7(),
+        natural="The launch is blocked waiting on security approval.",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.9,
+        scope_entities=(("commitment", commitment_id),),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="The launch is expected this week.",
+        proposition_kind="prediction",
+        confidence=0.7,
+        activation=0.8,
+        scope_entities=(("commitment", commitment_id),),
+    )
+
+    candidate = generate_scope_overlap_candidates(
+        tenant_id=tenant_id,
+        models=[blocker, target],
+    )[0]
+
+    assert candidate.edge_kind == "blocks"
+    assert candidate.basis == "causal_hypothesis"
+    assert candidate.metadata["causal"]["mechanism_summary"]
 
 
 def test_rank_candidates_orders_by_judgment_leverage() -> None:

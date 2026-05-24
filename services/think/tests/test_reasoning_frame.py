@@ -38,6 +38,25 @@ def test_reasoning_frame_normalizes_topology_trigger() -> None:
     assert frame.policy["emit_situation_for_composite_conditions"] is True
 
 
+def test_reasoning_frame_renders_dynamic_signals() -> None:
+    frame = ReasoningFrame.from_trigger(
+        TriggerContext(kind="T4", tenant_id=uuid7())
+    ).with_dynamic_signals([
+        {
+            "dynamic_kind": "oscillating",
+            "summary": "Model has re-asserted a prior state.",
+            "strength": 0.8,
+            "confidence": 0.7,
+        }
+    ])
+
+    section = frame.to_prompt_section()
+
+    assert "dynamic_signals:" in section
+    assert "oscillating" in section
+    assert "re-asserted" in section
+
+
 def test_build_prompt_renders_reasoning_frame_section() -> None:
     tenant_id = uuid7()
     trigger = TriggerContext(

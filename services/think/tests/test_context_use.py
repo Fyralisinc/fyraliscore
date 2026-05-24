@@ -251,9 +251,9 @@ async def test_think_persists_context_use_and_applies_context_edge(
 
     trigger_id = uuid7()
     trigger = TriggerContext(
-        kind="T2",
+        kind="T3",
         tenant_id=tenant,
-        subkind="belief_updated",
+        subkind="anomaly",
         model_id=seed_id,
         seed_signature={"trigger_id": str(trigger_id)},
         seed_natural_text="context-use end-to-end hidden warning",
@@ -338,5 +338,5 @@ async def test_think_persists_context_use_and_applies_context_edge(
     assert str(bridge_id) in context_use["referenced_model_ids"]
     assert str(target_id) in context_use["referenced_model_ids"]
     metrics = METRICS.snapshot()
-    assert metrics["context_use_grades_total"]["T2|graph_context_used"] == 1
-    assert metrics["context_use_selected_ratios"]["T2"]
+    assert metrics["context_use_grades_total"]["T3|graph_context_used"] == 1
+    assert metrics["context_use_selected_ratios"]["T3"]

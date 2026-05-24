@@ -36,6 +36,11 @@ from lib.shared.errors import (
 )
 from lib.shared.ids import uuid7
 
+from services.actors.operating_context import (
+    load_actor_operating_context,
+    summarize_actor_operating_context,
+)
+from services.dynamics import detect_dynamic_signals
 from services.retrieval.assembler import (
     AccessContext,
     ContextBundle,
@@ -432,6 +437,39 @@ def _fail_outcome(
 # ---------------------------------------------------------------------
 
 
+def _actor_ids_for_operating_context(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    limit: int = 3,
+) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+
+    def add(actor_id: Any) -> None:
+        if actor_id is None:
+            return
+        try:
+            value = actor_id if isinstance(actor_id, UUID) else UUID(str(actor_id))
+        except (TypeError, ValueError):
+            return
+        if value in seen:
+            return
+        seen.add(value)
+        out.append(value)
+
+    for actor_id in trigger.scope_actors:
+        add(actor_id)
+        if len(out) >= limit:
+            return out
+    for model in bundle.models:
+        for actor_id in getattr(model, "scope_actors", []) or []:
+            add(actor_id)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 async def _run_once(
     *,
     conn: asyncpg.Connection,
@@ -510,6 +548,32 @@ async def _run_once(
         trigger,
         retrieval_result=first,
     )
+    try:
+        dynamic_signals = await detect_dynamic_signals(
+            conn,
+            tenant_id=trigger.tenant_id,
+            model_ids=[
+                getattr(m, "id")
+                for m in first.models
+                if getattr(m, "id", None)
+            ],
+            actor_ids=trigger.scope_actors,
+        )
+        if dynamic_signals:
+            reasoning_frame = reasoning_frame.with_dynamic_signals(
+                [s.to_dict() for s in dynamic_signals]
+            )
+    except Exception as e:  # noqa: BLE001
+        first.notes["dynamic_signal_error"] = {
+            "type": type(e).__name__,
+            "message": str(e),
+        }
+        _log.warning(
+            "think.dynamic_signal_detection_failed",
+            tenant_id=str(trigger.tenant_id),
+            trigger_kind=trigger.kind,
+            error=str(e),
+        )
     first.notes["reasoning_frame"] = reasoning_frame.to_dict()
     emit("think.retrieval_done",
          run_id=str(record.id),
@@ -716,6 +780,28 @@ async def _run_once(
         },
     )
 
+    actor_operating_summary: str | None = None
+    try:
+        actor_contexts = await load_actor_operating_context(
+            conn,
+            tenant_id=trigger.tenant_id,
+            actor_ids=_actor_ids_for_operating_context(trigger, bundle),
+        )
+        actor_operating_summary = summarize_actor_operating_context(
+            actor_contexts
+        )
+    except Exception as e:  # noqa: BLE001
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="error",
+            payload={
+                "phase": "actor_operating_context",
+                "error": repr(e),
+            },
+        )
+
     # --- 6. Reason ------------------------------------------------
     llm_latency_ms: int | None = None
     if is_authoritative(trigger):
@@ -729,6 +815,7 @@ async def _run_once(
         raw_diff, llm_latency_ms = await llm_reason(
             trigger, bundle, llm_provider,
             triggering_content=triggering_content,
+            triggering_actor_summary=actor_operating_summary,
             reason_for_trigger=reason_for_trigger,
             reasoning_frame=reasoning_frame,
         )
@@ -791,6 +878,7 @@ async def _run_once(
             "is_authoritative": is_authoritative(trigger),
             "raw_diff": raw_diff,
             "reasoning_frame": reasoning_frame.to_dict(),
+            "actor_operating_context": actor_operating_summary,
             "context_use": raw_context_use,
         },
     )

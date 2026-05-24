@@ -12,6 +12,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from lib.shared.ids import uuid7
+from services.judgment.scoring import JudgmentScores, clamp_score
 
 
 CandidateKind = Literal["edge", "situation"]
@@ -33,55 +34,7 @@ ReviewStatus = Literal[
 ]
 
 
-def _clamp(v: float) -> float:
-    return max(0.0, min(1.0, float(v)))
-
-
-@dataclass(frozen=True)
-class JudgmentScores:
-    """Signals used to decide whether a candidate deserves attention.
-
-    `reversibility` is "irreversibility pressure": 1.0 means the
-    decision is hard to undo or costly to delay; 0.0 means reversible.
-    """
-
-    impact: float = 0.0
-    uncertainty: float = 0.0
-    urgency: float = 0.0
-    reversibility: float = 0.0
-    authority_required: float = 0.0
-    actionability: float = 0.0
-    novelty: float = 0.0
-    confidence: float = 0.0
-
-    @property
-    def judgment_leverage(self) -> float:
-        # Bias toward useful, time-sensitive, human-authority decisions.
-        # Confidence matters, but high-confidence low-impact trivia should
-        # never outrank an uncertain, material judgment point.
-        return _clamp(
-            0.22 * _clamp(self.impact)
-            + 0.16 * _clamp(self.urgency)
-            + 0.15 * _clamp(self.actionability)
-            + 0.14 * _clamp(self.authority_required)
-            + 0.12 * _clamp(self.uncertainty)
-            + 0.10 * _clamp(self.novelty)
-            + 0.07 * _clamp(self.reversibility)
-            + 0.04 * _clamp(self.confidence)
-        )
-
-    def as_dict(self) -> dict[str, float]:
-        return {
-            "impact": _clamp(self.impact),
-            "uncertainty": _clamp(self.uncertainty),
-            "urgency": _clamp(self.urgency),
-            "reversibility": _clamp(self.reversibility),
-            "authority_required": _clamp(self.authority_required),
-            "actionability": _clamp(self.actionability),
-            "novelty": _clamp(self.novelty),
-            "confidence": _clamp(self.confidence),
-            "judgment_leverage": self.judgment_leverage,
-        }
+_CAUSAL_EDGE_KINDS = {"causes", "explains", "blocks", "enables"}
 
 
 @dataclass(frozen=True)
@@ -164,11 +117,33 @@ def make_edge_candidate(
     scores: JudgmentScores,
     evidence_model_ids: tuple[UUID, ...] = (),
     evidence_event_ids: tuple[UUID, ...] = (),
+    mechanism_summary: str | None = None,
+    intervention_surface: str | None = None,
+    expected_delay: str | None = None,
+    confounders: tuple[str, ...] = (),
     metadata: dict[str, Any] | None = None,
     review_status: ReviewStatus = "candidate",
 ) -> RelationshipCandidate:
     if source_model_id == target_model_id:
         raise ValueError("relationship candidate cannot be a self-edge")
+    if basis in {"causal_hypothesis", "causal_confirmed"}:
+        if not mechanism_summary or not mechanism_summary.strip():
+            raise ValueError("causal relationship candidate requires mechanism_summary")
+    candidate_metadata = dict(metadata or {})
+    if (
+        mechanism_summary
+        or intervention_surface
+        or expected_delay
+        or confounders
+        or basis in {"causal_hypothesis", "causal_confirmed"}
+    ):
+        candidate_metadata["causal"] = {
+            "basis": basis,
+            "mechanism_summary": mechanism_summary,
+            "intervention_surface": intervention_surface,
+            "expected_delay": expected_delay,
+            "confounders": list(confounders),
+        }
     return RelationshipCandidate(
         id=uuid7(),
         tenant_id=tenant_id,
@@ -182,7 +157,7 @@ def make_edge_candidate(
         evidence_event_ids=evidence_event_ids,
         explanation=explanation,
         scores=scores,
-        metadata=metadata or {},
+        metadata=candidate_metadata,
         review_status=review_status,
     )
 
@@ -236,8 +211,8 @@ def rank_candidates(
         candidates,
         key=lambda c: (
             -c.judgment_leverage_score,
-            -_clamp(c.scores.impact),
-            -_clamp(c.scores.confidence),
+            -clamp_score(c.scores.impact),
+            -clamp_score(c.scores.confidence),
             str(c.id),
         ),
     )
@@ -282,6 +257,21 @@ def generate_scope_overlap_candidates(
                     f"proposition kinds ({source.proposition_kind}, "
                     f"{target.proposition_kind}) suggest {kind} should be reviewed."
                 )
+                basis: CandidateBasis = "inferred"
+                causal_kwargs: dict[str, Any] = {}
+                if kind in _CAUSAL_EDGE_KINDS:
+                    basis = "causal_hypothesis"
+                    causal_kwargs = {
+                        "mechanism_summary": _heuristic_mechanism_summary(
+                            source,
+                            target,
+                            kind,
+                        ),
+                        "intervention_surface": _heuristic_intervention_surface(
+                            kind
+                        ),
+                        "expected_delay": "unknown",
+                    }
                 scores = JudgmentScores(
                     impact=max(left.activation, right.activation),
                     uncertainty=0.55 if kind in {"causes", "early_warning_for"} else 0.35,
@@ -298,10 +288,11 @@ def generate_scope_overlap_candidates(
                         source_model_id=source.id,
                         target_model_id=target.id,
                         edge_kind=kind,
-                        basis="inferred",
+                        basis=basis,
                         explanation=explanation,
                         scores=scores,
                         metadata={"scope": {"type": scope[0], "id": str(scope[1])}},
+                        **causal_kwargs,
                     )
                 )
     return rank_candidates(out, limit=max_candidates)
@@ -322,6 +313,42 @@ def _heuristic_edge_kind(left: ModelSignal, right: ModelSignal) -> str:
     if "hypothesis" in kinds or "relation" in kinds:
         return "explains"
     return "co_occurs_with"
+
+
+def _heuristic_mechanism_summary(
+    source: ModelSignal,
+    target: ModelSignal,
+    edge_kind: str,
+) -> str:
+    if edge_kind == "blocks":
+        return (
+            "The source Model describes a constraint or blocker that may "
+            "delay, prevent, or degrade the target Model's outcome."
+        )
+    if edge_kind == "enables":
+        return (
+            "The source Model describes a capability or prerequisite that may "
+            "make the target Model's outcome more likely."
+        )
+    if edge_kind == "explains":
+        return (
+            "The source Model offers a plausible mechanism for why the target "
+            "Model is occurring."
+        )
+    return (
+        "The source Model may causally influence the target Model; the "
+        "mechanism should be reviewed before acceptance."
+    )
+
+
+def _heuristic_intervention_surface(edge_kind: str) -> str | None:
+    if edge_kind == "blocks":
+        return "remove blocker, clarify owner, change priority, or unblock dependency"
+    if edge_kind == "enables":
+        return "preserve prerequisite, allocate support, or reinforce capability"
+    if edge_kind == "explains":
+        return "test mechanism and inspect downstream leverage point"
+    return None
 
 
 def _orient_pair(

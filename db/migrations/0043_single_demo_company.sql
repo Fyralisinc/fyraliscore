@@ -8,7 +8,8 @@
 --
 -- Mirrors the (separately-authored) main-branch 0029 cleanup. Idempotent:
 -- a re-run finds nothing. Sessions/tenants pointing at a legacy config
--- are detached/ended first so the FK + NOT NULL constraints hold.
+-- are detached/ended first, and dependent cost ledger rows are removed
+-- before sessions so FK constraints hold on databases with prior demo runs.
 -- =====================================================================
 
 BEGIN;
@@ -28,6 +29,14 @@ UPDATE tenants
  WHERE demo_config_id IN (
    SELECT id FROM demo_configs
    WHERE company_id IN ('truss', 'northwind', 'meridian')
+ );
+
+DELETE FROM demo_session_costs
+ WHERE demo_session_id IN (
+   SELECT ds.id
+   FROM demo_sessions ds
+   JOIN demo_configs dc ON dc.id = ds.demo_config_id
+   WHERE dc.company_id IN ('truss', 'northwind', 'meridian')
  );
 
 DELETE FROM demo_sessions
