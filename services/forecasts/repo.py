@@ -377,7 +377,10 @@ async def risk_exposure_series(
     rows = await conn.fetch(
         """
         SELECT
-          date_trunc('week', resolution_at) AS bucket_start,
+          (
+            date_trunc('week', resolution_at AT TIME ZONE 'UTC')
+            AT TIME ZONE 'UTC'
+          ) AS bucket_start,
           SUM(
             COALESCE((impact ->> $3)::numeric, 0)
           ) AS value

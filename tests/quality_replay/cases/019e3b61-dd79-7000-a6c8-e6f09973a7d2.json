@@ -1,0 +1,179 @@
+{
+  "case": {
+    "artifacts": [],
+    "case_id": "think-quality:019e3b61-dd79-7000-a6c8-e6f09973a7d2",
+    "context_use": {
+      "act_ops_count": 0,
+      "claim_ops_count": 1,
+      "context_use_grade": "observation_context_used",
+      "edge_ops_between_selected_models": 0,
+      "edge_ops_count": 0,
+      "edge_ops_touching_graph_models": 0,
+      "graph_context_used": false,
+      "graph_selected_model_count": 6,
+      "graph_selected_model_ids": [
+        "019e3b60-abbc-7000-8616-043871954d77",
+        "019e3b60-add1-7000-ac4f-584648f0d155",
+        "019e3b60-cba8-7000-8cbf-25c0280b6856",
+        "019e3b60-f05f-7000-947b-a776fb2c6ab2",
+        "019e3b61-2f37-7000-a279-785ff0afed78",
+        "019e3b61-8995-7000-84d2-fbf5d6c11949"
+      ],
+      "graph_selected_reference_count": 0,
+      "graph_selected_reference_ratio": 0.0,
+      "model_context_used": false,
+      "observation_context_used": true,
+      "referenced_model_ids": [],
+      "referenced_observation_ids": [
+        "019e3b61-b734-7001-a65f-b46b2ca476a0"
+      ],
+      "resource_ops_count": 0,
+      "selected_context_count": 19,
+      "selected_context_reference_count": 1,
+      "selected_context_reference_ratio": 0.05263157894736842,
+      "selected_context_used": true,
+      "selected_model_count": 8,
+      "selected_model_ids": [
+        "019e3b60-abbc-7000-8616-043871954d77",
+        "019e3b60-abc7-7000-bb3e-5b0bddf7a707",
+        "019e3b60-add1-7000-ac4f-584648f0d155",
+        "019e3b60-ae7f-7000-8fa2-1c5c1e4aff9f",
+        "019e3b60-cba8-7000-8cbf-25c0280b6856",
+        "019e3b60-f05f-7000-947b-a776fb2c6ab2",
+        "019e3b61-2f37-7000-a279-785ff0afed78",
+        "019e3b61-8995-7000-84d2-fbf5d6c11949"
+      ],
+      "selected_model_reference_count": 0,
+      "selected_model_reference_ratio": 0.0,
+      "selected_observation_count": 11,
+      "selected_observation_ids": [
+        "019e3b60-87de-7000-855c-895d9ad99b23",
+        "019e3b60-8a6e-7001-8ad7-9562c3d34ef9",
+        "019e3b60-8da9-7001-a661-8e9f7921f789",
+        "019e3b60-8e39-7001-86ef-d9c7b9448d47",
+        "019e3b60-abe2-7001-bc98-67a586ca8d8a",
+        "019e3b60-aeb3-7002-8417-7b4de85e5b54",
+        "019e3b61-b563-7001-bfae-7a2358a013f4",
+        "019e3b61-b5e7-7001-9181-0c01af574c30",
+        "019e3b61-b6a2-7001-a3c6-f2bd5805a959",
+        "019e3b61-b703-7001-ae0f-551b5cbe6eef",
+        "019e3b61-b734-7001-a65f-b46b2ca476a0"
+      ],
+      "selected_observation_reference_count": 1,
+      "selected_observation_reference_ratio": 0.09090909090909091,
+      "unused_graph_model_ids": [
+        "019e3b60-abbc-7000-8616-043871954d77",
+        "019e3b60-add1-7000-ac4f-584648f0d155",
+        "019e3b60-cba8-7000-8cbf-25c0280b6856",
+        "019e3b60-f05f-7000-947b-a776fb2c6ab2",
+        "019e3b61-2f37-7000-a279-785ff0afed78",
+        "019e3b61-8995-7000-84d2-fbf5d6c11949"
+      ],
+      "unused_selected_model_ids": [
+        "019e3b60-abbc-7000-8616-043871954d77",
+        "019e3b60-abc7-7000-bb3e-5b0bddf7a707",
+        "019e3b60-add1-7000-ac4f-584648f0d155",
+        "019e3b60-ae7f-7000-8fa2-1c5c1e4aff9f",
+        "019e3b60-cba8-7000-8cbf-25c0280b6856",
+        "019e3b60-f05f-7000-947b-a776fb2c6ab2",
+        "019e3b61-2f37-7000-a279-785ff0afed78",
+        "019e3b61-8995-7000-84d2-fbf5d6c11949"
+      ],
+      "unused_selected_observation_ids": [
+        "019e3b60-87de-7000-855c-895d9ad99b23",
+        "019e3b60-8a6e-7001-8ad7-9562c3d34ef9",
+        "019e3b60-8da9-7001-a661-8e9f7921f789",
+        "019e3b60-8e39-7001-86ef-d9c7b9448d47",
+        "019e3b60-abe2-7001-bc98-67a586ca8d8a",
+        "019e3b60-aeb3-7002-8417-7b4de85e5b54",
+        "019e3b61-b563-7001-bfae-7a2358a013f4",
+        "019e3b61-b5e7-7001-9181-0c01af574c30",
+        "019e3b61-b6a2-7001-a3c6-f2bd5805a959",
+        "019e3b61-b703-7001-ae0f-551b5cbe6eef"
+      ]
+    },
+    "flags": [
+      "graph_context_ignored",
+      "graph_context_without_edge_ops",
+      "low_selected_context_use"
+    ],
+    "observation": {
+      "actor_id": "019e3b60-874d-7000-8de8-2c8d982f2712",
+      "content_text": "Refund flow is live in staging. Smoke tests passing. Will deploy to prod after on-call verification this afternoon.",
+      "entities_mentioned": "[]",
+      "id": "019e3b61-b734-7001-a65f-b46b2ca476a0",
+      "kind": "signal",
+      "occurred_at": "2026-05-19T02:02:22.357074+00:00",
+      "source_channel": "slack:eng-general",
+      "trust_tier": "inferential"
+    },
+    "promotion_hint": {
+      "assertions": [
+        "selected_context_reference_ratio improves or remains justified",
+        "graph-selected Models are used when graph context is applicable",
+        "edge_ops are emitted when the useful output is relational"
+      ],
+      "expected_failure_modes": [
+        "graph_context_ignored",
+        "graph_context_without_edge_ops",
+        "low_selected_context_use"
+      ],
+      "recommended_eval": "context_use_replay"
+    },
+    "run": {
+      "act_ops_count": 0,
+      "claim_ops_count": 1,
+      "context_use_grade": "observation_context_used",
+      "edge_ops_count": 0,
+      "graph_selected_model_count": 6,
+      "graph_selected_reference_ratio": 0.0,
+      "llm_latency_ms": 8470,
+      "retrieval_model_count": 8,
+      "retrieval_observation_count": 11,
+      "run_id": "019e3b61-dd79-7000-a6c8-e6f09973a7d2",
+      "selected_context_count": 19,
+      "selected_context_reference_ratio": 0.05263157894736842,
+      "selected_model_reference_ratio": 0.0,
+      "started_at": "2026-05-18T13:58:49.978559+00:00",
+      "status": "success",
+      "trigger_id": "019e3b61-dd71-7000-83d6-893b12f42129",
+      "trigger_kind": "T1:event_arrival",
+      "validation_error_count": 0
+    },
+    "trigger": {
+      "attempts": 0,
+      "enqueued_at": "2026-05-18T13:58:49.943070+00:00",
+      "id": "019e3b61-dd71-7000-83d6-893b12f42129",
+      "model_id": null,
+      "observation_id": "019e3b61-b734-7001-a65f-b46b2ca476a0",
+      "payload": "{\"kind\": \"signal\", \"trust_tier\": \"inferential\", \"scope_actors\": [\"019e3b60-874d-7000-8de8-2c8d982f2712\"], \"source_channel\": \"slack:eng-general\", \"seed_occurred_at\": \"2026-05-19T02:02:22.357074+00:00\", \"seed_natural_text\": \"Refund flow is live in staging. Smoke tests passing. Will deploy to prod after on-call verification this afternoon.\"}",
+      "scheduled_for": "2026-05-18T13:58:49.943070+00:00",
+      "trigger_kind": "T1",
+      "trigger_subkind": "event_arrival"
+    }
+  },
+  "case_id": "think-quality:019e3b61-dd79-7000-a6c8-e6f09973a7d2",
+  "expectation": {
+    "expected_flags": [
+      "graph_context_ignored",
+      "graph_context_without_edge_ops",
+      "low_selected_context_use"
+    ],
+    "minimum_selected_context_reference_ratio": 0.2,
+    "mode": "known_failure",
+    "require_edge_ops_when_graph_selected": false,
+    "require_graph_context_when_selected": true
+  },
+  "promoted_at": "2026-05-18T14:01:36.427436+00:00",
+  "schema_version": 1,
+  "source": {
+    "source": "scripts/promote_think_quality_cases.py",
+    "tenant_id": "019e3b60-8735-7000-adb3-ade34ac8925c",
+    "window": {
+      "include_artifacts": false,
+      "limit": 5,
+      "low_context_ratio": 0.2,
+      "since_hours": 24
+    }
+  }
+}

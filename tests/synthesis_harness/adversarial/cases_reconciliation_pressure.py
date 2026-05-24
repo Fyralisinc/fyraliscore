@@ -12,6 +12,7 @@ helper to land cosine in specific bands.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg

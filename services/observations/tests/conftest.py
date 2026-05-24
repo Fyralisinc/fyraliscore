@@ -14,6 +14,8 @@ import os
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
+import functools
+import inspect
 
 import asyncpg
 import httpx

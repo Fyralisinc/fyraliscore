@@ -73,6 +73,13 @@ class Metrics:
     # of human_review to total tells operators how much volume the
     # review queue is taking; the auto_merge rate is the dedup rate.
     reconcile_decisions_total: dict[str, int] = field(default_factory=dict)
+    # Context-use quality after validation, keyed by trigger kind and
+    # context_use_grade. This lets production watch whether successful
+    # Think runs are actually using selected retrieval context.
+    context_use_grades_total: dict[str, int] = field(default_factory=dict)
+    context_use_selected_ratios: dict[str, list[float]] = field(
+        default_factory=dict
+    )
 
     def inc_run(self, trigger_kind: str) -> None:
         self.runs_total[trigger_kind] = self.runs_total.get(trigger_kind, 0) + 1
@@ -117,6 +124,23 @@ class Metrics:
         self.cascade_invariant_violations[branch] = (
             self.cascade_invariant_violations.get(branch, 0) + n
         )
+
+    def observe_context_use(
+        self,
+        trigger_kind: str,
+        report: dict[str, Any],
+    ) -> None:
+        """Track selected-context use for successful Think runs."""
+        grade = str(report.get("context_use_grade") or "unknown")
+        key = f"{trigger_kind}|{grade}"
+        self.context_use_grades_total[key] = (
+            self.context_use_grades_total.get(key, 0) + 1
+        )
+        ratio = report.get("selected_context_reference_ratio")
+        if isinstance(ratio, (int, float)):
+            self.context_use_selected_ratios.setdefault(trigger_kind, []).append(
+                float(ratio)
+            )
 
     # --- OP-4 --------------------------------------------------------
     def inc_dropped_op(self, reason: str, op_type: str, n: int = 1) -> None:
@@ -172,6 +196,10 @@ class Metrics:
             "output_tokens_by_kind": dict(self.output_tokens_by_kind),
             "cascade_invariant_violations": dict(self.cascade_invariant_violations),
             "reconcile_decisions_total": dict(self.reconcile_decisions_total),
+            "context_use_grades_total": dict(self.context_use_grades_total),
+            "context_use_selected_ratios": {
+                k: list(v) for k, v in self.context_use_selected_ratios.items()
+            },
         }
 
     def reset(self) -> None:
@@ -189,6 +217,8 @@ class Metrics:
         self.output_tokens_by_kind.clear()
         self.cascade_invariant_violations.clear()
         self.reconcile_decisions_total.clear()
+        self.context_use_grades_total.clear()
+        self.context_use_selected_ratios.clear()
 
 
 METRICS = Metrics()

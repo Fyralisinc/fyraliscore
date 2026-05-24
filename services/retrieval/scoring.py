@@ -31,6 +31,8 @@ Our dimensions:
   - "semantic"   — pathway B rank
   - "temporal"   — pathway C rank
   - "pattern"    — pathway D rank
+  - "topological" — pathway F rank
+  - "model_edge" — pathway G typed graph rank
   - "activation" — Model.activation (rank by activation DESC)
   - "provenance" — the merged trust_tier + source_boost dimension
                    (RETRIEVAL-DESIGN-AUDIT §6 arg 3). Rank by
@@ -44,6 +46,8 @@ emphasis:
   semantic      0.85
   temporal      0.5
   pattern       0.5
+  topological   0.7
+  model_edge    0.9
   activation    0.5
   provenance    0.5
 
@@ -70,6 +74,7 @@ DIMENSION_SEMANTIC = "semantic"
 DIMENSION_TEMPORAL = "temporal"
 DIMENSION_PATTERN = "pattern"
 DIMENSION_TOPOLOGICAL = "topological"  # S3 — Pathway F (positional)
+DIMENSION_MODEL_EDGE = "model_edge"  # typed Model graph traversal
 DIMENSION_ACTIVATION = "activation"
 DIMENSION_PROVENANCE = "provenance"  # merged trust_tier + source_boost
 
@@ -83,6 +88,7 @@ DIMENSION_WEIGHTS: dict[str, float] = {
     # than semantic until empirical A/B shows it pulls more relevant
     # candidates than B alone. Operators can override per trigger.
     DIMENSION_TOPOLOGICAL: 0.7,
+    DIMENSION_MODEL_EDGE: 0.9,
     DIMENSION_ACTIVATION: 0.5,
     DIMENSION_PROVENANCE: 0.5,
 }
@@ -94,6 +100,7 @@ PATHWAY_TO_DIMENSION: dict[str, str] = {
     "C": DIMENSION_TEMPORAL,
     "D": DIMENSION_PATTERN,
     "F": DIMENSION_TOPOLOGICAL,
+    "G": DIMENSION_MODEL_EDGE,
 }
 
 

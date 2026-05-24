@@ -13,7 +13,10 @@ Public API:
   EdgesRepo(pool=None)
 
   .link(conn, *, source, target, kind, tenant_id, detected_by,
-        weight=None, metadata=None, created_by_event_id=None)
+        weight=None, metadata=None, created_by_event_id=None,
+        confidence=1.0, evidence_event_ids=None,
+        evidence_model_ids=None, explanation=None,
+        review_status='accepted', decay_after=None, expires_at=None)
       Insert one edge (or two for symmetric kinds). Idempotent on
       the (tenant, source, target, kind) UNIQUE; returns the
       inserted-or-existing edge id(s). Validates the kind is
@@ -66,12 +69,15 @@ Determinism note:
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from datetime import datetime
+from typing import Any, Iterable, Sequence, get_args
 from uuid import UUID
 
 import asyncpg
 
 from lib.shared.edge_registry import (
+    EDGE_REGISTRY,
+    EdgeKindSpec,
     EdgeRegistryError,
     assert_writable,
     cycle_scope_for,
@@ -81,6 +87,7 @@ from lib.shared.edge_registry import (
 )
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.ids import uuid7
+from lib.shared.types import EdgeDetectedBy
 
 
 # Edge-graph mutations affect the topology layer (S2): both
@@ -130,8 +137,13 @@ class EdgesRepoError(CompanyOSError):
 _SELECT_COLS_SQL = (
     "id, tenant_id, source_model_id, target_model_id, edge_kind, "
     "weight, metadata, status, detected_by, created_at, "
-    "created_by_event_id, status_changed_at, status_reason"
+    "created_by_event_id, status_changed_at, status_reason, "
+    "confidence, evidence_event_ids, evidence_model_ids, explanation, "
+    "review_status, last_confirmed_at, confirmed_count, contested_count, "
+    "decay_after, expires_at"
 )
+
+_ALLOWED_DETECTED_BY = set(get_args(EdgeDetectedBy))
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
@@ -139,6 +151,36 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     callbacks don't depend on Record being indexable by string and
     so tests can construct synthetic edges without a DB round-trip."""
     return {k: row[k] for k in row.keys()}
+
+
+def _validate_confidence(confidence: float) -> float:
+    try:
+        c = float(confidence)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"edge confidence must be numeric; got {confidence!r}",
+            confidence=confidence,
+        ) from exc
+    if not (0.0 <= c <= 1.0):
+        raise ValidationError(
+            f"edge confidence out of range [0, 1]: {c}",
+            confidence=c,
+        )
+    return c
+
+
+def _unique_uuid_list(values: Sequence[UUID] | None) -> list[UUID]:
+    if not values:
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        u = value if isinstance(value, UUID) else UUID(str(value))
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
 
 
 class EdgesRepo:
@@ -164,6 +206,13 @@ class EdgesRepo:
         weight: float | None = None,
         metadata: dict[str, Any] | None = None,
         created_by_event_id: UUID | None = None,
+        confidence: float = 1.0,
+        evidence_event_ids: Sequence[UUID] | None = None,
+        evidence_model_ids: Sequence[UUID] | None = None,
+        explanation: str | None = None,
+        review_status: str = "accepted",
+        decay_after: datetime | None = None,
+        expires_at: datetime | None = None,
     ) -> list[UUID]:
         """Insert an edge. Returns the edge id(s) (one for directed,
         two for symmetric).
@@ -180,6 +229,25 @@ class EdgesRepo:
         # Registry validation (does this kind exist + is it writable?).
         spec = assert_writable(kind)
         validate_weight(kind, weight)
+        confidence = _validate_confidence(confidence)
+        event_evidence = _unique_uuid_list(evidence_event_ids)
+        model_evidence = _unique_uuid_list(evidence_model_ids)
+        if review_status not in {
+            "accepted",
+            "candidate",
+            "needs_review",
+            "rejected",
+            "retired",
+        }:
+            raise ValidationError(
+                f"invalid edge review_status {review_status!r}",
+                review_status=review_status,
+            )
+        if detected_by not in _ALLOWED_DETECTED_BY:
+            raise ValidationError(
+                f"invalid edge detected_by {detected_by!r}",
+                detected_by=detected_by,
+            )
 
         if source == target:
             raise ValidationError(
@@ -189,27 +257,23 @@ class EdgesRepo:
 
         # Mutually-exclusive-with: reject if any forbidden kind exists
         # between this pair already.
-        if spec.mutually_exclusive_with:
-            existing_kind = await conn.fetchval(
-                """
-                SELECT edge_kind FROM model_edges
-                WHERE tenant_id = $1
-                  AND source_model_id = $2
-                  AND target_model_id = $3
-                  AND status = 'active'
-                  AND edge_kind = ANY($4::text[])
-                LIMIT 1
-                """,
-                tenant_id,
-                source,
-                target,
-                list(spec.mutually_exclusive_with),
+        await self._check_mutual_exclusion(
+            conn,
+            spec=spec,
+            kind=kind,
+            source=source,
+            target=target,
+            tenant_id=tenant_id,
+        )
+        if is_symmetric(kind):
+            await self._check_mutual_exclusion(
+                conn,
+                spec=spec,
+                kind=kind,
+                source=target,
+                target=source,
+                tenant_id=tenant_id,
             )
-            if existing_kind is not None:
-                raise EdgeRegistryError(
-                    f"edge_kind {kind!r} mutually exclusive with "
-                    f"{existing_kind!r} between {source} → {target}"
-                )
 
         # DAG cycle check across the kind's cycle_scope.
         scope = cycle_scope_for(kind)
@@ -233,6 +297,13 @@ class EdgesRepo:
             weight=weight,
             metadata=metadata or {},
             created_by_event_id=created_by_event_id,
+            confidence=confidence,
+            evidence_event_ids=event_evidence,
+            evidence_model_ids=model_evidence,
+            explanation=explanation,
+            review_status=review_status,
+            decay_after=decay_after,
+            expires_at=expires_at,
         )
         if is_symmetric(kind):
             mirror_ids = await self._insert_one(
@@ -245,6 +316,13 @@ class EdgesRepo:
                 weight=weight,
                 metadata=metadata or {},
                 created_by_event_id=created_by_event_id,
+                confidence=confidence,
+                evidence_event_ids=event_evidence,
+                evidence_model_ids=model_evidence,
+                explanation=explanation,
+                review_status=review_status,
+                decay_after=decay_after,
+                expires_at=expires_at,
             )
             ids.extend(mirror_ids)
 
@@ -268,6 +346,41 @@ class EdgesRepo:
         )
         return ids
 
+    async def _check_mutual_exclusion(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        spec: EdgeKindSpec,
+        kind: str,
+        source: UUID,
+        target: UUID,
+        tenant_id: UUID,
+    ) -> None:
+        """Reject active mutually-exclusive relationships for one ordered pair."""
+        if not spec.mutually_exclusive_with:
+            return
+        existing_kind = await conn.fetchval(
+            """
+            SELECT edge_kind FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND status = 'active'
+              AND review_status != 'rejected'
+              AND edge_kind = ANY($4::text[])
+            LIMIT 1
+            """,
+            tenant_id,
+            source,
+            target,
+            list(spec.mutually_exclusive_with),
+        )
+        if existing_kind is not None:
+            raise EdgeRegistryError(
+                f"edge_kind {kind!r} mutually exclusive with "
+                f"{existing_kind!r} between {source} → {target}"
+            )
+
     async def _insert_one(
         self,
         conn: asyncpg.Connection,
@@ -280,6 +393,13 @@ class EdgesRepo:
         weight: float | None,
         metadata: dict[str, Any],
         created_by_event_id: UUID | None,
+        confidence: float,
+        evidence_event_ids: Sequence[UUID],
+        evidence_model_ids: Sequence[UUID],
+        explanation: str | None,
+        review_status: str,
+        decay_after: datetime | None,
+        expires_at: datetime | None,
     ) -> list[UUID]:
         """The actual SQL INSERT. Idempotent: ON CONFLICT returns
         the pre-existing id rather than raising. Wrapped in
@@ -298,9 +418,42 @@ class EdgesRepo:
               INSERT INTO model_edges
                 (id, tenant_id, source_model_id, target_model_id,
                  edge_kind, weight, metadata, status, detected_by,
-                 created_by_event_id)
-              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'active', $8, $9)
-              ON CONFLICT ON CONSTRAINT model_edges_unique DO NOTHING
+                 created_by_event_id, confidence, evidence_event_ids,
+                 evidence_model_ids, explanation, review_status,
+                 decay_after, expires_at, last_confirmed_at, confirmed_count)
+              VALUES (
+                 $1, $2, $3, $4, $5, $6, $7::jsonb, 'active', $8, $9,
+                 $10, $11::uuid[], $12::uuid[], $13, $14, $15, $16,
+                 now(), 1
+              )
+              ON CONFLICT ON CONSTRAINT model_edges_unique DO UPDATE
+                SET weight = COALESCE(EXCLUDED.weight, model_edges.weight),
+                    metadata = model_edges.metadata || EXCLUDED.metadata,
+                    confidence = GREATEST(model_edges.confidence, EXCLUDED.confidence),
+                    evidence_event_ids = ARRAY(
+                      SELECT DISTINCT x
+                      FROM unnest(model_edges.evidence_event_ids || EXCLUDED.evidence_event_ids) AS t(x)
+                    ),
+                    evidence_model_ids = ARRAY(
+                      SELECT DISTINCT x
+                      FROM unnest(model_edges.evidence_model_ids || EXCLUDED.evidence_model_ids) AS t(x)
+                    ),
+                    explanation = COALESCE(EXCLUDED.explanation, model_edges.explanation),
+                    review_status = CASE
+                      WHEN model_edges.review_status IN ('rejected', 'retired')
+                        THEN model_edges.review_status
+                      WHEN model_edges.review_status = 'accepted'
+                           OR EXCLUDED.review_status = 'accepted'
+                        THEN 'accepted'
+                      WHEN model_edges.review_status = 'needs_review'
+                           OR EXCLUDED.review_status = 'needs_review'
+                        THEN 'needs_review'
+                      ELSE 'candidate'
+                    END,
+                    decay_after = COALESCE(EXCLUDED.decay_after, model_edges.decay_after),
+                    expires_at = COALESCE(EXCLUDED.expires_at, model_edges.expires_at),
+                    last_confirmed_at = now(),
+                    confirmed_count = model_edges.confirmed_count + 1
               RETURNING id
             )
             SELECT id FROM ins
@@ -322,6 +475,13 @@ class EdgesRepo:
             json.dumps(metadata, sort_keys=True, default=str),
             detected_by,
             created_by_event_id,
+            confidence,
+            list(evidence_event_ids),
+            list(evidence_model_ids),
+            explanation,
+            review_status,
+            decay_after,
+            expires_at,
         )
         if row is None:
             raise EdgesRepoError(
@@ -412,6 +572,81 @@ class EdgesRepo:
                 hop_depth=0,
             )
         return int(count or 0)
+
+    async def retire(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        source: UUID,
+        target: UUID,
+        kind: str,
+        tenant_id: UUID,
+        reason: str,
+    ) -> int:
+        """Retire an edge without deleting audit history.
+
+        Unlike unlink(), this marks the edge inert and sets
+        review_status='retired'. Symmetric kinds retire both mirror rows.
+        """
+        get_spec(kind)  # raises if unknown
+        if is_symmetric(kind):
+            rows = await conn.fetch(
+                f"""
+                UPDATE model_edges
+                SET status = 'inert',
+                    review_status = 'retired',
+                    status_changed_at = now(),
+                    status_reason = $5
+                WHERE tenant_id = $1
+                  AND edge_kind = $2
+                  AND status = 'active'
+                  AND ((source_model_id = $3 AND target_model_id = $4)
+                    OR (source_model_id = $4 AND target_model_id = $3))
+                RETURNING {_SELECT_COLS_SQL}
+                """,
+                tenant_id,
+                kind,
+                source,
+                target,
+                reason,
+            )
+        else:
+            rows = await conn.fetch(
+                f"""
+                UPDATE model_edges
+                SET status = 'inert',
+                    review_status = 'retired',
+                    status_changed_at = now(),
+                    status_reason = $5
+                WHERE tenant_id = $1
+                  AND edge_kind = $2
+                  AND source_model_id = $3
+                  AND target_model_id = $4
+                  AND status = 'active'
+                RETURNING {_SELECT_COLS_SQL}
+                """,
+                tenant_id,
+                kind,
+                source,
+                target,
+                reason,
+            )
+        if rows:
+            await _enqueue_topo_dirty(
+                conn,
+                model_id=source,
+                tenant_id=tenant_id,
+                cause_model_id=target,
+                hop_depth=0,
+            )
+            await _enqueue_topo_dirty(
+                conn,
+                model_id=target,
+                tenant_id=tenant_id,
+                cause_model_id=source,
+                hop_depth=0,
+            )
+        return len(rows)
 
     # =================================================================
     # traverse_forward / traverse_backward

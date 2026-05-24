@@ -4,65 +4,16 @@ unknown ones, cascades on model archival, and respects RLS."""
 from __future__ import annotations
 
 import json
-import os
 import uuid
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
 
 
 pytestmark = pytest.mark.integration
-
-
-_RLS_ROLE = "rls_test_user"
-
-
-@pytest_asyncio.fixture
-async def rls_pool():
-    """A pool connected as a non-superuser, non-BYPASSRLS role so the
-    RLS policy actually fires (superusers/owners bypass RLS, and CI
-    connects as a superuser). Only the cross-tenant RLS test needs this;
-    the rest of the suite uses the package's superuser `db_pool`."""
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        pytest.skip("DATABASE_URL not set")
-    admin = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
-    try:
-        async with admin.acquire() as c:
-            await c.execute(
-                f"""
-                DO $$ BEGIN
-                  IF NOT EXISTS (
-                    SELECT 1 FROM pg_roles WHERE rolname = '{_RLS_ROLE}'
-                  ) THEN
-                    CREATE ROLE {_RLS_ROLE} LOGIN PASSWORD '{_RLS_ROLE}'
-                      NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
-                  END IF;
-                END $$;
-                """
-            )
-            await c.execute(f"GRANT USAGE ON SCHEMA public TO {_RLS_ROLE}")
-            await c.execute(
-                "GRANT SELECT, INSERT, UPDATE, DELETE "
-                f"ON ALL TABLES IN SCHEMA public TO {_RLS_ROLE}"
-            )
-            await c.execute(
-                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
-                f"TO {_RLS_ROLE}"
-            )
-    finally:
-        await admin.close()
-    pool = await asyncpg.create_pool(
-        dsn, user=_RLS_ROLE, password=_RLS_ROLE, min_size=1, max_size=3
-    )
-    try:
-        yield pool
-    finally:
-        await pool.close()
 
 
 async def _seed_model(
@@ -225,12 +176,12 @@ async def test_readings_cascade_when_model_deleted(tx_conn: asyncpg.Connection):
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_rls_blocks_cross_tenant_select(rls_pool: asyncpg.Pool):
+async def test_rls_blocks_cross_tenant_select(db_pool: asyncpg.Pool):
     from pgvector.asyncpg import register_vector
 
     tenant_a = uuid7()
     tenant_b = uuid7()
-    async with rls_pool.acquire() as conn:
+    async with db_pool.acquire() as conn:
         try:
             await register_vector(conn)
         except Exception:
@@ -250,7 +201,7 @@ async def test_rls_blocks_cross_tenant_select(rls_pool: asyncpg.Pool):
                 conn, model_id=mid_b, tenant=tenant_b, reading_kind="contest",
             )
 
-    async with tenant_transaction(tenant_a, pool=rls_pool) as tctx:
+    async with tenant_transaction(tenant_a, pool=db_pool) as tctx:
         rows = await tctx.fetch(
             "SELECT reading_kind FROM model_signal_readings WHERE model_id = $1",
             mid_a,

@@ -11,8 +11,9 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import asyncpg
@@ -34,6 +35,7 @@ from services.ingestion.core import (
 from services.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     HandlerNotFound,
+    ObservationDraft,
     get_handler,
     handler_channels,
 )
@@ -392,13 +394,26 @@ async def test_notify_fires_post_commit(
 async def test_think_trigger_enqueued_on_new_observation(
     gateway_pool, tenant_id, _DeterministicEmbedder
 ):
+    entity_id = uuid7()
+    alias_repo = EntityAliasRepo(gateway_pool)
+    await alias_repo.insert_alias(
+        phrase="payments",
+        resolved_entity_ref={"type": "commitment", "id": str(entity_id)},
+        source="manual",
+        confidence=0.95,
+        tenant_id=tenant_id,
+    )
     r = await _ingest_slack(
-        gateway_pool, tenant_id, embedder=_DeterministicEmbedder()
+        gateway_pool,
+        tenant_id,
+        text="payments update",
+        embedder=_DeterministicEmbedder(),
+        alias_repo=alias_repo,
     )
     assert r.trigger_queue_id is not None
     row = await gateway_pool.fetchrow(
         """
-        SELECT tenant_id, trigger_kind, trigger_subkind, observation_id
+        SELECT tenant_id, trigger_kind, trigger_subkind, observation_id, payload
         FROM think_trigger_queue WHERE id = $1
         """,
         r.trigger_queue_id,
@@ -408,6 +423,9 @@ async def test_think_trigger_enqueued_on_new_observation(
     assert row["trigger_kind"] == "T1"
     assert row["trigger_subkind"] == "event_arrival"
     assert row["observation_id"] == r.observation.id
+    assert {"type": "commitment", "id": str(entity_id)} in (
+        row["payload"].get("seed_entity_ids") or []
+    )
 
 
 # =========================================================================

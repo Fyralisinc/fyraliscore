@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -186,7 +188,7 @@ async def test_weekly_does_not_block_concurrent_model_insert(
                     scope_temporal, confidence, activation,
                     confidence_at_assertion
                 ) VALUES (
-                    $1, $2, $3, '{"kind": "state"}'::jsonb, 'n',
+                    $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'n',
                     array_fill(0.0::real, ARRAY[768])::vector,
                     '{}'::jsonb, 0.5, 0.5, 0.5
                 )
@@ -213,7 +215,7 @@ async def test_weekly_does_not_block_concurrent_model_insert(
                         scope_temporal, confidence, activation,
                         confidence_at_assertion
                     ) VALUES (
-                        $1, $2, $3, '{"kind": "state"}'::jsonb, 'n',
+                        $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'n',
                         array_fill(0.0::real, ARRAY[768])::vector,
                         '{}'::jsonb, 0.5, 0.5, 0.5
                     )

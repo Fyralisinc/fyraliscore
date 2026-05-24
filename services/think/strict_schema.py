@@ -5,11 +5,11 @@ DeepSeek strict mode requires: every object property listed in `required`,
 these JSON-schema features: object, string, number, integer, boolean,
 array, enum, anyOf, const.
 
-This schema is a deliberate SUBSET of `RawDiff`: it only constrains
-`claim_ops` (which is what our tests measure). `act_ops`, `resource_ops`,
-and `new_predictions` are omitted from the schema — Pydantic defaults
-them to empty lists at parse time. Acts/resource generation can be added
-back when specific shapes need to be enforced.
+This schema is a deliberate SUBSET of `RawDiff`: it constrains
+`claim_ops` and first-class `edge_ops`. `act_ops`, `resource_ops`, and
+`new_predictions` are omitted from the schema — Pydantic defaults them
+to empty lists at parse time. Acts/resource generation can be added back
+when specific shapes need to be enforced.
 """
 from __future__ import annotations
 
@@ -42,6 +42,26 @@ _PROPOSITION_KINDS: list[dict] = [
     _proposition_variant("concern",               ["about", "nature", "raised_by"]),
     _proposition_variant("market_assessment",     ["subject_external", "assessment"]),
     _proposition_variant("environmental_trend",   ["signature", "direction", "strength"]),
+    {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "kind",
+            "situation",
+            "summary",
+            "member_model_ids",
+            "relationship_summary",
+            "status",
+        ],
+        "properties": {
+            "kind": {"type": "string", "enum": ["situation"]},
+            "situation": {"type": "string"},
+            "summary": {"type": "string"},
+            "member_model_ids": {"type": "array", "items": _UUID_STR},
+            "relationship_summary": {"type": "string"},
+            "status": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+    },
     # recommendation has a structured shape, not all-string fields, so
     # build it manually rather than via the _proposition_variant helper.
     {
@@ -264,10 +284,90 @@ _CLAIM_OP_INSERT = {
 }
 
 
+_EDGE_KIND_ENUM = [
+    "supports",
+    "contributes_to_resolution",
+    "instance_of",
+    "superseded_by",
+    "contradicts",
+    "weakens",
+    "causes",
+    "explains",
+    "predicts",
+    "blocks",
+    "enables",
+    "same_issue_as",
+    "co_occurs_with",
+    "analogous_to",
+    "alternative_to",
+    "early_warning_for",
+]
+
+
+_EDGE_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "source_model_id",
+        "target_model_id",
+        "edge_kind",
+        "weight",
+        "confidence",
+        "evidence_event_ids",
+        "evidence_model_ids",
+        "explanation",
+        "review_status",
+        "reason",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["add", "retire"]},
+        "source_model_id": _UUID_STR,
+        "target_model_id": _UUID_STR,
+        "edge_kind": {"type": "string", "enum": _EDGE_KIND_ENUM},
+        "weight": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "confidence": {"type": "number"},
+        "evidence_event_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_model_ids": {"type": "array", "items": _UUID_STR},
+        "explanation": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "review_status": {
+            "type": "string",
+            "enum": ["accepted", "candidate", "needs_review", "rejected", "retired"],
+        },
+        "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+}
+
+
 RAW_DIFF_STRICT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["trigger_ref", "tenant_id", "claim_ops", "reasoning_trace"],
+    "required": [
+        "trigger_ref",
+        "tenant_id",
+        "claim_ops",
+        "edge_ops",
+        "reasoning_trace",
+    ],
+    "properties": {
+        "trigger_ref": _UUID_STR,
+        "tenant_id": _UUID_STR,
+        "claim_ops": {"type": "array", "items": _CLAIM_OP_INSERT},
+        "edge_ops": {"type": "array", "items": _EDGE_OP},
+        "reasoning_trace": {"type": "string"},
+    },
+}
+
+
+RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "trigger_ref",
+        "tenant_id",
+        "claim_ops",
+        "reasoning_trace",
+    ],
     "properties": {
         "trigger_ref": _UUID_STR,
         "tenant_id": _UUID_STR,
@@ -277,4 +377,4 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
 }
 
 
-__all__ = ["RAW_DIFF_STRICT_SCHEMA"]
+__all__ = ["RAW_DIFF_STRICT_SCHEMA", "RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA"]

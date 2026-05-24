@@ -3,12 +3,13 @@
 ## Purpose
 
 This suite exercises Company OS end-to-end against a real LLM (DeepSeek) across
-three hand-authored company scenarios. It is the only test layer that drives
+six hand-authored company scenarios. It is the only test layer that drives
 the cognitive path (Ingestion → Think → Acts → Bridge) with a non-deterministic
-model rather than a script. Coverage is intentionally narrow — three scenarios,
-~25 tests — so iteration cost stays low. Tests use tolerance bands and
-existential assertions rather than strict equality so LLM variance doesn't
-become noise. Full design is in `REAL-LLM-TEST-SUITE-PLAN.md` at the repo root.
+model rather than a script. Coverage is intentionally narrow — six scenarios,
+regular behavioural tests plus opt-in large-corpus durability runs — so iteration
+cost stays low. Tests use tolerance bands and existential assertions rather
+than strict equality so LLM variance doesn't become noise. Full design is in
+`REAL-LLM-TEST-SUITE-PLAN.md` at the repo root.
 
 ## Quick start
 
@@ -43,6 +44,7 @@ tests/real_llm/
 │   ├── real_llm_runner.py      — @real_llm_test decorator (retry, flake tracking)
 │   ├── response_cache.py       — keyed LLM-response cache, prompt-hash epochs
 │   ├── assertion_helpers.py    — range / set / existential assertion helpers
+│   ├── durability_flow.py      — full-signal E2E helpers
 │   ├── scenario_loader.py      — loads + materializes scenario YAML
 │   ├── flake_tracker.py        — persists flake_rates.json across runs
 │   ├── report_generator.py     — markdown reports under reports/runs/<ts>/
@@ -51,14 +53,21 @@ tests/real_llm/
 ├── scenarios/
 │   ├── 01_early_startup.yaml
 │   ├── 02_growth_saas.yaml
-│   └── 03_enterprise_eng.yaml
+│   ├── 03_enterprise_eng.yaml
+│   ├── 04_scale_chaos_b2b.yaml   — large corpus for retrieval and memory stress
+│   ├── 05_industrial_ops.yaml    — deep industrial operations durability corpus
+│   └── 06_fintech_risk.yaml      — deep fintech risk durability corpus
 ├── tests/
-│   ├── test_smoke.py                — 3 cheap sanity checks per scenario
+│   ├── test_smoke.py                — 6 cheap scenario sanity checks
+│   ├── test_entity_resolver_real_llm.py — DeepSeek alias resolution from signal text
+│   ├── test_scale_chaos_end_to_end.py — scenario_04 alias -> Think -> Bridge proof
+│   ├── test_deep_durability_end_to_end.py — opt-in every-signal durability runs
 │   ├── test_ingestion_real_llm.py   — ~4 tests
 │   ├── test_think_reasoning.py      — ~8 tests (the expensive bulk)
 │   ├── test_acts_cascade.py         — ~5 tests
 │   ├── test_bridge_queries.py       — ~4 tests
-│   └── test_cross_component.py      — ~4 tests (end-to-end flows)
+│   ├── test_cross_component.py      — ~4 tests (end-to-end flows)
+│   └── test_scale_chaos_ingestion.py — opt-in full scenario_04 ingestion
 ├── cache/                       — gitignored; per-epoch cached LLM responses
 └── reports/                     — flake_rates.json + per-run markdown reports
 ```
@@ -118,6 +127,41 @@ expected_behaviors) is documented in
 `tests/real_llm/infrastructure/scenario_loader.py`. Wire a fixture for it in
 `conftest.py` mirroring `scenario_01` / `scenario_02` / `scenario_03`.
 
+The scale-chaos corpus is intentionally larger than the behavioural scenarios:
+`04_scale_chaos_b2b.yaml` contains 20+ actors, 10 customers, 20+ commitments,
+and 100+ signals. Use it when testing retrieval growth, customer-alias drift,
+hidden connections, stale replay handling, and revenue-risk prioritization.
+
+The deep durability corpora, `05_industrial_ops.yaml` and
+`06_fintech_risk.yaml`, are production-chaos fixtures for every-signal
+end-to-end validation. They cover industrial safety/telemetry/supplier risk and
+fintech ledger/KYC/fraud/regulatory risk respectively. Their full E2E test
+injects every signal, resolves actual-content aliases with DeepSeek, drains
+Think, checks context-use telemetry, verifies Models/state changes, and confirms
+Bridge customer surfaces.
+
+To inject the entire corpus without running Think/LLM reasoning:
+
+```bash
+RUN_REAL_LLM=1 RUN_SCALE_CHAOS_FULL=1 \
+  .venv/bin/python -m pytest tests/real_llm/tests/test_scale_chaos_ingestion.py -v
+```
+
+To run every-signal durability E2E for both deep corpora:
+
+```bash
+RUN_REAL_LLM=1 RUN_DURABILITY_E2E=1 \
+  DURABILITY_SCENARIOS=industrial_ops,fintech_risk \
+  .venv/bin/python -m pytest tests/real_llm/tests/test_deep_durability_end_to_end.py -v
+```
+
+`ThinkWorker` defaults to one in-flight Think transaction per tenant because
+the current Think transaction spans retrieval, LLM reasoning, validation, and
+apply. Raising `THINK_MAX_CONCURRENCY_PER_TENANT`,
+`REAL_LLM_THINK_CONCURRENCY`, or `DURABILITY_THINK_CONCURRENCY` is an explicit
+stress setting until the transaction is split so LLM calls happen outside the
+write transaction.
+
 ## Reading reports
 
 Each suite run writes to `tests/real_llm/reports/runs/<UTC-timestamp>/report.md`
@@ -149,10 +193,10 @@ changed.
 - LLM non-determinism is real. A test passing 2/3 attempts is the design
   target, not a bug. Treat sub-50% pass rates as either an over-tight
   assertion or a Think-output regression — investigate, don't suppress.
-- Embeddings inserted by Think are zero-vectored at insert time; semantic
-  retrieval over Think-generated Models is not exercised here. Tests that
-  rely on semantic retrieval should construct Models via a fixture, not via
-  Think.
+- When Think has no live embedder in-process, inserted Models receive a
+  deterministic lexical fallback embedding. This keeps retrieval/reconciliation
+  usable, but semantic-quality tests should still seed controlled embeddings
+  directly when the exact neighborhood matters.
 - The suite does not exercise the UI, webhook signature paths, or
   multi-tenant access enforcement. Those have their own (mocked) test
   layers.

@@ -114,18 +114,17 @@ class EntityAliasRepo:
         if not norm:
             return None
 
-        # We store the raw alias_text as provided by the caller and
-        # compare via LOWER(regexp_replace(...)) at query time. This
-        # avoids a second column while still using the text index
-        # (aliases_text_idx) as a bounded prefilter. For the 10k-row
-        # benchmark, confirm index usage via EXPLAIN in tests.
+        # We only need to know whether the normalized phrase maps to
+        # zero, one, or multiple canonical refs. Fetching at most two
+        # distinct refs avoids sorting every duplicate alias row on the
+        # hot ingestion path.
         rows = await self._pool.fetch(
             """
-            SELECT id, resolved_entity_ref, confidence
+            SELECT DISTINCT resolved_entity_ref
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
-            ORDER BY confidence DESC, last_used_at DESC
+            LIMIT 2
             """,
             tenant_id,
             norm,

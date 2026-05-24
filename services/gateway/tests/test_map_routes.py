@@ -20,6 +20,7 @@ import json
 import math
 import random
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -334,16 +335,10 @@ async def test_snapshot_health_enum_for_each_case(
     token, _ = valid_session
     now = datetime.now(timezone.utc)
 
-    # Health is a per-node property (status / confidence / activation /
-    # contestation / age) and is independent of the band. We spread the
-    # six seeds across distinct bands via the natural-text prefix so the
-    # per-band overview cap (spec §4.2: 2–4 nodes/band) can't drop any of
-    # them — otherwise all six would land in "commitment" (default kind
-    # "state") and the cap would silently evict the lower-ranked ones.
     # archived: status != 'active' (other gates ignored).
     arch = await _seed_model(
         gateway_pool, tenant_id,
-        natural="Goal G-arch", status="archived",
+        natural="arch", status="archived",
         created_at=now - timedelta(days=2),
         archived_at=now - timedelta(days=1),
         archive_reason="superseded",
@@ -351,19 +346,19 @@ async def test_snapshot_health_enum_for_each_case(
     # fresh: created within 7 days, status active.
     fresh = await _seed_model(
         gateway_pool, tenant_id,
-        natural="Decision D-fresh", created_at=now - timedelta(days=3),
+        natural="fresh", created_at=now - timedelta(days=3),
     )
     # contested: contested > confirmed, both > 0; older than 7d.
     contested = await _seed_model(
         gateway_pool, tenant_id,
-        natural="Commitment contested",
+        natural="contested",
         created_at=now - timedelta(days=20),
         contested=3, confirmed=1,
     )
     # solid: confidence ≥ 0.7, confirmed ≥ contested, older than 7d.
     solid = await _seed_model(
         gateway_pool, tenant_id,
-        natural="Risk R-solid",
+        natural="solid",
         confidence=0.8,
         created_at=now - timedelta(days=20),
         confirmed=5, contested=0,
@@ -372,21 +367,22 @@ async def test_snapshot_health_enum_for_each_case(
     # fading: activation < 0.3, older than 7d.
     fading = await _seed_model(
         gateway_pool, tenant_id,
-        natural="customer fading", activation=0.1,
+        natural="fading", activation=0.1,
         created_at=now - timedelta(days=20),
     )
     # stable: middle-of-road; confidence 0.5, activation 1.0, no
     # contestation, no recent confirm pressure.
     stable = await _seed_model(
         gateway_pool, tenant_id,
-        natural="Commitment stable",
+        natural="stable",
         confidence=0.5,
         activation=1.0,
         created_at=now - timedelta(days=20),
     )
 
     resp = await client.get(
-        "/map/snapshot?include_archived=true", headers=_auth(token),
+        "/map/snapshot?include_archived=true&lens=commitment",
+        headers=_auth(token),
     )
     assert resp.status_code == 200, resp.text
     by_id = {n["id"]: n for n in resp.json()["nodes"]}

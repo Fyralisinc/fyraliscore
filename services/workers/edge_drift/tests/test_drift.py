@@ -5,6 +5,7 @@ tests don't need a DB).
 """
 from __future__ import annotations
 
+from uuid import UUID
 
 from lib.shared.ids import uuid7
 from services.workers.edge_drift.worker import _check_tenant_sample

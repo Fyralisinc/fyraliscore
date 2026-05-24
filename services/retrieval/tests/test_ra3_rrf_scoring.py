@@ -14,6 +14,7 @@ Verification (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-3):
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
@@ -27,6 +28,7 @@ from services.retrieval.scoring import (
     DIMENSION_PROVENANCE,
     DIMENSION_SEMANTIC,
     DIMENSION_STRUCTURAL,
+    DIMENSION_TEMPORAL,
     DIMENSION_WEIGHTS,
     RRF_K_DEFAULT,
     compute_rrf_score,

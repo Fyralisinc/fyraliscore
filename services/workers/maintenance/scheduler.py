@@ -33,7 +33,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
 

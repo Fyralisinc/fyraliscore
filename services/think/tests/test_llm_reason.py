@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
-from lib.llm.provider import LLMError, LLMConfig
+from lib.llm.provider import LLMError, LLMParseError, LLMConfig
 from lib.shared.ids import uuid7
+from lib.shared.types import ResourceRow
 
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext
@@ -79,6 +82,7 @@ async def test_build_prompt_emits_all_sections():
     assert "commitment_outcome" in pair.system
     assert "prediction_deadline" in pair.system
     assert "Diff schema" in pair.system
+    assert "`confidence_basis` MUST be either an existing Model id" in pair.system
 
 
 async def test_build_prompt_triggering_kind_instructions():
@@ -112,6 +116,74 @@ async def test_build_prompt_respects_char_truncation():
     assert "..." in pair.user  # truncation marker was inserted
     # The whole user prompt should not exceed the sum of budgets + some slack.
     assert len(pair.user) < 25000
+
+
+async def test_build_prompt_resources_include_identity_for_scope_resolution():
+    tenant_id = uuid7()
+    resource_id = uuid7()
+    trigger = TriggerContext(kind="T1", tenant_id=tenant_id)
+    bundle = ContextBundle(
+        resources_summary=[
+            ResourceRow(
+                id=resource_id,
+                tenant_id=tenant_id,
+                kind="relational",
+                identity="Globex Inc",
+                description="Customer: Globex Inc",
+                current_value={"health": "at_risk", "arr_usd": 60000},
+                created_at=datetime.now(timezone.utc),
+                last_updated_at=datetime.now(timezone.utc),
+            )
+        ]
+    )
+
+    pair = build_prompt(trigger, bundle)
+
+    assert f"resource id={resource_id}" in pair.user
+    assert "identity=Globex Inc" in pair.user
+    assert "description=Customer: Globex Inc" in pair.user
+
+
+async def test_build_prompt_surfaces_selected_graph_memory_priority():
+    tenant_id = uuid7()
+    selected_id = uuid7()
+    graph_id = uuid7()
+    trigger = TriggerContext(kind="T2", tenant_id=tenant_id, model_id=selected_id)
+    bundle = ContextBundle(
+        notes={
+            "model_selection": {
+                "selected_count": 2,
+                "selected_model_ids": [str(selected_id), str(graph_id)],
+                "pathway_survival": {
+                    "G": {"selected_model_ids": [str(graph_id)]}
+                },
+            }
+        }
+    )
+
+    pair = build_prompt(trigger, bundle)
+
+    assert "<retrieval_priority>" in pair.user
+    assert "selected_model_ids (2)" in pair.user
+    assert "graph_anchor_model_ids (1)" in pair.user
+    assert str(selected_id) in pair.user
+    assert str(graph_id) in pair.user
+    assert "Graph anchors are the memory layer's strongest candidate" in pair.user
+    assert "Edge endpoints must be existing Model ids from <models>" in pair.user
+    assert "born_from_event_id of a claim_ops.insert" in pair.user
+    assert "reasoning_trace must name at least one relevant selected/graph Model" in pair.user
+
+
+async def test_build_prompt_claims_only_profile_uses_smaller_system_prompt():
+    trigger = TriggerContext(kind="T1", tenant_id=uuid7(), observation_id=uuid7())
+    bundle = ContextBundle()
+
+    full = build_prompt(trigger, bundle)
+    compact = build_prompt(trigger, bundle, claims_only=True)
+
+    assert "This compact pass can only emit" in compact.system
+    assert "edge_ops entry shape" not in compact.system
+    assert len(compact.system) < len(full.system)
 
 
 # =====================================================================
@@ -151,6 +223,149 @@ async def test_llm_reason_happy_path_returns_raw_diff():
     assert diff.trigger_ref == trig_id
     assert diff.claim_ops == []
     assert latency_ms >= 0
+
+
+async def test_llm_reason_uses_claims_only_schema_when_edges_are_impossible():
+    tid = uuid7()
+    trig_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tid,
+        observation_id=trig_id,
+        seed_natural_text="x",
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, ContextBundle(), provider)
+
+    assert "edge_ops" not in provider.calls[0]["schema_hint"]
+    assert "This compact pass can only emit" in provider.calls[0]["system"]
+
+
+async def test_llm_reason_keeps_edge_schema_when_models_are_available():
+    tid = uuid7()
+    trig_id = uuid7()
+    model_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tid,
+        observation_id=trig_id,
+        seed_natural_text="x",
+    )
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=model_id,
+                proposition_kind="state",
+                confidence=0.8,
+                activation=0.5,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural="Existing graph memory.",
+            )
+        ]
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, bundle, provider)
+
+    assert "edge_ops" in provider.calls[0]["schema_hint"]
+    assert "This compact pass can only emit" not in provider.calls[0]["system"]
+
+
+async def test_llm_reason_keeps_full_schema_when_acts_are_available():
+    tid = uuid7()
+    trig_id = uuid7()
+    commitment_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tid,
+        observation_id=trig_id,
+        seed_natural_text="PR merged for the migration.",
+    )
+    bundle = ContextBundle(
+        acts_summary={
+            "goals": [],
+            "commitments": [
+                SimpleNamespace(
+                    id=commitment_id,
+                    state="active",
+                    owner_id=None,
+                    due_date=None,
+                    title="Finish the migration",
+                )
+            ],
+            "decisions": [],
+        }
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, bundle, provider)
+
+    assert "act_ops" in provider.calls[0]["schema_hint"]
+    assert "This compact pass can only emit" not in provider.calls[0]["system"]
+
+
+async def test_llm_reason_keeps_full_schema_for_t2_graph_anchors():
+    tid = uuid7()
+    trig_id = uuid7()
+    selected_id = uuid7()
+    graph_id = uuid7()
+    trigger = TriggerContext(
+        kind="T2",
+        subkind="belief_updated",
+        tenant_id=tid,
+        model_id=selected_id,
+        seed_signature={"trigger_id": str(trig_id)},
+        seed_natural_text="hidden warning",
+    )
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=selected_id,
+                proposition_kind="state",
+                confidence=0.8,
+                activation=0.5,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural="Selected memory.",
+            ),
+            SimpleNamespace(
+                id=graph_id,
+                proposition_kind="concern",
+                confidence=0.78,
+                activation=0.6,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural="Graph anchor memory.",
+            ),
+        ],
+        notes={
+            "model_selection": {
+                "selected_model_ids": [str(selected_id), str(graph_id)],
+                "pathway_survival": {
+                    "G": {"selected_model_ids": [str(graph_id)]},
+                },
+            }
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, bundle, provider)
+
+    assert "edge_ops" in provider.calls[0]["schema_hint"]
+    assert "This compact pass can only emit" not in provider.calls[0]["system"]
 
 
 async def test_llm_reason_parse_error_terminal():

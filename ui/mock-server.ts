@@ -350,22 +350,6 @@ export function mockBackend(): Plugin {
           return;
         }
 
-        // ---- Wave 2: Ledger surface -------------------------------
-        if (method === "GET" && url.startsWith("/api/v1/history/summary")) {
-          const { LEDGER_SUMMARY_FIXTURE } = await import("./src/api/ledger-mock");
-          json(res, LEDGER_SUMMARY_FIXTURE);
-          return;
-        }
-        if (method === "GET" && url.startsWith("/api/v1/history") && new URLSearchParams(url.split("?")[1] ?? "").get("surface") === "ledger") {
-          const { LEDGER_EVENTS_FIXTURE, filterLedgerEvents } = await import("./src/api/ledger-mock");
-          const params = new URLSearchParams(url.split("?")[1] ?? "");
-          const typesParam = params.get("types");
-          const types = typesParam ? (typesParam.split(",") as any) : undefined;
-          const events = filterLedgerEvents(LEDGER_EVENTS_FIXTURE, types);
-          json(res, { events, period: params.get("period") ?? "30d", types });
-          return;
-        }
-
         // ---- Fyralis Today surface ------------------------------
         if (method === "GET" && url.startsWith("/api/v1/today")) {
           const decorated = decorateCardsForRevision(TODAY_FIXTURE);

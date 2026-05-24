@@ -75,7 +75,6 @@ in services/gateway/map_routes.py:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -281,22 +280,14 @@ class UMAPProjector:
             metric="cosine",  # topo embeddings are L2-normalised; cosine matches the substrate's notion of similarity
             random_state=42,
         )
-        # UMAP's fit_transform is synchronous and CPU-bound (and pays a
-        # one-time numba JIT cold-start of tens of seconds on first call
-        # in a process). Run it off the event loop so a fit can't stall
-        # the gateway for every other tenant's request in flight.
-        coords_2d = await asyncio.to_thread(reducer.fit_transform, embeddings)
+        coords_2d = reducer.fit_transform(embeddings)
 
         # Trustworthiness — 0..1. Computed against the same data we
         # fitted on; uses k separate from UMAP's n_neighbors so it
         # measures preservation, not the algorithm's own definition.
         k = min(TRUSTWORTHINESS_K, len(rows) - 1)
         try:
-            trust = float(
-                await asyncio.to_thread(
-                    trustworthiness, embeddings, coords_2d, n_neighbors=k
-                )
-            )
+            trust = float(trustworthiness(embeddings, coords_2d, n_neighbors=k))
         except Exception:
             # Defensive: trustworthiness can fail on degenerate inputs.
             # Don't block caching the projection on a metric.

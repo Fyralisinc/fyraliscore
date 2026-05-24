@@ -411,7 +411,7 @@ async def _build_snapshot(
     _LENS_CAP = 30
     _KIND_RANK = {
         "recommendation": 5, "concern": 4, "prediction": 3,
-        "pattern": 3, "capability_assessment": 2,
+        "situation": 4, "pattern": 3, "capability_assessment": 2,
         "hypothesis": 2, "relation": 1, "state": 1,
         "market_assessment": 2, "pattern_instance": 2,
         "environmental_trend": 2,
@@ -1165,7 +1165,7 @@ def _signal_max_at(signal_readings: Any) -> datetime | None:
 
 # Coarse mapping from proposition_kind to a Model-page band. The Model
 # UI renders nodes in five horizontal bands (spec §4.2). We bucket the
-# 11 known proposition_kinds into those bands. The "customer" band is
+# known proposition_kinds into those bands. The "customer" band is
 # preferred for any model whose natural text or proposition subject
 # clearly references customers/accounts/renewal/churn — that check
 # overrides the kind-based default.
@@ -1184,6 +1184,7 @@ _PROPOSITION_KIND_BAND: dict[str, str] = {
     "pattern_instance": "risk",
     "environmental_trend": "risk",
     "capability_assessment": "risk",
+    "situation": "risk",
     # Customer band: market-facing assessments.
     "market_assessment": "customer",
 }

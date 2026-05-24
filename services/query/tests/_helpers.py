@@ -3,18 +3,24 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
-from uuid import UUID
+from typing import Any, Optional
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
-from services.retrieval.assembler import ContextBundle
-from services.retrieval.primary import TriggerContext
+from lib.shared.types import ModelRow
+from services.retrieval.assembler import AccessContext, ContextBundle
+from services.retrieval.primary import RetrievalResult, TriggerContext
 
 from services.query.adapters import (
+    InMemoryCacheAdapter,
+    RenderingAdapter,
     RenderRequest,
     RenderResponse,
 )
-from services.query.strategies.base import StrategyResult
+from services.query.classifier import QueryClassifier
+from services.query.strategies.base import StrategyContext, StrategyResult
 
 
 # ---------------------------------------------------------------------
@@ -159,6 +165,7 @@ class FakeStrategy:
         return ParsedQuery(raw_query=query, category=self.category)
 
     def build_trigger(self, parsed, tenant_id, *, now):
+        from services.retrieval.primary import TriggerContext
         return TriggerContext(kind="T1", tenant_id=tenant_id)
 
     async def gather(self, parsed, ctx):

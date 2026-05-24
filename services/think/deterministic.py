@@ -2,7 +2,8 @@
 
 Spec §7 "Authoritative vs inferential triggers":
   * T1 state_change → cascade handler
-  * T2 prediction_overdue → resolution handler
+  * T2 prediction_overdue / prediction_deadline → resolution handler
+  * T2 belief_updated → deterministic no-op unless it has prediction shape
   * T4 background_maintenance / entity_resolution_proposal → per-subkind
     deterministic handlers
 
@@ -33,14 +34,14 @@ def is_authoritative(trigger: TriggerContext) -> bool:
     Spec §7 `is_authoritative`:
 
       T1 state_change       → True
-      T2 prediction_overdue → True
+      T2 prediction/belief_updated → True
       T4 background_maintenance / entity_resolution_proposal → True
       everything else       → False
     """
     if trigger.kind == "T1" and trigger.subkind == "state_change":
         return True
     if trigger.kind == "T2" and trigger.subkind in (
-        "prediction_overdue", "prediction_deadline"
+        "belief_updated", "prediction_overdue", "prediction_deadline"
     ):
         return True
     if trigger.kind == "T4" and trigger.subkind in (
@@ -322,6 +323,7 @@ async def _handle_t4_background(
                 "contributor_archived": -0.05,
                 "pattern_archived": -0.07,
                 "instance_archived": -0.02,
+                "counterevidence_archived": 0.05,
             }
             nudge = nudge_map.get(cause_kind, -0.05)
             row = await conn.fetchrow(

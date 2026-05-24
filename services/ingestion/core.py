@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -55,6 +56,9 @@ from lib.shared.types import ObservationCreate, ObservationRow
 from services.actors.repo import ActorRepo
 from services.entity_aliases.repo import EntityAliasRepo, normalize_phrase
 from services.ingestion.handlers import (
+    CHANNEL_TRUST_MAP,
+    HandlerNotFound,
+    ObservationDraft,
     get_handler,
 )
 from services.observations.events import emit_pending_notifications, notify_scope
@@ -326,6 +330,7 @@ async def ingest(
                                 "trust_tier": row.trust_tier,
                                 "seed_occurred_at": row.occurred_at.isoformat(),
                                 "seed_natural_text": (row.content_text or "")[:2000],
+                                "seed_entity_ids": row.entities_mentioned,
                                 "scope_actors": (
                                     [str(row.actor_id)] if row.actor_id else []
                                 ),

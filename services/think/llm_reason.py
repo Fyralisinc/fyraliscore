@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
+import asyncpg
 import structlog
 
 from lib.llm.provider import LLMError, LLMParseError, LLMProvider
@@ -23,8 +26,11 @@ from lib.shared.errors import CompanyOSError
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext
 
-from .diff_schema import RawDiff
+from .diff_schema import RawDiff, RawDiffClaimsOnly
 from .prompt import build_prompt
+
+if TYPE_CHECKING:
+    from .reasoning_frame import ReasoningFrame
 
 
 _log = structlog.get_logger(__name__)
@@ -42,8 +48,9 @@ async def llm_reason(
     triggering_content: str | None = None,
     triggering_actor_summary: str | None = None,
     reason_for_trigger: str | None = None,
+    reasoning_frame: ReasoningFrame | None = None,
     temperature: float = 0.2,
-    max_tokens: int = 4096,
+    max_tokens: int = 2048,
     max_attempts: int = 3,
 ) -> tuple[RawDiff, int]:
     """
@@ -53,12 +60,15 @@ async def llm_reason(
     `max_attempts` total calls. LLMParseError from the provider is
     already retried internally; if it escapes, we bubble as terminal.
     """
+    schema = _select_output_schema(trigger, bundle)
     pair = build_prompt(
         trigger,
         bundle,
         triggering_content=triggering_content,
         triggering_actor_summary=triggering_actor_summary,
         reason_for_trigger=reason_for_trigger,
+        reasoning_frame=reasoning_frame,
+        claims_only=schema is RawDiffClaimsOnly,
     )
 
     last_err: Exception | None = None
@@ -66,13 +76,14 @@ async def llm_reason(
 
     for attempt in range(max_attempts):
         try:
-            diff = await provider.structured(
+            diff_like = await provider.structured(
                 system=pair.system,
                 user=pair.user,
-                schema=RawDiff,
+                schema=schema,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            diff = _coerce_raw_diff(diff_like)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return diff, elapsed_ms
         except LLMParseError as e:
@@ -102,6 +113,55 @@ async def llm_reason(
         f"llm_reason exhausted {max_attempts} attempts: {last_err}",
         attempts=max_attempts,
     ) from last_err
+
+
+def _select_output_schema(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+) -> type[RawDiff] | type[RawDiffClaimsOnly]:
+    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
+        if _has_graph_anchor_models(bundle):
+            return RawDiff
+        return RawDiffClaimsOnly
+    if not bundle.models and not _has_acts(bundle) and not bundle.resources_summary:
+        return RawDiffClaimsOnly
+    return RawDiff
+
+
+def _has_graph_anchor_models(bundle: ContextBundle) -> bool:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    selection = notes.get("model_selection")
+    if not isinstance(selection, dict):
+        return False
+    pathway_survival = selection.get("pathway_survival")
+    if not isinstance(pathway_survival, dict):
+        return False
+    graph = pathway_survival.get("G")
+    if not isinstance(graph, dict):
+        return False
+    return bool(graph.get("selected_model_ids"))
+
+
+def _has_acts(bundle: ContextBundle) -> bool:
+    for rows in (bundle.acts_summary or {}).values():
+        if rows:
+            return True
+    return False
+
+
+def _coerce_raw_diff(diff: RawDiff | RawDiffClaimsOnly) -> RawDiff:
+    if isinstance(diff, RawDiff):
+        return diff
+    return RawDiff(
+        trigger_ref=diff.trigger_ref,
+        tenant_id=diff.tenant_id,
+        claim_ops=list(diff.claim_ops),
+        edge_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+        reasoning_trace=diff.reasoning_trace,
+    )
 
 
 __all__ = ["llm_reason", "ReasoningFailure"]

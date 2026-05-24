@@ -123,11 +123,22 @@ async def think_worker(
     from services.think.worker import ThinkWorker, WorkerConfig
 
     cfg = WorkerConfig.from_env()
-    # Profiling-investigation: tighten worker parallelism + kill cascade
-    # fanout from model_reeval (T4) triggers to isolate per-trigger LLM cost.
+    # Keep real-LLM tests aligned with production safety defaults. The Think
+    # transaction currently spans retrieval + LLM + apply, so per-tenant
+    # parallelism above 1 is an explicit stress setting, not the safe default.
     cfg.poll_interval_s = 0.05
-    cfg.max_concurrency_per_tenant = 16
-    cfg.trigger_max_attempts = 2  # was 5; cuts retry backoff from 310s -> 10s per stuck trigger
+    cfg.max_concurrency_per_tenant = int(
+        os.environ.get(
+            "REAL_LLM_THINK_CONCURRENCY",
+            cfg.max_concurrency_per_tenant,
+        )
+    )
+    cfg.trigger_max_attempts = int(
+        os.environ.get(
+            "REAL_LLM_TRIGGER_MAX_ATTEMPTS",
+            cfg.trigger_max_attempts,
+        )
+    )
     worker = ThinkWorker(pool=fresh_db, config=cfg, llm_provider=provider)
 
     async def _noop_promote() -> None:
@@ -204,6 +215,30 @@ async def scenario_02(fresh_db: asyncpg.Pool) -> AsyncGenerator[Scenario, None]:
 async def scenario_03(fresh_db: asyncpg.Pool) -> AsyncGenerator[Scenario, None]:
     """Scenario 03 (enterprise engineering) — loaded and materialized with a fresh tenant."""
     scenario = load_scenario("enterprise_eng")
+    await materialize(scenario, pool=fresh_db)
+    yield scenario
+
+
+@pytest_asyncio.fixture
+async def scenario_04(fresh_db: asyncpg.Pool) -> AsyncGenerator[Scenario, None]:
+    """Scenario 04 (scale-chaos B2B) — loaded and materialized with a fresh tenant."""
+    scenario = load_scenario("scale_chaos_b2b")
+    await materialize(scenario, pool=fresh_db)
+    yield scenario
+
+
+@pytest_asyncio.fixture
+async def scenario_05(fresh_db: asyncpg.Pool) -> AsyncGenerator[Scenario, None]:
+    """Scenario 05 (industrial ops) — loaded and materialized with a fresh tenant."""
+    scenario = load_scenario("industrial_ops")
+    await materialize(scenario, pool=fresh_db)
+    yield scenario
+
+
+@pytest_asyncio.fixture
+async def scenario_06(fresh_db: asyncpg.Pool) -> AsyncGenerator[Scenario, None]:
+    """Scenario 06 (fintech risk) — loaded and materialized with a fresh tenant."""
+    scenario = load_scenario("fintech_risk")
     await materialize(scenario, pool=fresh_db)
     yield scenario
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from uuid import UUID
 
 from lib.shared.ids import uuid7
 from services.observations import events, partitions

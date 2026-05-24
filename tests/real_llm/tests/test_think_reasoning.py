@@ -470,7 +470,7 @@ async def test_think_recognizes_decision_revisit(
     assert_model_count_in_range(
         models,
         1,
-        10,
+        15,
         context="decision_revision_cascade scoped Models",
     )
 

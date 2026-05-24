@@ -34,7 +34,7 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.shared.errors import CompanyOSError
+from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.ids import uuid7
 
 logger = logging.getLogger(__name__)

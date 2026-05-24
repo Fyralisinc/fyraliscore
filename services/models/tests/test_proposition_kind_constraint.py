@@ -1,7 +1,7 @@
 """Verify the CHECK constraint added by 0035_proposition_kind_constraints.sql.
 
 The constraint enforces that proposition_kind (a generated column derived
-from proposition->>'kind') is non-NULL and one of the 11 known kinds. A
+from proposition->>'kind') is non-NULL and one of the known kinds. A
 direct INSERT of a Model with an unknown kind in the proposition JSONB
 must be rejected by Postgres."""
 from __future__ import annotations
@@ -88,11 +88,12 @@ async def _insert_model(
 async def test_constraint_accepts_known_kind(tx_conn: asyncpg.Connection):
     tenant = uuid7()
     obs = await _seed_observation(tx_conn, tenant)
-    # All 11 known kinds should pass.
+    # All known kinds should pass.
     for kind in [
         "state", "relation", "prediction", "pattern", "pattern_instance",
         "capability_assessment", "hypothesis", "concern",
         "market_assessment", "environmental_trend", "recommendation",
+        "situation",
     ]:
         await _insert_model(tx_conn, tenant=tenant, born_from_event=obs, kind=kind)
 

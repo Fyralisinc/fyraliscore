@@ -4,9 +4,11 @@ context.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
+import asyncpg
 import pytest
 
 from services.retrieval.assembler import (
@@ -58,6 +60,11 @@ async def test_assembler_respects_size_budgets(
         <= 10
     )
     assert len(bundle.resources_summary) <= 5
+    selection = bundle.notes["model_selection"]
+    assert selection["retrieved_count"] == len(result.models)
+    assert selection["selected_count"] == len(bundle.models)
+    assert set(selection["pathway_survival"]).issuperset({"A", "B", "C", "G"})
+    assert set(selection["selected_model_ids"]) == {str(m.id) for m in bundle.models}
 
 
 async def test_assembler_access_redacts_private_model_for_outside_actor(

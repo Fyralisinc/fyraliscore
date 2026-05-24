@@ -24,8 +24,8 @@ new migration tooling. The production shell-side runner
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
+from collections.abc import Iterable
 
 import asyncpg
 
@@ -121,99 +121,7 @@ async def apply_migrations_dir(
                     "migration_cause": str(e.cause),
                 },
             )
-
-    # Test-environment only: relax schema invariants the test suite
-    # predates (tenant FKs + monthly partitions).
-    if os.environ.get("COMPANY_OS_ENV") == "test":
-        await _prepare_test_schema(conn)
-
     return applied
-
-
-async def _prepare_test_schema(conn: asyncpg.Connection) -> None:
-    """Test-DB-only schema relaxations (gated on COMPANY_OS_ENV=test).
-
-    Two adjustments the existing suite needs but production must not:
-    1. Drop the tenant_id foreign keys (0037) — see below.
-    2. Add a DEFAULT partition to each range-partitioned table
-       (observations, resource_transactions). Production creates
-       monthly partitions on a schedule; tests insert rows across
-       arbitrary months and otherwise hit "no partition of relation
-       X found for row".
-    """
-    await _relax_tenant_fks_for_tests(conn)
-    await _ensure_default_partitions_for_tests(conn)
-
-
-async def _ensure_default_partitions_for_tests(conn: asyncpg.Connection) -> None:
-    """Attach a DEFAULT partition to every partitioned table lacking
-    one, so out-of-range INSERTs route somewhere instead of raising
-    'no partition found'. TEST DB ONLY."""
-    await conn.execute(
-        """
-        DO $$
-        DECLARE r record;
-        BEGIN
-          FOR r IN
-            SELECT c.relname AS tbl
-            FROM pg_class c
-            WHERE c.relkind = 'p'
-              AND NOT EXISTS (
-                SELECT 1 FROM pg_inherits i
-                JOIN pg_class p ON p.oid = i.inhrelid
-                WHERE i.inhparent = c.oid
-                  AND pg_get_expr(p.relpartbound, p.oid) = 'DEFAULT'
-              )
-          LOOP
-            EXECUTE format(
-              'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I DEFAULT',
-              r.tbl || '_test_default', r.tbl
-            );
-          END LOOP;
-        END $$;
-        """
-    )
-
-
-async def _relax_tenant_fks_for_tests(conn: asyncpg.Connection) -> None:
-    """Drop the tenant_id foreign keys (migration 0037) — TEST DB ONLY.
-
-    0037 promotes every `tenant_id` to `REFERENCES tenants(id)
-    DEFERRABLE INITIALLY IMMEDIATE`. Its header documents the contract:
-    the FK is "never realized in tests" — tests are expected to wrap
-    the body in a transaction and ROLLBACK with `SET CONSTRAINTS ALL
-    DEFERRED`. Much of the suite predates that and uses the autocommit
-    + TRUNCATE pattern, so the IMMEDIATE check fires on the first
-    INSERT of a uuid7() tenant_id that has no tenants row.
-
-    Gated on COMPANY_OS_ENV=test (set by CI and test conftests, never
-    in production), this is the single choke point every test bootstrap
-    funnels through, so it covers the root conftest *and* the many
-    per-package pool fixtures that call apply_migrations_dir directly.
-    apply_migrations_dir re-adds the FK on each re-run, so the drop has
-    to follow every application. No test asserts FK-firing behavior.
-
-    Only the parent/standalone constraint is dropped (conislocal); the
-    inherited copies on partition children cannot be dropped directly
-    and disappear when the parent's is dropped.
-    """
-    await conn.execute(
-        """
-        DO $$
-        DECLARE r record;
-        BEGIN
-          FOR r IN
-            SELECT conrelid::regclass AS tbl, conname
-            FROM pg_constraint
-            WHERE contype = 'f' AND conname ~ '_tenant_fk$' AND conislocal
-          LOOP
-            EXECUTE format(
-              'ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname
-            );
-          END LOOP;
-        END $$;
-        """
-    )
 
 
 __all__ = ["MigrationError", "apply_migration", "apply_migrations_dir"]

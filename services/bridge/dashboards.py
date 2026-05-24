@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lib.shared.db import get_pool
 from lib.shared.types import GoalCachedHealth
+from services.resources.bridge import arr_usd_from_current_value
 
 from .queries import (
     CapabilityRisk,
@@ -194,9 +195,7 @@ async def render_customer_detail(
             raise ValueError(
                 f"customer {customer_id} not found in tenant {tenant_id}"
             )
-        cv = dict(cust["current_value"] or {})
-        arr_cents = int(cv.get("arr_cents", 0) or 0)
-        arr_usd = (Decimal(arr_cents) / Decimal(100)).quantize(Decimal("0.01"))
+        arr_usd = arr_usd_from_current_value(cust["current_value"])
 
         served_rows = await c.fetch(sql_served, customer_id, tenant_id)
         served: list[CustomerServedCommitment] = []

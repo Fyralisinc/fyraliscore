@@ -1,0 +1,336 @@
+scenario_id: industrial_ops
+scenario_name: "Industrial operations SaaS corpus"
+description: |
+  A synthetic industrial-operations software company serving manufacturers,
+  transit operators, food producers, ports, and chemical plants. This corpus
+  stresses customer-risk memory under operational incidents, supplier drift,
+  safety language, regulatory audits, noisy field reports, and forecast
+  contradictions.
+
+foundation:
+  actors:
+    - {name: "Avery Stone", role: "ceo", slack: "slack:U05AVERY", email_alias: "email:avery@helioops.test", kind: "human_internal"}
+    - {name: "Mila Torres", role: "coo", slack: "slack:U05MILA", email_alias: "email:mila@helioops.test", kind: "human_internal"}
+    - {name: "Theo Grant", role: "cto", slack: "slack:U05THEO", github: "github:tgrant", kind: "human_internal"}
+    - {name: "Jia Wen", role: "head_of_product", slack: "slack:U05JIA", github: "github:jwen", kind: "human_internal"}
+    - {name: "Rafael Costa", role: "sre_lead", slack: "slack:U05RAFAEL", github: "github:rcosta", kind: "human_internal"}
+    - {name: "Kenji Sato", role: "data_science_lead", slack: "slack:U05KENJI", github: "github:ksato", kind: "human_internal"}
+    - {name: "Priyanka Rao", role: "security_lead", slack: "slack:U05PRIYA", email_alias: "email:priyanka@helioops.test", kind: "human_internal"}
+    - {name: "Morgan Blake", role: "customer_success", slack: "slack:U05MORGAN", email_alias: "email:morgan@helioops.test", kind: "human_internal"}
+    - {name: "Isla Reed", role: "vp_sales", slack: "slack:U05ISLA", email_alias: "email:isla@helioops.test", kind: "human_internal"}
+    - {name: "Mei Carter", role: "qa_lead", slack: "slack:U05MEI", github: "github:mcarter", kind: "human_internal"}
+    - {name: "Omar Nasser", role: "finance_lead", slack: "slack:U05OMAR", email_alias: "email:omar@helioops.test", kind: "human_internal"}
+    - {name: "Vera Novak", role: "legal_counsel", slack: "slack:U05VERA", email_alias: "email:vera@helioops.test", kind: "human_internal"}
+    - {name: "Eli Brooks", role: "field_engineer", slack: "slack:U05ELI", linear: "linear:eli.brooks", kind: "human_internal"}
+    - {name: "Hana Kim", role: "supply_chain_analyst", slack: "slack:U05HANA", linear: "linear:hana.kim", kind: "human_internal"}
+
+  customers:
+    - {name: "Titan Foundry Inc", arr_usd: 2100000, health: "at_risk", contract_start_days_ago: 640, description: "Steel foundry using HelioOps for furnace telemetry, outage prevention, and penalty-risk forecasts."}
+    - {name: "MetroRail Authority", arr_usd: 1600000, health: "stable", contract_start_days_ago: 520, description: "Transit operator using safety alert workflows and depot maintenance memory."}
+    - {name: "AeroNorth Manufacturing", arr_usd: 980000, health: "healthy", contract_start_days_ago: 310, description: "Aerospace parts manufacturer piloting predictive maintenance."}
+    - {name: "Glacier Foods LLC", arr_usd: 740000, health: "stable", contract_start_days_ago: 280, description: "Food producer tracking cold-chain maintenance and spoilage risk."}
+    - {name: "Solace Chemicals Corp", arr_usd: 1250000, health: "at_risk", contract_start_days_ago: 450, description: "Chemical plant with strict safety and regulator evidence requirements."}
+    - {name: "Quantum Textiles", arr_usd: 360000, health: "trial", contract_start_days_ago: 40, description: "Trial account blocked by supplier-data quality concerns."}
+    - {name: "HarborPort Authority", arr_usd: 890000, health: "healthy", contract_start_days_ago: 210, description: "Port operator expanding from crane maintenance into vessel delay forecasting."}
+
+  goals:
+    - {title: "Protect industrial renewals from preventable downtime", altitude: "strategic", target_days_from_start: 80, success_criteria: {criteria: "Titan Foundry and Solace Chemicals renew without outage-related churn."}}
+    - {title: "Make safety-critical memory auditable", altitude: "strategic", target_days_from_start: 70, success_criteria: {criteria: "Safety insights cite telemetry, field reports, and human confirmations without overstating certainty."}}
+    - {title: "Reduce telemetry-to-action latency under four minutes", altitude: "operational", target_days_from_start: 45, success_criteria: {criteria: "p95 telemetry incident to recommended action below four minutes."}}
+    - {title: "Improve supplier-risk forecast trust", altitude: "operational", target_days_from_start: 50, success_criteria: {criteria: "Forecasts separate supplier facts, model inference, and stale ERP feeds."}}
+    - {title: "Launch maintenance graph v2", altitude: "tactical", target_days_from_start: 35, success_criteria: {criteria: "Customers can inspect hidden dependencies between machines, suppliers, commitments, and penalties."}}
+    - {title: "Build board-ready operational risk narrative", altitude: "strategic", target_days_from_start: 30, success_criteria: {criteria: "Exec narrative reconciles incident risk, ARR exposure, and delivery capacity."}}
+
+  commitments:
+    - {title: "Stabilize Titan furnace telemetry ingestion", owner: "Rafael Costa", state: "active", due_days_from_start: 5, priority: 1, contributes_to_goal: "Protect industrial renewals from preventable downtime"}
+    - {title: "Deliver Titan penalty-risk explanation export", owner: "Jia Wen", state: "active", due_days_from_start: 12, priority: 1, contributes_to_goal: "Make safety-critical memory auditable"}
+    - {title: "Ship MetroRail safety alert dedupe", owner: "Mei Carter", state: "active", due_days_from_start: 10, priority: 2, contributes_to_goal: "Make safety-critical memory auditable"}
+    - {title: "Cut telemetry-to-action p95 below four minutes", owner: "Rafael Costa", state: "active", due_days_from_start: 21, priority: 2, contributes_to_goal: "Reduce telemetry-to-action latency under four minutes"}
+    - {title: "Backfill industrial customer aliases", owner: "Morgan Blake", state: "active", due_days_from_start: 9, priority: 2, contributes_to_goal: "Protect industrial renewals from preventable downtime"}
+    - {title: "Correct Quantum supplier forecast drift", owner: "Hana Kim", state: "active", due_days_from_start: 14, priority: 2, contributes_to_goal: "Improve supplier-risk forecast trust"}
+    - {title: "Harden Solace regulator evidence package", owner: "Priyanka Rao", state: "active", due_days_from_start: 20, priority: 1, contributes_to_goal: "Make safety-critical memory auditable"}
+    - {title: "Complete AeroNorth predictive maintenance pilot", owner: "Kenji Sato", state: "active", due_days_from_start: 25, priority: 3, contributes_to_goal: "Launch maintenance graph v2"}
+    - {title: "Prepare Glacier spoilage-risk review", owner: "Eli Brooks", state: "active", due_days_from_start: 11, priority: 3, contributes_to_goal: "Improve supplier-risk forecast trust"}
+    - {title: "Reprice HarborPort expansion proposal", owner: "Isla Reed", state: "active", due_days_from_start: 16, priority: 3, contributes_to_goal: "Build board-ready operational risk narrative"}
+    - {title: "Publish maintenance graph v2 explanation template", owner: "Jia Wen", state: "active", due_days_from_start: 18, priority: 2, contributes_to_goal: ["Launch maintenance graph v2", "Make safety-critical memory auditable"]}
+    - {title: "Resolve MetroRail MRA identity merge", owner: "Morgan Blake", state: "active", due_days_from_start: 8, priority: 2, contributes_to_goal: "Protect industrial renewals from preventable downtime"}
+    - {title: "Draft Solace incident notification addendum", owner: "Vera Novak", state: "active", due_days_from_start: 13, priority: 2, contributes_to_goal: "Make safety-critical memory auditable"}
+    - {title: "Publish operational risk board narrative", owner: "Omar Nasser", state: "active", due_days_from_start: 6, priority: 2, contributes_to_goal: "Build board-ready operational risk narrative"}
+
+  decisions:
+    - title: "Treat safety and revenue risk as a single memory problem"
+      decision_text: "Safety, outage, penalty, and renewal signals should be connected in one memory graph rather than split across ops and sales silos."
+      state: "active"
+      scope: {area: "strategy"}
+      revisit_triggers: {triggers: ["safety-critical miss", "regulator evidence failure", "enterprise renewal blocked by incident context"]}
+    - title: "Gate maintenance graph v2 on explanation auditability"
+      decision_text: "Maintenance graph v2 cannot launch unless hidden machine/supplier connections cite source evidence and confidence limits."
+      state: "active"
+      scope: {area: "product"}
+    - title: "Defer self-serve industrial connectors"
+      decision_text: "Self-serve industrial connectors stay paused until telemetry dedupe and supplier feed trust are stable."
+      state: "active"
+      scope: {area: "platform"}
+    - title: "Use customer aliases as production-critical data"
+      decision_text: "Plant acronyms and customer shorthands are production data because they carry safety and revenue context."
+      state: "active"
+      scope: {area: "memory"}
+    - title: "Separate forecast fact from forecast inference"
+      decision_text: "Supplier and maintenance forecasts must separate authoritative ERP/fleet facts from model inference and field anecdotes."
+      state: "active"
+      scope: {area: "data_science"}
+
+  customer_commitments:
+    - {customer: "Titan Foundry Inc", commitment: "Stabilize Titan furnace telemetry ingestion", relationship_kind: "delivers", revenue_at_risk_usd: 2100000, criticality: "must_have"}
+    - {customer: "Titan Foundry Inc", commitment: "Deliver Titan penalty-risk explanation export", relationship_kind: "delivers", revenue_at_risk_usd: 2100000, criticality: "must_have"}
+    - {customer: "MetroRail Authority", commitment: "Ship MetroRail safety alert dedupe", relationship_kind: "delivers", revenue_at_risk_usd: 1600000, criticality: "high"}
+    - {customer: "MetroRail Authority", commitment: "Resolve MetroRail MRA identity merge", relationship_kind: "delivers", revenue_at_risk_usd: 1600000, criticality: "high"}
+    - {customer: "Solace Chemicals Corp", commitment: "Harden Solace regulator evidence package", relationship_kind: "delivers", revenue_at_risk_usd: 1250000, criticality: "must_have"}
+    - {customer: "Quantum Textiles", commitment: "Correct Quantum supplier forecast drift", relationship_kind: "delivers", revenue_at_risk_usd: 360000, criticality: "medium"}
+    - {customer: "HarborPort Authority", commitment: "Reprice HarborPort expansion proposal", relationship_kind: "impacts", revenue_at_risk_usd: 890000, criticality: "medium"}
+    - {customer: "AeroNorth Manufacturing", commitment: "Complete AeroNorth predictive maintenance pilot", relationship_kind: "delivers", revenue_at_risk_usd: 980000, criticality: "high"}
+    - {customer: "Glacier Foods LLC", commitment: "Prepare Glacier spoilage-risk review", relationship_kind: "delivers", revenue_at_risk_usd: 740000, criticality: "medium"}
+
+signal_sequences:
+
+  titan_furnace_outage:
+    description: "Titan outage, alias creation, telemetry latency, penalty risk, and recovery evidence."
+    signals:
+      - channel: "support:zendesk"
+        actor: "external:titan.ops"
+        content: "Titan Foundry Inc reports furnace line 7 telemetry dropped for 41 minutes. They call the account TFI internally, and TFI says the outage could trigger a penalty under the renewal addendum."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:customer-titan"
+        actor: "Morgan Blake"
+        content: "TFI means Titan Foundry Inc. Please keep TFI, Titan, furnace telemetry, and penalty risk in one customer story."
+        delay_minutes: 8
+      - channel: "datadog:alerts"
+        actor: "external:datadog"
+        content: "Telemetry p95 for Titan Foundry Inc crossed 8.7 minutes during furnace line 7 outage. Critical customer fast lane did not activate."
+        delay_minutes: 20
+        trust_tier: "authoritative_external"
+      - channel: "slack:sre"
+        actor: "Rafael Costa"
+        content: "Root cause likely connector backpressure after PLC burst. Stabilize Titan furnace telemetry ingestion is now the blocker for penalty-risk confidence."
+        delay_minutes: 37
+      - channel: "github:helioops/core"
+        actor: "Theo Grant"
+        content: "Opened PR for Titan connector priority lane. It dedupes PLC bursts and tags furnace telemetry with customer_resource_id before embedding."
+        delay_minutes: 80
+        trust_tier: "authoritative"
+      - channel: "linear:OPS"
+        actor: "Rafael Costa"
+        content: "Stabilize Titan furnace telemetry ingestion moved to review. Remaining risk: p95 metric excludes replayed PLC bursts."
+        delay_minutes: 150
+        trust_tier: "authoritative"
+      - channel: "email:thread"
+        actor: "external:titan.procurement"
+        content: "Titan Foundry Inc will pause renewal signoff until HelioOps explains whether the missed telemetry changed the penalty-risk forecast."
+        delay_minutes: 390
+        trust_tier: "authoritative_external"
+      - channel: "slack:exec"
+        actor: "Avery Stone"
+        content: "Titan is the test: the system must connect outage telemetry, penalty-risk explanation, renewal signoff, and the TFI alias without manual stitching."
+        delay_minutes: 450
+
+  metrorail_safety_identity:
+    description: "Safety-critical duplicate identity and alert dedupe pressure."
+    signals:
+      - channel: "support:zendesk"
+        actor: "external:metrorail.safety"
+        content: "MRA safety desk says duplicate depot alerts caused two supervisors to ignore a brake-temperature warning. MRA is MetroRail Authority."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:support"
+        actor: "Morgan Blake"
+        content: "MetroRail Authority, Metro Rail, and MRA are currently split across support and sales. Resolve MetroRail MRA identity merge is not admin cleanup; it is safety memory."
+        delay_minutes: 16
+      - channel: "linear:QA"
+        actor: "Mei Carter"
+        content: "Ship MetroRail safety alert dedupe now covers duplicate depot IDs, repeated brake-temperature alerts, and stale alert replay."
+        delay_minutes: 60
+        trust_tier: "authoritative"
+      - channel: "slack:product"
+        actor: "Jia Wen"
+        content: "Safety explanations must say which alert was duplicate and which was real. Do not let dedupe erase evidence."
+        delay_minutes: 95
+      - channel: "github:helioops/core"
+        actor: "Mei Carter"
+        content: "Added red-team case: MRA brake-temperature alert replay should not create a fresh safety incident, but the original warning must remain retrievable."
+        delay_minutes: 180
+        trust_tier: "authoritative"
+      - channel: "slack:customer-metrorail"
+        actor: "external:metrorail.safety"
+        content: "MetroRail Authority confirms dedupe demo is useful, but wants audit evidence before rolling to all depots."
+        delay_minutes: 760
+        trust_tier: "authoritative_external"
+      - channel: "slack:exec"
+        actor: "Mila Torres"
+        content: "MRA is a governance test: safety-critical memory needs alias resolution, dedupe, and source evidence together."
+        delay_minutes: 900
+
+  supplier_forecast_drift:
+    description: "Supplier feed staleness creates wrong forecasts and trial risk."
+    signals:
+      - channel: "salesforce:accounts"
+        actor: "Isla Reed"
+        content: "Quantum Textiles trial is blocked because the supplier-risk forecast marked dye supplier Arclight as healthy, but their ERP says Arclight is late on three shipments."
+        delay_minutes: 0
+        trust_tier: "authoritative"
+      - channel: "slack:data"
+        actor: "Hana Kim"
+        content: "Quantum supplier forecast drift comes from a stale EDI feed. ERP facts say Arclight is late; model inference still says low risk."
+        delay_minutes: 32
+      - channel: "slack:data"
+        actor: "Kenji Sato"
+        content: "This proves Separate forecast fact from forecast inference. Quantum should see ERP facts, model inference, and field anecdotes separately."
+        delay_minutes: 72
+      - channel: "linear:DATA"
+        actor: "Hana Kim"
+        content: "Correct Quantum supplier forecast drift now includes EDI freshness scoring and stale-source banners."
+        delay_minutes: 140
+        trust_tier: "authoritative"
+      - channel: "email:thread"
+        actor: "external:quantum.ops"
+        content: "Quantum Textiles says the trial can continue if HelioOps explains why Arclight looked safe yesterday and risky today."
+        delay_minutes: 360
+        trust_tier: "authoritative_external"
+      - channel: "slack:product"
+        actor: "Jia Wen"
+        content: "Maintenance graph v2 should expose stale supplier feeds as first-class evidence, not footnotes."
+        delay_minutes: 430
+      - channel: "slack:exec"
+        actor: "Omar Nasser"
+        content: "Board note: Quantum is low ARR, but supplier trust is reusable across Titan, Glacier, and HarborPort."
+        delay_minutes: 720
+
+  predictive_model_drift:
+    description: "AeroNorth pilot detects false positives and hidden maintenance dependencies."
+    signals:
+      - channel: "calendar:events"
+        actor: "Kenji Sato"
+        content: "AeroNorth Manufacturing pilot review: predictive maintenance caught two compressor risks but generated six false positives on harmless vibration drift."
+        delay_minutes: 0
+        trust_tier: "authoritative"
+      - channel: "slack:customer-aeronorth"
+        actor: "Eli Brooks"
+        content: "AeroNorth says false positives waste floor supervisor time. They trust the graph more when it shows supplier batch, machine lineage, and field confirmation."
+        delay_minutes: 35
+      - channel: "github:helioops/ml"
+        actor: "Kenji Sato"
+        content: "Added false-positive suppressor using maintenance graph lineage. It links compressor risk to supplier batch only when field confirmation exists."
+        delay_minutes: 120
+        trust_tier: "authoritative"
+      - channel: "slack:product"
+        actor: "Jia Wen"
+        content: "AeroNorth is an explanation issue, not just a model metric issue. Supervisors want to know what would disprove a compressor-risk insight."
+        delay_minutes: 210
+      - channel: "linear:ML"
+        actor: "Kenji Sato"
+        content: "Complete AeroNorth predictive maintenance pilot moved to 70 percent. Remaining work: falsifier language and confidence bands."
+        delay_minutes: 480
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Avery Stone"
+        content: "If maintenance graph v2 cannot explain false positives, it will not feel premium to industrial operators."
+        delay_minutes: 620
+
+  regulator_and_security_package:
+    description: "Solace Chemicals regulator evidence and legal/security constraints."
+    signals:
+      - channel: "email:thread"
+        actor: "external:solace.compliance"
+        content: "Solace Chemicals Corp regulator review asks whether HelioOps safety recommendations can cite source telemetry and human field confirmations for every high-risk claim."
+        delay_minutes: 0
+        trust_tier: "authoritative_external"
+      - channel: "slack:security"
+        actor: "Priyanka Rao"
+        content: "Solace Chemicals evidence package needs telemetry lineage, human confirmation, access logs, and recommendation confidence. It overlaps Titan penalty-risk export."
+        delay_minutes: 24
+      - channel: "email:thread"
+        actor: "Vera Novak"
+        content: "Draft Solace incident notification addendum is acceptable if it says HelioOps recommends actions, not certifies plant safety."
+        delay_minutes: 100
+        trust_tier: "attested_agent"
+      - channel: "linear:SEC"
+        actor: "Priyanka Rao"
+        content: "Harden Solace regulator evidence package expanded with audit export, source telemetry lineage, and role-based access proof."
+        delay_minutes: 180
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Mila Torres"
+        content: "Solace and Titan are linked by explanation liability. The system should remember legal wording when product changes evidence exports."
+        delay_minutes: 300
+      - channel: "slack:customer-solace"
+        actor: "external:solace.compliance"
+        content: "Solace Chemicals says the evidence package is close, but field confirmations must be easy to inspect."
+        delay_minutes: 840
+        trust_tier: "authoritative_external"
+
+  board_capacity_conflict:
+    description: "Executive narrative across customer risk, platform capacity, and ARR."
+    signals:
+      - channel: "slack:exec"
+        actor: "Omar Nasser"
+        content: "Operational risk board narrative: Titan is 2.1M ARR outage risk, MetroRail is safety-governance risk, Solace is regulator evidence risk, Quantum is supplier-trust risk."
+        delay_minutes: 0
+      - channel: "slack:exec"
+        actor: "Theo Grant"
+        content: "Capacity truth: Rafael cannot own Titan priority lane, telemetry p95, and Solace evidence export at the same time."
+        delay_minutes: 25
+      - channel: "slack:exec"
+        actor: "Avery Stone"
+        content: "Move one product engineer from maintenance graph visuals to reliability. Safety and revenue memory is the product."
+        delay_minutes: 60
+      - channel: "linear:FIN"
+        actor: "Omar Nasser"
+        content: "Publish operational risk board narrative draft groups risks by connection misses: alias, telemetry, supplier feed, evidence export, and capacity."
+        delay_minutes: 110
+        trust_tier: "authoritative"
+      - channel: "slack:sales"
+        actor: "Isla Reed"
+        content: "HarborPort expansion is healthy but not urgent. Reprice HarborPort expansion proposal can slip if Titan or Solace need the capacity."
+        delay_minutes: 160
+      - channel: "slack:exec"
+        actor: "Mila Torres"
+        content: "The board story should not be generic incidents. It should show how the memory system turns hidden operational links into timely action."
+        delay_minutes: 300
+
+  noisy_industrial_edges:
+    description: "Small ambiguous signals that should not dominate authoritative evidence."
+    signals:
+      - channel: "slack:random"
+        actor: "Eli Brooks"
+        content: "Titan thing maybe fine now, idk."
+        delay_minutes: 0
+        trust_tier: "inferential"
+      - channel: "slack:customer-titan"
+        actor: "Morgan Blake"
+        content: "Clarifying Eli's note: Titan Foundry Inc telemetry recovered, but penalty-risk explanation remains open."
+        delay_minutes: 10
+      - channel: "support:zendesk"
+        actor: "external:glacier.ops"
+        content: "Glacier Foods LLC says spoilage-risk review can wait until next month. This is not churn risk; their cold-chain issue was resolved internally."
+        delay_minutes: 80
+        trust_tier: "authoritative_external"
+      - channel: "slack:data"
+        actor: "Hana Kim"
+        content: "Ambiguous term: Harbor sometimes means HarborPort Authority, but in SRE docs it can mean the old harbor connector experiment."
+        delay_minutes: 140
+      - channel: "github:helioops/core"
+        actor: "Mei Carter"
+        content: "Added retrieval eval for Harbor ambiguity: sales/legal context should resolve Harbor to HarborPort Authority; engineering connector docs should not."
+        delay_minutes: 210
+        trust_tier: "authoritative"
+      - channel: "slack:exec"
+        actor: "Avery Stone"
+        content: "Noise handling matters: vague Slack chatter should be remembered but dominated by authoritative customer and telemetry evidence."
+        delay_minutes: 400
+
+expected_behaviors:
+  - "TFI resolves to Titan Foundry Inc when the source text defines the alias."
+  - "MetroRail, Metro Rail, and MRA evidence stays connected for safety alert reasoning."
+  - "Supplier-risk retrieval separates ERP facts from stale EDI/model inference."
+  - "Solace regulator evidence connects legal wording, security controls, and product export work."
+  - "Board narrative retrieval surfaces risk categories without letting vague low-trust chatter dominate."

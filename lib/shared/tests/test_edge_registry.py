@@ -20,8 +20,7 @@ from lib.shared.edge_registry import (
 
 
 def test_registry_has_expected_kinds():
-    """v1 must register exactly six edge kinds: four enabled
-    producers + two reserved names (`contradicts`, `weakens`)."""
+    """The registry is the complete relationship vocabulary."""
     assert set(EDGE_REGISTRY.keys()) == {
         "supports",
         "contributes_to_resolution",
@@ -29,18 +28,21 @@ def test_registry_has_expected_kinds():
         "superseded_by",
         "contradicts",
         "weakens",
+        "causes",
+        "explains",
+        "predicts",
+        "blocks",
+        "enables",
+        "same_issue_as",
+        "co_occurs_with",
+        "analogous_to",
+        "alternative_to",
+        "early_warning_for",
     }
 
 
-def test_writable_kinds_excludes_reserved():
-    """Reserved names live in the registry but the repo refuses to
-    write them in v1 (no producer)."""
-    assert writable_kinds() == {
-        "supports",
-        "contributes_to_resolution",
-        "instance_of",
-        "superseded_by",
-    }
+def test_writable_kinds_matches_active_registry():
+    assert writable_kinds() == frozenset(EDGE_REGISTRY.keys())
 
 
 def test_get_spec_unknown_raises():
@@ -49,11 +51,11 @@ def test_get_spec_unknown_raises():
     assert "unknown edge_kind" in str(exc.value)
 
 
-def test_assert_writable_rejects_reserved():
-    """contradicts is reserved → repo must reject INSERTs of it."""
-    with pytest.raises(EdgeRegistryError) as exc:
-        assert_writable("contradicts")
-    assert "reserved" in str(exc.value)
+def test_assert_writable_accepts_contradicts():
+    spec = assert_writable("contradicts")
+    assert spec.name == "contradicts"
+    assert spec.enabled_for_writes is True
+    assert spec.weight_required is True
 
 
 def test_assert_writable_accepts_supports():
@@ -101,6 +103,16 @@ def test_contradicts_is_symmetric_no_dag():
     assert spec.is_directed is False  # symmetric → 2 rows
     assert spec.cycle_scope is None
     assert spec.weight_required is True
+    assert "supports" in spec.mutually_exclusive_with
+
+
+def test_hidden_connection_specs_have_expected_polarity():
+    assert get_spec("weakens").is_directed is True
+    assert get_spec("same_issue_as").is_directed is False
+    assert get_spec("co_occurs_with").is_directed is False
+    assert get_spec("analogous_to").is_directed is False
+    assert get_spec("alternative_to").is_directed is False
+    assert "enables" in get_spec("blocks").mutually_exclusive_with
 
 
 def test_is_symmetric_helper():

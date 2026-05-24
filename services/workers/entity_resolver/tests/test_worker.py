@@ -15,12 +15,16 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
-from lib.llm.provider import LLMConfig, LLMProvider
+from lib.llm.provider import LLMConfig, LLMProvider, LLMParseError
 from lib.shared.ids import uuid7
 from services.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
+    EntityResolution,
     EntityResolverWorker,
+    LLMRateLimitError,
+    LLMTimeoutError,
     ResolverLLMBudget,
 )
 
@@ -79,21 +83,30 @@ async def _seed_observation(
     unresolved_phrases: list[str],
     source_channel: str = "slack:message",
     occurred_at: datetime | None = None,
+    unresolved_location: str = "metadata",
+    entities_mentioned: list[dict] | None = None,
 ) -> UUID:
     obs_id = uuid7()
     occurred_at = occurred_at or datetime.now(timezone.utc)
-    content = {
-        "text": content_text,
-        "metadata": {"_unresolved_phrases": unresolved_phrases},
-    }
+    content: dict[str, object] = {"text": content_text}
+    if unresolved_location == "metadata":
+        content["metadata"] = {"_unresolved_phrases": unresolved_phrases}
+    elif unresolved_location == "top_level":
+        content["_unresolved_phrases"] = unresolved_phrases
+    elif unresolved_location == "both":
+        content["_unresolved_phrases"] = unresolved_phrases
+        content["metadata"] = {"_unresolved_phrases": unresolved_phrases}
+    else:
+        raise AssertionError(f"unknown unresolved_location={unresolved_location!r}")
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO observations (
                 id, tenant_id, occurred_at, kind, source_channel,
-                content, content_text, trust_tier
+                content, content_text, trust_tier, entities_mentioned
             ) VALUES (
-                $1, $2, $3, 'signal', $4, $5::jsonb, $6, 'attested_agent'
+                $1, $2, $3, 'signal', $4, $5::jsonb, $6,
+                'attested_agent', $7::jsonb
             )
             """,
             obs_id,
@@ -102,6 +115,7 @@ async def _seed_observation(
             source_channel,
             json.dumps(content),
             content_text,
+            json.dumps(entities_mentioned or []),
         )
     return obs_id
 
@@ -194,6 +208,92 @@ async def test_phrase_in_payment_context_resolves_to_commitment(
 
     # state_change observation emitted.
     assert await _count_state_change_obs(resolver_db, tenant_id) == 1
+
+
+async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    decisions = await worker.process_observation(obs_id, tenant_id)
+
+    assert decisions == [("NBI", "resolved")]
+    ref = await EntityAliasRepo(resolver_db).fast_path_resolve("NBI", tenant_id)
+    assert ref == {"type": "customer", "id": "customer-nimbus"}
+
+
+async def test_duplicate_top_level_and_metadata_phrases_are_deduped(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="both",
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    decisions = await worker.process_observation(obs_id, tenant_id)
+
+    assert decisions == [("NBI", "resolved")]
+    assert len(provider.calls) == 1
+
+
+async def test_resolver_prompt_includes_source_entities_and_known_candidates(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    await EntityAliasRepo(resolver_db).insert_alias(
+        phrase="Nimbus Bank",
+        resolved_entity_ref={"type": "customer", "id": "customer-nimbus"},
+        source="manual",
+        confidence=0.98,
+        tenant_id=tenant_id,
+    )
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Nimbus Bank should also be known as NBI",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+        entities_mentioned=[{"type": "customer", "id": "customer-nimbus"}],
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    await worker.process_observation(obs_id, tenant_id)
+
+    prompt = provider.calls[0]["user"]
+    assert "source_entities_mentioned" in prompt
+    assert "known_entity_candidates" in prompt
+    assert "customer-nimbus" in prompt
 
 
 async def test_resolved_customer_enqueues_think_trigger(
@@ -413,6 +513,31 @@ async def test_no_unresolved_phrases_is_noop(
     decisions = await worker.process_observation(obs_id, tenant_id)
     assert decisions == []
     assert len(provider.calls) == 0
+
+
+async def test_process_pending_finds_top_level_unresolved_phrases(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    processed = await worker.process_pending(limit=1)
+
+    assert processed == 1
+    assert len(provider.calls) == 1
 
 
 # =====================================================================

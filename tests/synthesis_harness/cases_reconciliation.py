@@ -23,6 +23,7 @@ production Think uses), then asserts:
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 import asyncpg

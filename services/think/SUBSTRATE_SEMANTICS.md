@@ -1,6 +1,6 @@
 # Fyralis v1 Substrate Semantics
 
-> Canonical specification for the five v1 substrate decisions. This document is the source of truth — every implementation PR (see [V1_PR_PROMPTS.md](../../V1_PR_PROMPTS.md)) refers back here. Update this file when decisions evolve; do not let the code drift ahead of the spec.
+> Canonical specification for the five v1 substrate decisions. This document is the source of truth — every implementation PR refers back here. Update this file when decisions evolve; do not let the code drift ahead of the spec.
 
 ## How to use this document
 
@@ -53,7 +53,7 @@
               └──────────────────────────────────┘
 ```
 
-Sequencing rationale (mirrors PR order in V1_PR_PROMPTS.md):
+Sequencing rationale:
 
 1. **Q5 first** — every other decision emits audit events.
 2. **Q4 second** — no schema change; affects all subsequent reconciliation.
@@ -96,7 +96,6 @@ Two tiers (auto-merge above some threshold, create-new below) cannot resolve bot
 
 ### Implementation references
 
-- PR 4 — see [V1_PR_PROMPTS.md PR 4](../../V1_PR_PROMPTS.md) for scope and gates.
 - Schema: `reconciliation_decisions` (PR 4).
 - Code: `services/think/reconciler.py`, `services/think/reconciliation_prompt.py` (PR 4).
 - Pre-PR-4 baseline: [V1_BASELINE.md](V1_BASELINE.md) Q1.
@@ -142,8 +141,7 @@ Today's flat `scope_entities` makes these failures invisible — they manifest a
 
 ### Implementation references
 
-- PR 5 — see [V1_PR_PROMPTS.md PR 5](../../V1_PR_PROMPTS.md). Largest PR; explicit user-review gate.
-- Schema: `entities`, `entity_relationships` (PR 5).
+- Schema: `entities`, `entity_relationships` (PR 5). Largest PR; explicit user-review gate.
 - Code: `services/think/hierarchy.py`, `services/retrieval/primary.py` extensions, `services/jobs/hierarchy_audit.py` (PR 5).
 - Pre-PR-5 baseline: [V1_BASELINE.md](V1_BASELINE.md) Q2.
 
@@ -199,8 +197,7 @@ Preconditions resolve this by making the conditional a first-class `latent` Node
 
 ### Implementation references
 
-- PR 3 — see [V1_PR_PROMPTS.md PR 3](../../V1_PR_PROMPTS.md). Explicit design-review gate; design doc is `services/think/PR3_DESIGN.md`.
-- Schema migration: adds enum + columns + indexes; rollback documented (PR 3).
+- Schema migration: adds enum + columns + indexes; rollback documented (PR 3). Explicit design-review gate; design doc is `services/think/PR3_DESIGN.md`.
 - Code: `services/think/precondition_resolver.py` (new), `services/think/cascade.py` extension, recommendation-feed filter (PR 3).
 - Pre-PR-3 baseline: [V1_BASELINE.md](V1_BASELINE.md) Q3.
 
@@ -246,8 +243,7 @@ The current code already takes `max()` in reconciliation. The work is making thi
 
 ### Implementation references
 
-- PR 2 — see [V1_PR_PROMPTS.md PR 2](../../V1_PR_PROMPTS.md). No schema change; prompt + reconciler changes only.
-- Code: `services/think/prompt.py` (calibration anchor), `services/think/reconciler.py` and `services/think/applier.py` (`commitment_merge_confidence` branch).
+- Code: `services/think/prompt.py` (calibration anchor), `services/think/reconciler.py` and `services/think/applier.py` (`commitment_merge_confidence` branch). No schema change; prompt + reconciler changes only.
 - Pre-PR-2 baseline: [V1_BASELINE.md](V1_BASELINE.md) Q4. Note: current code already uses `max()` uniformly; PR 2 is mostly the prompt calibration plus naming the function.
 - Calibration measurement: `tests/synthesis_harness/calibration.py` (already in place).
 
@@ -325,7 +321,7 @@ Trying to overload either existing table would either (a) bloat its schema with 
 
 ## Open questions
 
-These are decisions that V1_PR_PROMPTS.md flags but does not resolve. Each blocks the corresponding PR's design-review gate.
+These decisions are flagged but not resolved. Each blocks the corresponding PR's design-review gate.
 
 | ID | Question | Blocks |
 |---|---|---|
@@ -345,4 +341,4 @@ These are decisions that V1_PR_PROMPTS.md flags but does not resolve. Each block
 
 | Date | Change | Author |
 |---|---|---|
-| 2026-05-09 | Initial draft. Five decisions captured from V1_PR_PROMPTS.md content. Rationale paragraphs filled in by Claude based on derivable signals (adversarial harness failure modes, baseline current-state findings, V1_PR_PROMPTS.md scope/risks sections); user delegated rationale-drafting via "go with your best choices" rather than pasting authoritative paragraphs — surface for amendment if any rationale misreads the original intent. OQ9 resolved (audit chain unbounded for v1). OQ1–OQ8 remain open for their respective PR design gates. | Rachin + Claude |
+| 2026-05-09 | Initial draft. Five decisions captured. Rationale paragraphs filled in based on derivable signals (adversarial harness failure modes, baseline current-state findings, scope/risks); rationale was drafted heuristically rather than from authoritative paragraphs — surface for amendment if any rationale misreads the original intent. OQ9 resolved (audit chain unbounded for v1). OQ1–OQ8 remain open for their respective PR design gates. | Rachin |

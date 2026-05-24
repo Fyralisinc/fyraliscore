@@ -49,6 +49,8 @@ import asyncpg
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import (
     CommitmentRow,
+    DecisionRow,
+    GoalRow,
     ModelRow,
     ObservationRow,
     ResourceRow,
@@ -68,6 +70,13 @@ _BUDGET_RESOURCES = 5
 # novelty at the expense of relevance.
 _MMR_LAMBDA_DEFAULT = 0.5
 
+# Keep the strongest retrieval hits before applying diversity pressure.
+# MMR is a context-shaping tool, not permission to drop the best
+# evidence; these anchors protect high-value graph/structural hits
+# while the remaining slots still diversify.
+_MMR_RELEVANCE_ANCHOR_COUNT = 5
+_MMR_GRAPH_ANCHOR_COUNT = 3
+
 # Cheap-and-correct token estimator used for the MMR path (FU-1). Real
 # tokenization would cost a per-row tokenizer call; 4 chars/token is
 # the industry rule-of-thumb and is well within the accuracy needed
@@ -86,6 +95,82 @@ def _estimate_model_tokens(m: ModelRow) -> int:
     if not nat:
         nat = getattr(m, "proposition", None) or ""
     return max(1, len(str(nat)) // _CHARS_PER_TOKEN)
+
+
+def _model_selection_notes(
+    retrieval_result: RetrievalResult,
+    *,
+    visible_models: list[ModelRow],
+    selected_models: list[ModelRow],
+) -> dict[str, Any]:
+    """Summarize which retrieved Models survived into the context.
+
+    This is intentionally lightweight prompt-survival telemetry. It
+    lets tests and production traces answer the question that matters
+    most after retrieval: did a pathway's useful candidates actually
+    reach the LLM-facing bundle?
+    """
+    retrieved_ids = [m.id for m in retrieval_result.models]
+    visible_ids = [m.id for m in visible_models]
+    selected_ids = [m.id for m in selected_models]
+    visible_set = set(visible_ids)
+    selected_set = set(selected_ids)
+
+    pathway_survival: dict[str, dict[str, Any]] = {}
+    for pr in retrieval_result.pathway_results:
+        pathway = str(pr.source_pathway)
+        candidate_ids = []
+        seen: set[UUID] = set()
+        for m in pr.models:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            candidate_ids.append(m.id)
+        selected_from_pathway = [mid for mid in candidate_ids if mid in selected_set]
+        visible_from_pathway = [mid for mid in candidate_ids if mid in visible_set]
+        pathway_survival[pathway] = {
+            "candidate_count": len(candidate_ids),
+            "visible_count": len(visible_from_pathway),
+            "selected_count": len(selected_from_pathway),
+            "dropped_after_visibility_count": (
+                len(visible_from_pathway) - len(selected_from_pathway)
+            ),
+            "selected_model_ids": [str(mid) for mid in selected_from_pathway[:20]],
+        }
+
+    return {
+        "retrieved_count": len(retrieved_ids),
+        "visible_count": len(visible_ids),
+        "selected_count": len(selected_ids),
+        "dropped_count": len(visible_ids) - len(selected_ids),
+        "selected_model_ids": [str(mid) for mid in selected_ids],
+        "dropped_model_ids": [
+            str(mid) for mid in visible_ids if mid not in selected_set
+        ],
+        "pathway_survival": pathway_survival,
+    }
+
+
+def _top_pathway_model_ids(
+    retrieval_result: RetrievalResult,
+    pathway: str,
+    *,
+    limit: int,
+) -> list[UUID]:
+    """Return de-duped Model ids from a pathway in pathway rank order."""
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for pr in retrieval_result.pathway_results:
+        if str(pr.source_pathway) != pathway:
+            continue
+        for model in pr.models:
+            if model.id in seen:
+                continue
+            seen.add(model.id)
+            out.append(model.id)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 @dataclass
@@ -735,16 +820,66 @@ async def assemble_context(
             )
             for m in visible_models
         ]
-        mmr_selected = mmr_select(
-            wrappers,
-            budget_tokens=int(cfg.context_budget_tokens),
-            lambda_diversity=float(cfg.mmr_lambda_diversity),
+        token_budget = int(cfg.context_budget_tokens)
+        wrappers_by_id = {w.model.id: w for w in wrappers}
+        anchor_limit = min(
+            _MMR_RELEVANCE_ANCHOR_COUNT,
+            budget_models,
+            len(wrappers),
         )
+        relevance_anchor_candidate_ids = {
+            w.model.id for w in wrappers[:anchor_limit]
+        }
+        graph_anchor_ids = _top_pathway_model_ids(
+            retrieval_result,
+            "G",
+            limit=_MMR_GRAPH_ANCHOR_COUNT,
+        )
+        anchor_candidates = [*wrappers[:anchor_limit]]
+        anchor_candidates.extend(
+            wrappers_by_id[mid]
+            for mid in graph_anchor_ids
+            if mid in wrappers_by_id
+        )
+        anchors: list[_MMRModelWrapper] = []
+        anchored_ids: set[UUID] = set()
+        used_anchor_tokens = 0
+        for wrapper in anchor_candidates:
+            if len(anchors) >= budget_models:
+                break
+            if wrapper.model.id in anchored_ids:
+                continue
+            if used_anchor_tokens + wrapper.tokens > token_budget:
+                continue
+            anchors.append(wrapper)
+            anchored_ids.add(wrapper.model.id)
+            used_anchor_tokens += wrapper.tokens
+
+        remaining_wrappers = [w for w in wrappers if w.model.id not in anchored_ids]
+        remaining_slots = max(0, budget_models - len(anchors))
+        remaining_budget = max(0, token_budget - used_anchor_tokens)
+        diverse_tail = (
+            mmr_select(
+                remaining_wrappers,
+                budget_tokens=remaining_budget,
+                lambda_diversity=float(cfg.mmr_lambda_diversity),
+            )[:remaining_slots]
+            if remaining_slots > 0 and remaining_budget > 0
+            else []
+        )
+        mmr_selected = [*anchors, *diverse_tail]
         models_cap = [w.model for w in mmr_selected][:budget_models]
         mmr_notes = {
             "used": True,
             "lambda_diversity": float(cfg.mmr_lambda_diversity),
-            "budget_tokens": int(cfg.context_budget_tokens),
+            "budget_tokens": token_budget,
+            "relevance_anchor_count": len(
+                {w.model.id for w in anchors} & relevance_anchor_candidate_ids
+            ),
+            "graph_anchor_count": len(
+                {w.model.id for w in anchors} & set(graph_anchor_ids)
+            ),
+            "relevance_anchor_tokens": used_anchor_tokens,
             "selected_count": len(models_cap),
             "candidate_count": len(visible_models),
         }
@@ -856,6 +991,11 @@ async def assemble_context(
         "access_redactions_cross_tenant": cross_tenant_redactions,
         "retrieval_trigger_kind": retrieval_result.trigger.kind,
         "mmr": mmr_notes,
+        "model_selection": _model_selection_notes(
+            retrieval_result,
+            visible_models=visible_models,
+            selected_models=models_cap,
+        ),
     }
 
     return ContextBundle(

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pathlib
 import random
 import uuid
 from collections.abc import AsyncGenerator
@@ -37,6 +38,8 @@ from lib.llm.provider import LLMConfig, LLMProvider
 from lib.shared.ids import uuid7
 
 from services.models.repo import ModelsRepo, pgvector_pool_init
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 pytestmark = pytest.mark.integration
@@ -102,6 +105,10 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     pool = await asyncpg.create_pool(
         dsn, min_size=1, max_size=15, init=_init_connection,
     )
+    async with pool.acquire() as conn:
+        from lib.shared.migrations import apply_migrations_dir
+
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:
@@ -183,6 +190,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         )
         await conn.execute(
             "DELETE FROM model_edges WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM model_scope_actors WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM model_scope_entities WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
             "DELETE FROM applied_triggers WHERE tenant_id = $1", tenant,

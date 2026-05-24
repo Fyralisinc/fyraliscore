@@ -226,6 +226,73 @@ async def assert_cascade_chain_intact(
     )
 
 
+async def assert_any_cascade_chain_intact(
+    tenant_id: UUID,
+    starting_event_ids: list[UUID],
+    *,
+    pool: asyncpg.Pool,
+    min_depth: int = 1,
+    context: str = "",
+) -> None:
+    """Assert at least one injected observation has a downstream cause chain.
+
+    Production Think does not promise that the first signal in a sequence is
+    the one that produces a durable Model or Act transition; it promises that
+    meaningful mutations remain causally traceable to the signal that caused
+    them. This helper checks that contract across the whole injected sequence.
+    """
+    assert starting_event_ids, _prefix(context, "No starting observations supplied")
+
+    async def _depth(conn: asyncpg.Connection, start: UUID) -> int:
+        starter = await conn.fetchval(
+            """
+            SELECT id FROM observations
+            WHERE id = $1 AND tenant_id = $2
+            LIMIT 1
+            """,
+            start,
+            tenant_id,
+        )
+        assert starter is not None, _prefix(
+            context,
+            f"Starting observation {start} not found for tenant {tenant_id}",
+        )
+        frontier: set[UUID] = {start}
+        visited: set[UUID] = {start}
+        depth = 0
+        while frontier and depth < min_depth:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM observations
+                WHERE tenant_id = $1
+                  AND cause_id = ANY($2::uuid[])
+                """,
+                tenant_id,
+                list(frontier),
+            )
+            next_frontier: set[UUID] = set()
+            for r in rows:
+                rid = r["id"]
+                if rid not in visited:
+                    visited.add(rid)
+                    next_frontier.add(rid)
+            if not next_frontier:
+                break
+            depth += 1
+            frontier = next_frontier
+        return depth
+
+    async with pool.acquire() as conn:
+        depths = {start: await _depth(conn, start) for start in starting_event_ids}
+
+    best = max(depths.values(), default=0)
+    assert best >= min_depth, _prefix(
+        context,
+        f"No injected observation reached cascade depth >= {min_depth}; "
+        f"depths={{{', '.join(f'{k}: {v}' for k, v in depths.items())}}}",
+    )
+
+
 async def assert_bridge_revenue_at_risk(
     tenant_id: UUID,
     customer_resource_id: UUID,
@@ -262,6 +329,7 @@ __all__ = [
     "assert_model_count_in_range",
     "assert_at_least_one_model_matching",
     "assert_proposition_kind_distribution",
+    "assert_any_cascade_chain_intact",
     "assert_commitment_transitioned",
     "assert_cascade_chain_intact",
     "assert_bridge_revenue_at_risk",

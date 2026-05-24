@@ -37,7 +37,7 @@ import dataclasses
 import datetime
 import json
 import pathlib
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 
 # Bucket edges: 10 evenly-spaced buckets covering [0, 1].

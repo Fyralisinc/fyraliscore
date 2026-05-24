@@ -24,7 +24,7 @@
 -- of zero drift, S2 cuts consumers over and S3 drops the array
 -- columns. Until then the arrays remain the source of truth.
 --
--- Symmetric edge_kinds (none in v1; reserved for future `contradicts`)
+-- Symmetric edge_kinds (for example `contradicts` and `same_issue_as`)
 -- are stored as TWO rows kept in sync by the EdgesRepo helper, not as
 -- a single canonicalized row + CHECK. This eliminates source/target
 -- special-casing in every consumer at the cost of negligible storage.

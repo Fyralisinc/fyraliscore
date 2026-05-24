@@ -12,8 +12,10 @@ from lib.shared.db import transaction
 from services.resources import bridge, customer_commitments as cc, deployments, repo
 from services.resources.tests.conftest import (
     TENANT_A,
+    TENANT_B,
     make_commitment,
     make_decision,
+    make_goal,
     make_observation,
     set_commitment_state,
 )
@@ -47,6 +49,25 @@ async def test_revenue_at_risk_blocked_commitment_returns_arr(resources_db, even
     await set_commitment_state(resources_db, cmt, "blocked")
     rar = await bridge.revenue_at_risk_for_customer(customer.id)
     assert rar == Decimal("100000.00")
+
+
+async def test_revenue_at_risk_accepts_legacy_arr_usd(resources_db, event_id):
+    customer = await repo.create(
+        kind="relational",
+        identity="customer:legacy-arr",
+        current_value={
+            "counterparty_id": "legacy-arr",
+            "arr_usd": 12345,
+            "strength": "strong",
+        },
+        tenant_id=TENANT_A,
+        created_by_event_id=event_id,
+    )
+    cmt = await make_commitment(resources_db)
+    await cc.link_commitment(customer.id, cmt, tenant_id=TENANT_A)
+    await set_commitment_state(resources_db, cmt, "blocked")
+
+    assert await bridge.revenue_at_risk_for_customer(customer.id) == Decimal("12345.00")
 
 
 async def test_revenue_at_risk_paused_returns_arr(resources_db, event_id):

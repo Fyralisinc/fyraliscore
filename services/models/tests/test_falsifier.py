@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 
 from services.models.falsifier import (
     LEGAL_FALSIFIER_KINDS,

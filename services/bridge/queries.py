@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lib.shared.db import get_pool
 from lib.shared.types import CommitmentRow
+from services.resources.bridge import arr_usd_from_current_value
 
 
 # =====================================================================
@@ -294,9 +295,7 @@ async def revenue_at_risk(
 
         # Fallback per null row: ARR / at_risk_cnt (split evenly).
         fallback_used = null_cnt > 0
-        cv = dict(r["customer_current_value"] or {}) if r["customer_current_value"] else {}
-        arr_cents = int(cv.get("arr_cents", 0) or 0)
-        arr_usd = (Decimal(arr_cents) / Decimal(100)).quantize(Decimal("0.01"))
+        arr_usd = arr_usd_from_current_value(r["customer_current_value"])
 
         if at_risk_cnt > 0 and null_cnt > 0 and arr_usd > 0:
             per_row = (arr_usd / Decimal(at_risk_cnt)).quantize(Decimal("0.01"))
@@ -680,7 +679,10 @@ async def customer_health_timeline(
     sql_states = """
         SELECT o.occurred_at,
                (o.content->>'entity_id')::uuid AS commitment_id,
-               o.content->'metadata'->>'new_state' AS new_state
+               COALESCE(
+                 o.content->'metadata'->>'new_state',
+                 o.content->>'to_state'
+               ) AS new_state
         FROM observations o
         WHERE o.tenant_id = $2
           AND o.kind = 'state_change'
@@ -699,9 +701,9 @@ async def customer_health_timeline(
                 for d in days
             ]
         cust_row = await c.fetchrow(sql_customer, customer_id, tenant_id)
-        cv = dict(cust_row["current_value"] or {}) if cust_row else {}
-        arr_cents = int(cv.get("arr_cents", 0) or 0)
-        arr_usd = (Decimal(arr_cents) / Decimal(100)).quantize(Decimal("0.01"))
+        arr_usd = arr_usd_from_current_value(
+            cust_row["current_value"] if cust_row else None
+        )
 
         cmt_ids = [r["commitment_id"] for r in served_rows]
         state_rows = await c.fetch(

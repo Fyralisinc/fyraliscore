@@ -23,6 +23,7 @@ frontend can fall back to its spec-aligned fixture.
 """
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -227,7 +228,7 @@ _DEFAULT_VERB: dict[str, str] = {
     "supports":                 "supports",
     "contributes_to_resolution": "affects",
     "instance_of":              "exemplifies",
-    "superseded_by":            "supersedes",
+    "superseded_by":            "is superseded by",
 }
 
 
@@ -487,6 +488,7 @@ _PROPOSITION_KIND_BAND: dict[str, str] = {
     "pattern_instance": "risk",
     "environmental_trend": "risk",
     "capability_assessment": "risk",
+    "situation": "risk",
     "market_assessment": "customer",
 }
 

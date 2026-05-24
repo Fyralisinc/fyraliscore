@@ -27,6 +27,7 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable
 
 import asyncpg
 
@@ -333,7 +334,7 @@ async def build_fixture(
             content={"topic": topic, "index": i},
             content_text=text,
             trust_tier="authoritative",
-            external_id=f"fixture-obs-{i}",
+            external_id=f"fixture-obs-{tenant_id}-{i}",
         )
         # ObservationRepository.insert will compute embedding via
         # embedder which is None — that triggers embedding_pending=True.

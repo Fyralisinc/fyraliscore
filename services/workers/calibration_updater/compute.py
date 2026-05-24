@@ -35,7 +35,7 @@ indexed SELECT without special-casing cold start.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 
 # Spec §9 lines 2644-2645.
@@ -76,6 +76,10 @@ PROP_KIND_DEFAULTS: dict[str, float] = {
     # Recommendations are inferential ("you should do X") and prone to
     # over-confidence in the same way as predictions; mirror that prior.
     "recommendation":        0.85,
+    # Situations summarize multi-model subgraphs. They should start
+    # slightly conservative because their usefulness depends on the
+    # relationship interpretation, not only the member claims.
+    "situation":             0.86,
 }
 
 # Back-compat alias. Older call sites reference `DEFAULT_OFFSETS`.

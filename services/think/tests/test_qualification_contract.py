@@ -207,7 +207,7 @@ def test_prompt_contract_surfaces_ids_scope_and_topology_context() -> None:
         reason_for_trigger="neighborhood phase shift",
     )
 
-    assert "The eleven kinds above are the ONLY valid `kind` values" in pair.system
+    assert "The twelve kinds above are the ONLY valid `kind` values" in pair.system
     assert str(obs_id) in pair.user
     assert str(actor_id) in pair.user
     assert str(commitment_id) in pair.user

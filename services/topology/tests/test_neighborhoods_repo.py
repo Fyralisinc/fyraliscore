@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.ids import uuid7
 from services.models.edges_repo import EdgesRepo
 from services.topology.neighborhoods_repo import NeighborhoodsRepo
 from services.topology.topo_repo import TopoRepo

@@ -15,10 +15,11 @@ Single source of truth for per-kind semantics:
     archived (responsible for any model_reeval_queue inserts and
     side effects)
   - mutually_exclusive_with (registry-level invariant: e.g. you
-    cannot have a `supports` edge and a future `contradicts` edge
-    between the same ordered pair)
-  - enabled_for_writes (False for kinds reserved in v1 but not yet
-    populated; the repo refuses to insert them until flipped)
+    cannot have a `supports` edge and a `contradicts` edge between
+    the same ordered pair)
+  - enabled_for_writes (False only for names intentionally staged
+    ahead of their producer; the repo refuses to insert them until
+    flipped)
 
 Why a registry, not per-table or per-column dispatch:
   Adding a new relationship type should be a ~10-line registry
@@ -89,13 +90,13 @@ class EdgeKindSpec:
 
     name: str
 
-    # Direction. Symmetric edge_kinds (e.g. future `contradicts`)
+    # Direction. Symmetric edge_kinds (e.g. `contradicts`)
     # are stored as TWO rows kept in sync by EdgesRepo.link(); every
     # consumer queries `WHERE source = X` without special-casing.
     is_directed: bool
 
     # Cycle invariant. None = not DAG-required (e.g. symmetric
-    # `contradicts`, future `weakens`). Otherwise: the SET of
+    # `contradicts`, directed `weakens`). Otherwise: the SET of
     # edge_kinds that participate jointly in the DAG check; cycles
     # within this scope are rejected at link time. Two important
     # patterns:
@@ -106,7 +107,7 @@ class EdgeKindSpec:
     #     in isolation from the support graph.
     cycle_scope: frozenset[str] | None
 
-    # Weight rules. Some kinds require a numeric strength (future
+    # Weight rules. Some kinds require a numeric strength
     # `contradicts(weight=0.4)` for "in tension"); some allow it
     # (`supports` may carry evidential weight); some forbid it
     # (`superseded_by` is binary by definition). Repo enforces.
@@ -119,15 +120,13 @@ class EdgeKindSpec:
 
     # Mutually-exclusive-with: registry-level invariant. If a pair
     # (source, target) has any of these kinds, this kind cannot also
-    # be added between them. Reserved for future use (e.g. you
-    # cannot have BOTH `supports` and `contradicts` between the
-    # same pair). Empty in v1.
+    # be added between them. Example: a Model cannot both `supports`
+    # and `contradicts` the same target.
     mutually_exclusive_with: frozenset[str] = field(default_factory=frozenset)
 
-    # When False, the repo refuses to insert this kind. Reserved
-    # names live in the registry so the validator can recognize
-    # them; they cannot be written until a producer ships and this
-    # flag is flipped.
+    # When False, the repo refuses to insert this kind. This lets a
+    # relationship name be staged in the registry before any producer
+    # is trusted to write it.
     enabled_for_writes: bool = True
 
 
@@ -285,6 +284,32 @@ async def _instance_of_on_target_archive(
     )
 
 
+async def _counterevidence_on_endpoint_archive(
+    conn: asyncpg.Connection,
+    archived_model_id: UUID,
+    other_endpoint_id: UUID,
+    edge: dict[str, Any],
+    archive_reason: str,
+) -> None:
+    """Signed/tension edges: if counter-evidence disappears, the other
+    endpoint deserves re-evaluation because the tension landscape changed.
+
+    The deterministic T4 handler treats this as a mild positive nudge. The
+    callback intentionally does not infer "the other Model is now true"; it
+    only schedules a reconsideration.
+    """
+    tenant_id = edge.get("tenant_id")
+    if tenant_id is None:
+        return
+    await _enqueue_reeval(
+        conn,
+        tenant_id=tenant_id,
+        dependent_id=other_endpoint_id,
+        cause_model_id=archived_model_id,
+        cause_kind="counterevidence_archived",
+    )
+
+
 # `superseded_by` has no cascade in either direction:
 #   - When source is archived (the superseded one): supports cascade
 #     handles dependents via the supports edges from source. The
@@ -299,10 +324,9 @@ async def _instance_of_on_target_archive(
 # ---------------------------------------------------------------------
 
 
-# v1 enables writes for `supports`, `contributes_to_resolution`,
-# `instance_of`, `superseded_by`. The reserved kinds (`contradicts`,
-# `weakens`) live here so the validator recognizes them but the repo
-# refuses to insert them until producers ship.
+# The registry is deliberately broader than the initial producer set: the
+# Think edge-op path and link/tension miners can add typed organizational
+# relationships without another schema migration.
 EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
     "supports": EdgeKindSpec(
         name="supports",
@@ -312,6 +336,7 @@ EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
         weight_allowed=True,
         on_source_archive=_supports_on_source_archive,
         on_target_archive=None,
+        mutually_exclusive_with=frozenset({"contradicts", "weakens"}),
     ),
     "contributes_to_resolution": EdgeKindSpec(
         name="contributes_to_resolution",
@@ -340,17 +365,15 @@ EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
         on_source_archive=None,
         on_target_archive=None,
     ),
-    # Reserved — defined so the validator recognizes the name, but
-    # repo refuses to write them until producers ship.
     "contradicts": EdgeKindSpec(
         name="contradicts",
         is_directed=False,
         cycle_scope=None,
         weight_required=True,
         weight_allowed=True,
-        on_source_archive=None,  # stage-4 ships polarity-inverted callback
-        on_target_archive=None,
-        enabled_for_writes=False,
+        on_source_archive=_counterevidence_on_endpoint_archive,
+        on_target_archive=_counterevidence_on_endpoint_archive,
+        mutually_exclusive_with=frozenset({"supports", "enables"}),
     ),
     "weakens": EdgeKindSpec(
         name="weakens",
@@ -358,9 +381,101 @@ EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
         cycle_scope=None,
         weight_required=True,
         weight_allowed=True,
+        on_source_archive=_counterevidence_on_endpoint_archive,
+        on_target_archive=None,
+        mutually_exclusive_with=frozenset({"supports", "enables"}),
+    ),
+    "causes": EdgeKindSpec(
+        name="causes",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
         on_source_archive=None,
         on_target_archive=None,
-        enabled_for_writes=False,
+    ),
+    "explains": EdgeKindSpec(
+        name="explains",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "predicts": EdgeKindSpec(
+        name="predicts",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "blocks": EdgeKindSpec(
+        name="blocks",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+        mutually_exclusive_with=frozenset({"enables", "supports"}),
+    ),
+    "enables": EdgeKindSpec(
+        name="enables",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+        mutually_exclusive_with=frozenset({"blocks", "contradicts", "weakens"}),
+    ),
+    "same_issue_as": EdgeKindSpec(
+        name="same_issue_as",
+        is_directed=False,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "co_occurs_with": EdgeKindSpec(
+        name="co_occurs_with",
+        is_directed=False,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "analogous_to": EdgeKindSpec(
+        name="analogous_to",
+        is_directed=False,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "alternative_to": EdgeKindSpec(
+        name="alternative_to",
+        is_directed=False,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
+    ),
+    "early_warning_for": EdgeKindSpec(
+        name="early_warning_for",
+        is_directed=True,
+        cycle_scope=None,
+        weight_required=False,
+        weight_allowed=True,
+        on_source_archive=None,
+        on_target_archive=None,
     ),
 }
 
@@ -391,13 +506,11 @@ def get_spec(kind: str) -> EdgeKindSpec:
 
 def assert_writable(kind: str) -> EdgeKindSpec:
     """Look up the spec AND assert the kind is currently writable.
-    Used by EdgesRepo.link() to reject reserved kinds in v1."""
+    Used by EdgesRepo.link() to reject intentionally staged kinds."""
     spec = get_spec(kind)
     if not spec.enabled_for_writes:
         raise EdgeRegistryError(
-            f"edge_kind {kind!r} is reserved (no producer in v1); "
-            f"writes will be enabled when stage-4 (contradicts) or "
-            f"a future weakens producer ships"
+            f"edge_kind {kind!r} is registered but not enabled for writes"
         )
     return spec
 

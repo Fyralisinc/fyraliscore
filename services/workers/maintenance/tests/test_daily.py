@@ -11,6 +11,7 @@ Covers (from the BUILD-PLAN §5 Prompt 4.D test list):
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -73,7 +74,7 @@ async def _seed_model(
             confidence_at_assertion,
             last_retrieved_at
         ) VALUES (
-            $1, $2, $3, '{"kind": "state"}'::jsonb, 'natural',
+            $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'natural',
             array_fill(0.0::real, ARRAY[768])::vector,
             '{}'::jsonb, 0.5, $4, 0.5, $5
         )

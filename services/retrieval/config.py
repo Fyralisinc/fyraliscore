@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, fields
-from typing import Any
+from dataclasses import dataclass, field, fields
+from typing import Any, Literal
 
 
 _log = logging.getLogger(__name__)

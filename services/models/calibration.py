@@ -80,6 +80,7 @@ except Exception:  # pragma: no cover — defensive
         "market_assessment":     0.87,
         "environmental_trend":   0.90,
         "recommendation":        0.85,
+        "situation":             0.86,
     }
 
 _DEFAULT_FALLBACK = 1.0

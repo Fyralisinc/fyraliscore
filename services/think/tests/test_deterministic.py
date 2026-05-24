@@ -21,7 +21,8 @@ Scenarios (Wave 3-B Outstanding #4):
 from __future__ import annotations
 
 import json
-from uuid import UUID
+from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -32,6 +33,7 @@ from services.retrieval.primary import TriggerContext
 from services.think.deterministic import (
     deterministic_handler,
     is_authoritative,
+    _trigger_ref,
 )
 from services.think.tests.conftest import make_embedding
 
@@ -68,6 +70,13 @@ async def test_is_authoritative_t2_prediction_overdue_true():
 async def test_is_authoritative_t2_prediction_deadline_true():
     t = TriggerContext(
         kind="T2", tenant_id=uuid7(), subkind="prediction_deadline",
+    )
+    assert is_authoritative(t) is True
+
+
+async def test_is_authoritative_t2_belief_updated_true():
+    t = TriggerContext(
+        kind="T2", tenant_id=uuid7(), subkind="belief_updated",
     )
     assert is_authoritative(t) is True
 

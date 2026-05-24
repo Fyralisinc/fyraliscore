@@ -631,6 +631,18 @@ class Dispatcher:
         if since_sequence_num < 0:
             return 0
         sub = state.sub
+        # A client can subscribe immediately after rows are inserted while
+        # asyncpg still has their NOTIFY callbacks buffered. If those live
+        # frames land before replay frames, the client observes sequence order
+        # like [3, 1, 2]. Drain the current queue, replay the durable history in
+        # DB order, then append still-new frames after dropping duplicates.
+        queued_before_replay: list[Any] = []
+        while True:
+            try:
+                queued_before_replay.append(state.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
         # Partition-pruning bound.
         rows = await self._pool.fetch(
             """
@@ -649,6 +661,8 @@ class Dispatcher:
             int(limit),
         )
         pushed = 0
+        replayed_ids: set[UUID] = set()
+        max_replayed_sequence = int(since_sequence_num)
         for r in rows:
             content = r["content"]
             if isinstance(content, str):
@@ -686,7 +700,29 @@ class Dispatcher:
                 payload=frame.payload,
             )
             self._enqueue(state, outbound)
+            replayed_ids.add(outbound.id)
+            max_replayed_sequence = max(
+                max_replayed_sequence,
+                outbound.sequence_num,
+            )
             pushed += 1
+        for item in queued_before_replay:
+            if item is _SENTINEL_CLOSE:
+                with contextlib.suppress(asyncio.QueueFull):
+                    state.queue.put_nowait(item)
+                continue
+            if isinstance(item, EventFrame):
+                if item.id in replayed_ids:
+                    continue
+                if (
+                    item.tenant_id == sub.tenant_id
+                    and item.sequence_num <= max_replayed_sequence
+                ):
+                    continue
+                self._enqueue(state, item)
+                continue
+            with contextlib.suppress(asyncio.QueueFull):
+                state.queue.put_nowait(item)
         return pushed
 
     # ------------------------------------------------------------------

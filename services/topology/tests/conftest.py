@@ -10,6 +10,7 @@ hermetic boundary.
 from __future__ import annotations
 
 import os
+import pathlib
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -18,6 +19,8 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -31,6 +34,10 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     if not dsn:
         pytest.skip("DATABASE_URL not set; skipping integration test.")
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    async with pool.acquire() as conn:
+        from lib.shared.migrations import apply_migrations_dir
+
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:

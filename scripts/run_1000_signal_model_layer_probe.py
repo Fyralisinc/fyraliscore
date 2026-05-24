@@ -1,0 +1,1830 @@
+#!/usr/bin/env python3
+"""Generate and run a 1000-signal single-company model-layer probe.
+
+This script is intentionally outside pytest: the goal is a durable scale
+artifact that can be inspected later, not an ephemeral fixture rollback.
+
+Default behavior:
+  * create one synthetic tenant/company foundation,
+  * inject 1000 diverse signals through production ingestion,
+  * enqueue a configurable number of T1 triggers for Think,
+  * run the live Think worker until drain or timeout,
+  * export model-layer shape reports to tests/real_llm/reports/runs/.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import time
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+os.environ.setdefault("COMPANY_OS_ENV", "test")
+if os.environ.get("DEEPSEEK_API_KEY"):
+    os.environ["LLM_PROVIDER"] = "deepseek"
+    os.environ["LLM_MODEL"] = os.environ.get("REAL_LLM_MODEL", "deepseek-chat")
+
+import asyncpg
+
+from lib.embeddings.ollama import OllamaClient, OllamaConfig
+from lib.llm.provider import LLMConfig, LLMConfigError, build_provider, set_response_cache
+from lib.shared.ids import uuid7
+from lib.shared.migrations import apply_migrations_dir
+from services.actors.repo import ActorRepo
+from services.entity_aliases.repo import EntityAliasRepo
+from services.gateway.db_bootstrap import _register_codecs
+from services.synthetic.core import SyntheticSignal, inject
+from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
+from tests.real_llm.infrastructure.response_cache import LLMResponseCache
+from tests.real_llm.infrastructure.scenario_loader import (
+    Scenario,
+    _resolve_actor_ref,
+    materialize,
+)
+
+
+SCENARIO_ID = "mega_single_company_1000"
+COMPANY_NAME = "AsterGrid Systems"
+
+
+CUSTOMER_ALIASES: dict[str, list[str]] = {
+    "Atlas Retail Group": ["ARG", "Atlas Retail", "Atlas"],
+    "Borealis Bank": ["BBK", "Borealis"],
+    "Cobalt Health Network": ["CHN", "Cobalt Health"],
+    "DeltaFleet Logistics": ["DFL", "DeltaFleet"],
+    "Evergreen Energy": ["EGE", "Evergreen"],
+    "FoundryWorks Manufacturing": ["FWM", "FoundryWorks"],
+    "Granite Insurance": ["GIC", "Granite"],
+    "HarborRail Transit": ["HRT", "HarborRail"],
+    "IonPay": ["Ion", "IPay"],
+    "Jupiter Foods": ["JFO", "Jupiter"],
+    "Keystone Robotics": ["KRB", "Keystone"],
+    "Lumina Telecom": ["LTC", "Lumina"],
+    "Meridian Public Sector": ["MPS", "Meridian"],
+    "Northstar Labs": ["NSL", "Northstar"],
+}
+
+CUSTOMERS = list(CUSTOMER_ALIASES)
+
+ACTORS: list[dict[str, Any]] = [
+    {
+        "name": "Maya Chen",
+        "role": "CEO",
+        "email": "maya@astergrid.example",
+        "slack": "slack:maya",
+        "email_alias": "email:maya@astergrid.example",
+        "nexus_attested": True,
+    },
+    {
+        "name": "Jon Bell",
+        "role": "CTO",
+        "email": "jon@astergrid.example",
+        "slack": "slack:jon",
+        "github": "github:jbell",
+        "email_alias": "email:jon@astergrid.example",
+        "nexus_attested": True,
+    },
+    {
+        "name": "Priya Rao",
+        "role": "VP Product",
+        "email": "priya@astergrid.example",
+        "slack": "slack:priya",
+        "linear": "linear:priya",
+        "email_alias": "email:priya@astergrid.example",
+    },
+    {
+        "name": "Elena Voss",
+        "role": "VP Customer Success",
+        "email": "elena@astergrid.example",
+        "slack": "slack:elena",
+        "email_alias": "email:elena@astergrid.example",
+    },
+    {
+        "name": "Marcus Li",
+        "role": "CRO",
+        "email": "marcus@astergrid.example",
+        "slack": "slack:marcus",
+        "email_alias": "email:marcus@astergrid.example",
+    },
+    {
+        "name": "Rina Patel",
+        "role": "SRE Lead",
+        "email": "rina@astergrid.example",
+        "slack": "slack:rina",
+        "github": "github:rina-p",
+        "email_alias": "email:rina@astergrid.example",
+    },
+    {
+        "name": "Diego Alvarez",
+        "role": "Security Lead",
+        "email": "diego@astergrid.example",
+        "slack": "slack:diego",
+        "github": "github:dalvarez",
+        "email_alias": "email:diego@astergrid.example",
+    },
+    {
+        "name": "Nadia Brooks",
+        "role": "Data Platform Lead",
+        "email": "nadia@astergrid.example",
+        "slack": "slack:nadia",
+        "github": "github:nbrooks",
+        "email_alias": "email:nadia@astergrid.example",
+    },
+    {
+        "name": "Theo Martin",
+        "role": "Support Director",
+        "email": "theo@astergrid.example",
+        "slack": "slack:theo",
+        "email_alias": "email:theo@astergrid.example",
+    },
+    {
+        "name": "Olivia Grant",
+        "role": "Finance Lead",
+        "email": "olivia@astergrid.example",
+        "slack": "slack:olivia",
+        "email_alias": "email:olivia@astergrid.example",
+    },
+    {
+        "name": "Samir Haddad",
+        "role": "Legal Counsel",
+        "email": "samir@astergrid.example",
+        "slack": "slack:samir",
+        "email_alias": "email:samir@astergrid.example",
+    },
+    {
+        "name": "Talia Morgan",
+        "role": "Solutions Architect",
+        "email": "talia@astergrid.example",
+        "slack": "slack:talia",
+        "email_alias": "email:talia@astergrid.example",
+    },
+    {
+        "name": "Iris Wu",
+        "role": "Account Executive",
+        "email": "iris@astergrid.example",
+        "slack": "slack:iris",
+        "email_alias": "email:iris@astergrid.example",
+    },
+    {
+        "name": "Noah Stone",
+        "role": "Engineering Manager",
+        "email": "noah@astergrid.example",
+        "slack": "slack:noah",
+        "github": "github:nstone",
+        "linear": "linear:noah",
+        "email_alias": "email:noah@astergrid.example",
+    },
+    {
+        "name": "Ava Sinclair",
+        "role": "Marketing Lead",
+        "email": "ava@astergrid.example",
+        "slack": "slack:ava",
+        "email_alias": "email:ava@astergrid.example",
+    },
+    {
+        "name": "Owen Park",
+        "role": "Implementation Lead",
+        "email": "owen@astergrid.example",
+        "slack": "slack:owen",
+        "email_alias": "email:owen@astergrid.example",
+    },
+    {
+        "name": "Lena Ortiz",
+        "role": "RevOps Lead",
+        "email": "lena@astergrid.example",
+        "slack": "slack:lena",
+        "email_alias": "email:lena@astergrid.example",
+    },
+    {
+        "name": "Ben Foster",
+        "role": "QA Lead",
+        "email": "ben@astergrid.example",
+        "slack": "slack:ben",
+        "github": "github:bfoster",
+        "email_alias": "email:ben@astergrid.example",
+    },
+    {
+        "name": "Hana Kim",
+        "role": "Customer Success Manager",
+        "email": "hana@astergrid.example",
+        "slack": "slack:hana",
+        "email_alias": "email:hana@astergrid.example",
+    },
+    {
+        "name": "External Atlas Sponsor",
+        "role": "Customer sponsor",
+        "email": "sponsor@atlas.example",
+        "email_alias": "email:sponsor@atlas.example",
+    },
+]
+
+
+GOALS: list[dict[str, Any]] = [
+    {
+        "title": "Protect enterprise renewal base",
+        "altitude": "strategic",
+        "description": "Keep mission-critical customers healthy through renewal season.",
+        "success_criteria": {"at_risk_arr_under_usd": 2_000_000},
+        "target_days_from_start": 90,
+    },
+    {
+        "title": "Make retrieval-grade memory reliable",
+        "altitude": "strategic",
+        "description": "Improve the signal-to-model path so hidden connections are surfaced.",
+        "success_criteria": {"manual_research_hours_saved": 120},
+        "target_days_from_start": 75,
+    },
+    {
+        "title": "Ship regulated enterprise controls",
+        "altitude": "strategic",
+        "description": "Deliver audit, SAML, residency, and permission controls.",
+        "success_criteria": {"tier1_blockers": 0},
+        "target_days_from_start": 60,
+    },
+    {
+        "title": "Reduce incident-driven churn",
+        "altitude": "operational",
+        "parent": "Protect enterprise renewal base",
+        "description": "Cut repeat-severity incidents and postmortem leakage.",
+        "success_criteria": {"repeat_p1_incidents": 0},
+        "target_days_from_start": 45,
+    },
+    {
+        "title": "Stabilize data freshness",
+        "altitude": "operational",
+        "parent": "Make retrieval-grade memory reliable",
+        "description": "Make connectors, embeddings, and state-change propagation predictable.",
+        "success_criteria": {"freshness_slo_minutes": 15},
+        "target_days_from_start": 30,
+    },
+    {
+        "title": "Improve expansion forecasting",
+        "altitude": "operational",
+        "parent": "Protect enterprise renewal base",
+        "description": "Separate genuine expansion intent from noisy account chatter.",
+        "success_criteria": {"forecast_slippage_percent": 15},
+        "target_days_from_start": 80,
+    },
+    {
+        "title": "Tighten support escalation loops",
+        "altitude": "operational",
+        "parent": "Reduce incident-driven churn",
+        "description": "Close customer escalations with traceable owner and date.",
+        "success_criteria": {"unowned_escalations": 0},
+        "target_days_from_start": 25,
+    },
+    {
+        "title": "Harden security review posture",
+        "altitude": "operational",
+        "parent": "Ship regulated enterprise controls",
+        "description": "Make security evidence accessible before procurement asks.",
+        "success_criteria": {"security_review_days": 5},
+        "target_days_from_start": 50,
+    },
+    {
+        "title": "Constrain bespoke commitments",
+        "altitude": "operational",
+        "description": "Avoid one-off work that weakens roadmap leverage.",
+        "success_criteria": {"bespoke_work_percent": 20},
+        "target_days_from_start": 65,
+    },
+    {
+        "title": "Improve implementation throughput",
+        "altitude": "operational",
+        "description": "Move new customers from kickoff to useful usage faster.",
+        "success_criteria": {"median_go_live_days": 21},
+        "target_days_from_start": 70,
+    },
+]
+
+
+COMMITMENTS: list[dict[str, Any]] = [
+    {
+        "title": "Deliver audit export v2",
+        "owner": "Priya Rao",
+        "state": "active",
+        "due_days_from_start": 21,
+        "priority": 1,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Ship SAML group mapping",
+        "owner": "Diego Alvarez",
+        "state": "active",
+        "due_days_from_start": 18,
+        "priority": 1,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Launch data residency controls",
+        "owner": "Nadia Brooks",
+        "state": "active",
+        "due_days_from_start": 35,
+        "priority": 1,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Stabilize streaming connector lag",
+        "owner": "Rina Patel",
+        "state": "active",
+        "due_days_from_start": 14,
+        "priority": 1,
+        "contributes_to_goal": ["Stabilize data freshness"],
+    },
+    {
+        "title": "Resolve Atlas Retail Group renewal blockers",
+        "owner": "Elena Voss",
+        "state": "active",
+        "due_days_from_start": 30,
+        "priority": 1,
+        "contributes_to_goal": ["Protect enterprise renewal base"],
+    },
+    {
+        "title": "Recover Borealis Bank executive confidence",
+        "owner": "Maya Chen",
+        "state": "active",
+        "due_days_from_start": 25,
+        "priority": 1,
+        "contributes_to_goal": ["Protect enterprise renewal base"],
+    },
+    {
+        "title": "Close Cobalt Health Network security packet",
+        "owner": "Diego Alvarez",
+        "state": "active",
+        "due_days_from_start": 17,
+        "priority": 2,
+        "contributes_to_goal": ["Harden security review posture"],
+    },
+    {
+        "title": "Unblock DeltaFleet Logistics implementation",
+        "owner": "Owen Park",
+        "state": "active",
+        "due_days_from_start": 20,
+        "priority": 2,
+        "contributes_to_goal": ["Improve implementation throughput"],
+    },
+    {
+        "title": "Prepare Evergreen Energy data residency review",
+        "owner": "Samir Haddad",
+        "state": "active",
+        "due_days_from_start": 29,
+        "priority": 2,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Repair FoundryWorks Manufacturing connector reliability",
+        "owner": "Rina Patel",
+        "state": "active",
+        "due_days_from_start": 16,
+        "priority": 1,
+        "contributes_to_goal": ["Reduce incident-driven churn"],
+    },
+    {
+        "title": "Rebuild Granite Insurance champion map",
+        "owner": "Hana Kim",
+        "state": "active",
+        "due_days_from_start": 22,
+        "priority": 3,
+        "contributes_to_goal": ["Improve expansion forecasting"],
+    },
+    {
+        "title": "Finish HarborRail Transit procurement evidence",
+        "owner": "Samir Haddad",
+        "state": "active",
+        "due_days_from_start": 28,
+        "priority": 2,
+        "contributes_to_goal": ["Harden security review posture"],
+    },
+    {
+        "title": "Validate IonPay latency remediation",
+        "owner": "Ben Foster",
+        "state": "active",
+        "due_days_from_start": 12,
+        "priority": 2,
+        "contributes_to_goal": ["Reduce incident-driven churn"],
+    },
+    {
+        "title": "Scope Jupiter Foods expansion forecast",
+        "owner": "Marcus Li",
+        "state": "active",
+        "due_days_from_start": 33,
+        "priority": 3,
+        "contributes_to_goal": ["Improve expansion forecasting"],
+    },
+    {
+        "title": "Contain Keystone Robotics custom workflow request",
+        "owner": "Priya Rao",
+        "state": "active",
+        "due_days_from_start": 26,
+        "priority": 3,
+        "contributes_to_goal": ["Constrain bespoke commitments"],
+    },
+    {
+        "title": "Close Lumina Telecom audit exception",
+        "owner": "Diego Alvarez",
+        "state": "active",
+        "due_days_from_start": 19,
+        "priority": 2,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Prepare Meridian Public Sector launch plan",
+        "owner": "Owen Park",
+        "state": "active",
+        "due_days_from_start": 32,
+        "priority": 2,
+        "contributes_to_goal": ["Improve implementation throughput"],
+    },
+    {
+        "title": "Reprice Northstar Labs expansion package",
+        "owner": "Olivia Grant",
+        "state": "active",
+        "due_days_from_start": 40,
+        "priority": 4,
+        "contributes_to_goal": ["Improve expansion forecasting"],
+    },
+    {
+        "title": "Implement model graph edge quality telemetry",
+        "owner": "Nadia Brooks",
+        "state": "active",
+        "due_days_from_start": 27,
+        "priority": 1,
+        "contributes_to_goal": ["Make retrieval-grade memory reliable"],
+    },
+    {
+        "title": "Deploy stale replay guardrails",
+        "owner": "Jon Bell",
+        "state": "active",
+        "due_days_from_start": 23,
+        "priority": 2,
+        "contributes_to_goal": ["Make retrieval-grade memory reliable"],
+    },
+    {
+        "title": "Create executive risk digest",
+        "owner": "Maya Chen",
+        "state": "proposed",
+        "due_days_from_start": 15,
+        "priority": 3,
+        "contributes_to_goal": ["Protect enterprise renewal base"],
+    },
+    {
+        "title": "Refactor Salesforce duplicate account merge",
+        "owner": "Lena Ortiz",
+        "state": "active",
+        "due_days_from_start": 24,
+        "priority": 3,
+        "contributes_to_goal": ["Improve expansion forecasting"],
+    },
+    {
+        "title": "Publish SOC2 evidence room",
+        "owner": "Diego Alvarez",
+        "state": "active",
+        "due_days_from_start": 10,
+        "priority": 1,
+        "contributes_to_goal": ["Harden security review posture"],
+    },
+    {
+        "title": "Rewrite onboarding health playbook",
+        "owner": "Elena Voss",
+        "state": "active",
+        "due_days_from_start": 38,
+        "priority": 4,
+        "contributes_to_goal": ["Improve implementation throughput"],
+    },
+    {
+        "title": "Add permission audit trail to admin console",
+        "owner": "Noah Stone",
+        "state": "active",
+        "due_days_from_start": 34,
+        "priority": 2,
+        "contributes_to_goal": ["Ship regulated enterprise controls"],
+    },
+    {
+        "title": "Backfill contract metadata from billing",
+        "owner": "Olivia Grant",
+        "state": "active",
+        "due_days_from_start": 36,
+        "priority": 4,
+        "contributes_to_goal": ["Make retrieval-grade memory reliable"],
+    },
+    {
+        "title": "Clarify support severity language",
+        "owner": "Theo Martin",
+        "state": "active",
+        "due_days_from_start": 13,
+        "priority": 3,
+        "contributes_to_goal": ["Tighten support escalation loops"],
+    },
+    {
+        "title": "Build customer-visible incident timeline",
+        "owner": "Rina Patel",
+        "state": "active",
+        "due_days_from_start": 31,
+        "priority": 2,
+        "contributes_to_goal": ["Reduce incident-driven churn"],
+    },
+]
+
+
+DECISIONS: list[dict[str, Any]] = [
+    {
+        "title": "Enterprise controls remain the top renewal lever",
+        "state": "active",
+        "decision_text": "Prioritize audit export, SAML mapping, data residency, and permission audit work before exploratory AI UX work.",
+        "rationale": "Renewal and procurement evidence repeatedly dominate expansion and churn risk.",
+        "revisit_triggers": {"if_at_risk_arr_under_usd": 1_000_000},
+    },
+    {
+        "title": "Do not accept unpriced bespoke workflow work",
+        "state": "active",
+        "decision_text": "Custom workflow requests need explicit ARR upside or reusable platform leverage.",
+        "rationale": "Bespoke commitments have been hiding behind renewal pressure.",
+    },
+    {
+        "title": "Use customer-facing timelines for repeat incidents",
+        "state": "active",
+        "decision_text": "Every repeat P1 or P2 incident gets a customer-visible timeline and owner.",
+        "rationale": "Incident opacity is a stronger churn driver than the incident itself.",
+    },
+    {
+        "title": "Treat data freshness as product quality",
+        "state": "active",
+        "decision_text": "Connector lag over the SLO is product risk, not internal ops noise.",
+        "rationale": "Delayed memory creates false confidence in customer-facing workflows.",
+    },
+    {
+        "title": "Escalate ambiguous aliases before graph mutation",
+        "state": "active",
+        "decision_text": "Ambiguous customer aliases should be resolved before strong model graph edges are written.",
+        "rationale": "A wrong alias creates high-confidence retrieval pollution.",
+    },
+    {
+        "title": "Prefer factual executive digest over narrative summary",
+        "state": "drafted",
+        "decision_text": "The executive digest should show linked evidence and deltas, not prose alone.",
+        "rationale": "Leaders need inspectable connections under pressure.",
+    },
+    {
+        "title": "Revenue-at-risk beats activity volume",
+        "state": "active",
+        "decision_text": "Prioritize escalations by ARR and commitment criticality, not message volume.",
+        "rationale": "Noisy small accounts should not drown quiet strategic risk.",
+    },
+    {
+        "title": "Bridge views should expose contested memory",
+        "state": "drafted",
+        "decision_text": "Customer and model pages should show contradiction and contestability, not hide it.",
+        "rationale": "False cleanliness makes the system feel premium but less useful.",
+    },
+    {
+        "title": "Forecast confidence requires evidence diversity",
+        "state": "active",
+        "decision_text": "Expansion forecasts need customer source, internal source, and product usage evidence.",
+        "rationale": "Single-source enthusiasm has produced false positives.",
+    },
+    {
+        "title": "Keep model graph edges first-class",
+        "state": "active",
+        "decision_text": "Hidden non-obvious connections should be represented as model_edges, not buried in model text.",
+        "rationale": "Retrieval needs traversable structure, not just better summaries.",
+    },
+]
+
+
+FAMILIES = [
+    "customer_escalation",
+    "incident",
+    "support_ticket",
+    "sales_pipeline",
+    "security_review",
+    "legal_procurement",
+    "product_roadmap",
+    "engineering_pr",
+    "calendar_meeting",
+    "finance_billing",
+    "usage_telemetry",
+    "implementation",
+    "exec_decision",
+    "alias_ambiguity",
+    "contradiction",
+    "stale_replay",
+    "market_competitor",
+    "forecast_update",
+    "risk_digest",
+    "noise",
+]
+
+
+CHANNEL_BY_FAMILY = {
+    "customer_escalation": "slack:mega-customer-escalations",
+    "incident": "pagerduty:mega-incidents",
+    "support_ticket": "support:zendesk-mega",
+    "sales_pipeline": "salesforce:mega-accounts",
+    "security_review": "email:mega-security",
+    "legal_procurement": "email:mega-legal",
+    "product_roadmap": "linear:mega-roadmap",
+    "engineering_pr": "github:astergrid/core",
+    "calendar_meeting": "calendar:mega-exec",
+    "finance_billing": "email:mega-finance",
+    "usage_telemetry": "datadog:mega-product-usage",
+    "implementation": "slack:mega-implementation",
+    "exec_decision": "slack:mega-exec",
+    "alias_ambiguity": "slack:mega-aliases",
+    "contradiction": "slack:mega-contradictions",
+    "stale_replay": "email:mega-replays",
+    "market_competitor": "email:mega-market",
+    "forecast_update": "salesforce:mega-forecast",
+    "risk_digest": "slack:mega-risk",
+    "noise": "slack:mega-general",
+}
+
+
+ACTOR_BY_FAMILY = {
+    "customer_escalation": "Elena Voss",
+    "incident": "Rina Patel",
+    "support_ticket": "Theo Martin",
+    "sales_pipeline": "Marcus Li",
+    "security_review": "Diego Alvarez",
+    "legal_procurement": "Samir Haddad",
+    "product_roadmap": "Priya Rao",
+    "engineering_pr": "Noah Stone",
+    "calendar_meeting": "Maya Chen",
+    "finance_billing": "Olivia Grant",
+    "usage_telemetry": "Nadia Brooks",
+    "implementation": "Owen Park",
+    "exec_decision": "Maya Chen",
+    "alias_ambiguity": "Lena Ortiz",
+    "contradiction": "Jon Bell",
+    "stale_replay": "Ben Foster",
+    "market_competitor": "Ava Sinclair",
+    "forecast_update": "Iris Wu",
+    "risk_digest": "Hana Kim",
+    "noise": "Ava Sinclair",
+}
+
+
+TRUST_BY_FAMILY = {
+    "customer_escalation": "authoritative_external",
+    "incident": "authoritative",
+    "support_ticket": "authoritative_external",
+    "sales_pipeline": "authoritative",
+    "security_review": "authoritative",
+    "legal_procurement": "authoritative",
+    "product_roadmap": "authoritative",
+    "engineering_pr": "authoritative",
+    "calendar_meeting": "authoritative",
+    "finance_billing": "authoritative",
+    "usage_telemetry": "authoritative",
+    "implementation": "inferential",
+    "exec_decision": "authoritative",
+    "alias_ambiguity": "inferential",
+    "contradiction": "inferential",
+    "stale_replay": "inferential",
+    "market_competitor": "inferential",
+    "forecast_update": "authoritative",
+    "risk_digest": "inferential",
+    "noise": "inferential",
+}
+
+
+def build_scenario(signal_count: int, *, namespace: str) -> Scenario:
+    foundation = {
+        "actors": _namespaced_actors(namespace),
+        "customers": _build_customers(),
+        "goals": GOALS,
+        "commitments": COMMITMENTS,
+        "decisions": DECISIONS,
+        "customer_commitments": _build_customer_commitments(),
+    }
+    signal_sequences = _build_signal_sequences(signal_count)
+    return Scenario(
+        scenario_id=SCENARIO_ID,
+        name=f"{COMPANY_NAME} mega signal probe",
+        description=(
+            "One-company corpus for stress-testing ingestion, retrieval, "
+            "Think, and model graph shape under production-like chaos."
+        ),
+        foundation=foundation,
+        signal_sequences=signal_sequences,
+        expected_behaviors=[
+            "All generated signals inject through production ingestion.",
+            "Think creates scoped models instead of unscoped global memory.",
+            "Customer, commitment, incident, and decision evidence remains connected.",
+            "Noisy and stale signals do not dominate active model creation.",
+        ],
+        raw={"generated": True, "signal_count": signal_count},
+    )
+
+
+def _namespaced_actors(namespace: str) -> list[dict[str, Any]]:
+    slug = "".join(ch if ch.isalnum() else "-" for ch in namespace.lower()).strip("-")
+    slug = slug[:48] or "mega"
+    actors: list[dict[str, Any]] = []
+    for actor in ACTORS:
+        copy = dict(actor)
+        email = copy.get("email")
+        if isinstance(email, str) and "@" in email:
+            local, domain = email.split("@", 1)
+            copy["email"] = f"{local}+{slug}@{domain}"
+        for field_name in ("slack", "github", "email_alias", "linear"):
+            value = copy.get(field_name)
+            if not isinstance(value, str) or ":" not in value:
+                continue
+            channel, ref = value.split(":", 1)
+            copy[field_name] = f"{channel}:{slug}-{ref}"
+        actors.append(copy)
+    return actors
+
+
+def _build_customers() -> list[dict[str, Any]]:
+    health_cycle = [
+        "healthy",
+        "at_risk",
+        "watch",
+        "healthy",
+        "watch",
+        "at_risk",
+        "healthy",
+    ]
+    base_arr = [
+        1_850_000,
+        2_600_000,
+        1_400_000,
+        920_000,
+        1_100_000,
+        760_000,
+        1_300_000,
+        880_000,
+        690_000,
+        540_000,
+        1_050_000,
+        2_200_000,
+        1_720_000,
+        430_000,
+    ]
+    return [
+        {
+            "name": customer,
+            "description": f"{customer} is an enterprise customer of {COMPANY_NAME}.",
+            "arr_usd": base_arr[i],
+            "health": health_cycle[i % len(health_cycle)],
+            "contract_start_days_ago": 30 + i * 18,
+        }
+        for i, customer in enumerate(CUSTOMERS)
+    ]
+
+
+def _build_customer_commitments() -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    customer_specific = [
+        ("Atlas Retail Group", "Resolve Atlas Retail Group renewal blockers"),
+        ("Borealis Bank", "Recover Borealis Bank executive confidence"),
+        ("Cobalt Health Network", "Close Cobalt Health Network security packet"),
+        ("DeltaFleet Logistics", "Unblock DeltaFleet Logistics implementation"),
+        ("Evergreen Energy", "Prepare Evergreen Energy data residency review"),
+        (
+            "FoundryWorks Manufacturing",
+            "Repair FoundryWorks Manufacturing connector reliability",
+        ),
+        ("Granite Insurance", "Rebuild Granite Insurance champion map"),
+        ("HarborRail Transit", "Finish HarborRail Transit procurement evidence"),
+        ("IonPay", "Validate IonPay latency remediation"),
+        ("Jupiter Foods", "Scope Jupiter Foods expansion forecast"),
+        (
+            "Keystone Robotics",
+            "Contain Keystone Robotics custom workflow request",
+        ),
+        ("Lumina Telecom", "Close Lumina Telecom audit exception"),
+        ("Meridian Public Sector", "Prepare Meridian Public Sector launch plan"),
+        ("Northstar Labs", "Reprice Northstar Labs expansion package"),
+    ]
+    shared = [
+        "Deliver audit export v2",
+        "Ship SAML group mapping",
+        "Launch data residency controls",
+        "Stabilize streaming connector lag",
+        "Publish SOC2 evidence room",
+    ]
+    for i, (customer, commitment) in enumerate(customer_specific):
+        links.append(
+            {
+                "customer": customer,
+                "commitment": commitment,
+                "criticality": "must_have" if i < 4 else "high",
+                "revenue_at_risk_usd": 300_000 + i * 55_000,
+            }
+        )
+        shared_commitment = shared[i % len(shared)]
+        links.append(
+            {
+                "customer": customer,
+                "commitment": shared_commitment,
+                "criticality": "high" if i % 3 == 0 else "medium",
+                "revenue_at_risk_usd": 120_000 + i * 30_000,
+            }
+        )
+    return links
+
+
+def _build_signal_sequences(signal_count: int) -> dict[str, list[dict[str, Any]]]:
+    sequences: dict[str, list[dict[str, Any]]] = {}
+    for index in range(signal_count):
+        window = index // 50
+        seq_name = f"window_{window + 1:02d}_mixed_operations"
+        sequences.setdefault(seq_name, []).append(_make_signal(index, window))
+    return sequences
+
+
+def _make_signal(index: int, window: int) -> dict[str, Any]:
+    family = FAMILIES[index % len(FAMILIES)]
+    customer = CUSTOMERS[(index * 7 + window) % len(CUSTOMERS)]
+    secondary = CUSTOMERS[(index * 11 + 3) % len(CUSTOMERS)]
+    alias = CUSTOMER_ALIASES[customer][index % len(CUSTOMER_ALIASES[customer])]
+    commitment = _commitment_for_customer(customer, index)
+    related_goal = GOALS[index % len(GOALS)]["title"]
+    decision = DECISIONS[index % len(DECISIONS)]["title"]
+    severity = ["P0", "P1", "P2", "P3"][index % 4]
+    arr = 250_000 + (index % 13) * 75_000
+    week = 1 + index // 140
+    actor = ACTOR_BY_FAMILY[family]
+    channel = CHANNEL_BY_FAMILY[family]
+    trust = TRUST_BY_FAMILY[family]
+    delay = float(index * 6 + (index % 3))
+    text = _signal_text(
+        index=index,
+        family=family,
+        customer=customer,
+        secondary=secondary,
+        alias=alias,
+        commitment=commitment,
+        goal=related_goal,
+        decision=decision,
+        severity=severity,
+        arr=arr,
+        week=week,
+    )
+    content_dict = {
+        "text": text,
+        "company": COMPANY_NAME,
+        "family": family,
+        "signal_index": index,
+        "week": week,
+        "customer_name": customer,
+        "customer_alias": alias,
+        "secondary_customer_name": secondary,
+        "commitment_title": commitment,
+        "goal_title": related_goal,
+        "decision_title": decision,
+        "severity": severity,
+        "arr_usd": arr,
+        "entity_names": {
+            "customers": [customer, secondary] if index % 9 == 0 else [customer],
+            "commitments": [commitment],
+            "goals": [related_goal],
+            "decisions": [decision],
+        },
+    }
+    signal: dict[str, Any] = {
+        "channel": channel,
+        "actor": actor,
+        "delay_minutes": delay,
+        "content": text,
+        "content_dict": content_dict,
+        "trust_tier": trust,
+        "external_id": f"{SCENARIO_ID}:{index:04d}",
+    }
+    index_in_sequence = index % 50
+    if index_in_sequence > 0 and index % 17 == 0:
+        signal["thread_of"] = index_in_sequence - 1
+    return signal
+
+
+def _commitment_for_customer(customer: str, index: int) -> str:
+    for commitment in COMMITMENTS:
+        title = commitment["title"]
+        if customer in title:
+            return title
+    return COMMITMENTS[index % len(COMMITMENTS)]["title"]
+
+
+def _signal_text(
+    *,
+    index: int,
+    family: str,
+    customer: str,
+    secondary: str,
+    alias: str,
+    commitment: str,
+    goal: str,
+    decision: str,
+    severity: str,
+    arr: int,
+    week: int,
+) -> str:
+    base = (
+        f"[{COMPANY_NAME} signal {index:04d} week {week}] "
+        f"{customer} ({alias}) relates to {commitment}. "
+    )
+    tails = {
+        "customer_escalation": (
+            f"External sponsor says {severity} renewal confidence is dropping; "
+            f"blocked evidence now puts roughly ${arr:,} ARR at risk. "
+            f"They referenced {decision} and asked for a named owner today."
+        ),
+        "incident": (
+            f"{severity} incident repeats in the ingestion freshness path. "
+            f"{customer} saw delayed dashboard state, while {secondary} is a possible "
+            "adjacent blast-radius account. Postmortem needs a falsifier for repeat risk."
+        ),
+        "support_ticket": (
+            f"Ticket says {alias} hit a permission edge case after SAML setup. "
+            "Support cannot tell whether this is onboarding confusion or a product gap."
+        ),
+        "sales_pipeline": (
+            f"Salesforce changed {customer} renewal stage and expansion amount by ${arr:,}. "
+            f"The champion is warm but procurement cites {goal} as the hard blocker."
+        ),
+        "security_review": (
+            f"Security review asks for SOC2, audit export, SAML mapping, and data residency "
+            f"evidence before {alias} will approve the renewal packet."
+        ),
+        "legal_procurement": (
+            f"Procurement redline from {customer}: liability cap and data processing terms "
+            "are acceptable only if the audit trail is customer-visible."
+        ),
+        "product_roadmap": (
+            f"Roadmap comment says {commitment} is reusable for {customer}, but a bespoke "
+            f"variant requested by {alias} may conflict with {decision}."
+        ),
+        "engineering_pr": (
+            f"GitHub PR links connector lag remediation to {customer}; tests mention stale "
+            "replay guardrails, graph edge telemetry, and customer-visible incident timelines."
+        ),
+        "calendar_meeting": (
+            f"Exec meeting notes: {customer} renewal review, {secondary} adjacent risk, "
+            f"and decision '{decision}' need one consolidated model trail."
+        ),
+        "finance_billing": (
+            f"Billing note: {customer} has an invoice dispute and asks whether the "
+            f"${arr:,} credit should be tied to the {commitment} remediation."
+        ),
+        "usage_telemetry": (
+            f"Telemetry shows {customer} active seats changed {3 + index % 17}% while "
+            "workflow completion dropped; this may contradict sales confidence."
+        ),
+        "implementation": (
+            f"Implementation status for {customer}: integration owner changed, kickoff "
+            "dependency slipped, and onboarding health should be downgraded unless evidence improves."
+        ),
+        "exec_decision": (
+            f"Leadership says {decision} still stands for {customer}; exceptions require "
+            "clear reusable leverage and explicit revenue-at-risk."
+        ),
+        "alias_ambiguity": (
+            f"Ambiguous mention: '{alias}' could refer to {customer}, but a note also mentions "
+            f"{secondary}. Resolve before creating a strong customer edge."
+        ),
+        "contradiction": (
+            f"Contradiction: customer success marks {customer} at risk, while sales marks "
+            f"{alias} as expansion-qualified. Need evidence diversity before forecast confidence rises."
+        ),
+        "stale_replay": (
+            f"Stale replay detected for {customer}: an old connector alert repeats after "
+            "remediation. Treat as low-confidence unless confirmed by fresh telemetry."
+        ),
+        "market_competitor": (
+            f"Competitor displacement note: {customer} compared AsterGrid to a vendor with "
+            "faster audit evidence but weaker workflow memory."
+        ),
+        "forecast_update": (
+            f"Forecast update: {customer} moved renewal probability by {index % 23 + 5} points; "
+            f"expansion depends on closing {commitment}."
+        ),
+        "risk_digest": (
+            f"Risk digest ties {customer}, {secondary}, {goal}, and {commitment}; "
+            "the non-obvious connection is that procurement anxiety and incident opacity are merging."
+        ),
+        "noise": (
+            f"General chatter mentions {alias} in passing with lunch logistics and no actionable "
+            "customer evidence. This should not dominate model creation."
+        ),
+    }
+    return base + tails[family]
+
+
+def _resolve_entities_hint(scenario: Scenario, signal_def: dict[str, Any]) -> list[dict[str, str]]:
+    entity_names = dict((signal_def.get("content_dict") or {}).get("entity_names") or {})
+    hints: list[dict[str, str]] = []
+    for name in entity_names.get("customers") or []:
+        if name in scenario.customers:
+            hints.append({"type": "customer", "id": str(scenario.customer_id(name))})
+    for title in entity_names.get("commitments") or []:
+        if title in scenario.commitments:
+            hints.append({"type": "commitment", "id": str(scenario.commitment_id(title))})
+    for title in entity_names.get("goals") or []:
+        if title in scenario.goals:
+            hints.append({"type": "goal", "id": str(scenario.goal_id(title))})
+    for title in entity_names.get("decisions") or []:
+        if title in scenario.decisions:
+            hints.append({"type": "decision", "id": str(scenario.decision_id(title))})
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, str]] = []
+    for hint in hints:
+        key = (hint["type"], hint["id"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(hint)
+    return deduped
+
+
+async def _insert_extra_aliases(scenario: Scenario, alias_repo: EntityAliasRepo) -> None:
+    assert scenario.tenant_id is not None
+    for customer, aliases in CUSTOMER_ALIASES.items():
+        ref = {"type": "customer", "id": str(scenario.customer_id(customer))}
+        for alias in aliases:
+            await alias_repo.insert_alias(
+                phrase=alias,
+                resolved_entity_ref=ref,
+                source="manual",
+                confidence=0.92,
+                tenant_id=scenario.tenant_id,
+                extra_metadata={"scenario_id": scenario.scenario_id},
+            )
+
+
+async def inject_generated_signals(
+    scenario: Scenario,
+    *,
+    pool: asyncpg.Pool,
+    actor_repo: ActorRepo,
+    alias_repo: EntityAliasRepo,
+    embedder: OllamaClient,
+    run_id: str,
+    progress_every: int,
+) -> list[UUID]:
+    if scenario.tenant_id is None:
+        raise RuntimeError("scenario must be materialized")
+    base = scenario.base_time or datetime.now(timezone.utc)
+    observation_ids: list[UUID] = []
+    all_signals = [
+        signal for sequence in scenario.signal_sequences.values() for signal in sequence
+    ]
+    started = time.monotonic()
+    for index, signal_def in enumerate(all_signals, start=1):
+        content_text = str(signal_def.get("content") or signal_def.get("text") or "")
+        content_dict = dict(signal_def.get("content_dict") or {})
+        content_dict.setdefault("text", content_text)
+        occurred_at = base + timedelta(minutes=float(signal_def.get("delay_minutes", 0)))
+        signal = SyntheticSignal(
+            source_channel=str(signal_def["channel"]),
+            content_text=content_text,
+            content=content_dict,
+            occurred_at=occurred_at,
+            source_actor_ref=_resolve_actor_ref(signal_def.get("actor"), scenario),
+            external_id=f"{run_id}:{signal_def.get('external_id') or index}",
+            entities_hint=_resolve_entities_hint(scenario, signal_def),
+            trust_tier=signal_def.get("trust_tier"),
+            kind=signal_def.get("kind", "signal"),
+            scenario_id=scenario.scenario_id,
+            run_id=run_id,
+        )
+        result = await inject(
+            signal,
+            scenario.tenant_id,
+            pool=pool,
+            actor_repo=actor_repo,
+            alias_repo=alias_repo,
+            embedder=embedder,
+            skip_t1_enqueue=True,
+        )
+        observation_ids.append(result.observation.id)
+        if progress_every and index % progress_every == 0:
+            elapsed = time.monotonic() - started
+            print(
+                f"injected {index}/{len(all_signals)} signals "
+                f"({elapsed:.1f}s elapsed)",
+                flush=True,
+            )
+    return observation_ids
+
+
+async def enqueue_t1_for_observations(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    observation_ids: list[UUID],
+    limit: int,
+    run_id: str,
+) -> int:
+    selected = observation_ids[:limit]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, source_channel, kind, trust_tier, occurred_at, content_text,
+                   entities_mentioned, actor_id
+            FROM observations
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+            ORDER BY occurred_at ASC, id ASC
+            """,
+            tenant_id,
+            selected,
+        )
+        for row in rows:
+            payload = {
+                "source_channel": row["source_channel"],
+                "kind": row["kind"],
+                "trust_tier": row["trust_tier"],
+                "seed_occurred_at": row["occurred_at"].isoformat(),
+                "seed_natural_text": (row["content_text"] or "")[:2000],
+                "seed_entity_ids": row["entities_mentioned"] or [],
+                "scope_actors": [str(row["actor_id"])] if row["actor_id"] else [],
+                "mega_probe": {"run_id": run_id},
+            }
+            await conn.execute(
+                """
+                INSERT INTO think_trigger_queue (
+                    id, tenant_id, trigger_kind, trigger_subkind,
+                    observation_id, model_id, payload
+                ) VALUES (
+                    $1, $2, 'T1', 'event_arrival', $3, NULL, $4::jsonb
+                )
+                """,
+                uuid7(),
+                tenant_id,
+                row["id"],
+                json.dumps(payload, default=str),
+            )
+    return len(rows)
+
+
+async def collect_model_layer_report(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    run_id: str,
+    report_dir: Path,
+    scenario: Scenario,
+    observation_ids: list[UUID],
+    think_status: str,
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    async with pool.acquire() as conn:
+        summary = {
+            "tenant_id": str(tenant_id),
+            "run_id": run_id,
+            "scenario_id": scenario.scenario_id,
+            "signal_count": len(observation_ids),
+            "think_status": think_status,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "observation_count": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM observations
+                WHERE tenant_id = $1
+                  AND content->>'run_id' = $2
+                """,
+                tenant_id,
+                run_id,
+            ),
+            "observations_with_entities": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM observations
+                WHERE tenant_id = $1
+                  AND content->>'run_id' = $2
+                  AND jsonb_typeof(entities_mentioned) = 'array'
+                  AND jsonb_array_length(entities_mentioned) > 0
+                """,
+                tenant_id,
+                run_id,
+            ),
+            "active_models": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'active'",
+                tenant_id,
+            ),
+            "archived_models": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'archived'",
+                tenant_id,
+            ),
+            "model_edges": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1",
+                tenant_id,
+            ),
+            "active_model_edges": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1 AND status = 'active'",
+                tenant_id,
+            ),
+            "state_changes": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM observations
+                WHERE tenant_id = $1
+                  AND kind = 'state_change'
+                """,
+                tenant_id,
+            ),
+            "think_runs_success": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'success'",
+                tenant_id,
+            ),
+            "think_runs_failed": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'failed'",
+                tenant_id,
+            ),
+            "pending_triggers": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND completed_at IS NULL
+                """,
+                tenant_id,
+            ),
+        }
+        summary["channel_family_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT split_part(source_channel, ':', 1) AS key, COUNT(*)::bigint AS value
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'run_id' = $2
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+            run_id,
+        )
+        summary["signal_family_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT content->>'family' AS key, COUNT(*)::bigint AS value
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'run_id' = $2
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+            run_id,
+        )
+        summary["trust_tier_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT trust_tier AS key, COUNT(*)::bigint AS value
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'run_id' = $2
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+            run_id,
+        )
+        summary["model_kind_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(proposition_kind, '<none>') AS key, COUNT(*)::bigint AS value
+            FROM models
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["model_status_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT status AS key, COUNT(*)::bigint AS value
+            FROM models
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["model_scope_entity_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(e.value->>'type', '<none>') AS key, COUNT(DISTINCT m.id)::bigint AS value
+            FROM models m
+            LEFT JOIN LATERAL jsonb_array_elements(COALESCE(m.scope_entities, '[]'::jsonb)) e(value) ON true
+            WHERE m.tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["edge_kind_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT edge_kind AS key, COUNT(*)::bigint AS value
+            FROM model_edges
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["edge_review_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT review_status AS key, COUNT(*)::bigint AS value
+            FROM model_edges
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["context_use_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(ops_applied->'context_use'->>'context_use_grade', '<none>') AS key,
+                   COUNT(*)::bigint AS value
+            FROM think_runs
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["top_customer_model_scopes"] = await _fetch_named_counts(
+            conn,
+            """
+            SELECT r.identity AS name, COUNT(DISTINCT m.id)::bigint AS value
+            FROM models m
+            JOIN LATERAL jsonb_array_elements(COALESCE(m.scope_entities, '[]'::jsonb)) e(value) ON true
+            JOIN resources r
+              ON r.tenant_id = m.tenant_id
+             AND r.id::text = e.value->>'id'
+             AND e.value->>'type' = 'customer'
+            WHERE m.tenant_id = $1
+            GROUP BY r.identity
+            ORDER BY 2 DESC, 1 ASC
+            LIMIT 20
+            """,
+            tenant_id,
+        )
+        summary["cost"] = await _fetch_cost(conn, tenant_id)
+        model_rows = await conn.fetch(
+            """
+            SELECT id, proposition_kind, status, confidence, activation,
+                   "natural", scope_entities, scope_actors,
+                   array_length(supporting_event_ids, 1) AS supporting_events,
+                   array_length(supporting_model_ids, 1) AS supporting_models,
+                   created_at
+            FROM models
+            WHERE tenant_id = $1
+            ORDER BY created_at ASC
+            """,
+            tenant_id,
+        )
+        edge_rows = await conn.fetch(
+            """
+            SELECT id, source_model_id, target_model_id, edge_kind, status,
+                   review_status, confidence, explanation, created_at
+            FROM model_edges
+            WHERE tenant_id = $1
+            ORDER BY created_at ASC
+            """,
+            tenant_id,
+        )
+
+    summary["graph_health"] = _compute_graph_health(model_rows, edge_rows)
+    _write_json(report_dir / "run_summary.json", summary)
+    _write_jsonl(report_dir / "models.jsonl", [_record_to_dict(row) for row in model_rows])
+    _write_jsonl(report_dir / "model_edges.jsonl", [_record_to_dict(row) for row in edge_rows])
+    _write_jsonl(
+        report_dir / "signal_manifest.jsonl",
+        [
+            {
+                "index": index,
+                "observation_id": str(observation_id),
+                "family": (signal.get("content_dict") or {}).get("family"),
+                "customer": (signal.get("content_dict") or {}).get("customer_name"),
+                "channel": signal["channel"],
+                "trust_tier": signal.get("trust_tier"),
+                "content": signal["content"],
+            }
+            for index, (observation_id, signal) in enumerate(
+                zip(
+                    observation_ids,
+                    [
+                        s
+                        for sequence in scenario.signal_sequences.values()
+                        for s in sequence
+                    ],
+                    strict=False,
+                )
+            )
+        ],
+    )
+    (report_dir / "model_layer_summary.md").write_text(_render_markdown(summary))
+    return summary
+
+
+async def _fetch_distribution(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> dict[str, int]:
+    rows = await conn.fetch(query, *args)
+    return {str(row["key"]): int(row["value"] or 0) for row in rows}
+
+
+async def _fetch_named_counts(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> list[dict[str, Any]]:
+    rows = await conn.fetch(query, *args)
+    return [{"name": row["name"], "count": int(row["value"] or 0)} for row in rows]
+
+
+async def _fetch_cost(conn: asyncpg.Connection, tenant_id: UUID) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """
+        SELECT COUNT(*)::bigint AS rows,
+               COALESCE(SUM(llm_calls_count), 0)::bigint AS llm_calls,
+               COALESCE(SUM(llm_input_tokens_total), 0)::bigint AS input_tokens,
+               COALESCE(SUM(llm_output_tokens_total), 0)::bigint AS output_tokens,
+               COALESCE(SUM(llm_cost_usd), 0)::numeric AS cost_usd
+        FROM think_run_costs
+        WHERE tenant_id = $1
+        """,
+        tenant_id,
+    )
+    if row is None:
+        return {}
+    data = _record_to_dict(row)
+    data["cost_usd"] = float(data.get("cost_usd") or 0)
+    return data
+
+
+def _record_to_dict(row: asyncpg.Record) -> dict[str, Any]:
+    return {key: _jsonable(row[key]) for key in row.keys()}
+
+
+def _compute_graph_health(
+    model_rows: list[asyncpg.Record],
+    edge_rows: list[asyncpg.Record],
+) -> dict[str, Any]:
+    active_model_ids = {
+        row["id"] for row in model_rows if str(row["status"]) == "active"
+    }
+    active_edges = [
+        row for row in edge_rows
+        if str(row["status"]) == "active"
+        and row["source_model_id"] in active_model_ids
+        and row["target_model_id"] in active_model_ids
+    ]
+    degree: Counter[UUID] = Counter()
+    adjacency: dict[UUID, set[UUID]] = {mid: set() for mid in active_model_ids}
+    edge_keys: Counter[tuple[UUID, UUID, str]] = Counter()
+    soft_kinds = {"co_occurs_with", "same_issue_as", "analogous_to"}
+    actionable_kinds = {
+        "blocks",
+        "causes",
+        "explains",
+        "predicts",
+        "contradicts",
+        "weakens",
+        "early_warning_for",
+        "enables",
+        "contributes_to_resolution",
+    }
+    self_edges = 0
+    orphan_edges = 0
+    for row in edge_rows:
+        source = row["source_model_id"]
+        target = row["target_model_id"]
+        kind = str(row["edge_kind"])
+        if str(row["status"]) != "active":
+            continue
+        if source == target:
+            self_edges += 1
+        if source not in active_model_ids or target not in active_model_ids:
+            orphan_edges += 1
+        edge_keys[(source, target, kind)] += 1
+        if source in active_model_ids and target in active_model_ids:
+            degree[source] += 1
+            degree[target] += 1
+            adjacency[source].add(target)
+            adjacency[target].add(source)
+
+    seen: set[UUID] = set()
+    component_sizes: list[int] = []
+    for mid in active_model_ids:
+        if mid in seen:
+            continue
+        stack = [mid]
+        seen.add(mid)
+        size = 0
+        while stack:
+            current = stack.pop()
+            size += 1
+            for neighbor in adjacency.get(current, set()):
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        component_sizes.append(size)
+    component_sizes.sort(reverse=True)
+
+    naturals = Counter(
+        " ".join(str(row["natural"] or "").lower().split())
+        for row in model_rows
+        if str(row["status"]) == "active" and str(row["natural"] or "").strip()
+    )
+    exact_duplicate_groups = [
+        {"natural": natural[:240], "count": count}
+        for natural, count in naturals.most_common()
+        if count > 1
+    ]
+    isolated_count = sum(1 for mid in active_model_ids if degree[mid] == 0)
+    edge_kind_counts = Counter(str(row["edge_kind"]) for row in active_edges)
+    soft_edge_count = sum(edge_kind_counts[kind] for kind in soft_kinds)
+    actionable_edge_count = sum(edge_kind_counts[kind] for kind in actionable_kinds)
+    active_model_count = len(active_model_ids)
+    active_edge_count = len(active_edges)
+    duplicate_edge_count = sum(count - 1 for count in edge_keys.values() if count > 1)
+    degree_values = [degree[mid] for mid in active_model_ids]
+
+    def _ratio(numerator: int, denominator: int) -> float:
+        return round(numerator / denominator, 4) if denominator else 0.0
+
+    return {
+        "active_model_count": active_model_count,
+        "active_edge_count": active_edge_count,
+        "component_count": len(component_sizes),
+        "largest_component_size": component_sizes[0] if component_sizes else 0,
+        "largest_component_ratio": _ratio(
+            component_sizes[0] if component_sizes else 0,
+            active_model_count,
+        ),
+        "isolated_model_count": isolated_count,
+        "isolated_model_ratio": _ratio(isolated_count, active_model_count),
+        "average_degree": (
+            round(sum(degree_values) / len(degree_values), 4)
+            if degree_values else 0.0
+        ),
+        "max_degree": max(degree_values) if degree_values else 0,
+        "soft_edge_count": soft_edge_count,
+        "soft_edge_ratio": _ratio(soft_edge_count, active_edge_count),
+        "actionable_edge_count": actionable_edge_count,
+        "actionable_edge_ratio": _ratio(actionable_edge_count, active_edge_count),
+        "self_edge_count": self_edges,
+        "orphan_edge_count": orphan_edges,
+        "duplicate_directed_edge_count": duplicate_edge_count,
+        "exact_duplicate_natural_groups": len(exact_duplicate_groups),
+        "top_exact_duplicate_naturals": exact_duplicate_groups[:10],
+    }
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True))
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n")
+
+
+def _render_markdown(summary: dict[str, Any]) -> str:
+    lines = [
+        "# Model Layer 1000-Signal Probe",
+        "",
+        f"- Tenant: `{summary['tenant_id']}`",
+        f"- Run: `{summary['run_id']}`",
+        f"- Think status: `{summary['think_status']}`",
+        f"- Signals injected: {summary['signal_count']}",
+        f"- Observations stored: {summary['observation_count']}",
+        f"- Observations with entities: {summary['observations_with_entities']}",
+        f"- Successful Think runs: {summary['think_runs_success']}",
+        f"- Failed Think runs: {summary['think_runs_failed']}",
+        f"- Pending triggers: {summary['pending_triggers']}",
+        f"- Active models: {summary['active_models']}",
+        f"- Archived models: {summary['archived_models']}",
+        f"- Model edges: {summary['model_edges']}",
+        f"- State changes: {summary['state_changes']}",
+        f"- Elapsed seconds: {summary['elapsed_seconds']}",
+        "",
+        "## Model Kinds",
+        _table(summary.get("model_kind_distribution") or {}),
+        "",
+        "## Context Use",
+        _table(summary.get("context_use_distribution") or {}),
+        "",
+        "## Edge Kinds",
+        _table(summary.get("edge_kind_distribution") or {}),
+        "",
+        "## Graph Health",
+        "```json",
+        json.dumps(summary.get("graph_health") or {}, indent=2, sort_keys=True),
+        "```",
+        "",
+        "## Top Customer Scopes",
+        _named_table(summary.get("top_customer_model_scopes") or []),
+        "",
+        "## Cost",
+        "```json",
+        json.dumps(summary.get("cost") or {}, indent=2, sort_keys=True),
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _table(dist: dict[str, int]) -> str:
+    if not dist:
+        return "_No rows._"
+    lines = ["| Key | Count |", "| --- | ---: |"]
+    for key, value in dist.items():
+        lines.append(f"| {key} | {value} |")
+    return "\n".join(lines)
+
+
+def _named_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "_No rows._"
+    lines = ["| Name | Count |", "| --- | ---: |"]
+    for row in rows:
+        lines.append(f"| {row['name']} | {row['count']} |")
+    return "\n".join(lines)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--signals", type=int, default=1000)
+    parser.add_argument(
+        "--think-limit",
+        type=int,
+        default=200,
+        help=(
+            "Number of injected signals to enqueue for live Think. Use 1000 "
+            "for a full LLM burn."
+        ),
+    )
+    parser.add_argument("--think-timeout", type=int, default=3600)
+    parser.add_argument("--progress-every", type=int, default=50)
+    parser.add_argument("--pool-max-size", type=int, default=8)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--report-root",
+        type=Path,
+        default=REPO_ROOT / "tests" / "real_llm" / "reports" / "runs",
+    )
+    return parser.parse_args()
+
+
+async def main() -> int:
+    args = parse_args()
+    if args.signals <= 0:
+        raise SystemExit("--signals must be positive")
+    if args.think_limit < 0:
+        raise SystemExit("--think-limit cannot be negative")
+    if args.think_limit > args.signals:
+        raise SystemExit("--think-limit cannot exceed --signals")
+
+    run_id = args.run_id or f"mega-1000-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    report_dir = args.report_root / f"model-layer-{run_id}"
+    print(f"building {args.signals}-signal scenario for {COMPANY_NAME}", flush=True)
+    scenario = build_scenario(args.signals, namespace=run_id)
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        raise SystemExit("DATABASE_URL is not set")
+    pool = await asyncpg.create_pool(
+        dsn,
+        min_size=1,
+        max_size=args.pool_max_size,
+        init=_register_codecs,
+    )
+    embedder = OllamaClient(OllamaConfig.from_env())
+    started = time.monotonic()
+    think_status = "not_run"
+    try:
+        async with pool.acquire() as conn:
+            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+
+        await materialize(scenario, pool=pool)
+        assert scenario.tenant_id is not None
+        print(f"tenant={scenario.tenant_id} run_id={run_id}", flush=True)
+
+        actor_repo = ActorRepo(pool)
+        alias_repo = EntityAliasRepo(pool)
+        await _insert_extra_aliases(scenario, alias_repo)
+
+        observation_ids = await inject_generated_signals(
+            scenario,
+            pool=pool,
+            actor_repo=actor_repo,
+            alias_repo=alias_repo,
+            embedder=embedder,
+            run_id=run_id,
+            progress_every=args.progress_every,
+        )
+        print(f"injected_total={len(observation_ids)}", flush=True)
+
+        if args.think_limit:
+            enqueued = await enqueue_t1_for_observations(
+                pool,
+                tenant_id=scenario.tenant_id,
+                observation_ids=observation_ids,
+                limit=args.think_limit,
+                run_id=run_id,
+            )
+            print(
+                f"enqueued {enqueued} T1 triggers for live Think "
+                f"(limit={args.think_limit})",
+                flush=True,
+            )
+            provider = _build_cached_provider()
+            try:
+                await run_think_until_drain(
+                    scenario.tenant_id,
+                    pool=pool,
+                    provider=provider,
+                    timeout_seconds=args.think_timeout,
+                )
+                think_status = "drained"
+            except TimeoutError as exc:
+                think_status = f"timeout: {exc}"
+                print(think_status, flush=True)
+
+        summary = await collect_model_layer_report(
+            pool,
+            tenant_id=scenario.tenant_id,
+            run_id=run_id,
+            report_dir=report_dir,
+            scenario=scenario,
+            observation_ids=observation_ids,
+            think_status=think_status,
+            elapsed_seconds=time.monotonic() - started,
+        )
+        print(f"report_dir={report_dir}", flush=True)
+        print(
+            json.dumps(
+                {
+                    "tenant_id": summary["tenant_id"],
+                    "run_id": summary["run_id"],
+                    "signals": summary["signal_count"],
+                    "active_models": summary["active_models"],
+                    "model_edges": summary["model_edges"],
+                    "think_runs_success": summary["think_runs_success"],
+                    "think_runs_failed": summary["think_runs_failed"],
+                    "pending_triggers": summary["pending_triggers"],
+                    "cost": summary["cost"],
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    finally:
+        await embedder.close()
+        await pool.close()
+    return 0
+
+
+def _build_cached_provider():
+    cache = LLMResponseCache(
+        cache_dir=REPO_ROOT / "tests" / "real_llm" / "cache",
+        current_epoch=LLMResponseCache.current_epoch(),
+    )
+    set_response_cache(cache)
+    try:
+        cfg = LLMConfig.from_env()
+    except LLMConfigError as exc:
+        raise SystemExit(f"LLM provider is not configured: {exc}") from exc
+    if not cfg.api_key:
+        raise SystemExit("LLM API key is not set")
+    return build_provider(cfg)
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

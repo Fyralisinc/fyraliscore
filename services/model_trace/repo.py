@@ -71,6 +71,7 @@ _KIND_LABELS: dict[str, str] = {
     "capability_assessment": "claim",
     "market_assessment": "claim",
     "environmental_trend": "pattern",
+    "situation": "situation",
 }
 
 

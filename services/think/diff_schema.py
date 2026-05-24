@@ -10,6 +10,7 @@ pure-Pydantic shape.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -147,6 +148,40 @@ class ResourceOp(BaseModel):
 
 
 # =====================================================================
+# EdgeOp — first-class Model graph mutations.
+# =====================================================================
+
+
+class EdgeOp(BaseModel):
+    """
+    A mutation over the Model-to-Model memory graph.
+
+    `add` creates or reconfirms a typed relationship through EdgesRepo.
+    `retire` marks an active edge inert without deleting audit history.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add", "retire"]
+    source_model_id: UUID
+    target_model_id: UUID
+    edge_kind: str
+    weight: float | None = None
+    confidence: float = 1.0
+    evidence_event_ids: list[UUID] = Field(default_factory=list)
+    evidence_model_ids: list[UUID] = Field(default_factory=list)
+    explanation: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    review_status: Literal[
+        "accepted", "candidate", "needs_review", "rejected", "retired"
+    ] = "accepted"
+    detected_by: str | None = None
+    decay_after: datetime | None = None
+    expires_at: datetime | None = None
+    reason: str | None = None
+
+
+# =====================================================================
 # ValidatedDiff — the top-level container.
 # =====================================================================
 
@@ -166,6 +201,7 @@ class ValidatedDiff(BaseModel):
     trigger_ref: UUID
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
+    edge_ops: list[EdgeOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     # Predictions that should be scheduled with the deadline resolver
@@ -201,9 +237,25 @@ class RawDiff(BaseModel):
     trigger_ref: UUID
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
+    edge_ops: list[EdgeOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     new_predictions: list[ClaimOp] = Field(default_factory=list)
+    reasoning_trace: str | None = None
+
+
+class RawDiffClaimsOnly(BaseModel):
+    """
+    Compact LLM output shape for invocations where first-class graph edges
+    are not available or not the target surface. It parses into `RawDiff`
+    before validation/apply, with edge/act/resource/prediction buckets empty.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    trigger_ref: UUID
+    tenant_id: UUID
+    claim_ops: list[ClaimOp] = Field(default_factory=list)
     reasoning_trace: str | None = None
 
 
@@ -211,8 +263,10 @@ __all__ = [
     "ClaimOp",
     "ActOp",
     "ActOpKind",
+    "EdgeOp",
     "ResourceOp",
     "ResourceOpKind",
     "ValidatedDiff",
     "RawDiff",
+    "RawDiffClaimsOnly",
 ]

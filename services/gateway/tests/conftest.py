@@ -24,11 +24,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import pathlib
 import struct
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -45,6 +47,11 @@ from services.gateway.auth import create_session
 from services.gateway.db_bootstrap import _register_codecs
 from services.gateway.main import GatewayDeps, build_app
 from services.gateway.rate_limit import RateLimiter
+from services.ingestion.handlers.slack import verify_slack_signature
+from tests.db_baseline import (
+    install_test_tenant_auto_register,
+    seed_test_baseline,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -58,36 +65,6 @@ _TRANSIENT_ERRORS = (
     "SerializationError",
     "InFailedSQLTransactionError",
 )
-
-
-def pytest_configure(config):
-    """Pay UMAP's one-time numba JIT cold-start before any test runs.
-
-    The CEO Map tests fit a real UMAP model (services/topology/
-    umap_projector.py). The first fit in a process JIT-compiles numba
-    kernels, which can take tens of seconds. If that cost lands inside a
-    test it can blow the per-test timeout (pyproject: timeout = 30) — and
-    *which* test absorbs it depends on collection order, so the timeout
-    failure is flaky. Warming here (a configure hook, outside any test
-    item's timeout window) makes the subsequent real fits fast and the
-    suite order-independent. Best-effort: never fail collection on it.
-    """
-    try:
-        import numpy as np
-        import umap
-
-        reducer = umap.UMAP(
-            n_components=2,
-            n_neighbors=4,
-            min_dist=0.1,
-            metric="cosine",
-            random_state=42,
-        )
-        reducer.fit_transform(
-            np.random.default_rng(0).normal(size=(8, 8)).astype(float)
-        )
-    except Exception:
-        pass
 
 
 def pytest_runtest_protocol(item, nextitem):
@@ -154,10 +131,6 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
-    # demo_configs is seeded only by migrations (the single pelago demo
-    # company) and the ASGI test transport doesn't run the app lifespan
-    # that would re-seed it, so wiping it leaves /v1/demo/companies empty.
-    # Exclude it — no test mutates it.
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -165,7 +138,6 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-          AND c.relname <> 'demo_configs'
         """
     )
     tables = [r["relname"] for r in rows]
@@ -233,7 +205,9 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     try:
         async with pool.acquire() as conn:
             await _run_migrations(conn)
+            await install_test_tenant_auto_register(conn)
             await _truncate_all(conn)
+            await seed_test_baseline(conn)
         yield pool
     finally:
         # Force-terminate to release all server-side locks immediately.

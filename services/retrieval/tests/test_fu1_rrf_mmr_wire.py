@@ -172,6 +172,7 @@ async def test_fu1_mmr_assembler_path_is_exercised_end_to_end(
     assert bundle_on.notes["mmr"]["used"] is True
     assert bundle_on.notes["mmr"]["lambda_diversity"] == 0.5
     assert bundle_on.notes["mmr"]["budget_tokens"] == 10_000
+    assert bundle_on.notes["mmr"]["relevance_anchor_count"] >= 1
     assert bundle_on.notes["mmr"]["candidate_count"] >= len(bundle_on.models)
 
     # Every MMR-selected model must have been in the off-path candidate

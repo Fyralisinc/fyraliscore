@@ -5,6 +5,7 @@ throw) + activation histogram + uncontested-high-confidence report.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import pytest
@@ -99,7 +100,7 @@ async def test_uncontested_high_confidence_report(
                 confidence_at_assertion,
                 contested_count, created_at
             ) VALUES (
-                $1, $2, $3, '{"kind": "state"}'::jsonb, 'n',
+                $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'n',
                 array_fill(0.0::real, ARRAY[768])::vector,
                 '{}'::jsonb, 0.9, 1.0, 0.9,
                 0, now() - interval '120 days'
@@ -119,7 +120,7 @@ async def test_uncontested_high_confidence_report(
                 confidence_at_assertion,
                 contested_count
             ) VALUES (
-                $1, $2, $3, '{"kind": "state"}'::jsonb, 'n',
+                $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'n',
                 array_fill(0.0::real, ARRAY[768])::vector,
                 '{}'::jsonb, 0.9, 1.0, 0.9, 0
             )
@@ -138,7 +139,7 @@ async def test_uncontested_high_confidence_report(
                 confidence_at_assertion,
                 contested_count, created_at
             ) VALUES (
-                $1, $2, $3, '{"kind": "state"}'::jsonb, 'n',
+                $1, $2, $3, '{"kind":"state","subject":"test","assertion":"natural"}'::jsonb, 'n',
                 array_fill(0.0::real, ARRAY[768])::vector,
                 '{}'::jsonb, 0.9, 1.0, 0.9, 2,
                 now() - interval '120 days'

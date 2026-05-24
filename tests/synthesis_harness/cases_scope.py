@@ -23,6 +23,7 @@ from services.think.region_locks import (
 )
 from lib.shared.ids import uuid7
 
+from . import _fixtures as F
 from ._runner import Case
 
 

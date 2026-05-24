@@ -156,6 +156,21 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
     customer_commitment_links = foundation.get("customer_commitments") or []
 
     actor_repo = ActorRepo(pool)
+    alias_repo = EntityAliasRepo(pool)
+    pending_aliases: list[tuple[str, dict[str, Any], float]] = []
+    linked_customer_commitments: set[tuple[UUID, UUID]] = set()
+
+    # ActorRepo and a few foundation services write through their own pool
+    # connections, so the tenant must be committed before the transaction below.
+    await pool.execute(
+        """
+        INSERT INTO tenants (id, name, is_demo)
+        VALUES ($1, $2, FALSE)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        tenant_id,
+        f"real-llm:{scenario.scenario_id}",
+    )
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -246,6 +261,13 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
                     conn=conn,
                 )
                 scenario.customers[name] = resource.id
+                pending_aliases.extend(
+                    _entity_aliases_for_name(
+                        name,
+                        {"type": "customer", "id": str(resource.id)},
+                        confidence=0.98,
+                    )
+                )
 
             # Step 5: goals — parents first.
             ordered_goals = _order_goals_by_parent(goals_def)
@@ -277,6 +299,9 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
                     conn=conn,
                 )
                 scenario.goals[title] = row.id
+                pending_aliases.append(
+                    (title, {"type": "goal", "id": str(row.id)}, 0.95)
+                )
 
             # Step 6: commitments.
             for commitment_def in commitments_def:
@@ -348,6 +373,9 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
                     conn=conn,
                 )
                 scenario.commitments[title] = row.id
+                pending_aliases.append(
+                    (title, {"type": "commitment", "id": str(row.id)}, 0.95)
+                )
 
             # Step 7: decisions.
             for decision_def in decisions_def:
@@ -366,14 +394,19 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
                     conn=conn,
                 )
                 scenario.decisions[title] = row.id
+                pending_aliases.append(
+                    (title, {"type": "decision", "id": str(row.id)}, 0.95)
+                )
 
             # Step 8: customer ↔ commitment links.
             for link_def in customer_commitment_links:
                 customer_name = link_def["customer"]
                 commitment_title = link_def["commitment"]
+                customer_id = scenario.customer_id(customer_name)
+                commitment_id = scenario.commitment_id(commitment_title)
                 await customer_commitments_svc.link_commitment(
-                    scenario.customer_id(customer_name),
-                    scenario.commitment_id(commitment_title),
+                    customer_id,
+                    commitment_id,
                     tenant_id=tenant_id,
                     relationship_kind=link_def.get(
                         "relationship_kind", "delivers"
@@ -383,6 +416,48 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
                     served_description=link_def.get("served_description"),
                     conn=conn,
                 )
+                linked_customer_commitments.add((customer_id, commitment_id))
+
+            # Scenario authors often encode customer relevance in the
+            # commitment title ("Renew Globex contract") without a separate
+            # customer_commitments stanza. Infer those obvious links so the
+            # real-LLM harness exercises production customer memory paths.
+            for customer_name, customer_id in scenario.customers.items():
+                aliases = _alias_phrases_for_name(customer_name)
+                for commitment_def in commitments_def:
+                    title = commitment_def["title"]
+                    commitment_id = scenario.commitment_id(title)
+                    if (customer_id, commitment_id) in linked_customer_commitments:
+                        continue
+                    searchable = " ".join(
+                        str(part or "")
+                        for part in (
+                            title,
+                            commitment_def.get("description"),
+                        )
+                    ).casefold()
+                    if not any(alias.casefold() in searchable for alias in aliases):
+                        continue
+                    await customer_commitments_svc.link_commitment(
+                        customer_id,
+                        commitment_id,
+                        tenant_id=tenant_id,
+                        relationship_kind="impacts",
+                        criticality="high",
+                        served_description=f"Inferred from scenario commitment title: {title}",
+                        conn=conn,
+                    )
+                    linked_customer_commitments.add((customer_id, commitment_id))
+
+    for phrase, ref, confidence in _dedupe_aliases(pending_aliases):
+        await alias_repo.insert_alias(
+            phrase=phrase,
+            resolved_entity_ref=ref,
+            source="manual",
+            confidence=confidence,
+            tenant_id=tenant_id,
+            extra_metadata={"scenario_id": scenario.scenario_id},
+        )
 
 
 def _order_goals_by_parent(
@@ -410,6 +485,48 @@ def _order_goals_by_parent(
     for g in goals_def:
         visit(g, ())
     return ordered
+
+
+def _entity_aliases_for_name(
+    name: str,
+    ref: dict[str, Any],
+    *,
+    confidence: float,
+) -> list[tuple[str, dict[str, Any], float]]:
+    aliases = [(phrase, ref, confidence) for phrase in _alias_phrases_for_name(name)]
+    if aliases:
+        aliases[0] = (aliases[0][0], aliases[0][1], confidence)
+    if len(aliases) > 1:
+        aliases[1] = (aliases[1][0], aliases[1][1], confidence - 0.03)
+    return aliases
+
+
+def _alias_phrases_for_name(name: str) -> list[str]:
+    aliases = [name]
+    suffixes = (" inc", " corp", " llc", " ltd", " incorporated")
+    folded = name.casefold()
+    for suffix in suffixes:
+        if folded.endswith(suffix):
+            aliases.append(name[: -len(suffix)].strip())
+            break
+    return [a for a in aliases if a.strip()]
+
+
+def _dedupe_aliases(
+    aliases: list[tuple[str, dict[str, Any], float]],
+) -> list[tuple[str, dict[str, Any], float]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[tuple[str, dict[str, Any], float]] = []
+    for phrase, ref, confidence in aliases:
+        cleaned = phrase.strip()
+        if not cleaned:
+            continue
+        key = (cleaned.casefold(), json.dumps(ref, sort_keys=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((cleaned, ref, confidence))
+    return result
 
 
 async def inject_sequence(

@@ -1093,10 +1093,19 @@ def _deepseek_supports_strict_tool_calling(model_name: str | None) -> bool:
 def _strict_schema_for(schema: type[BaseModel]) -> dict | None:
     """Return the registered strict-mode schema for a Pydantic class, or None."""
     try:
-        from services.think.diff_schema import RawDiff, ValidatedDiff
-        from services.think.strict_schema import RAW_DIFF_STRICT_SCHEMA
+        from services.think.diff_schema import (
+            RawDiff,
+            RawDiffClaimsOnly,
+            ValidatedDiff,
+        )
+        from services.think.strict_schema import (
+            RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA,
+            RAW_DIFF_STRICT_SCHEMA,
+        )
     except ImportError:
         return None
+    if schema is RawDiffClaimsOnly:
+        return RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA
     if schema is RawDiff or schema is ValidatedDiff:
         return RAW_DIFF_STRICT_SCHEMA
     return None

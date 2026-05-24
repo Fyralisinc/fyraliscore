@@ -8,13 +8,17 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 
+from lib.shared.errors import (
+    FalsifierInadequateError, InvariantViolation, TrustTierError,
+)
 from lib.shared.ids import uuid7
 
 from services.retrieval.primary import RetrievalResult, TriggerContext
-from services.think.diff_schema import ActOp, ClaimOp, RawDiff
+from services.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp
 from services.think.validator import (
     OutOfRegionError, ValidationFailure, validate,
 )
@@ -562,3 +566,176 @@ async def test_validate_drops_malformed_proposition_but_keeps_good_claim(
         ]
         assert validated.dropped_op_count == 1
         assert "recommendation.target_actor_id" in validated.dropped_op_errors[0]
+
+
+async def test_validate_accepts_evidence_backed_edge_op(fresh_db, tenant):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="contradicts",
+                    weight=0.7,
+                    confidence=0.85,
+                    evidence_event_ids=[obs_id],
+                    explanation=(
+                        "The two Models make incompatible claims about the "
+                        "same operating state."
+                    ),
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+        assert len(validated.edge_ops) == 1
+        assert validated.edge_ops[0].edge_kind == "contradicts"
+        assert validated.edge_ops[0].evidence_event_ids == [obs_id]
+
+
+async def test_validate_allows_same_diff_insert_as_edge_and_act_basis(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    existing_model, born_obs = await _make_model(fresh_db, tenant, confidence=0.72)
+    new_event = uuid7()
+    async with fresh_db.acquire() as conn:
+        actor_id = uuid7()
+        await conn.execute(
+            "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+            "VALUES ($1, $2, 'human_internal', 'x', 'active')",
+            actor_id, tenant,
+        )
+        commitment_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO commitments
+              (id, tenant_id, title, state, owner_id, created_by_event_id,
+               last_state_change_at)
+            VALUES ($1, $2, 'x', 'active', $3, $4, now())
+            """,
+            commitment_id, tenant, actor_id, born_obs,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "born_from_event_id": str(new_event),
+                        "proposition": {
+                            "kind": "state",
+                            "subject": "x",
+                            "assertion": "done",
+                        },
+                        "natural": "x is done",
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.82,
+                        "falsifier": {
+                            "kind": "observation_pattern",
+                            "pattern": "x is reopened or marked incomplete",
+                            "within_window": "P14D",
+                        },
+                    },
+                )
+            ],
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=new_event,
+                    target_model_id=existing_model,
+                    edge_kind="superseded_by",
+                    confidence=0.8,
+                    explanation="The new done state supersedes the older state.",
+                    detected_by="system",
+                )
+            ],
+            act_ops=[
+                ActOp(
+                    op="transition_commitment",
+                    confidence_basis=new_event,
+                    entity={
+                        "id": str(commitment_id),
+                        "new_state": "doneunverified",
+                    },
+                )
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.claim_ops) == 1
+    assert len(validated.edge_ops) == 1
+    assert validated.edge_ops[0].detected_by is None
+    assert len(validated.act_ops) == 1
+    assert validated.dropped_op_count == 0
+
+
+async def test_validate_drops_edge_op_missing_explanation_but_keeps_claim(
+    fresh_db, tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="update", model_id=a, changes={"confidence": 0.55}),
+            ],
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="contradicts",
+                    weight=0.5,
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+        assert len(validated.claim_ops) == 1
+        assert validated.edge_ops == []
+        assert validated.dropped_op_count == 1
+        assert "requires explanation" in validated.dropped_op_errors[0]
+
+
+async def test_validate_drops_edge_op_missing_endpoint_but_keeps_claim(
+    fresh_db, tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    missing = uuid4()
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="update", model_id=a, changes={"confidence": 0.55}),
+            ],
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=missing,
+                    edge_kind="weakens",
+                    weight=0.5,
+                    explanation="The first Model weakens the missing endpoint.",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+        assert len(validated.claim_ops) == 1
+        assert validated.edge_ops == []
+        assert validated.dropped_op_count == 1
+        assert "missing model" in validated.dropped_op_errors[0]

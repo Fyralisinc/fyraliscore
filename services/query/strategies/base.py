@@ -31,6 +31,7 @@ from services.retrieval.assembler import (
 from services.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
+    TriggerKind,
     primary_retrieve,
 )
 

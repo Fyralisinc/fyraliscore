@@ -30,6 +30,20 @@
         "threshold": 1,
         "timestamp": "2026-04-22T09:10:57.391833+00:00",
         "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:16:25.439889+00:00",
+        "total": 1
       }
     ]
   },
@@ -80,6 +94,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:01:26.397752+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:00:18.226126+00:00",
+        "total": 3
       }
     ]
   },
@@ -129,6 +162,25 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-04-22T09:08:51.457780+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:11:43.970456+00:00",
         "total": 3
       }
     ]
@@ -190,6 +242,111 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:14:21.054324+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Customer churn email should produce at least a 2-hop cascade chain (think run -> downstream observations): Cascade chain from 019e3c19-b0d4-7001-bb71-19d48477daa4 reached depth 1, expected >= 2",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Customer churn email should produce at least a 2-hop cascade chain (think run -> downstream observations): Cascade chain from 019e3c1b-13ca-7000-b933-2d7174f67221 reached depth 0, expected >= 2",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Customer churn email should produce at least a 2-hop cascade chain (think run -> downstream observations): Cascade chain from 019e3c1b-8364-7001-b503-f6875a4abef4 reached depth 0, expected >= 2",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:22:09.872644+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:17:27.196043+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": "Customer churn sequence should produce at least one downstream cause_id-linked observation: No injected observation reached cascade depth >= 1; depths={019e3c68-d94a-7001-b337-f4bf9ba0032c: 0, 019e3c68-d9e3-7001-9e64-4285080f8263: 0, 019e3c68-da2f-7001-a376-0abcabe4634d: 0, 019e3c68-da81-7001-ba96-3760312524ff: 0, 019e3c68-dac3-7001-b31d-b76def75e7e2: 0, 019e3c68-db0b-7001-aab1-1b9929c8717e: 0}",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Customer churn sequence should produce at least one downstream cause_id-linked observation: No injected observation reached cascade depth >= 1; depths={019e3c69-3bd2-7001-9f46-b402972fd4f8: 0, 019e3c69-3c5a-7001-99d9-7da5f2c25c16: 0, 019e3c69-3cb7-7001-a5e5-6ad0e6522930: 0, 019e3c69-3d29-7001-9572-5bb7af5d95a0: 0, 019e3c69-3d84-7001-b1a1-df9ba3749f4f: 0, 019e3c69-3dca-7001-88c6-7da8e69f822e: 0}",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:46:55.656200+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:03:24.020942+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:10:56.041138+00:00",
+        "total": 3
       }
     ]
   },
@@ -223,6 +380,62 @@
         "passes": 0,
         "threshold": 1,
         "timestamp": "2026-04-22T09:10:57.069845+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Acme has scenario ARR $180K, expected arr_usd > 0, got 0.00\nassert Decimal('0.00') > 0\n +  where Decimal('0.00') = CustomerDetailDashboard(customer_resource_id=UUID('019e3c14-90dd-7000-8606-59467dcbcd66'), identity='Acme Corp', arr_u...day=datetime.date(2026, 5, 18), total_at_risk_usd=Decimal('0.00'), blocked_commitment_count=0)], active_deployments=[]).arr_usd",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:16:24.895374+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T18:15:00.880710+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T18:45:02.789219+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T19:09:23.556967+00:00",
         "total": 1
       }
     ]
@@ -274,6 +487,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:07:09.271658+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:08:40.511092+00:00",
+        "total": 3
       }
     ]
   },
@@ -324,6 +556,57 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:06:04.747385+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:06:36.140799+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_deepseek_resolves_vague_customer_alias_from_actual_content": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:28:09.119918+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:29:53.667977+00:00",
+        "total": 1
       }
     ]
   },
@@ -384,6 +667,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:17:05.484981+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:29:11.992170+00:00",
+        "total": 3
       }
     ]
   },
@@ -433,6 +735,25 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-04-22T09:15:12.563782+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:26:23.706040+00:00",
         "total": 3
       }
     ]
@@ -490,6 +811,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:12:41.365892+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:19:36.685825+00:00",
+        "total": 3
       }
     ]
   },
@@ -535,6 +875,20 @@
         "passes": 1,
         "threshold": 1,
         "timestamp": "2026-04-22T09:18:57.554065+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:32:20.941796+00:00",
         "total": 1
       }
     ]
@@ -582,6 +936,20 @@
         "threshold": 1,
         "timestamp": "2026-04-22T09:18:57.196788+00:00",
         "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:32:20.465598+00:00",
+        "total": 1
       }
     ]
   },
@@ -627,6 +995,20 @@
         "passes": 1,
         "threshold": 1,
         "timestamp": "2026-04-22T09:17:08.806981+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:29:12.785811+00:00",
         "total": 1
       }
     ]
@@ -1080,6 +1462,191 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:18:56.463038+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:32:19.678424+00:00",
+        "total": 3
+      }
+    ]
+  },
+  "test_real_llm_uses_selected_models_to_emit_edge_op": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:10:59.127646+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:17:54.577595+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:27:00.908742+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "assert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T16:34:40.802013+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "assert 0 >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "assert False\n +  where False = any(<generator object test_real_llm_uses_selected_models_to_emit_edge_op.<locals>.<genexpr> at 0x115003440>)",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:16:44.588237+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:15:12.109090+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:45:12.221560+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:09:33.766974+00:00",
+        "total": 3
       }
     ]
   },
@@ -1124,6 +1691,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:10:31.611406+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:14:00.376585+00:00",
+        "total": 3
       }
     ]
   },
@@ -1157,6 +1743,20 @@
         "passes": 1,
         "threshold": 1,
         "timestamp": "2026-04-22T09:10:31.892730+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:14:00.880318+00:00",
         "total": 1
       }
     ]
@@ -1274,6 +1874,90 @@
         "threshold": 1,
         "timestamp": "2026-04-22T09:18:57.858668+00:00",
         "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:32:21.378443+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:37:22.751166+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:39:48.833529+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:30:04.610962+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:48:26.114938+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:49:56.558700+00:00",
+        "total": 1
       }
     ]
   },
@@ -1361,6 +2045,76 @@
         "passes": 1,
         "threshold": 1,
         "timestamp": "2026-04-22T09:18:58.139350+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:32:21.817993+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:37:23.306623+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:39:49.391545+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:30:05.226615+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:49:56.961872+00:00",
         "total": 1
       }
     ]
@@ -1472,6 +2226,341 @@
         "threshold": 1,
         "timestamp": "2026-04-22T09:18:58.444263+00:00",
         "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T17:32:22.229095+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:37:23.862761+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:39:50.032188+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:30:05.832208+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:49:57.377198+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_04_injects_full_scale_chaos_corpus": {
+    "runs": [
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:38:37.870747+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:39:35.752441+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_04_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:37:12.254015+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:37:24.524539+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T20:39:50.745762+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-18T21:30:06.538411+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:49:31.676255+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:49:57.896408+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_04_nimbus_alias_to_think_to_bridge_end_to_end": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "assert 0 >= 1\n +  where 0 = int((0 or 0))",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "assert 0 >= 1\n +  where 0 = int((0 or 0))",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:43:17.055122+00:00",
+        "total": 2
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T06:47:23.912741+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_05_every_signal_reaches_think_and_bridge": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "FullSignalSummary(scenario_id='industrial_ops', run_id='industrial-ops-full-signal-durability', expected_signal_count=...ext_use_reports=86, downstream_state_changes=42, active_models=39, distinct_channels=25, observations_with_entities=17)\nassert 17 >= (46 // 2)\n +  where 17 = FullSignalSummary(scenario_id='industrial_ops', run_id='industrial-ops-full-signal-durability', expected_signal_count=...ext_use_reports=86, downstream_state_changes=42, active_models=39, distinct_channels=25, observations_with_entities=17).observations_with_entities\n +  and   46 = FullSignalSummary(scenario_id='industrial_ops', run_id='industrial-ops-full-signal-durability', expected_signal_count=...ext_use_reports=86, downstream_state_changes=42, active_models=39, distinct_channels=25, observations_with_entities=17).expected_signal_count",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 1,
+        "timestamp": "2026-05-19T07:52:16.504784+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T08:04:15.924101+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_05_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T07:12:49.685374+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T08:16:35.918728+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_06_every_signal_reaches_think_and_bridge": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T08:14:40.139474+00:00",
+        "total": 1
+      }
+    ]
+  },
+  "test_scenario_06_materializes_and_injects_first_signal": {
+    "runs": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T07:12:50.222030+00:00",
+        "total": 1
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-05-19T08:16:36.445832+00:00",
+        "total": 1
       }
     ]
   },
@@ -1528,6 +2617,87 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:03:35.550597+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": "First injected signal should have at least one downstream observation referencing it via cause_id: Cascade chain from 019e3c09-d0b2-7000-9ba3-d97b48d5dbe8 reached depth 0, expected >= 1",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "First injected signal should have at least one downstream observation referencing it via cause_id: Cascade chain from 019e3c0a-5ef5-7001-9a0b-9d99dbcb7dec reached depth 0, expected >= 1",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:03:36.668649+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:12:09.568657+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:42:50.759237+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:07:01.583302+00:00",
+        "total": 3
       }
     ]
   },
@@ -1583,6 +2753,263 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-04-22T09:22:01.446770+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T13:59:42.143315+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 11 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 12 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:16:15.485746+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:21:37.952531+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:29:35.759033+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 12 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 12 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "Alice + refund-flow scoped Models for ships sequence: Model count 13 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:36:06.418092+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:44:23.133398+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T14:55:47.135593+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T15:00:35.595973+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T15:04:27.233935+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T15:08:22.255451+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T15:24:42.025819+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T15:31:47.360448+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:37:07.424975+00:00",
         "total": 3
       }
     ]
@@ -1644,6 +3071,30 @@
         "threshold": 3,
         "timestamp": "2026-04-22T09:25:16.024261+00:00",
         "total": 5
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 3,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 3,
+        "threshold": 3,
+        "timestamp": "2026-05-18T17:44:33.228276+00:00",
+        "total": 5
       }
     ]
   },
@@ -1704,6 +3155,111 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-04-22T09:23:31.575423+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 1.00 (expected 0.00-0.80)",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 1.00 (expected 0.00-0.80)",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 1.00 (expected 0.00-0.80)",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:40:50.455116+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 0.86 (expected 0.00-0.80)",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 0.86 (expected 0.00-0.80)",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "No single proposition kind should exceed 80% of all Models: Proposition kind distribution violations:\n  state: 0.86 (expected 0.00-0.80)",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:21:45.602379+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:35:32.932926+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:50:35.072252+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:15:39.203816+00:00",
         "total": 3
       }
     ]
@@ -1781,6 +3337,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:28:41.479541+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:50:54.910214+00:00",
+        "total": 3
       }
     ]
   },
@@ -1830,6 +3405,25 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-04-22T09:26:12.961114+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:48:32.783820+00:00",
         "total": 3
       }
     ]
@@ -1891,6 +3485,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:30:47.406786+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:54:53.719486+00:00",
+        "total": 3
       }
     ]
   },
@@ -1951,6 +3564,25 @@
         "threshold": 2,
         "timestamp": "2026-04-22T09:20:39.016429+00:00",
         "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:34:09.734970+00:00",
+        "total": 3
       }
     ]
   },
@@ -2010,6 +3642,111 @@
         "passes": 0,
         "threshold": 2,
         "timestamp": "2026-04-22T09:33:36.928167+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "decision_revision_cascade scoped Models: Model count 0 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T17:59:03.763732+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": "decision_revision_cascade scoped Models: Model count 11 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 2,
+            "error": "decision_revision_cascade scoped Models: Model count 11 outside expected range [1, 10]",
+            "status": "fail"
+          },
+          {
+            "attempt": 3,
+            "error": "decision_revision_cascade scoped Models: Model count 11 outside expected range [1, 10]",
+            "status": "fail"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:25:00.057063+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:39:13.977471+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T18:53:30.714771+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          },
+          {
+            "attempt": 2,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 2,
+        "threshold": 2,
+        "timestamp": "2026-05-18T19:19:19.077693+00:00",
         "total": 3
       }
     ]

@@ -43,11 +43,12 @@ commitments table to verify the ref exists.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 import asyncpg
 
+from lib.shared.edge_registry import EdgeRegistryError
 from lib.shared.errors import (
     CompanyOSError,
     FalsifierInadequateError,
@@ -56,6 +57,7 @@ from lib.shared.errors import (
     TrustTierError,
     ValidationError,
 )
+from lib.shared.types import EdgeDetectedBy
 from lib.shared.trust import TrustTier
 
 from services.acts.state_machines import can_transition
@@ -63,9 +65,21 @@ from services.models.calibration import apply_calibration
 from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
 
-from .diff_schema import ActOp, ClaimOp, RawDiff, ResourceOp, ValidatedDiff
+from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
 from .observability import log_dropped_op
 from .thresholds import compute_threshold
+
+
+_ALLOWED_EDGE_DETECTED_BY = set(get_args(EdgeDetectedBy))
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _classify_claim_drop_reason(exc: Exception) -> str:
@@ -115,6 +129,23 @@ def _classify_resource_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
     if "non-empty" in msg or "requires" in msg:
         return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_edge_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "unknown edge_kind" in msg or "reserved" in msg:
+        return "invalid_edge_kind"
+    if "weight" in msg:
+        return "invalid_weight"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "not found" in msg:
+        return "missing_model_reference"
+    if "self-edge" in msg:
+        return "invalid_shape"
+    if "explanation" in msg:
+        return "missing_explanation"
     return "unclassified"
 
 
@@ -245,6 +276,9 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
                         out.append((str(et), str(eid)))
         elif op.model_id is not None:
             out.append(("model", str(op.model_id)))
+    for op in diff.edge_ops:
+        out.append(("model", str(op.source_model_id)))
+        out.append(("model", str(op.target_model_id)))
     for op in diff.act_ops:
         ent = op.entity or {}
         if op.op in (
@@ -395,7 +429,10 @@ async def validate(
     """
     errors: list[str] = []
     total_ops = (
-        len(diff.claim_ops) + len(diff.act_ops) + len(diff.resource_ops)
+        len(diff.claim_ops)
+        + len(diff.edge_ops)
+        + len(diff.act_ops)
+        + len(diff.resource_ops)
     )
 
     # --- Out-of-region check (before any other work) ---------------
@@ -412,6 +449,7 @@ async def validate(
             )
 
     validated_claim_ops: list[ClaimOp] = []
+    validated_edge_ops: list[EdgeOp] = []
     validated_act_ops: list[ActOp] = []
     validated_resource_ops: list[ResourceOp] = []
 
@@ -462,10 +500,49 @@ async def validate(
                 continue
         validated_claim_ops.append(v_op)
 
+    pending_claim_basis_confidence: dict[UUID, float] = {}
+    for op in validated_claim_ops:
+        if op.op != "insert" or not isinstance(op.entry, dict):
+            continue
+        confidence = float(op.entry.get("confidence") or 0.0)
+        for key in ("born_from_event_id", "model_id", "id"):
+            placeholder_id = _coerce_uuid(op.entry.get(key))
+            if placeholder_id is not None:
+                pending_claim_basis_confidence[placeholder_id] = confidence
+
+    # --- edge_ops --------------------------------------------------
+    for op in diff.edge_ops:
+        try:
+            v_op = await _validate_edge_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                pending_model_event_ids=set(pending_claim_basis_confidence),
+            )
+        except (ValidationError, EdgeRegistryError) as e:
+            reason = _classify_edge_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"edge_op {op.op}: {msg}")
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="edge",
+                failure_reason=reason,
+                original_op=op,
+            )
+            continue
+        validated_edge_ops.append(v_op)
+
     # --- act_ops ---------------------------------------------------
     for op in diff.act_ops:
         try:
-            v_op = await _validate_act_op(op, retrieval_result, conn)
+            v_op = await _validate_act_op(
+                op,
+                retrieval_result,
+                conn,
+                pending_claim_basis_confidence=pending_claim_basis_confidence,
+            )
         except (
             ValidationError, InvariantViolation, TrustTierError,
         ) as e:
@@ -507,7 +584,10 @@ async def validate(
     # and EVERY one of them was bad — in that case there's nothing to
     # apply and silently returning empty would mask an upstream bug.
     any_survived = bool(
-        validated_claim_ops or validated_act_ops or validated_resource_ops
+        validated_claim_ops
+        or validated_edge_ops
+        or validated_act_ops
+        or validated_resource_ops
     )
     if total_ops > 0 and not any_survived:
         raise ValidationFailure(
@@ -521,6 +601,7 @@ async def validate(
         trigger_ref=diff.trigger_ref,
         tenant_id=diff.tenant_id,
         claim_ops=validated_claim_ops,
+        edge_ops=validated_edge_ops,
         act_ops=validated_act_ops,
         resource_ops=validated_resource_ops,
         new_predictions=[op for op in diff.new_predictions if op.op == "insert"],
@@ -666,11 +747,16 @@ async def _validate_act_op(
     op: ActOp,
     retrieval_result: Any,
     conn: asyncpg.Connection,
+    *,
+    pending_claim_basis_confidence: dict[UUID, float] | None = None,
 ) -> ActOp:
     """
     Threshold + state-machine validation for an Act op.
     """
     basis = await _load_basis_model(conn, op.confidence_basis)
+    pending_claim_basis_confidence = pending_claim_basis_confidence or {}
+    if basis is None and op.confidence_basis in pending_claim_basis_confidence:
+        basis = {"confidence": pending_claim_basis_confidence[op.confidence_basis]}
 
     # Some ops (cascade-originated updates) have no basis by design.
     # For LLM-originated ops we require a basis (safety — the LLM
@@ -772,6 +858,94 @@ async def _validate_act_op(
                 from_state=row["state"], to_state=new_state,
             )
 
+    return op
+
+
+async def _validate_edge_op(
+    op: EdgeOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID] | None = None,
+) -> EdgeOp:
+    from lib.shared.edge_registry import assert_writable, validate_weight
+
+    if op.source_model_id == op.target_model_id:
+        raise ValidationError(
+            "edge_op self-edge not allowed",
+            model_id=str(op.source_model_id),
+        )
+    spec = assert_writable(op.edge_kind)
+    validate_weight(op.edge_kind, op.weight)
+    if not (0.0 <= float(op.confidence) <= 1.0):
+        raise ValidationError(
+            "edge_op confidence must be in [0, 1]",
+            confidence=op.confidence,
+        )
+    if op.detected_by and op.detected_by not in _ALLOWED_EDGE_DETECTED_BY:
+        op = op.model_copy(update={"detected_by": None})
+    if op.op == "add":
+        explanation_required = {
+            "contradicts",
+            "weakens",
+            "causes",
+            "explains",
+            "predicts",
+            "blocks",
+            "enables",
+            "same_issue_as",
+            "early_warning_for",
+            "alternative_to",
+        }
+        if (
+            op.edge_kind in explanation_required
+            and not (op.explanation or "").strip()
+        ):
+            raise ValidationError(
+                f"edge_op add {op.edge_kind!r} requires explanation",
+                edge_kind=op.edge_kind,
+            )
+    elif op.op == "retire":
+        if not (op.reason or "").strip():
+            raise ValidationError("edge_op retire requires reason")
+    else:
+        raise ValidationError(f"unknown edge_op: {op.op!r}")
+
+    rows = await conn.fetch(
+        """
+        SELECT id, status FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        [op.source_model_id, op.target_model_id],
+    )
+    found = {r["id"]: r["status"] for r in rows}
+    pending_model_event_ids = pending_model_event_ids or set()
+    missing = [
+        str(mid)
+        for mid in (op.source_model_id, op.target_model_id)
+        if mid not in found and mid not in pending_model_event_ids
+    ]
+    if missing:
+        raise ValidationError(
+            f"edge_op references {len(missing)} missing model(s)",
+            missing=missing,
+        )
+    if op.op == "add":
+        inactive = [
+            str(mid)
+            for mid, status in found.items()
+            if status != "active"
+        ]
+        if inactive:
+            raise ValidationError(
+                "edge_op add requires active model endpoints",
+                inactive=inactive,
+            )
+
+    # Touch spec so linters/tests know this was intentionally looked up.
+    _ = spec
     return op
 
 

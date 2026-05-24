@@ -33,7 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
@@ -168,6 +169,7 @@ def reset_handlers() -> None:
 def _summarize_op_count(diff: ValidatedDiff) -> dict[str, int]:
     return {
         "claim_ops": len(diff.claim_ops),
+        "edge_ops": len(diff.edge_ops),
         "act_ops": len(diff.act_ops),
         "resource_ops": len(diff.resource_ops),
     }
@@ -193,6 +195,9 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
             for e in op.entry.get("scope_entities", []) or []:
                 if isinstance(e, dict):
                     _add(e.get("type"), e.get("id"))
+    for op in diff.edge_ops:
+        _add("model", op.source_model_id)
+        _add("model", op.target_model_id)
     for op in diff.act_ops:
         ent = op.entity or {}
         eid = ent.get("id")

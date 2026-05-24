@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -17,7 +18,7 @@ import pytest_asyncio
 
 from lib.shared.ids import uuid7
 from lib.shared.types import TOPO_EMBEDDING_DIM
-from lib.topology.naming import member_summaries_from_rows
+from lib.topology.naming import derive_signature, member_summaries_from_rows
 from lib.topology.relocate import RelocateTarget
 from services.models.edges_repo import EdgesRepo
 from services.retrieval.pathways import pathway_f_topological

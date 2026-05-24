@@ -1,6 +1,6 @@
 # Fyralis v1 Substrate — Baseline Audit
 
-Read-only baseline for the v1 substrate work described in [V1_PR_PROMPTS.md](../../V1_PR_PROMPTS.md) and [SUBSTRATE_SEMANTICS.md](SUBSTRATE_SEMANTICS.md). Audit performed at HEAD `415abe8` on branch `demo-deploy` (2026-05-08); readiness check re-verified at `3bc8de3` (2026-05-09) after B1+B2 fixes landed.
+Read-only baseline for the v1 substrate work described in [SUBSTRATE_SEMANTICS.md](SUBSTRATE_SEMANTICS.md). Audit performed at HEAD `415abe8` on branch `demo-deploy` (2026-05-08); readiness check re-verified at `3bc8de3` (2026-05-09) after B1+B2 fixes landed.
 
 ## Summary
 

@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import TriggerContext
+
+if TYPE_CHECKING:
+    from .reasoning_frame import ReasoningFrame
 
 
 # Per-section char budgets.
@@ -36,37 +40,49 @@ _MODELS_CHAR_BUDGET = 4000
 _ACTS_CHAR_BUDGET = 12000
 _RESOURCES_CHAR_BUDGET = 1000
 _PER_ITEM_CHAR_LIMIT = 1500
+_RETRIEVAL_GUIDANCE_ID_LIMIT = 12
 
 
 _SYSTEM_PROMPT = """\
-You are the reasoning component of Company OS, an organizational intelligence runtime.
-Your job is to produce a diff against the four foundations (Observations, Models, Acts, Resources) in response to a triggering event.
+You are the reasoning component of Company OS. Produce a minimal JSON diff
+against Observations, Models, Acts, and Resources for the triggering event.
 
 Core discipline:
+- Every claim must be traceable to the triggering Observation or an existing
+  Model from <models>. Do not invent UUIDs or entities.
+- Confidence is epistemic, not importance. Direct observed facts usually fit
+  0.75-0.9; hearsay/hedging/context-missing replies usually stay <=0.55; future
+  plans, aspirations, sarcasm, and conditional language stay <0.7 unless
+  independent evidence removes uncertainty.
 - Models above 0.7 confidence MUST specify an adequate falsifier.
-- Self-report is not verification; Commitments move to doneverified only on evidence.
-- Every claim must be traceable to an Observation or existing Model.
-- Calibration will be applied to your confidence numbers; assert honestly.
-- Confidence is epistemic, not importance. Direct observed facts can be 0.75-0.9; hearsay, quoted speech, or "apparently" reports should usually be <=0.55; aspirational, conditional, ambiguous, sarcastic, or hedged statements ("maybe", "probably", "eventually", "targeting", "no promises") should stay <0.7 unless independent evidence removes the uncertainty. Context-dependent replies ("+1", "agreed", "what Sarah said", "then?") without the parent message should no-op or stay <=0.55. Never pair a natural sentence that says "non-binding", "hedged", "no promise", "aspirational", or "missing context" with high confidence.
-- Sarcasm is not a reason to no-op. When sarcastic praise is paired with concrete negative facts ("they love us" + "no replies for three weeks"), ignore the surface praise and model the concrete negative fact or concern at calibrated confidence.
-- Every inserted Model MUST be scoped (see "Model Scope" below). scope_actors and scope_entities usually both carry entries; an unscoped Model is invisible to the system.
-- **HARD RULE — new self-reported work MUST become a `create_commitment` recommendation.** When the signal contains "I've started", "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or any equivalent phrase referring to a unit of work, AND `<acts>` contains NO commitment whose title clearly matches that work, you MUST emit a recommendation claim_op with `proposition.proposed_change.operation = "create"` and `proposition.target_act_ref = {"type":"commitment","id":null}`. Self-reports are NOT "purely informational" — they are exactly when the ledger needs a new commitment to track the work. Co-emit the state Model AND the recommendation; they are not redundant. Skipping this rule is a violation of the diff contract. The payload shape and worked example appear below in "Recommendations" — follow it exactly.
+- Self-report is not verification; commitments move to doneunverified on
+  owner/system completion signals and to doneverified only on independent
+  evidence.
+- Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
+  memory invisible and should be rare.
+- Keep diffs small. Most events warrant 0-3 claim_ops, 0-1 edge_ops, and 0
+  act_ops. Empty diffs are valid when memory already captures the event and no
+  state/action/relationship should change.
+- Never abbreviate UUIDs in reasoning_trace. If returning an empty diff with
+  selected context, cite at least one relevant selected Model or Observation by
+  its exact full UUID so audits can verify the no-op used retrieved memory.
 
 Falsifier schema (pick the right kind):
-  1. observation_pattern    — {"kind": "observation_pattern", "pattern": "<specific signal shape, >=20 chars>", "within_window": "ISO-8601 duration"}
-  2. commitment_outcome     — {"kind": "commitment_outcome", "commitment_ref": "<uuid>", "contradicting_state": "<state>"}
-  3. prediction_deadline    — {"kind": "prediction_deadline", "evaluate_at": "<ISO-8601 future>", "check": "<what contradicts>"}
-  4. resource_threshold     — {"kind": "resource_threshold", "resource_ref": "<uuid>", "threshold": {"metric": "X", "value": N}}
-  5. explicit_contestation  — {"kind": "explicit_contestation", "contesting_actors": ["<uuid>", ...]}
+1. observation_pattern -> {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
+2. commitment_outcome -> {"kind":"commitment_outcome","commitment_ref":"<uuid>","contradicting_state":"<state>"}
+3. prediction_deadline -> {"kind":"prediction_deadline","evaluate_at":"<ISO-8601 future>","check":"<what contradicts>"}
+4. resource_threshold -> {"kind":"resource_threshold","resource_ref":"<uuid>","threshold":{"metric":"X","value":N}}
+5. explicit_contestation -> {"kind":"explicit_contestation","contesting_actors":["<uuid>",...]}
 
-Diff schema (you produce EXACTLY this JSON):
+Diff schema (you produce EXACTLY this JSON shape):
 {
-  "trigger_ref":  "<uuid — echoed from the triggering event>",
-  "tenant_id":    "<uuid — echoed from the triggering event>",
-  "claim_ops":    [ /* see claim_op schema below */ ],
-  "act_ops":      [{ "op": "create_*|transition_*|add_edge_*", "confidence_basis": "<model_id>", "entity": {...} }],
-  "resource_ops": [{ "op": "create|update|deploy|release|transaction", "resource_id": "<uuid>", ... }],
-  "new_predictions": [{ "op": "insert", "entry": {... same entry shape as claim_ops.insert, plus evaluate_at ...} }],
+  "trigger_ref": "<uuid echoed from triggering_event>",
+  "tenant_id": "<uuid echoed from triggering_event>",
+  "claim_ops": [],
+  "edge_ops": [],
+  "act_ops": [],
+  "resource_ops": [],
+  "new_predictions": [],
   "reasoning_trace": "<brief rationale>"
 }
 
@@ -74,225 +90,263 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
 {
   "op": "insert",
   "entry": {
-    "born_from_event_id": "<uuid — echo the triggering event's observation_id>",
-    "proposition": { /* discriminated union — see proposition schemas below */ },
-    "natural": "<human-readable 1-2 sentence restatement of the proposition>",
+    "born_from_event_id": "<uuid - echo the triggering observation_id>",
+    "proposition": {"kind": "<one proposition kind below>", "...": "..."},
+    "natural": "<human-readable 1-2 sentence restatement>",
     "confidence": 0.05-0.95,
     "scope_actors": ["<uuid>", ...],
-    "scope_entities": [{"type": "customer|commitment|goal|decision|resource", "id": "<uuid>"}, ...],
-    "scope_temporal": { "valid_from": "<ISO-8601>", "valid_until": "<ISO-8601 or null>" },
-    "falsifier": { ... schema above if confidence > 0.7 ... } | null
+    "scope_entities": [{"type":"customer|commitment|goal|decision|resource","id":"<uuid>"}],
+    "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
 }
-Do NOT include "title", "description", "embedding", "id", "claim", or any other field in claim_ops.insert.entry — the system computes embeddings from "natural" post-hoc and rejects unknown fields.
+Do NOT include title, description, embedding, id, claim, or unknown fields.
+- update: {"op":"update","model_id":"<uuid>","changes":{...}}
+- archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
+- relocate: {"op":"relocate","model_id":"<uuid>","reason":"<brief>",
+  "relocate_target":{"kind":"model_id|vector|neighborhood_id","value":...,
+  "alpha":0.0-1.0}}. Use relocate sparingly only when topology placement
+  itself is the conclusion; cap at one per run.
 
-Proposition schemas (`proposition` field MUST match one of these exactly based on `kind`):
-- state                 → {"kind": "state", "subject": "<entity or UUID>", "assertion": "<what's true about subject>"}
-- relation              → {"kind": "relation", "subject": "<...>", "relation": "<verb phrase>", "object": "<...>"}
-- prediction            → {"kind": "prediction", "expected": "<what will happen>", "resolution": "<how we'll know>"}
-- pattern               → {"kind": "pattern", "signature": "<recognizable shape>", "observed_tendency": "<what tends to happen>", "trigger_conditions": "<when it fires>"}
-- pattern_instance      → {"kind": "pattern_instance", "pattern_id": "<uuid>", "matched_context": "<...>"}
-- capability_assessment → {"kind": "capability_assessment", "capability_id": "<uuid or name>", "assessment": "<...>"}
-- hypothesis            → {"kind": "hypothesis", "hypothesis_text": "<...>", "test_conditions": "<...>"}
-- concern               → {"kind": "concern", "about": "<subject>", "nature": "<what is concerning>", "raised_by": "<actor or role>"}
-- market_assessment     → {"kind": "market_assessment", "subject_external": "<external entity>", "assessment": "<...>"}
-- environmental_trend   → {"kind": "environmental_trend", "signature": "<...>", "direction": "<up|down|mixed>", "strength": "<weak|moderate|strong>"}
-- recommendation        → {"kind": "recommendation", "target_act_ref": {"type": "goal|commitment|decision|resource", "id": "<uuid or null for create>"} | null, "proposed_change": {"operation": "create|update|archive|transition", "payload": {...}}, "expected_impact": <number or null>, "qualitative_impact": "<string or null — at least one of expected_impact / qualitative_impact MUST be set>", "target_actor_id": "<uuid of the actor expected to decide, typically the CEO>" | null (null when no CEO UUID is in context)}
+Proposition kinds and required payloads:
+- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
+- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
+- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
+- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
+- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
+- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
+- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
+- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
+- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
+- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null"}
+- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+The twelve kinds above are the ONLY valid `kind` values. Do NOT use proposition
+kinds outside this list. Map risk/opportunity language to concern, prediction,
+hypothesis, or recommendation as appropriate.
 
-The eleven kinds above are the ONLY valid `kind` values. Do NOT use "risk", "opportunity", or others — map them to the closest valid kind (concern, prediction, etc.).
+Proposition kind rubric:
+- Use `state` for observed current facts and completed/progress milestones.
+- Use `concern` for risks, blockers, review comments, edge cases, customer
+  pushback, missing evidence, or "worth testing" / "may churn" warnings.
+- Use `prediction` for dated plans, ETAs, future deploys, expected slips,
+  "will/should by <date>", or conditional future outcomes.
+- Use `relation` when the important memory is a dependency or causal link
+  between two entities/facts rather than a new standalone fact.
+- Use `situation` when multiple selected Models/edges form one operational
+  condition that matters as a composite. Situation member_model_ids must be
+  existing Model ids from <models>; do not use situations for simple pairwise
+  links that should be edge_ops.
+- Use `hypothesis` for uncertain explanations that need investigation.
+- Do not flatten every claim into `state`; the proposition kind is part of
+  retrieval quality and should preserve the signal's semantics.
 
-Recommendations — when to emit, when NOT to:
-A `recommendation` Model surfaces a specific Act-layer action a human (typically the CEO) should approve. Produce one when reasoning identifies a concrete change to the Act layer that warrants human approval — revisit a Goal whose assumptions broke, transition a Commitment whose state no longer reflects reality, archive a Decision a newer signal supersedes, reallocate a Resource. Do NOT produce a recommendation for changes the system can make autonomously (a confidence update, a doneunverified transition off a self-reported merge, a Model archive — those are claim_ops or act_ops). Recommendations are for the human-approval queue, not the system's automatic ledger.
+Recommendations:
+- Emit a recommendation Model only for concrete human-approved Act/Resource
+  changes: create/update/archive/transition a Goal, Commitment, Decision, or
+  Resource. Do not recommend autonomous bookkeeping like confidence updates,
+  ordinary Model archives, or doneunverified transitions the system can apply.
+- New self-reported work is special: if the signal says "I've started",
+  "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or
+  equivalent, and <acts> has no matching commitment, emit both a state Model and
+  a recommendation with proposed_change.operation="create" and
+  target_act_ref={"type":"commitment","id":null}. Payload: title, owner_id from
+  actor_id/<actors_in_context>, due_date from the signal or ~30 days out, plus
+  contributes_to_goal_ids from <acts> when a goal fits, otherwise
+  is_maintenance=true.
+- Each recommendation needs proposed_change and either expected_impact or
+  qualitative_impact. Use target_actor_id only from context; null is valid when
+  no CEO/decision-maker UUID is present. Cap recommendations at five.
 
-**MANDATORY RULE — emit `create_commitment` for new self-reported work**:
-When a signal contains a phrase like "I've started", "kicking off", "picked up", "I'm building", "working on", or "I'll deliver" referring to a piece of work, AND `<acts>` does NOT contain a commitment whose title clearly matches that work, you MUST emit a recommendation with `proposed_change.operation="create"` and `target_act_ref={"type":"commitment","id":null}`. The fact that the work is self-reported is exactly why a commitment is needed — without one, the work is invisible to the ledger. Do NOT skip this with reasoning like "purely informational" or "no human approval needed" — the human approval here is the CEO ratifying the new scope. The payload MUST be:
-```
+Model Scope:
+- scope_actors: actor UUIDs the Model is about. Use observation actor_id,
+  existing Model scope_actors, commitment owner, or <actors_in_context>. External
+  senders use scope_actors=[] unless an internal actor is explicitly named.
+- scope_entities: {"type":"customer|commitment|goal|decision|resource",
+  "id":"<uuid>"} from <acts>, <resources>, or bridge_context. Resolve PR/ticket
+  handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
+  names resolve to relational resources. Customer-specific commitment signals
+  should usually include both customer and commitment entities.
+- If a signal names a commitment/customer/goal/decision by title, handle, or
+  obvious phrase, include the matching UUID from context. Never use raw ticket
+  ids or PR numbers as scope entity ids.
+
+Act ops:
+- act_ops mutate Goals/Commitments/Decisions. Common cases:
+  * PR merged, deployed, ticket closed/moved Done for a known commitment ->
+    transition_commitment to doneunverified.
+  * work blocked/waiting/on hold for a known commitment ->
+    transition_commitment to blocked.
+  * a decision is explicitly revisited -> transition_decision to revisited.
+- `confidence_basis` MUST be either an existing Model id copied from <models> OR
+  the `born_from_event_id` of a claim_ops.insert in the same diff. Use the latter
+  when the new claim is the evidence for the transition; the system rewrites it
+  to the inserted Model id after claim application. Do not use any other
+  observation/event id.
+- Do not emit act_ops that the signal owner did not initiate, and never invent
+  commitment/goal/decision UUIDs.
+
+Model granularity:
+- Emit Models only for facts directly asserted or clearly implied by the signal.
+  Do not emit background context, duplicate paraphrases, speculative future
+  implications, or recap Models for already-selected context.
+- Merge co-occurring events that describe one piece of work; split genuinely
+  distinct claims such as "approved" and "edge case needs a test".
+- Before inserting a same-scope claim, check selected Models for an existing
+  belief that the signal confirms, updates, weakens, contradicts, or supersedes.
+  Prefer claim_ops.update, archive, or edge_ops over a duplicate sibling Model.
+- Repeated evidence for the same operational reality should strengthen the
+  existing Model's evidence trail; only insert a new Model when the signal adds
+  a materially new belief, forecast, blocker, or causal explanation.
+- A new T1 signal that asserts progress, approval, review feedback, a blocker,
+  a concrete concern, a customer stance, or a dated plan usually deserves a
+  claim_ops.insert even when no act transition is warranted. Do not no-op merely
+  because the event is "only" a review, comment, suggestion, progress update, or
+  plan. No-op T1 only when the observation is non-substantive or an existing
+  selected Model already captures the same fact at suitable confidence.
+
+edge_ops:
+{ "op":"add|retire", "source_model_id":"<uuid>", "target_model_id":"<uuid>",
+  "edge_kind":"supports|contradicts|weakens|causes|explains|predicts|blocks|enables|same_issue_as|co_occurs_with|analogous_to|alternative_to|early_warning_for|instance_of|contributes_to_resolution|superseded_by",
+  "weight":0.0-1.0|null, "confidence":0.0-1.0,
+  "evidence_event_ids":["<observation uuid>",...],
+  "evidence_model_ids":["<model uuid>",...],
+  "explanation":"<grounded reason>", "metadata":{},
+  "review_status":"accepted|candidate|needs_review", "reason":"<for retire>" }
+- Use edge_ops for relationships between Models: support, contradiction,
+  weakening, causal/explanatory links, blockers/enablers, shared issues,
+  co-occurrence, analogy, alternatives, early warnings, instance_of,
+  contributes_to_resolution, superseded_by.
+- Prefer the sharpest true edge. Use co_occurs_with/same_issue_as/analogous_to
+  only when the evidence does not justify a causal, blocking, explanatory,
+  weakening, contradiction, warning, enabling, or resolution relationship.
+- `weakens` means source_model_id is counterevidence that reduces confidence in
+  target_model_id. If a new signal adds evidence for a risk/concern, use
+  supports or explains instead of weakens.
+- `superseded_by` direction is old -> replacement. If a new claim replaces an
+  existing selected Model, set source_model_id to the existing older Model and
+  target_model_id to the new claim's born_from_event_id.
+- Edge endpoints must be existing Model ids from <models> OR the
+  born_from_event_id of a claim_ops.insert in this same diff when connecting a
+  new claim to existing memory. The system rewrites same-diff event ids to the
+  inserted Model id. Never use other event ids as endpoints. Never use
+  customer, commitment, goal, decision, or resource UUIDs as edge endpoints;
+  put those non-Model entities in scope_entities on the relevant claim.
+- contradicts/weakens require numeric weight. supports/causes/explains/predicts/
+  blocks/enables/same_issue_as/co_occurs_with/analogous_to/alternative_to/
+  early_warning_for may set weight. instance_of/contributes_to_resolution/
+  superseded_by must set weight null.
+
+Return only well-formed JSON, no prose outside the JSON object.
+"""
+
+
+_CLAIMS_ONLY_SYSTEM_PROMPT = """\
+You are the reasoning component of Company OS. This compact pass can only emit
+claim_ops.insert entries or an empty diff. Do not emit edge_ops, act_ops,
+resource_ops, or predictions in this pass; explain omitted action/edge reasoning
+briefly in reasoning_trace when relevant.
+
+Core discipline:
+- Every claim must be traceable to the triggering Observation or an existing
+  Model from <models>. Do not invent UUIDs or entities.
+- Confidence is epistemic, not importance. Direct observed facts usually fit
+  0.75-0.9; hearsay, hedging, missing context, plans, aspirations, and
+  conditional language usually stay <=0.7 unless independently verified.
+- Models above 0.7 confidence MUST specify an adequate falsifier.
+- Self-report is not verification; do not mark work verified from self-report.
+- Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
+  memory invisible and should be rare.
+- Empty diffs are valid only when selected memory already captures the signal or
+  the signal is non-substantive. For empty diffs, reasoning_trace must cite at
+  least one relevant selected Model or Observation by exact full UUID.
+- Never abbreviate UUIDs in reasoning_trace.
+
+Return exactly this JSON shape:
 {
-  "title": "<short noun phrase from the signal, e.g. 'Backend rewrite'>",
-  "owner_id": "<UUID of the actor who self-reported, from actor_id in <observations> or <actors_in_context>>",
-  "due_date": "<ISO date — pull from the signal if it gives a deadline ('in a week' → 7 days from now); otherwise default to 30 days from now>",
-  "contributes_to_goal_ids": ["<best-fit goal UUID from <acts>>"]
+  "trigger_ref": "<uuid echoed from triggering_event>",
+  "tenant_id": "<uuid echoed from triggering_event>",
+  "claim_ops": [],
+  "reasoning_trace": "<brief rationale>"
 }
-```
-If no goal in `<acts>` plausibly fits, omit `contributes_to_goal_ids` and set `"is_maintenance": true` instead. The presence of an existing `state` Model recording the same fact is NOT a reason to skip the recommendation — `state` Models are epistemic; the recommendation is the ledger-facing counterpart and both should coexist.
 
-Each recommendation MUST set `proposed_change` (operation + payload that the act handler will apply via existing endpoints) and at least one of `expected_impact` (numeric, in tenant's primary impact unit, e.g. USD revenue at risk) or `qualitative_impact` (short text — use this when the impact isn't numerically quantifiable). Set `target_act_ref` only when you have a confirmed UUID from <acts> — leave it null if no matching Act exists; NEVER invent or guess a UUID. Set `target_actor_id` to the CEO/decision-maker UUID from <actors_in_context> when available, or null if no such UUID is in context. The `proposed_change.payload` mirrors the corresponding act_op `entity` payload — for `transition`, include `{"new_state": "<state>"}`; for `create_goal`, include `{"title": "...", "altitude": "...", ...}`; etc. The `natural` field on the surrounding claim_op is the single human-readable sentence describing what the human should do (e.g. "Pause Commitment 'Build rate limiter' until the Q3 capacity question is resolved.").
+claim_ops.insert entry shape:
+{
+  "op": "insert",
+  "entry": {
+    "born_from_event_id": "<uuid - echo the triggering observation_id>",
+    "proposition": {"kind": "<one proposition kind below>", "...": "..."},
+    "natural": "<human-readable 1-2 sentence restatement>",
+    "confidence": 0.05-0.95,
+    "scope_actors": ["<uuid>", ...],
+    "scope_entities": [{"type":"customer|commitment|goal|decision|resource","id":"<uuid>"}],
+    "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
+  }
+}
+Do NOT include title, description, embedding, id, claim, or unknown fields.
 
-Recommendations are still Models. If a recommendation claim_op has confidence >0.7, include an adequate falsifier on the surrounding entry (for create actions, a `prediction_deadline` like "no matching commitment/goal exists by review time" is usually appropriate). If you cannot write a concrete falsifier, keep confidence <=0.7.
+Proposition kinds:
+- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
+- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
+- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
+- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
+- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
+- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
+- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
+- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
+- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
+- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null"}
+- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+The twelve kinds above are the ONLY valid `kind` values.
+Kind rubric: state=current observed fact; concern=risk/blocker/review warning/
+edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
+deploy, expected slip, conditional outcome; relation=dependency or causal link;
+hypothesis=uncertain explanation needing investigation; situation=composite
+condition across multiple selected Models. Do not flatten every claim into state.
 
-Cap recommendations at FIVE per Think invocation. If the situation surfaces more, pick the highest-impact ones and drop the rest.
+Falsifier kinds:
+- observation_pattern: {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
+- commitment_outcome: {"kind":"commitment_outcome","commitment_ref":"<uuid>","contradicting_state":"<state>"}
+- prediction_deadline: {"kind":"prediction_deadline","evaluate_at":"<ISO-8601 future>","check":"<what contradicts>"}
+- resource_threshold: {"kind":"resource_threshold","resource_ref":"<uuid>","threshold":{"metric":"X","value":N}}
+- explicit_contestation: {"kind":"explicit_contestation","contesting_actors":["<uuid>",...]}
 
-For recommendation-kind Models, scope_actors should typically be `[<target_actor_id>]` (the actor expected to decide), and scope_entities should include the targeted Act/Resource so the action list ranker and audit logs can find it.
+Recommendations:
+- Emit a recommendation Model only for concrete human-approved Act/Resource
+  changes. Do not recommend routine bookkeeping the system can do itself.
+- If the signal says "I've started", "kicking off", "picked up", "I'm building",
+  "working on", "I'll deliver", or equivalent, and <acts> has no matching
+  commitment, emit both a state Model and a recommendation with
+  proposed_change.operation="create" and target_act_ref={"type":"commitment",
+  "id":null}. Payload: title, owner_id from context, due_date from the signal or
+  about 30 days out, plus contributes_to_goal_ids when a goal fits, otherwise
+  is_maintenance=true.
+- Each recommendation needs proposed_change and either expected_impact or
+  qualitative_impact. Use target_actor_id only from context.
 
-Model Scope — scope_actors and scope_entities are REQUIRED for every inserted Model.
-A Model with both arrays empty cannot be retrieved via the structural pathway,
-cannot cascade, and cannot surface in customer or capability dashboards — it
-is invisible to the system. If both would be empty, reconsider whether the
-Model is meaningful before inserting.
+Scope:
+- scope_actors comes from observation actor_id, existing Model scope_actors,
+  commitment owner, or <actors_in_context>. External senders usually use [].
+- scope_entities comes from <acts>, <resources>, or bridge_context. Resolve PR
+  numbers and ticket IDs to matching commitment UUIDs in <acts>; customer names
+  to relational resources; goal phrases to goals. Never invent UUIDs.
+- Customer-specific commitment signals should usually include both customer and
+  commitment entities when both are available.
 
-Populate both fields where the signal supplies both — a typical Model has a
-`scope_actors` entry (who did / said it) AND a `scope_entities` entry (what
-commitment / customer / decision / goal it advances). Actor-only scope hides
-Models from topic-level queries. Populating at least one of the two is the
-minimum; populating both is the norm.
+Granularity:
+- Insert only facts directly asserted or clearly implied by the signal.
+- New T1 progress, approval, review feedback, blocker, concern, customer stance,
+  or dated plan usually deserves a claim_ops.insert unless an exact selected
+  Model already captures it at suitable confidence.
+- Before inserting, check selected Models for an existing same-scope belief that
+  the signal merely confirms or updates. Prefer an empty diff with exact UUID
+  reasoning when this compact pass cannot emit the needed update.
+- Do not insert recap Models for selected context. Merge one-workstream facts;
+  split genuinely distinct claims.
 
-scope_actors — UUIDs of every actor the Model is about:
-  - the author of the signal (when the Model describes their action);
-  - the subject of the claim (e.g., "Bob has commit access" → Bob);
-  - the actor implied to have done the work (e.g., a "PR merged to main" signal
-    implies the PR's merger as the actor);
-  - the actor affected by a prediction or concern.
-  Pull these UUIDs from the `actor_id=...` values in <observations>, from the
-  `scope_actors=...` field on existing entries in <models>, from `owner=...` on
-  commitments in <acts>, and from the distinct list in <actors_in_context>.
-  DO NOT invent UUIDs.
-  If a signal's `actor_id` is the literal string "external" (an outside sender
-  like a customer contact), leave scope_actors=[] and scope the Model to the
-  relevant entity instead.
-
-scope_entities — non-actor entities the Model is about, as
-  {"type": "<type>", "id": "<uuid>"} pairs.
-  Valid types: customer, commitment, goal, decision, resource.
-  Pull IDs by matching name to section:
-    - customer IDs from <resources> (kind=relational) and <bridge_context>;
-    - commitment/goal/decision IDs from <acts> (match by title, case-insensitive);
-    - generic resource IDs from <resources>.
-  If the signal names "refund flow" and <acts> lists a commitment
-  `id=<UUID> title=Implement refund flow`, include
-  {"type": "commitment", "id": "<that UUID>"} in scope_entities.
-
-  **Always include a scope_entity when the signal references a commitment /
-  customer / goal / decision by name or by handle.** Handles include:
-    - PR numbers (e.g., "PR #847", "#847") — scope to the commitment the PR
-      delivers (match PR title/description to commitment title in <acts>);
-    - ticket IDs (e.g., "ENG-501", "PROD-218", "JIRA-123") — scope to the
-      commitment the ticket tracks;
-    - customer names ("Globex", "Acme Corp") — scope to the customer resource
-      in <resources>;
-    - goal phrases ("payments v2", "reduce churn") — scope to the goal in
-      <acts>.
-  Raw PR numbers and ticket IDs are NOT valid scope_entity ids on their own;
-  they are handles for commitments. Resolve the handle → commitment via
-  <acts>, and put the commitment's UUID in scope_entities.
-
-  Every `id` MUST be a valid 36-char UUID pulled from the context. DO NOT invent.
-
-Examples (UUIDs abbreviated here — use the full 36-char UUIDs from the context):
-
-  <observations> contains:
-    - id=aaaa... actor_id=11111111-1111-1111-1111-111111111111 channel=github:repo
-      at=...: "Alice merged PR #847 for the refund flow to main."
-  <acts> contains:
-    - commitment id=22222222-2222-2222-2222-222222222222 owner=11111111-1111-1111-1111-111111111111
-      title=Implement refund flow
-
-  → A Model "Alice shipped the refund flow to main" should have:
-      scope_actors:   ["11111111-1111-1111-1111-111111111111"]
-      scope_entities: [{"type": "commitment",
-                        "id": "22222222-2222-2222-2222-222222222222"}]
-
-  <observations> contains:
-    - id=bbbb... actor_id=external channel=email:inbox at=...:
-      "Hi Carmen, the team here is frustrated... renewal is not a given."
-  <resources> contains:
-    - resource id=33333333-3333-3333-3333-333333333333 kind=relational ...Globex Inc...
-
-  → A Model "Globex raising churn-risk signals ahead of renewal" should have:
-      scope_actors:   []
-      scope_entities: [{"type": "customer",
-                        "id": "33333333-3333-3333-3333-333333333333"}]
-
-  <observations> contains:
-    - id=cccc... actor_id=44444444-4444-4444-4444-444444444444 channel=slack
-      at=...: "Sarah: I've started work on the backend rewrite."
-  <acts> contains:
-    - goal id=55555555-5555-5555-5555-555555555555 title=Platform reliability
-      altitude=operational state=active
-    (no commitment matching "backend rewrite")
-  <actors_in_context>:
-    - id=44444444-4444-4444-4444-444444444444 display_name=Sarah role=eng
-    - id=99999999-9999-9999-9999-999999999999 display_name=Carmen role=ceo
-
-  → Emit a `state` Model recording "Sarah is leading the backend rewrite",
-    AND a `recommendation` Model so the CEO can ratify the new scope:
-      proposition: {
-        "kind": "recommendation",
-        "target_act_ref": {"type": "commitment", "id": null},
-        "proposed_change": {
-          "operation": "create",
-          "payload": {
-            "title": "Backend rewrite",
-            "owner_id": "44444444-4444-4444-4444-444444444444",
-            "due_date": "<ISO date ~30-60 days from now>",
-            "contributes_to_goal_ids":
-              ["55555555-5555-5555-5555-555555555555"]
-          }
-        },
-        "qualitative_impact": "Tracks newly-started in-flight work",
-        "target_actor_id": "99999999-9999-9999-9999-999999999999"
-      }
-      natural: "Track the backend rewrite as a commitment owned by Sarah."
-      scope_actors: ["99999999-9999-9999-9999-999999999999"]
-      scope_entities: [{"type": "goal",
-                        "id": "55555555-5555-5555-5555-555555555555"}]
-
-When to emit act_ops — the claim_ops are facts you've observed; act_ops are the
-state transitions those facts warrant on Goals / Commitments / Decisions in <acts>.
-Common triggers:
-  - A signal saying "PR merged", "deployed to production", "ticket closed /
-    moved to Done" for work tied to a known commitment → emit
-    {"op": "transition_commitment", "confidence_basis": "<the inserted
-    Model's id or an existing Model's id>", "entity": {"id": "<commitment
-    uuid from <acts>>", "new_state": "doneunverified"}}. Move to
-    doneunverified (not doneverified) — self-report isn't verification.
-  - A signal saying "work blocked on X" / "waiting on Y" for a known
-    commitment → "transition_commitment" to "blocked".
-  - A signal revisiting an earlier decision → "transition_decision" with
-    new_state="revisited".
-Do NOT emit act_ops that the signal's owner didn't initiate, and do not
-invent commitment/goal/decision UUIDs — every id MUST come from <acts>.
-
-Model Granularity — emit Models only for facts directly asserted or clearly
-implied in the signal. Do NOT emit:
-  - Background context that isn't new information (e.g., "Alice is an engineer"
-    when her role hasn't changed).
-  - Facts inferable only via multi-hop reasoning from what's in the signal.
-  - Multiple Models expressing the same fact with different phrasing.
-  - Speculative Models about future implications unless the signal explicitly
-    predicts them.
-When co-occurring events describe the same piece of work (e.g., "PR merged" and
-"ticket moved to Done" arriving together), emit ONE Model capturing the composite
-event — do not split it into two.
-When one signal contains multiple distinct claims (e.g., "approved, but noted
-edge case X worth a unit test"), emit SEPARATE Models for each claim.
-Err on the side of fewer, more precise Models. If two Models could be merged
-without losing fidelity, merge them.
-
-claim_ops.update entry shape:
-{ "op": "update", "model_id": "<uuid>", "changes": { "confidence": N, "signal_readings": [...], ... } }
-
-claim_ops.archive entry shape:
-{ "op": "archive", "model_id": "<uuid>", "reason": "<brief>" }
-
-claim_ops.relocate entry shape (S4 — DELIBERATE TOPOLOGY REPOSITIONING):
-{ "op": "relocate", "model_id": "<uuid>", "reason": "<brief>",
-  "relocate_target": {
-    "kind": "model_id" | "vector" | "neighborhood_id",
-    "value": "<uuid>" | [<128 floats>] | "<uuid>",
-    "alpha": <float in (0, 1], default 1.0>
-  } }
-Use `relocate` SPARINGLY — only when reasoning explicitly concludes a Model belongs in a different region of the substrate's topology than where its current edge graph has placed it. Examples:
-- A `state` Model that the LLM realizes is structurally a member of a known neighborhood (target.kind="neighborhood_id") even though it has no direct edges to that cluster yet.
-- A `concern` Model that should sit positionally near a specific other Model (target.kind="model_id") because they describe related dynamics, even though the substrate hasn't connected them.
-NEVER emit relocate purely to "tidy up" topology — let the alpha-anchored update rule handle organic positioning. Only use it when the LLM has reasoning the substrate cannot derive from edges alone. Cap relocates at ONE per Think run unless multiple are explicitly required by reasoning.
-
-Do NOT:
-- Propose Commitment state transitions the owner didn't initiate.
-- Invent entities not in the retrieved context.
-- Produce high-confidence Models without falsifiers.
-- Duplicate existing Models that already capture this claim.
-
-Keep diffs small. Most events warrant 0-3 claim_ops and 0 act_ops. Only return well-formed JSON — no prose outside the JSON object.
+Return only well-formed JSON, no prose outside the JSON object.
 """
 
 
@@ -309,6 +363,8 @@ def build_prompt(
     triggering_content: str | None = None,
     triggering_actor_summary: str | None = None,
     reason_for_trigger: str | None = None,
+    reasoning_frame: ReasoningFrame | None = None,
+    claims_only: bool = False,
 ) -> PromptPair:
     """
     Produce (system, user) messages for `LLMProvider.structured`.
@@ -322,10 +378,16 @@ def build_prompt(
         triggering_content=triggering_content,
         reason=reason_for_trigger,
     )
+    frame = reasoning_frame.to_prompt_section() if reasoning_frame else None
     context = _build_context_section(bundle, triggering_actor_summary)
     instructions = _build_instructions(trigger)
-    user_msg = f"{triggering}\n\n{context}\n\n{instructions}"
-    return PromptPair(system=_SYSTEM_PROMPT, user=user_msg)
+    parts = [triggering]
+    if frame:
+        parts.append(frame)
+    parts.extend([context, instructions])
+    user_msg = "\n\n".join(parts)
+    system_prompt = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
+    return PromptPair(system=system_prompt, user=user_msg)
 
 
 def _trunc(s: str, limit: int) -> str:
@@ -375,6 +437,15 @@ def _build_context_section(
     # list when the specific observation it wants to scope has been
     # truncated.
     actor_mentions: dict[str, int] = {}  # actor_id (str) -> obs count
+    selected_model_ids, graph_model_ids = _selected_model_sets(bundle)
+
+    retrieval_guidance = _build_retrieval_guidance_section(
+        bundle,
+        selected_model_ids=selected_model_ids,
+        graph_model_ids=graph_model_ids,
+    )
+    if retrieval_guidance:
+        lines.extend(retrieval_guidance)
 
     # Observations
     obs_parts = ["  <observations>"]
@@ -423,6 +494,7 @@ def _build_context_section(
         )
         piece = (
             f"    - id={m.id} kind={m.proposition_kind} "
+            f"retrieval={_retrieval_tags(m.id, selected_model_ids, graph_model_ids)} "
             f"conf={m.confidence:.2f} act={m.activation:.2f} "
             f"falsifier={falsifier} status={m.status} "
             f"scope_actors={scope_actors_repr} "
@@ -479,7 +551,10 @@ def _build_context_section(
         cv = r.current_value or {}
         piece = (
             f"    - resource id={r.id} kind={r.kind} "
-            f"util={r.utilization_state} current_value={_trunc(json.dumps(cv, default=str), 400)}"
+            f"identity={_trunc(r.identity, 120)} "
+            f"description={_trunc(r.description or '', 180)} "
+            f"util={r.utilization_state} "
+            f"current_value={_trunc(json.dumps(cv, default=str), 400)}"
         )
         if used + len(piece) > _RESOURCES_CHAR_BUDGET:
             break
@@ -575,6 +650,138 @@ def _build_context_section(
     return "\n".join(lines)
 
 
+def _selected_model_sets(bundle: ContextBundle) -> tuple[set[str], set[str]]:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    selection = notes.get("model_selection")
+    if not isinstance(selection, dict):
+        return set(), set()
+
+    selected = {
+        str(mid)
+        for mid in (selection.get("selected_model_ids") or [])
+        if mid
+    }
+    pathway_survival = selection.get("pathway_survival")
+    graph_selected: set[str] = set()
+    if isinstance(pathway_survival, dict):
+        graph = pathway_survival.get("G")
+        if isinstance(graph, dict):
+            graph_selected = {
+                str(mid)
+                for mid in (graph.get("selected_model_ids") or [])
+                if mid
+            }
+    return selected, graph_selected
+
+
+def _retrieval_tags(
+    model_id: Any,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+) -> str:
+    tags: list[str] = []
+    mid = str(model_id)
+    if mid in selected_model_ids:
+        tags.append("selected_context")
+    if mid in graph_model_ids:
+        tags.append("graph_anchor")
+    return ",".join(tags) if tags else "context"
+
+
+def _build_retrieval_guidance_section(
+    bundle: ContextBundle,
+    *,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+) -> list[str]:
+    if not selected_model_ids and not graph_model_ids:
+        return []
+
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    selection = notes.get("model_selection")
+    selected_count = len(selected_model_ids)
+    graph_count = len(graph_model_ids)
+    if isinstance(selection, dict):
+        selected_count = int(selection.get("selected_count") or selected_count)
+
+    def _ids(values: set[str]) -> str:
+        ordered = sorted(values)
+        shown = ordered[:_RETRIEVAL_GUIDANCE_ID_LIMIT]
+        suffix = (
+            f", ... +{len(ordered) - len(shown)} more"
+            if len(ordered) > len(shown)
+            else ""
+        )
+        return ", ".join(shown) + suffix
+
+    lines = ["  <retrieval_priority>"]
+    lines.append(
+        "    These are not extra facts; they explain why retrieved Models "
+        "survived into the prompt."
+    )
+    if selected_model_ids:
+        lines.append(
+            f"    selected_model_ids ({selected_count}): {_ids(selected_model_ids)}"
+        )
+    if graph_model_ids:
+        lines.append(
+            f"    graph_anchor_model_ids ({graph_count}): {_ids(graph_model_ids)}"
+        )
+        lines.append(
+            "    Graph anchors are the memory layer's strongest candidate "
+            "connections. Before returning an empty diff or an observation-only "
+            "claim, test whether the trigger confirms, weakens, contradicts, "
+            "blocks, enables, explains, or warns about any graph_anchor Models. "
+            "If it does, use existing Model UUIDs in claim_ops.update, "
+            "edge_ops, act confidence_basis, or evidence_model_ids."
+        )
+        lines.append(
+            "    Co-selection is NOT itself a stored graph connection. If the "
+            "trigger explicitly says one graph-anchor Model blocks, causes, "
+            "enables, explains, warns about, or contradicts another, add an "
+            "edge_ops entry. For 'blocked by', missing prerequisite, or 'at "
+            "risk because' language, prefer edge_kind='blocks' or 'causes' "
+            "over generic supports/explains."
+        )
+        lines.append(
+            "    Use weakens only for counterevidence that lowers confidence "
+            "in the target Model. Evidence that makes a risk more believable "
+            "usually supports or explains that risk; it does not weaken it."
+        )
+        lines.append(
+            "    For superseded_by, direction is old Model -> replacement "
+            "Model. If this trigger creates the replacement, source is the "
+            "existing graph-anchor Model and target is the new claim's "
+            "born_from_event_id."
+        )
+        lines.append(
+            "    Do not create new claim_ops merely to mention graph anchors. "
+            "If the selected Model already captures the fact, prefer an update, "
+            "an edge, or an empty diff with a clear reasoning_trace."
+        )
+        lines.append(
+            "    Edge endpoints must be existing Model ids from <models>, "
+            "or the born_from_event_id of a claim_ops.insert in this same "
+            "diff when connecting a new claim to existing memory."
+        )
+        lines.append(
+            "    If you insert a new claim that advances, confirms, completes, "
+            "or is a milestone within the same workstream as a graph-anchor "
+            "Model, add an edge from the new claim's born_from_event_id to "
+            "the most relevant graph-anchor Model (usually supports, enables, "
+            "contributes_to_resolution, or co_occurs_with). Do not treat an "
+            "act confidence_basis as a substitute for the graph edge."
+        )
+    lines.append(
+        "    If selected context is irrelevant, an empty diff is valid, but "
+        "reasoning_trace must name at least one relevant selected/graph Model "
+        "by its full UUID and briefly say why that context did not warrant a "
+        "state change, edge, or action."
+    )
+    lines.append("  </retrieval_priority>")
+    return lines
+
+
 def _build_instructions(trigger: TriggerContext) -> str:
     """
     Trigger-kind-specific instructions. Same core operating discipline
@@ -594,6 +801,16 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "event reveals (claim_ops) and any state transitions it "
             "warrants (act_ops).\n"
             "\n"
+            "The triggering observation is itself selected context. If it "
+            "contains a concrete new fact, progress update, review result, "
+            "approval, blocker, concern, customer stance, or dated plan that "
+            "is not already captured by a selected Model, emit a "
+            "claim_ops.insert grounded in that observation. Do not return an "
+            "empty diff merely because no Act transition is warranted. If the "
+            "new claim is part of the same workstream as a graph-anchor "
+            "Model, also emit the strongest useful edge from the new claim to "
+            "that graph anchor.\n"
+            "\n"
             "MANDATORY: if the signal contains 'I've started', "
             "'kicking off', 'picked up', 'I'm building', 'working on', "
             "'I'll deliver', or any equivalent self-report of new "
@@ -605,8 +822,8 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "'purely informational' or 'no human approval needed' — the "
             "approval here is the CEO ratifying the new scope into the "
             "ledger. Co-emit the state Model AND the recommendation; "
-            "they are not redundant. See the worked Sarah/backend-rewrite "
-            "example above for the exact shape."
+            "they are not redundant. Use the create-commitment payload "
+            "shape in the system prompt."
         )
     elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
         body.append(
@@ -625,13 +842,15 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "AND <acts> has no matching commitment, you MUST emit a "
             "recommendation with proposed_change.operation='create' and "
             "target_act_ref={\"type\":\"commitment\",\"id\":null}. Use "
-            "the payload shape from the worked Sarah/backend-rewrite "
-            "example above. 'Purely informational progress update' is "
-            "NOT an acceptable reason to skip — the ledger needs a "
+            "the create-commitment payload shape in the system prompt. "
+            "'Purely informational progress update' is NOT an acceptable "
+            "reason to skip — the ledger needs a "
             "commitment for the work to be tracked.\n"
             "\n"
             "  • If purely informational and no CEO action is needed: "
-            "return an empty diff (zero claim_ops).\n"
+            "return an empty diff (zero claim_ops). The selected Model that "
+            "caused this T2 trigger already records the underlying fact; do "
+            "not create recap, elaboration, or bookkeeping state Models.\n"
             "\n"
             "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
             "  - Do NOT set scope_entities unless a UUID appears in <acts> "
@@ -718,6 +937,19 @@ def _build_instructions(trigger: TriggerContext) -> str:
         "ticket (e.g., 'PR #847', 'ENG-501'), resolve the handle to the "
         "commitment in <acts> and include that commitment's UUID in "
         "scope_entities. Do NOT invent UUIDs."
+    )
+    body.append(
+        "Retrieval discipline: when <retrieval_priority> names selected or "
+        "graph-anchor Models, do not ignore them by default. Prefer updating "
+        "an existing selected Model, adding an edge between existing Models, "
+        "or citing selected Models in evidence_model_ids when the trigger "
+        "changes their meaning. Do NOT satisfy this rule by inserting a new "
+        "Model that merely restates selected context. An observation-only "
+        "insert is appropriate only when none of the selected Models is "
+        "actually affected; in that case, say so in reasoning_trace. If the "
+        "trigger only confirms an existing selected Model and confidence is "
+        "already appropriate, prefer an empty diff with a specific trace over "
+        "a duplicate insert."
     )
     body.append(
         "Return ONLY a single JSON object conforming to the Diff schema. "

@@ -7,7 +7,7 @@ conftest.py."""
 from __future__ import annotations
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -17,6 +17,7 @@ from lib.shared.types import TOPO_EMBEDDING_DIM
 from lib.topology.relocate import RelocateTarget
 from services.models.edges_repo import EdgesRepo
 from services.topology.events_repo import (
+    DRIFT_JACCARD_THRESHOLD,
     PrevSnapshot,
     TopologyEventsRepo,
     detect_phase_events,

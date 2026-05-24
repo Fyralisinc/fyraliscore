@@ -16,6 +16,7 @@ the repos; the prompt is explicit about this.
 from __future__ import annotations
 
 import os
+import pathlib
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -27,6 +28,8 @@ from pgvector.asyncpg import register_vector
 from lib.shared.ids import uuid7
 
 from services.models.repo import ModelsRepo
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 pytestmark = pytest.mark.integration
@@ -51,6 +54,10 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         dsn, min_size=1, max_size=25,
         init=_init_connection,
     )
+    async with pool.acquire() as conn:
+        from lib.shared.migrations import apply_migrations_dir
+
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:

@@ -13,8 +13,9 @@ import hashlib
 import json
 import os
 import random
+import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -271,9 +272,11 @@ async def insert_minimal_model(
     natural: str = "Test belief",
 ) -> UUID:
     mid = uuid7()
-    # "state" is one of the kinds allowed by models_proposition_kind_valid
-    # (migration 0035); the older "belief" placeholder predates that CHECK.
-    proposition = proposition or {"kind": "state", "text": natural}
+    proposition = proposition or {
+        "kind": "state",
+        "subject": "test",
+        "assertion": natural,
+    }
     scope_temporal = {"kind": "indefinite"}
     emb = make_embedding(natural)
     await conn.execute(

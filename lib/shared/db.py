@@ -77,16 +77,13 @@ async def close_pool() -> None:
     global _pool
     if _pool is None:
         return
-    try:
-        await _pool.close()
-    except RuntimeError:
-        # The pool may have been created on a different (now-closed)
-        # event loop — e.g. a prior pytest case whose function-scoped
-        # loop has since been torn down. There is nothing to await in
-        # that case; just drop the reference so the process-global
-        # state is clean for the next caller.
-        pass
+    pool = _pool
     _pool = None
+    try:
+        await pool.close()
+    except RuntimeError as exc:
+        if "Event loop is closed" not in str(exc):
+            raise
 
 
 def get_pool() -> asyncpg.Pool:
