@@ -1342,19 +1342,38 @@ async def pathway_f_topological(
 
     # --- Build the HNSW query parameter -----------------------------
     # Match Pathway B's bind format: numpy array when the codec is
-    # registered, stringified literal otherwise.
-    if _conn_has_vector_codec(conn):
-        import numpy as _np
-        vec_param: Any = _np.asarray(
-            [float(x) for x in seed_topo], dtype="float32"
-        )
-    else:
-        vec_param = (
-            "[" + ",".join(f"{float(x):.8f}" for x in seed_topo) + "]"
+    # registered, stringified literal otherwise. The codec *registry*
+    # (services.models.repo.PGVECTOR_REGISTERED_POOL_IDS) can drift from
+    # the connection's actual codec state — e.g. a test conn that called
+    # register_vector() without updating the registry, or a pooled conn
+    # whose id is stale — so keep both forms and retry the query with the
+    # alternate binding on a vector type-mismatch DataError.
+    import numpy as _np
+    _vec_array: Any = _np.asarray(
+        [float(x) for x in seed_topo], dtype="float32"
+    )
+    _vec_str = "[" + ",".join(f"{float(x):.8f}" for x in seed_topo) + "]"
+    _vec_primary, _vec_alt = (
+        (_vec_array, _vec_str)
+        if _conn_has_vector_codec(conn)
+        else (_vec_str, _vec_array)
+    )
+
+    def _topo_args(vec: Any) -> list[Any]:
+        return (
+            [tenant_id, vec, k, seed_model_id]
+            if seed_model_id is not None
+            else [tenant_id, vec, k]
         )
 
+    async def _fetch_topo(sql: str) -> list:
+        try:
+            return await conn.fetch(sql, *_topo_args(_vec_primary))
+        except asyncpg.exceptions.DataError:
+            return await conn.fetch(sql, *_topo_args(_vec_alt))
+
     # --- HNSW NN over topo_embedding --------------------------------
-    nn_rows = await conn.fetch(
+    nn_rows = await _fetch_topo(
         f"""
         SELECT {_MODEL_SELECT_SQL}
         FROM models
@@ -1364,17 +1383,12 @@ async def pathway_f_topological(
           {"AND id != $4" if seed_model_id is not None else ""}
         ORDER BY topo_embedding <=> $2::vector
         LIMIT $3
-        """,
-        *(
-            [tenant_id, vec_param, k, seed_model_id]
-            if seed_model_id is not None
-            else [tenant_id, vec_param, k]
-        ),
+        """
     )
     nn_models = _hydrate_many(nn_rows, _hydrate_model, notes, "models")
 
     if len(nn_models) < min(k, 10):
-        exact_rows = await conn.fetch(
+        exact_rows = await _fetch_topo(
             f"""
             WITH _params AS (
               SELECT $2::vector AS _query_vector, $3::int AS _k
@@ -1386,12 +1400,7 @@ async def pathway_f_topological(
               AND topo_embedding IS NOT NULL
               {"AND id != $4" if seed_model_id is not None else ""}
             LIMIT LEAST(GREATEST($3::int * 20, 200), 5000)
-            """,
-            *(
-                [tenant_id, vec_param, k, seed_model_id]
-                if seed_model_id is not None
-                else [tenant_id, vec_param, k]
-            ),
+            """
         )
         scored_exact: list[tuple[float, ModelRow]] = []
         skipped_exact = 0

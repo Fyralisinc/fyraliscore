@@ -77,7 +77,15 @@ async def close_pool() -> None:
     global _pool
     if _pool is None:
         return
-    await _pool.close()
+    try:
+        await _pool.close()
+    except RuntimeError:
+        # The pool may have been created on a different (now-closed)
+        # event loop — e.g. a prior pytest case whose function-scoped
+        # loop has since been torn down. There is nothing to await in
+        # that case; just drop the reference so the process-global
+        # state is clean for the next caller.
+        pass
     _pool = None
 
 
