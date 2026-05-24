@@ -61,8 +61,12 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
     result = await primary_retrieve(trigger, tx_conn, models_repo=repo)
 
     assert isinstance(result, RetrievalResult)
-    # T1 runs A + B + C
-    assert set(result.notes["pathways_run"]) == {"A", "B", "C"}
+    # T1 runs A + B + C (S3: also F whenever it can produce a seed,
+    # but the test bundle has no topology so F skips with 'empty_seed'
+    # and still returns a PathwayResult — included in pathways_run).
+    run = set(result.notes["pathways_run"])
+    assert {"A", "B", "C"}.issubset(run)
+    assert run.issubset({"A", "B", "C", "F"})
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
@@ -77,10 +81,7 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
         assert m.last_retrieved_at is not None
 
 
-async def test_t2_prediction_path_uses_a_b_and_d(tx_conn, fresh_db, tenant):
-    # T2 mixes structural (A) + semantic (B) + pattern (D). Subset
-    # rather than equality because individual pathways may legitimately
-    # return zero rows on a small fixture and skip themselves.
+async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
     fs = await _build(tx_conn, fresh_db, tenant)
     trigger = TriggerContext(
         kind="T2",
@@ -88,7 +89,10 @@ async def test_t2_prediction_path_uses_a_b_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D"})
+    # T2: A + B + D in the original spec, plus F (S3); F may
+    # short-circuit when no topology seed resolves but is still
+    # recorded in pathways_run.
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "F"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
@@ -104,8 +108,8 @@ async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
     )
     result = await primary_retrieve(trigger, tx_conn)
     assert "A" in result.notes["pathways_run"]
-    # Weights differ from T1 (0.5 / 0.3 / 0.2 vs 0.4 / 0.4 / 0.2)
-    assert result.notes["weights"]["A"] == 0.5
+    # Weights differ from T1: T3's A is heavier (0.4 vs 0.35 in S3).
+    assert result.notes["weights"]["A"] == 0.4
 
 
 async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
@@ -117,7 +121,8 @@ async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
         seed_signature={"regex": "^hotfix"},
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D"})
+    # T4: D + A, plus F (S3) — F often skips on empty seed.
+    assert set(result.notes["pathways_run"]).issubset({"A", "D", "F"})
 
 
 # =====================================================================
@@ -239,6 +244,46 @@ async def test_retrieval_tenant_isolation(
     r = await primary_retrieve(trigger, tx_conn)
     for m in r.models:
         assert m.tenant_id == other_tenant
+
+
+async def test_primary_threads_event_scope_into_semantic_pathway(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    seed = {"type": "commitment", "id": str(fs.hero_commitment_id)}
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[seed],
+        seed_natural_text="alice ships reliably",
+        seed_occurred_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding("alice ships reliably"),
+    )
+    result = await primary_retrieve(trigger, tx_conn)
+    pr_b = next(p for p in result.pathway_results if p.source_pathway == "B")
+    assert pr_b.notes["scope_filter"]["applied"] is True
+    assert pr_b.notes["scope_filter"]["event_entities_count"] == 1
+    assert pr_b.models
+    for m in pr_b.models:
+        assert seed in m.scope_entities
+
+
+async def test_primary_t2_uses_due_model_scope_text_and_embedding_without_embedder(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    trigger = TriggerContext(
+        kind="T2",
+        tenant_id=tenant,
+        model_id=fs.hero_model_id,
+    )
+    result = await primary_retrieve(trigger, tx_conn)
+    pr_b = next(p for p in result.pathway_results if p.source_pathway == "B")
+    assert pr_b.notes["vector_source"] == "precomputed"
+    assert pr_b.notes["scope_filter"]["applied"] is True
+    assert result.notes["effective_scope"]["t2_model_text_fallback"] is True
+    assert result.notes["effective_scope"]["t2_model_embedding_fallback"] is True
+    assert pr_b.models
 
 
 # =====================================================================

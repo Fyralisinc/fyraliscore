@@ -1,0 +1,61 @@
+# Northwind Software — Series B, healthy growth, normal Tuesday.
+# Source: DEMO-BUILD-PLAN.md "The three preloaded companies" (Company B).
+company_id: northwind
+company_name: Northwind Software
+tagline: Series B, healthy growth, normal Tuesday
+ceo_name: Jordan Reyes
+ceo_email: jordan@northwind.io
+description: >-
+  Series B SaaS, 180 employees, $14M ARR, growing 80% YoY. Building a
+  modern HR platform for mid-market companies. Coordination across
+  functions is starting to consume executive attention; the action
+  list helps stay ahead of small fires before they become big ones.
+
+actor_count: 180
+customer_count: 50
+customer_arr_total: 14000000     # $14M ARR
+prospect_count: 25
+goal_count: 8
+decision_count: 8
+commitment_count: 250
+signal_window_days: 365          # 12 months of signal history
+recommendation_count: 7
+
+role_mix:
+  engineer: 60
+  pm: 8
+  gtm: 35
+  ops_leadership: 12
+  customer_success: 18
+  designer: 8
+  marketing: 12
+  recruiter: 4
+  finance: 5
+  legal_advisor: 3
+  contractor_advisor: 6
+  founder: 2
+  data: 7
+reporting_depth: 4
+
+recommendations:
+  - kind: capacity
+    proposition: Engineering at 91% utilization — reallocate before Q3 push
+    impact_usd: 60000
+  - kind: decision_revisit
+    proposition: Postgres-only architecture decision (14 mo old) — conditions changed
+    impact_usd: 90000
+  - kind: personnel
+    proposition: Manager has gone 6 weeks without 1:1s with direct report — attention
+    impact_usd: 30000
+  - kind: customer_pressure
+    proposition: 3 customers requested SAML SSO in past 60 days — $410K ARR exposure
+    impact_usd: 410000
+  - kind: slip_warning
+    proposition: Mid-priority commitment showing slip risk — watch
+    impact_usd: 80000
+  - kind: strategic
+    proposition: Pipeline lean on enterprise — Series B target needs deeper top-of-funnel
+    impact_usd: 1500000
+  - kind: customer_pressure
+    proposition: Early-warning customer health drift on a smaller account
+    impact_usd: 50000

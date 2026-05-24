@@ -60,6 +60,36 @@ _TRANSIENT_ERRORS = (
 )
 
 
+def pytest_configure(config):
+    """Pay UMAP's one-time numba JIT cold-start before any test runs.
+
+    The CEO Map tests fit a real UMAP model (services/topology/
+    umap_projector.py). The first fit in a process JIT-compiles numba
+    kernels, which can take tens of seconds. If that cost lands inside a
+    test it can blow the per-test timeout (pyproject: timeout = 30) — and
+    *which* test absorbs it depends on collection order, so the timeout
+    failure is flaky. Warming here (a configure hook, outside any test
+    item's timeout window) makes the subsequent real fits fast and the
+    suite order-independent. Best-effort: never fail collection on it.
+    """
+    try:
+        import numpy as np
+        import umap
+
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=4,
+            min_dist=0.1,
+            metric="cosine",
+            random_state=42,
+        )
+        reducer.fit_transform(
+            np.random.default_rng(0).normal(size=(8, 8)).astype(float)
+        )
+    except Exception:
+        pass
+
+
 def pytest_runtest_protocol(item, nextitem):
     from _pytest.runner import runtestprotocol
 
@@ -119,15 +149,15 @@ class _DeterministicEmbedder:
 
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
-    migrations = sorted((REPO_ROOT / "db" / "migrations").glob("*.sql"))
-    for p in migrations:
-        await conn.execute(p.read_text())
+    from lib.shared.migrations import apply_migrations_dir
+    await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
-    # demo_configs is seeded only by migrations; truncating it leaves
-    # the table empty between tests because migrations don't re-run.
-    seed_only = ["demo_configs"]
+    # demo_configs is seeded only by migrations (the single pelago demo
+    # company) and the ASGI test transport doesn't run the app lifespan
+    # that would re-seed it, so wiping it leaves /v1/demo/companies empty.
+    # Exclude it — no test mutates it.
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -135,9 +165,8 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-          AND c.relname <> ALL($1::text[])
-        """,
-        seed_only,
+          AND c.relname <> 'demo_configs'
+        """
     )
     tables = [r["relname"] for r in rows]
     if not tables:
@@ -228,6 +257,10 @@ def tenant_id_b() -> UUID:
 async def seeded_actor(gateway_pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
     actor_id = uuid7()
     await gateway_pool.execute(
+        "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+        tenant_id,
+    )
+    await gateway_pool.execute(
         """
         INSERT INTO actors (id, tenant_id, type, display_name, status)
         VALUES ($1, $2, 'human_internal', 'Alice', 'active')
@@ -243,6 +276,10 @@ async def seeded_actor_b(
     gateway_pool: asyncpg.Pool, tenant_id_b: UUID
 ) -> UUID:
     actor_id = uuid7()
+    await gateway_pool.execute(
+        "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+        tenant_id_b,
+    )
     await gateway_pool.execute(
         """
         INSERT INTO actors (id, tenant_id, type, display_name, status)

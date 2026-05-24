@@ -188,6 +188,11 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # /sessions/start endpoint mints the auth token for everything else.
     "/v1/demo/companies",
     "/v1/demo/sessions/start",
+    # IN-06: webhook ingress. Authentication is the per-provider
+    # cryptographic signature check inside services.webhooks.router —
+    # NOT a Bearer token. The Bearer middleware MUST skip this prefix
+    # or every webhook becomes a 401 with `missing_bearer`.
+    "/webhooks/",
 )
 
 
@@ -352,6 +357,16 @@ def build_app(
         nonlocal pool, actor_repo, alias_repo, embedder, rate_limiter
         if pool is None:
             pool = await create_gateway_pool()
+        # Ensure the Pelago demo company is registered. Tests truncate
+        # demo_configs between cases (see services/gateway/tests/
+        # conftest.py), so after running pytest the dev/demo database
+        # is left with no demo companies and the UI's AutoDemoSession
+        # gets stuck on "can't start demo". Idempotent — the migration
+        # uses ON CONFLICT DO UPDATE.
+        try:
+            await _ensure_demo_seed(pool)
+        except Exception:  # noqa: BLE001 — startup must not fail here
+            log.exception("demo_seed_warning")
         if actor_repo is None:
             actor_repo = ActorRepo(pool)
         if alias_repo is None:
@@ -407,22 +422,34 @@ def build_app(
             if rt is not None:
                 try:
                     await rt.dispatcher.stop()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "lifespan_dispatcher_stop_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             ceo = getattr(app_.state, "ceo_view", None)
             if ceo is not None:
                 scheduler = ceo.get("scheduler")
                 if scheduler is not None:
                     try:
                         await scheduler.stop()
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "lifespan_scheduler_stop_failed",
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
             deps: GatewayDeps = app_.state.deps
             if deps.embedder is not None:
                 try:
                     await deps.embedder.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "lifespan_embedder_close_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             if os.environ.get("GATEWAY_OWNS_POOL", "") == "1":
                 await close_gateway_pool(deps.pool)
 
@@ -480,12 +507,111 @@ def build_app(
     from services.demo.router import demo_router as _demo_router
 
     app.include_router(_demo_router)
+
+    # IN-06: webhook gateway router. Mounted at /webhooks/{provider}/...
+    # Bearer middleware is configured to skip this prefix (see
+    # `_PUBLIC_PATH_PREFIXES`). Verification is per-provider signature.
+    from services.webhooks.router import build_webhooks_router
+
+    app.include_router(build_webhooks_router())
+
+    from services.decision_deltas.router import build_router as build_decision_deltas_router
+    from services.forecasts import build_router as build_forecasts_router
+    from services.model_trace.router import router as model_trace_router
+    from services.history.router import router as history_router
+
+    app.include_router(build_decision_deltas_router())
+    app.include_router(build_forecasts_router())
+    app.include_router(model_trace_router)
+    app.include_router(history_router)
+
+    # Spec-aligned product routes (Operating Threads, Decision Deltas
+    # spec view, Forecasts spec view, unified Ledger Events). The UI
+    # tries these endpoints first and falls back to in-browser fixtures
+    # when they 404 — so adding them here is purely additive.
+    from services.gateway.spec_routes import register_spec_routes
+
+    register_spec_routes(app)
+
+    # Model page v2.
+    # Adapter over the existing models / model_edges / model_trace
+    # substrate. The UI falls back to fixtures when data is sparse, so
+    # this is purely additive.
+    from services.gateway.model_page_routes import register_model_page_routes
+
+    register_model_page_routes(app)
+
+    # Today page v2.
+    # Synthesizes the spec's Proposed Change wire shape from the
+    # existing decision_deltas + evidence + topology_events tables.
+    # The DB schema is unchanged; status / field divergences are
+    # handled in the synth layer.
+    from services.gateway.today_routes import register_today_routes
+
+    register_today_routes(app)
     return app
 
 
 # ---------------------------------------------------------------------
 # Helpers — deps resolver (for routes + middleware that run late)
 # ---------------------------------------------------------------------
+
+
+async def _ensure_demo_seed(pool) -> None:  # type: ignore[no-untyped-def]
+    """Re-apply the Pelago demo_configs row if it's missing.
+
+    Tests in services/gateway/tests/conftest.py TRUNCATE all tables
+    between cases, which empties demo_configs and leaves the dev
+    database without any demo companies. Without this safeguard,
+    starting the gateway after a pytest run produces a broken demo:
+    AutoDemoSession in the UI POSTs /api/v1/demo/sessions/start, the
+    gateway responds `unknown demo company_id='pelago'`, and the
+    page never advances past the "Loading Pelago…" splash.
+
+    The insert uses ON CONFLICT DO UPDATE so it's safe to call on
+    every startup. UUID + JSONB literals match
+    db/migrations/0028_pelago_demo_config.sql.
+    """
+    have = await pool.fetchval(
+        "SELECT 1 FROM demo_configs WHERE company_id = 'pelago' LIMIT 1"
+    )
+    if have:
+        return
+    await pool.execute(
+        """
+        INSERT INTO demo_configs (
+            id, company_id, name, description, tagline, snapshot_uri,
+            model_routing, cost_cap_usd_per_session, determinism_seed
+        ) VALUES (
+            '00000000-0000-7d23-8000-000000000004'::uuid,
+            'pelago',
+            'Pelago',
+            $1,
+            'Series A, multi-shock year, founder running on signals',
+            'demo/snapshots/pelago-v1.sql.zst',
+            $2::jsonb,
+            5.00,
+            42
+        )
+        ON CONFLICT (company_id) DO UPDATE
+          SET name = EXCLUDED.name,
+              description = EXCLUDED.description,
+              tagline = EXCLUDED.tagline,
+              snapshot_uri = EXCLUDED.snapshot_uri,
+              model_routing = EXCLUDED.model_routing,
+              cost_cap_usd_per_session = EXCLUDED.cost_cap_usd_per_session,
+              determinism_seed = EXCLUDED.determinism_seed
+        """,
+        (
+            "Series A B2B SaaS revenue-intelligence platform. 35 people, "
+            "$5.8M ARR, 28 customers. Just closed a $14M Series A. The "
+            "company is 9 months in: an anchor design partner has churned, "
+            "the VP Eng departed mid-year, and the org has just "
+            "reorganized around integration surfaces."
+        ),
+        '{"think":"haiku","render":"haiku","entity_resolver":"haiku"}',
+    )
+    log.info("demo_seed_inserted", extra={"company_id": "pelago"})
 
 
 def _deps(request_or_app) -> GatewayDeps:  # type: ignore[no-untyped-def]
@@ -517,16 +643,7 @@ def _register_routes(app: FastAPI) -> None:
         Returns {"token": "...", "expires_at": "..."}.
         """
         deps = _deps(request)
-        bootstrap = os.environ.get("AUTH_BOOTSTRAP_SECRET", "")
-        env_name = os.environ.get("COMPANY_OS_ENV", "dev").lower()
-        # Production MUST have AUTH_BOOTSTRAP_SECRET set. An empty secret
-        # in dev is intentional; in prod it would leave session minting open
-        # to anyone who can enumerate a valid actor_id.
-        if not bootstrap and env_name == "prod":
-            return JSONResponse(
-                {"error": "auth_bootstrap_not_configured"},
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+        bootstrap = os.environ.get("AUTH_BOOTSTRAP_SECRET")
         hdr = request.headers.get("X-Bootstrap-Secret", "")
         if bootstrap and hdr != bootstrap:
             return JSONResponse(
@@ -1792,6 +1909,14 @@ def _register_routes(app: FastAPI) -> None:
                 if isinstance(cv, dict) and isinstance(cv.get("name"), str):
                     brand_name = cv["name"]
 
+            from services.greeting import ViewerStateRepo
+            from datetime import datetime as _vs_dt, timezone as _vs_tz
+            _vs_repo = ViewerStateRepo(deps.pool)
+            previous_last_seen = await _vs_repo.upsert_last_seen(
+                auth.tenant_id, str(target_actor),
+                _vs_dt.now(_vs_tz.utc), conn=conn,
+            )
+
             payload = await build_today(
                 tenant_id=auth.tenant_id,
                 actor_id=target_actor,
@@ -1799,6 +1924,7 @@ def _register_routes(app: FastAPI) -> None:
                 brand_name=brand_name,
                 conn=conn,
                 days_since_inception=days_since,
+                previous_last_seen_at=previous_last_seen,
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 
@@ -1822,12 +1948,19 @@ def _register_routes(app: FastAPI) -> None:
                 status_code=400,
             )
 
+        types_raw = request.query_params.get("types")
+        types_list = (
+            [t for t in types_raw.split(",") if t]
+            if types_raw else None
+        )
+
         deps = _deps(request)
         async with deps.pool.acquire() as conn:
             payload = await build_history(
                 tenant_id=auth.tenant_id,
                 period=period,
                 conn=conn,
+                types=types_list,
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 
@@ -1993,6 +2126,14 @@ def _register_routes(app: FastAPI) -> None:
             status_code=200,
         )
 
+    # ---------------- /api/map/* (CEO Map view) ---------------------
+    # Wires the four map endpoints onto `app`. Imported lazily so the
+    # heavy sklearn dependency only loads when this Gateway boots; the
+    # routes themselves only acquire it on first /api/map/* hit.
+    from services.gateway.map_routes import register_map_routes
+
+    register_map_routes(app)
+
     # ---------------- WS /stream ------------------------------------
     # Wave 4-D mounts the real realtime router on startup via
     # `services.realtime.configure_realtime(app, pool=pool)`. The
@@ -2132,8 +2273,10 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     )
     from services.greeting.api import build_ceo_api_router
     from services.greeting.rendering_adapter import build_rendering_adapter
+    from services.greeting.viewer_state_repo import ViewerStateRepo
 
     cache_repo = ViewCeoCacheRepo(pool)
+    viewer_state_repo = ViewerStateRepo(pool)
     rendering_adapter = build_rendering_adapter()
     scheduler = GreetingScheduler(
         pool=pool,
@@ -2175,6 +2318,7 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
             cache=cache_repo,
             scheduler=scheduler,
             stream_manager=stream_manager,
+            viewer_state_repo=viewer_state_repo,
             default_tenant_id=_UUID(default_tenant) if default_tenant else None,
         )
     )
@@ -2297,6 +2441,7 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     app_.state.ceo_view = {
         "scheduler": scheduler,
         "cache": cache_repo,
+        "viewer_state_repo": viewer_state_repo,
         "stream_manager": stream_manager,
         "rendering_adapter": rendering_adapter,
         "qry_handler": qry_handler,

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Map — CEO view mockup</title>
+<style>
+  :root {
+    --page-bg: #ECEEF2;
+    --page-bg-deep: #DDE0E6;
+    --surface: #FFFFFF;
+    --surface-paper: #FAF8F2;
+    --warm-ink: #232327;
+    --warm-ink-2: #4A4B53;
+    --warm-ink-3: #6E6F78;
+    --rule-soft: #E8E7E2;
+    --rule-faint: #F0EFE8;
+    --accent-teal: #0F766E;
+    --critical: #B91C1C;
+    --warn: #B45309;
+    --good: #15803D;
+    --idle: #94918A;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-deep) 100%);
+    min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--warm-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  body { padding: 48px 32px; }
+
+  /* PAGE HEADER (collapsed greeting + return-visit signal) */
+  .page-head {
+    max-width: 920px;
+    margin: 0 auto 24px;
+    padding: 0 8px;
+  }
+  .page-date {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--warm-ink-3);
+    margin-bottom: 6px;
+  }
+  .page-h1 {
+    font-family: Georgia, "Newsreader", serif;
+    font-size: 30px;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    margin: 0 0 6px;
+  }
+  .page-h1 .name { font-style: italic; }
+  .page-stance {
+    font-family: Georgia, "Newsreader", serif;
+    font-size: 15px;
+    color: var(--warm-ink-2);
+    margin: 0;
+  }
+  .page-stance .strong { color: var(--warm-ink); }
+  .more-link {
+    display: inline-block;
+    margin-top: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--warm-ink-3);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--rule-soft);
+  }
+
+  /* MAP */
+  .map {
+    max-width: 920px;
+    margin: 0 auto;
+    background: var(--surface-paper);
+    border: 1px solid var(--rule-soft);
+    border-radius: 6px;
+    padding: 28px 36px 22px;
+    box-shadow:
+      0 1px 0 rgba(0,0,0,0.02),
+      0 14px 32px -16px rgba(20,20,30,0.10);
+    position: relative;
+  }
+  .map::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 16px; right: 16px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,250,240,0.7), transparent);
+    pointer-events: none;
+  }
+
+  .map-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--rule-faint);
+    margin-bottom: 18px;
+  }
+  .map-title {
+    font-family: Georgia, "Newsreader", serif;
+    font-size: 22px;
+    font-weight: 400;
+    letter-spacing: -0.005em;
+    margin: 0;
+  }
+  .map-meta {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--warm-ink-3);
+    text-align: right;
+    line-height: 1.55;
+  }
+  .map-meta .changed {
+    color: var(--accent-teal);
+    font-weight: 500;
+  }
+
+  .map-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 32px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule-faint);
+  }
+  .map-row:last-of-type { border-bottom: none; }
+
+  .map-cat {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--warm-ink-3);
+    padding-top: 5px;
+  }
+
+  .map-entities {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .entity {
+    display: grid;
+    grid-template-columns: 18px 170px 160px 1fr;
+    align-items: baseline;
+    gap: 14px;
+    padding: 5px 8px;
+    margin: 0 -8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .entity:hover { background: rgba(15, 118, 110, 0.05); }
+
+  .dot {
+    font-size: 9px;
+    color: var(--warm-ink-3);
+    text-align: center;
+  }
+  .dot.live { color: var(--accent-teal); }
+  .dot.idle { color: var(--idle); }
+
+  .ent-name {
+    font-family: Georgia, "Newsreader", serif;
+    font-size: 14.5px;
+    font-style: italic;
+    color: var(--warm-ink);
+  }
+
+  .ent-state {
+    font-size: 12.5px;
+    color: var(--warm-ink-2);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .ent-state.bad   { color: var(--critical); }
+  .ent-state.good  { color: var(--good); }
+  .ent-state.warn  { color: var(--warn); }
+  .ent-state.calm  { color: var(--warm-ink-3); }
+
+  .delta {
+    font-size: 10.5px;
+    font-weight: 700;
+  }
+  .delta.up   { color: var(--good); }
+  .delta.down { color: var(--critical); }
+
+  .star {
+    color: var(--critical);
+    font-weight: 700;
+    margin-left: 3px;
+  }
+
+  .ent-meta {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--warm-ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* summary row (Beliefs, Commitments) — horizontal stats */
+  .row-summary .map-entities {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 28px;
+    padding-top: 6px;
+  }
+  .stat {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--warm-ink-2);
+  }
+  .stat-n {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--warm-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-n.bad  { color: var(--critical); }
+  .stat-n.good { color: var(--good); }
+  .stat-n.idle { color: var(--idle); }
+  .stat-aside {
+    font-family: Georgia, "Newsreader", serif;
+    font-style: italic;
+    color: var(--warm-ink-3);
+    font-size: 12.5px;
+  }
+
+  /* legend */
+  .map-legend {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule-faint);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--warm-ink-3);
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .legend-item .sym { color: var(--warm-ink-2); margin-right: 4px; font-weight: 600; }
+  .legend-item .sym.star { color: var(--critical); }
+  .legend-item .sym.up   { color: var(--good); }
+  .legend-item .sym.down { color: var(--critical); }
+
+  /* what sits below — hint of the cards stack */
+  .below {
+    max-width: 920px;
+    margin: 28px auto 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card-stub {
+    background: var(--surface);
+    border: 1px solid var(--rule-soft);
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    gap: 16px;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+  }
+  .card-stub.crit { border-left-color: var(--critical); }
+  .card-stub.warn { border-left-color: var(--warn); }
+  .card-stub.soft { border-left-color: #D6D3CB; }
+  .card-stub-headline {
+    font-family: Georgia, "Newsreader", serif;
+    font-size: 16px;
+    color: var(--warm-ink);
+  }
+  .card-stub-sub {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    color: var(--warm-ink-3);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+  .card-stub-cta {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--warm-ink-3);
+  }
+
+  .footnote {
+    max-width: 920px;
+    margin: 36px auto 0;
+    font-family: Georgia, "Newsreader", serif;
+    font-style: italic;
+    font-size: 12.5px;
+    color: var(--warm-ink-3);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+  <header class="page-head">
+    <div class="page-date">Fri 15 May · 14:08 · returning visit</div>
+    <h1 class="page-h1">Welcome back, <span class="name">Rachin</span>.</h1>
+    <p class="page-stance"><span class="strong">One decision is on you today.</span> Three things moved. The rest is handled.</p>
+    <a class="more-link" href="#">More from this morning →</a>
+  </header>
+
+  <!-- THE MAP -->
+  <section class="map" aria-label="The map">
+    <div class="map-header">
+      <h2 class="map-title">The Map</h2>
+      <div class="map-meta">
+        fresh 2 min ago<br>
+        <span class="changed">3 entities moved since 17:42</span>
+      </div>
+    </div>
+
+    <!-- CUSTOMERS -->
+    <div class="map-row">
+      <div class="map-cat">Customers</div>
+      <div class="map-entities">
+        <div class="entity">
+          <span class="dot live">●</span>
+          <span class="ent-name">Acme</span>
+          <span class="ent-state bad">at&nbsp;risk <span class="delta down">▼</span><span class="star">*</span></span>
+          <span class="ent-meta">renewal $487K · decide Thu</span>
+        </div>
+        <div class="entity">
+          <span class="dot live">●</span>
+          <span class="ent-name">Northwind</span>
+          <span class="ent-state good">expanding <span class="delta up">▲</span></span>
+          <span class="ent-meta">+0.06 confidence</span>
+        </div>
+        <div class="entity">
+          <span class="dot">○</span>
+          <span class="ent-name">BetaCo</span>
+          <span class="ent-state calm">stable</span>
+          <span class="ent-meta">healthy 28d</span>
+        </div>
+        <div class="entity">
+          <span class="dot">○</span>
+          <span class="ent-name">Delta Systems</span>
+          <span class="ent-state calm">stable</span>
+          <span class="ent-meta">healthy 9d</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GOALS -->
+    <div class="map-row">
+      <div class="map-cat">Goals</div>
+      <div class="map-entities">
+        <div class="entity">
+          <span class="dot live">●</span>
+          <span class="ent-name">Q3 revenue</span>
+          <span class="ent-state good">tracking <span class="delta up">▲</span></span>
+          <span class="ent-meta">conf 0.81 → 0.89</span>
+        </div>
+        <div class="entity">
+          <span class="dot">○</span>
+          <span class="ent-name">Hiring plan</span>
+          <span class="ent-state calm">on track</span>
+          <span class="ent-meta">2 offers out</span>
+        </div>
+        <div class="entity">
+          <span class="dot idle">◌</span>
+          <span class="ent-name">DePIN / Nepal</span>
+          <span class="ent-state warn">idle 41d<span class="star">*</span></span>
+          <span class="ent-meta">standing question</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- BELIEFS -->
+    <div class="map-row row-summary">
+      <div class="map-cat">Beliefs</div>
+      <div class="map-entities">
+        <div class="stat"><span class="stat-n good">4</span> strong <span class="stat-aside">&gt;0.75</span></div>
+        <div class="stat"><span class="stat-n">7</span> forming</div>
+        <div class="stat"><span class="stat-n bad">2</span> weakening<span class="star">*</span> <span class="stat-aside">incl. Acme renewal</span></div>
+        <div class="stat"><span class="stat-n">3</span> falsifiers fired <span class="stat-aside">past 48h</span></div>
+      </div>
+    </div>
+
+    <!-- COMMITMENTS -->
+    <div class="map-row row-summary">
+      <div class="map-cat">Commitments</div>
+      <div class="map-entities">
+        <div class="stat"><span class="stat-n">12</span> in flight</div>
+        <div class="stat"><span class="stat-n bad">1</span> blocked<span class="star">*</span> <span class="stat-aside">Eng-Lead role</span></div>
+        <div class="stat"><span class="stat-n">2</span> due this week</div>
+        <div class="stat"><span class="stat-n good">5</span> closed this week</div>
+      </div>
+    </div>
+
+    <div class="map-legend">
+      <span class="legend-item"><span class="sym star">*</span>needs you</span>
+      <span class="legend-item"><span class="sym up">▲</span><span class="sym down">▼</span> moved since last view</span>
+      <span class="legend-item"><span class="sym">●</span> active</span>
+      <span class="legend-item"><span class="sym">○</span> stable</span>
+      <span class="legend-item"><span class="sym">◌</span> idle</span>
+    </div>
+  </section>
+
+  <!-- HINT: cards live below, anchored to map cells -->
+  <div class="below">
+    <div class="card-stub crit">
+      <div>
+        <div class="card-stub-headline">Acme renewal is structurally unsafe.</div>
+        <div class="card-stub-sub">Observation · revenue at risk · filed Sun 03:12</div>
+      </div>
+      <div class="card-stub-cta">▸ Ask why</div>
+    </div>
+    <div class="card-stub warn">
+      <div>
+        <div class="card-stub-headline">Re-scope the Acme deliverable, or extend the renewal window.</div>
+        <div class="card-stub-sub">Decision · on you · by Thu 24 Apr</div>
+      </div>
+      <div class="card-stub-cta">▸ Ask why</div>
+    </div>
+    <div class="card-stub soft">
+      <div>
+        <div class="card-stub-headline">Is the DePIN goal a real bet, or there because letting it go would feel like giving up?</div>
+        <div class="card-stub-sub">Open question · standing 41 days</div>
+      </div>
+      <div class="card-stub-cta">▸ Ask why</div>
+    </div>
+  </div>
+
+  <p class="footnote">The map is the index. The cards are the chapters. Click any cell to drill in.</p>
+
+</body>
+</html>

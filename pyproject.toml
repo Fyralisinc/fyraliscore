@@ -21,7 +21,8 @@ dependencies = [
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)
     "anthropic>=0.34",
     "openai>=1.40",
-    "zstandard>=0.22",
+    "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
+    "zstandard>=0.22",           # demo snapshot (.zst) read/write
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,8 @@ dev = [
     "hdbscan>=0.8.40",          # Wave 4-C precipitation clustering
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
     "numpy>=2.0",               # transitive; model-embedding stacking
+    "umap-learn>=0.5",          # 2D projection for the CEO Map view (preserves local structure;
+                                # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
 ]
 
@@ -58,6 +61,15 @@ filterwarnings = [
     # actionable from test code and surface as PytestUnraisableException.
     "ignore::ResourceWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
+    # umap-learn emits an ImportWarning when tensorflow isn't installed
+    # (parametric variant unavailable) — we don't use parametric UMAP.
+    "ignore::ImportWarning:umap.*",
+    # umap also UserWarns about n_jobs vs random_state — we set both
+    # deliberately for determinism.
+    "ignore::UserWarning:umap.*",
+    # numba emits NumbaDeprecation/PendingDeprecation warnings transitively.
+    "ignore::DeprecationWarning:numba.*",
+    "ignore::PendingDeprecationWarning:numba.*",
 ]
 addopts = [
     "-ra",
@@ -80,7 +92,12 @@ markers = [
 # Ruff reads that as F811 (redefined-while-unused) — false positive.
 "**/tests/**/test_*.py" = ["F811"]
 "tests/**/test_*.py" = ["F811"]
+# conftest.py files override imported fixtures with local same-named
+# fixtures (e.g. a package-local gateway_pool/tenant_id) — same
+# fixture-rebinding false positive as the test files above.
+"**/tests/**/conftest.py" = ["F811"]
 # String type-annotations referencing not-yet-imported modules. The
 # annotation is evaluated lazily; ruff can't tell it's resolved at
 # runtime via __future__ annotations elsewhere.
 "services/realtime/tests/conftest.py" = ["F821"]
+"services/webhooks/tests/conftest.py" = ["F821"]

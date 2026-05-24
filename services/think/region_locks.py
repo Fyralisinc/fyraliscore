@@ -224,6 +224,75 @@ async def acquire_region_lock(
 # ---------------------------------------------------------------------
 
 
+def touched_entity_ids_from_diff(
+    diff: Any,
+) -> list[tuple[str, str]]:
+    """
+    Extract (type, id) entity pairs from a ValidatedDiff for region-lock
+    keying. Best-effort: a Model being inserted has no id yet, so we
+    derive its region from declared scope (scope_actors + scope_entities)
+    instead. Two diffs with identical scope contend on the same advisory
+    lock and serialize.
+
+    Used by `apply_diff` to acquire its own region lock — direct callers
+    (harness, scripts, future entry points) get serialization without
+    having to remember to lock first. The reason.py path also acquires
+    its own (broader) retrieval-region lock; the two locks coexist
+    because pg_advisory_xact_lock is keyed by tuple, and both release at
+    transaction commit.
+    """
+    entities: set[tuple[str, str]] = set()
+
+    for op in (getattr(diff, "claim_ops", []) or []):
+        if getattr(op, "op", None) == "insert":
+            entry = getattr(op, "entry", None) or {}
+            for a in (entry.get("scope_actors") or []):
+                entities.add(("actor", str(a)))
+            for e in (entry.get("scope_entities") or []):
+                if isinstance(e, dict):
+                    et = e.get("type")
+                    eid = e.get("id")
+                    if et and eid:
+                        entities.add((str(et), str(eid)))
+        else:
+            mid = getattr(op, "model_id", None)
+            if mid is not None:
+                entities.add(("model", str(mid)))
+
+    for op in (getattr(diff, "act_ops", []) or []):
+        ent = getattr(op, "entity", None) or {}
+        op_kind = getattr(op, "op", "") or ""
+        for key, kind in (
+            ("commitment_id", "commitment"),
+            ("goal_id", "goal"),
+            ("decision_id", "decision"),
+        ):
+            v = ent.get(key)
+            if v is not None:
+                entities.add((kind, str(v)))
+        v = ent.get("id")
+        if v is not None:
+            if "commitment" in op_kind:
+                kind = "commitment"
+            elif "goal" in op_kind:
+                kind = "goal"
+            elif "decision" in op_kind:
+                kind = "decision"
+            else:
+                kind = "act"
+            entities.add((kind, str(v)))
+
+    for op in (getattr(diff, "resource_ops", []) or []):
+        rid = getattr(op, "resource_id", None)
+        if rid is not None:
+            entities.add(("resource", str(rid)))
+        cid = getattr(op, "commitment_id", None)
+        if cid is not None:
+            entities.add(("commitment", str(cid)))
+
+    return sorted(entities)
+
+
 def touched_entity_ids(
     retrieval_like: Any,
 ) -> list[tuple[str, str]]:
@@ -295,6 +364,7 @@ __all__ = [
     "region_lock_key",
     "acquire_region_lock",
     "touched_entity_ids",
+    "touched_entity_ids_from_diff",
     "RegionLockAcquisition",
     "compute_primary_entity",
     "compute_region_key_t1",

@@ -73,38 +73,9 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 @pytest_asyncio.fixture
 async def fresh_db(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Pool, None]:
     """
-    Override the root `fresh_db` fixture.
-
-    Originally we relied on tenant-UUID isolation alone. That breaks
-    pathway B (HNSW cosine NN over `models.embedding`): the index
-    operator class returns top-k by similarity FIRST and the
-    `tenant_id`/scope filter is applied AFTER. When other test files
-    leave committed rows in `models` / `observations`, an HNSW search
-    with a small `k` can return zero rows for the test's own tenant
-    even though the rows exist — the test's models simply aren't in
-    the top-k by global similarity. RA-1 / RA-5 tests surfaced this
-    as full-suite-only failures.
-    Truncate the high-volume tables that pathway B searches over so
-    each retrieval test starts with a clean HNSW index.
+    Override the root `fresh_db` fixture. We do NOT TRUNCATE — tenant
+    UUID isolation is our hermetic boundary.
     """
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT c.relname
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public'
-              AND c.relkind IN ('r', 'p')
-              AND c.relispartition = FALSE
-              AND c.relname <> 'demo_configs'
-            """
-        )
-        names = [r["relname"] for r in rows]
-        if names:
-            tables = ", ".join(f'"{t}"' for t in names)
-            await conn.execute(
-                f"TRUNCATE {tables} RESTART IDENTITY CASCADE"
-            )
     yield db_pool
 
 
@@ -122,6 +93,9 @@ async def tx_conn(fresh_db: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, 
         pass
     tx = conn.transaction()
     await tx.start()
+    # Migration 0037: defer tenant FK to commit (rollback teardown
+    # never triggers the check).
+    await conn.execute("SET CONSTRAINTS ALL DEFERRED")
     try:
         yield conn
     finally:

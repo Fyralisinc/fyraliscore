@@ -271,7 +271,9 @@ async def insert_minimal_model(
     natural: str = "Test belief",
 ) -> UUID:
     mid = uuid7()
-    proposition = proposition or {"kind": "belief", "text": natural}
+    # "state" is one of the kinds allowed by models_proposition_kind_valid
+    # (migration 0035); the older "belief" placeholder predates that CHECK.
+    proposition = proposition or {"kind": "state", "text": natural}
     scope_temporal = {"kind": "indefinite"}
     emb = make_embedding(natural)
     await conn.execute(

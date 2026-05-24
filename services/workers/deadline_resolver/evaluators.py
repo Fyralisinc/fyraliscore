@@ -89,49 +89,36 @@ class EvaluationContext:
 
 
 # ---------------------------------------------------------------------
-# Window parser — "4 weeks", "30 days", "6 hours", "any 4-week period"
+# Window parser — delegates to the canonical parser in
+# services.models.falsifier so adequacy and evaluation share grammar.
+# Accepts both ISO-8601 (P7D, PT4H) and human-readable (7 days,
+# any 4-week period) shapes.
+#
+# Wrapped here in a swallow-and-return-None form because evaluators
+# run inside the deadline-resolver worker and `inconclusive` is the
+# right behavior on truly unparseable input *at evaluation time*: by
+# then any malformed value should already have been rejected at
+# Model insert time (services/think/validator.py + repo.insert),
+# so the only way we reach here with garbage is a row that
+# pre-dates the validator change. Treating it as `inconclusive`
+# matches the spec's "fall back to LLM" policy.
 # ---------------------------------------------------------------------
-
-
-_WINDOW_RE = re.compile(
-    r"""
-    ^\s*
-    (?:any\s+)?
-    (\d+(?:\.\d+)?)    # number
-    [- ]?              # optional separator
-    (second|minute|hour|day|week|month|year)
-    s?                 # optional plural
-    (?:\s+period)?     # optional "period"
-    \s*$
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-_WINDOW_MULT = {
-    "second": 1.0,
-    "minute": 60.0,
-    "hour": 3600.0,
-    "day": 86400.0,
-    "week": 7 * 86400.0,
-    "month": 30 * 86400.0,
-    "year": 365 * 86400.0,
-}
 
 
 def parse_window(spec: str | None) -> timedelta | None:
     """Parse a window spec string into a timedelta, or None if invalid.
 
-    Accepts shapes: "4 weeks", "30 days", "6 hours", "any 4-week period".
-    Returns None for None, empty, or unparseable input.
+    Returns `None` for None, empty, or unparseable input. Validation-time
+    rejection happens upstream — see
+    `services.models.falsifier.parse_within_window`.
     """
-    if not spec or not isinstance(spec, str):
+    from services.models.falsifier import parse_within_window
+    from lib.shared.errors import MalformedFalsifierError
+    try:
+        return parse_within_window(spec)
+    except MalformedFalsifierError:
+        # Worker can't repair this; the resolver returns 'inconclusive'.
         return None
-    m = _WINDOW_RE.match(spec)
-    if not m:
-        return None
-    n = float(m.group(1))
-    unit = m.group(2).lower()
-    return timedelta(seconds=n * _WINDOW_MULT[unit])
 
 
 # ---------------------------------------------------------------------

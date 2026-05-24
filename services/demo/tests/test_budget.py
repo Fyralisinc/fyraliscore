@@ -34,7 +34,7 @@ async def test_budget_starts_under_cap(fresh_db: asyncpg.Pool):
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-budget",
+        fresh_db, tenant_id=tid, name="truss-budget",
         is_demo=True, demo_config_id=cfg.id,
     )
     session = await insert_demo_session(
@@ -55,7 +55,7 @@ async def test_budget_flush_persists_costs_and_advances_spent(
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-flush",
+        fresh_db, tenant_id=tid, name="truss-flush",
         is_demo=True, demo_config_id=cfg.id,
     )
     session = await insert_demo_session(
@@ -88,7 +88,7 @@ async def test_budget_trips_when_cumulative_spend_exceeds_cap(
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-cap",
+        fresh_db, tenant_id=tid, name="truss-cap",
         is_demo=True, demo_config_id=cfg.id,
     )
     session = await insert_demo_session(

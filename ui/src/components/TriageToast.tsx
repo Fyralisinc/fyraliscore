@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import type { TriageToast as TriageToastModel } from "@/hooks/useToday";
+import type { TriageAction } from "@/api/today-types";
+
+export type TriageToastModel = {
+  id: number;
+  kind: TriageAction;
+  headline: string;
+  detail?: string;
+  at: number;
+  action?: { label: string; href: string };
+};
 
 type Props = {
   toast: TriageToastModel | null;

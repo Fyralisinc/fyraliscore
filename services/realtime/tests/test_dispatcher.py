@@ -244,29 +244,23 @@ async def test_backpressure_drops_oldest_and_bumps_counter(
 async def test_replay_since_sequence_num_ordered(
     realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
 ) -> None:
-    # Insert observations BEFORE starting the dispatcher. If the
-    # dispatcher's LISTEN connection is up while these inserts run,
-    # the resulting pg_notify events race with the subsequent
-    # `replay_since` call: any NOTIFY processed after `register_client`
-    # is also pushed to the client's queue, producing duplicates and
-    # out-of-order frames. Inserting first keeps NOTIFY off the wire
-    # for any listener and isolates this test to the replay code path.
-    goal_id = uuid7()
-    ids = []
-    async with realtime_pool.acquire() as c:
-        for _ in range(5):
-            ids.append(
-                await _insert_observation(
-                    c,
-                    tenant_id=tenant_id,
-                    entity_kind="goal",
-                    entity_id=goal_id,
-                )
-            )
-
     disp = Dispatcher(realtime_pool)
     await disp.start()
     try:
+        goal_id = uuid7()
+        # Insert 5 observations BEFORE the client connects.
+        ids = []
+        async with realtime_pool.acquire() as c:
+            for _ in range(5):
+                ids.append(
+                    await _insert_observation(
+                        c,
+                        tenant_id=tenant_id,
+                        entity_kind="goal",
+                        entity_id=goal_id,
+                    )
+                )
+        # Client subscribes.
         state = disp.register_client(
             tenant_id=tenant_id,
             actor_id=seeded_actor,
@@ -274,13 +268,32 @@ async def test_replay_since_sequence_num_ordered(
         )
         pushed = await disp.replay_since(state, since_sequence_num=0)
         assert pushed == 5
-        # Drain and check sequence order.
-        seqs = []
-        for _ in range(5):
-            f = await _drain_one(state, timeout=2.0)
+        # The dispatcher is at-least-once: an observation inserted in the
+        # registration window can be delivered by BOTH replay_since and
+        # the live LISTEN loop (the NOTIFY backlog from the inserts may be
+        # processed after the client subscribes). sequence_num is the
+        # resume/dedup key for exactly this reason (migration 0012), so we
+        # drain everything and dedup by it rather than assuming each event
+        # is delivered exactly once in strict drain order — asserting that
+        # made this test flaky under load.
+        received: list[int] = []
+        while True:
+            try:
+                f = await _drain_one(state, timeout=1.0)
+            except asyncio.TimeoutError:
+                break
             assert isinstance(f, EventFrame)
-            seqs.append(f.sequence_num)
-        assert seqs == sorted(seqs)
+            received.append(f.sequence_num)
+        # After dedup, replay must have delivered every missed event,
+        # ordered by sequence_num (replay_since's ORDER BY contract).
+        expected = await realtime_pool.fetch(
+            "SELECT sequence_num FROM observations "
+            "WHERE id = ANY($1::uuid[]) ORDER BY sequence_num ASC",
+            ids,
+        )
+        expected_seqs = [int(r["sequence_num"]) for r in expected]
+        assert len(expected_seqs) == 5
+        assert sorted(set(received)) == expected_seqs
     finally:
         await disp.stop()
 

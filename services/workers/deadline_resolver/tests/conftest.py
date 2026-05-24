@@ -109,8 +109,8 @@ async def resolver_db() -> AsyncGenerator[asyncpg.Pool, None]:
     # Migrations are idempotent — apply once per pool to be safe when
     # run in isolation.
     async with pool.acquire() as conn:
-        for path in sorted((REPO_ROOT / "db" / "migrations").glob("*.sql")):
-            await conn.execute(path.read_text())
+        from lib.shared.migrations import apply_migrations_dir
+        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
     try:
         yield pool
     finally:

@@ -103,7 +103,7 @@ async def test_inflating_calibration_requires_falsifier(fresh_db, tenant, tenant
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "state", "text": "x"},
+                    "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [str(actor)],
@@ -147,7 +147,7 @@ async def test_inflating_calibration_with_adequate_falsifier_passes(
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "prediction", "text": "x"},
+                    "proposition": {"kind": "prediction", "expected": "x", "resolution": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [str(actor)],
@@ -196,7 +196,7 @@ async def test_deflating_calibration_does_not_require_falsifier(
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "state", "text": "x"},
+                    "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [str(actor)],
@@ -233,7 +233,7 @@ async def test_no_calibration_row_is_identity(fresh_db, tenant, tenant_cleanup):
                 ClaimOp(op="insert", entry={
                     "tenant_id": str(tenant),
                     "born_from_event_id": str(uuid7()),
-                    "proposition": {"kind": "state", "text": "x"},
+                    "proposition": {"kind": "state", "subject": "x", "assertion": "y"},
                     "natural": "x",
                     "embedding": [0.0] * 768,
                     "scope_actors": [str(actor)],

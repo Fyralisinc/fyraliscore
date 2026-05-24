@@ -26,12 +26,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
-    for p in sorted((REPO_ROOT / "db" / "migrations").glob("*.sql")):
-        await conn.execute(p.read_text())
+    from lib.shared.migrations import apply_migrations_dir
+    await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
-    # Skip `demo_configs` — seeded by migration only. See root conftest.
     rows = await conn.fetch(
         """
         SELECT c.relname FROM pg_class c
@@ -39,7 +38,6 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
-          AND c.relname <> 'demo_configs'
         """
     )
     names = [r["relname"] for r in rows]

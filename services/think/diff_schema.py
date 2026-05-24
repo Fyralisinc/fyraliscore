@@ -32,17 +32,33 @@ class ClaimOp(BaseModel):
       `applier.py._ALLOWED_MODEL_UPDATE_COLUMNS`.
     - op='archive': `model_id` + `reason` required; reason is a
       `ModelArchiveReason` literal.
+    - op='relocate' (S4): deliberate repositioning of one Model in
+      topology space. Closes the substrate's reasoning loop —
+      arrangement is now a first-class diff op, not just a derived
+      property of the edge graph. Required:
+        * `model_id` — the Model being moved.
+        * `relocate_target` — `{"kind": "model_id"|"vector"|
+          "neighborhood_id", "value": <uuid|list[float]|uuid>,
+          "alpha": <float in (0,1]>}`. `alpha` is the blend factor
+          between the Model's current topo and the target topo
+          (1.0 = full snap to target; 0.5 = halfway; etc.).
+          Defaults to 1.0 if omitted (snap).
+        * `reason` — short string for audit trail.
+      Cascades through `topo_dirty_queue` with bounded fan-out via
+      [TopoRepo.bounded_cascade](services/topology/topo_repo.py).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    op: Literal["insert", "update", "archive"]
+    op: Literal["insert", "update", "archive", "relocate"]
     # For insert:
     entry: dict[str, Any] | None = None
-    # For update / archive:
+    # For update / archive / relocate:
     model_id: UUID | None = None
     changes: dict[str, Any] | None = None
     reason: str | None = None
+    # For relocate (S4):
+    relocate_target: dict[str, Any] | None = None
 
 
 # =====================================================================

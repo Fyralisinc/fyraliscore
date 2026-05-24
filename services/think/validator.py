@@ -52,6 +52,7 @@ from lib.shared.errors import (
     CompanyOSError,
     FalsifierInadequateError,
     InvariantViolation,
+    MalformedFalsifierError,
     TrustTierError,
     ValidationError,
 )
@@ -60,6 +61,7 @@ from lib.shared.trust import TrustTier
 from services.acts.state_machines import can_transition
 from services.models.calibration import apply_calibration
 from services.models.falsifier import is_adequate_falsifier
+from services.models.propositions import validate_proposition
 
 from .diff_schema import ActOp, ClaimOp, RawDiff, ResourceOp, ValidatedDiff
 from .observability import log_dropped_op
@@ -69,7 +71,12 @@ from .thresholds import compute_threshold
 def _classify_claim_drop_reason(exc: Exception) -> str:
     """Map a per-op exception to a short, stable `failure_reason`
     classification tag. Used by OP-4 dropped-op logging."""
-    from lib.shared.errors import FalsifierInadequateError  # local import
+    from lib.shared.errors import (  # local import
+        FalsifierInadequateError,
+        MalformedFalsifierError,
+    )
+    if isinstance(exc, MalformedFalsifierError):
+        return "malformed_falsifier"
     if isinstance(exc, FalsifierInadequateError):
         return "inadequate_falsifier"
     msg = str(getattr(exc, "message", exc)).lower()
@@ -79,6 +86,8 @@ def _classify_claim_drop_reason(exc: Exception) -> str:
         return "immutable_column"
     if "model" in msg and "not found" in msg:
         return "missing_model_reference"
+    if "proposition" in msg:
+        return "invalid_proposition_shape"
     if "non-empty changes" in msg or "requires" in msg:
         return "invalid_shape"
     return "unclassified"
@@ -114,6 +123,32 @@ _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
 _ERROR_RATE_HARD_LIMIT = 0.25  # Retained for callers that import it; no longer enforced as a gate.
 
+_UNCERTAINTY_CONFIDENCE_CAP = 0.69
+_LOW_TRUST_CONFIDENCE_CAP = 0.55
+_UNCERTAINTY_MARKERS = (
+    "maybe",
+    "probably",
+    "eventually",
+    "would love",
+    "we'd love",
+    "no promises",
+    "targeting",
+    "when it's ready",
+    "if leadership",
+    "if they",
+    "if pelago",
+    "otherwise",
+    "aspirational",
+)
+_LOW_TRUST_MARKERS = (
+    "apparently",
+    "secondhand",
+    "heard it",
+    "not sure",
+    "+1 to",
+    "what sarah said",
+)
+
 
 class ValidationFailure(CompanyOSError):
     default_code = "validation_failure"
@@ -138,6 +173,57 @@ def _clip(v: float) -> float:
     if v > _CONFIDENCE_MAX:
         return _CONFIDENCE_MAX
     return v
+
+
+def _extract_observation_text(obs: Any) -> str:
+    for attr in ("content_text", "natural", "text"):
+        value = getattr(obs, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    if isinstance(obs, dict):
+        for key in ("content_text", "natural", "text"):
+            value = obs.get(key)
+            if isinstance(value, str) and value:
+                return value
+        content = obs.get("content")
+    else:
+        content = getattr(obs, "content", None)
+    if isinstance(content, dict):
+        value = content.get("content_text") or content.get("text")
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _confidence_cap_for_linguistic_uncertainty(
+    entry: dict[str, Any],
+    retrieval_result: Any,
+) -> float | None:
+    """Return a deterministic cap for obviously uncertain source text.
+
+    LLMs sometimes understand hedged/conditional language in the
+    natural text but still assign high confidence to a simplified
+    subclaim. The source observation is the contract boundary: if the
+    triggering signal is mostly hedged, aspirational, secondhand, or
+    reply-context-dependent, keep inserted Model confidence below the
+    high-confidence falsifier threshold.
+    """
+    parts = [
+        str(entry.get("natural") or ""),
+        str(entry.get("proposition") or ""),
+    ]
+    trigger = getattr(retrieval_result, "trigger", None)
+    seed = getattr(trigger, "seed_natural_text", None)
+    if isinstance(seed, str):
+        parts.append(seed)
+    for obs in getattr(retrieval_result, "observations", []) or []:
+        parts.append(_extract_observation_text(obs))
+    text = " ".join(parts).lower()
+    if any(marker in text for marker in _LOW_TRUST_MARKERS):
+        return _LOW_TRUST_CONFIDENCE_CAP
+    if any(marker in text for marker in _UNCERTAINTY_MARKERS):
+        return _UNCERTAINTY_CONFIDENCE_CAP
+    return None
 
 
 def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
@@ -338,7 +424,7 @@ async def validate(
             v_op = await _validate_claim_op(
                 op, retrieval_result, conn, tenant_id=diff.tenant_id
             )
-        except (FalsifierInadequateError, ValidationError) as e:
+        except (FalsifierInadequateError, MalformedFalsifierError, ValidationError) as e:
             reason = _classify_claim_drop_reason(e)
             errors.append(
                 f"claim_op {op.op}: {e.message if hasattr(e, 'message') else str(e)}"
@@ -493,6 +579,11 @@ async def _validate_claim_op(
             conn=conn,
         )
         conf = _clip(conf)
+        uncertainty_cap = _confidence_cap_for_linguistic_uncertainty(
+            entry, retrieval_result,
+        )
+        if uncertainty_cap is not None:
+            conf = min(conf, uncertainty_cap)
         # Falsifier check runs AFTER calibration (TK-2). If calibration
         # inflated conf past the threshold, the Model must still have
         # an adequate falsifier.
@@ -505,6 +596,11 @@ async def _validate_claim_op(
                     confidence=conf,
                 )
         entry["confidence"] = conf
+        # Validate the proposition union here, before apply. Live LLM
+        # calls can emit one malformed claim next to valid claims; the
+        # validator's partial-accept contract should drop that one op
+        # instead of letting the applier fail the whole transaction.
+        validate_proposition(entry.get("proposition"))
         # confidence_at_assertion — if the LLM doesn't supply one, use
         # the pre-calibration raw confidence (clipped). This becomes the
         # immutable "what Think originally said" value.
@@ -544,6 +640,23 @@ async def _validate_claim_op(
             raise ValidationError("claim_op archive requires model_id")
         if not op.reason:
             raise ValidationError("claim_op archive requires reason")
+        return op
+
+    if op.op == "relocate":
+        # S4: deliberate topology repositioning. Shape-only checks
+        # here; semantic checks (target exists in tenant, dim
+        # match, alpha range) live in `parse_relocate_target` and
+        # are run by the applier.
+        from lib.topology.relocate import parse_relocate_target
+
+        if op.model_id is None:
+            raise ValidationError("claim_op relocate requires model_id")
+        if not op.relocate_target:
+            raise ValidationError(
+                "claim_op relocate requires relocate_target dict",
+            )
+        # parse_relocate_target raises ValidationError on shape errors.
+        parse_relocate_target(op.relocate_target)
         return op
 
     raise ValidationError(f"unknown claim_op: {op.op!r}")

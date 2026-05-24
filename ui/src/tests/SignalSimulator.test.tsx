@@ -10,7 +10,7 @@ beforeEach(() => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/v1/demo/simulator/suggested")) {
       return new Response(
-        JSON.stringify({ company_id: "pelago", tabs: { slack: [] } }),
+        JSON.stringify({ company_id: "truss", tabs: { slack: [] } }),
         { status: 200 }
       );
     }
@@ -37,7 +37,9 @@ afterEach(() => {
 
 describe("SignalSimulator", () => {
   it("renders all tabs", async () => {
+    const user = userEvent.setup();
     render(<SignalSimulator token="t" sessionId="s" />);
+    await user.click(await screen.findByTestId("sim-open-handle"));
     await waitFor(() => screen.getByText("Slack"));
     for (const t of ["Slack", "Email", "GitHub", "Calendar", "Stripe", "Custom"]) {
       expect(screen.getByText(t)).toBeInTheDocument();
@@ -47,11 +49,11 @@ describe("SignalSimulator", () => {
   it("posts the slack payload with the right channel mapping", async () => {
     const user = userEvent.setup();
     render(<SignalSimulator token="t" sessionId="s" />);
+    await user.click(await screen.findByTestId("sim-open-handle"));
     await waitFor(() => screen.getByText("Slack"));
 
-    const channel = screen.getByPlaceholderText("#sales") as HTMLInputElement;
-    await user.clear(channel);
-    await user.type(channel, "#deals");
+    const channel = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    await user.selectOptions(channel, "#sales");
     const message = screen.getByPlaceholderText(
       /Linear just asked about SSO/
     ) as HTMLTextAreaElement;
@@ -65,7 +67,7 @@ describe("SignalSimulator", () => {
       expect(injectCall).toBeTruthy();
       const body = JSON.parse((injectCall as any[])[1].body);
       expect(body.channel).toBe("slack:message");
-      expect(body.payload.channel).toBe("#deals");
+      expect(body.payload.channel).toBe("#sales");
       expect(body.payload.message).toBe("hello");
     });
   });

@@ -42,6 +42,7 @@ from services.greeting.rendering_adapter import (
     RenderingAdapter,
     MockRenderingAdapter,
 )
+from services.greeting.viewer_state_repo import ViewerStateRepo
 
 __all__ = [
     "CachedContent",
@@ -56,4 +57,5 @@ __all__ = [
     "ViewCeoStreamManager",
     "RenderingAdapter",
     "MockRenderingAdapter",
+    "ViewerStateRepo",
 ]

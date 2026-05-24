@@ -1,5 +1,5 @@
 """services/demo/tests/test_sessions_lifecycle.py — start / reset / end
-flow exercised against the Pelago snapshot loader."""
+flow exercised against the synthetic snapshot loader."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -118,7 +118,7 @@ async def test_inactivity_sweeper_ends_idle_sessions(fresh_db: asyncpg.Pool):
     assert cfg is not None
     tid = uuid7()
     await upsert_tenant(
-        fresh_db, tenant_id=tid, name="pelago-sweeper",
+        fresh_db, tenant_id=tid, name="truss-sweeper",
         is_demo=True, demo_config_id=cfg.id,
     )
     sess = await insert_demo_session(

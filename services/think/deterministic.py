@@ -287,12 +287,41 @@ async def _handle_t4_background(
                 cause_kind = ck
         if dependent_model_id is not None:
             # Nudge confidence downward per cause_kind.
+            #
+            # Pre-S1 five-value taxonomy (preserved exactly):
+            #   supporting_archived/deprecated/superseded — direct
+            #     supporter went away; mild-to-moderate nudge.
+            #   contested_cluster — a contesting cluster fired; stronger.
+            #   falsifier_triggered_upstream — upstream falsifier hit;
+            #     strongest standard nudge.
+            #
+            # S1 (migration 0031) widens the map for cause_kinds
+            # produced by registry-driven edge cascades:
+            #   contributor_archived — a contributing_to_resolution
+            #     supporter (T2 prediction resolver) was archived.
+            #     Treated similarly to supporting_archived.
+            #   pattern_archived — the pattern this Model is an
+            #     instance of was archived. Loses categorization;
+            #     moderate nudge.
+            #   instance_archived — one instance among many of a
+            #     pattern was archived. Pattern's evidence base
+            #     shrinks slightly; mild nudge.
+            #
+            # The pre-S1 CHECK on model_reeval_queue.cause_kind was
+            # dropped in migration 0031 because cause_kinds are now
+            # declarative (registry-owned). The default fallback of
+            # -0.05 means an unknown cause_kind still produces a
+            # safe small nudge; never silently drops the re-eval.
             nudge_map = {
                 "supporting_archived": -0.05,
                 "supporting_deprecated": -0.05,
                 "supporting_superseded": -0.03,
                 "contested_cluster": -0.10,
                 "falsifier_triggered_upstream": -0.15,
+                # S1 additions (registry-driven cascades):
+                "contributor_archived": -0.05,
+                "pattern_archived": -0.07,
+                "instance_archived": -0.02,
             }
             nudge = nudge_map.get(cause_kind, -0.05)
             row = await conn.fetchrow(

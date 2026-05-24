@@ -68,8 +68,8 @@ async def db_pool(request: pytest.FixtureRequest) -> AsyncGenerator[asyncpg.Pool
     repo_root = Path(__file__).resolve().parents[2]
     migrations_dir = repo_root / "db" / "migrations"
     async with pool.acquire() as conn:
-        for path in sorted(migrations_dir.glob("*.sql")):
-            await conn.execute(path.read_text())
+        from lib.shared.migrations import apply_migrations_dir
+        await apply_migrations_dir(conn, migrations_dir)
     try:
         yield pool
     finally:
