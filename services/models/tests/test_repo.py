@@ -1835,3 +1835,54 @@ async def test_get_by_id_round_trip(
     assert got.confidence == pytest.approx(0.475)
     assert got.confidence_at_assertion == 0.5
     assert got.natural == "round trip"
+
+
+# =====================================================================
+# Positional topo_embedding initialization on insert (migration 0032)
+# =====================================================================
+
+
+async def test_insert_initializes_topo_embedding(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    """Inserting a Model must synchronously populate
+    `models.topo_embedding` with the 128-d content_anchor projection
+    so the UMAP map view and Pathway F can see the row immediately.
+    Regression test for commit 31dc9fb which dropped this write."""
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=state_proposition(
+                    subject="topo", assertion="anchored"
+                ),
+                natural="alice is anchored in topo space",
+                embedding=embedding,
+                confidence=0.5,
+            ),
+            conn=tx_conn,
+        )
+
+    persisted = await tx_conn.fetchrow(
+        """
+        SELECT
+            topo_embedding IS NOT NULL AS has_topo,
+            vector_dims(topo_embedding) AS dims,
+            topo_updated_at
+        FROM models
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        row.id,
+        tenant,
+    )
+    assert persisted is not None
+    assert persisted["has_topo"] is True
+    assert persisted["dims"] == 128
+    assert persisted["topo_updated_at"] is not None

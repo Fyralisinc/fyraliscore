@@ -101,6 +101,7 @@ from services.models.propositions import validate_proposition
 from services.models.recommendations import validate_recommendation
 from services.observations.state_change import emit_state_change
 from services.topology import LatentTopologyService
+from services.topology.anchor import content_anchor
 # NOTE: audit module is imported lazily inside the methods that use it.
 # Importing services.think.audit at module-load time triggers
 # services/think/__init__.py, which imports reason.py → retrieval →
@@ -1352,6 +1353,35 @@ class ModelsRepo:
                 created_by_event_id=hydrated.born_from_event_id,
                 update_arrays=False,
             )
+
+        # 7c-pre. Positional topo_embedding (migration 0032). Project
+        # the 768-d content embedding deterministically into the 128-d
+        # topo space so the UMAP map view + Pathway F can see this
+        # Model the moment it commits. The sweeper may later refine
+        # the position with neighbor information; this initial anchor
+        # is the gravitational baseline.
+        #
+        # Skip on NULL/empty embedding (e.g. embedder unavailable):
+        # leave topo_embedding NULL and let a later backfill catch it
+        # rather than blowing up the insert.
+        if embedding:
+            try:
+                topo_anchor = content_anchor(embedding)
+                await conn.execute(
+                    """
+                    UPDATE models
+                       SET topo_embedding = $1::vector,
+                           topo_updated_at = now()
+                     WHERE id = $2 AND tenant_id = $3
+                    """,
+                    topo_anchor,
+                    hydrated.id,
+                    hydrated.tenant_id,
+                )
+            except Exception:
+                # Best-effort: topo_embedding stays NULL and the
+                # sweeper / a backfill will fill it later.
+                pass
 
         # 7c. Topology layer: generate latent relationship/situation
         # candidates from this new Model. Topology is pre-truth here:

@@ -252,7 +252,7 @@ async def apply_diff(
             and op.entry.get("member_model_pending") is True
         )
         if is_pending_situation:
-            members = group_member_ids.get(gid or -1, [])
+            members = group_member_ids.get(gid, []) if gid is not None else []
             if not members:
                 # All atomic members were dropped (rejected/downgraded).
                 # Skip the situation rather than emit an empty composite.
@@ -265,7 +265,9 @@ async def apply_diff(
             prop = op.entry.get("proposition") or {}
             prop["member_model_ids"] = [str(uid) for uid in members]
             op.entry["proposition"] = prop
+            # Strip splitter-only audit markers — ModelCreate forbids extras.
             op.entry.pop("member_model_pending", None)
+            op.entry.pop("split_reasons", None)
 
         if op.op == "insert":
             recon_result = await reconcile_claim_op(
