@@ -23,6 +23,7 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow
 from services.judgment.scoring import JudgmentScores, clamp_score
 from services.relationships.candidates import (
+    TOPOLOGY_EMITTABLE_EDGE_KINDS,
     ModelSignal,
     RelationshipCandidate,
     make_edge_candidate,
@@ -109,13 +110,17 @@ _STAKE_TERMS: dict[str, tuple[str, ...]] = {
     "execution": ("ship", "launch", "release", "roadmap", "delivery"),
 }
 
-_PAIR_EDGE_KIND_BY_PRESSURE = {
+# Pressure → edge_kind mapping is restricted to topology-emittable kinds.
+# Pressures that historically suggested an LLM-only kind (e.g. "overload"
+# → "explains") are intentionally NOT in this table. Topology must not
+# fabricate `explains` / `causes` / `predicts` / `weakens` etc. — those
+# are LLM-only kinds; Think proposes them directly.
+_PAIR_EDGE_KIND_BY_PRESSURE: dict[str, str] = {
     "blocker": "blocks",
     "dependency": "blocks",
     "contradiction": "contradicts",
     "opportunity": "enables",
     "decay": "early_warning_for",
-    "overload": "explains",
     "deadline": "early_warning_for",
 }
 
@@ -596,6 +601,9 @@ class LatentTopologyService:
             if score.total < self.min_insert_score:
                 continue
             edge_kind = _edge_kind_for_interaction(seed_sig, other_sig)
+            if edge_kind not in TOPOLOGY_EMITTABLE_EDGE_KINDS:
+                # Topology never fabricates LLM-only kinds.
+                continue
             source_model_id, target_model_id = _orient_for_edge_kind(
                 model.id,
                 neighbor.row["id"],
@@ -604,28 +612,37 @@ class LatentTopologyService:
                 other_sig,
             )
             explanation = _pair_explanation(model, neighbor.row, score, edge_kind)
+            metadata: dict[str, Any] = {
+                "topology": {
+                    "kind": "latent_relationship_field",
+                    "object_type": "pair_candidate",
+                    "selection_sources": list(neighbor.sources),
+                    "score_components": score.as_dict(),
+                    "impact_signatures": [
+                        seed_sig.as_dict(),
+                        other_sig.as_dict(),
+                    ],
+                }
+            }
+            kwargs: dict[str, Any] = {}
+            justification = _edge_kind_justification(
+                edge_kind, seed_sig, other_sig
+            )
+            if justification:
+                metadata.update(justification.get("metadata", {}))
+                kwargs.update(justification.get("kwargs", {}))
             candidate = make_edge_candidate(
                 tenant_id=model.tenant_id,
                 source_model_id=source_model_id,
                 target_model_id=target_model_id,
                 edge_kind=edge_kind,
-                basis="topology_suggested",
+                basis=justification.get("basis", "topology_suggested") if justification else "topology_suggested",
                 explanation=explanation,
                 scores=_judgment_from_topology(score),
                 evidence_model_ids=(model.id, neighbor.row["id"]),
                 source="latent_topology",
-                metadata={
-                    "topology": {
-                        "kind": "latent_relationship_field",
-                        "object_type": "pair_candidate",
-                        "selection_sources": list(neighbor.sources),
-                        "score_components": score.as_dict(),
-                        "impact_signatures": [
-                            seed_sig.as_dict(),
-                            other_sig.as_dict(),
-                        ],
-                    }
-                },
+                metadata=metadata,
+                **kwargs,
             )
             candidates.append(candidate)
         return rank_candidates(candidates, limit=self.candidate_insert_limit)
@@ -932,7 +949,86 @@ def _edge_kind_for_interaction(
             return kind
     if _intersect(left.flows, right.flows):
         return "same_issue_as"
-    return "co_occurs_with"
+    # `co_occurs_with` is an LLM-only kind; do not fabricate here.
+    return "same_issue_as"
+
+
+def _edge_kind_justification(
+    edge_kind: str,
+    seed_sig: ImpactSignature,
+    other_sig: ImpactSignature,
+) -> dict[str, Any] | None:
+    """Build per-kind justification metadata + make_edge_candidate kwargs.
+
+    Topology-level justification is structural (signature-based), not
+    LLM-level reasoning. Adjudication still requires these fields to
+    accept the candidate as a real edge.
+    """
+    if edge_kind == "blocks":
+        pressures = sorted(set(seed_sig.pressures + other_sig.pressures))
+        basis_reason = (
+            "blocker" if "blocker" in pressures
+            else "dependency" if "dependency" in pressures
+            else "topology_pressure_overlap"
+        )
+        mechanism = (
+            "Topology saw a blocker/dependency pressure surface in at least "
+            "one Model; downstream Think must confirm a concrete dependency."
+        )
+        return {
+            "basis": "causal_hypothesis",
+            "metadata": {
+                "mechanism": mechanism,
+                "dependency_basis": basis_reason,
+            },
+            "kwargs": {
+                "mechanism_summary": mechanism,
+                "intervention_surface": (
+                    "remove blocker, clarify owner, or unblock dependency"
+                ),
+                "expected_delay": "unknown",
+            },
+        }
+    if edge_kind == "early_warning_for":
+        evidence_kind = (
+            "deadline_pressure_overlap"
+            if "deadline" in set(seed_sig.pressures + other_sig.pressures)
+            else "decay_pressure_overlap"
+        )
+        return {
+            "basis": "topology_suggested",
+            "metadata": {
+                "lead_time_evidence": {
+                    "kind": evidence_kind,
+                    "seed_time_shape": seed_sig.time_shape,
+                    "other_time_shape": other_sig.time_shape,
+                },
+                "historical_basis": evidence_kind,
+            },
+            "kwargs": {},
+        }
+    if edge_kind == "enables":
+        return {
+            "basis": "causal_hypothesis",
+            "metadata": {
+                "mechanism": (
+                    "Topology saw an opportunity/capability pressure in at "
+                    "least one Model; downstream Think must verify the target "
+                    "is a capability assessment that this source enables."
+                ),
+            },
+            "kwargs": {
+                "mechanism_summary": (
+                    "Source describes a capability or opportunity that may "
+                    "make the target outcome more likely."
+                ),
+                "intervention_surface": (
+                    "preserve prerequisite, allocate support, or reinforce capability"
+                ),
+                "expected_delay": "unknown",
+            },
+        }
+    return None
 
 
 def _orient_for_edge_kind(
@@ -942,7 +1038,7 @@ def _orient_for_edge_kind(
     left_sig: ImpactSignature,
     right_sig: ImpactSignature,
 ) -> tuple[UUID, UUID]:
-    if edge_kind in {"contradicts", "same_issue_as", "co_occurs_with"}:
+    if edge_kind in {"contradicts", "same_issue_as", "co_occurs_with", "analogous_to"}:
         return (left_id, right_id) if str(left_id) < str(right_id) else (right_id, left_id)
     left_pressure = _pressure_priority(left_sig)
     right_pressure = _pressure_priority(right_sig)

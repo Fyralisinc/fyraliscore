@@ -52,6 +52,17 @@ _PROPOSITION_KINDS: list[dict] = [
             "member_model_ids",
             "relationship_summary",
             "status",
+            # Compositional fields — strict mode requires every property
+            # be listed in `required`, so we make them required-but-
+            # nullable. Pydantic accepts null/absent as None.
+            "pressure_type",
+            "shared_mechanism",
+            "judgment_change",
+            "affected_decisions",
+            "affected_customers",
+            "affected_teams",
+            "evidence_event_ids",
+            "open_falsifier",
         ],
         "properties": {
             "kind": {"type": "string", "enum": ["situation"]},
@@ -60,6 +71,57 @@ _PROPOSITION_KINDS: list[dict] = [
             "member_model_ids": {"type": "array", "items": _UUID_STR},
             "relationship_summary": {"type": "string"},
             "status": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "pressure_type": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "enum": [
+                            "capacity",
+                            "trust",
+                            "revenue",
+                            "compliance",
+                            "decision",
+                            "execution",
+                            "market",
+                            "resource",
+                        ],
+                    },
+                    {"type": "null"},
+                ],
+            },
+            "shared_mechanism": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+            },
+            "judgment_change": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+            },
+            "affected_decisions": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+            "affected_customers": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+            "affected_teams": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+            "evidence_event_ids": {
+                "anyOf": [
+                    {"type": "array", "items": _UUID_STR},
+                    {"type": "null"},
+                ],
+            },
+            "open_falsifier": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+            },
         },
     },
     # recommendation has a structured shape, not all-string fields, so

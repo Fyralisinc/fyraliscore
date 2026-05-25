@@ -1048,6 +1048,7 @@ async def _run_once(
             "candidate_id": str(candidate_adjudication.candidate_id),
             "review_status": candidate_adjudication.review_status,
             "reason": candidate_adjudication.reason,
+            "decision_reason": candidate_adjudication.decision_reason,
             "accepted_model_id": (
                 str(candidate_adjudication.accepted_model_id)
                 if candidate_adjudication.accepted_model_id else None

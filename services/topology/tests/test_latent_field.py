@@ -166,7 +166,10 @@ async def test_latent_topology_generates_candidates_and_t4_trigger(
     )
     assert row is not None
     assert row["source"] == "latent_topology"
-    assert row["basis"] == "topology_suggested"
+    # `blocks`/`enables` now carry `causal_hypothesis` basis (mechanism
+    # required). Other allowed kinds (same_issue_as / early_warning_for /
+    # contradicts / analogous_to / supports) keep `topology_suggested`.
+    assert row["basis"] in {"topology_suggested", "causal_hypothesis"}
     metadata = (
         json.loads(row["metadata"])
         if isinstance(row["metadata"], str)
