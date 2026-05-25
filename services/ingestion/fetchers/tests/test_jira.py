@@ -55,22 +55,23 @@ def _issue(iid, key, updated, *, with_changelog=True, with_comment=True):
 
 
 class _FakeJiraClient:
-    """Two-page full sync; records the JQL it was called with."""
+    """Two-page full sync via the token-paginated /search/jql shape; records
+    the JQL it was called with."""
 
     def __init__(self):
         self.calls: list[dict] = []
 
-    async def search_issues(self, *, jql, start_at, max_results, fields=None, expand="changelog"):
-        self.calls.append({"jql": jql, "start_at": start_at})
-        total = 3
-        if start_at == 0:
+    async def search_issues(self, *, jql, next_page_token=None, max_results=100,
+                            fields=None, expand="changelog"):
+        self.calls.append({"jql": jql, "next_page_token": next_page_token})
+        if next_page_token is None:
             issues = [
                 _issue("10001", "ENG-1", "2026-05-01T10:00:00.000+0000"),
                 _issue("10002", "ENG-2", "2026-05-02T10:00:00.000+0000"),
             ]
-            return issues, 2, total
+            return issues, "tok-2", False  # more pages
         issues = [_issue("10003", "ENG-3", "2026-05-03T10:00:00.000+0000")]
-        return issues, None, total
+        return issues, None, True  # terminal
 
 
 def _patch_client(monkeypatch, client):
@@ -103,18 +104,20 @@ async def test_full_backfill_fans_out_and_advances_cursor(monkeypatch):
     # site stamped from the base_url host (parity with the webhook path).
     assert all(r["_fyralis_site"] == "acme.atlassian.net" for r in res1.records)
     cur = JiraCursor.model_validate(res1.next_cursor)
-    assert cur.start_at == 2
+    assert cur.next_page_token == "tok-2"
     assert cur.high_water_updated == "2026-05-02T10:00:00.000+0000"
     # FULL mode -> JQL has no `updated >=` floor.
     assert "updated >=" not in client.calls[0]["jql"]
 
-    # Page 2 (terminal).
+    # Page 2 (terminal) — the cursor's token is threaded back to the client.
     res2 = await fetch_page_jira(_FakeInst(), shard, res1.next_cursor)
+    assert client.calls[1]["next_page_token"] == "tok-2"
     assert res2.end_of_data is True
     assert len(res2.records) == 3
     cur2 = JiraCursor.model_validate(res2.next_cursor)
     assert cur2.high_water_updated == "2026-05-03T10:00:00.000+0000"
     assert cur2.issues_seen == 3
+    assert cur2.next_page_token is None
 
 
 async def test_warm_start_uses_incremental_jql(monkeypatch):

@@ -4,13 +4,15 @@ A real, threaded HTTP server that mimics the Jira Cloud v3 endpoints the
 ingestion path touches, so a sandbox can drive the REAL JiraClient + fetcher +
 reconciler against it with no Atlassian credentials:
 
-  POST /rest/api/3/search
-      JQL issue search. Three modes the fetcher/reconciler use, distinguished
-      by the JQL the client sends:
-        - full  (`project = "KEY" ORDER BY updated ASC`)          -> all issues,
-          paginated by startAt/maxResults + a `total`.
-        - incremental / probe (`... AND updated >= "<floor>" ...`) -> the
-          project's delta issues (the reconciler probe reads only `total`).
+  POST /rest/api/3/search/jql
+      JQL issue search (the post-2025 token-paginated endpoint; the classic
+      /rest/api/3/search was removed → 410). Returns {issues, nextPageToken,
+      isLast} — the page token encodes the offset. Two JQL modes:
+        - full  (`project = "KEY" ORDER BY updated ASC`)          -> all issues.
+        - incremental (`... AND updated >= "<floor>" ...`)        -> the
+          project's delta issues.
+  POST /rest/api/3/search/approximate-count
+      -> {count} for the reconciler gap probe (replaces the removed `total`).
 
   GET /rest/api/3/project/search
       Projects visible to the token (seed-time enumeration).
@@ -73,8 +75,11 @@ def _make_handler(fixtures: JiraFixtures, hits: dict[str, int]):
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path
             body = self._read_body()
-            if path.endswith("/rest/api/3/search"):
+            if path.endswith("/rest/api/3/search/jql"):
                 self._handle_search(body)
+                return
+            if path.endswith("/rest/api/3/search/approximate-count"):
+                self._handle_count(body)
                 return
             self._json(404, {"errorMessages": [f"no POST route {path}"]})
 
@@ -95,30 +100,39 @@ def _make_handler(fixtures: JiraFixtures, hits: dict[str, int]):
                 return
             self._json(404, {"errorMessages": [f"no GET route {path}"]})
 
-        def _handle_search(self, body: dict[str, Any]) -> None:
-            jql = str(body.get("jql", ""))
-            start_at = int(body.get("startAt", 0) or 0)
-            max_results = int(body.get("maxResults", 50) or 50)
+        def _pool_for(self, jql: str) -> list[dict[str, Any]]:
             m = _PROJECT_RE.search(jql)
             project_key = m.group(1) if m else None
             hits[f"search:{project_key}"] = hits.get(f"search:{project_key}", 0) + 1
-
             fx = fixtures.get(project_key) if project_key else None
             if fx is None:
-                self._json(200, {"startAt": start_at, "maxResults": max_results,
-                                 "total": 0, "issues": []})
-                return
-
+                return []
             incremental = "updated >=" in jql.lower() or "updated>=" in jql.lower()
-            pool = list(fx.get("delta", [])) if incremental else list(fx.get("issues", []))
-            total = len(pool)
-            page = pool[start_at:start_at + max_results]
-            self._json(200, {
-                "startAt": start_at,
-                "maxResults": max_results,
-                "total": total,
-                "issues": page,
-            })
+            return list(fx.get("delta", [])) if incremental else list(fx.get("issues", []))
+
+        def _handle_search(self, body: dict[str, Any]) -> None:
+            """New token-paginated `/rest/api/3/search/jql`: the page token
+            encodes the offset; the response carries `nextPageToken` + `isLast`
+            (NO startAt/total — matching Jira Cloud 2025)."""
+            jql = str(body.get("jql", ""))
+            max_results = int(body.get("maxResults", 50) or 50)
+            try:
+                offset = int(body.get("nextPageToken") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            pool = self._pool_for(jql)
+            page = pool[offset:offset + max_results]
+            next_offset = offset + len(page)
+            is_last = next_offset >= len(pool)
+            resp: dict[str, Any] = {"issues": page, "isLast": is_last}
+            if not is_last:
+                resp["nextPageToken"] = str(next_offset)
+            self._json(200, resp)
+
+        def _handle_count(self, body: dict[str, Any]) -> None:
+            """`/rest/api/3/search/approximate-count` -> {count}."""
+            pool = self._pool_for(str(body.get("jql", "")))
+            self._json(200, {"count": len(pool)})
 
         def _handle_project_search(self, params: dict[str, str]) -> None:
             hits["project_search"] = hits.get("project_search", 0) + 1

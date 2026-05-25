@@ -77,7 +77,11 @@ class JiraCursor(BaseModel):
     """Cursor for one project shard. Round-trips through the opaque dict in
     workflow_states.state_data per the M6.2a contract.
 
-    - start_at            : the next `startAt` offset within this run.
+    The new `/rest/api/3/search/jql` endpoint is TOKEN-paginated (no startAt),
+    so the cursor carries the opaque `next_page_token`, not an offset.
+
+    - next_page_token     : the `/search/jql` continuation token (None on the
+                            first page of a run).
     - high_water_updated  : max issue `updated` (ISO) observed — the warm-start
                             / incremental lower bound AND the reconciler's gap
                             reference point.
@@ -89,7 +93,7 @@ class JiraCursor(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    start_at: int = 0
+    next_page_token: str | None = None
     high_water_updated: str | None = None
     incremental_floor: str | None = None
     issues_seen: int = 0
@@ -234,8 +238,8 @@ async def fetch_page_jira(
     client, close = await _open_jira_client(install)
     try:
         try:
-            issues, next_start, total = await client.search_issues(
-                jql=jql, start_at=cur.start_at, max_results=page_size,
+            issues, next_token, is_last = await client.search_issues(
+                jql=jql, next_page_token=cur.next_page_token, max_results=page_size,
             )
         except JiraApiError as exc:
             if (exc.context or {}).get("code") == "jira_api_rate_limited" or \
@@ -259,8 +263,7 @@ async def fetch_page_jira(
             _bump_high_water(cur, fields.get("updated"))
 
         cur.issues_seen += len(issues)
-        is_last = next_start is None
-        cur.start_at = next_start if next_start is not None else cur.start_at
+        cur.next_page_token = next_token
 
         log.info(
             "jira_backfill_page",
@@ -268,7 +271,6 @@ async def fetch_page_jira(
                 "project_key": project_key,
                 "issues": len(issues),
                 "records": len(records),
-                "total": total,
                 "is_last": is_last,
             },
         )

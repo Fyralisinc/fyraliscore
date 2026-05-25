@@ -210,33 +210,40 @@ class JiraClient:
         self,
         *,
         jql: str,
-        start_at: int = 0,
+        next_page_token: str | None = None,
         max_results: int = _DEFAULT_PAGE_SIZE,
         fields: str | None = None,
         expand: str | None = "changelog",
-    ) -> tuple[list[dict[str, Any]], int | None, int]:
-        """`POST /rest/api/3/search` — issues matching `jql`.
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """`POST /rest/api/3/search/jql` — issues matching `jql`.
 
-        Returns `(issues, next_start_at, total)`. `next_start_at is None`
-        signals the last page (no more results). `expand=changelog` inlines
-        each issue's changelog histories (the transition signal).
+        NOTE (real-API, 2025): Atlassian REMOVED the classic
+        `/rest/api/3/search` (returns 410) in favour of `/search/jql`, which
+        is **token-paginated** — no `startAt`/`total`. Pass the `nextPageToken`
+        from the previous page; the response carries the next one (absent on
+        the last page) + `isLast`. `expand=changelog` inlines each issue's
+        changelog histories (the transition signal).
+
+        Returns `(issues, next_page_token, is_last)`. `next_page_token is None`
+        (== `is_last`) signals no more pages.
         """
         body: dict[str, Any] = {
             "jql": jql,
-            "startAt": start_at,
             "maxResults": max_results,
             "fields": (fields or DEFAULT_ISSUE_FIELDS).split(","),
         }
         if expand:
-            body["expand"] = expand.split(",")
-        resp = await self._request("POST", "/rest/api/3/search", json_body=body)
+            body["expand"] = expand  # /search/jql takes expand as a string
+        if next_page_token:
+            body["nextPageToken"] = next_page_token
+        resp = await self._request("POST", "/rest/api/3/search/jql", json_body=body)
         issues = resp.get("issues")
         issues = [i for i in issues if isinstance(i, dict)] if isinstance(issues, list) else []
-        total = int(resp.get("total", 0) or 0)
-        returned_start = int(resp.get("startAt", start_at) or start_at)
-        next_start = returned_start + len(issues)
-        is_last = next_start >= total or not issues
-        return issues, (None if is_last else next_start), total
+        token = resp.get("nextPageToken")
+        token = token if isinstance(token, str) and token else None
+        # Terminal when the API says so OR there's no continuation token.
+        is_last = bool(resp.get("isLast")) or token is None
+        return issues, (None if is_last else token), is_last
 
     async def list_projects(
         self,
@@ -265,15 +272,16 @@ class JiraClient:
     ) -> bool:
         """Cheap reconciler gap probe: are there issues in `project_key`
         updated at/after `updated_min_jql` (a `yyyy/MM/dd HH:mm` JQL literal)?
-        Runs a 1-row search and reads `total`. Over-reshares are harmless
-        (dedup makes the re-walk idempotent); it never under-reshares."""
+        Uses `/rest/api/3/search/approximate-count` (the new endpoint's count
+        surface, since `/search/jql` no longer returns `total`). Over-reshares
+        are harmless (dedup makes the re-walk idempotent); never under-reshares."""
         safe_key = project_key.replace('"', "")
         jql = f'project = "{safe_key}" AND updated >= "{updated_min_jql}"'
         body = await self._request(
-            "POST", "/rest/api/3/search",
-            json_body={"jql": jql, "startAt": 0, "maxResults": 1, "fields": ["updated"]},
+            "POST", "/rest/api/3/search/approximate-count",
+            json_body={"jql": jql},
         )
-        return int(body.get("total", 0) or 0) > 0
+        return int(body.get("count", 0) or 0) > 0
 
     async def myself(self) -> dict[str, Any]:
         """`GET /rest/api/3/myself` — the authenticated account; a cheap
