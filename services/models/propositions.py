@@ -117,6 +117,18 @@ class EnvironmentalTrendProposition(_PropositionBase):
     strength: str | float
 
 
+SituationPressureType = Literal[
+    "capacity",
+    "trust",
+    "revenue",
+    "compliance",
+    "decision",
+    "execution",
+    "market",
+    "resource",
+]
+
+
 class SituationProposition(_PropositionBase):
     """Composite operational belief backed by multiple Models/edges.
 
@@ -124,6 +136,24 @@ class SituationProposition(_PropositionBase):
     in a way that matters." Pairwise relationships should stay in
     `model_edges`; a situation summarizes a subgraph humans would struggle
     to hold at once.
+
+    Compositional fields (all optional for backward compatibility, will
+    tighten in a later phase):
+
+      - `pressure_type` — which of the eight pressure categories this
+        situation expresses.
+      - `shared_mechanism` — one sentence on why these members belong
+        together (the causal/operational thread).
+      - `judgment_change` — one sentence on what becomes clear only when
+        the members are viewed as one composite.
+      - `affected_decisions` / `affected_customers` / `affected_teams` —
+        downstream surfaces the situation touches (free-form strings:
+        entity names or stringified actor UUIDs).
+      - `evidence_event_ids` — Observation UUIDs that ground the
+        composite claim, drawn from the trigger bundle.
+      - `open_falsifier` — under what observation would this composite be
+        invalid; a human-readable hedge complementing the structured
+        falsifier on the enclosing Model.
     """
 
     kind: Literal["situation"] = "situation"
@@ -132,6 +162,14 @@ class SituationProposition(_PropositionBase):
     member_model_ids: list[str] = Field(default_factory=list)
     relationship_summary: str
     status: str | None = None
+    pressure_type: SituationPressureType | None = None
+    shared_mechanism: str | None = None
+    judgment_change: str | None = None
+    affected_decisions: list[str] | None = None
+    affected_customers: list[str] | None = None
+    affected_teams: list[str] | None = None
+    evidence_event_ids: list[str] | None = None
+    open_falsifier: str | None = None
 
     @model_validator(mode="after")
     def _check_situation_shape(self) -> "SituationProposition":
@@ -143,6 +181,26 @@ class SituationProposition(_PropositionBase):
             raise ValueError("relationship_summary must be non-empty")
         if len(set(self.member_model_ids)) != len(self.member_model_ids):
             raise ValueError("member_model_ids must not contain duplicates")
+        # Reject empty strings on optional text fields — present-but-empty
+        # is almost always a downstream bug. Absent (None) stays valid for
+        # backward compatibility.
+        for field_name in ("shared_mechanism", "judgment_change", "open_falsifier"):
+            value = getattr(self, field_name)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field_name} must be non-empty when provided")
+        for list_field in (
+            "affected_decisions",
+            "affected_customers",
+            "affected_teams",
+            "evidence_event_ids",
+        ):
+            value = getattr(self, list_field)
+            if value is None:
+                continue
+            if any((not isinstance(v, str) or not v.strip()) for v in value):
+                raise ValueError(
+                    f"{list_field} entries must be non-empty strings when provided"
+                )
         return self
 
 
@@ -317,6 +375,8 @@ __all__ = [
     "ConcernProposition",
     "MarketAssessmentProposition",
     "EnvironmentalTrendProposition",
+    "SituationProposition",
+    "SituationPressureType",
     "RecommendationProposition",
     "validate_proposition",
     "proposition_kind",
