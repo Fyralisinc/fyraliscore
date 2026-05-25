@@ -56,7 +56,18 @@ async def _insert_model(
     born_from_event: uuid.UUID,
     kind: str,
 ) -> None:
-    proposition = f'{{"kind":"{kind}","subject":"x","assertion":"y"}}'
+    # The DB CHECK constraints only inspect `proposition->>'kind'` plus
+    # (for situations) `pressure_type` and `shared_mechanism`. We don't
+    # need a fully Pydantic-valid payload — we only need the CHECK
+    # constraint to accept it.
+    if kind == "situation":
+        proposition = (
+            '{"kind":"situation",'
+            '"pressure_type":"capacity",'
+            '"shared_mechanism":"members share one capacity squeeze"}'
+        )
+    else:
+        proposition = f'{{"kind":"{kind}","subject":"x","assertion":"y"}}'
     await conn.execute(
         """
         INSERT INTO models (

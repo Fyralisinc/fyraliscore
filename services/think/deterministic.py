@@ -393,22 +393,30 @@ async def _handle_t4_background(
                 # uses the caller-supplied conn.
                 repo = ModelsRepo(pool=None)
                 try:
-                    await promote_pattern_candidate(
-                        conn,
-                        candidate_id,
-                        models_repo=repo,
-                        born_from_event_id=born_event,
-                    )
+                    async with conn.transaction():
+                        await promote_pattern_candidate(
+                            conn,
+                            candidate_id,
+                            models_repo=repo,
+                            born_from_event_id=born_event,
+                        )
                 except Exception as e:
                     # If promotion fails (e.g., constituent Models
                     # vanished between enqueue and promote), mark the
                     # candidate rejected so Think doesn't retry
                     # forever.
-                    await reject_pattern_candidate(
-                        conn,
-                        candidate_id,
-                        reason=f"promotion failed: {type(e).__name__}: {e}",
-                    )
+                    try:
+                        async with conn.transaction():
+                            await reject_pattern_candidate(
+                                conn,
+                                candidate_id,
+                                reason=(
+                                    "promotion failed: "
+                                    f"{type(e).__name__}: {e}"
+                                ),
+                            )
+                    except Exception:
+                        pass
 
     return RawDiff(
         trigger_ref=_trigger_ref(trigger),

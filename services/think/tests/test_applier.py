@@ -83,6 +83,34 @@ async def test_apply_diff_acquires_tenant_model_write_lock(
     assert calls[0] == [("tenant_model_write", str(tenant))]
 
 
+async def test_reconciler_db_error_does_not_poison_apply_transaction(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    monkeypatch,
+):
+    """Reconciler is best-effort, so its DB failures use a savepoint."""
+    from services.think import reconciler
+
+    async def failing_inner(*args, **kwargs):
+        conn = args[1]
+        await conn.execute("SELECT 1 / 0")
+
+    monkeypatch.setattr(reconciler, "_reconcile_inner", failing_inner)
+
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            result = await reconciler.reconcile_claim_op(
+                ClaimOp(op="insert", entry={"natural": "duplicate-ish claim"}),
+                conn,
+                tenant_id=tenant,
+                trigger_id=uuid7(),
+                think_run_id=uuid7(),
+            )
+            assert result.decision == "skipped"
+            assert await conn.fetchval("SELECT 1") == 1
+
+
 async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
     """Happy path: a single claim_op insert creates a Model + state_change."""
     from services.think.tests.conftest import make_embedding
@@ -637,7 +665,114 @@ async def test_apply_partial_failure_rolls_back_all_ops(fresh_db, tenant, tenant
             "SELECT COUNT(*) FROM models WHERE tenant_id = $1",
             tenant,
         )
-        assert n == 0
+    assert n == 0
+
+
+async def test_apply_drops_domain_invalid_act_op_without_rolling_back_claims(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """
+    Late-discovered domain-invalid act_ops are dropped like validator
+    partial failures. Valid claim_ops from the same signal still commit.
+    """
+    from services.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = uuid7()
+        actor_id = uuid7()
+        commitment_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, 'x',
+                    $3, FALSE, 'authoritative')
+            """,
+            oid, tenant, make_embedding("x"),
+        )
+        await conn.execute(
+            "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+            "VALUES ($1, $2, 'human_internal', 'owner', 'active')",
+            actor_id,
+            tenant,
+        )
+        await conn.execute(
+            """
+            INSERT INTO commitments
+              (id, tenant_id, title, state, owner_id, created_by_event_id,
+               last_state_change_at, is_maintenance)
+            VALUES ($1, $2, 'ship reliability work', 'active', $3, $4, now(), TRUE)
+            """,
+            commitment_id,
+            tenant,
+            actor_id,
+            oid,
+        )
+        trigger_ref = uuid7()
+        diff = ValidatedDiff(
+            trigger_ref=trigger_ref,
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(oid),
+                    "proposition": {
+                        "kind": "state",
+                        "subject": "reliability",
+                        "assertion": "new risk surfaced",
+                    },
+                    "natural": "A new reliability risk surfaced.",
+                    "embedding": make_embedding("reliability risk"),
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.7,
+                    "confidence_at_assertion": 0.7,
+                }),
+            ],
+            act_ops=[
+                ActOp(
+                    op="transition_commitment",
+                    confidence_basis=oid,
+                    entity={
+                        "id": str(commitment_id),
+                        "new_state": "blocked",
+                    },
+                )
+            ],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                "T1",
+                oid,
+                models_repo=repo,
+            )
+
+        model_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM models WHERE tenant_id = $1",
+            tenant,
+        )
+        commitment_state = await conn.fetchval(
+            "SELECT state FROM commitments WHERE id = $1",
+            commitment_id,
+        )
+        trigger_outcome = await conn.fetchval(
+            "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
+            trigger_ref,
+        )
+
+    assert model_count == 1
+    assert commitment_state == "active"
+    assert trigger_outcome == "success"
+    assert result["apply_dropped_op_count"] == 1
+    assert result["act_ops"][0]["op"] == "skip"
+    assert result["act_ops"][0]["reason"] == "illegal_transition"
 
 
 async def test_hash_diff_is_stable():
@@ -748,3 +883,63 @@ async def test_apply_edge_ops_add_and_retire(fresh_db, tenant, tenant_cleanup):
         assert {r["status_reason"] for r in statuses} == {
             "operator resolved the contradiction"
         }
+
+
+async def test_apply_edge_cycle_is_dropped_not_transaction_fatal(
+    fresh_db, tenant, tenant_cleanup,
+):
+    from services.models.edges_repo import EdgesRepo
+    from services.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="A supports B, but reverse support is invalid",
+            external_id=f"edge-cycle-drop-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "A")
+        b = await _insert_applier_model(conn, tenant, oid, "B")
+        repo = EdgesRepo()
+        async with conn.transaction():
+            await repo.link(
+                conn,
+                source=a,
+                target=b,
+                kind="supports",
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                confidence=0.8,
+            )
+
+        trigger_ref = uuid7()
+        diff = ValidatedDiff(
+            trigger_ref=trigger_ref,
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=b,
+                    target_model_id=a,
+                    edge_kind="supports",
+                    confidence=0.8,
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        outcome = await conn.fetchval(
+            "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
+            trigger_ref,
+        )
+        edge_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM model_edges WHERE tenant_id = $1",
+            tenant,
+        )
+
+    assert outcome == "success"
+    assert edge_count == 1
+    assert result["apply_dropped_op_count"] == 1
+    assert result["edge_ops"][0]["op"] == "skip"
+    assert result["edge_ops"][0]["reason"] == "cycle_prevention"

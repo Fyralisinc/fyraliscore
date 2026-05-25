@@ -320,6 +320,23 @@ def every_kind_proposition() -> list[dict]:
                 "than isolated facts."
             ),
             "status": "forming",
+            "pressure_type": "revenue",
+            "shared_mechanism": (
+                "All three member claims point to the same delivery slippage "
+                "loop on the Beacon account."
+            ),
+            "judgment_change": (
+                "Each member alone is recoverable; together they describe a "
+                "renewal at material risk before quarter-end."
+            ),
+            "affected_decisions": ["renewal pricing", "owner reassignment"],
+            "affected_customers": ["Beacon Inc"],
+            "affected_teams": ["customer success", "platform"],
+            "evidence_event_ids": [str(uuid7()), str(uuid7())],
+            "open_falsifier": (
+                "Beacon countersigns the renewal at list price within 14 days "
+                "and implementation milestones resume on track."
+            ),
         },
     ]
 

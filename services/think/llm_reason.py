@@ -20,7 +20,13 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from lib.llm.provider import LLMError, LLMParseError, LLMProvider
+from lib.llm.provider import (
+    LLMError,
+    LLMParseError,
+    LLMProvider,
+    classify_error,
+    retry_policy_for,
+)
 from lib.shared.errors import CompanyOSError
 
 from services.retrieval.assembler import ContextBundle
@@ -94,15 +100,19 @@ async def llm_reason(
             ) from e
         except LLMError as e:
             last_err = e
-            if attempt < max_attempts - 1:
-                backoff_s = 2 ** attempt
+            policy = retry_policy_for(e)
+            total_allowed = min(max_attempts, 1 + policy.max_attempts)
+            if attempt < total_allowed - 1:
+                backoff_s = policy.delay_for(attempt + 1)
                 _log.warning(
-                    "think.llm_transient_failure",
+                    "think.llm_retryable_failure",
                     attempt=attempt,
                     backoff_s=backoff_s,
+                    error_class=classify_error(e).value,
                     error=str(e),
                 )
-                await asyncio.sleep(backoff_s)
+                if backoff_s > 0:
+                    await asyncio.sleep(backoff_s)
                 continue
             break
         except Exception as e:

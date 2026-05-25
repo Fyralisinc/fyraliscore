@@ -11,9 +11,12 @@ BEFORE any op runs. If the transaction commits, outcome is updated to
 'success' in the SAME transaction. A second Think run with the same
 trigger_id sees the existing row and short-circuits.
 
-Partial-failure policy: all-or-nothing. Any op that raises propagates
-to the caller; the whole transaction rolls back — applied_triggers
-row included.
+Partial-failure policy: claim apply failures remain transaction-fatal
+because downstream ops may depend on newly-created Models. Domain-invalid
+edge, act, and resource ops discovered late at apply time are classified
+and dropped, matching the validator's partial-accept policy. Unexpected
+errors still propagate and roll back the whole transaction —
+applied_triggers row included.
 """
 from __future__ import annotations
 
@@ -25,9 +28,10 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
+from lib.shared.edge_registry import EdgeRegistryError
 from services.acts import commitments as commitments_svc
 from services.acts import decisions as decisions_svc
 from services.acts import goals as goals_svc
@@ -39,6 +43,9 @@ from services.resources.transactions import record_transaction
 from services.resources.deployments import release as release_deployment
 
 from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
+from .observability import log_dropped_op
+from .quality_gate import QualityContext, apply_verdict, score_quality
+from .splitter import split_compound_claim_op
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
@@ -171,6 +178,8 @@ async def apply_diff(
         "act_ops": [],
         "resource_ops": [],
         "diff_hash": diff_hash,
+        "apply_dropped_op_count": 0,
+        "apply_dropped_op_errors": [],
     }
     pending_model_ids_by_event_id: dict[UUID, UUID] = {}
 
@@ -192,9 +201,74 @@ async def apply_diff(
         "no_match": 0,
         "skipped": 0,
     }
-    for original_op in diff.claim_ops:
-        op = original_op
+    quality_summary: dict[str, int] = {
+        "accept": 0,
+        "needs_review": 0,
+        "reject": 0,
+        "downgrade_to_evidence": 0,
+    }
+    split_summary: dict[str, int] = {
+        "compound_inputs": 0,
+        "atomic_outputs": 0,
+        "synthesized_situations": 0,
+    }
+
+    # ---------- Splitter expansion ----------
+    # Each compound op becomes a contiguous group of N atomic ops +
+    # 1 synthesized situation. We track the group via `gid` so we
+    # can patch member_model_ids on the situation after its atomics
+    # commit. Non-compound inputs pass through with `gid=None`.
+    expanded_ops: list[tuple[ClaimOp, ClaimOp, int | None]] = []
+    next_gid = 0
+    for src_op in diff.claim_ops:
+        if src_op.op != "insert":
+            expanded_ops.append((src_op, src_op, None))
+            continue
+        splits = split_compound_claim_op(src_op)
+        if len(splits) <= 1:
+            expanded_ops.append((src_op, src_op, None))
+            continue
+        gid = next_gid
+        next_gid += 1
+        split_summary["compound_inputs"] += 1
+        split_summary["atomic_outputs"] += max(0, len(splits) - 1)
+        split_summary["synthesized_situations"] += 1
+        for s in splits:
+            expanded_ops.append((src_op, s, gid))
+
+    # Track atomic model IDs per split group for situation member patching.
+    group_member_ids: dict[int, list[UUID]] = {}
+
+    for original_op, expanded_op, gid in expanded_ops:
+        op = expanded_op
         recon_result = None
+        verdict = None
+
+        # Pending-situation handling: patch member_model_ids using the
+        # atomic IDs from this group before any further processing.
+        is_pending_situation = (
+            op.op == "insert"
+            and isinstance(op.entry, dict)
+            and op.entry.get("member_model_pending") is True
+        )
+        if is_pending_situation:
+            members = group_member_ids.get(gid, []) if gid is not None else []
+            if not members:
+                # All atomic members were dropped (rejected/downgraded).
+                # Skip the situation rather than emit an empty composite.
+                ops_summary["claim_ops"].append({
+                    "op": "skip",
+                    "reason": "situation_skipped_no_atomic_members_after_quality_gate",
+                    "split_group_id": gid,
+                })
+                continue
+            prop = op.entry.get("proposition") or {}
+            prop["member_model_ids"] = [str(uid) for uid in members]
+            op.entry["proposition"] = prop
+            # Strip splitter-only audit markers — ModelCreate forbids extras.
+            op.entry.pop("member_model_pending", None)
+            op.entry.pop("split_reasons", None)
+
         if op.op == "insert":
             recon_result = await reconcile_claim_op(
                 op, conn,
@@ -204,7 +278,44 @@ async def apply_diff(
             )
             reconcile_summary[recon_result.decision] += 1
             if recon_result.replacement_op is not None:
+                # auto_merge: substitute the confidence-update op and
+                # skip the quality gate (confidence updates against an
+                # existing model do not need re-scoring).
                 op = recon_result.replacement_op
+            else:
+                # Fresh insert path: run the quality gate.
+                verdict = score_quality(
+                    op,
+                    QualityContext(
+                        reconcile_result=recon_result,
+                        trigger_kind=getattr(diff.trigger_ref, "kind", None),
+                        tenant_id=diff.tenant_id,
+                    ),
+                )
+                quality_summary[verdict.decision] = (
+                    quality_summary.get(verdict.decision, 0) + 1
+                )
+                op_after_verdict, side_ops = apply_verdict(op, verdict)
+                if op_after_verdict is None:
+                    # rejected or downgraded — record and skip apply.
+                    ops_summary["claim_ops"].append({
+                        "op": "skip",
+                        "reason": f"quality_gate_{verdict.decision}",
+                        "quality_verdict": {
+                            "decision": verdict.decision,
+                            "atomicity": verdict.atomicity_score,
+                            "durability": verdict.durability_score,
+                            "kind_fit": verdict.kind_fit_score,
+                            "overall": verdict.overall_score,
+                            "rejection_reasons": verdict.rejection_reasons,
+                        },
+                        "split_group_id": gid,
+                    })
+                    continue
+                op = op_after_verdict
+                # side_ops currently empty (evidence path unwired); future
+                # evidence emission would loop them through _apply_claim_op.
+
         # When the reconciler converted an insert into an update, the
         # audit chain should record the transition as
         # 'reconciliation_merge' rather than the default 'field_update'
@@ -221,8 +332,7 @@ async def apply_diff(
                 "reconciliation_merge" if is_recon_merge else None
             ),
         )
-        # Annotate the per-op summary with reconcile context so callers
-        # and tests can see what the reconciler decided.
+        # Annotate the per-op summary with reconcile + quality context.
         if recon_result is not None and recon_result.decision != "skipped":
             result["summary"]["reconcile_decision"] = recon_result.decision
             if recon_result.matched_model_id is not None:
@@ -233,9 +343,17 @@ async def apply_diff(
                 result["summary"]["reconcile_cosine"] = (
                     recon_result.cosine_similarity
                 )
+        if verdict is not None:
+            result["summary"]["quality_decision"] = verdict.decision
+            result["summary"]["quality_overall"] = verdict.overall_score
+        if gid is not None:
+            result["summary"]["split_group_id"] = gid
         ops_summary["claim_ops"].append(result["summary"])
         if result.get("model_id") is not None:
             applied_model_ids.append(result["model_id"])
+            # Track this atomic ID for situation member patching.
+            if gid is not None and not is_pending_situation:
+                group_member_ids.setdefault(gid, []).append(result["model_id"])
             if original_op.op == "insert" and isinstance(original_op.entry, dict):
                 for key in ("born_from_event_id", "model_id", "id"):
                     placeholder_id = _coerce_uuid(original_op.entry.get(key))
@@ -250,6 +368,8 @@ async def apply_diff(
                 _belief_updated_model_ids.append(result["model_id"])
         state_changes_emitted += result.get("state_changes", 0)
     ops_summary["reconcile_summary"] = reconcile_summary
+    ops_summary["quality_summary"] = quality_summary
+    ops_summary["split_summary"] = split_summary
 
     # --- 2. edge_ops ----------------------------------------------
     for op in diff.edge_ops:
@@ -263,10 +383,33 @@ async def apply_diff(
                 "reason": "resolved_to_same_model_after_reconciliation",
             })
             continue
-        result = await _apply_edge_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_edge_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except (EdgeRegistryError, ValidationError) as exc:
+            reason = _classify_apply_edge_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="edge",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["edge_ops"].append({
+                "op": "skip",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["edge_ops"].append(result["summary"])
 
     # --- 3. act_ops -----------------------------------------------
@@ -279,19 +422,61 @@ async def apply_diff(
                     ]
                 }
             )
-        result = await _apply_act_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_act_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except (InvariantViolation, ValidationError) as exc:
+            reason = _classify_apply_act_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="act",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["act_ops"].append({
+                "op": "skip",
+                "act_op": op.op,
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["act_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
     # --- 4. resource_ops ------------------------------------------
     for op in diff.resource_ops:
-        result = await _apply_resource_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_resource_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except ValidationError as exc:
+            reason = _classify_apply_resource_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="resource",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["resource_ops"].append({
+                "op": "skip",
+                "resource_op": op.op,
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["resource_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
@@ -385,6 +570,48 @@ def _audit_jsonable(v: Any) -> Any:
         except (ValueError, UnicodeDecodeError):
             return v.decode(errors="replace")
     return str(v)
+
+
+def _classify_apply_act_drop_reason(exc: Exception) -> str:
+    """Stable tags for domain-level act apply drops."""
+    if isinstance(exc, InvariantViolation):
+        return "illegal_transition"
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "not found" in msg:
+        return "missing_entity_reference"
+    if "requires" in msg or "entity" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_apply_edge_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "cycle" in msg:
+        return "cycle_prevention"
+    if "mutually exclusive" in msg:
+        return "mutually_exclusive_edge"
+    if "self-edge" in msg:
+        return "invalid_shape"
+    if "unknown edge_kind" in msg or "reserved" in msg:
+        return "invalid_edge_kind"
+    if "weight" in msg:
+        return "invalid_weight"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "detected_by" in msg or "review_status" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_apply_resource_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "invalid transaction_type" in msg or "invalid kind" in msg:
+        return "invalid_transaction_type"
+    if "not found" in msg:
+        return "missing_entity_reference"
+    if "requires" in msg or "delta" in msg:
+        return "invalid_shape"
+    return "unclassified"
 
 
 _ALLOWED_MODEL_UPDATE_COLUMNS = {

@@ -51,6 +51,7 @@ class ReasoningFrame:
             "prefer_existing_models": True,
             "emit_edges_for_pairwise_relationships": True,
             "emit_situation_for_composite_conditions": True,
+            "situation_requires_compositional_fields": True,
             "treat_topology_as_evidence_not_truth": True,
             "do_not_invent_ids": True,
             "minimize_diff": True,
@@ -88,6 +89,7 @@ class ReasoningFrame:
                 )
             ),
             "situation_requires_multiple_existing_models": True,
+            "situation_requires_compositional_fields": True,
         }
         priority_dimensions = _priority_dimensions(trigger)
 

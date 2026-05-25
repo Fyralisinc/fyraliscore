@@ -6,11 +6,17 @@ from lib.shared.ids import uuid7
 from services.relationships.candidates import (
     JudgmentScores,
     ModelSignal,
+    candidate_rules,
     generate_scope_overlap_candidates,
     make_edge_candidate,
     make_situation_candidate,
     rank_candidates,
 )
+
+
+# ---------------------------------------------------------------------
+# Constructor invariants (unchanged contract).
+# ---------------------------------------------------------------------
 
 
 def test_situation_candidate_carries_first_class_proposition() -> None:
@@ -75,80 +81,6 @@ def test_causal_candidate_requires_mechanism() -> None:
         )
 
 
-def test_generate_scope_overlap_candidates_prioritizes_warning_edges() -> None:
-    tenant_id = uuid7()
-    customer_id = uuid7()
-    concern = ModelSignal(
-        id=uuid7(),
-        natural="Beacon renewal risk is rising because pricing is unresolved.",
-        proposition_kind="concern",
-        confidence=0.72,
-        activation=0.9,
-        scope_entities=(("customer", customer_id),),
-    )
-    prediction = ModelSignal(
-        id=uuid7(),
-        natural="Beacon churn prediction depends on May procurement approval.",
-        proposition_kind="prediction",
-        confidence=0.64,
-        activation=0.8,
-        scope_entities=(("customer", customer_id),),
-    )
-    unrelated = ModelSignal(
-        id=uuid7(),
-        natural="Internal docs cleanup is progressing.",
-        proposition_kind="state",
-        confidence=0.8,
-        activation=0.2,
-        scope_entities=(("resource", uuid7()),),
-    )
-
-    candidates = generate_scope_overlap_candidates(
-        tenant_id=tenant_id,
-        models=[concern, prediction, unrelated],
-    )
-
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.edge_kind == "early_warning_for"
-    assert candidate.source_model_id == concern.id
-    assert candidate.target_model_id == prediction.id
-    assert candidate.metadata["scope"] == {
-        "type": "customer",
-        "id": str(customer_id),
-    }
-
-
-def test_scope_overlap_blocker_includes_causal_metadata() -> None:
-    tenant_id = uuid7()
-    commitment_id = uuid7()
-    blocker = ModelSignal(
-        id=uuid7(),
-        natural="The launch is blocked waiting on security approval.",
-        proposition_kind="concern",
-        confidence=0.8,
-        activation=0.9,
-        scope_entities=(("commitment", commitment_id),),
-    )
-    target = ModelSignal(
-        id=uuid7(),
-        natural="The launch is expected this week.",
-        proposition_kind="prediction",
-        confidence=0.7,
-        activation=0.8,
-        scope_entities=(("commitment", commitment_id),),
-    )
-
-    candidate = generate_scope_overlap_candidates(
-        tenant_id=tenant_id,
-        models=[blocker, target],
-    )[0]
-
-    assert candidate.edge_kind == "blocks"
-    assert candidate.basis == "causal_hypothesis"
-    assert candidate.metadata["causal"]["mechanism_summary"]
-
-
 def test_rank_candidates_orders_by_judgment_leverage() -> None:
     tenant_id = uuid7()
     low = make_edge_candidate(
@@ -178,3 +110,408 @@ def test_rank_candidates_orders_by_judgment_leverage() -> None:
     )
 
     assert rank_candidates([low, high]) == [high, low]
+
+
+# ---------------------------------------------------------------------
+# Per-edge-kind rule registry. One positive + one negative case each.
+# ---------------------------------------------------------------------
+
+
+def _emb(seed: float) -> tuple[float, ...]:
+    return tuple([seed] + [0.0] * 7)
+
+
+def _aligned(strength: float = 1.0) -> tuple[float, ...]:
+    return tuple([strength] + [0.0] * 7)
+
+
+def _scope(*entries: tuple[str, object]) -> tuple[tuple[str, object], ...]:
+    return tuple(entries)
+
+
+def _scope_meta() -> dict:
+    return {"scope_type": "test", "scope_id": "fixed"}
+
+
+def _rule(kind: str):
+    return candidate_rules()[kind]
+
+
+def test_same_issue_as_fires_on_high_cosine_same_entity_same_workstream() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    e = _aligned()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="Pricing on Beacon renewal is being renegotiated",
+        proposition_kind="concern",
+        embedding=e,
+        workstream="renewal",
+        scope_entities=_scope(("customer", customer)),
+        confidence=0.7,
+        activation=0.6,
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="Beacon renewal pricing renegotiation is in flight",
+        proposition_kind="concern",
+        embedding=e,
+        workstream="renewal",
+        scope_entities=_scope(("customer", customer)),
+        confidence=0.7,
+        activation=0.5,
+    )
+    result = _rule("same_issue_as")(tenant_id, _scope_meta(), left, right)
+    assert result is not None
+    assert result.edge_kind == "same_issue_as"
+
+
+def test_same_issue_as_rejects_when_workstream_differs() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    e = _aligned()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="concern",
+        embedding=e,
+        workstream="renewal",
+        scope_entities=_scope(("customer", customer)),
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="concern",
+        embedding=e,
+        workstream="delivery",
+        scope_entities=_scope(("customer", customer)),
+    )
+    result = _rule("same_issue_as")(tenant_id, _scope_meta(), left, right)
+    assert result is None
+
+
+def test_supports_fires_on_shared_evidence_event() -> None:
+    tenant_id = uuid7()
+    ev = uuid7()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="state",
+        confidence=0.6,
+        activation=0.4,
+        evidence_event_ids=(ev,),
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="state",
+        confidence=0.6,
+        activation=0.5,
+        evidence_event_ids=(ev,),
+    )
+    result = _rule("supports")(tenant_id, _scope_meta(), left, right)
+    assert result is not None
+    assert result.edge_kind == "supports"
+    assert result.evidence_event_ids == (ev,)
+
+
+def test_supports_rejects_without_evidence_or_activation_pattern() -> None:
+    tenant_id = uuid7()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="state",
+        confidence=0.4,
+        activation=0.3,
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="state",
+        confidence=0.4,
+        activation=0.3,
+    )
+    result = _rule("supports")(tenant_id, _scope_meta(), left, right)
+    assert result is None
+
+
+def test_analogous_to_fires_on_high_cosine_different_scope() -> None:
+    tenant_id = uuid7()
+    e = _aligned()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="pattern",
+        embedding=e,
+        workstream="alpha",
+        scope_entities=_scope(("customer", uuid7())),
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="pattern",
+        embedding=e,
+        workstream="bravo",
+        scope_entities=_scope(("customer", uuid7())),
+    )
+    result = _rule("analogous_to")(tenant_id, _scope_meta(), left, right)
+    assert result is not None
+    assert result.edge_kind == "analogous_to"
+
+
+def test_analogous_to_rejects_when_scope_is_shared() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    e = _aligned()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="pattern",
+        embedding=e,
+        workstream="alpha",
+        scope_entities=_scope(("customer", customer)),
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="pattern",
+        embedding=e,
+        workstream="alpha",
+        scope_entities=_scope(("customer", customer)),
+    )
+    result = _rule("analogous_to")(tenant_id, _scope_meta(), left, right)
+    assert result is None
+
+
+def test_blocks_fires_on_explicit_blocker_target() -> None:
+    tenant_id = uuid7()
+    target_id = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Launch is blocked by security review",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.8,
+        blocker_targets=(target_id,),
+    )
+    target = ModelSignal(
+        id=target_id,
+        natural="Security review for the launch",
+        proposition_kind="state",
+        confidence=0.7,
+        activation=0.5,
+    )
+    result = _rule("blocks")(tenant_id, _scope_meta(), source, target)
+    assert result is not None
+    assert result.edge_kind == "blocks"
+    assert result.source_model_id == source.id
+    assert result.target_model_id == target.id
+    assert result.metadata.get("mechanism")
+    assert result.metadata.get("dependency_basis")
+
+
+def test_blocks_rejects_pure_pressure_overlap() -> None:
+    tenant_id = uuid7()
+    left = ModelSignal(
+        id=uuid7(),
+        natural="The team is overloaded right now",
+        proposition_kind="concern",
+        confidence=0.7,
+        activation=0.8,
+    )
+    right = ModelSignal(
+        id=uuid7(),
+        natural="Bandwidth is constrained across squads",
+        proposition_kind="concern",
+        confidence=0.7,
+        activation=0.7,
+    )
+    result = _rule("blocks")(tenant_id, _scope_meta(), left, right)
+    assert result is None
+
+
+def test_early_warning_for_fires_on_leading_indicator_with_history() -> None:
+    tenant_id = uuid7()
+    target_id = uuid7()
+    leading = ModelSignal(
+        id=uuid7(),
+        natural="Early-stage usage drop",
+        proposition_kind="prediction",
+        confidence=0.7,
+        activation=0.7,
+        time_shape="leading",
+        historical_cooccurrence_with=(target_id,),
+    )
+    target = ModelSignal(
+        id=target_id,
+        natural="Churn outcome",
+        proposition_kind="prediction",
+        confidence=0.6,
+        activation=0.6,
+        time_shape="bounded",
+    )
+    result = _rule("early_warning_for")(tenant_id, _scope_meta(), leading, target)
+    assert result is not None
+    assert result.edge_kind == "early_warning_for"
+    assert result.metadata.get("lead_time_evidence")
+
+
+def test_early_warning_for_rejects_without_leading_time_shape() -> None:
+    tenant_id = uuid7()
+    a = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="state",
+        time_shape="unspecified",
+    )
+    b = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="state",
+        time_shape="unspecified",
+    )
+    result = _rule("early_warning_for")(tenant_id, _scope_meta(), a, b)
+    assert result is None
+
+
+def test_contradicts_fires_on_opposing_polarity_same_scope() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    a = ModelSignal(
+        id=uuid7(),
+        natural="Renewal is on track",
+        proposition_kind="state",
+        polarity="positive",
+        scope_entities=_scope(("customer", customer)),
+    )
+    b = ModelSignal(
+        id=uuid7(),
+        natural="Renewal is at risk",
+        proposition_kind="state",
+        polarity="negative",
+        scope_entities=_scope(("customer", customer)),
+    )
+    result = _rule("contradicts")(tenant_id, _scope_meta(), a, b)
+    assert result is not None
+    assert result.edge_kind == "contradicts"
+
+
+def test_contradicts_rejects_when_polarities_match() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    a = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="state",
+        polarity="positive",
+        scope_entities=_scope(("customer", customer)),
+    )
+    b = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="state",
+        polarity="positive",
+        scope_entities=_scope(("customer", customer)),
+    )
+    result = _rule("contradicts")(tenant_id, _scope_meta(), a, b)
+    assert result is None
+
+
+def test_enables_fires_on_capability_surface_and_capability_assessment() -> None:
+    tenant_id = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="New onboarding playbook is live",
+        proposition_kind="state",
+        capability_surface="onboarding_playbook",
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Customer team can run onboarding without engineering",
+        proposition_kind="capability_assessment",
+    )
+    result = _rule("enables")(tenant_id, _scope_meta(), source, target)
+    assert result is not None
+    assert result.edge_kind == "enables"
+    assert result.source_model_id == source.id
+    assert result.target_model_id == target.id
+    assert result.metadata.get("mechanism")
+
+
+def test_enables_rejects_without_capability_assessment_target() -> None:
+    tenant_id = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="A",
+        proposition_kind="state",
+        capability_surface="onboarding_playbook",
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="B",
+        proposition_kind="concern",
+    )
+    result = _rule("enables")(tenant_id, _scope_meta(), source, target)
+    assert result is None
+
+
+# ---------------------------------------------------------------------
+# Loop-level: pairs that fail every rule produce NO candidates.
+# ---------------------------------------------------------------------
+
+
+def test_generate_scope_overlap_yields_no_candidates_without_signals() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    a = ModelSignal(
+        id=uuid7(),
+        natural="Pricing is being reviewed",
+        proposition_kind="concern",
+        scope_entities=_scope(("customer", customer)),
+    )
+    b = ModelSignal(
+        id=uuid7(),
+        natural="Roadmap meeting moved to next week",
+        proposition_kind="state",
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    out = generate_scope_overlap_candidates(tenant_id=tenant_id, models=[a, b])
+    assert out == []
+
+
+def test_generate_scope_overlap_runs_blocks_rule_in_pipeline() -> None:
+    tenant_id = uuid7()
+    commitment = uuid7()
+    target_id = uuid7()
+    blocker = ModelSignal(
+        id=uuid7(),
+        natural="Launch is blocked on security review",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.9,
+        scope_entities=_scope(("commitment", commitment)),
+        blocker_targets=(target_id,),
+    )
+    target = ModelSignal(
+        id=target_id,
+        natural="Security review for the launch",
+        proposition_kind="state",
+        confidence=0.7,
+        activation=0.5,
+        scope_entities=_scope(("commitment", commitment)),
+    )
+
+    out = generate_scope_overlap_candidates(
+        tenant_id=tenant_id, models=[blocker, target]
+    )
+
+    kinds = {c.edge_kind for c in out}
+    assert "blocks" in kinds
+    blocks_candidate = next(c for c in out if c.edge_kind == "blocks")
+    assert blocks_candidate.metadata.get("dependency_basis")
+    assert blocks_candidate.metadata.get("mechanism")
+    assert blocks_candidate.metadata["scope"] == {
+        "type": "commitment",
+        "id": str(commitment),
+    }

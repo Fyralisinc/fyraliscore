@@ -295,7 +295,7 @@ async def update_think_run(
         params.append(status)
         i += 1
         if status in ("success", "failed", "skipped_idempotent"):
-            set_clauses.append("ended_at = now()")
+            set_clauses.append("ended_at = clock_timestamp()")
     if error is not None:
         set_clauses.append(f"error = ${i}")
         params.append(error)

@@ -15,6 +15,9 @@ path categorizes).
 """
 from __future__ import annotations
 
+import asyncio
+import os
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -94,6 +97,28 @@ from .validator import (
 
 
 _log = structlog.get_logger(__name__)
+
+
+def _raise_if_postgres_error(exc: Exception) -> None:
+    """A swallowed SQL error leaves the active transaction unusable."""
+    if isinstance(exc, asyncpg.PostgresError):
+        raise exc
+
+
+def _tx_health_check_enabled() -> bool:
+    return os.environ.get("THINK_TX_HEALTH_CHECK", "0") == "1"
+
+
+async def _assert_tx_usable(conn: asyncpg.Connection, phase: str) -> None:
+    if not _tx_health_check_enabled():
+        return
+    try:
+        await conn.execute("SELECT 1")
+    except asyncpg.PostgresError as exc:
+        raise RuntimeError(
+            "think transaction aborted after "
+            f"{phase}: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------
@@ -181,6 +206,10 @@ async def think(
          tenant_id=str(trigger.tenant_id))
 
     rerun_count = 0
+    transaction_retry_count = 0
+    max_transaction_retries = int(
+        os.environ.get("THINK_TRANSACTION_RETRY_ATTEMPTS", "8")
+    )
     expanded_region: set[tuple[str, str]] | None = None
 
     # OP-2: install a usage aggregator on the provider for this run.
@@ -253,6 +282,27 @@ async def think(
                 missing = e.context.get("missing") or []
                 prev.update((t, i) for (t, i) in missing)
                 expanded_region = prev
+                continue
+            except (
+                asyncpg.exceptions.DeadlockDetectedError,
+                asyncpg.exceptions.SerializationError,
+            ) as e:
+                transaction_retry_count += 1
+                if transaction_retry_count > max_transaction_retries:
+                    raise
+                backoff_s = min(
+                    5.0,
+                    0.1 * (2 ** max(0, transaction_retry_count - 1)),
+                ) + random.uniform(0.0, 0.25)
+                emit(
+                    "think.transaction_retry",
+                    run_id=str(run_id),
+                    attempt=transaction_retry_count,
+                    max_attempts=max_transaction_retries,
+                    error_type=type(e).__name__,
+                    backoff_s=round(backoff_s, 3),
+                )
+                await asyncio.sleep(backoff_s)
                 continue
 
             outcome.elapsed_ms = (time.monotonic() - started_at) * 1000.0
@@ -503,6 +553,7 @@ async def _run_once(
     # --- 1. Retrieval ---------------------------------------------
     t0 = time.monotonic()
     first = await primary_retrieve(trigger, conn, embedder=embedder)
+    await _assert_tx_usable(conn, "primary_retrieve")
     try:
         second_pass_decision = should_run_second_pass(
             first,
@@ -543,6 +594,7 @@ async def _run_once(
                 "reason_detail": dict(second_pass_decision.reason_detail),
             }
     except Exception as e:  # noqa: BLE001
+        _raise_if_postgres_error(e)
         first.notes["second_pass_error"] = {
             "type": type(e).__name__,
             "message": str(e),
@@ -553,6 +605,7 @@ async def _run_once(
             trigger_kind=trigger.kind,
             error=str(e),
         )
+    await _assert_tx_usable(conn, "second_pass")
     reasoning_frame = ReasoningFrame.from_trigger(
         trigger,
         retrieval_result=first,
@@ -573,6 +626,7 @@ async def _run_once(
                 [s.to_dict() for s in dynamic_signals]
             )
     except Exception as e:  # noqa: BLE001
+        _raise_if_postgres_error(e)
         first.notes["dynamic_signal_error"] = {
             "type": type(e).__name__,
             "message": str(e),
@@ -583,6 +637,7 @@ async def _run_once(
             trigger_kind=trigger.kind,
             error=str(e),
         )
+    await _assert_tx_usable(conn, "dynamic_signal_detection")
     first.notes["reasoning_frame"] = reasoning_frame.to_dict()
     emit("think.retrieval_done",
          run_id=str(record.id),
@@ -767,6 +822,7 @@ async def _run_once(
                 set(allowed_region) | {("decision", str(r["id"]))}
             )
     except Exception as _aug_err:  # noqa: BLE001
+        _raise_if_postgres_error(_aug_err)
         await debug_capture(
             conn,
             run_id=record.id,
@@ -774,6 +830,7 @@ async def _run_once(
             stage="error",
             payload={"phase": "acts_augmentation", "error": repr(_aug_err)},
         )
+    await _assert_tx_usable(conn, "acts_augmentation")
 
     await debug_capture(
         conn,
@@ -801,6 +858,7 @@ async def _run_once(
             actor_contexts
         )
     except Exception as e:  # noqa: BLE001
+        _raise_if_postgres_error(e)
         await debug_capture(
             conn,
             run_id=record.id,
@@ -811,6 +869,7 @@ async def _run_once(
                 "error": repr(e),
             },
         )
+    await _assert_tx_usable(conn, "actor_operating_context")
 
     # --- 6. Reason ------------------------------------------------
     llm_latency_ms: int | None = None
@@ -975,6 +1034,7 @@ async def _run_once(
             region_acquisition=acquisition,
             llm_latency_ms=llm_latency_ms,
         )
+    await _assert_tx_usable(conn, "apply_diff")
 
     candidate_adjudication = await adjudicate_candidate_for_trigger(
         conn,
@@ -982,11 +1042,13 @@ async def _run_once(
         diff=validated,
         applied=applied,
     )
+    await _assert_tx_usable(conn, "relationship_adjudication")
     if candidate_adjudication is not None:
         applied["relationship_candidate_adjudication"] = {
             "candidate_id": str(candidate_adjudication.candidate_id),
             "review_status": candidate_adjudication.review_status,
             "reason": candidate_adjudication.reason,
+            "decision_reason": candidate_adjudication.decision_reason,
             "accepted_model_id": (
                 str(candidate_adjudication.accepted_model_id)
                 if candidate_adjudication.accepted_model_id else None
@@ -1030,6 +1092,7 @@ async def _run_once(
     # --- 9. Anomalies ---------------------------------------------
     anomalies = await check_anomalies(validated, conn)
     await publish_anomalies(anomalies, record.id, trigger.tenant_id, conn)
+    await _assert_tx_usable(conn, "anomaly_publish")
     emit("think.anomalies_published",
          run_id=str(record.id), count=len(anomalies))
 
@@ -1055,6 +1118,7 @@ async def _run_once(
     await enqueue_post_commit_actions(
         trigger, validated, conn, anomalies=anomaly_dicts,
     )
+    await _assert_tx_usable(conn, "post_commit_enqueue")
 
     # --- 10. Cascade ---------------------------------------------
     casc_result: CascadeResult | None = None
@@ -1114,6 +1178,7 @@ async def _run_once(
                     observation_id=seed_obs,
                 )
                 casc_result = await cascade(seed_event, conn)
+    await _assert_tx_usable(conn, "cascade")
     cascade_depth = casc_result.depth_reached if casc_result else 0
     if casc_result is not None:
         METRICS.observe_cascade_depth(trigger_kind_full, cascade_depth)

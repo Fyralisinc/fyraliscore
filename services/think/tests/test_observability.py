@@ -26,6 +26,7 @@ from services.think.observability import (
     METRICS, Metrics, ThinkRunRecord, emit,
     insert_think_run, update_think_run, write_region_lock_log,
 )
+from services.think import debug_capture
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -74,6 +75,7 @@ async def test_update_think_run_success_sets_ended_at(
     async with fresh_db.acquire() as conn:
         async with conn.transaction():
             await insert_think_run(conn, record)
+            await conn.execute("SELECT pg_sleep(0.01)")
             await update_think_run(
                 conn, record.id,
                 status="success",
@@ -87,6 +89,7 @@ async def test_update_think_run_success_sets_ended_at(
         )
     assert row["status"] == "success"
     assert row["ended_at"] is not None
+    assert row["ended_at"] > row["started_at"]
     assert row["retrieval_model_count"] == 5
     assert row["retrieval_observation_count"] == 20
     assert row["cascade_depth"] == 3
@@ -216,6 +219,50 @@ async def test_think_runs_rolls_back_on_transaction_rollback(
             "SELECT 1 FROM think_runs WHERE id = $1", record.id,
         )
     assert row is None
+
+
+async def test_debug_capture_insert_error_does_not_poison_transaction(
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
+):
+    """Best-effort artifact capture must not abort the Think tx."""
+    record = ThinkRunRecord(
+        id=uuid7(),
+        tenant_id=tenant,
+        trigger_id=uuid7(),
+        trigger_kind="T1",
+    )
+    monkeypatch.setattr(
+        debug_capture,
+        "_STAGES",
+        (*debug_capture._STAGES, "bad_stage"),
+    )
+
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            await debug_capture.capture(
+                conn,
+                run_id=record.id,
+                tenant_id=tenant,
+                stage="bad_stage",
+                payload={"will": "violate stage check"},
+            )
+            assert await conn.fetchval("SELECT 1") == 1
+            await insert_think_run(conn, record)
+
+        row = await conn.fetchrow(
+            "SELECT * FROM think_runs WHERE id = $1",
+            record.id,
+        )
+        bad_artifact = await conn.fetchrow(
+            """
+            SELECT 1 FROM think_run_artifacts
+            WHERE run_id = $1 AND stage = 'bad_stage'
+            """,
+            record.id,
+        )
+
+    assert row is not None
+    assert bad_artifact is None
 
 
 # =====================================================================

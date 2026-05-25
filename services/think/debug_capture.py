@@ -1,8 +1,9 @@
 """services/think/debug_capture.py — optional per-stage artifact capture.
 
 Writes rows into `think_run_artifacts` when `DEBUG_ARTIFACT_CAPTURE=1`.
-Each call is best-effort: any DB error is swallowed so a capture bug
-never breaks Think.
+Each call is best-effort. DB writes are wrapped in a nested transaction
+when called from the Think transaction, so a capture insert failure rolls
+back to a savepoint instead of poisoning the caller's transaction.
 
 The /debug UI reads these rows to show the full processing log for
 every observation (retrieval output, LLM prompt, LLM response, ops,
@@ -96,14 +97,15 @@ async def capture(
         )
         return
     try:
-        await conn.execute(
-            """
-            INSERT INTO think_run_artifacts
-                (id, run_id, tenant_id, stage, payload, captured_at)
-            VALUES ($1, $2, $3, $4, $5::jsonb, now())
-            """,
-            uuid7(), run_id, tenant_id, stage, payload_json,
-        )
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO think_run_artifacts
+                    (id, run_id, tenant_id, stage, payload, captured_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, now())
+                """,
+                uuid7(), run_id, tenant_id, stage, payload_json,
+            )
     except Exception as e:  # noqa: BLE001
         _log.warning(
             "debug_capture.insert_failed",

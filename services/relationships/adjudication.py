@@ -4,11 +4,16 @@ The topology layer proposes candidates; Think decides whether those
 signals become durable memory. This module closes that loop by marking
 the originating `relationship_candidates` row based on the validated
 diff that actually applied.
+
+Adjudication is structural: even if Think applies an edge of the
+requested kind, the edge is only accepted when kind-specific structural
+justification is present in the candidate metadata. Otherwise the row is
+marked `needs_review`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
@@ -19,11 +24,82 @@ from services.think.diff_schema import ValidatedDiff
 from .repo import RelationshipCandidatesRepo
 
 
+DecisionReason = Literal[
+    "accepted_with_justification",
+    "accepted_low_confidence",
+    "needs_review_missing_mechanism",
+    "needs_review_partial_evidence",
+    "needs_review_dropped_ops",
+    "needs_review_unrelated_ops",
+    "needs_review_situation_missing_fields",
+    "rejected_no_match",
+]
+
+
+# Per-kind structural requirements. An accepted edge must satisfy the
+# corresponding predicate against the candidate metadata. Pure pressure
+# overlap is not enough — the metadata has to contain the structural
+# justification the rule promised.
+def _has_mechanism(metadata: dict[str, Any]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if isinstance(metadata.get("mechanism"), str) and metadata["mechanism"].strip():
+        return True
+    causal = metadata.get("causal") or {}
+    if isinstance(causal, dict):
+        ms = causal.get("mechanism_summary")
+        if isinstance(ms, str) and ms.strip():
+            return True
+    return False
+
+
+def _has_dependency_basis(metadata: dict[str, Any]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("dependency_basis"):
+        return True
+    rule = metadata.get("rule") or {}
+    if isinstance(rule, dict) and rule.get("dependency_basis"):
+        return True
+    return False
+
+
+def _has_lead_time_evidence(metadata: dict[str, Any]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("lead_time_evidence") or metadata.get("historical_basis"):
+        return True
+    rule = metadata.get("rule") or {}
+    if isinstance(rule, dict) and (
+        rule.get("lead_time_evidence") or rule.get("historical_basis")
+    ):
+        return True
+    return False
+
+
+# Edge kind → predicate returning (ok, missing_field_name).
+_STRUCTURAL_REQUIREMENTS: dict[str, list[tuple[str, Any]]] = {
+    "blocks": [
+        ("mechanism_or_dependency_basis", lambda md: _has_mechanism(md) or _has_dependency_basis(md)),
+    ],
+    "early_warning_for": [
+        ("lead_time_evidence_or_historical_basis", lambda md: _has_lead_time_evidence(md)),
+    ],
+    "explains": [
+        ("mechanism", lambda md: _has_mechanism(md)),
+    ],
+    "enables": [
+        ("mechanism", lambda md: _has_mechanism(md)),
+    ],
+}
+
+
 @dataclass(frozen=True)
 class CandidateAdjudication:
     candidate_id: UUID
     review_status: str
     reason: str
+    decision_reason: DecisionReason
     accepted_model_id: UUID | None = None
     accepted_edge_ids: tuple[UUID, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -99,6 +175,7 @@ async def adjudicate_candidate_for_trigger(
         accepted_edge_ids=list(adjudication.accepted_edge_ids),
         decision_metadata={
             "reason": adjudication.reason,
+            "decision_reason": adjudication.decision_reason,
             "accepted_edge_ids": [
                 str(edge_id) for edge_id in adjudication.accepted_edge_ids
             ],
@@ -132,15 +209,53 @@ def _adjudicate(
     applied: dict[str, Any],
 ) -> CandidateAdjudication:
     candidate_id = candidate["id"]
+    candidate_metadata = candidate.get("metadata") or {}
+    edge_kind = candidate.get("edge_kind")
+
     accepted_edge_ids = _accepted_edge_ids(candidate, applied)
-    accepted_model_id = _accepted_situation_model_id(candidate, diff, applied)
-    if accepted_edge_ids or accepted_model_id is not None:
+    accepted_model_id, situation_validation = _accepted_situation(
+        candidate, diff, applied
+    )
+
+    if accepted_edge_ids:
+        missing = _structural_missing_fields(edge_kind, candidate_metadata)
+        if missing:
+            return CandidateAdjudication(
+                candidate_id=candidate_id,
+                review_status="needs_review",
+                reason="think_applied_edge_without_structural_justification",
+                decision_reason="needs_review_missing_mechanism",
+                accepted_edge_ids=tuple(accepted_edge_ids),
+                metadata={
+                    "edge_kind": edge_kind,
+                    "missing_fields": missing,
+                },
+            )
         return CandidateAdjudication(
             candidate_id=candidate_id,
             review_status="accepted",
             reason="think_promoted_candidate_to_durable_memory",
-            accepted_model_id=accepted_model_id,
+            decision_reason="accepted_with_justification",
             accepted_edge_ids=tuple(accepted_edge_ids),
+            metadata={"edge_kind": edge_kind},
+        )
+
+    if accepted_model_id is not None:
+        if situation_validation and situation_validation.get("missing"):
+            return CandidateAdjudication(
+                candidate_id=candidate_id,
+                review_status="needs_review",
+                reason="situation_model_missing_required_fields",
+                decision_reason="needs_review_situation_missing_fields",
+                accepted_model_id=accepted_model_id,
+                metadata={"missing_fields": situation_validation["missing"]},
+            )
+        return CandidateAdjudication(
+            candidate_id=candidate_id,
+            review_status="accepted",
+            reason="think_promoted_candidate_to_durable_memory",
+            decision_reason="accepted_with_justification",
+            accepted_model_id=accepted_model_id,
         )
 
     if _has_needs_review_edge(candidate, applied) or diff.dropped_op_count:
@@ -151,6 +266,11 @@ def _adjudicate(
                 "think_found_partial_or_uncertain_candidate_evidence"
                 if not diff.dropped_op_count
                 else "think_validation_dropped_candidate_ops"
+            ),
+            decision_reason=(
+                "needs_review_partial_evidence"
+                if not diff.dropped_op_count
+                else "needs_review_dropped_ops"
             ),
             metadata={
                 "dropped_op_count": diff.dropped_op_count,
@@ -169,13 +289,34 @@ def _adjudicate(
             candidate_id=candidate_id,
             review_status="rejected",
             reason="think_interpreted_candidate_as_noise_or_non_durable",
+            decision_reason="rejected_no_match",
         )
 
     return CandidateAdjudication(
         candidate_id=candidate_id,
         review_status="needs_review",
         reason="think_applied_other_ops_without_directly_promoting_candidate",
+        decision_reason="needs_review_unrelated_ops",
     )
+
+
+def _structural_missing_fields(
+    edge_kind: str | None,
+    metadata: dict[str, Any],
+) -> list[str]:
+    if not edge_kind:
+        return []
+    requirements = _STRUCTURAL_REQUIREMENTS.get(edge_kind)
+    if not requirements:
+        return []
+    missing: list[str] = []
+    for name, predicate in requirements:
+        try:
+            if not predicate(metadata):
+                missing.append(name)
+        except Exception:  # noqa: BLE001
+            missing.append(name)
+    return missing
 
 
 def _accepted_edge_ids(
@@ -207,17 +348,17 @@ def _accepted_edge_ids(
     return out
 
 
-def _accepted_situation_model_id(
+def _accepted_situation(
     candidate: dict[str, Any],
     diff: ValidatedDiff,
     applied: dict[str, Any],
-) -> UUID | None:
+) -> tuple[UUID | None, dict[str, Any] | None]:
     candidate_members = {
         _coerce_uuid(v) for v in candidate.get("member_model_ids") or []
     }
     candidate_members.discard(None)
     if len(candidate_members) < 2:
-        return None
+        return None, None
 
     summaries = applied.get("claim_ops") or []
     for index, op in enumerate(diff.claim_ops):
@@ -235,8 +376,29 @@ def _accepted_situation_model_id(
             continue
         if index >= len(summaries):
             continue
-        return _coerce_uuid(summaries[index].get("model_id"))
-    return None
+        validation = _validate_situation_fields(prop)
+        return _coerce_uuid(summaries[index].get("model_id")), validation
+    return None, None
+
+
+def _validate_situation_fields(proposition: dict[str, Any]) -> dict[str, Any]:
+    """Validate situation Model has the required structural fields.
+
+    Phase 1 is adding `pressure_type` and `shared_mechanism` to the
+    situation proposition. Until that ships, the fields are optional —
+    only flag them as missing when the proposition references them
+    explicitly as `None` or when one is present and the other is not.
+    """
+    pressure_type = proposition.get("pressure_type", "__unset__")
+    shared_mechanism = proposition.get("shared_mechanism", "__unset__")
+    if pressure_type == "__unset__" and shared_mechanism == "__unset__":
+        return {"missing": []}
+    missing: list[str] = []
+    if pressure_type in (None, "", "__unset__"):
+        missing.append("pressure_type")
+    if shared_mechanism in (None, "", "__unset__"):
+        missing.append("shared_mechanism")
+    return {"missing": missing}
 
 
 def _has_needs_review_edge(
@@ -311,6 +473,7 @@ def _coerce_uuid(value: Any) -> UUID | None:
 
 __all__ = [
     "CandidateAdjudication",
+    "DecisionReason",
     "adjudicate_candidate_for_trigger",
     "candidate_id_from_trigger",
     "load_candidate_for_trigger",

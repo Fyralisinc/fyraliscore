@@ -91,6 +91,10 @@ def test_classify_http_401_is_permanent():
     assert classify_error(_ExcWithStatus("auth", 401)) == LLMErrorClass.PERMANENT
 
 
+def test_classify_http_402_is_permanent():
+    assert classify_error(_ExcWithStatus("payment required", 402)) == LLMErrorClass.PERMANENT
+
+
 def test_classify_http_500_is_transient():
     assert classify_error(_ExcWithStatus("boom", 500)) == LLMErrorClass.TRANSIENT
 
@@ -119,6 +123,12 @@ def test_classify_content_policy_by_message():
     class Exc(Exception):
         pass
     assert classify_error(Exc("blocked by content policy")) == LLMErrorClass.CONTENT_VIOLATION
+
+
+def test_classify_insufficient_balance_by_message():
+    class Exc(Exception):
+        pass
+    assert classify_error(Exc("Insufficient Balance")) == LLMErrorClass.PERMANENT
 
 
 def test_classify_unknown_defaults_to_transient():

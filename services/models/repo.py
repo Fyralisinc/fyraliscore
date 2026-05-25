@@ -101,6 +101,7 @@ from services.models.propositions import validate_proposition
 from services.models.recommendations import validate_recommendation
 from services.observations.state_change import emit_state_change
 from services.topology import LatentTopologyService
+from services.topology.anchor import content_anchor
 # NOTE: audit module is imported lazily inside the methods that use it.
 # Importing services.think.audit at module-load time triggers
 # services/think/__init__.py, which imports reason.py → retrieval →
@@ -1353,16 +1354,48 @@ class ModelsRepo:
                 update_arrays=False,
             )
 
+        # 7c-pre. Positional topo_embedding (migration 0032). Project
+        # the 768-d content embedding deterministically into the 128-d
+        # topo space so the UMAP map view + Pathway F can see this
+        # Model the moment it commits. The sweeper may later refine
+        # the position with neighbor information; this initial anchor
+        # is the gravitational baseline.
+        #
+        # Skip on NULL/empty embedding (e.g. embedder unavailable):
+        # leave topo_embedding NULL and let a later backfill catch it
+        # rather than blowing up the insert.
+        if embedding:
+            try:
+                topo_anchor = content_anchor(embedding)
+                await conn.execute(
+                    """
+                    UPDATE models
+                       SET topo_embedding = $1::vector,
+                           topo_updated_at = now()
+                     WHERE id = $2 AND tenant_id = $3
+                    """,
+                    topo_anchor,
+                    hydrated.id,
+                    hydrated.tenant_id,
+                )
+            except Exception:
+                # Best-effort: topo_embedding stays NULL and the
+                # sweeper / a backfill will fill it later.
+                pass
+
         # 7c. Topology layer: generate latent relationship/situation
         # candidates from this new Model. Topology is pre-truth here:
         # it surfaces consequence-sensitive hypotheses for Think, not
         # accepted edges or graph layout.
         if self._run_topology_on_insert:
             try:
-                await _TOPOLOGY.generate_for_model(conn, model=hydrated)
+                async with conn.transaction():
+                    await _TOPOLOGY.generate_for_model(conn, model=hydrated)
             except Exception:
                 # Topology is best-effort: the Model insert is canonical,
                 # while candidate discovery can be retried by later sweeps.
+                # The nested transaction keeps topology failures from
+                # poisoning the surrounding model-insert transaction.
                 pass
 
         # 8. Emit state_change in the same transaction.
@@ -1466,13 +1499,11 @@ class ModelsRepo:
         """
         Fetch models by id AND bump activation/retrieval counters.
 
-        Exactly mirrors spec §2 retrieval SQL:
-            UPDATE models
-            SET last_retrieved_at = now(),
-                retrieval_count = retrieval_count + 1,
-                activation = LEAST(1.0, activation + 0.15)
-            WHERE id = ANY($retrieved_ids)
-            RETURNING *;
+        Reconsolidation is best-effort under concurrency: rows that are
+        already locked by another Think run are still returned for
+        retrieval, but their activation/retrieval counters are skipped
+        for this pass. These counters are heat signals, not correctness
+        gates, so large signal drains must never serialize on them.
 
         confidence is NOT TOUCHED. Ever. Reconsolidation is read-only
         with respect to the epistemic value.
@@ -1483,14 +1514,29 @@ class ModelsRepo:
 
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             await _ensure_vector_codec(c)
-            rows = await c.fetch(
-                f"""
-                UPDATE models
+            await c.execute(
+                """
+                WITH target AS (
+                    SELECT id
+                    FROM models
+                    WHERE id = ANY($1::uuid[])
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE models AS m
                 SET last_retrieved_at = now(),
                     retrieval_count = retrieval_count + 1,
                     activation = LEAST(1.0, activation + 0.15)
+                FROM target
+                WHERE m.id = target.id
+                """,
+                id_list,
+            )
+            rows = await c.fetch(
+                f"""
+                SELECT {_SELECT_COLS_SQL}
+                FROM models
                 WHERE id = ANY($1::uuid[])
-                RETURNING {_SELECT_COLS_SQL}
                 """,
                 id_list,
             )

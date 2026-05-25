@@ -292,7 +292,7 @@ class LLMErrorClass(str, enum.Enum):
 # mis-bucketed as a dead letter.
 
 _RATE_LIMIT_STATUSES = (429,)
-_PERMANENT_STATUSES = (400, 401, 403, 404, 422)
+_PERMANENT_STATUSES = (400, 401, 402, 403, 404, 422)
 _TRANSIENT_STATUSES = (500, 502, 503, 504)
 
 
@@ -356,6 +356,13 @@ def classify_error(exc: BaseException) -> LLMErrorClass:
         return LLMErrorClass.TIMEOUT
     if "content policy" in msg or "content_policy" in msg or "content filter" in msg:
         return LLMErrorClass.CONTENT_VIOLATION
+    if (
+        "insufficient balance" in msg
+        or "insufficient quota" in msg
+        or "billing" in msg
+        or "payment required" in msg
+    ):
+        return LLMErrorClass.PERMANENT
 
     # Unknown — treat as transient (caller gets a retry).
     return LLMErrorClass.TRANSIENT
@@ -532,7 +539,7 @@ class LLMConfig:
             api_key = _codex_api_key_from_env()
         else:
             api_key = os.environ.get("LLM_API_KEY", "")
-        model = os.environ.get("LLM_MODEL") or _default_model(provider)
+        model = _model_from_env(provider)
         # TK-1: if LLM_TIMEOUT_SECONDS is explicitly set, honour it (back-compat);
         # otherwise derive from per-model tier. `get_timeout_for_model` itself
         # respects LLM_TIMEOUT_OVERRIDE_MS for test forcing.
@@ -566,10 +573,33 @@ def _default_model(provider: str) -> str:
         "anthropic": "claude-opus-4-7",
         "openai": "gpt-4o",
         "deepseek": "deepseek-reasoner",
-        "codex": os.environ.get("CODEX_MODEL")
-        or _codex_config_model()
-        or "gpt-5.3-codex",
+        "codex": _codex_default_model(),
     }.get(provider, "claude-opus-4-7")
+
+
+def _model_from_env(provider: str) -> str:
+    if provider != "codex":
+        return os.environ.get("LLM_MODEL") or _default_model(provider)
+    return _codex_model_from_env()
+
+
+def _codex_model_from_env() -> str:
+    explicit = os.environ.get("CODEX_MODEL")
+    if explicit:
+        return explicit
+    config_model = _codex_config_model()
+    # Local Codex transports should behave like the Codex CLI/IDE: the
+    # user's ~/.codex/config.toml selects the subscription-backed model.
+    # `LLM_MODEL` is a provider-generic knob and can accidentally pin a
+    # platform/API model in local dogfood. Use CODEX_MODEL for an explicit
+    # Codex override.
+    if _codex_transport() in {"app-server", "cli"} and config_model:
+        return config_model
+    return os.environ.get("LLM_MODEL") or config_model or _codex_default_model()
+
+
+def _codex_default_model() -> str:
+    return "gpt-5.5"
 
 
 def _codex_home() -> Path:
@@ -1407,6 +1437,10 @@ class _CodexAppServerClient:
                     f"codex app-server timed out after {timeout_s:.0f}s",
                     model=model,
                 ) from exc
+            except LLMError as exc:
+                if _codex_app_server_error_requires_restart(exc):
+                    await self._restart()
+                raise
 
     async def _call_unlocked(
         self,
@@ -1599,14 +1633,53 @@ class _CodexAppServerClient:
                 del self._stderr_tail[:25]
 
 
+def _codex_app_server_error_requires_restart(exc: BaseException) -> bool:
+    msg = _message_of(exc).lower()
+    if "codex app-server" not in msg:
+        return False
+    restart_markers = (
+        "turn ended with status",
+        "exited unexpectedly",
+        "returned non-json",
+        "stdin is unavailable",
+        "stdout is unavailable",
+        "returned invalid thread/start response",
+        "returned invalid turn/start response",
+        "empty response from codex app-server",
+    )
+    return any(marker in msg for marker in restart_markers)
+
+
 _CODEX_APP_SERVER_CLIENT: _CodexAppServerClient | None = None
+_CODEX_APP_SERVER_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 def _codex_app_server_client() -> _CodexAppServerClient:
-    global _CODEX_APP_SERVER_CLIENT
-    if _CODEX_APP_SERVER_CLIENT is None:
+    global _CODEX_APP_SERVER_CLIENT, _CODEX_APP_SERVER_LOOP
+    loop = asyncio.get_running_loop()
+    if _CODEX_APP_SERVER_CLIENT is None or _CODEX_APP_SERVER_LOOP is not loop:
+        # The app-server client owns asyncio locks, subprocess transports,
+        # stdout/stderr readers, and background tasks. Those are bound to
+        # the loop that creates them, so a module-global client cannot be
+        # reused safely across pytest-asyncio's per-test loops or any
+        # multi-loop host process.
         _CODEX_APP_SERVER_CLIENT = _CodexAppServerClient()
+        _CODEX_APP_SERVER_LOOP = loop
     return _CODEX_APP_SERVER_CLIENT
+
+
+async def close_codex_app_server_client() -> None:
+    """Close the current loop's Codex app-server client, if one exists.
+
+    Primarily used by live LLM tests so each pytest event loop tears down
+    its subprocess before the next test starts on a fresh loop.
+    """
+    global _CODEX_APP_SERVER_CLIENT, _CODEX_APP_SERVER_LOOP
+    client = _CODEX_APP_SERVER_CLIENT
+    _CODEX_APP_SERVER_CLIENT = None
+    _CODEX_APP_SERVER_LOOP = None
+    if client is not None:
+        await client._restart()
 
 
 def _codex_system_prompt(system: str) -> str:
@@ -1848,6 +1921,7 @@ __all__ = [
     "CodexProvider",
     "DeepSeekProvider",
     "build_provider",
+    "close_codex_app_server_client",
     "set_response_cache",
     "get_response_cache",
     "get_timeout_for_model",

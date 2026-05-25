@@ -483,6 +483,31 @@ async def test_llm_reason_transient_error_retries_then_fails():
     assert elapsed < 10.0
 
 
+async def test_llm_reason_permanent_error_does_not_retry():
+    """Provider quota/billing failures should not burn the full retry budget."""
+    tid = uuid7()
+    trig_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tid,
+        observation_id=trig_id,
+        seed_natural_text="x",
+    )
+    bundle = ContextBundle()
+    provider = ScriptedProvider(
+        responses=[
+            LLMError(
+                "Error code: 402 - {'error': {'message': 'Insufficient Balance'}}"
+            ),
+            _minimal_raw_diff_json(str(trig_id), str(tid)),
+        ],
+    )
+
+    with pytest.raises(ReasoningFailure):
+        await llm_reason(trigger, bundle, provider, max_attempts=3)
+
+    assert len(provider.calls) == 1
+
+
 async def test_llm_reason_transient_then_success_recovers():
     """First attempt raises LLMError; second attempt returns a valid diff."""
     tid = uuid7()

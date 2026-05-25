@@ -37,6 +37,7 @@ from lib.llm.provider import (
     LLMConfigError,
     LLMProvider,
     build_provider,
+    close_codex_app_server_client,
     set_response_cache,
 )
 from lib.shared.ids import uuid7
@@ -115,6 +116,25 @@ def provider(response_cache: LLMResponseCache) -> LLMProvider:
             "`codex login` for LLM_PROVIDER=codex."
         )
     return build_provider(cfg)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def llm_runtime_state() -> AsyncGenerator[None, None]:
+    """Keep live-provider runtime state scoped to one pytest event loop.
+
+    Codex app-server transports and provider circuit-breaker locks are
+    async runtime objects. Real-LLM tests run on fresh pytest-asyncio
+    loops, so each test should start with a clean breaker window and
+    close any app-server subprocess before the loop is torn down.
+    """
+    from services.think.circuit_breaker import reset_breakers
+
+    reset_breakers()
+    try:
+        yield
+    finally:
+        await close_codex_app_server_client()
+        reset_breakers()
 
 
 @pytest_asyncio.fixture

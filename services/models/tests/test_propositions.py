@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.ids import uuid7
 from lib.shared.errors import ValidationError
 from services.models.propositions import (
     LEGAL_KINDS,
+    SituationProposition,
     StateProposition,
     PredictionProposition,
     validate_proposition,
@@ -107,3 +109,101 @@ def test_prediction_proposition_round_trip() -> None:
     back = parsed.model_dump()
     assert back["kind"] == "prediction"
     assert back["expected"] == raw["expected"]
+
+
+def test_situation_proposition_compositional_fields_round_trip() -> None:
+    """Extended SituationProposition must validate and round-trip the
+    eight new compositional fields (pressure_type, shared_mechanism,
+    judgment_change, affected_decisions, affected_customers,
+    affected_teams, evidence_event_ids, open_falsifier)."""
+    member_ids = [str(uuid7()), str(uuid7()), str(uuid7())]
+    evidence_ids = [str(uuid7()), str(uuid7())]
+    raw = {
+        "kind": "situation",
+        "situation": "Capacity squeeze on platform pod is hitting Globex",
+        "summary": (
+            "Two senior engineers on PTO while Globex onboarding ramps; "
+            "the renewal-eve sprint is at risk."
+        ),
+        "member_model_ids": member_ids,
+        "relationship_summary": (
+            "PTO overlap (M1), onboarding ramp (M2), and renewal date (M3) "
+            "interact to compress headroom in the same week."
+        ),
+        "status": "forming",
+        "pressure_type": "capacity",
+        "shared_mechanism": (
+            "All three claims compete for the same two reviewers in a "
+            "single week."
+        ),
+        "judgment_change": (
+            "Read together, the team is one ticket away from missing the "
+            "renewal demo even though no individual claim is alarming."
+        ),
+        "affected_decisions": ["postpone non-Globex hotfixes"],
+        "affected_customers": ["Globex Inc"],
+        "affected_teams": ["platform"],
+        "evidence_event_ids": evidence_ids,
+        "open_falsifier": (
+            "A senior reviewer returns early or the Globex demo is moved by "
+            "more than five business days."
+        ),
+    }
+    parsed = validate_proposition(raw)
+    assert isinstance(parsed, SituationProposition)
+    assert parsed.pressure_type == "capacity"
+    assert parsed.shared_mechanism.startswith("All three claims")
+    assert parsed.affected_customers == ["Globex Inc"]
+    assert parsed.evidence_event_ids == evidence_ids
+
+    back = parsed.model_dump()
+    for key, expected in raw.items():
+        assert back[key] == expected, f"round-trip lost field {key!r}"
+
+
+def test_situation_proposition_legacy_shape_still_validates() -> None:
+    """Backward compat: the original five-field SituationProposition shape
+    must still parse so older Models written before this migration keep
+    loading."""
+    raw = {
+        "kind": "situation",
+        "situation": "Legacy situation",
+        "summary": "Old shape captured before compositional fields existed.",
+        "member_model_ids": [str(uuid7()), str(uuid7())],
+        "relationship_summary": "Members co-occur in one operational region.",
+        "status": "active",
+    }
+    parsed = validate_proposition(raw)
+    assert isinstance(parsed, SituationProposition)
+    assert parsed.pressure_type is None
+    assert parsed.shared_mechanism is None
+    assert parsed.open_falsifier is None
+
+
+def test_situation_proposition_rejects_unknown_pressure_type() -> None:
+    raw = {
+        "kind": "situation",
+        "situation": "X",
+        "summary": "y",
+        "member_model_ids": [str(uuid7())],
+        "relationship_summary": "z",
+        "status": None,
+        "pressure_type": "vibes",  # not in the eight-category enum
+        "shared_mechanism": "n/a",
+    }
+    with pytest.raises(ValidationError):
+        validate_proposition(raw)
+
+
+def test_situation_proposition_rejects_empty_optional_strings() -> None:
+    raw = {
+        "kind": "situation",
+        "situation": "X",
+        "summary": "y",
+        "member_model_ids": [str(uuid7())],
+        "relationship_summary": "z",
+        "status": None,
+        "shared_mechanism": "   ",  # whitespace-only
+    }
+    with pytest.raises(ValidationError):
+        validate_proposition(raw)

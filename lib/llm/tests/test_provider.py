@@ -137,10 +137,61 @@ def test_config_from_env_codex_reads_auth_json(monkeypatch, tmp_path):
     assert cfg.api_key == "oauth-token"
 
 
+def test_config_from_env_codex_local_uses_codex_config_model(
+    monkeypatch, tmp_path,
+):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n')
+
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-codex")
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.delenv("CODEX_TRANSPORT", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+
+    cfg = LLMConfig.from_env()
+
+    assert cfg.model == "gpt-5.5"
+
+
+def test_config_from_env_codex_model_explicit_override_wins(
+    monkeypatch, tmp_path,
+):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n')
+
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-codex")
+    monkeypatch.setenv("CODEX_MODEL", "gpt-5.3-codex-spark")
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+
+    cfg = LLMConfig.from_env()
+
+    assert cfg.model == "gpt-5.3-codex-spark"
+
+
 def test_config_from_env_codex_rejects_deepseek_model(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "codex")
     monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+    monkeypatch.setenv("CODEX_TRANSPORT", "responses")
     monkeypatch.setenv("LLM_MODEL", "deepseek-chat")
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
 
     with pytest.raises(LLMConfigError, match="LLM_PROVIDER=codex"):
         LLMConfig.from_env()
@@ -332,6 +383,7 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
     import lib.llm.provider as provider_module
 
     provider_module._CODEX_APP_SERVER_CLIENT = None
+    provider_module._CODEX_APP_SERVER_LOOP = None
     captured: dict = {"spawns": 0, "turns": []}
 
     class FakeStdout:
@@ -445,6 +497,141 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
     if provider_module._CODEX_APP_SERVER_CLIENT is not None:
         await provider_module._CODEX_APP_SERVER_CLIENT._restart()
         provider_module._CODEX_APP_SERVER_CLIENT = None
+        provider_module._CODEX_APP_SERVER_LOOP = None
+
+
+async def test_codex_provider_restarts_app_server_after_failed_turn(monkeypatch):
+    monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
+    monkeypatch.setenv("CODEX_TRANSPORT", "app-server")
+
+    import lib.llm.provider as provider_module
+
+    provider_module._CODEX_APP_SERVER_CLIENT = None
+    provider_module._CODEX_APP_SERVER_LOOP = None
+    captured: dict = {"spawns": 0, "kills": 0}
+
+    class FakeStdout:
+        def __init__(self):
+            self.queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+        async def readline(self):
+            return await self.queue.get()
+
+        def push(self, obj):
+            self.queue.put_nowait((json.dumps(obj) + "\n").encode("utf-8"))
+
+    class FakeStderr:
+        async def readline(self):
+            return b""
+
+    class FakeStdin:
+        def __init__(self, stdout: FakeStdout, *, fail_turn: bool):
+            self.stdout = stdout
+            self.fail_turn = fail_turn
+
+        def write(self, data):
+            msg = json.loads(data.decode("utf-8"))
+            method = msg["method"]
+            request_id = msg.get("id")
+            if method == "initialize":
+                self.stdout.push({"id": request_id, "result": {"protocolVersion": "0.1"}})
+            elif method == "thread/start":
+                self.stdout.push({
+                    "id": request_id,
+                    "result": {"thread": {"id": f"thread-{request_id}"}},
+                })
+            elif method == "turn/start":
+                self.stdout.push({
+                    "id": request_id,
+                    "result": {"turn": {"id": f"turn-{request_id}"}},
+                })
+                if self.fail_turn:
+                    self.stdout.push({
+                        "method": "turn/completed",
+                        "params": {
+                            "turn": {
+                                "id": f"turn-{request_id}",
+                                "status": "failed",
+                            }
+                        },
+                    })
+                else:
+                    self.stdout.push({
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "type": "agentMessage",
+                                "text": _valid_payload(),
+                            }
+                        },
+                    })
+                    self.stdout.push({
+                        "method": "turn/completed",
+                        "params": {
+                            "turn": {
+                                "id": f"turn-{request_id}",
+                                "status": "completed",
+                            }
+                        },
+                    })
+
+        async def drain(self):
+            return None
+
+    class FakeAppServerProc:
+        returncode = None
+
+        def __init__(self, *, fail_turn: bool):
+            self.stdout = FakeStdout()
+            self.stdin = FakeStdin(self.stdout, fail_turn=fail_turn)
+            self.stderr = FakeStderr()
+
+        def kill(self):
+            captured["kills"] += 1
+            self.returncode = -9
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        captured["spawns"] += 1
+        return FakeAppServerProc(fail_turn=captured["spawns"] == 1)
+
+    monkeypatch.setattr(
+        "lib.llm.provider.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    codex = CodexProvider(LLMConfig(
+        provider="codex",
+        api_key="oauth-token",
+        model="gpt-5.3-codex",
+    ))
+
+    with pytest.raises(provider_module.LLMError, match="turn ended with status"):
+        await codex._raw_call(
+            system="system prompt",
+            user="user prompt",
+            temperature=0.1,
+            max_tokens=128,
+            schema_hint="",
+        )
+
+    raw = await codex._raw_call(
+        system="system prompt",
+        user="user prompt",
+        temperature=0.1,
+        max_tokens=128,
+        schema_hint="",
+    )
+
+    assert json.loads(raw)["claim"] == "Alice ships fast"
+    assert captured["spawns"] == 2
+    assert captured["kills"] == 1
+
+    if provider_module._CODEX_APP_SERVER_CLIENT is not None:
+        await provider_module._CODEX_APP_SERVER_CLIENT._restart()
+        provider_module._CODEX_APP_SERVER_CLIENT = None
+        provider_module._CODEX_APP_SERVER_LOOP = None
 
 
 async def test_codex_provider_does_not_infer_account_header_for_api_key(

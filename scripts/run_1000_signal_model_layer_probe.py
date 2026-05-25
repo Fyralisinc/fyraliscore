@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate and run a 1000-signal single-company model-layer probe.
+"""Generate and run a configurable single-company model-layer probe.
 
 This script is intentionally outside pytest: the goal is a durable scale
 artifact that can be inspected later, not an ephemeral fixture rollback.
 
 Default behavior:
   * create one synthetic tenant/company foundation,
-  * inject 1000 diverse signals through production ingestion,
+  * inject thousands of diverse signals through production ingestion,
   * enqueue a configurable number of T1 triggers for Think,
   * run the live Think worker until drain or timeout,
   * export model-layer shape reports to tests/real_llm/reports/runs/.
@@ -30,20 +30,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 os.environ.setdefault("COMPANY_OS_ENV", "test")
-if os.environ.get("DEEPSEEK_API_KEY"):
-    os.environ["LLM_PROVIDER"] = "deepseek"
-    os.environ["LLM_MODEL"] = os.environ.get("REAL_LLM_MODEL", "deepseek-chat")
 
 import asyncpg
+from dotenv import load_dotenv
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
-from lib.llm.provider import LLMConfig, LLMConfigError, build_provider, set_response_cache
+from lib.llm.provider import (
+    LLMConfig,
+    LLMConfigError,
+    build_provider,
+    set_response_cache,
+    _codex_transport,
+)
 from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
 from services.actors.repo import ActorRepo
 from services.entity_aliases.repo import EntityAliasRepo
 from services.gateway.db_bootstrap import _register_codecs
 from services.synthetic.core import SyntheticSignal, inject
+from services.think.post_commit import WorkerStats, process_batch
 from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 from tests.real_llm.infrastructure.response_cache import LLMResponseCache
 from tests.real_llm.infrastructure.scenario_loader import (
@@ -53,8 +58,67 @@ from tests.real_llm.infrastructure.scenario_loader import (
 )
 
 
-SCENARIO_ID = "mega_single_company_1000"
+SCENARIO_ID = "mega_single_company_e2e"
 COMPANY_NAME = "AsterGrid Systems"
+
+load_dotenv(REPO_ROOT / ".env", override=False)
+
+
+COMPANY_PROFILE: dict[str, Any] = {
+    "company_name": COMPANY_NAME,
+    "operating_space": (
+        "Enterprise operational-intelligence software for regulated B2B "
+        "companies whose leaders need customer, product, security, revenue, "
+        "and execution signals reconciled into reliable memory."
+    ),
+    "product": {
+        "name": "AsterGrid MemoryOps",
+        "category": "AI-native operating system for enterprise execution",
+        "stage": "Series B, post-product-market fit, scaling enterprise deployments",
+        "core_modules": [
+            "signal ingestion",
+            "organizational memory graph",
+            "customer-risk bridge",
+            "executive decision cockpit",
+            "regulated-enterprise audit trail",
+        ],
+    },
+    "financials": {
+        "cash_in_hand_usd": 18_400_000,
+        "monthly_burn_usd": 1_250_000,
+        "runway_months": 14.7,
+        "arr_usd": 12_800_000,
+        "pipeline_usd": 9_600_000,
+        "renewal_base_usd": 7_900_000,
+    },
+    "stage_constraints": [
+        "enterprise controls must ship before renewal season",
+        "implementation quality is limiting expansion",
+        "support volume is rising faster than headcount",
+        "data freshness incidents threaten trust in the product narrative",
+    ],
+    "employees_by_department": {
+        "engineering": 42,
+        "product_design": 12,
+        "customer_success": 18,
+        "sales": 16,
+        "marketing": 7,
+        "support": 11,
+        "security_compliance": 6,
+        "data_platform": 8,
+        "finance_ops": 5,
+        "people": 4,
+        "executive": 5,
+    },
+    "board_priorities": [
+        "protect renewal base",
+        "prove AI memory produces hidden organizational insight",
+        "extend runway without starving enterprise commitments",
+        "reduce founder-mediated decision load",
+    ],
+}
+
+DEPARTMENTS = list(COMPANY_PROFILE["employees_by_department"])
 
 
 CUSTOMER_ALIASES: dict[str, list[str]] = {
@@ -621,6 +685,12 @@ FAMILIES = [
     "market_competitor",
     "forecast_update",
     "risk_digest",
+    "cash_runway",
+    "hiring_capacity",
+    "board_update",
+    "partner_integration",
+    "compliance_regulatory",
+    "people_ops",
     "noise",
 ]
 
@@ -645,6 +715,12 @@ CHANNEL_BY_FAMILY = {
     "market_competitor": "email:mega-market",
     "forecast_update": "salesforce:mega-forecast",
     "risk_digest": "slack:mega-risk",
+    "cash_runway": "email:mega-finance",
+    "hiring_capacity": "greenhouse:mega-recruiting",
+    "board_update": "calendar:mega-board",
+    "partner_integration": "slack:mega-partners",
+    "compliance_regulatory": "email:mega-compliance",
+    "people_ops": "email:mega-people",
     "noise": "slack:mega-general",
 }
 
@@ -669,6 +745,12 @@ ACTOR_BY_FAMILY = {
     "market_competitor": "Ava Sinclair",
     "forecast_update": "Iris Wu",
     "risk_digest": "Hana Kim",
+    "cash_runway": "Olivia Grant",
+    "hiring_capacity": "Jon Bell",
+    "board_update": "Maya Chen",
+    "partner_integration": "Talia Morgan",
+    "compliance_regulatory": "Diego Alvarez",
+    "people_ops": "Hana Kim",
     "noise": "Ava Sinclair",
 }
 
@@ -693,12 +775,19 @@ TRUST_BY_FAMILY = {
     "market_competitor": "inferential",
     "forecast_update": "authoritative",
     "risk_digest": "inferential",
+    "cash_runway": "authoritative",
+    "hiring_capacity": "authoritative",
+    "board_update": "authoritative",
+    "partner_integration": "inferential",
+    "compliance_regulatory": "authoritative",
+    "people_ops": "authoritative",
     "noise": "inferential",
 }
 
 
 def build_scenario(signal_count: int, *, namespace: str) -> Scenario:
     foundation = {
+        "company_profile": COMPANY_PROFILE,
         "actors": _namespaced_actors(namespace),
         "customers": _build_customers(),
         "goals": GOALS,
@@ -721,8 +810,14 @@ def build_scenario(signal_count: int, *, namespace: str) -> Scenario:
             "Think creates scoped models instead of unscoped global memory.",
             "Customer, commitment, incident, and decision evidence remains connected.",
             "Noisy and stale signals do not dominate active model creation.",
+            "Financial and department-capacity context appears in derived memory.",
+            "The topology layer surfaces hidden cross-functional relationships.",
         ],
-        raw={"generated": True, "signal_count": signal_count},
+        raw={
+            "generated": True,
+            "signal_count": signal_count,
+            "company_profile": COMPANY_PROFILE,
+        },
     )
 
 
@@ -853,8 +948,13 @@ def _make_signal(index: int, window: int) -> dict[str, Any]:
     commitment = _commitment_for_customer(customer, index)
     related_goal = GOALS[index % len(GOALS)]["title"]
     decision = DECISIONS[index % len(DECISIONS)]["title"]
+    department = DEPARTMENTS[(index * 5 + window) % len(DEPARTMENTS)]
+    department_headcount = int(
+        COMPANY_PROFILE["employees_by_department"][department]
+    )
     severity = ["P0", "P1", "P2", "P3"][index % 4]
     arr = 250_000 + (index % 13) * 75_000
+    cash_impact = 25_000 + (index % 29) * 18_000
     week = 1 + index // 140
     actor = ACTOR_BY_FAMILY[family]
     channel = CHANNEL_BY_FAMILY[family]
@@ -869,8 +969,11 @@ def _make_signal(index: int, window: int) -> dict[str, Any]:
         commitment=commitment,
         goal=related_goal,
         decision=decision,
+        department=department,
+        department_headcount=department_headcount,
         severity=severity,
         arr=arr,
+        cash_impact=cash_impact,
         week=week,
     )
     content_dict = {
@@ -885,8 +988,14 @@ def _make_signal(index: int, window: int) -> dict[str, Any]:
         "commitment_title": commitment,
         "goal_title": related_goal,
         "decision_title": decision,
+        "department": department,
+        "department_headcount": department_headcount,
         "severity": severity,
         "arr_usd": arr,
+        "cash_impact_usd": cash_impact,
+        "cash_in_hand_usd": COMPANY_PROFILE["financials"]["cash_in_hand_usd"],
+        "runway_months": COMPANY_PROFILE["financials"]["runway_months"],
+        "product_stage": COMPANY_PROFILE["product"]["stage"],
         "entity_names": {
             "customers": [customer, secondary] if index % 9 == 0 else [customer],
             "commitments": [commitment],
@@ -927,13 +1036,22 @@ def _signal_text(
     commitment: str,
     goal: str,
     decision: str,
+    department: str,
+    department_headcount: int,
     severity: str,
     arr: int,
+    cash_impact: int,
     week: int,
 ) -> str:
+    financials = COMPANY_PROFILE["financials"]
+    product = COMPANY_PROFILE["product"]
     base = (
         f"[{COMPANY_NAME} signal {index:04d} week {week}] "
         f"{customer} ({alias}) relates to {commitment}. "
+        f"Company context: {product['name']} is at {product['stage']} with "
+        f"${financials['cash_in_hand_usd']:,} cash, "
+        f"{financials['runway_months']} months runway, and "
+        f"{department_headcount} people in {department}. "
     )
     tails = {
         "customer_escalation": (
@@ -1013,6 +1131,35 @@ def _signal_text(
         "risk_digest": (
             f"Risk digest ties {customer}, {secondary}, {goal}, and {commitment}; "
             "the non-obvious connection is that procurement anxiety and incident opacity are merging."
+        ),
+        "cash_runway": (
+            f"Finance update: {department} spend changed by ${cash_impact:,}; "
+            f"runway sensitivity now connects {commitment}, renewal timing, "
+            "and whether enterprise controls can ship before the next board meeting."
+        ),
+        "hiring_capacity": (
+            f"Capacity plan says {department} has {department_headcount} people but "
+            f"needs {2 + index % 5} more to protect {goal}. Recruiting tradeoff "
+            "could slow customer-facing remediation if cash burn stays fixed."
+        ),
+        "board_update": (
+            f"Board prep asks whether {decision} is still valid given {customer} "
+            f"risk, ${arr:,} ARR exposure, current runway, and product-stage pressure."
+        ),
+        "partner_integration": (
+            f"Partner integration note: {customer} depends on an ecosystem connector "
+            f"owned by {department}; the delay may quietly weaken {secondary}'s "
+            "implementation confidence too."
+        ),
+        "compliance_regulatory": (
+            f"Regulatory update: audit evidence and data residency controls for "
+            f"{customer} now affect procurement, legal review, and {department} "
+            "capacity in the same operating loop."
+        ),
+        "people_ops": (
+            f"People ops signal: {department} attrition risk is rising after repeated "
+            f"{severity} escalation load. This may explain slips on {commitment} "
+            "and should not be treated as isolated morale noise."
         ),
         "noise": (
             f"General chatter mentions {alias} in passing with lunch logistics and no actionable "
@@ -1168,6 +1315,53 @@ async def enqueue_t1_for_observations(
     return len(rows)
 
 
+async def drain_post_commit_actions(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    timeout_seconds: int,
+    batch_size: int = 250,
+) -> dict[str, int]:
+    """Drain durable post-commit actions for this tenant."""
+    deadline = time.monotonic() + timeout_seconds
+    stats = WorkerStats()
+    while True:
+        async with pool.acquire() as conn:
+            pending = await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM pending_post_commit_actions
+                WHERE tenant_id = $1
+                  AND processed_at IS NULL
+                  AND dead_lettered_at IS NULL
+                  AND scheduled_at <= now()
+                """,
+                tenant_id,
+            )
+        if int(pending or 0) == 0:
+            return {
+                "processed": stats.processed,
+                "failed": stats.failed,
+                "dead_lettered": stats.dead_lettered,
+                "iterations": stats.iterations,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "processed": stats.processed,
+                "failed": stats.failed,
+                "dead_lettered": stats.dead_lettered,
+                "iterations": stats.iterations,
+                "timed_out": 1,
+            }
+        await process_batch(
+            pool,
+            limit=batch_size,
+            stats=stats,
+            tenant_id=tenant_id,
+        )
+        await asyncio.sleep(0.05)
+
+
 async def collect_model_layer_report(
     pool: asyncpg.Pool,
     *,
@@ -1185,6 +1379,7 @@ async def collect_model_layer_report(
             "tenant_id": str(tenant_id),
             "run_id": run_id,
             "scenario_id": scenario.scenario_id,
+            "company_profile": scenario.raw.get("company_profile") or {},
             "signal_count": len(observation_ids),
             "think_status": think_status,
             "elapsed_seconds": round(elapsed_seconds, 3),
@@ -1226,6 +1421,37 @@ async def collect_model_layer_report(
                 "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1 AND status = 'active'",
                 tenant_id,
             ),
+            "relationship_candidates": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM relationship_candidates WHERE tenant_id = $1",
+                tenant_id,
+            ),
+            "latent_topology_candidates": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM relationship_candidates
+                WHERE tenant_id = $1
+                  AND source = 'latent_topology'
+                """,
+                tenant_id,
+            ),
+            "relationship_candidate_think_triggers": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND trigger_kind = 'T4'
+                  AND trigger_subkind = 'latent_relationship_candidate'
+                """,
+                tenant_id,
+            ),
+            "model_scope_entity_sidecars": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM model_scope_entities WHERE tenant_id = $1",
+                tenant_id,
+            ),
+            "model_scope_actor_sidecars": await conn.fetchval(
+                "SELECT COUNT(*)::bigint FROM model_scope_actors WHERE tenant_id = $1",
+                tenant_id,
+            ),
             "state_changes": await conn.fetchval(
                 """
                 SELECT COUNT(*)::bigint
@@ -1249,6 +1475,24 @@ async def collect_model_layer_report(
                 FROM think_trigger_queue
                 WHERE tenant_id = $1
                   AND completed_at IS NULL
+                """,
+                tenant_id,
+            ),
+            "pending_post_commit_actions": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM pending_post_commit_actions
+                WHERE tenant_id = $1
+                  AND processed_at IS NULL
+                """,
+                tenant_id,
+            ),
+            "dead_lettered_post_commit_actions": await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM pending_post_commit_actions
+                WHERE tenant_id = $1
+                  AND dead_lettered_at IS NOT NULL
                 """,
                 tenant_id,
             ),
@@ -1343,6 +1587,41 @@ async def collect_model_layer_report(
             SELECT review_status AS key, COUNT(*)::bigint AS value
             FROM model_edges
             WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["relationship_candidate_kind_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT candidate_kind AS key, COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["relationship_candidate_status_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT review_status AS key, COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        summary["topology_object_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(metadata->'topology'->>'object_type', '<none>') AS key,
+                   COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'latent_topology'
             GROUP BY 1
             ORDER BY 2 DESC, 1 ASC
             """,
@@ -1615,11 +1894,21 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _render_markdown(summary: dict[str, Any]) -> str:
+    profile = summary.get("company_profile") or {}
+    financials = profile.get("financials") or {}
+    employee_count = sum(
+        int(v) for v in (profile.get("employees_by_department") or {}).values()
+    )
     lines = [
-        "# Model Layer 1000-Signal Probe",
+        "# Company-Scale Signal Probe",
         "",
         f"- Tenant: `{summary['tenant_id']}`",
         f"- Run: `{summary['run_id']}`",
+        f"- Company: {profile.get('company_name', COMPANY_NAME)}",
+        f"- Operating space: {profile.get('operating_space', '')}",
+        f"- Cash in hand: ${int(financials.get('cash_in_hand_usd') or 0):,}",
+        f"- Runway months: {financials.get('runway_months', '<unknown>')}",
+        f"- Employees modeled: {employee_count}",
         f"- Think status: `{summary['think_status']}`",
         f"- Signals injected: {summary['signal_count']}",
         f"- Observations stored: {summary['observation_count']}",
@@ -1627,9 +1916,14 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- Successful Think runs: {summary['think_runs_success']}",
         f"- Failed Think runs: {summary['think_runs_failed']}",
         f"- Pending triggers: {summary['pending_triggers']}",
+        f"- Pending post-commit actions: {summary.get('pending_post_commit_actions', 0)}",
+        f"- Dead-lettered post-commit actions: {summary.get('dead_lettered_post_commit_actions', 0)}",
         f"- Active models: {summary['active_models']}",
         f"- Archived models: {summary['archived_models']}",
         f"- Model edges: {summary['model_edges']}",
+        f"- Relationship candidates: {summary.get('relationship_candidates', 0)}",
+        f"- Latent topology candidates: {summary.get('latent_topology_candidates', 0)}",
+        f"- Scope entity sidecars: {summary.get('model_scope_entity_sidecars', 0)}",
         f"- State changes: {summary['state_changes']}",
         f"- Elapsed seconds: {summary['elapsed_seconds']}",
         "",
@@ -1641,6 +1935,12 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         "",
         "## Edge Kinds",
         _table(summary.get("edge_kind_distribution") or {}),
+        "",
+        "## Relationship Candidates",
+        _table(summary.get("relationship_candidate_kind_distribution") or {}),
+        "",
+        "## Topology Objects",
+        _table(summary.get("topology_object_distribution") or {}),
         "",
         "## Graph Health",
         "```json",
@@ -1679,17 +1979,18 @@ def _named_table(rows: list[dict[str, Any]]) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--signals", type=int, default=1000)
+    parser.add_argument("--signals", type=int, default=3000)
     parser.add_argument(
         "--think-limit",
         type=int,
         default=200,
         help=(
-            "Number of injected signals to enqueue for live Think. Use 1000 "
+            "Number of injected signals to enqueue for live Think. Use --signals "
             "for a full LLM burn."
         ),
     )
     parser.add_argument("--think-timeout", type=int, default=3600)
+    parser.add_argument("--post-commit-timeout", type=int, default=600)
     parser.add_argument("--progress-every", type=int, default=50)
     parser.add_argument("--pool-max-size", type=int, default=8)
     parser.add_argument("--run-id", default=None)
@@ -1710,7 +2011,7 @@ async def main() -> int:
     if args.think_limit > args.signals:
         raise SystemExit("--think-limit cannot exceed --signals")
 
-    run_id = args.run_id or f"mega-1000-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = args.run_id or f"company-e2e-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     report_dir = args.report_root / f"model-layer-{run_id}"
     print(f"building {args.signals}-signal scenario for {COMPANY_NAME}", flush=True)
     scenario = build_scenario(args.signals, namespace=run_id)
@@ -1727,6 +2028,7 @@ async def main() -> int:
     embedder = OllamaClient(OllamaConfig.from_env())
     started = time.monotonic()
     think_status = "not_run"
+    post_commit_status: dict[str, int] = {}
     try:
         async with pool.acquire() as conn:
             await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
@@ -1775,6 +2077,15 @@ async def main() -> int:
             except TimeoutError as exc:
                 think_status = f"timeout: {exc}"
                 print(think_status, flush=True)
+            post_commit_status = await drain_post_commit_actions(
+                pool,
+                tenant_id=scenario.tenant_id,
+                timeout_seconds=args.post_commit_timeout,
+            )
+            print(
+                f"post_commit={json.dumps(post_commit_status, sort_keys=True)}",
+                flush=True,
+            )
 
         summary = await collect_model_layer_report(
             pool,
@@ -1786,6 +2097,8 @@ async def main() -> int:
             think_status=think_status,
             elapsed_seconds=time.monotonic() - started,
         )
+        _write_json(report_dir / "run_summary.json", summary)
+        (report_dir / "model_layer_summary.md").write_text(_render_markdown(summary))
         print(f"report_dir={report_dir}", flush=True)
         print(
             json.dumps(
@@ -1795,9 +2108,16 @@ async def main() -> int:
                     "signals": summary["signal_count"],
                     "active_models": summary["active_models"],
                     "model_edges": summary["model_edges"],
+                    "relationship_candidates": summary["relationship_candidates"],
+                    "latent_topology_candidates": summary["latent_topology_candidates"],
                     "think_runs_success": summary["think_runs_success"],
                     "think_runs_failed": summary["think_runs_failed"],
                     "pending_triggers": summary["pending_triggers"],
+                    "pending_post_commit_actions": summary["pending_post_commit_actions"],
+                    "dead_lettered_post_commit_actions": summary[
+                        "dead_lettered_post_commit_actions"
+                    ],
+                    "post_commit_status": post_commit_status,
                     "cost": summary["cost"],
                 },
                 indent=2,
@@ -1822,6 +2142,10 @@ def _build_cached_provider():
     except LLMConfigError as exc:
         raise SystemExit(f"LLM provider is not configured: {exc}") from exc
     if not cfg.api_key:
+        if cfg.provider == "codex" and _codex_transport() in {"app-server", "cli"}:
+            raise SystemExit(
+                "Codex local auth is not set; run `codex login` or set CODEX_AUTH_FILE"
+            )
         raise SystemExit("LLM API key is not set")
     return build_provider(cfg)
 

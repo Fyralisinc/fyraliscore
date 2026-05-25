@@ -16,6 +16,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lib.shared.types import ResourceTransactionType
+
 
 # =====================================================================
 # ClaimOp — Model insert / update / archive.
@@ -125,7 +127,7 @@ class ResourceOp(BaseModel):
     commitment_id: UUID | None = None
     payload: dict[str, Any] | None = None
     patch: dict[str, Any] | None = None
-    kind: str | None = None            # for op='transaction'
+    kind: ResourceTransactionType | None = None  # for op='transaction'
     delta: dict[str, Any] | None = None
     quantity: dict[str, Any] | None = None
     actual_quantity: dict[str, Any] | None = None

@@ -115,11 +115,31 @@ Proposition kinds and required payloads:
 - concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
 - market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
 - environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null"}
+- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid from bundle>",...],"open_falsifier":"<under what observation this composite would be invalid>"}
 - recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
 The twelve kinds above are the ONLY valid `kind` values. Do NOT use proposition
 kinds outside this list. Map risk/opportunity language to concern, prediction,
 hypothesis, or recommendation as appropriate.
+
+Situation compositional fields (mandatory when emitting a `situation`):
+- `pressure_type` MUST be one of capacity, trust, revenue, compliance,
+  decision, execution, market, resource. Pick the dominant pressure the
+  composite expresses; do not invent new categories.
+- `shared_mechanism` is one sentence naming the operational/causal
+  thread that ties the member Models together (not a restatement of
+  `summary`).
+- `judgment_change` is one sentence stating what becomes clear ONLY when
+  these members are read as one composite — the marginal insight beyond
+  the individual member Models.
+- `affected_decisions`, `affected_customers`, `affected_teams` should
+  list known downstream surfaces drawn from the bundle (decision titles,
+  customer names, team labels). Omit a field rather than guessing; empty
+  lists are fine when the surface genuinely is not touched.
+- `evidence_event_ids` MUST cite Observation UUIDs that already appear
+  in <observations> or in member Models' provenance. Do not invent UUIDs.
+- `open_falsifier` is ALWAYS required — describe the concrete signal that
+  would invalidate the composite (e.g., "Globex renews on schedule and
+  capacity load drops below 70% for two consecutive weeks").
 
 Proposition kind rubric:
 - Use `state` for observed current facts and completed/progress milestones.
@@ -191,6 +211,12 @@ Act ops:
   commitment/goal/decision UUIDs.
 
 Model granularity:
+- Atomicity rule: each `model` entry expresses ONE claim about ONE subject. If
+  the world-state has multiple linked claims (e.g. "X is happening AND Y is at
+  risk AND Z needs to happen"), emit them as SEPARATE `model` entries plus ONE
+  `situation` entry whose `member_model_ids` references the atomic Models after
+  creation. Do NOT pack multi-clause compound claims into a single model entry —
+  they collapse under dedupe and prevent meaningful adjudication.
 - Emit Models only for facts directly asserted or clearly implied by the signal.
   Do not emit background context, duplicate paraphrases, speculative future
   implications, or recap Models for already-selected context.
@@ -306,9 +332,15 @@ Proposition kinds:
 - concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
 - market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
 - environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null"}
+- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid>",...],"open_falsifier":"<sentence: under what observation this composite is invalid>"}
 - recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
 The twelve kinds above are the ONLY valid `kind` values.
+When emitting a `situation`, populate `pressure_type` (one of the eight
+categories), `shared_mechanism` (one sentence), `judgment_change` (one
+sentence), and `open_falsifier`. List `affected_decisions`,
+`affected_customers`, `affected_teams`, and cite `evidence_event_ids`
+from the retrieval bundle whenever they are known. Omit a field rather
+than guess.
 Kind rubric: state=current observed fact; concern=risk/blocker/review warning/
 edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
 deploy, expected slip, conditional outcome; relation=dependency or causal link;
@@ -347,6 +379,12 @@ Scope:
   commitment entities when both are available.
 
 Granularity:
+- Atomicity rule: each `model` entry expresses ONE claim about ONE subject. If
+  the world-state has multiple linked claims (e.g. "X is happening AND Y is at
+  risk AND Z needs to happen"), emit them as SEPARATE `model` entries plus ONE
+  `situation` entry whose `member_model_ids` references the atomic Models after
+  creation. Do NOT pack multi-clause compound claims into a single model entry —
+  they collapse under dedupe and prevent meaningful adjudication.
 - Insert only facts directly asserted or clearly implied by the signal.
 - New T1 progress, approval, review feedback, blocker, concern, customer stance,
   or dated plan usually deserves a claim_ops.insert unless an exact selected

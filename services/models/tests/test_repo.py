@@ -623,6 +623,155 @@ async def test_retrieve_bumps_activation_clipped_at_1_confidence_untouched(
     assert got2[0].confidence == pytest.approx(expected_conf)
 
 
+async def test_retrieve_skips_locked_reconsolidation_rows_without_blocking(
+    repo: ModelsRepo,
+    fresh_db: asyncpg.Pool,
+    tenant: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    """Hot retrieval bookkeeping must not serialize large Think drains."""
+    from pgvector.asyncpg import register_vector
+
+    actor_id = uuid7()
+    born_from_event = uuid7()
+    async with fresh_db.acquire() as setup:
+        try:
+            await register_vector(setup)
+        except Exception:
+            pass
+        async with setup.transaction():
+            await setup.execute(
+                """
+                INSERT INTO tenants (id, name, is_demo)
+                VALUES ($1, 'retrieve-skip-locked', FALSE)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                tenant,
+            )
+            await setup.execute(
+                """
+                INSERT INTO actors (
+                    id, tenant_id, type, display_name, email, status,
+                    metadata, specification_id, created_at, last_seen_at
+                ) VALUES (
+                    $1, $2, 'human_internal', 'Lock Holder',
+                    'lock-holder@example.com', 'active',
+                    '{}'::jsonb, NULL, now(), NULL
+                )
+                """,
+                actor_id,
+                tenant,
+            )
+            await setup.execute(
+                """
+                INSERT INTO observations (
+                    id, tenant_id, occurred_at, kind, source_channel,
+                    actor_id, content, content_text,
+                    embedding, embedding_pending, trust_tier,
+                    external_id, entities_mentioned
+                ) VALUES (
+                    $1, $2, now(), 'signal', 'test:signal',
+                    $3, '{}'::jsonb, 'locked retrieval test',
+                    NULL, TRUE, 'authoritative',
+                    $4, '[]'::jsonb
+                )
+                """,
+                born_from_event,
+                tenant,
+                actor_id,
+                f"locked-retrieval-{born_from_event}",
+            )
+            with notify_scope():
+                row = await repo.insert(
+                    _mc(
+                        tenant=tenant,
+                        born_from_event=born_from_event,
+                        actor_id=actor_id,
+                        proposition=state_proposition(),
+                        natural="retrieve without blocking on locked heat counters",
+                        embedding=embedding,
+                        confidence=0.5,
+                    ),
+                    conn=setup,
+                )
+
+    locker = await fresh_db.acquire()
+    reader = await fresh_db.acquire()
+    lock_tx = locker.transaction()
+    await lock_tx.start()
+    try:
+        await locker.execute(
+            "SELECT id FROM models WHERE id = $1 FOR UPDATE",
+            row.id,
+        )
+
+        started = asyncio.get_running_loop().time()
+        got = await repo.retrieve([row.id], conn=reader)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert elapsed < 0.5
+        assert [m.id for m in got] == [row.id]
+        assert got[0].retrieval_count == 0
+        assert got[0].last_retrieved_at is None
+    finally:
+        await lock_tx.rollback()
+        await fresh_db.release(locker)
+        await fresh_db.release(reader)
+        async with fresh_db.acquire() as cleanup:
+            await cleanup.execute("DELETE FROM models WHERE tenant_id = $1", tenant)
+            await cleanup.execute("DELETE FROM observations WHERE tenant_id = $1", tenant)
+            await cleanup.execute("DELETE FROM actors WHERE tenant_id = $1", tenant)
+            await cleanup.execute("DELETE FROM tenants WHERE id = $1", tenant)
+
+
+async def test_topology_insert_failure_does_not_poison_model_insert(
+    fresh_db: asyncpg.Pool,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+    monkeypatch,
+) -> None:
+    """Topology candidate discovery is best-effort under a savepoint."""
+    from services.models import repo as repo_mod
+
+    async def fail_with_db_error(conn, *, model):
+        del model
+        await conn.execute("SELECT 1 / 0")
+
+    monkeypatch.setattr(
+        repo_mod._TOPOLOGY,
+        "generate_for_model",
+        fail_with_db_error,
+    )
+    repo_with_topology = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=True,
+    )
+
+    with notify_scope():
+        row = await repo_with_topology.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=state_proposition(),
+                natural="topology failure should not abort insert",
+                embedding=embedding,
+                confidence=0.5,
+            ),
+            conn=tx_conn,
+        )
+
+    assert await tx_conn.fetchval("SELECT 1") == 1
+    assert await tx_conn.fetchval(
+        "SELECT COUNT(*) FROM models WHERE id = $1",
+        row.id,
+    ) == 1
+
+
 async def test_reconsolidation_never_touches_confidence(
     repo: ModelsRepo,
     tx_conn: asyncpg.Connection,
@@ -1686,3 +1835,54 @@ async def test_get_by_id_round_trip(
     assert got.confidence == pytest.approx(0.475)
     assert got.confidence_at_assertion == 0.5
     assert got.natural == "round trip"
+
+
+# =====================================================================
+# Positional topo_embedding initialization on insert (migration 0032)
+# =====================================================================
+
+
+async def test_insert_initializes_topo_embedding(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    """Inserting a Model must synchronously populate
+    `models.topo_embedding` with the 128-d content_anchor projection
+    so the UMAP map view and Pathway F can see the row immediately.
+    Regression test for commit 31dc9fb which dropped this write."""
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=state_proposition(
+                    subject="topo", assertion="anchored"
+                ),
+                natural="alice is anchored in topo space",
+                embedding=embedding,
+                confidence=0.5,
+            ),
+            conn=tx_conn,
+        )
+
+    persisted = await tx_conn.fetchrow(
+        """
+        SELECT
+            topo_embedding IS NOT NULL AS has_topo,
+            vector_dims(topo_embedding) AS dims,
+            topo_updated_at
+        FROM models
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        row.id,
+        tenant,
+    )
+    assert persisted is not None
+    assert persisted["has_topo"] is True
+    assert persisted["dims"] == 128
+    assert persisted["topo_updated_at"] is not None

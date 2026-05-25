@@ -460,8 +460,11 @@ async def _branch_commitment_state(
             # Compute current revenue_at_risk via Bridge primitive.
             from services.resources.bridge import revenue_at_risk_for_customer
             try:
-                rar = await revenue_at_risk_for_customer(cid, conn=conn)
+                async with conn.transaction():
+                    rar = await revenue_at_risk_for_customer(cid, conn=conn)
             except Exception:
+                # Bridge recompute is best-effort; the savepoint keeps
+                # DB errors from poisoning the cascade transaction.
                 rar = None
             obs_id = await emit_state_change(
                 conn,
