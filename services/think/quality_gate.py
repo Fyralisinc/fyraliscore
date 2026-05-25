@@ -99,6 +99,19 @@ def is_compound(text_or_entry: str | dict) -> bool:
     so we adapt accordingly. When called with a plain string we wrap it
     into a minimal entry shape so the splitter's text extractor sees it.
     """
+    # Pull a text view for the local bullet/sentence fallback regardless
+    # of whether splitter fires — splitter is conjunction-based and won't
+    # catch newline-bullet or multi-sentence packing.
+    if isinstance(text_or_entry, dict):
+        prop = text_or_entry.get("proposition") or {}
+        text = prop.get("assertion") or prop.get("summary") or ""
+        text = text if isinstance(text, str) else ""
+    else:
+        text = text_or_entry
+
+    if _is_compound_text(text):
+        return True
+
     if _splitter_is_compound is not None:
         try:
             entry: dict
@@ -107,19 +120,12 @@ def is_compound(text_or_entry: str | dict) -> bool:
             else:
                 entry = text_or_entry
             result = _splitter_is_compound(entry)
-            # Real splitter returns (bool, [reasons]); be defensive about
-            # alternate return shapes.
             if isinstance(result, tuple):
                 return bool(result[0])
             return bool(result)
         except Exception:
             pass
-    if isinstance(text_or_entry, dict):
-        # Best-effort: pull a string out of the dict for the fallback.
-        prop = text_or_entry.get("proposition") or {}
-        text = prop.get("assertion") or prop.get("summary") or ""
-        return _is_compound_text(text if isinstance(text, str) else "")
-    return _is_compound_text(text_or_entry)
+    return False
 
 
 # =====================================================================
@@ -561,20 +567,12 @@ def score_quality(op: ClaimOp, context: QualityContext) -> QualityVerdict:
 
     reasons = list(a_reasons) + list(d_reasons) + list(k_reasons)
 
-    # Decision rules — order matters. Hard reject comes first.
-    if overall < 0.45 or any(s < 0.2 for s in individual):
-        return QualityVerdict(
-            decision="reject",
-            atomicity_score=atomicity,
-            durability_score=durability,
-            kind_fit_score=kind_fit,
-            overall_score=overall,
-            rejection_reasons=reasons or [f"overall_score={overall:.2f} below 0.45"],
-            downgrade_target=None,
-        )
-
-    # Durability-only failure with kind well-formed → downgrade.
-    if durability < 0.3 and kind_fit >= 0.5:
+    # Decision rules — order matters. Durability-specific downgrade
+    # comes BEFORE hard reject so that low-durability-but-coherent
+    # claims (e.g. one-off observations) flow to the evidence path
+    # instead of being silently dropped. Atomicity guard prevents
+    # downgrading compound junk.
+    if durability < 0.3 and kind_fit >= 0.5 and atomicity >= 0.3:
         downgrade_reasons = list(reasons)
         downgrade_reasons.append(
             "downgrade: durability < 0.3 → emit as evidence attachment "
@@ -589,6 +587,19 @@ def score_quality(op: ClaimOp, context: QualityContext) -> QualityVerdict:
             overall_score=overall,
             rejection_reasons=downgrade_reasons,
             downgrade_target="evidence",
+        )
+
+    # Hard reject — failed downgrade conditions AND overall is too low
+    # OR any single dimension is catastrophically bad.
+    if overall < 0.45 or any(s < 0.2 for s in individual):
+        return QualityVerdict(
+            decision="reject",
+            atomicity_score=atomicity,
+            durability_score=durability,
+            kind_fit_score=kind_fit,
+            overall_score=overall,
+            rejection_reasons=reasons or [f"overall_score={overall:.2f} below 0.45"],
+            downgrade_target=None,
         )
 
     if 0.45 <= overall < 0.6:

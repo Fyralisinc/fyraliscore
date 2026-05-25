@@ -248,6 +248,24 @@ def _split_top_level(text: str) -> list[str]:
     if not text or not text.strip():
         return []
     pieces: list[str] = [p for p in text.split(" | ") if p.strip()]
+    # Dedupe restatements across the natural / proposition.assertion
+    # text views. The joined " | " input often contains the same claim
+    # twice (e.g. natural="x ships", proposition.assertion="ships"),
+    # which would otherwise be counted as two conjuncts. Drop any piece
+    # that is a substring of a longer piece in the same group.
+    if len(pieces) > 1:
+        deduped: list[str] = []
+        for p in pieces:
+            p_norm = p.lower().strip()
+            redundant = any(
+                q is not p and p_norm in q.lower().strip()
+                and len(p_norm) < len(q.lower().strip())
+                for q in pieces
+            )
+            if not redundant:
+                deduped.append(p)
+        if deduped:
+            pieces = deduped
     for sep in _CONJ_SEPARATORS:
         next_pieces: list[str] = []
         for piece in pieces:
