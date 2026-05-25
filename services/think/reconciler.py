@@ -18,17 +18,27 @@ For each `claim_op.insert` proposed by the LLM, the reconciler:
      within the recency window. If the LLM omitted an embedding, the
      reconciler uses the same deterministic fallback the applier uses
      before insert, so strict-schema live output can still deduplicate.
-  2. Decides:
-       * cosine ≥ AUTO_MERGE_COSINE     → 'auto_merge': convert
-         the insert to a confidence update against the matched Model.
-       * cosine in [HUMAN_REVIEW, AUTO) → 'human_review': record
-         the candidate in `pending_reconciliation` queue, proceed
-         with the original insert anyway. The queue is reviewed
-         out-of-band; auto-merge does NOT happen for borderline
-         cases.
+  2. Scores each candidate by combining cosine with graph-structural
+     signals (shared evidence events, shared supporting_model_ids,
+     shared falsifier semantics).
+  3. Decides:
+       * adjusted-score ≥ AUTO_MERGE_COSINE (or per-kind override)
+                                     → 'auto_merge': convert the
+         insert to a confidence update against the matched Model.
+       * adjusted-score in [HUMAN_REVIEW, AUTO) → 'human_review':
+         record the candidate in `reconciliation_events` for human
+         review AND emit a `same_issue_as` relationship candidate so
+         the duplicate suspicion is visible to T4 / adjudication.
+         The original insert still proceeds.
        * no match in window             → 'no_match': pass through
          unchanged.
-  3. Records the decision in `reconciliation_events`.
+  4. Records the decision in `reconciliation_events`.
+
+Per-kind overrides (see `_KIND_RULES`) tighten thresholds for
+proposition kinds that paraphrase heavily (market_assessment,
+concern) and forbid auto-merge for kinds that require human
+confirmation (recommendation). `situation` and `pattern_instance`
+get bespoke matching rules.
 
 Reconciliation is opt-out via env `RECONCILE_ENABLED=false`. The
 reconciler MUST never abort apply: any internal exception is
@@ -39,7 +49,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -113,6 +123,19 @@ class ReconcilerConfig:
 
 
 Decision = Literal["auto_merge", "human_review", "no_match", "skipped"]
+DecisionReason = Literal[
+    "exact_match",
+    "high_cosine_auto_merge",
+    "kind_specific_auto_merge",
+    "graph_signal_boost",
+    "near_duplicate_review",
+    "same_issue_candidate_emitted",
+    "no_match",
+    "kind_blocked_auto_merge",
+    "disabled",
+    "inapplicable",
+    "error",
+]
 
 
 @dataclass
@@ -123,12 +146,21 @@ class ReconcileResult:
     caller should apply this op instead of the original insert.
     For all other decisions it is None and the caller proceeds
     with the original op.
+
+    `decision_reason` and `signal_breakdown` are observability
+    surfaces — they explain *why* the decision came out the way it
+    did, including which graph-structural signals contributed.
+    `same_issue_candidate_id` is set when the borderline branch
+    emitted a `same_issue_as` RelationshipCandidate.
     """
     decision: Decision
     matched_model_id: UUID | None
     cosine_similarity: float | None
     replacement_op: ClaimOp | None
     event_id: UUID | None  # row id in reconciliation_events, if written
+    decision_reason: DecisionReason = "no_match"
+    signal_breakdown: dict[str, float] = field(default_factory=dict)
+    same_issue_candidate_id: UUID | None = None
 
 
 # =====================================================================
@@ -252,6 +284,231 @@ def _confirmation_reading(
 
 
 # =====================================================================
+# Per-kind reconciliation rules
+# =====================================================================
+#
+# Each rule may:
+#   * override the default auto_merge / human_review thresholds for
+#     its kind,
+#   * forbid auto_merge entirely (never_auto_merge=True),
+#   * supply custom match_score / qualifies functions that augment or
+#     replace the default cosine + scope check.
+#
+# A rule returning False from `qualifies` means the candidate pair is
+# not a duplicate for that kind even if cosine is high (e.g. two
+# pattern_instances of different parent patterns).
+
+
+@dataclass(frozen=True)
+class KindRule:
+    auto_merge_cosine: float | None = None
+    human_review_cosine: float | None = None
+    never_auto_merge: bool = False
+    # Member-overlap shortcut for `situation`: when set, the rule
+    # auto-merges if `>= auto_member_overlap` fraction of member ids
+    # are shared, regardless of cosine.
+    auto_member_overlap: float | None = None
+    # 0.50-0.80 member overlap on situations should emit a
+    # same_issue_as candidate even if cosine is below human_review.
+    same_issue_member_overlap_floor: float | None = None
+    # Recommendation: always require human confirmation.
+    require_human_review: bool = False
+    # If True, the rule disqualifies pairs whose parent pattern_id
+    # does not match (used by pattern_instance).
+    require_matching_pattern_id: bool = False
+
+
+_KIND_RULES: dict[str, KindRule] = {
+    # Market assessments paraphrase heavily ("AWS outage drives
+    # multicloud demand" vs "AWS reliability concerns push customers
+    # to multicloud"). Match on (entity OR market) within a 30-day
+    # timeframe (already enforced by recency window + scope filter).
+    # Lower the auto_merge bar to 0.75.
+    "market_assessment": KindRule(
+        auto_merge_cosine=0.75,
+        human_review_cosine=0.65,
+    ),
+    # Concerns about the same workstream + activation period get
+    # re-stated in different words. Lower auto_merge to 0.78.
+    "concern": KindRule(
+        auto_merge_cosine=0.78,
+        human_review_cosine=0.65,
+    ),
+    # Recommendations are action-oriented and need a human in the
+    # loop. NEVER auto_merge — even at high cosine, queue to
+    # pending_reconciliation for review.
+    "recommendation": KindRule(
+        never_auto_merge=True,
+        require_human_review=True,
+    ),
+    # Situation reconciliation is dominated by member overlap rather
+    # than text similarity. ≥80% member overlap → auto_merge. 50-80%
+    # → same_issue_as candidate emission.
+    "situation": KindRule(
+        auto_member_overlap=0.80,
+        same_issue_member_overlap_floor=0.50,
+    ),
+    # Pattern instances are only duplicates if they share the parent
+    # pattern_id.
+    "pattern_instance": KindRule(
+        require_matching_pattern_id=True,
+    ),
+}
+
+
+def _kind_rule(prop_kind: str | None) -> KindRule:
+    if prop_kind and prop_kind in _KIND_RULES:
+        return _KIND_RULES[prop_kind]
+    return KindRule()
+
+
+# =====================================================================
+# Graph-structural signal helpers
+# =====================================================================
+
+
+def _entry_supporting_event_ids(entry: dict[str, Any]) -> set[UUID]:
+    ids: set[UUID] = set()
+    for key in ("supporting_event_ids", "evidence_event_ids"):
+        for v in entry.get(key) or []:
+            uid = _coerce_uuid(v)
+            if uid is not None:
+                ids.add(uid)
+    born = _coerce_uuid(entry.get("born_from_event_id"))
+    if born is not None:
+        ids.add(born)
+    return ids
+
+
+def _entry_supporting_model_ids(entry: dict[str, Any]) -> set[UUID]:
+    ids: set[UUID] = set()
+    for v in entry.get("supporting_model_ids") or []:
+        uid = _coerce_uuid(v)
+        if uid is not None:
+            ids.add(uid)
+    return ids
+
+
+def _row_supporting_event_ids(row: dict[str, Any]) -> set[UUID]:
+    return set(_normalize_uuid_list(row.get("supporting_event_ids")))
+
+
+def _row_supporting_model_ids(row: dict[str, Any]) -> set[UUID]:
+    return set(_normalize_uuid_list(row.get("supporting_model_ids")))
+
+
+def _normalize_jsonish(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return json.loads(value.decode())
+        except (ValueError, UnicodeDecodeError):
+            return None
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _falsifier_text(value: Any) -> str:
+    obj = _normalize_jsonish(value)
+    if not isinstance(obj, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("pattern", "condition", "natural", "description"):
+        v = obj.get(key)
+        if isinstance(v, str) and v.strip():
+            parts.append(v.strip())
+    return " ".join(parts)
+
+
+def _falsifier_cosine(entry: dict[str, Any], row: dict[str, Any]) -> float:
+    """Cosine of deterministic embeddings over the two falsifier blobs."""
+    cand_text = _falsifier_text(entry.get("falsifier"))
+    row_text = _falsifier_text(row.get("falsifier"))
+    if not cand_text or not row_text:
+        return 0.0
+    cand_vec = deterministic_text_embedding(cand_text)
+    row_vec = deterministic_text_embedding(row_text)
+    return _cosine(cand_vec, row_vec)
+
+
+def _member_model_ids(payload: Any) -> set[UUID]:
+    """Pull `member_model_ids` from a situation proposition payload."""
+    obj = _normalize_jsonish(payload)
+    if not isinstance(obj, dict):
+        return set()
+    raw = obj.get("member_model_ids") or []
+    out: set[UUID] = set()
+    if isinstance(raw, (list, tuple)):
+        for v in raw:
+            uid = _coerce_uuid(v)
+            if uid is not None:
+                out.add(uid)
+    return out
+
+
+def _member_overlap_fraction(left: set[UUID], right: set[UUID]) -> float:
+    if not left or not right:
+        return 0.0
+    smaller = min(len(left), len(right))
+    if smaller == 0:
+        return 0.0
+    return len(left & right) / float(smaller)
+
+
+def _pattern_id(payload: Any) -> UUID | None:
+    obj = _normalize_jsonish(payload)
+    if not isinstance(obj, dict):
+        return None
+    for key in ("pattern_id", "parent_pattern_id", "pattern"):
+        uid = _coerce_uuid(obj.get(key))
+        if uid is not None:
+            return uid
+    return None
+
+
+def _compute_signal_breakdown(
+    entry: dict[str, Any],
+    row: dict[str, Any],
+    base_cosine: float,
+) -> tuple[float, dict[str, float]]:
+    """Apply graph-structural boosts to the base cosine score.
+
+    Returns (adjusted_score, breakdown) where breakdown maps the
+    contributing signal names to their numeric boost / value.
+    """
+    breakdown: dict[str, float] = {"cosine": float(base_cosine)}
+    boost = 0.0
+
+    cand_events = _entry_supporting_event_ids(entry)
+    row_events = _row_supporting_event_ids(row)
+    shared_events = cand_events & row_events
+    if shared_events:
+        breakdown["shared_evidence_events"] = float(len(shared_events))
+        boost += 0.10
+
+    cand_models = _entry_supporting_model_ids(entry)
+    row_models = _row_supporting_model_ids(row)
+    shared_models = cand_models & row_models
+    if len(shared_models) >= 2:
+        breakdown["shared_supporting_models"] = float(len(shared_models))
+        boost += 0.05
+
+    fcos = _falsifier_cosine(entry, row)
+    if fcos >= 0.80:
+        breakdown["falsifier_cosine"] = float(fcos)
+        boost += 0.05
+
+    adjusted = min(1.0, float(base_cosine) + boost)
+    if boost > 0:
+        breakdown["graph_boost"] = float(boost)
+    breakdown["adjusted_score"] = float(adjusted)
+    return adjusted, breakdown
+
+
+# =====================================================================
 # Candidate search
 # =====================================================================
 
@@ -319,7 +576,8 @@ async def _find_candidates(
     sql = f"""
         SELECT id, embedding, scope_actors, scope_entities,
                confidence, proposition_kind, "natural", created_at,
-               supporting_event_ids, signal_readings, confirmed_count
+               supporting_event_ids, signal_readings, confirmed_count,
+               supporting_model_ids, falsifier, proposition
         FROM models
         WHERE {' AND '.join(where)}
         ORDER BY embedding <=> $LIMITSEED::vector
@@ -417,6 +675,7 @@ async def reconcile_claim_op(
             cosine_similarity=None,
             replacement_op=None,
             event_id=None,
+            decision_reason="disabled",
         )
     if op.op != "insert" or op.entry is None:
         return ReconcileResult(
@@ -425,6 +684,7 @@ async def reconcile_claim_op(
             cosine_similarity=None,
             replacement_op=None,
             event_id=None,
+            decision_reason="inapplicable",
         )
 
     try:
@@ -452,6 +712,8 @@ async def reconcile_claim_op(
             cosine_similarity=None,
             replacement_op=None,
             event_id=None,
+            decision_reason="error",
+            signal_breakdown={"error": 1.0},
         )
 
 

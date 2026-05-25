@@ -211,6 +211,12 @@ Act ops:
   commitment/goal/decision UUIDs.
 
 Model granularity:
+- Atomicity rule: each `model` entry expresses ONE claim about ONE subject. If
+  the world-state has multiple linked claims (e.g. "X is happening AND Y is at
+  risk AND Z needs to happen"), emit them as SEPARATE `model` entries plus ONE
+  `situation` entry whose `member_model_ids` references the atomic Models after
+  creation. Do NOT pack multi-clause compound claims into a single model entry —
+  they collapse under dedupe and prevent meaningful adjudication.
 - Emit Models only for facts directly asserted or clearly implied by the signal.
   Do not emit background context, duplicate paraphrases, speculative future
   implications, or recap Models for already-selected context.
@@ -373,6 +379,12 @@ Scope:
   commitment entities when both are available.
 
 Granularity:
+- Atomicity rule: each `model` entry expresses ONE claim about ONE subject. If
+  the world-state has multiple linked claims (e.g. "X is happening AND Y is at
+  risk AND Z needs to happen"), emit them as SEPARATE `model` entries plus ONE
+  `situation` entry whose `member_model_ids` references the atomic Models after
+  creation. Do NOT pack multi-clause compound claims into a single model entry —
+  they collapse under dedupe and prevent meaningful adjudication.
 - Insert only facts directly asserted or clearly implied by the signal.
 - New T1 progress, approval, review feedback, blocker, concern, customer stance,
   or dated plan usually deserves a claim_ops.insert unless an exact selected
