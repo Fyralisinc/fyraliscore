@@ -164,6 +164,7 @@ async def test_reeval_row_processed_at_set_on_trigger_complete(
     await worker._promote_reeval_rows()
     trigger_id = await _fetch_one_trigger_id(fresh_db, tenant)
     payload = {"reeval_row_id": str(reeval_id)}
+    await _lock_trigger(fresh_db, trigger_id, worker.config.worker_id)
     await worker._mark_trigger_complete(trigger_id, payload=payload)
 
     async with fresh_db.acquire() as conn:
@@ -192,10 +193,12 @@ async def test_dead_letter_after_max_attempts(
     trigger_id = await _fetch_one_trigger_id(fresh_db, tenant)
 
     # Fail twice — second one hits terminal attempt.
+    await _lock_trigger(fresh_db, trigger_id, worker.config.worker_id)
     await worker._mark_trigger_failed(trigger_id, "boom1")
     # On the second failure, the trigger row will be updated to attempts=2
     # and completed; but we need to simulate the locked_by lease release
     # + next failed attempt. The _mark_trigger_failed path increments.
+    await _lock_trigger(fresh_db, trigger_id, worker.config.worker_id)
     await worker._mark_trigger_failed(trigger_id, "boom2")
 
     async with fresh_db.acquire() as conn:
@@ -226,6 +229,7 @@ async def test_failure_before_max_attempts_schedules_backoff(
     )
     await worker._promote_reeval_rows()
     trigger_id = await _fetch_one_trigger_id(fresh_db, tenant)
+    await _lock_trigger(fresh_db, trigger_id, worker.config.worker_id)
     await worker._mark_trigger_failed(trigger_id, "transient")
 
     async with fresh_db.acquire() as conn:
@@ -411,3 +415,16 @@ async def _fetch_one_trigger_id(pool, tenant: UUID) -> UUID:
         )
     assert row is not None
     return row["id"]
+
+
+async def _lock_trigger(pool, trigger_id: UUID, worker_id: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = $2, locked_at = now()
+            WHERE id = $1
+            """,
+            trigger_id,
+            worker_id,
+        )

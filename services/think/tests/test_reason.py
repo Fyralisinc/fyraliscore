@@ -29,6 +29,7 @@ from lib.shared.ids import uuid7
 
 from services.retrieval.assembler import AccessContext
 from services.retrieval.primary import TriggerContext
+import services.think.reason as reason_mod
 from services.think.reason import ThinkRunOutcome, think
 from services.think.tests.conftest import ScriptedProvider, make_embedding
 
@@ -182,6 +183,56 @@ async def test_think_inferential_without_provider_fails(
     outcome = await think(trigger, fresh_db, llm_provider=None)
     assert outcome.status == "failed"
     assert "llm_provider" in (outcome.error or "").lower()
+
+
+async def test_think_retries_deadlock_without_recording_failed_run(
+    fresh_db, tenant, monkeypatch,
+):
+    """Deadlock/serialization failures retry the transaction boundary."""
+    obs = await _seed_observation(fresh_db, tenant)
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        subkind="event_arrival",
+        observation_id=obs,
+        seed_natural_text="contention event",
+        seed_signature={"trigger_id": str(obs)},
+    )
+    calls = 0
+
+    async def fake_run_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        record = kwargs["record"]
+        if calls == 1:
+            raise asyncpg.exceptions.DeadlockDetectedError("deadlock detected")
+        return ThinkRunOutcome(
+            run_id=record.id,
+            trigger_id=record.trigger_id,
+            trigger_kind=record.trigger_kind,
+            status="success",
+        )
+
+    monkeypatch.setenv("THINK_TRANSACTION_RETRY_ATTEMPTS", "1")
+    monkeypatch.setattr(reason_mod, "_run_once", fake_run_once)
+
+    outcome = await think(trigger, fresh_db, llm_provider=None)
+
+    assert outcome.succeeded
+    assert calls == 2
+    async with fresh_db.acquire() as conn:
+        failures = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM think_runs
+            WHERE tenant_id = $1
+              AND trigger_id = $2
+              AND status = 'failed'
+            """,
+            tenant,
+            obs,
+        )
+    assert int(failures or 0) == 0
 
 
 # =====================================================================

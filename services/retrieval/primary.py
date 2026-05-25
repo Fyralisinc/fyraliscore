@@ -67,6 +67,12 @@ from .scoring import merge_and_rank_rrf
 
 TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
 
+
+def _raise_if_postgres_error(exc: Exception) -> None:
+    """Do not swallow SQL errors inside the caller's transaction."""
+    if isinstance(exc, asyncpg.PostgresError):
+        raise exc
+
 # Per-spec-§8 weighting mix. Live topology now writes relationship/
 # situation candidates, and those candidates reach Think through T4
 # `latent_relationship_candidate` member_model_ids.
@@ -580,6 +586,7 @@ async def primary_retrieve(
             pathway_results.append(pr_a)
             notes["pathways_run"].append("A")
         except Exception as e:
+            _raise_if_postgres_error(e)
             notes["pathways_skipped"].append({"pathway": "A", "reason": str(e)})
 
     # ------ Pathway B ------
@@ -621,6 +628,7 @@ async def primary_retrieve(
                 pathway_results.append(pr_c)
                 notes["pathways_run"].append("C")
             except Exception as e:
+                _raise_if_postgres_error(e)
                 notes["pathways_skipped"].append({"pathway": "C", "reason": str(e)})
         else:
             notes["pathways_skipped"].append(
@@ -638,6 +646,7 @@ async def primary_retrieve(
             pathway_results.append(pr_d)
             notes["pathways_run"].append("D")
         except Exception as e:
+            _raise_if_postgres_error(e)
             notes["pathways_skipped"].append({"pathway": "D", "reason": str(e)})
 
     # ------ Pathway G (typed Model-edge traversal) ------
@@ -666,6 +675,7 @@ async def primary_retrieve(
             pathway_results.append(pr_g)
             notes["pathways_run"].append("G")
         except Exception as e:
+            _raise_if_postgres_error(e)
             notes["pathways_skipped"].append({"pathway": "G", "reason": str(e)})
 
     # ------ Merge + rank ------

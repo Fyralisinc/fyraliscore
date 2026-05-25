@@ -80,7 +80,10 @@ class LLMCircuitBreaker:
     state: CircuitState = field(default=CircuitState.CLOSED)
     events: deque = field(default_factory=deque)  # (timestamp, success)
     opened_at: float | None = None
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _lock: asyncio.Lock | None = field(default=None, init=False, repr=False)
+    _lock_loop: asyncio.AbstractEventLoop | None = field(
+        default=None, init=False, repr=False
+    )
 
     def _now(self) -> float:
         return time.monotonic()
@@ -139,6 +142,17 @@ class LLMCircuitBreaker:
                 self.state = CircuitState.HALF_OPEN
                 _log.info("circuit_breaker_half_open", name=self.name)
 
+    def _current_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            # Pytest and some embedding hosts run independent event loops in
+            # one interpreter. asyncio locks are loop-bound once used, so a
+            # provider-level singleton breaker needs a fresh lock per loop
+            # while keeping its state/window intact.
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
     async def call(self, fn: Callable[[], Awaitable[T]]) -> T:
         """Invoke `fn()` through the breaker.
 
@@ -147,7 +161,7 @@ class LLMCircuitBreaker:
                      for HALF_OPEN transition first).
         HALF_OPEN  — allow one probe; success closes, failure re-opens.
         """
-        async with self._lock:
+        async with self._current_lock():
             self._check_half_open_transition()
             if self.state == CircuitState.OPEN:
                 raise CircuitOpenError(
@@ -160,11 +174,11 @@ class LLMCircuitBreaker:
         try:
             result = await fn()
         except Exception:
-            async with self._lock:
+            async with self._current_lock():
                 self._record_failure()
             raise
         else:
-            async with self._lock:
+            async with self._current_lock():
                 self._record_success()
             return result
 
@@ -185,6 +199,8 @@ class LLMCircuitBreaker:
         self.state = CircuitState.CLOSED
         self.opened_at = None
         self.events.clear()
+        self._lock = None
+        self._lock_loop = None
 
 
 # ---------------------------------------------------------------------

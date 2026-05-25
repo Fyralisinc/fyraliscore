@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from uuid import UUID
 
@@ -20,6 +21,12 @@ async def wait_for_think_to_drain(
     poll_interval_s: float = 0.5,
 ) -> None:
     """Poll think_trigger_queue until no incomplete rows remain for the tenant."""
+    override = os.environ.get("REAL_LLM_THINK_DRAIN_TIMEOUT_SECONDS")
+    if override:
+        try:
+            timeout_seconds = max(timeout_seconds, int(override))
+        except ValueError:
+            pass
     deadline = time.monotonic() + timeout_seconds
     last_pending = -1
     while True:

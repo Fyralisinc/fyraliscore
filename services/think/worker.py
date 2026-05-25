@@ -155,7 +155,11 @@ class WorkerConfig:
     backpressure_limit: int = 500
     trigger_max_attempts: int = 5
     reeval_max_attempts: int = 5
+    trigger_lock_timeout_s: float = 600.0
+    trigger_heartbeat_interval_s: float = 30.0
+    run_timeout_s: float = 600.0
     worker_id: str = "worker"
+    tenant_filter: UUID | None = None
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -173,6 +177,15 @@ class WorkerConfig:
             )),
             reeval_max_attempts=int(os.environ.get(
                 "THINK_REEVAL_MAX_ATTEMPTS", 5
+            )),
+            trigger_lock_timeout_s=float(os.environ.get(
+                "THINK_TRIGGER_LOCK_TIMEOUT_S", 600.0
+            )),
+            trigger_heartbeat_interval_s=float(os.environ.get(
+                "THINK_TRIGGER_HEARTBEAT_INTERVAL_S", 30.0
+            )),
+            run_timeout_s=float(os.environ.get(
+                "THINK_RUN_TIMEOUT_S", 600.0
             )),
             worker_id=os.environ.get("THINK_WORKER_ID", f"worker-{os.getpid()}"),
         )
@@ -276,19 +289,36 @@ class ThinkWorker:
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                rows = await conn.fetch(
-                    """
-                    SELECT id, tenant_id, model_id, cause_model_id, cause_kind
-                    FROM model_reeval_queue
-                    WHERE processed_at IS NULL
-                      AND attempts < $1
-                    ORDER BY enqueued_at ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT $2
-                    """,
-                    self.config.reeval_max_attempts,
-                    self.config.poll_batch,
-                )
+                if self.config.tenant_filter is None:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, tenant_id, model_id, cause_model_id, cause_kind
+                        FROM model_reeval_queue
+                        WHERE processed_at IS NULL
+                          AND attempts < $1
+                        ORDER BY enqueued_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT $2
+                        """,
+                        self.config.reeval_max_attempts,
+                        self.config.poll_batch,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, tenant_id, model_id, cause_model_id, cause_kind
+                        FROM model_reeval_queue
+                        WHERE processed_at IS NULL
+                          AND attempts < $1
+                          AND tenant_id = $2
+                        ORDER BY enqueued_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT $3
+                        """,
+                        self.config.reeval_max_attempts,
+                        self.config.tenant_filter,
+                        self.config.poll_batch,
+                    )
                 for r in rows:
                     # Only promote if no trigger is already in flight
                     # for this reeval row. We use the reeval row id as
@@ -336,22 +366,70 @@ class ThinkWorker:
             return
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                rows = await conn.fetch(
-                    """
-                    SELECT id, tenant_id, trigger_kind, trigger_subkind,
-                           observation_id, model_id, payload, attempts
-                    FROM think_trigger_queue
-                    WHERE completed_at IS NULL
-                      AND locked_by IS NULL
-                      AND scheduled_for <= now()
-                      AND attempts < $1
-                    ORDER BY enqueued_at ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT $2
-                    """,
-                    self.config.trigger_max_attempts,
-                    available_slots,
-                )
+                if self.config.tenant_filter is None:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                               observation_id, model_id, payload, attempts
+                        FROM think_trigger_queue
+                        WHERE completed_at IS NULL
+                          AND (
+                            locked_by IS NULL
+                            OR locked_at < now() - ($3 || ' seconds')::interval
+                          )
+                          AND scheduled_for <= now()
+                          AND attempts < $1
+                        ORDER BY
+                          CASE
+                            WHEN trigger_kind = 'T4'
+                              AND trigger_subkind = 'latent_relationship_candidate'
+                              THEN 0
+                            WHEN trigger_kind = 'T2' THEN 1
+                            WHEN trigger_kind = 'T4' THEN 2
+                            WHEN trigger_kind = 'T3' THEN 3
+                            ELSE 4
+                          END,
+                          enqueued_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT $2
+                        """,
+                        self.config.trigger_max_attempts,
+                        available_slots,
+                        str(self.config.trigger_lock_timeout_s),
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                               observation_id, model_id, payload, attempts
+                        FROM think_trigger_queue
+                        WHERE completed_at IS NULL
+                          AND (
+                            locked_by IS NULL
+                            OR locked_at < now() - ($4 || ' seconds')::interval
+                          )
+                          AND scheduled_for <= now()
+                          AND attempts < $1
+                          AND tenant_id = $2
+                        ORDER BY
+                          CASE
+                            WHEN trigger_kind = 'T4'
+                              AND trigger_subkind = 'latent_relationship_candidate'
+                              THEN 0
+                            WHEN trigger_kind = 'T2' THEN 1
+                            WHEN trigger_kind = 'T4' THEN 2
+                            WHEN trigger_kind = 'T3' THEN 3
+                            ELSE 4
+                          END,
+                          enqueued_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT $3
+                        """,
+                        self.config.trigger_max_attempts,
+                        self.config.tenant_filter,
+                        available_slots,
+                        str(self.config.trigger_lock_timeout_s),
+                    )
                 leased_ids = [r["id"] for r in rows]
                 if leased_ids:
                     await conn.execute(
@@ -441,8 +519,9 @@ class ThinkWorker:
         # raises OutOfRegionError. (Bug surfaced by the Wave 3-B
         # follow-up agent; blocks Wave 4-B T3 enqueue path.)
         _populate_seed_fields(trigger, payload)
+        heartbeat = asyncio.create_task(self._heartbeat_trigger(row["id"]))
         try:
-            outcome = await think(
+            call = think(
                 trigger,
                 self.pool,
                 llm_provider=self.llm_provider,
@@ -452,6 +531,32 @@ class ThinkWorker:
                     if row["trigger_subkind"] else row["trigger_kind"]
                 ),
             )
+            if self.config.run_timeout_s > 0:
+                outcome = await asyncio.wait_for(
+                    call,
+                    timeout=self.config.run_timeout_s,
+                )
+            else:
+                outcome = await call
+        except asyncio.TimeoutError:
+            error = (
+                f"think_run_timeout after {self.config.run_timeout_s:.0f}s"
+            )
+            _log.warning(
+                "think.worker.run_timeout",
+                trigger_id=str(row["id"]),
+                timeout_s=self.config.run_timeout_s,
+            )
+            try:
+                from lib.llm.provider import close_codex_app_server_client
+                await asyncio.wait_for(
+                    close_codex_app_server_client(),
+                    timeout=5.0,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            await self._mark_trigger_failed(row["id"], error)
+            return
         except Exception as e:
             _log.exception(
                 "think.worker.unhandled_failure",
@@ -460,6 +565,12 @@ class ThinkWorker:
             )
             await self._mark_trigger_failed(row["id"], str(e))
             return
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
         if outcome.succeeded or outcome.skipped_idempotent:
             await self._mark_trigger_complete(
@@ -479,6 +590,34 @@ class ThinkWorker:
             # as documentation of the integration point.
         else:
             await self._mark_trigger_failed(row["id"], outcome.error or "unknown")
+
+    async def _heartbeat_trigger(self, trigger_id: UUID) -> None:
+        interval = self.config.trigger_heartbeat_interval_s
+        if interval <= 0:
+            return
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE think_trigger_queue
+                        SET locked_at = now()
+                        WHERE id = $1
+                          AND completed_at IS NULL
+                          AND locked_by = $2
+                        """,
+                        trigger_id,
+                        self.config.worker_id,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                _log.warning(
+                    "think.worker.heartbeat_failed",
+                    trigger_id=str(trigger_id),
+                    error=str(e),
+                )
 
     # -----------------------------------------------------------------
     # Trigger lifecycle
@@ -504,8 +643,10 @@ class ThinkWorker:
                         locked_by = NULL,
                         locked_at = NULL
                     WHERE id = $1
+                      AND locked_by = $2
                     """,
                     trigger_id,
+                    self.config.worker_id,
                 )
                 if payload and "reeval_row_id" in payload:
                     try:
@@ -535,8 +676,16 @@ class ThinkWorker:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    "SELECT attempts, payload FROM think_trigger_queue WHERE id = $1",
+                    """
+                    SELECT attempts, payload
+                    FROM think_trigger_queue
+                    WHERE id = $1
+                      AND completed_at IS NULL
+                      AND locked_by = $2
+                    FOR UPDATE
+                    """,
                     trigger_id,
+                    self.config.worker_id,
                 )
                 if row is None:
                     return
@@ -640,12 +789,22 @@ class ThinkWorker:
 
     async def _queue_depth(self) -> int:
         async with self.pool.acquire() as conn:
-            n = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM think_trigger_queue
-                WHERE completed_at IS NULL
-                """
-            )
+            if self.config.tenant_filter is None:
+                n = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM think_trigger_queue
+                    WHERE completed_at IS NULL
+                    """
+                )
+            else:
+                n = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM think_trigger_queue
+                    WHERE completed_at IS NULL
+                      AND tenant_id = $1
+                    """,
+                    self.config.tenant_filter,
+                )
             depth = int(n or 0)
             METRICS.set_queue_depth("all", depth)
             return depth

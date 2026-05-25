@@ -1007,13 +1007,15 @@ async def pathway_b_semantic(
     # inside the caller's tx.
     if hnsw_ef_search is not None and hnsw_ef_search > 0:
         try:
-            await conn.execute(
-                f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}"
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}"
+                )
             notes["hnsw_ef_search"] = int(hnsw_ef_search)
         except asyncpg.PostgresError:
             # Not fatal — just means we're not in a tx or pgvector
-            # version doesn't honor the GUC. Fall back to default.
+            # version doesn't honor the GUC. The savepoint keeps the
+            # caller's transaction usable. Fall back to default.
             notes["hnsw_ef_search"] = None
 
     # RA-1 scope filter: restrict to Models whose scope overlaps the

@@ -11,9 +11,12 @@ BEFORE any op runs. If the transaction commits, outcome is updated to
 'success' in the SAME transaction. A second Think run with the same
 trigger_id sees the existing row and short-circuits.
 
-Partial-failure policy: all-or-nothing. Any op that raises propagates
-to the caller; the whole transaction rolls back — applied_triggers
-row included.
+Partial-failure policy: claim apply failures remain transaction-fatal
+because downstream ops may depend on newly-created Models. Domain-invalid
+edge, act, and resource ops discovered late at apply time are classified
+and dropped, matching the validator's partial-accept policy. Unexpected
+errors still propagate and roll back the whole transaction —
+applied_triggers row included.
 """
 from __future__ import annotations
 
@@ -25,9 +28,10 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
+from lib.shared.edge_registry import EdgeRegistryError
 from services.acts import commitments as commitments_svc
 from services.acts import decisions as decisions_svc
 from services.acts import goals as goals_svc
@@ -39,6 +43,7 @@ from services.resources.transactions import record_transaction
 from services.resources.deployments import release as release_deployment
 
 from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
+from .observability import log_dropped_op
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
@@ -171,6 +176,8 @@ async def apply_diff(
         "act_ops": [],
         "resource_ops": [],
         "diff_hash": diff_hash,
+        "apply_dropped_op_count": 0,
+        "apply_dropped_op_errors": [],
     }
     pending_model_ids_by_event_id: dict[UUID, UUID] = {}
 
@@ -263,10 +270,33 @@ async def apply_diff(
                 "reason": "resolved_to_same_model_after_reconciliation",
             })
             continue
-        result = await _apply_edge_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_edge_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except (EdgeRegistryError, ValidationError) as exc:
+            reason = _classify_apply_edge_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="edge",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["edge_ops"].append({
+                "op": "skip",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["edge_ops"].append(result["summary"])
 
     # --- 3. act_ops -----------------------------------------------
@@ -279,19 +309,61 @@ async def apply_diff(
                     ]
                 }
             )
-        result = await _apply_act_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_act_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except (InvariantViolation, ValidationError) as exc:
+            reason = _classify_apply_act_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="act",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["act_ops"].append({
+                "op": "skip",
+                "act_op": op.op,
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["act_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
     # --- 4. resource_ops ------------------------------------------
     for op in diff.resource_ops:
-        result = await _apply_resource_op(
-            op, conn, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-        )
+        try:
+            result = await _apply_resource_op(
+                op, conn, diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except ValidationError as exc:
+            reason = _classify_apply_resource_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="resource",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["resource_ops"].append({
+                "op": "skip",
+                "resource_op": op.op,
+                "reason": reason,
+                "message": message,
+            })
+            continue
         ops_summary["resource_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
@@ -385,6 +457,48 @@ def _audit_jsonable(v: Any) -> Any:
         except (ValueError, UnicodeDecodeError):
             return v.decode(errors="replace")
     return str(v)
+
+
+def _classify_apply_act_drop_reason(exc: Exception) -> str:
+    """Stable tags for domain-level act apply drops."""
+    if isinstance(exc, InvariantViolation):
+        return "illegal_transition"
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "not found" in msg:
+        return "missing_entity_reference"
+    if "requires" in msg or "entity" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_apply_edge_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "cycle" in msg:
+        return "cycle_prevention"
+    if "mutually exclusive" in msg:
+        return "mutually_exclusive_edge"
+    if "self-edge" in msg:
+        return "invalid_shape"
+    if "unknown edge_kind" in msg or "reserved" in msg:
+        return "invalid_edge_kind"
+    if "weight" in msg:
+        return "invalid_weight"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "detected_by" in msg or "review_status" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_apply_resource_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "invalid transaction_type" in msg or "invalid kind" in msg:
+        return "invalid_transaction_type"
+    if "not found" in msg:
+        return "missing_entity_reference"
+    if "requires" in msg or "delta" in msg:
+        return "invalid_shape"
+    return "unclassified"
 
 
 _ALLOWED_MODEL_UPDATE_COLUMNS = {

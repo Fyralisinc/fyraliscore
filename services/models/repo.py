@@ -1359,10 +1359,13 @@ class ModelsRepo:
         # accepted edges or graph layout.
         if self._run_topology_on_insert:
             try:
-                await _TOPOLOGY.generate_for_model(conn, model=hydrated)
+                async with conn.transaction():
+                    await _TOPOLOGY.generate_for_model(conn, model=hydrated)
             except Exception:
                 # Topology is best-effort: the Model insert is canonical,
                 # while candidate discovery can be retried by later sweeps.
+                # The nested transaction keeps topology failures from
+                # poisoning the surrounding model-insert transaction.
                 pass
 
         # 8. Emit state_change in the same transaction.
@@ -1466,13 +1469,11 @@ class ModelsRepo:
         """
         Fetch models by id AND bump activation/retrieval counters.
 
-        Exactly mirrors spec §2 retrieval SQL:
-            UPDATE models
-            SET last_retrieved_at = now(),
-                retrieval_count = retrieval_count + 1,
-                activation = LEAST(1.0, activation + 0.15)
-            WHERE id = ANY($retrieved_ids)
-            RETURNING *;
+        Reconsolidation is best-effort under concurrency: rows that are
+        already locked by another Think run are still returned for
+        retrieval, but their activation/retrieval counters are skipped
+        for this pass. These counters are heat signals, not correctness
+        gates, so large signal drains must never serialize on them.
 
         confidence is NOT TOUCHED. Ever. Reconsolidation is read-only
         with respect to the epistemic value.
@@ -1483,14 +1484,29 @@ class ModelsRepo:
 
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             await _ensure_vector_codec(c)
-            rows = await c.fetch(
-                f"""
-                UPDATE models
+            await c.execute(
+                """
+                WITH target AS (
+                    SELECT id
+                    FROM models
+                    WHERE id = ANY($1::uuid[])
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE models AS m
                 SET last_retrieved_at = now(),
                     retrieval_count = retrieval_count + 1,
                     activation = LEAST(1.0, activation + 0.15)
+                FROM target
+                WHERE m.id = target.id
+                """,
+                id_list,
+            )
+            rows = await c.fetch(
+                f"""
+                SELECT {_SELECT_COLS_SQL}
+                FROM models
                 WHERE id = ANY($1::uuid[])
-                RETURNING {_SELECT_COLS_SQL}
                 """,
                 id_list,
             )

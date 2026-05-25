@@ -64,6 +64,7 @@ from services.acts.state_machines import can_transition
 from services.models.calibration import apply_calibration
 from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
+from services.resources.transactions import VALID_TRANSACTION_TYPES
 
 from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
 from .observability import log_dropped_op
@@ -127,6 +128,8 @@ def _classify_act_drop_reason(exc: Exception) -> str:
 
 def _classify_resource_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
+    if "invalid transaction" in msg or "invalid kind" in msg:
+        return "invalid_transaction_type"
     if "non-empty" in msg or "requires" in msg:
         return "invalid_shape"
     return "unclassified"
@@ -144,6 +147,8 @@ def _classify_edge_drop_reason(exc: Exception) -> str:
         return "missing_model_reference"
     if "self-edge" in msg:
         return "invalid_shape"
+    if "cycle" in msg:
+        return "cycle_prevention"
     if "explanation" in msg:
         return "missing_explanation"
     return "unclassified"
@@ -954,6 +959,12 @@ def _validate_resource_op_shape(op: ResourceOp) -> ResourceOp:
         if op.resource_id is None or op.kind is None or op.delta is None:
             raise ValidationError(
                 "resource_op transaction requires resource_id, kind, delta",
+            )
+        if op.kind not in VALID_TRANSACTION_TYPES:
+            raise ValidationError(
+                f"resource_op transaction has invalid kind {op.kind!r}",
+                kind=op.kind,
+                valid=list(VALID_TRANSACTION_TYPES),
             )
         return op
     if op.op == "deploy":

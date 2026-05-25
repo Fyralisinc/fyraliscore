@@ -428,15 +428,18 @@ async def reconcile_claim_op(
         )
 
     try:
-        return await _reconcile_inner(
-            op, conn,
-            tenant_id=tenant_id,
-            trigger_id=trigger_id,
-            think_run_id=think_run_id,
-            config=cfg,
-        )
+        async with conn.transaction():
+            return await _reconcile_inner(
+                op, conn,
+                tenant_id=tenant_id,
+                trigger_id=trigger_id,
+                think_run_id=think_run_id,
+                config=cfg,
+            )
     except Exception as exc:  # noqa: BLE001
         # Reconciler must never abort apply. Log loudly and pass through.
+        # The nested transaction above rolls back any failed DB work to a
+        # savepoint so the main apply transaction remains usable.
         _log.warning(
             "reconcile.error",
             error=str(exc),

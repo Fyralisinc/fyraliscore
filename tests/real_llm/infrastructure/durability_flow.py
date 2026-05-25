@@ -149,6 +149,7 @@ async def run_think_until_drain(
     """Run the production Think worker until this tenant's queue is drained."""
     cfg = WorkerConfig.from_env()
     cfg.poll_interval_s = 0.05
+    cfg.tenant_filter = tenant_id
     cfg.max_concurrency_per_tenant = int(
         os.environ.get(
             "DURABILITY_THINK_CONCURRENCY",

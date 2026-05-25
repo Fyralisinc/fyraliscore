@@ -82,6 +82,19 @@ async def _enqueue_trigger_row(
     return trigger_id
 
 
+async def _lock_trigger(pool, trigger_id: UUID, worker_id: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = $2, locked_at = now()
+            WHERE id = $1
+            """,
+            trigger_id,
+            worker_id,
+        )
+
+
 # =====================================================================
 # Dequeue — FOR UPDATE SKIP LOCKED
 # =====================================================================
@@ -115,6 +128,48 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
             tenant,
         )
     assert n == 2
+
+
+async def test_poll_reclaims_stale_locked_rows(
+    fresh_db, tenant, tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'dead-worker',
+                locked_at = now() - interval '10 minutes'
+            WHERE id = $1
+            """,
+            trig,
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=1,
+            worker_id="reclaimer",
+            trigger_lock_timeout_s=60,
+            tenant_filter=tenant,
+        ),
+    )
+    dispatched: list[UUID] = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row["id"])
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+
+    assert dispatched == [trig]
+    async with fresh_db.acquire() as conn:
+        owner = await conn.fetchval(
+            "SELECT locked_by FROM think_trigger_queue WHERE id = $1",
+            trig,
+        )
+    assert owner == "reclaimer"
 
 
 async def test_poll_does_not_overlease_when_in_flight_is_full(
@@ -428,6 +483,7 @@ async def test_mark_trigger_failed_bumps_attempts(
     worker = ThinkWorker(
         fresh_db, config=WorkerConfig(trigger_max_attempts=5),
     )
+    await _lock_trigger(fresh_db, trig, worker.config.worker_id)
     await worker._mark_trigger_failed(trig, "boom1")
     async with fresh_db.acquire() as conn:
         row = await conn.fetchrow(
@@ -447,6 +503,7 @@ async def test_mark_trigger_failed_eventually_dead_letters(
         fresh_db, config=WorkerConfig(trigger_max_attempts=3),
     )
     for i in range(3):
+        await _lock_trigger(fresh_db, trig, worker.config.worker_id)
         await worker._mark_trigger_failed(trig, f"fail{i}")
     async with fresh_db.acquire() as conn:
         row = await conn.fetchrow(
