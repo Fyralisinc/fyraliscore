@@ -733,6 +733,19 @@ async def _reconcile_inner(
     prop_kind = (
         proposition.get("kind") if isinstance(proposition, dict) else None
     )
+    kind_rule = _kind_rule(prop_kind)
+
+    # Per-kind threshold overrides; otherwise use global defaults.
+    auto_merge_threshold = (
+        kind_rule.auto_merge_cosine
+        if kind_rule.auto_merge_cosine is not None
+        else config.auto_merge_cosine
+    )
+    human_review_threshold = (
+        kind_rule.human_review_cosine
+        if kind_rule.human_review_cosine is not None
+        else config.human_review_cosine
+    )
 
     # scope_actors come in as either UUID strings or UUID objects.
     raw_actors = entry.get("scope_actors") or []
@@ -751,9 +764,18 @@ async def _reconcile_inner(
         recency_window_days=config.recency_window_days,
     )
 
-    # Score each row and pick the best.
+    # Score each row and pick the best, applying graph-structural
+    # boosts on top of the raw cosine. We track both the raw cosine
+    # (for audit trail / `cosine_similarity` on the result) and the
+    # adjusted score (used for threshold decisions).
     best_row: dict[str, Any] | None = None
     best_cosine: float = -1.0
+    best_adjusted: float = -1.0
+    best_breakdown: dict[str, float] = {}
+    candidate_member_ids = _member_model_ids(entry.get("proposition"))
+    candidate_pattern_id = _pattern_id(entry.get("proposition"))
+    best_member_overlap: float = 0.0
+
     for r in rows:
         existing_emb = r.get("embedding")
         # Embedding may come back as numpy array (codec-registered)
@@ -764,82 +786,107 @@ async def _reconcile_inner(
             existing_emb = existing_emb.tolist()
         if not isinstance(existing_emb, list):
             continue
+
+        # pattern_instance: require matching parent pattern_id.
+        if kind_rule.require_matching_pattern_id:
+            row_pattern_id = _pattern_id(r.get("proposition"))
+            if (
+                candidate_pattern_id is None
+                or row_pattern_id is None
+                or candidate_pattern_id != row_pattern_id
+            ):
+                continue
+
         cos = _cosine(candidate_embedding, list(existing_emb))
-        if cos > best_cosine:
+        adjusted, breakdown = _compute_signal_breakdown(entry, r, cos)
+
+        # situation: factor member-overlap into the adjusted score.
+        member_overlap = 0.0
+        if prop_kind == "situation" and candidate_member_ids:
+            row_member_ids = _member_model_ids(r.get("proposition"))
+            member_overlap = _member_overlap_fraction(
+                candidate_member_ids, row_member_ids,
+            )
+            if member_overlap > 0:
+                breakdown["situation_member_overlap"] = float(member_overlap)
+                # Promote overlap into the adjusted score so the
+                # decision branch can short-circuit. We cap at 1.0.
+                adjusted = max(adjusted, min(1.0, member_overlap))
+                breakdown["adjusted_score"] = float(adjusted)
+
+        if adjusted > best_adjusted:
+            best_adjusted = adjusted
             best_cosine = cos
             best_row = r
+            best_breakdown = breakdown
+            best_member_overlap = member_overlap
 
-    if best_row is None or best_cosine < config.human_review_cosine:
-        # No qualifying match. Optionally write a no_match audit row
-        # for tuning data.
-        event_id: UUID | None = None
-        if config.log_no_match:
-            event_id = await _record_event(
-                conn,
-                tenant_id=tenant_id,
+    if best_row is None or best_adjusted < human_review_threshold:
+        # Situation may still cross the same_issue floor on member
+        # overlap alone even when adjusted score is sub-threshold.
+        situation_floor = kind_rule.same_issue_member_overlap_floor
+        if (
+            best_row is not None
+            and situation_floor is not None
+            and best_member_overlap >= situation_floor
+        ):
+            # Fall through to the borderline branch below — overlap
+            # alone qualifies for same_issue_as emission.
+            pass
+        else:
+            event_id: UUID | None = None
+            if config.log_no_match:
+                event_id = await _record_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    decision="no_match",
+                    original_claim_op=op,
+                    matched_model_id=None,
+                    cosine_similarity=(
+                        best_cosine if best_cosine >= 0.0 else None
+                    ),
+                    proposition_kind=prop_kind,
+                    trigger_id=trigger_id,
+                    think_run_id=think_run_id,
+                )
+            _emit_metric("no_match")
+            _log.info(
+                "reconcile.decision",
                 decision="no_match",
-                original_claim_op=op,
+                cosine=best_cosine if best_cosine >= 0.0 else None,
+                trigger_id=str(trigger_id),
+            )
+            return ReconcileResult(
+                decision="no_match",
                 matched_model_id=None,
                 cosine_similarity=(
                     best_cosine if best_cosine >= 0.0 else None
                 ),
-                proposition_kind=prop_kind,
-                trigger_id=trigger_id,
-                think_run_id=think_run_id,
+                replacement_op=None,
+                event_id=event_id,
+                decision_reason="no_match",
+                signal_breakdown=best_breakdown,
             )
-        _emit_metric("no_match")
-        _log.info(
-            "reconcile.decision",
-            decision="no_match",
-            cosine=best_cosine if best_cosine >= 0.0 else None,
-            trigger_id=str(trigger_id),
-        )
-        return ReconcileResult(
-            decision="no_match",
-            matched_model_id=None,
-            cosine_similarity=best_cosine if best_cosine >= 0.0 else None,
-            replacement_op=None,
-            event_id=event_id,
-        )
 
     matched_id: UUID = best_row["id"]
+    used_threshold = auto_merge_threshold
 
-    if best_cosine >= config.auto_merge_cosine:
-        # Auto-merge: convert insert into a confidence update against
-        # the matched Model. We choose the *higher* of the two
-        # confidences as the new value — the reconciler treats the
-        # new claim as a confirming signal and lets the underlying
-        # Model rise toward the more confident reading. Going lower
-        # is reserved for explicit contestation.
-        candidate_conf = float(entry.get("confidence", 0.5))
-        existing_conf = float(best_row["confidence"])
-        new_conf = max(candidate_conf, existing_conf)
-        now = datetime.now(timezone.utc)
-        source_event_id = _coerce_uuid(entry.get("born_from_event_id"))
-        existing_events = _normalize_uuid_list(
-            best_row.get("supporting_event_ids"),
-        )
-        existing_readings = _normalize_signal_readings(
-            best_row.get("signal_readings"),
-        )
-        changes: dict[str, Any] = {
-            "confidence": new_conf,
-            "last_confirmed_at": now,
-            "confirmed_count": int(best_row.get("confirmed_count") or 0) + 1,
-        }
-        if source_event_id is not None:
-            changes["supporting_event_ids"] = _append_uuid_once(
-                existing_events,
-                source_event_id,
-            )
-            changes["signal_readings"] = [
-                *existing_readings,
-                _confirmation_reading(entry, source_event_id, now),
-            ]
-        replacement = ClaimOp(
-            op="update",
-            model_id=matched_id,
-            changes=changes,
+    # ---- Situation member-overlap shortcut -------------------------
+    member_overlap_auto = (
+        prop_kind == "situation"
+        and kind_rule.auto_member_overlap is not None
+        and best_member_overlap >= kind_rule.auto_member_overlap
+    )
+
+    # ---- Auto-merge branch -----------------------------------------
+    can_auto_merge = (
+        not kind_rule.never_auto_merge
+        and not kind_rule.require_human_review
+        and (best_adjusted >= used_threshold or member_overlap_auto)
+    )
+    if can_auto_merge:
+        replacement = _build_auto_merge_replacement(
+            entry, best_row, matched_id,
         )
         event_id = await _record_event(
             conn,
@@ -857,19 +904,42 @@ async def _reconcile_inner(
             "reconcile.decision",
             decision="auto_merge",
             cosine=best_cosine,
+            adjusted=best_adjusted,
             matched_model_id=str(matched_id),
             trigger_id=str(trigger_id),
         )
+        # Distinguish "graph signals pushed us over" vs "kind-specific
+        # threshold did" vs "default high-cosine path".
+        if member_overlap_auto:
+            decision_reason: DecisionReason = "kind_specific_auto_merge"
+        elif (
+            best_breakdown.get("graph_boost", 0.0) > 0.0
+            and best_cosine < used_threshold
+        ):
+            decision_reason = "graph_signal_boost"
+        elif (
+            kind_rule.auto_merge_cosine is not None
+            and best_cosine < config.auto_merge_cosine
+        ):
+            decision_reason = "kind_specific_auto_merge"
+        elif best_cosine >= 0.999:
+            decision_reason = "exact_match"
+        else:
+            decision_reason = "high_cosine_auto_merge"
         return ReconcileResult(
             decision="auto_merge",
             matched_model_id=matched_id,
             cosine_similarity=best_cosine,
             replacement_op=replacement,
             event_id=event_id,
+            decision_reason=decision_reason,
+            signal_breakdown=best_breakdown,
         )
 
-    # Borderline: log to the human-review queue, proceed with the
-    # original insert. We do NOT auto-merge here.
+    # ---- Borderline / human-review branch --------------------------
+    # Log to the human-review queue, proceed with the original insert.
+    # NEW: also emit a `same_issue_as` RelationshipCandidate so the
+    # duplicate suspicion is visible to T4 / adjudication.
     event_id = await _record_event(
         conn,
         tenant_id=tenant_id,
@@ -882,12 +952,40 @@ async def _reconcile_inner(
         think_run_id=think_run_id,
     )
     _emit_metric("human_review")
+
+    same_issue_candidate_id = await _emit_same_issue_candidate(
+        conn,
+        tenant_id=tenant_id,
+        matched_model_id=matched_id,
+        cosine=best_cosine,
+        adjusted=best_adjusted,
+        breakdown=best_breakdown,
+        prop_kind=prop_kind,
+        candidate_entry=entry,
+        kind_rule=kind_rule,
+    )
+
+    # Which reason wins?
+    if kind_rule.never_auto_merge or kind_rule.require_human_review:
+        decision_reason = "kind_blocked_auto_merge"
+    elif same_issue_candidate_id is not None:
+        decision_reason = "same_issue_candidate_emitted"
+    else:
+        decision_reason = "near_duplicate_review"
+
     _log.info(
         "reconcile.decision",
         decision="human_review",
         cosine=best_cosine,
+        adjusted=best_adjusted,
         matched_model_id=str(matched_id),
         trigger_id=str(trigger_id),
+        decision_reason=decision_reason,
+        same_issue_candidate_id=(
+            str(same_issue_candidate_id)
+            if same_issue_candidate_id is not None
+            else None
+        ),
     )
     return ReconcileResult(
         decision="human_review",
@@ -895,7 +993,159 @@ async def _reconcile_inner(
         cosine_similarity=best_cosine,
         replacement_op=None,
         event_id=event_id,
+        decision_reason=decision_reason,
+        signal_breakdown=best_breakdown,
+        same_issue_candidate_id=same_issue_candidate_id,
     )
+
+
+def _build_auto_merge_replacement(
+    entry: dict[str, Any],
+    best_row: dict[str, Any],
+    matched_id: UUID,
+) -> ClaimOp:
+    """Convert an insert into a confidence-update against the matched
+    Model. We choose the *higher* of the two confidences as the new
+    value — the reconciler treats the new claim as a confirming
+    signal and lets the underlying Model rise toward the more
+    confident reading. Going lower is reserved for explicit
+    contestation."""
+    candidate_conf = float(entry.get("confidence", 0.5))
+    existing_conf = float(best_row["confidence"])
+    new_conf = max(candidate_conf, existing_conf)
+    now = datetime.now(timezone.utc)
+    source_event_id = _coerce_uuid(entry.get("born_from_event_id"))
+    existing_events = _normalize_uuid_list(
+        best_row.get("supporting_event_ids"),
+    )
+    existing_readings = _normalize_signal_readings(
+        best_row.get("signal_readings"),
+    )
+    changes: dict[str, Any] = {
+        "confidence": new_conf,
+        "last_confirmed_at": now,
+        "confirmed_count": int(best_row.get("confirmed_count") or 0) + 1,
+    }
+    if source_event_id is not None:
+        changes["supporting_event_ids"] = _append_uuid_once(
+            existing_events,
+            source_event_id,
+        )
+        changes["signal_readings"] = [
+            *existing_readings,
+            _confirmation_reading(entry, source_event_id, now),
+        ]
+    return ClaimOp(
+        op="update",
+        model_id=matched_id,
+        changes=changes,
+    )
+
+
+async def _emit_same_issue_candidate(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    matched_model_id: UUID,
+    cosine: float,
+    adjusted: float,
+    breakdown: dict[str, float],
+    prop_kind: str | None,
+    candidate_entry: dict[str, Any],
+    kind_rule: KindRule,
+) -> UUID | None:
+    """Emit a `same_issue_as` RelationshipCandidate for a near-duplicate.
+
+    The new model's id is not yet known at reconcile time (apply
+    happens AFTER reconcile decides), so we use the
+    `born_from_event_id` as a stable placeholder for the new model
+    via the candidate's `evidence_event_ids` field, and we pass
+    `placeholder_model_id` (a uuid7 we mint here) as `source_model_id`.
+    The placeholder is wired up in metadata so adjudication can
+    resolve it after the apply step writes the real model id.
+
+    Returns the candidate id on success, or None on failure (we
+    intentionally swallow failures: this is best-effort enrichment
+    and must NEVER break the reconcile path).
+    """
+    try:
+        # P5 owns candidates.py — we only CALL into it.
+        from services.judgment.scoring import JudgmentScores, clamp_score
+        from services.relationships.candidates import make_edge_candidate
+        from services.relationships.repo import RelationshipCandidatesRepo
+    except Exception as exc:  # noqa: BLE001
+        _log.debug(
+            "reconcile.same_issue_emit_import_error",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return None
+
+    placeholder_source_id = uuid7()  # stand-in for the soon-to-be-inserted model
+    leverage = clamp_score(cosine)
+    scores = JudgmentScores(
+        impact=0.35,
+        urgency=0.25,
+        actionability=0.30,
+        authority_required=0.25,
+        uncertainty=clamp_score(1.0 - cosine),
+        novelty=0.20,
+        reversibility=0.55,
+        confidence=clamp_score(cosine),
+    )
+    metadata: dict[str, Any] = {
+        "origin": "reconciler_near_duplicate",
+        # The relationship_candidates.basis CHECK constraint does not
+        # accept 'paraphrase_suspect', so we encode the operator-
+        # visible basis in metadata while keeping the column value
+        # within the allowed set.
+        "operator_basis": "paraphrase_suspect",
+        "cosine": float(cosine),
+        "adjusted_score": float(adjusted),
+        "signal_breakdown": {k: float(v) for k, v in breakdown.items()},
+        "proposition_kind": prop_kind,
+        "judgment_leverage_proxy": float(leverage),
+        "placeholder_source_model_id": str(placeholder_source_id),
+        "kind_rule": {
+            "never_auto_merge": kind_rule.never_auto_merge,
+            "require_human_review": kind_rule.require_human_review,
+            "auto_merge_cosine": kind_rule.auto_merge_cosine,
+        },
+    }
+    # `born_from_event_id` is the strongest hook back to the new model
+    # once the apply step writes it.
+    born_event = _coerce_uuid(candidate_entry.get("born_from_event_id"))
+    evidence_event_ids: tuple[UUID, ...] = (
+        (born_event,) if born_event is not None else ()
+    )
+
+    try:
+        candidate = make_edge_candidate(
+            tenant_id=tenant_id,
+            source_model_id=placeholder_source_id,
+            target_model_id=matched_model_id,
+            edge_kind="same_issue_as",
+            basis="inferred",  # CHECK-constrained; real basis in metadata.
+            explanation=(
+                f"reconciler near-duplicate (cosine={cosine:.2f}, "
+                f"adjusted={adjusted:.2f}) — paraphrase_suspect"
+            ),
+            scores=scores,
+            evidence_event_ids=evidence_event_ids,
+            metadata=metadata,
+            source="think.reconciler",
+            review_status="needs_review",
+        )
+        repo = RelationshipCandidatesRepo()
+        await repo.insert(conn, candidate)
+        return candidate.id
+    except Exception as exc:  # noqa: BLE001
+        _log.debug(
+            "reconcile.same_issue_emit_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return None
 
 
 # =====================================================================
@@ -918,6 +1168,8 @@ def _emit_metric(decision: str) -> None:
 
 __all__ = [
     "Decision",
+    "DecisionReason",
+    "KindRule",
     "ReconcileResult",
     "ReconcilerConfig",
     "reconcile_claim_op",
