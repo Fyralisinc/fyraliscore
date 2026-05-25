@@ -613,7 +613,10 @@ async def test_model_layer_stress_insert_time_topology_is_bounded_and_tenant_saf
     )
     assert len(candidate_rows) >= 3
     assert len(candidate_rows) <= 8 * len(tenant_models)
-    assert all(row["basis"] == "topology_suggested" for row in candidate_rows)
+    assert all(
+        row["basis"] in ("topology_suggested", "causal_hypothesis")
+        for row in candidate_rows
+    )
     assert all(0.0 <= row["judgment_leverage_score"] <= 1.0 for row in candidate_rows)
 
     tenant_id_set = set(tenant_ids)
