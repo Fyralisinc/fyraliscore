@@ -30,8 +30,10 @@ class _FakePool:
 class _FakeCalClient:
     def __init__(self, has_updates):
         self._has = has_updates
+        self.last_updated_min = None
 
     async def has_updates_since(self, **kw):
+        self.last_updated_min = kw.get("updated_min")
         return self._has
 
 
@@ -49,10 +51,11 @@ def _shard(shard_id):
 
 def _wire(monkeypatch, *, has_updates, high_water="2026-04-20T10:00:00.000Z"):
     set_pool_provider(_FakePool())
+    client = _FakeCalClient(has_updates)
 
     async def fake_open(install):
         async def close(): return None
-        return _FakeCalClient(has_updates), close
+        return client, close
     monkeypatch.setattr(rec, "_open_calendar_client", fake_open)
 
     class _State:
@@ -61,6 +64,7 @@ def _wire(monkeypatch, *, has_updates, high_water="2026-04-20T10:00:00.000Z"):
     async def fake_load_state(pool, kind, sid):
         return _State()
     monkeypatch.setattr(rec, "load_state", fake_load_state)
+    return client
 
 
 async def test_clean_when_no_live_updates(monkeypatch):
@@ -84,6 +88,25 @@ async def test_gap_emits_reshared_shard(monkeypatch):
     assert reshared.parent_shard_id == sid
     assert reshared.shard.recency_score == rec.RESHARE_RECENCY_SCORE
     assert reshared.shard.shard_identifier["parent_shard_id"] == str(sid)
+
+
+async def test_probe_uses_exclusive_floor(monkeypatch):
+    # The probe must be sent at high_water + 1ms so Calendar's INCLUSIVE
+    # updatedMin doesn't re-match the boundary event forever (runaway reshare).
+    client = _wire(
+        monkeypatch, has_updates=False,
+        high_water="2026-04-20T10:00:00.000Z",
+    )
+    await reconcile_google_calendar([_shard(uuid4())], _Row(tenant_id=uuid4()))
+    assert client.last_updated_min == "2026-04-20T10:00:00.001Z"
+
+
+async def test_unparseable_high_water_skips_probe(monkeypatch):
+    _wire(monkeypatch, has_updates=True, high_water="not-a-timestamp")
+    decision = await reconcile_google_calendar(
+        [_shard(uuid4())], _Row(tenant_id=uuid4()),
+    )
+    assert decision.has_gaps is False
 
 
 async def test_no_high_water_skips_probe(monkeypatch):
