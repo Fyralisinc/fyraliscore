@@ -273,10 +273,17 @@ class JiraClient:
         """Cheap reconciler gap probe: are there issues in `project_key`
         updated at/after `updated_min_jql` (a `yyyy/MM/dd HH:mm` JQL literal)?
         Uses `/rest/api/3/search/approximate-count` (the new endpoint's count
-        surface, since `/search/jql` no longer returns `total`). Over-reshares
-        are harmless (dedup makes the re-walk idempotent); never under-reshares."""
+        surface, since `/search/jql` no longer returns `total`).
+
+        STRICT `>` (not `>=`) is load-bearing: the high-water mark IS an issue
+        the backfill already walked, so an inclusive `>=` would always match it
+        and the reconciler would re-share forever (observed: 100+ reshare passes
+        hammering the API). `>` converges — it only fires on issues in a strictly
+        later minute. Sub-minute updates after the walk (JQL `updated` is
+        minute-precision) are caught by the live webhook + the periodic
+        reconciler, not this one-shot onboarding probe."""
         safe_key = project_key.replace('"', "")
-        jql = f'project = "{safe_key}" AND updated >= "{updated_min_jql}"'
+        jql = f'project = "{safe_key}" AND updated > "{updated_min_jql}"'
         body = await self._request(
             "POST", "/rest/api/3/search/approximate-count",
             json_body={"jql": jql},

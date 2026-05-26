@@ -107,7 +107,9 @@ def _make_handler(fixtures: JiraFixtures, hits: dict[str, int]):
             fx = fixtures.get(project_key) if project_key else None
             if fx is None:
                 return []
-            incremental = "updated >=" in jql.lower() or "updated>=" in jql.lower()
+            # Matches both the walk floor (`updated >=`) and the reconciler
+            # probe (`updated >`), since "updated >" is a prefix of "updated >=".
+            incremental = "updated >" in jql.lower() or "updated>" in jql.lower()
             return list(fx.get("delta", [])) if incremental else list(fx.get("issues", []))
 
         def _handle_search(self, body: dict[str, Any]) -> None:
