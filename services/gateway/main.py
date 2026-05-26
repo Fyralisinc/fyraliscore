@@ -496,6 +496,14 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
             )
         )
 
+    # M5.3 cutover: the webhook router reads `ingestion.kafka_path_enabled`
+    # off `app.state.tenant_flags` to decide pipeline-vs-inline per tenant.
+    # Without this the cutover branch can never activate and every provider
+    # stays on inline ingest(). Per-process reader with a 30s TTL cache.
+    if getattr(app_.state, "tenant_flags", None) is None:
+        from services.ingestion.feature_flags import TenantFlags
+        app_.state.tenant_flags = TenantFlags(pool)
+
     # IN-13: GitHub App outbound client (single instance per pod;
     # owns the installation-access-token cache) and replay LRU
     # (in-process; FR-014 — defense-in-depth, not correctness gate).
@@ -512,32 +520,35 @@ def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
         app_.state.github_replay_cache = make_replay_cache()
 
 
-async def _wire_notion_data_plane(app_: FastAPI) -> None:
-    """Wire a Notion-scoped ingestion data plane onto ``app.state``.
+async def _wire_ingestion_data_plane(app_: FastAPI) -> None:
+    """Wire the ingestion data plane onto ``app.state`` for ALL sources.
 
-    Notion webhook events have NO inline ingest handler in the gateway
-    (unlike slack/github/discord) — the changed object must traverse the
-    real data plane: ``shadow_write`` → Kafka ``ingestion.raw`` →
-    normalizer → observation_writer. This builds the Kafka producer +
-    raw-tier S3 client the Notion webhook handler hands to
-    ``shadow_write_raw``.
+    Webhook / Pub/Sub ingress must traverse the real data plane:
+    ``shadow_write`` → Kafka ``ingestion.raw`` → normalizer →
+    observation_writer (instead of the inline ``ingest()`` against the
+    gateway DB). This builds the single Kafka producer + raw-tier S3
+    client every ingress path hands to ``shadow_write_raw``.
 
-    SCOPING (deliberate): stored under ``app.state.notion_data_plane``,
-    NOT the canonical ``app.state.kafka_producer`` / ``s3_raw_client``.
-    The slack/github M5.3 cutover branch and the gmail Pub/Sub endpoint
-    key off those canonical names; leaving them unset keeps those
-    providers on their existing inline path. Only Notion uses the data
-    plane here. (The ``ingestion.kafka_path_enabled`` flag that the
-    observation_writer needs for full-mode is the SAME flag that would
-    trip the slack/github cutover — scoping by attribute name is what
-    decouples the two.) See services/webhooks/router.py cutover branch.
+    CANONICAL NAMES: stored under ``app.state.kafka_producer`` /
+    ``app.state.s3_raw_client`` — the names the slack/github M5.3 cutover
+    branch (``services/webhooks/router.py::_attempt_kafka_path``) and the
+    gmail Pub/Sub endpoint (``services/webhooks/gmail_pubsub.py``) read.
+    Wiring them activates the full pipeline for those providers once their
+    tenant's ``ingestion.kafka_path_enabled`` flag is TRUE; until then the
+    cutover branch is a no-op and ingress stays inline (graceful
+    degradation, never a drop).
+
+    Notion has no inline handler, so it reads the SAME producer + S3
+    client via the ``app.state.notion_data_plane`` alias (kept for the
+    IN-14 handler's call sites) — one producer/connection per process,
+    shared.
 
     Guarded: when ``KAFKA_BOOTSTRAP_SERVERS`` is unset (unit tests,
-    minimal deployments) this is a no-op; the Notion webhook handler then
-    acks the event without writing (logged). A producer/S3 startup
+    minimal deployments) this is a no-op; the cutover branch then sees
+    missing deps and every provider stays inline. A producer/S3 startup
     failure is logged and swallowed so it never blocks gateway startup.
     """
-    if getattr(app_.state, "notion_data_plane", None) is not None:
+    if getattr(app_.state, "kafka_producer", None) is not None:
         return
     brokers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
     if not brokers:
@@ -554,7 +565,7 @@ async def _wire_notion_data_plane(app_: FastAPI) -> None:
         producer = IdempotentProducer(
             ProducerConfig(
                 bootstrap_servers=brokers,
-                client_id="gateway-notion-ingress",
+                client_id="gateway-ingress",
             )
         )
         await producer.start()
@@ -563,31 +574,40 @@ async def _wire_notion_data_plane(app_: FastAPI) -> None:
             endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         )
         await s3_client.connect()
+        # Canonical names — slack/github cutover + gmail Pub/Sub read these.
+        app_.state.kafka_producer = producer
+        app_.state.s3_raw_client = s3_client
+        # IN-14 alias — the Notion webhook handler reads the same instances.
         app_.state.notion_data_plane = SimpleNamespace(
             producer=producer, s3_client=s3_client,
         )
-        log.info("notion_data_plane_wired", brokers=brokers)
+        log.info("ingestion_data_plane_wired", brokers=brokers)
     except Exception as exc:  # noqa: BLE001 — never block startup
         log.error(
-            "notion_data_plane_wiring_failed",
+            "ingestion_data_plane_wiring_failed",
             error_type=type(exc).__name__,
             error=str(exc),
         )
 
 
-async def _close_notion_data_plane(app_: FastAPI) -> None:
-    """Tear down the Notion data plane wired by ``_wire_notion_data_plane``."""
-    ndp = getattr(app_.state, "notion_data_plane", None)
-    if ndp is None:
-        return
-    try:
-        await ndp.producer.stop()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await ndp.s3_client.close()
-    except Exception:  # noqa: BLE001
-        pass
+async def _close_ingestion_data_plane(app_: FastAPI) -> None:
+    """Tear down the data plane wired by ``_wire_ingestion_data_plane``.
+
+    The canonical names and the Notion alias point at the SAME producer +
+    S3 client; stop/close each exactly once.
+    """
+    producer = getattr(app_.state, "kafka_producer", None)
+    s3_client = getattr(app_.state, "s3_raw_client", None)
+    if producer is not None:
+        try:
+            await producer.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    if s3_client is not None:
+        try:
+            await s3_client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def build_app(
@@ -704,14 +724,16 @@ def build_app(
                     error=str(_ceo_exc),
                     error_type=type(_ceo_exc).__name__,
                 )
-        # IN-14: Notion webhook events traverse the real data plane (no
-        # inline handler). Wire the Notion-scoped Kafka producer + S3 raw
-        # client. Guarded + swallow-on-failure (see helper docstring).
-        await _wire_notion_data_plane(app_)
+        # Wire the ingestion data plane (Kafka producer + S3 raw client)
+        # under the canonical names so EVERY source's webhook / Pub/Sub
+        # ingress can traverse the full pipeline instead of inline
+        # ingest(); Notion reads the same instances via its alias.
+        # Guarded + swallow-on-failure (see helper docstring).
+        await _wire_ingestion_data_plane(app_)
         try:
             yield
         finally:
-            await _close_notion_data_plane(app_)
+            await _close_ingestion_data_plane(app_)
             # IN-08: cancel the oauth_install_states sweep task.
             sweep_task = getattr(app_.state, "oauth_sweep_task", None)
             if sweep_task is not None:

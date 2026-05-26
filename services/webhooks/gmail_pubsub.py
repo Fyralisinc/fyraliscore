@@ -223,6 +223,24 @@ async def gmail_pubsub_push(
                 envelope=envelope,
             )
 
+    # CRITICAL (request/response gateway): both handle_push() (fetched
+    # messages) and _maybe_shadow_write_pubsub() (the push envelope)
+    # only `produce()` into librdkafka's LOCAL buffer. An HTTP handler
+    # has nothing driving the delivery queue, so without an explicit
+    # flush the produced records sit in the buffer and never land on
+    # `ingestion.raw`. Flush so the event is durably on the broker
+    # before we ack Pub/Sub. Best-effort: we still return 200 (the
+    # Pub/Sub no-retry-storm contract); an incomplete flush is logged
+    # for the operator. Same semantic as the webhook router cutover.
+    producer = getattr(request.app.state, "kafka_producer", None)
+    if producer is not None:
+        try:
+            remaining = await producer.flush(timeout_seconds=10.0)
+            if remaining:
+                log.warning("gmail.pubsub.kafka_flush_incomplete", remaining=remaining)
+        except Exception as exc:  # noqa: BLE001 — never break the 200 ack
+            log.warning("gmail.pubsub.kafka_flush_error", error=str(exc)[:200])
+
     # Strip the internal tenant_id key from the response — clients
     # (Pub/Sub) don't need it; keep the public contract minimal.
     if isinstance(result, dict) and "tenant_id" in result:

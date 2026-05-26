@@ -31,7 +31,7 @@ a one-time handshake and the steady-state event path:
     handler wired in the gateway, and we deliberately route Notion through
     the full pipeline. The producer + S3 client come from
     ``app.state.notion_data_plane`` (wired in
-    services/gateway/main.py::_wire_notion_data_plane), scoped so the
+    services/gateway/main.py::_wire_ingestion_data_plane), scoped so the
     slack/github cutover stays inline. The observation lands once the
     tenant's ``ingestion.kafka_path_enabled`` flag is on (the
     observation_writer full-mode gate) — the same gate backfill lives
@@ -228,7 +228,7 @@ async def _shadow_write_page(
 
     Uses the Notion-scoped producer + S3 client wired at
     ``app.state.notion_data_plane`` (see
-    services/gateway/main.py::_wire_notion_data_plane). Returns True when
+    services/gateway/main.py::_wire_ingestion_data_plane). Returns True when
     the write was attempted, False when the data plane is unwired
     (KAFKA_BOOTSTRAP_SERVERS unset / startup failed). A failure mid-write
     propagates the exception to the caller's 200 path only via the log —

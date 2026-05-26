@@ -69,7 +69,7 @@ def build_raw_s3_key(
     """
     if not env:
         raise ValueError("env is required")
-    if source not in ("slack", "github", "discord", "gmail", "notion", "google_calendar"):
+    if source not in ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive"):
         raise ValueError(f"unknown source {source!r}")
     if not content_hash:
         raise ValueError("content_hash is required")

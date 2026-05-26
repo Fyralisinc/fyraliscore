@@ -33,7 +33,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar"]
+Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive"]
 
 
 class ProgressEventBase(BaseModel):
