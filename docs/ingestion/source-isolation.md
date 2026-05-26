@@ -174,6 +174,21 @@ the all-sources fallback subscribes to every per-source topic.
 
 Each phase is a self-contained commit.
 
+## Operator knobs (env vars)
+
+| Env var | Worker(s) | Default | Effect |
+|---|---|---|---|
+| `INGESTION_SOURCE` | all 4 workers | unset | Pin worker to one source's lane (`slack`, `github`, …). Unset = all-sources fallback. |
+| `KAFKA_TOPIC_PARTITIONS` | provisioner + gateway | 12 | Partitions per topic; the gateway's traffic-signal partition lookup reads the same value. |
+| `NORMALIZER_MAX_CONCURRENCY` | normalizer | 1 | >1 overlaps S3 GETs across tenants within a source lane (per-tenant order preserved). |
+| `EMBEDDING_MAX_CONCURRENCY` | embedding-worker | 1 | Per-source Ollama concurrency budget within a batch. |
+| `WRITER_POSTGRES_POOL_SIZE` | observation-writer | 10 | Per-source DB pool budget. |
+| `POSTGRES_POOL_SIZE` | embedding/dlq workers | 5 | Per-source DB pool budget. |
+
+Per-source workers are deployed via `scripts/gen_per_source_compose.py`
+(generates `docker-compose.per-source.yml`); run it with the base compose and
+scale the all-sources singletons to 0.
+
 ## Known follow-ups (deliberately deferred)
 
 - **Circuit breaker per-source lag.** `services/ingestion/feature_flags/
