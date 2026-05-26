@@ -11,6 +11,7 @@ covers:
 """
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
 import mmh3
@@ -83,3 +84,21 @@ def test_num_partitions_changes_output_safely():
     assert p_32 == h_masked % 32
     assert p_64 == h_masked % 64
     assert p_8 == h_masked % 8
+
+
+def test_default_num_partitions_matches_provisioned_count():
+    """Source-isolation drift fix: the default partition count MUST equal
+    the provisioned topic partition count (KAFKA_TOPIC_PARTITIONS, default
+    12) — not the old hardcoded 32 — or the traffic-signal partition lookup
+    points at a partition the message never lands on.
+    """
+    from services.webhooks.router import _DEFAULT_NUM_PARTITIONS
+
+    expected = int(os.environ.get("KAFKA_TOPIC_PARTITIONS", "12"))
+    assert _DEFAULT_NUM_PARTITIONS == expected
+
+    tid = uuid4()
+    key = str(tid).encode("utf-8")
+    h_masked = mmh3.hash(key, seed=0x9747b28c, signed=False) & 0x7fffffff
+    # Calling with no explicit num_partitions uses the provisioned default.
+    assert _kafka_partition_for_tenant(tid) == h_masked % expected

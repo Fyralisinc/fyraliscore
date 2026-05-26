@@ -173,3 +173,18 @@ the all-sources fallback subscribes to every per-source topic.
 | 8 | partition-count drift fix |
 
 Each phase is a self-contained commit.
+
+## Known follow-ups (deliberately deferred)
+
+- **Circuit breaker per-source lag.** `services/ingestion/feature_flags/
+  circuit_breaker.py` measures consumer lag on a single `raw_topic`. With
+  per-source raw topics, a tenant can lag on one source's lane while healthy on
+  another. The breaker should measure lag across every
+  `topics_for_stage("raw")` lane (per-source consumer groups) and trip on the
+  worst-case lane. Left at the legacy `raw_topic` it fails SAFE (never
+  false-trips) but is inert. It's a cutover-era safety net, separate from
+  steady-state isolation — deferred, not forgotten.
+- **Per-source topic auto-provisioning on source addition.** Adding a source to
+  `SourceLiteral` makes its four topics appear in the registry automatically,
+  but the provisioner must be re-run on deploy to create them (auto-create is
+  off). Documented in the rollout section.

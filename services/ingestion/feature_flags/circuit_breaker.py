@@ -150,6 +150,19 @@ class BreakerConfig:
     # The raw-topic + consumer-group + signal-topic names line up
     # with the LLD §5.2 + §11.3 wire contract; do not change without
     # the LLD changing in lockstep.
+    #
+    # SOURCE-ISOLATION FOLLOW-UP (docs/ingestion/source-isolation.md
+    # "Known follow-ups"): the raw stage is now split into per-source
+    # topics (ingestion.raw.<source>), so a single `raw_topic` no longer
+    # captures a tenant's lag — a tenant can be lagging on one source's
+    # lane while healthy on another. Adapting the breaker means measuring
+    # lag across every per-source raw topic (see
+    # services.ingestion.kafka.topics.topics_for_stage("raw")) and per-
+    # source consumer groups, then tripping on the worst-case lane.
+    # Until that lands, a `raw_topic` left at the legacy name measures a
+    # topic that no longer receives traffic — the breaker fails SAFE
+    # (never false-trips) but is inert. Deferred deliberately: the breaker
+    # is a cutover-era safety net, separate from steady-state isolation.
     raw_topic: str = "ingestion.raw"
     consumer_group: str = "ingestion-normalizer"
     signal_topic: str = "ingestion.tenant_traffic_signal"
