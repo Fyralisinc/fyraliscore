@@ -132,9 +132,15 @@ async def test_warm_start_uses_incremental_jql(monkeypatch):
     assert 'updated >= "2026/05/02 10:00"' in client.calls[0]["jql"]
 
 
-async def test_to_jql_datetime_normalises_offset():
+async def test_to_jql_datetime_keeps_user_tz_wall_clock():
+    # UTC / Z stay as-is.
     assert jf._to_jql_datetime("2026-05-20T12:30:00.000+0000") == "2026/05/20 12:30"
     assert jf._to_jql_datetime("2026-05-20T12:30:00Z") == "2026/05/20 12:30"
+    # CRITICAL: a non-UTC offset (e.g. +0545 Nepal) must keep its OWN wall
+    # clock, NOT convert to UTC. Jira interprets the bare JQL literal in the
+    # user's tz, so converting to UTC ("03:39") would shift the floor ~6h into
+    # the past and make `updated >` match everything → infinite reshard.
+    assert jf._to_jql_datetime("2026-05-26T09:24:29.224+0545") == "2026/05/26 09:24"
     assert jf._to_jql_datetime(None) is None
     assert jf._to_jql_datetime("garbage") is None
 

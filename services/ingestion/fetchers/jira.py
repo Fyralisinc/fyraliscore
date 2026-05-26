@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -120,7 +120,16 @@ async def _open_jira_client(install: asyncpg.Record):  # noqa: ANN202
 def _to_jql_datetime(iso: str | None) -> str | None:
     """Convert an ISO-8601 `updated` timestamp to the JQL datetime literal
     Jira accepts (`yyyy/MM/dd HH:mm`, minute precision). Returns None if it
-    can't be parsed (caller then runs a FULL walk)."""
+    can't be parsed (caller then runs a FULL walk).
+
+    TIMEZONE (load-bearing): Jira interprets a BARE JQL datetime literal in the
+    querying user's timezone, and returns `issue.updated` in that SAME timezone.
+    So the literal must keep the value's OWN wall-clock — do NOT convert to UTC.
+    Converting shifts the floor by the tz offset; for a +0545 account a UTC
+    floor lands ~6h in the past, so `updated > floor` matches every issue and
+    the reconciler re-shards forever (observed). Formatting the parsed dt
+    without `astimezone` keeps the original-offset wall clock, which round-trips
+    correctly through Jira's user-tz interpretation."""
     if not isinstance(iso, str) or not iso:
         return None
     s = iso
@@ -133,9 +142,8 @@ def _to_jql_datetime(iso: str | None) -> str | None:
         dt = datetime.fromisoformat(s)
     except ValueError:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y/%m/%d %H:%M")
+    # Format in the value's own offset (no UTC conversion) — see docstring.
+    return dt.strftime("%Y/%m/%d %H:%M")
 
 
 def _build_jql(project_key: str, floor: str | None) -> str:
