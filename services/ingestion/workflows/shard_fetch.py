@@ -384,6 +384,18 @@ SELECT id, tenant_id, workspace_domain, service_account_email,
  LIMIT 1
 """
 
+# IN-16: Google Drive is a DWD source like Gmail/Calendar (not in
+# provider_installations). The fetcher works one drive at a time via
+# shard_identifier, so the install row only needs scope + id + tenant_id;
+# the impersonated owner_email + drive_id come from the shard.
+_LOAD_GDRIVE_INSTALL_SQL = """
+SELECT id, tenant_id, workspace_domain, service_account_email,
+       scope, disabled_at
+  FROM google_drive_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 # IN-17: Jira is a per-site install (not in provider_installations). The
 # fetcher works one project at a time via shard_identifier; the install row
 # carries base_url + account_email + secret_ref the JiraClient needs.
@@ -475,6 +487,8 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
     if source == "google_calendar":
         return await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
+    if source == "google_drive":
+        return await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
     if source == "jira":
         return await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)

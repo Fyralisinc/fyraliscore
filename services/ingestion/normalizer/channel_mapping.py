@@ -81,6 +81,16 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # collapses a backfilled event and its live "poll" twin to one observation.
     ("google_calendar", "backfill"): "google_calendar:event",
     ("google_calendar", "poll"): "google_calendar:event",
+    # Google Drive — backfill + poll (IN-16, D3). A Google Workspace API on the
+    # shared Gmail DWD auth substrate; no push-webhook in v1. Backfill walks each
+    # drive once (files.list windowed by modifiedTime); the incremental driver
+    # re-runs the same fetcher under ingress_kind="poll" using the Changes API
+    # start-page-token. BOTH route to the single `google_drive:file` channel; the
+    # handler branches on removed/trashed -> state_change. external_id parity
+    # (`gdrive:{file_id}:{version}`) collapses a backfilled file and its live
+    # "poll" twin to one observation.
+    ("google_drive", "backfill"): "google_drive:file",
+    ("google_drive", "poll"): "google_drive:file",
     # Jira — backfill + poll + webhook (IN-17). Jira Cloud has BOTH a live
     # push surface (dynamic webhooks: jira:issue_created/updated,
     # comment_created/updated) AND a historical query surface (JQL search).

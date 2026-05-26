@@ -193,7 +193,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "jira")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira")
 
 
 # ---------------------------------------------------------------------
@@ -270,6 +270,32 @@ SELECT gi.id, gi.tenant_id, gi.workspace_domain, gi.service_account_email,
   FROM google_calendar_installations gi
   LEFT JOIN google_calendar_calendars cc
     ON cc.google_calendar_installation_id = gi.id AND cc.state = 'active'
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ GROUP BY gi.id
+ LIMIT 1
+"""
+
+# IN-16: Google Drive mirrors the Gmail/Calendar loader (A18.2) — the planner
+# needs the 1-to-N active-target list aggregated onto the workspace install so
+# it can emit one shard per drive (My Drive + Shared Drives; no DB I/O in the
+# planner).
+_LOAD_GDRIVE_INSTALL_SQL = """
+SELECT gi.id, gi.tenant_id, gi.workspace_domain, gi.service_account_email,
+       gi.scope, gi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'drive_kind', dt.drive_kind,
+             'drive_id', dt.drive_id,
+             'owner_email', dt.owner_email,
+             'start_page_token', dt.start_page_token
+           ) ORDER BY dt.drive_kind, dt.drive_id, dt.owner_email
+         ) FILTER (WHERE dt.id IS NOT NULL),
+         '[]'::json
+       ) AS targets
+  FROM google_drive_installations gi
+  LEFT JOIN google_drive_targets dt
+    ON dt.google_drive_installation_id = gi.id AND dt.state = 'active'
  WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
  GROUP BY gi.id
  LIMIT 1
@@ -411,6 +437,8 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
     if source == "google_calendar":
         return await conn.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
+    if source == "google_drive":
+        return await conn.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
     if source == "jira":
         return await conn.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
