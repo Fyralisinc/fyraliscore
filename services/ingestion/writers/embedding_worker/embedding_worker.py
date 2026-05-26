@@ -290,6 +290,13 @@ class EmbeddingWorkerConfig:
     source: str | None = None
     # Small pool — embedding is bottlenecked by Ollama, not the DB.
     postgres_pool_size: int = 5
+    # Per-source Ollama concurrency budget (source-isolation): how many
+    # embed calls this worker runs concurrently within a batch. Default 1
+    # = strictly sequential (historical behaviour). Raising it improves a
+    # source's throughput; keeping it bounded stops one source's worker
+    # from monopolising the shared Ollama endpoint. See
+    # docs/ingestion/source-isolation.md.
+    max_concurrency: int = 1
     # Stop after N messages (test mode). Production = None.
     stop_after: int | None = None
     # Idle poll timeout for getmany — keeps the worker responsive to
@@ -388,10 +395,18 @@ async def run_embedding_worker(
                     break
                 continue
 
-            for msg in messages:
-                consumed += 1
-                _bump("embedding_worker.messages_consumed")
+            # Per-source Ollama concurrency budget (source-isolation):
+            # process the batch's embeds under a bounded semaphore.
+            # max_concurrency=1 (default) is strictly sequential and
+            # behaviourally identical to the historical loop; >1 overlaps
+            # embed calls up to the budget. Offsets commit AFTER the whole
+            # batch completes, so at-least-once is preserved (re-embed is
+            # idempotent: the UPDATE matches 0 rows once embedding is set).
+            consumed += len(messages)
+            _bump("embedding_worker.messages_consumed", float(len(messages)))
+            sem = asyncio.Semaphore(max(1, config.max_concurrency))
 
+            async def _process_one(msg: Any) -> str | None:
                 try:
                     env = EmbeddingEnvelope.model_validate(
                         orjson.loads(msg.value)
@@ -408,35 +423,38 @@ async def run_embedding_worker(
                             "error": str(exc)[:200],
                         },
                     )
-                    # Parse failures on this topic are programmer
-                    # errors (producer schema drift); skip + commit.
-                    # No DLQ — best-effort extraction has nothing
-                    # to extract from a garbage embedding envelope.
-                    continue
+                    # Parse failures on this topic are programmer errors
+                    # (producer schema drift); skip. No DLQ — best-effort
+                    # extraction has nothing to pull from garbage.
+                    return None
 
-                try:
-                    status = await embed_and_update(
-                        env=env,
-                        pool=pool,
-                        embedder=embedder_obj,
-                        dlq_producer=dlq_producer,
-                    )
-                    if status == "embedded":
-                        embedded += 1
-                except Exception as exc:  # noqa: BLE001
-                    # Catch-all for unexpected errors (DB connection
-                    # loss, etc.). Log + bump + continue — same
-                    # prime directive as the DLQ writer.
-                    _bump("embedding_worker.embeds_failed")
-                    log.warning(
-                        "embedding_worker.unexpected_error",
-                        extra={
-                            "tenant_id": str(env.tenant_id),
-                            "observation_id": str(env.observation_id),
-                            "error_type": type(exc).__name__,
-                            "error": str(exc)[:200],
-                        },
-                    )
+                async with sem:
+                    try:
+                        return await embed_and_update(
+                            env=env,
+                            pool=pool,
+                            embedder=embedder_obj,
+                            dlq_producer=dlq_producer,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # Catch-all (DB loss, etc.). Log + bump + continue
+                        # — same prime directive as the DLQ writer.
+                        _bump("embedding_worker.embeds_failed")
+                        log.warning(
+                            "embedding_worker.unexpected_error",
+                            extra={
+                                "tenant_id": str(env.tenant_id),
+                                "observation_id": str(env.observation_id),
+                                "error_type": type(exc).__name__,
+                                "error": str(exc)[:200],
+                            },
+                        )
+                        return None
+
+            statuses = await asyncio.gather(
+                *(_process_one(m) for m in messages)
+            )
+            embedded += sum(1 for s in statuses if s == "embedded")
 
             await consumer.commit()
 
@@ -470,6 +488,9 @@ def main() -> None:
         source=os.environ.get("INGESTION_SOURCE") or None,
         postgres_pool_size=int(
             os.environ.get("POSTGRES_POOL_SIZE", "5")
+        ),
+        max_concurrency=int(
+            os.environ.get("EMBEDDING_MAX_CONCURRENCY", "1")
         ),
     )
 

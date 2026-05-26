@@ -622,7 +622,13 @@ def main() -> None:
             source=source,
         )
         if dsn is not None:
-            pool = await make_writer_pool(dsn)
+            # Source isolation: per-source writers each own their pool,
+            # so the size is a per-source DB budget. Tunable so a noisy
+            # source can be given headroom without touching the others.
+            pool = await make_writer_pool(
+                dsn,
+                max_size=int(os.environ.get("WRITER_POSTGRES_POOL_SIZE", "10")),
+            )
             config = WriterConfig(
                 bootstrap_servers=config.bootstrap_servers,
                 consumer_group=config.consumer_group,
