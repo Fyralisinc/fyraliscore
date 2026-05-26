@@ -175,7 +175,7 @@ async def test_lease_takeover_on_crashed_holder(fresh_db: asyncpg.Pool):
             f"{redis_box.get_exposed_port(6379)}/0"
         )
         kafka_bootstrap = kafka_box.get_bootstrap_server()
-        _create_topic(kafka_bootstrap, "ingestion.raw")
+        _create_topic(kafka_bootstrap, "ingestion.raw.discord")
 
         tenant_id = await _seed_tenant(fresh_db)
 
@@ -424,7 +424,7 @@ async def test_no_frames_lost_across_sigkill(fresh_db: asyncpg.Pool):
             f"{redis_box.get_exposed_port(6379)}/0"
         )
         kafka_bootstrap = kafka_box.get_bootstrap_server()
-        _create_topic(kafka_bootstrap, "ingestion.raw")
+        _create_topic(kafka_bootstrap, "ingestion.raw.discord")
 
         tenant_id = await _seed_tenant(fresh_db)
         application_id = f"app-noloss-{uuid4().hex[:8]}"
@@ -520,7 +520,7 @@ async def test_no_frames_lost_across_sigkill(fresh_db: asyncpg.Pool):
             # internal state).
             gateway_msgs = _drain_kafka(
                 bootstrap=kafka_bootstrap,
-                topic="ingestion.raw",
+                topic="ingestion.raw.discord",
                 expected=3, timeout_s=20,
                 filter_ingress_kind="gateway",
             )

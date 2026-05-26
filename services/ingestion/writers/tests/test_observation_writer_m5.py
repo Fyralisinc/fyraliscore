@@ -563,10 +563,11 @@ async def test_writer_full_mode_publishes_embedding_request_on_pending(
         "Observation should be pending — writer was wired with embedder=None."
     )
 
-    # Embedding request published to `ingestion.embedding`.
+    # Embedding request published to the per-source embedding lane
+    # (source-isolation): ingestion.embedding.<source>.
     emb_publishes = [
         (topic, value) for (topic, value, _key) in capture.published
-        if topic == "ingestion.embedding"
+        if topic.startswith("ingestion.embedding")
     ]
     assert len(emb_publishes) == 1, (
         f"Expected 1 publish to ingestion.embedding; got "
@@ -624,7 +625,7 @@ async def test_writer_parse_failure_dlqs_and_commits(
     # DLQ publish landed on ingestion.dlq.
     dlq_publishes = [
         (topic, value) for (topic, value, _key) in capture.published
-        if topic == "ingestion.dlq"
+        if topic.startswith("ingestion.dlq")
     ]
     assert len(dlq_publishes) == 1, (
         f"Expected 1 publish to ingestion.dlq for the bad message; "
@@ -683,7 +684,7 @@ async def test_writer_missing_partition_dlqs_not_crash_loop(
     # Routed to ingestion.dlq with the partition_missing diagnostic.
     dlq_publishes = [
         value for (topic, value, _key) in capture.published
-        if topic == "ingestion.dlq"
+        if topic.startswith("ingestion.dlq")
     ]
     assert len(dlq_publishes) == 1, (
         f"Expected exactly 1 DLQ publish; got {len(dlq_publishes)}."

@@ -198,9 +198,10 @@ async def _read_observation(
 def _create_topics(bootstrap: str) -> None:
     from confluent_kafka.admin import AdminClient, NewTopic
     admin = AdminClient({"bootstrap.servers": bootstrap})
+    # Per-source lanes (source-isolation): these tests use slack.
     futs = admin.create_topics([
-        NewTopic("ingestion.embedding", num_partitions=4, replication_factor=1),
-        NewTopic("ingestion.dlq",       num_partitions=4, replication_factor=1),
+        NewTopic("ingestion.embedding.slack", num_partitions=4, replication_factor=1),
+        NewTopic("ingestion.dlq.slack",       num_partitions=4, replication_factor=1),
     ])
     for f in futs.values():
         f.result(timeout=30)
@@ -223,7 +224,7 @@ def _publish_envelope(
         "compression.type": "zstd",
     })
     p.produce(
-        "ingestion.embedding",
+        f"ingestion.embedding.{source}",
         value=orjson.dumps(env.model_dump(mode="json")),
         key=str(tenant_id).encode("utf-8"),
     )
@@ -246,7 +247,7 @@ def _drain_dlq(bootstrap: str, expected: int, timeout_s: float = 15.0) -> list[d
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
     })
-    c.subscribe(["ingestion.dlq"])
+    c.subscribe(["ingestion.dlq.slack"])
     out: list[dict] = []
     deadline = asyncio.get_event_loop().time() + timeout_s
     try:
@@ -310,6 +311,7 @@ async def test_embedding_worker_happy_path_succeeds(fresh_db: asyncpg.Pool):
             EmbeddingWorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="emb-test-1",
+                source="slack",
                 stop_after=1,
             ),
             pool=fresh_db,
@@ -389,6 +391,7 @@ async def test_embedding_worker_supports_reembed_with_existing_embedding(
             EmbeddingWorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="emb-test-2",
+                source="slack",
                 stop_after=1,
             ),
             pool=fresh_db,
@@ -492,6 +495,7 @@ async def test_embedding_worker_concurrent_with_inline_safe(
             EmbeddingWorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="emb-test-3",
+                source="slack",
                 stop_after=1,
             ),
             pool=fresh_db,
@@ -579,6 +583,7 @@ async def test_embedding_worker_terminal_ollama_failure_publishes_dlq(
             EmbeddingWorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="emb-test-4",
+                source="slack",
                 stop_after=1,
             ),
             pool=fresh_db,

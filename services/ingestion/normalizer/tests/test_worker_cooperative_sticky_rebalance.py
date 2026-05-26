@@ -236,8 +236,10 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
         # actually redistribute. A 1-partition topic would not
         # exercise the strategy at all.
         admin = AdminClient({"bootstrap.servers": bootstrap})
+        # Per-source lane (source-isolation): slack envelopes, 4 partitions
+        # so the rebalance can redistribute across workers.
         topic_fut = admin.create_topics([
-            NewTopic("ingestion.raw", num_partitions=4, replication_factor=1),
+            NewTopic("ingestion.raw.slack", num_partitions=4, replication_factor=1),
         ])
         for fut in topic_fut.values():
             fut.result(timeout=30)
@@ -254,7 +256,7 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
         })
         for i, env_bytes in enumerate(envelopes):
             raw_producer.produce(
-                "ingestion.raw",
+                "ingestion.raw.slack",
                 value=env_bytes,
                 key=f"key-{i}".encode("utf-8"),
             )
@@ -295,6 +297,7 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
             cfg = WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-rebalance-test",
+                source="slack",
                 stop_after=15,
                 rebalance_listener=_RecordingListener("A", rebalance_log),
             )
@@ -307,6 +310,7 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
             cfg = WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-rebalance-test",
+                source="slack",
                 stop_after=25,
                 rebalance_listener=_RecordingListener("B", rebalance_log),
             )
@@ -376,6 +380,6 @@ async def test_cooperative_sticky_two_workers_no_loss_no_duplicates(
             f"keys out of {len(seen_keys)} published"
         )
 
-        # 6. Topic was published to is ingestion.normalized.
+        # 6. Topic published to is the slack normalized lane (source-isolation).
         topics = {t for (t, _, _) in capture_producer.published}
-        assert topics == {"ingestion.normalized"}, topics
+        assert topics == {"ingestion.normalized.slack"}, topics
