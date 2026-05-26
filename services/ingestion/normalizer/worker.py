@@ -59,6 +59,7 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
+from services.ingestion.kafka.topics import topic_for
 from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
 from services.ingestion.observability import (
     Heartbeat,
@@ -459,7 +460,9 @@ async def _normalize_one_with_envelope(
         idem_hints=envelope.idem_hints,
     )
     await producer.produce(
-        topic=_NORMALIZED_TOPIC,
+        # Per-source normalized topic — keeps the observation-writer lanes
+        # independent per source (source-isolation.md).
+        topic=topic_for("normalized", envelope.source),
         value=orjson.dumps(normalized.model_dump(mode="json")),
         key=str(envelope.tenant_id).encode("utf-8"),
     )
