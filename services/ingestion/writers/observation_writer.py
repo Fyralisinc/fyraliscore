@@ -89,6 +89,7 @@ from services.ingestion.observability import (
     start_health_server,
 )
 from services.ingestion.normalizer.models import NormalizedEnvelope
+from services.observations.partitions import ensure_partitions
 
 
 # Transient-error retry (avoids a tight crash-loop on a brief DB blip).
@@ -103,6 +104,26 @@ _TRANSIENT_BACKOFF_BASE_S = float(
 )
 _TRANSIENT_BACKOFF_MAX_S = float(
     os.environ.get("WRITER_TRANSIENT_BACKOFF_MAX_SEC", "30")
+)
+
+
+# Ticket #44 — partition self-heal guardrail. `observations` is range-
+# partitioned by `occurred_at` and the partition manager is forward-only
+# (`services/observations/partitions.py`), so a historical-backfill row
+# whose `occurred_at` predates partition coverage routes to no partition
+# and asyncpg raises an *unnamed* CheckViolationError. Rather than DLQ
+# such rows (silent, success-shaped data loss), the writer creates the
+# covering month and retries the insert once — but ONLY when occurred_at
+# falls within [now - MAX_BACKFILL_LOOKBACK, now + FUTURE_SKEW]. Outside
+# that window the timestamp is treated as corrupt source data and DLQ'd
+# deliberately (reason="out_of_bounds_occurred_at") with NO partition
+# created, so a bad far-future / pre-historic value can't spawn a
+# pathological partition.
+_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS = int(
+    os.environ.get("WRITER_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS", "3660")  # ~10y
+)
+_PARTITION_FUTURE_SKEW_DAYS = int(
+    os.environ.get("WRITER_PARTITION_FUTURE_SKEW_DAYS", "7")
 )
 
 
@@ -121,8 +142,15 @@ _metrics: dict[str, float] = {
     "writer.full_mode_dedup_hits": 0.0,
     "writer.full_mode_failures": 0.0,
     # A28 — observation routed to DLQ because no partition covers its
-    # occurred_at (permanent, not transient; see ticket #44).
+    # occurred_at AND the row could not be self-healed (residual fallback;
+    # see ticket #44).
     "writer.partition_missing": 0.0,
+    # Ticket #44 — missing partition was auto-created and the row inserted
+    # on retry (the self-heal path; replaces the old silent DLQ drop).
+    "writer.partition_autocreated": 0.0,
+    # Ticket #44 — occurred_at outside the auto-create guardrail window;
+    # DLQ'd deliberately as corrupt source data (no partition created).
+    "writer.partition_out_of_bounds": 0.0,
     "writer.parse_failure": 0.0,
     # M3.1 — DLQ publish metrics.
     "writer.dlq_publish.success": 0.0,
@@ -271,6 +299,82 @@ async def _full_mode_write(
     else:
         _bump("writer.full_mode_writes")
     return result
+
+
+# Self-heal outcomes (ticket #44). Returned by
+# `_attempt_partition_self_heal` so the caller can pick the right DLQ
+# reason / metric without re-deriving the guardrail decision.
+_HEAL_INSERTED = "inserted"
+_HEAL_OUT_OF_BOUNDS = "out_of_bounds"
+_HEAL_STILL_MISSING = "still_missing"
+
+
+async def _attempt_partition_self_heal(
+    env: NormalizedEnvelope,
+    *,
+    config: WriterConfig,
+    embedding_producer: Any,
+) -> str:
+    """Ticket #44: heal a missing-partition write by creating the
+    covering month and retrying the insert once.
+
+    Returns one of:
+      `_HEAL_INSERTED`      — partition ensured and the row was written.
+      `_HEAL_OUT_OF_BOUNDS` — `occurred_at` is missing or outside the
+                              guardrail window; NO partition was created
+                              and the caller should DLQ it deliberately.
+      `_HEAL_STILL_MISSING` — the retry still hit an unnamed
+                              CheckViolation after creating the partition
+                              (should not happen in practice); the caller
+                              DLQs as `partition_missing`.
+
+    Permanent (ValidationError / HandlerNotFound / PayloadTooLarge) and
+    transient errors raised by the retried write propagate unchanged —
+    transient ones reach `_handle_message_with_retry` and are retried.
+    """
+    occurred = env.occurred_at
+    if occurred is None:
+        return _HEAL_OUT_OF_BOUNDS
+    if occurred.tzinfo is None:
+        occurred = occurred.replace(tzinfo=dt.timezone.utc)
+    now = dt.datetime.now(tz=dt.timezone.utc)
+    too_old = now - dt.timedelta(days=_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS)
+    too_new = now + dt.timedelta(days=_PARTITION_FUTURE_SKEW_DAYS)
+    if occurred < too_old or occurred > too_new:
+        return _HEAL_OUT_OF_BOUNDS
+
+    # Create exactly the covering month (months_ahead=0). Idempotent via
+    # CREATE TABLE IF NOT EXISTS, and runs in its own connection/
+    # transaction — the failed first INSERT already rolled back and
+    # released its connection. Tolerate a concurrent writer winning the
+    # race and surfacing DuplicateTableError despite IF NOT EXISTS.
+    try:
+        created = await ensure_partitions(
+            config.pool, as_of=occurred.date(), months_ahead=0,
+        )
+    except asyncpg.exceptions.DuplicateTableError:
+        created = []  # another writer created it first — treat as success
+    if created:
+        log.info(
+            "writer.partition_autocreate",
+            extra={"created": created, "occurred_at": occurred.isoformat()},
+        )
+
+    # Retry the write once in a fresh transaction.
+    try:
+        await _full_mode_write(
+            env,
+            pool=config.pool,
+            actor_repo=config.actor_repo,
+            alias_repo=config.alias_repo,
+            embedder=config.embedder,
+            embedding_producer=embedding_producer,
+        )
+    except asyncpg.exceptions.CheckViolationError as exc:
+        if exc.constraint_name is not None:
+            raise
+        return _HEAL_STILL_MISSING
+    return _HEAL_INSERTED
 
 
 # ---------------------------------------------------------------------
@@ -425,37 +529,100 @@ async def _handle_message(
             on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
         )
     except asyncpg.exceptions.CheckViolationError as exc:
-        # A28: a missing-partition routing failure on the range-
-        # partitioned `observations` table (no partition covers this
-        # row's occurred_at) raises CheckViolationError with NO
-        # constraint name — structurally distinct from a *named* CHECK
-        # constraint violation, which carries `constraint_name`. The
-        # missing-partition case is PERMANENT: retrying never creates
-        # the partition, so the prior transient-classification crash-
-        # loops the consumer on the first out-of-range message (e.g. a
-        # backfill of historical data older than partition coverage).
-        # Route it to the DLQ with an operational diagnostic instead.
-        # A *named* CHECK violation keeps the prior transient behavior.
-        # See A28 + ticket #44 (partition-coverage extension).
+        # A28 / ticket #44: an *unnamed* CheckViolationError on the range-
+        # partitioned `observations` table means no partition covers this
+        # row's occurred_at (the implicit partition-routing constraint
+        # carries no name; a *named* CHECK violation does carry one and
+        # stays on the transient re-raise path). Historical-backfill rows
+        # carry their original event time, which is older than the
+        # forward-only partition window — so instead of DLQ-ing them
+        # (silent, success-shaped data loss), self-heal: create the
+        # covering month and retry the insert once, bounded by a guardrail
+        # so corrupt timestamps don't spawn pathological partitions.
         if exc.constraint_name is not None:
             raise
-        _bump("writer.partition_missing")
         occurred = (
             env.occurred_at.isoformat()
             if env.occurred_at is not None else "<none>"
         )
-        summary = (
-            f"partition_missing: occurred_at={occurred} outside partition "
-            f"range; observations partitioning may need extension"
-        )
+        try:
+            status = await _attempt_partition_self_heal(
+                env, config=config, embedding_producer=embedding_producer,
+            )
+        except (ValidationError, HandlerNotFound, PayloadTooLarge) as exc2:
+            # A permanent error surfaced only on the retry (not expected,
+            # since validation precedes the INSERT in ingest_from_draft).
+            # DLQ it like any other full-mode permanent failure.
+            _bump("writer.full_mode_failures")
+            log.warning(
+                "writer.full_mode_permanent_failure",
+                extra={
+                    "topic": msg_topic,
+                    "partition": msg_partition,
+                    "offset": msg_offset,
+                    "tenant_id": str(env.tenant_id),
+                    "error_type": type(exc2).__name__,
+                    "error": str(exc2)[:200],
+                },
+            )
+            await publish_dlq(
+                producer=dlq_producer,
+                failure_kind="writer.full_mode_permanent_failure",
+                error_summary=f"{type(exc2).__name__}: {str(exc2)[:200]}",
+                tenant_id=env.tenant_id,
+                source=env.source,
+                raw_s3_key=env.raw_s3_key,
+                msg_bytes=msg_value,
+                on_success=lambda: _bump("writer.dlq_publish.success"),
+                on_failure=lambda: _bump("writer.dlq_publish.failure"),
+                on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+            )
+            return
+
+        if status == _HEAL_INSERTED:
+            _bump("writer.partition_autocreated")
+            log.info(
+                "writer.partition_autocreated",
+                extra={
+                    "topic": msg_topic,
+                    "partition": msg_partition,
+                    "offset": msg_offset,
+                    "tenant_id": str(env.tenant_id),
+                    "occurred_at": occurred,
+                },
+            )
+            return
+
+        # status is out_of_bounds (deliberate) or still_missing (residual
+        # fallback) — DLQ with the matching reason/metric. No partition
+        # was created for the out_of_bounds case.
+        if status == _HEAL_OUT_OF_BOUNDS:
+            _bump("writer.partition_out_of_bounds")
+            reason = "out_of_bounds_occurred_at"
+            summary = (
+                f"out_of_bounds_occurred_at: occurred_at={occurred} outside "
+                f"the partition auto-create window "
+                f"[-{_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS}d, "
+                f"+{_PARTITION_FUTURE_SKEW_DAYS}d]; treated as corrupt "
+                f"source data (no partition created)"
+            )
+        else:
+            _bump("writer.partition_missing")
+            reason = "partition_missing"
+            summary = (
+                f"partition_missing: occurred_at={occurred} still outside "
+                f"partition range after auto-create; observations "
+                f"partitioning may need extension"
+            )
         log.warning(
-            "writer.partition_missing",
+            "writer.partition_dlq",
             extra={
                 "topic": msg_topic,
                 "partition": msg_partition,
                 "offset": msg_offset,
                 "tenant_id": str(env.tenant_id),
                 "occurred_at": occurred,
+                "reason": reason,
             },
         )
         await publish_dlq(
@@ -467,7 +634,7 @@ async def _handle_message(
             raw_s3_key=env.raw_s3_key,
             msg_bytes=msg_value,
             error_context={
-                "reason": "partition_missing",
+                "reason": reason,
                 "occurred_at": occurred,
                 "table": "observations",
             },
