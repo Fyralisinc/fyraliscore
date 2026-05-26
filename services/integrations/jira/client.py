@@ -275,15 +275,16 @@ class JiraClient:
         Uses `/rest/api/3/search/approximate-count` (the new endpoint's count
         surface, since `/search/jql` no longer returns `total`).
 
-        STRICT `>` (not `>=`) is load-bearing: the high-water mark IS an issue
-        the backfill already walked, so an inclusive `>=` would always match it
-        and the reconciler would re-share forever (observed: 100+ reshare passes
-        hammering the API). `>` converges — it only fires on issues in a strictly
-        later minute. Sub-minute updates after the walk (JQL `updated` is
-        minute-precision) are caught by the live webhook + the periodic
-        reconciler, not this one-shot onboarding probe."""
+        `updated_min_jql` MUST be an EXCLUSIVE floor — the caller passes the
+        minute AFTER the high-water (see reconcilers/jira.py `_to_jql_minute_after`),
+        and we use `>=`. This is load-bearing for convergence: JQL `updated` is
+        minute-precision, so an issue at `09:24:29` is `> "09:24"` (== 09:24:00)
+        AND `>= "09:24"` — both re-match it forever. Rounding the floor up to the
+        next minute (`09:25`) with `>=` is the only combination that excludes the
+        high-water's own minute. Sub-minute updates after the walk are caught by
+        the live webhook + the periodic reconciler, not this one-shot probe."""
         safe_key = project_key.replace('"', "")
-        jql = f'project = "{safe_key}" AND updated > "{updated_min_jql}"'
+        jql = f'project = "{safe_key}" AND updated >= "{updated_min_jql}"'
         body = await self._request(
             "POST", "/rest/api/3/search/approximate-count",
             json_body={"jql": jql},

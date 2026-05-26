@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -143,6 +143,30 @@ def _to_jql_datetime(iso: str | None) -> str | None:
     except ValueError:
         return None
     # Format in the value's own offset (no UTC conversion) — see docstring.
+    return dt.strftime("%Y/%m/%d %H:%M")
+
+
+def _to_jql_minute_after(iso: str | None) -> str | None:
+    """Like `_to_jql_datetime`, but rounds UP to the next minute. Used by the
+    reconciler gap probe as an EXCLUSIVE floor: JQL `updated` is minute
+    precision, so to ask "anything updated after the high-water instant?" we
+    must compare `>=` against the minute *after* the high-water's minute —
+    otherwise an issue at `HH:MM:ss` (ss>0) re-matches its own minute forever.
+    Keeps the value's own offset (no UTC conversion), same tz rationale as
+    `_to_jql_datetime`."""
+    if not isinstance(iso, str) or not iso:
+        return None
+    s = iso
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    elif len(s) >= 5 and (s[-5] in "+-") and s[-3] != ":":
+        s = s[:-2] + ":" + s[-2:]
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    # Truncate to the minute, then add one minute (the exclusive boundary).
+    dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
     return dt.strftime("%Y/%m/%d %H:%M")
 
 

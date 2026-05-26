@@ -25,7 +25,7 @@ from typing import Any
 import asyncpg
 import orjson
 
-from services.ingestion.fetchers.jira import _to_jql_datetime
+from services.ingestion.fetchers.jira import _to_jql_minute_after
 from services.ingestion.planners import Shard
 from services.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
@@ -96,7 +96,11 @@ async def _check_one_shard_for_gap(
     high_water = await _load_shard_high_water(pool, shard["id"])
     if high_water is None:
         return None  # No reference point (empty project / cursor).
-    floor = _to_jql_datetime(high_water)
+    # EXCLUSIVE floor = the minute AFTER the high-water. With `>=` in the probe
+    # this excludes the high-water's own minute, so a project that hasn't
+    # changed since the walk returns no gap and the reconciler converges (a
+    # plain minute-floor would re-match the boundary issue's seconds forever).
+    floor = _to_jql_minute_after(high_water)
     if floor is None:
         return None
 

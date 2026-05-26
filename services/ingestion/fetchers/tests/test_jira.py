@@ -145,6 +145,18 @@ async def test_to_jql_datetime_keeps_user_tz_wall_clock():
     assert jf._to_jql_datetime("garbage") is None
 
 
+async def test_to_jql_minute_after_is_exclusive_floor():
+    # Rounds UP to the next minute so the reconciler probe (`updated >=`)
+    # excludes the high-water's own minute -> converges (no infinite reshard).
+    # 09:24:29 must become 09:25 (NOT 09:24, which `>=`/`>` both re-match).
+    assert jf._to_jql_minute_after("2026-05-26T09:24:29.224+0545") == "2026/05/26 09:25"
+    assert jf._to_jql_minute_after("2026-05-20T12:30:00.000+0000") == "2026/05/20 12:31"
+    # minute rollover into the next hour/day.
+    assert jf._to_jql_minute_after("2026-05-20T12:59:30.000+0000") == "2026/05/20 13:00"
+    assert jf._to_jql_minute_after("2026-05-20T23:59:30Z") == "2026/05/21 00:00"
+    assert jf._to_jql_minute_after(None) is None
+
+
 async def test_missing_project_key_ends_cleanly(monkeypatch):
     _patch_client(monkeypatch, _FakeJiraClient())
     res = await fetch_page_jira(_FakeInst(), {"shard_kind": SHARD_KIND_PROJECT_ISSUES}, None)
