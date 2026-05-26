@@ -77,6 +77,56 @@ async def test_first_page_advances_cursor(monkeypatch):
     assert result.next_cursor["last_seen_updated_at"] == "2025-01-02T00:00:00Z"
 
 
+async def test_issues_stream_filters_out_pull_requests(monkeypatch):
+    # GitHub's /issues list returns PRs too (each with a `pull_request` key);
+    # they must NOT become `issues` observations (the dedicated pull_requests
+    # shard already covers them, and their issue node_id won't dedup against
+    # the PR node_id). The cursor must still advance over the PR's timestamp.
+    fake = _FakeGithubClient(pages=[
+        [{"id": 1, "node_id": "Issue_1", "updated_at": "2025-01-01T00:00:00Z"},
+         {"id": 2, "node_id": "Issue_2", "updated_at": "2025-01-03T00:00:00Z",
+          "pull_request": {"url": "https://api.github.com/.../pulls/2"}}],
+    ])
+    _patch_client(monkeypatch, fake)
+    result = await fetch_page_github(
+        install=_FakeInstall(),
+        shard_identifier={
+            "shard_kind": SHARD_KIND_REPO_EVENTS,
+            "owner": "acme", "repo": "api",
+            "event_type": "issues",
+            "installation_id": "42",
+            "repo_full_name": "acme/api",
+        },
+        cursor=None,
+    )
+    # Only the real issue produced a record; the PR was dropped.
+    assert len(result.records) == 1
+    # ...but the cursor still advanced past the PR's (newer) timestamp.
+    assert result.next_cursor["last_seen_updated_at"] == "2025-01-03T00:00:00Z"
+
+
+async def test_pull_requests_stream_keeps_all_items(monkeypatch):
+    # On the pull_requests shard the filter is scoped to event_type=="issues",
+    # so nothing is dropped there.
+    fake = _FakeGithubClient(pages=[
+        [{"id": 1, "node_id": "PullRequest_1", "updated_at": "2025-01-01T00:00:00Z"},
+         {"id": 2, "node_id": "PullRequest_2", "updated_at": "2025-01-02T00:00:00Z"}],
+    ])
+    _patch_client(monkeypatch, fake)
+    result = await fetch_page_github(
+        install=_FakeInstall(),
+        shard_identifier={
+            "shard_kind": SHARD_KIND_REPO_EVENTS,
+            "owner": "acme", "repo": "api",
+            "event_type": "pull_requests",
+            "installation_id": "42",
+            "repo_full_name": "acme/api",
+        },
+        cursor=None,
+    )
+    assert len(result.records) == 2
+
+
 async def test_multi_page_paginates(monkeypatch):
     fake = _FakeGithubClient(pages=[
         [{"id": i, "updated_at": f"2025-01-{i:02d}T00:00:00Z"}
