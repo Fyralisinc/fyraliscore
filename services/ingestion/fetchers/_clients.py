@@ -198,6 +198,37 @@ async def build_notion_client(
     return client
 
 
+async def build_jira_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Jira Cloud read-client. API token is long-lived: resolved once from the
+    secret store via `install['secret_ref']` (or preset in spammer mode). The
+    site base URL is per-install (`install['base_url']`); in spammer mode it is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/jira` sub-path. `account_email` is the Basic-auth username."""
+    from lib.integrations.endpoints import endpoint
+    from services.integrations.jira.client import JiraClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"])
+    account_email = str(install["account_email"])
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = JiraClient(
+        base_url=base_url,
+        account_email=account_email,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-jira" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes ALL sites to the one mock host under /jira; prod uses
+        # the per-install base_url (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("jira_api") if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -227,9 +258,13 @@ async def open_notion_client(install: asyncpg.Record) -> Opener:
     return await build_notion_client(install), _noop
 
 
+async def open_jira_client(install: asyncpg.Record) -> Opener:
+    return await build_jira_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_discord_client",
-    "build_notion_client",
+    "build_notion_client", "build_jira_client",
     "open_github_client", "open_slack_client", "open_discord_client",
-    "open_notion_client",
+    "open_notion_client", "open_jira_client",
 ]

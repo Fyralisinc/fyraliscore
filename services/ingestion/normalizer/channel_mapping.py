@@ -91,6 +91,21 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # "poll" twin to one observation.
     ("google_drive", "backfill"): "google_drive:file",
     ("google_drive", "poll"): "google_drive:file",
+    # Jira — backfill + poll + webhook (IN-17). Jira Cloud has BOTH a live
+    # push surface (dynamic webhooks: jira:issue_created/updated,
+    # comment_created/updated) AND a historical query surface (JQL search).
+    # Backfill walks each project once (JQL `project = KEY ORDER BY updated
+    # ASC`, expand=changelog); the incremental driver re-runs the same fetcher
+    # under ingress_kind="poll" using the per-project `updated` high-water
+    # cursor; the webhook ingress delivers live change events. ALL route to
+    # the single `jira:issue` channel; the handler branches on the reshaped
+    # event/record type (issue / changelog-transition / comment) — mirrors the
+    # github:webhook one-channel/many-event-types shape. external_id parity
+    # across the three paths (`jira:{site}:issue:{id}:{updated}` and friends)
+    # collapses a backfilled issue and its live twins to one observation.
+    ("jira", "backfill"): "jira:issue",
+    ("jira", "poll"): "jira:issue",
+    ("jira", "webhook"): "jira:issue",
 }
 
 

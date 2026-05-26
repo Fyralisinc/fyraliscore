@@ -198,12 +198,14 @@ async def _run_service(name: str) -> None:
         from services.ingestion.reconcilers import (
             google_calendar as google_calendar_reconciler,
         )
+        from services.ingestion.reconcilers import jira as jira_reconciler
         gmail_reconciler.set_pool_provider(pool)
         github_reconciler.set_pool_provider(pool)
         slack_reconciler.set_pool_provider(pool)
         discord_reconciler.set_pool_provider(pool)
         notion_reconciler.set_pool_provider(pool)
         google_calendar_reconciler.set_pool_provider(pool)
+        jira_reconciler.set_pool_provider(pool)
 
         service = Reconciler(
             pool,

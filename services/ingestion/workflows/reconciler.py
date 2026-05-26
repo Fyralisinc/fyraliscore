@@ -657,6 +657,7 @@ async def _run_service() -> None:
     from services.ingestion.reconcilers import (
         google_drive as google_drive_reconciler_mod,
     )
+    from services.ingestion.reconcilers import jira as jira_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
@@ -664,6 +665,7 @@ async def _run_service() -> None:
     notion_reconciler_mod.set_pool_provider(pool)
     google_calendar_reconciler_mod.set_pool_provider(pool)
     google_drive_reconciler_mod.set_pool_provider(pool)
+    jira_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

@@ -60,7 +60,7 @@ _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 # pinned to the four canonical sources. `tenant_id` is a v4/v7 UUID.
 _S3_KEY_RE = re.compile(
     r"^[a-z0-9_-]+"                              # env
-    r"/(slack|github|discord|gmail|notion|google_calendar|google_drive)"  # source
+    r"/(slack|github|discord|gmail|notion|google_calendar|google_drive|jira)"  # source
     r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # tenant
     r"/[0-9]{4}-[0-9]{2}"                        # yyyy-mm
     r"/[0-9a-f]{2}"                              # hash prefix

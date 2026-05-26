@@ -21,6 +21,7 @@ from __future__ import annotations
 from services.webhooks.signatures import (
     discord,
     github,
+    jira,
     linear,
     notion,
     slack,
@@ -36,6 +37,7 @@ VERIFIERS: dict[str, Verifier] = {
     "stripe": stripe.verifier,
     "discord": discord.verifier,
     "notion": notion.verifier,
+    "jira": jira.verifier,
 }
 
 

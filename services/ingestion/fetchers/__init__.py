@@ -150,6 +150,7 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "notion":  _not_implemented_fetcher("notion",  "IN-14"),
     "google_calendar": _not_implemented_fetcher("google_calendar", "IN-15"),
     "google_drive": _not_implemented_fetcher("google_drive", "IN-16"),
+    "jira":    _not_implemented_fetcher("jira",    "IN-17"),
 }
 
 
@@ -169,3 +170,4 @@ from services.ingestion.fetchers import discord as _discord  # noqa: E402,F401
 from services.ingestion.fetchers import notion as _notion  # noqa: E402,F401
 from services.ingestion.fetchers import google_calendar as _google_calendar  # noqa: E402,F401
 from services.ingestion.fetchers import google_drive as _google_drive  # noqa: E402,F401
+from services.ingestion.fetchers import jira as _jira  # noqa: E402,F401

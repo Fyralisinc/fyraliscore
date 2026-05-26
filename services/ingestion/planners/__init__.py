@@ -131,6 +131,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "notion":  _not_implemented_planner("notion",  "IN-14"),
     "google_calendar": _not_implemented_planner("google_calendar", "IN-15"),
     "google_drive": _not_implemented_planner("google_drive", "IN-16"),
+    "jira":    _not_implemented_planner("jira",    "IN-17"),
 }
 
 
@@ -153,3 +154,4 @@ from services.ingestion.planners import discord as _discord  # noqa: E402,F401
 from services.ingestion.planners import notion as _notion  # noqa: E402,F401
 from services.ingestion.planners import google_calendar as _google_calendar  # noqa: E402,F401
 from services.ingestion.planners import google_drive as _google_drive  # noqa: E402,F401
+from services.ingestion.planners import jira as _jira  # noqa: E402,F401

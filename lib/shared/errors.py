@@ -472,6 +472,36 @@ class NotionApiError(CompanyOSError):
             self._code = code
 
 
+class JiraApiError(CompanyOSError):
+    """
+    Outbound Jira Cloud REST call failure (IN-17).
+
+    Stable `code` values:
+      - jira_api_unauthorized: 401/403 — API token rejected / no permission
+      - jira_api_not_found: 404 — project/issue no longer accessible
+      - jira_api_rate_limited: 429 with retry budget exhausted
+      - jira_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token
+    and the Basic-auth header are NEVER placed on context.
+    """
+    default_code = "jira_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -494,4 +524,5 @@ __all__ = [
     "GithubApiError",
     "NotionOAuthError",
     "NotionApiError",
+    "JiraApiError",
 ]
