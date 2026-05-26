@@ -105,7 +105,7 @@ arrive. Backfill and live twins dedup on the versioned external_id.
 
 | Concern | File |
 |---|---|
-| Migration (tables + source CHECK) | `db/migrations/0061_jira.sql` |
+| Migration (tables + source CHECK) | `db/migrations/0062_jira.sql` |
 | REST client | `services/integrations/jira/client.py` |
 | Onboarding helpers | `services/integrations/jira/onboarding.py` |
 | Planner (1 shard/project) | `services/ingestion/planners/jira.py` |

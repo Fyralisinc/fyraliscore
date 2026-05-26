@@ -100,7 +100,7 @@ async def finalize_install(
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
         # Gmail/Calendar this is NOT a provider_installations source; the
         # install id rides in installation_row_id purely for the idempotency
-        # dedup index. source='jira' is admitted by migration 0061.
+        # dedup index. source='jira' is admitted by migration 0062.
         await tctx.execute(
             """
             INSERT INTO onboarding_triggers (

@@ -1,5 +1,5 @@
--- 0061_jira.sql
---   IN-17 — Jira as a seventh ingestion source.
+-- 0062_jira.sql
+--   IN-17 — Jira as an ingestion source.
 --
 -- Jira Cloud is a SaaS REST API (v3) authenticated with HTTP Basic
 -- (account_email:api_token). The api_token is held in encrypted_secrets and
@@ -13,9 +13,17 @@
 --   jira_installations — one row per (tenant, base_url)
 --   jira_projects      — one row per project the planner shards on
 --
+-- NUMBERING (was 0061 on the IN-17 branch): renumbered to 0062 because IN-16
+-- Google Drive landed first as 0061_google_drive.sql. That migration and this
+-- one both DROP+re-ADD the SAME four source-CHECK constraints, so the LAST one
+-- applied wins. To avoid silently dropping 'google_drive' from the allowed set,
+-- the CHECK lists below carry BOTH 'google_drive' AND 'jira' (a strict superset
+-- of 0061's list). Listing google_drive is harmless even if 0061 hasn't run.
+--
 -- Plus the source-registry CHECK widening every new ingestion source needs:
 -- the M6 substrate pins allowed `source` values with an inline CHECK on FOUR
--- tables (each widened by 0060 to include 'google_calendar'):
+-- tables (widened by 0060 to add 'google_calendar', by 0061 to add
+-- 'google_drive', and here to add 'jira'):
 --   - source_onboarding_runs  (migration 0055)
 --   - onboarding_shards        (migration 0045)
 --   - ingestion_failures       (migration 0046)
@@ -128,30 +136,31 @@ END $$;
 
 -- ---------------------------------------------------------------------
 -- Source-registry CHECK widening — admit 'jira' on all four M6 substrate
--- tables.
+-- tables. Carries 'google_drive' forward (IN-16 / 0061) so applying this
+-- migration last does not drop it from the allowed set.
 -- ---------------------------------------------------------------------
 ALTER TABLE source_onboarding_runs
     DROP CONSTRAINT IF EXISTS source_onboarding_runs_source_check;
 ALTER TABLE source_onboarding_runs
     ADD CONSTRAINT source_onboarding_runs_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'jira'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira'));
 
 ALTER TABLE onboarding_shards
     DROP CONSTRAINT IF EXISTS onboarding_shards_source_check;
 ALTER TABLE onboarding_shards
     ADD CONSTRAINT onboarding_shards_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'jira'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira'));
 
 ALTER TABLE ingestion_failures
     DROP CONSTRAINT IF EXISTS ingestion_failures_source_check;
 ALTER TABLE ingestion_failures
     ADD CONSTRAINT ingestion_failures_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'jira'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira'));
 
 ALTER TABLE onboarding_triggers
     DROP CONSTRAINT IF EXISTS onboarding_triggers_source_check;
 ALTER TABLE onboarding_triggers
     ADD CONSTRAINT onboarding_triggers_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'jira'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira'));
 
 COMMIT;

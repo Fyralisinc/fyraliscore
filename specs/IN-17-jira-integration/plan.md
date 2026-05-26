@@ -126,8 +126,10 @@ Connect-app JWT, the verifier slot is already there.)
 Per the "adding an ingestion source" checklist, widen **all** of these together (each is a
 silent-drop landmine if missed):
 
-- Migration `0061_jira.sql`: 4 source CHECKs (`source_onboarding_runs`,
-  `onboarding_shards`, `ingestion_failures`, `onboarding_triggers`).
+- Migration `0062_jira.sql`: 4 source CHECKs (`source_onboarding_runs`,
+  `onboarding_shards`, `ingestion_failures`, `onboarding_triggers`). Each CHECK
+  carries `google_drive` (IN-16 / `0061`) forward alongside `jira`, since both
+  migrations rewrite the same constraints and the last applied wins.
 - `services/ingestion/raw_tier/envelope.py` `SourceLiteral`
 - `services/ingestion/progress/events.py` `Source` Literal
 - `services/ingestion/normalizer/channel_mapping.py` `_CHANNEL_MAP` (`("jira","backfill")`,
@@ -151,7 +153,7 @@ silent-drop landmine if missed):
 ## 8. Ordered task breakdown
 
 - **T1** — This design doc. ✔
-- **T2** — Migration `0061_jira.sql`: `jira_installations` + `jira_projects` (RLS) + widen 4 source CHECKs.
+- **T2** — Migration `0062_jira.sql`: `jira_installations` + `jira_projects` (RLS) + widen 4 source CHECKs.
 - **T3** — Widen every source-name allowlist / Literal / dispatch table (§7) to admit `jira`.
 - **T4** — `services/integrations/jira/client.py` (Basic-auth REST, `search_issues` JQL paginate, `list_projects`) + `_clients.build_jira_client`/`open_jira_client`.
 - **T5** — `services/ingestion/planners/jira.py` (1 shard/project) + `_LOAD_JIRA_INSTALL_SQL` in source_onboarding (aggregating) and shard_fetch (bare).
