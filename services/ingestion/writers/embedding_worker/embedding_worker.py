@@ -85,6 +85,7 @@ from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.kafka.topics import consumer_group, subscribe_topics
 from services.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
@@ -283,6 +284,10 @@ class EmbeddingWorkerConfig:
 
     bootstrap_servers: str = "localhost:9092"
     consumer_group: str = _CONSUMER_GROUP
+    # Source isolation: when set, subscribe ONLY to
+    # ingestion.embedding.<source> under group "<consumer_group>.<source>";
+    # None → all per-source embedding topics under the bare group.
+    source: str | None = None
     # Small pool — embedding is bottlenecked by Ollama, not the DB.
     postgres_pool_size: int = 5
     # Stop after N messages (test mode). Production = None.
@@ -325,7 +330,7 @@ async def run_embedding_worker(
     """
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
-        group_id=config.consumer_group,
+        group_id=consumer_group(config.consumer_group, config.source),
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
@@ -356,7 +361,7 @@ async def run_embedding_worker(
 
     await consumer.start()
     await dlq_producer.start()
-    consumer.subscribe([_EMBEDDING_TOPIC])
+    consumer.subscribe(subscribe_topics("embedding", config.source))
 
     consumed = 0
     embedded = 0
@@ -462,6 +467,7 @@ def main() -> None:
         bootstrap_servers=os.environ.get(
             "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
         ),
+        source=os.environ.get("INGESTION_SOURCE") or None,
         postgres_pool_size=int(
             os.environ.get("POSTGRES_POOL_SIZE", "5")
         ),

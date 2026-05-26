@@ -58,6 +58,7 @@ from lib.shared.ids import uuid7
 from services.ingestion.alerts import send_ops_alert
 from services.ingestion.dlq.models import DLQEnvelope
 from services.ingestion.kafka.shutdown import install_shutdown_event
+from services.ingestion.kafka.topics import consumer_group, subscribe_topics
 from services.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
@@ -209,6 +210,11 @@ class DLQWriterConfig:
 
     bootstrap_servers: str = "localhost:9092"
     consumer_group: str = _CONSUMER_GROUP
+    # Source isolation: when set, consume ONLY ingestion.dlq.<source>
+    # under group "<consumer_group>.<source>"; None → all per-source DLQ
+    # topics under the bare group. DLQ is low-volume so the default
+    # single all-sources writer is usually sufficient.
+    source: str | None = None
     # Small pool — DLQ is low-volume by design (LLD §5.5).
     postgres_pool_size: int = 5
     # Stop after N messages (test mode); production = None.
@@ -301,12 +307,12 @@ async def run_dlq_writer(
     """
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
-        group_id=config.consumer_group,
+        group_id=consumer_group(config.consumer_group, config.source),
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
     await consumer.start()
-    consumer.subscribe([_DLQ_TOPIC])
+    consumer.subscribe(subscribe_topics("dlq", config.source))
 
     consumed = 0
     upserted = 0
@@ -435,6 +441,7 @@ def main() -> None:
         bootstrap_servers=os.environ.get(
             "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
         ),
+        source=os.environ.get("INGESTION_SOURCE") or None,
         postgres_pool_size=int(
             os.environ.get("POSTGRES_POOL_SIZE", "5")
         ),

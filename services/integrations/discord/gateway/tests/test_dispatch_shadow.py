@@ -122,7 +122,8 @@ async def test_gateway_message_create_writes_shadow(
 
     # Inspect the envelope on the Kafka publish.
     _, kafka_kwargs = kafka.produce.await_args
-    assert kafka_kwargs["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): discord -> discord lane.
+    assert kafka_kwargs["topic"] == "ingestion.raw.discord"
     assert kafka_kwargs["key"] == str(seeded_tenant).encode("utf-8")
     envelope = json.loads(kafka_kwargs["value"])
     assert envelope["source"] == "discord"

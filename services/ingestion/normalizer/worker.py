@@ -59,7 +59,11 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 from services.ingestion.dlq.publish import publish_dlq
 from services.ingestion.handlers import HandlerNotFound, get_handler
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
-from services.ingestion.kafka.topics import topic_for
+from services.ingestion.kafka.topics import (
+    consumer_group,
+    subscribe_topics,
+    topic_for,
+)
 from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
 from services.ingestion.observability import (
     Heartbeat,
@@ -126,6 +130,12 @@ class WorkerConfig:
 
     bootstrap_servers: str = "localhost:9092"
     consumer_group: str = _CONSUMER_GROUP
+    # Source isolation: when set (e.g. "slack"), this worker subscribes
+    # ONLY to ingestion.raw.<source> and joins consumer group
+    # "<consumer_group>.<source>" so its lag/offsets are independent of
+    # every other source. When None, it subscribes to ALL per-source raw
+    # topics under the bare group (dev / single-process fallback).
+    source: str | None = None
     # S3 raw-tier connection.
     s3_endpoint_url: str | None = None  # None → real AWS
     s3_bucket: str = "fyralis-raw"
@@ -162,9 +172,10 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
     # Construct WITHOUT topic so we can call subscribe(...) below
     # with an optional listener. Constructor-subscription doesn't
     # support listeners (the listener arg lives on subscribe()).
+    raw_topics = subscribe_topics("raw", config.source)
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
-        group_id=config.consumer_group,
+        group_id=consumer_group(config.consumer_group, config.source),
         auto_offset_reset="earliest",
         enable_auto_commit=False,
         partition_assignment_strategy=config.partition_assignment_strategy,
@@ -186,9 +197,9 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
     # Subscribe AFTER start(); listener (if any) records rebalance
     # events for the cooperative-sticky test.
     if config.rebalance_listener is not None:
-        consumer.subscribe([_RAW_TOPIC], listener=config.rebalance_listener)
+        consumer.subscribe(raw_topics, listener=config.rebalance_listener)
     else:
-        consumer.subscribe([_RAW_TOPIC])
+        consumer.subscribe(raw_topics)
     await s3.connect()
 
     # Snapshot the producer + envelope-bytes context the DLQ publish
@@ -495,6 +506,9 @@ def main() -> None:
         s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         s3_bucket=os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
         s3_region_name=os.environ.get("S3_REGION_NAME", "auto"),
+        # Source isolation: INGESTION_SOURCE pins this process to one
+        # source's lane. Unset → all-sources fallback (dev/sandbox).
+        source=os.environ.get("INGESTION_SOURCE") or None,
     )
     asyncio.run(run_worker(config))
 

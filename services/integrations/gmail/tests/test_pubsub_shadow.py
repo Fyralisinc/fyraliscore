@@ -146,7 +146,8 @@ async def test_pubsub_notification_writes_shadow(_shadow_app, _handle_push_retur
     assert kafka.produce.await_count == 1
 
     _, kafka_kwargs = kafka.produce.await_args
-    assert kafka_kwargs["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): gmail pubsub -> gmail lane.
+    assert kafka_kwargs["topic"] == "ingestion.raw.gmail"
     assert kafka_kwargs["key"] == str(_TENANT).encode("utf-8")
 
     out_envelope = json.loads(kafka_kwargs["value"])

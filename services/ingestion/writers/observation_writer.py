@@ -83,6 +83,7 @@ from services.ingestion.handlers import (
 )
 from services.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingestion.kafka.topics import consumer_group, subscribe_topics
 from services.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
@@ -312,6 +313,11 @@ class WriterConfig:
 
     bootstrap_servers: str = "localhost:9092"
     consumer_group: str = _WRITER_GROUP
+    # Source isolation: when set, subscribe ONLY to
+    # ingestion.normalized.<source> under group "<consumer_group>.<source>";
+    # when None, subscribe to all per-source normalized topics under the
+    # bare group (dev fallback). See docs/ingestion/source-isolation.md.
+    source: str | None = None
     # Stop after N events (test mode). Production = None.
     stop_after: int | None = None
     # M3.1 — producer config for DLQ publishes + embedding-pending
@@ -483,7 +489,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
     """Writer's main loop. Returns a stats dict for tests."""
     consumer = AIOKafkaConsumer(
         bootstrap_servers=config.bootstrap_servers,
-        group_id=config.consumer_group,
+        group_id=consumer_group(config.consumer_group, config.source),
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
@@ -500,7 +506,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
 
     await dlq_producer.start()
     await consumer.start()
-    consumer.subscribe([_NORMALIZED_TOPIC])
+    consumer.subscribe(subscribe_topics("normalized", config.source))
 
     consumed = 0
     # Ticket #45: SIGTERM/SIGINT sets this; next_or_stop returns None and
@@ -608,16 +614,19 @@ def main() -> None:
 
     async def _run() -> None:
         dsn = os.environ.get("DATABASE_URL")
+        source = os.environ.get("INGESTION_SOURCE") or None
         config = WriterConfig(
             bootstrap_servers=os.environ.get(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
             ),
+            source=source,
         )
         if dsn is not None:
             pool = await make_writer_pool(dsn)
             config = WriterConfig(
                 bootstrap_servers=config.bootstrap_servers,
                 consumer_group=config.consumer_group,
+                source=source,
                 pool=pool,
                 tenant_flags=TenantFlags(pool),
                 actor_repo=ActorRepo(pool),

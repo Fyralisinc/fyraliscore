@@ -73,7 +73,8 @@ async def test_cutover_publishes_poll_envelope():
     assert kafka.produce.await_count == 1
 
     _, kw = kafka.produce.await_args
-    assert kw["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): gmail poll -> gmail lane.
+    assert kw["topic"] == "ingestion.raw.gmail"
     assert kw["key"] == str(_TENANT).encode("utf-8")
     envelope = orjson.loads(kw["value"])
     assert envelope["source"] == "gmail"

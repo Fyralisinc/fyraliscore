@@ -143,7 +143,8 @@ async def test_page_event_fetches_and_shadow_writes(patch_client) -> None:
     assert written["id"] == "page-123"
     assert written["_fyralis_workspace_id"] == "ws-1"
     assert len(producer.produced) == 1
-    assert producer.produced[0]["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): notion -> notion lane.
+    assert producer.produced[0]["topic"] == "ingestion.raw.notion"
     assert producer.produced[0]["key"] == str(TENANT).encode()
 
 
