@@ -29,18 +29,23 @@ import sys
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import TopicAlreadyExistsError
 
+from services.ingestion.kafka.topics import all_data_plane_topics
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("provision_kafka_topics")
 
-# Every topic the ingestion data plane uses. Keep in sync with the
-# module-level constants in services/ingestion (asserted by a test).
-INGESTION_TOPICS = (
-    "ingestion.raw",
-    "ingestion.normalized",
-    "ingestion.embedding",
-    "ingestion.dlq",
+# Control-plane topics — NOT per-source (they carry per-tenant signals,
+# not per-source data). See docs/ingestion/source-isolation.md.
+CONTROL_PLANE_TOPICS = (
     "ingestion.tenant_traffic_signal",
 )
+
+# Every topic the ingestion data plane uses: one per (stage, source)
+# lane derived from the source registry (source-isolation), plus the
+# control-plane topics. The registry is the single source of truth —
+# add a source to RawEnvelope.SourceLiteral and its four topics appear
+# here automatically. A test asserts this set matches the registry.
+INGESTION_TOPICS = tuple(all_data_plane_topics()) + CONTROL_PLANE_TOPICS
 
 
 async def _provision() -> int:
