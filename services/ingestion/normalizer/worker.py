@@ -142,6 +142,17 @@ class WorkerConfig:
     s3_region_name: str = "auto"
     # Stop after N envelopes (test mode). Production sets to None.
     stop_after: int | None = None
+    # Source isolation / intra-source fairness: how many tenants' message
+    # groups to process concurrently within a batch. Default 1 = the
+    # historical strictly-serial loop (one message, await S3 GET, produce,
+    # commit). >1 switches to a batched loop that overlaps S3 GETs across
+    # tenants while preserving per-tenant ordering, so one tenant's slow
+    # S3 fetch no longer head-of-line blocks another tenant on the same
+    # source lane. See docs/ingestion/source-isolation.md.
+    max_concurrency: int = 1
+    # getmany poll timeout for the concurrent loop (ignored when
+    # max_concurrency == 1).
+    poll_timeout_ms: int = 500
     # Idempotent producer; LLD §5.2 defaults if omitted.
     producer_config: ProducerConfig | None = None
     # Sticky partition assignment is aiokafka's nearest analogue to
@@ -202,12 +213,6 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
         consumer.subscribe(raw_topics)
     await s3.connect()
 
-    # Snapshot the producer + envelope-bytes context the DLQ publish
-    # helpers close over. Captured at start-of-loop so the helper
-    # functions stay pure-ish (no consumer state in their signatures).
-    _last_envelope: RawEnvelope | None = None
-    _last_msg_bytes: bytes = b""
-
     consumed = 0
     produced = 0
 
@@ -222,122 +227,92 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
     ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
 
     try:
-        while True:
-            msg = await next_or_stop(consumer, stop_event)
-            if msg is None:
-                break
+        if config.max_concurrency <= 1:
+            # ---- Serial path (historical, default) ----
+            # One message at a time: await S3 GET, normalize, produce,
+            # commit. Behaviourally identical to the pre-concurrency loop.
+            while True:
+                msg = await next_or_stop(consumer, stop_event)
+                if msg is None:
+                    break
 
-            consumed += 1
-            _bump("normalizer.messages_consumed")
+                consumed += 1
+                _bump("normalizer.messages_consumed")
+                _record_lag(msg)
 
-            if msg.timestamp:
-                lag_s = max(
-                    0.0, (time.time() * 1000 - msg.timestamp) / 1000.0
-                )
-                _metrics["normalizer.consumer_lag_seconds_last"] = lag_s
-
-            t0 = time.monotonic()
-            _last_envelope = None
-            _last_msg_bytes = msg.value
-            try:
-                # Refactored: _normalize_one parses envelope FIRST so
-                # the outer loop can hand it to the DLQ publish helper
-                # on invariant failure (where envelope IS available).
-                # Parse failures (no envelope) fall through to the
-                # best-effort partial-extract path below.
-                envelope_or_none, produced_one = await _normalize_one_with_envelope(
-                    msg.value, s3, producer,
-                )
-                _last_envelope = envelope_or_none
-                if produced_one:
+                if await _process_message(msg, s3, producer):
                     produced += 1
                     _bump("normalizer.messages_produced")
-            except EnvelopeInvariantError as exc:
-                # M2.4 PRIME DIRECTIVE: invariant failures are parse-
-                # failure-class. Log + metric + COMMIT + CONTINUE.
-                # Never propagate — that would deadline-loop the
-                # consumer on a single bad envelope.
-                _bump("normalizer.invariant_failure")
-                _bump("normalizer.parse_failure")
-                log.warning(
-                    "normalizer.invariant_failure",
-                    extra={
-                        "topic": msg.topic,
-                        "partition": msg.partition,
-                        "offset": msg.offset,
-                        "error": str(exc)[:200],
-                    },
-                )
-                # M3.1 — DLQ publish from the parsed envelope (the
-                # invariant check runs AFTER model_validate, so the
-                # envelope object is available via exc context).
-                _env = getattr(exc, "envelope", None) or _last_envelope
-                await publish_dlq(
-                    producer=producer,
-                    failure_kind="normalizer.invariant_failure",
-                    error_summary=str(exc)[:500],
-                    tenant_id=(_env.tenant_id if _env is not None else None),
-                    source=(_env.source if _env is not None else None),
-                    raw_s3_key=(_env.raw_s3_key if _env is not None else None),
-                    msg_bytes=_last_msg_bytes,
-                    on_success=lambda: _bump("normalizer.dlq_publish.success"),
-                    on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
-                    on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
-                )
-            except Exception as exc:  # noqa: BLE001 — record + skip
-                _bump("normalizer.parse_failure")
-                log.warning(
-                    "normalizer.transform_failed",
-                    extra={
-                        "topic": msg.topic,
-                        "partition": msg.partition,
-                        "offset": msg.offset,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[:200],
-                    },
-                )
-                # M3.1 — best-effort DLQ publish. If the envelope was
-                # JSON-decodable far enough to extract tenant_id +
-                # source, we publish. If not (byte garbage), we skip
-                # the DLQ publish and just log — no source field
-                # means no ingestion_failures row would satisfy the
-                # CHECK constraint anyway.
-                await publish_dlq(
-                    producer=producer,
-                    failure_kind="normalizer.parse_failure",
-                    error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
-                    tenant_id=(
-                        _last_envelope.tenant_id
-                        if _last_envelope is not None else None
-                    ),
-                    source=(
-                        _last_envelope.source
-                        if _last_envelope is not None else None
-                    ),
-                    raw_s3_key=(
-                        _last_envelope.raw_s3_key
-                        if _last_envelope is not None else None
-                    ),
-                    msg_bytes=_last_msg_bytes,
-                    on_success=lambda: _bump("normalizer.dlq_publish.success"),
-                    on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
-                    on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
-                )
-            finally:
-                duration_ms = (time.monotonic() - t0) * 1000.0
-                _bump("normalizer.transform_duration_ms_sum", duration_ms)
-                _bump("normalizer.transform_duration_ms_count")
 
-            # Commit AFTER processing — at-least-once semantics. M3
-            # may layer txn-commit on top; M2 is the simplest correct
-            # shape.
-            await consumer.commit()
+                # Commit AFTER processing — at-least-once semantics.
+                await consumer.commit()
 
-            if (
-                config.stop_after is not None
-                and consumed >= config.stop_after
-            ):
-                break
+                if (
+                    config.stop_after is not None
+                    and consumed >= config.stop_after
+                ):
+                    break
+        else:
+            # ---- Concurrent path (max_concurrency > 1) ----
+            # Pull a batch, group by tenant (the Kafka message key IS the
+            # tenant_id), process tenant groups CONCURRENTLY (their S3 GETs
+            # overlap) but messages within a tenant SERIALLY (preserves
+            # per-tenant ordering). Commit the whole batch after all groups
+            # complete — at-least-once preserved; reprocessing produces
+            # duplicate normalized messages that the observation-writer's
+            # unique index dedups. Concurrency bounded by max_concurrency.
+            sem = asyncio.Semaphore(config.max_concurrency)
+
+            async def _process_group(group: list[Any]) -> int:
+                produced_in_group = 0
+                async with sem:
+                    for m in group:
+                        if await _process_message(m, s3, producer):
+                            produced_in_group += 1
+                return produced_in_group
+
+            while not stop_event.is_set():
+                batches = await consumer.getmany(
+                    timeout_ms=config.poll_timeout_ms,
+                )
+                messages: list[Any] = []
+                for partition_msgs in batches.values():
+                    messages.extend(partition_msgs)
+                if not messages:
+                    if (
+                        config.stop_after is not None
+                        and consumed >= config.stop_after
+                    ):
+                        break
+                    continue
+
+                consumed += len(messages)
+                _bump("normalizer.messages_consumed", float(len(messages)))
+                for m in messages:
+                    _record_lag(m)
+
+                # Group by tenant (message key). Insertion order within a
+                # key preserves the partition's delivery order for that
+                # tenant.
+                groups: dict[bytes, list[Any]] = {}
+                for m in messages:
+                    groups.setdefault(m.key or b"", []).append(m)
+
+                counts = await asyncio.gather(
+                    *(_process_group(g) for g in groups.values())
+                )
+                total_produced = sum(counts)
+                produced += total_produced
+                if total_produced:
+                    _bump("normalizer.messages_produced", float(total_produced))
+
+                await consumer.commit()
+
+                if (
+                    config.stop_after is not None
+                    and consumed >= config.stop_after
+                ):
+                    break
     finally:
         ticker.cancel()
         if health is not None:
@@ -347,6 +322,104 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
         await s3.close()
 
     return {"consumed": consumed, "produced": produced}
+
+
+def _record_lag(msg: Any) -> None:
+    """Update the consumer-lag gauge from a message timestamp."""
+    if msg.timestamp:
+        lag_s = max(0.0, (time.time() * 1000 - msg.timestamp) / 1000.0)
+        _metrics["normalizer.consumer_lag_seconds_last"] = lag_s
+
+
+async def _process_message(
+    msg: Any,
+    s3: S3Client,
+    producer: IdempotentProducer,
+) -> bool:
+    """Normalize one raw message and publish to `ingestion.normalized.<source>`.
+
+    Returns True iff a normalized envelope was produced. On parse/invariant
+    failure, publishes a best-effort DLQ envelope and returns False. NEVER
+    raises (PRIME DIRECTIVE): a single bad message must not stall or crash
+    the consumer. Bumps transform-duration + failure metrics. Shared by the
+    serial and concurrent loops in `run_worker`.
+    """
+    t0 = time.monotonic()
+    last_envelope: RawEnvelope | None = None
+    last_msg_bytes = msg.value
+    produced = False
+    try:
+        # _normalize_one_with_envelope parses the envelope FIRST so the
+        # invariant-failure branch has it available for the DLQ publish.
+        envelope_or_none, produced = await _normalize_one_with_envelope(
+            msg.value, s3, producer,
+        )
+        last_envelope = envelope_or_none
+    except EnvelopeInvariantError as exc:
+        # M2.4 PRIME DIRECTIVE: invariant failures are parse-failure-class.
+        # Log + metric + DLQ + CONTINUE. Never propagate.
+        _bump("normalizer.invariant_failure")
+        _bump("normalizer.parse_failure")
+        log.warning(
+            "normalizer.invariant_failure",
+            extra={
+                "topic": msg.topic,
+                "partition": msg.partition,
+                "offset": msg.offset,
+                "error": str(exc)[:200],
+            },
+        )
+        _env = getattr(exc, "envelope", None) or last_envelope
+        await publish_dlq(
+            producer=producer,
+            failure_kind="normalizer.invariant_failure",
+            error_summary=str(exc)[:500],
+            tenant_id=(_env.tenant_id if _env is not None else None),
+            source=(_env.source if _env is not None else None),
+            raw_s3_key=(_env.raw_s3_key if _env is not None else None),
+            msg_bytes=last_msg_bytes,
+            on_success=lambda: _bump("normalizer.dlq_publish.success"),
+            on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
+            on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
+        )
+    except Exception as exc:  # noqa: BLE001 — record + skip
+        _bump("normalizer.parse_failure")
+        log.warning(
+            "normalizer.transform_failed",
+            extra={
+                "topic": msg.topic,
+                "partition": msg.partition,
+                "offset": msg.offset,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
+        # Best-effort DLQ publish. Byte garbage with no extractable
+        # (tenant_id, source) is skipped (would violate the
+        # ingestion_failures CHECK constraint anyway).
+        await publish_dlq(
+            producer=producer,
+            failure_kind="normalizer.parse_failure",
+            error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+            tenant_id=(
+                last_envelope.tenant_id if last_envelope is not None else None
+            ),
+            source=(
+                last_envelope.source if last_envelope is not None else None
+            ),
+            raw_s3_key=(
+                last_envelope.raw_s3_key if last_envelope is not None else None
+            ),
+            msg_bytes=last_msg_bytes,
+            on_success=lambda: _bump("normalizer.dlq_publish.success"),
+            on_failure=lambda: _bump("normalizer.dlq_publish.failure"),
+            on_skipped=lambda: _bump("normalizer.dlq_publish.skipped"),
+        )
+    finally:
+        duration_ms = (time.monotonic() - t0) * 1000.0
+        _bump("normalizer.transform_duration_ms_sum", duration_ms)
+        _bump("normalizer.transform_duration_ms_count")
+    return produced
 
 
 async def _normalize_one(
@@ -509,6 +582,9 @@ def main() -> None:
         # Source isolation: INGESTION_SOURCE pins this process to one
         # source's lane. Unset → all-sources fallback (dev/sandbox).
         source=os.environ.get("INGESTION_SOURCE") or None,
+        # Intra-source fairness: >1 overlaps S3 GETs across tenants
+        # (per-tenant order preserved). Default 1 = serial.
+        max_concurrency=int(os.environ.get("NORMALIZER_MAX_CONCURRENCY", "1")),
     )
     asyncio.run(run_worker(config))
 
