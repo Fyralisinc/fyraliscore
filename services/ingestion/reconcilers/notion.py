@@ -104,6 +104,15 @@ async def _check_one_shard_for_gap(
     identifier = _decode_identifier(shard["shard_identifier"])
     shard_kind = identifier.get("shard_kind")
     high_water = await _load_shard_high_water(pool, shard["id"])
+    if high_water is None:
+        # No reference point: the shard walked zero objects (e.g. a page_tree
+        # shard in a workspace whose pages are all database rows). With no
+        # high-water there is nothing to compare a probe against, so a re-share
+        # would re-walk the same empty scope forever. Mirror the calendar
+        # reconciler's `high_water is None -> return None` guard. (Without this,
+        # the `latest <= high_water` check below is skipped on None and the
+        # shard re-shares unconditionally — the IN-14 runaway loop.)
+        return None
 
     try:
         if shard_kind == SHARD_KIND_DATABASE:
@@ -124,8 +133,8 @@ async def _check_one_shard_for_gap(
 
     if latest is None:
         return None
-    if high_water is not None and latest <= high_water:
-        return None  # no edits newer than what we walked
+    if latest <= high_water:
+        return None  # no edits newer than what we walked (high_water is non-None here)
 
     metrics.record_fetch_event("reconcile_gap")
     gap_identifier = dict(identifier)

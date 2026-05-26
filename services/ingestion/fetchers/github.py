@@ -210,6 +210,13 @@ def _build_record(
     return body
 
 
+def _is_pull_request(item: dict[str, Any]) -> bool:
+    """True if an item from the `/issues` list is actually a pull request.
+    GitHub returns PRs in the issues stream and documents that consumers
+    identify them by the presence of a `pull_request` key."""
+    return isinstance(item, dict) and item.get("pull_request") is not None
+
+
 def _item_updated_at(event_type: str, item: dict[str, Any]) -> str | None:
     """The timestamp used to advance `last_seen_updated_at`. Commits
     carry it under `commit.author.date`; everything else uses
@@ -422,12 +429,26 @@ async def fetch_page_github(
             page=cur.page, per_page=_DEFAULT_PER_PAGE,
             etag=cur.etag,
         )
+        # GitHub's REST `/repos/{o}/{r}/issues` returns pull requests as well
+        # as issues (every PR is an issue), each carrying a `pull_request` key
+        # — and the PR's issue-endpoint `node_id` is an *issue* id distinct
+        # from the `PullRequest_*` id the `pull_requests` shard sees, so dedup
+        # can't collapse them. Skip them here (GitHub's documented consumer
+        # guard) so PRs aren't double-ingested as bogus `issues` observations;
+        # they're already covered by the dedicated `pull_requests` shard. The
+        # cursor below still advances over the full page (PRs included) so
+        # pagination / last_seen stays correct.
+        record_items = (
+            [item for item in page_records if not _is_pull_request(item)]
+            if event_type == "issues"
+            else page_records
+        )
         records = [
             _build_record(
                 event_type=event_type, repo_full_name=repo_full_name,
                 payload=item,
             )
-            for item in page_records
+            for item in record_items
         ]
         last_seen = cur.last_seen_updated_at
         for item in page_records:
