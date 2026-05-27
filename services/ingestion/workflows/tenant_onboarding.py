@@ -128,6 +128,7 @@ from uuid import UUID
 
 import asyncpg
 
+from services.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
 from services.ingestion.workflows.runtime import LongRunningService
 from services.ingestion.workflows.signals import (
     WorkflowSignal,
@@ -221,6 +222,21 @@ UPDATE onboarding_runs
  WHERE id = $1 AND status = 'pending'
 """
 
+# Default a freshly-onboarded tenant onto the full Kafka pipeline so
+# its data-plane envelopes are persisted (not dropped as shadow-only).
+# ON CONFLICT DO NOTHING: only establishes the default on first
+# onboarding — it never clobbers an explicit later decision, in
+# particular the circuit breaker's `auto:circuit_breaker` trip-off
+# (which sets the flag FALSE under sustained consumer lag) or an
+# operator who deliberately seeded the tenant FALSE.
+_ENABLE_KAFKA_PATH_SQL = """
+INSERT INTO tenant_flags
+    (tenant_id, flag_name, flag_value, set_by, note, set_at)
+VALUES ($1, $2, TRUE, 'auto:tenant_onboarding',
+        'enabled by default at tenant onboarding', now())
+ON CONFLICT (tenant_id, flag_name) DO NOTHING
+"""
+
 _MARK_SOURCE_COMPLETED_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'completed', completed_at = now()
@@ -307,6 +323,18 @@ async def _insert_source_row(
     await conn.execute(
         _INSERT_SOURCE_ROW_SQL, run_id, source, tenant_id,
     )
+
+
+async def _enable_kafka_path(
+    conn: asyncpg.Connection, tenant_id: UUID,
+) -> None:
+    """Set `ingestion.kafka_path_enabled=TRUE` for the tenant if unset.
+
+    Idempotent (ON CONFLICT DO NOTHING) and runs inside the
+    run-created transaction, so it commits atomically with the
+    'running' transition — the flag is TRUE before any backfill
+    envelope reaches the observation writer."""
+    await conn.execute(_ENABLE_KAFKA_PATH_SQL, tenant_id, KAFKA_PATH_ENABLED)
 
 
 async def _mark_source_completed(
@@ -474,6 +502,12 @@ class TenantOnboardingOrchestrator(LongRunningService):
                     "source": source,
                 },
             )
+
+        # Default this tenant onto the full Kafka pipeline so its
+        # observations persist (idempotent; never overrides a later
+        # operator/circuit-breaker FALSE). Same transaction as the
+        # 'running' transition below.
+        await _enable_kafka_path(conn, tenant_id)
 
         await conn.execute(_MARK_RUN_RUNNING_SQL, run_id)
 
