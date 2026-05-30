@@ -7,9 +7,23 @@ GAP DETECTION ALGORITHM
 ============================================================
 After a calendar shard completes, its cursor carries `high_water_updated` —
 the max event `updated` timestamp the fetcher walked. The reconciler probes
-the LIVE calendar with `events.list?updatedMin=<high_water>&showDeleted=true
-&maxResults=1`: if anything changed since the high-water, a reshare is
-emitted for that calendar. A cancellation counts (showDeleted=true).
+the LIVE calendar with `events.list?updatedMin=<high_water+1ms>
+&showDeleted=true&maxResults=1`: if anything changed STRICTLY AFTER the
+high-water, a reshare is emitted for that calendar. A cancellation counts
+(showDeleted=true).
+
+EXCLUSIVE FLOOR (convergence — load-bearing). Calendar's `updatedMin` is an
+INCLUSIVE lower bound (`updated >= updatedMin`), and `high_water` is by
+construction the max `updated` the fetcher already walked — so a probe at
+`updatedMin=high_water` ALWAYS re-matches that same boundary event and reports
+a phantom gap, re-sharing forever (nothing here caps the re-share cycle;
+`gap_baseline_updated` below is written but no fetcher consumes it, so a
+re-walk reproduces the identical high-water). We therefore probe at
+`high_water + 1ms` so the boundary event is excluded and only genuinely newer
+edits trip a reshare. This mirrors the exclusive-floor technique
+reconcilers/notion.py (`latest <= high_water` settles) and reconcilers/jira.py
+(`_to_jql_minute_after`) already use; Calendar was the lone source still using
+a raw inclusive boolean probe.
 
 A reshared shard re-runs the walk with a boosted recency. `external_id`
 parity means re-walked events dedup against what backfill already wrote —
@@ -20,6 +34,7 @@ never under-reshares, and dedup makes re-walks idempotent.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -72,6 +87,19 @@ def _decode_identifier(raw: Any) -> dict[str, Any]:
     return dict(raw)
 
 
+def _exclusive_updated_floor(high_water: str) -> str | None:
+    """RFC3339 timestamp 1ms after `high_water`, for use as an EXCLUSIVE
+    `updatedMin` floor against Calendar's inclusive lower bound. Returns None
+    if `high_water` can't be parsed (caller then skips the probe rather than
+    risk a runaway). See the module docstring's EXCLUSIVE FLOOR note."""
+    try:
+        parsed = datetime.fromisoformat(high_water.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    nxt = (parsed + timedelta(milliseconds=1)).astimezone(timezone.utc)
+    return nxt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 async def _load_shard_high_water(pool: Any, shard_id: Any) -> str | None:
     state = await load_state(pool, "shard_fetch", str(shard_id))
     if state is None or not state.state_data:
@@ -99,11 +127,19 @@ async def _check_one_shard_for_gap(
         # No reference point (empty calendar / cursor); nothing to compare.
         return None
 
+    # EXCLUSIVE floor = high_water + 1ms. With Calendar's inclusive `updatedMin`
+    # this excludes the high-water's own boundary event, so a calendar that
+    # hasn't changed since the walk reports no gap and the reconciler converges
+    # (a plain `updatedMin=high_water` re-matches the boundary forever).
+    floor = _exclusive_updated_floor(high_water)
+    if floor is None:
+        return None
+
     try:
         has_updates = await client.has_updates_since(
             calendar_id=calendar_id,
             user_email=owner_email,
-            updated_min=high_water,
+            updated_min=floor,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(

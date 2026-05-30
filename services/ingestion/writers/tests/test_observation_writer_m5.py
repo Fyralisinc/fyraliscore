@@ -20,6 +20,7 @@ envelope bytes. No Kafka broker is spun up.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -641,34 +642,57 @@ async def test_writer_parse_failure_dlqs_and_commits(
     assert obs_count == 0
 
 
-async def test_writer_missing_partition_dlqs_not_crash_loop(
+async def _partition_name_for(occurred: dt.datetime) -> str:
+    return f"observations_{occurred.strftime('%Y_%m')}"
+
+
+async def _drop_partition(pool: asyncpg.Pool, occurred: dt.datetime) -> None:
+    """Drop the monthly partition covering `occurred` if it exists, so a
+    test can deterministically reproduce the missing-partition condition
+    regardless of what partitions the shared dev DB happens to carry.
+    """
+    name = await _partition_name_for(occurred)
+    await pool.execute(f'DROP TABLE IF EXISTS "{name}"')
+
+
+async def _partition_exists(pool: asyncpg.Pool, occurred: dt.datetime) -> bool:
+    name = await _partition_name_for(occurred)
+    return await pool.fetchval("SELECT to_regclass($1)", name) is not None
+
+
+async def test_writer_missing_partition_self_heals_and_inserts(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """A28: an observation whose `occurred_at` falls outside the
-    `observations` table's partition coverage triggers asyncpg's
-    CheckViolationError (no partition routes the row). The writer must
-    classify this as PERMANENT — distinguished from a *named* CHECK
-    violation by `constraint_name is None` — and route it to the DLQ
-    with a `partition_missing` diagnostic + commit, rather than letting
-    it propagate as a transient error that crash-loops the consumer on
-    the first out-of-range message. See ticket #44.
+    """Ticket #44 (durable fix): an observation whose `occurred_at` has
+    no covering partition triggers asyncpg's unnamed CheckViolationError.
+    The writer must NOT silently DLQ it (success-shaped data loss).
+    Instead it auto-creates the covering month and retries the insert —
+    so the row lands, `writer.partition_missing == 0`, and
+    `writer.partition_autocreated` is bumped.
+
+    Replaces the prior `test_writer_missing_partition_dlqs_not_crash_loop`
+    which asserted the now-removed DLQ-drop behaviour.
     """
-    tenant = await _seed_tenant(fresh_db, "tenant-partition-missing")
+    tenant = await _seed_tenant(fresh_db, "tenant-partition-heal")
     await _enable_kafka_path(fresh_db, tenant)
 
-    # Well before the earliest observations partition (coverage starts
-    # 2025-01) → Postgres finds no partition for the row.
-    out_of_range = dt.datetime(2023, 11, 14, 22, 14, 20, tzinfo=dt.timezone.utc)
+    # A within-lookback historical backfill timestamp with no partition.
+    # Drop the covering month first so the missing-partition condition
+    # holds regardless of the shared DB's existing partition set.
+    backfill_at = dt.datetime(2017, 7, 14, 22, 14, 20, tzinfo=dt.timezone.utc)
+    await _drop_partition(fresh_db, backfill_at)
+    assert not await _partition_exists(fresh_db, backfill_at)
+
     env = _build_envelope(
-        tenant, external_id="C01:partition-miss",
-    ).model_copy(update={"occurred_at": out_of_range})
+        tenant, external_id="C01:partition-heal",
+    ).model_copy(update={"occurred_at": backfill_at})
 
     capture = _CaptureProducer()
     config = await _writer_config_with_db(
         fresh_db, embedder=_DeterministicEmbedder(),
     )
 
-    # MUST NOT raise — a raise here is the crash-loop the fix prevents.
+    # MUST NOT raise.
     await writer_module._handle_message(
         _envelope_bytes(env),
         config=config,
@@ -677,24 +701,236 @@ async def test_writer_missing_partition_dlqs_not_crash_loop(
     )
 
     metrics = writer_module.get_metrics()
-    assert metrics["writer.partition_missing"] == 1, (
-        f"Out-of-range occurred_at should bump writer.partition_missing; "
-        f"got {metrics['writer.partition_missing']}."
+    assert metrics["writer.partition_missing"] == 0, (
+        f"Self-heal should drop nothing; got partition_missing="
+        f"{metrics['writer.partition_missing']}."
     )
-    # Routed to ingestion.dlq with the partition_missing diagnostic.
+    assert metrics["writer.partition_autocreated"] == 1, (
+        f"Backfill row should auto-create its partition; got "
+        f"partition_autocreated={metrics['writer.partition_autocreated']}."
+    )
+    assert metrics["writer.full_mode_writes"] == 1
+    # No DLQ publish for the healed row.
     dlq_publishes = [
         value for (topic, value, _key) in capture.published
         if topic.startswith("ingestion.dlq")
     ]
-    assert len(dlq_publishes) == 1, (
-        f"Expected exactly 1 DLQ publish; got {len(dlq_publishes)}."
+    assert dlq_publishes == [], (
+        f"Healed row must not be DLQ'd; got {len(dlq_publishes)} publishes."
     )
+    # The covering partition now exists and holds the row.
+    assert await _partition_exists(fresh_db, backfill_at)
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant,
+    )
+    assert obs_count == 1, f"Backfill row should be inserted; got {obs_count}."
+
+
+async def test_writer_out_of_bounds_future_dlqs_no_partition(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Ticket #44 guardrail: a far-future `occurred_at` (beyond
+    FUTURE_SKEW) is corrupt source data, not a legitimate backfill. The
+    writer must DLQ it with `reason="out_of_bounds_occurred_at"` and must
+    NOT create a partition for it (prevents a bad clock-skewed timestamp
+    from spawning a pathological far-future partition).
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-oob-future")
+    await _enable_kafka_path(fresh_db, tenant)
+
+    # Year 2035: beyond the dev DB's forward coverage and far beyond the
+    # 7-day future skew.
+    future_at = dt.datetime(2035, 1, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
+    await _drop_partition(fresh_db, future_at)
+
+    env = _build_envelope(
+        tenant, external_id="C01:oob-future",
+    ).model_copy(update={"occurred_at": future_at})
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.partition_out_of_bounds"] == 1, metrics
+    assert metrics["writer.partition_autocreated"] == 0, metrics
+    assert metrics["writer.partition_missing"] == 0, metrics
+
+    dlq_publishes = [
+        value for (topic, value, _key) in capture.published
+        if topic == "ingestion.dlq"
+    ]
+    assert len(dlq_publishes) == 1, dlq_publishes
     dlq = orjson.loads(dlq_publishes[0])
-    assert "partition_missing" in dlq["error_summary"], dlq
-    assert dlq["error_context"]["reason"] == "partition_missing", dlq
-    assert dlq["error_context"]["occurred_at"] == out_of_range.isoformat()
-    # No observation written.
+    assert dlq["error_context"]["reason"] == "out_of_bounds_occurred_at", dlq
+    assert dlq["error_context"]["occurred_at"] == future_at.isoformat()
+    # Crucially: NO partition was spawned for the bad timestamp.
+    assert not await _partition_exists(fresh_db, future_at), (
+        "Guardrail must not create a partition for out-of-bounds data."
+    )
     obs_count = await fresh_db.fetchval(
         "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant,
     )
     assert obs_count == 0
+
+
+async def test_writer_out_of_bounds_ancient_dlqs_no_partition(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Ticket #44 guardrail (past side): an `occurred_at` older than
+    MAX_BACKFILL_LOOKBACK is DLQ'd as out-of-bounds with no partition
+    created — the symmetric counterpart to the far-future guard.
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-oob-ancient")
+    await _enable_kafka_path(fresh_db, tenant)
+
+    # Year 2005: well beyond the ~10-year lookback floor.
+    ancient_at = dt.datetime(2005, 3, 2, 9, 30, 0, tzinfo=dt.timezone.utc)
+    await _drop_partition(fresh_db, ancient_at)
+
+    env = _build_envelope(
+        tenant, external_id="C01:oob-ancient",
+    ).model_copy(update={"occurred_at": ancient_at})
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.partition_out_of_bounds"] == 1, metrics
+    dlq_publishes = [
+        value for (topic, value, _key) in capture.published
+        if topic == "ingestion.dlq"
+    ]
+    assert len(dlq_publishes) == 1
+    dlq = orjson.loads(dlq_publishes[0])
+    assert dlq["error_context"]["reason"] == "out_of_bounds_occurred_at", dlq
+    assert not await _partition_exists(fresh_db, ancient_at)
+
+
+async def test_writer_partition_self_heal_concurrent_same_month(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Ticket #44 concurrency: two writers handling the same missing
+    month must not crash and must not let a DuplicateTableError escape.
+    Both rows land exactly once (idempotent CREATE TABLE IF NOT EXISTS;
+    DuplicateTableError caught as success).
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-heal-concurrent")
+    await _enable_kafka_path(fresh_db, tenant)
+
+    backfill_at = dt.datetime(2017, 9, 3, 8, 0, 0, tzinfo=dt.timezone.utc)
+    await _drop_partition(fresh_db, backfill_at)
+
+    env_a = _build_envelope(
+        tenant, external_id="C01:heal-a", content_text="row a",
+    ).model_copy(update={"occurred_at": backfill_at})
+    env_b = _build_envelope(
+        tenant, external_id="C01:heal-b", content_text="row b",
+    ).model_copy(update={"occurred_at": backfill_at})
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    # Drive both concurrently — they race to create observations_2017_09.
+    await asyncio.gather(
+        writer_module._handle_message(
+            _envelope_bytes(env_a), config=config,
+            dlq_producer=capture, embedding_producer=capture,
+        ),
+        writer_module._handle_message(
+            _envelope_bytes(env_b), config=config,
+            dlq_producer=capture, embedding_producer=capture,
+        ),
+    )
+
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.partition_missing"] == 0, metrics
+    # No DLQ publishes at all.
+    dlq_publishes = [
+        v for (t, v, _k) in capture.published if t == "ingestion.dlq"
+    ]
+    assert dlq_publishes == [], dlq_publishes
+    # Both rows inserted exactly once.
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant,
+    )
+    assert obs_count == 2, f"Expected both rows inserted; got {obs_count}."
+
+
+async def test_writer_duplicate_table_error_treated_as_success(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ticket #44 concurrency (deterministic): if `ensure_partitions`
+    raises DuplicateTableError (the race window Postgres can surface even
+    with IF NOT EXISTS), the writer treats it as success and the retried
+    insert lands — no crash, no DLQ.
+
+    Simulated race: the partition starts absent (first insert fails with
+    the unnamed CheckViolation). We then patch ensure_partitions to
+    *create* the partition (as the winning writer would) and immediately
+    raise DuplicateTableError (as the losing writer sees). The retry must
+    still succeed against the now-existing partition.
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-dup-table")
+    await _enable_kafka_path(fresh_db, tenant)
+
+    backfill_at = dt.datetime(2017, 11, 20, 6, 0, 0, tzinfo=dt.timezone.utc)
+    await _drop_partition(fresh_db, backfill_at)
+
+    real_ensure = writer_module.ensure_partitions
+
+    async def _create_then_raise_dup(pool: Any, **kw: Any) -> list[str]:
+        # The winning writer created the partition...
+        await real_ensure(pool, **kw)
+        # ...and our CREATE raced and lost despite IF NOT EXISTS.
+        raise asyncpg.exceptions.DuplicateTableError("raced")
+
+    monkeypatch.setattr(
+        writer_module, "ensure_partitions", _create_then_raise_dup,
+    )
+
+    env = _build_envelope(
+        tenant, external_id="C01:dup-table",
+    ).model_copy(update={"occurred_at": backfill_at})
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    await writer_module._handle_message(
+        _envelope_bytes(env), config=config,
+        dlq_producer=capture, embedding_producer=capture,
+    )
+
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.partition_autocreated"] == 1, metrics
+    assert metrics["writer.partition_missing"] == 0, metrics
+    dlq_publishes = [
+        v for (t, v, _k) in capture.published if t == "ingestion.dlq"
+    ]
+    assert dlq_publishes == []
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant,
+    )
+    assert obs_count == 1

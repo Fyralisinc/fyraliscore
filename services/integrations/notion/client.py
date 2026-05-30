@@ -279,19 +279,34 @@ class NotionClient:
         return None
 
     async def latest_page_edit(self) -> str | None:
-        """`last_edited_time` of the most-recently-edited page in the whole
-        workspace (reconciler probe for the loose-page shard)."""
+        """`last_edited_time` of the most-recently-edited LOOSE page (one NOT
+        owned by a database) in the workspace — the reconciler probe for the
+        notion_page_tree shard.
+
+        Database rows are EXCLUDED to mirror the page_tree fetcher, which skips
+        `_is_database_row` pages because they are covered by notion_database
+        shards (services/ingestion/fetchers/notion.py loose_pages walk). Without
+        this exclusion the probe returns the newest database row — a timestamp
+        the page-tree walk never records as its high-water — so the reconciler
+        sees `latest > high_water` on every pass and re-shares forever
+        (IN-14 convergence; the page_tree probe must match the page_tree
+        coverage). `/v1/search` sorts descending, so we scan one bounded page
+        and return the newest non-database page; if the newest pages are all
+        database rows we return None (no loose-page change to chase)."""
         body = await self._request(
             "POST", "/v1/search",
             json_body={
-                "page_size": 1,
+                "page_size": 50,
                 "filter": {"value": "page", "property": "object"},
                 "sort": {"timestamp": "last_edited_time", "direction": "descending"},
             },
         )
         results, _cursor, _more = _unwrap_list(body)
-        if results:
-            edited = results[0].get("last_edited_time")
+        for page in results:
+            parent = page.get("parent")
+            if isinstance(parent, dict) and parent.get("type") == "database_id":
+                continue  # database row — owned by a notion_database shard
+            edited = page.get("last_edited_time")
             return edited if isinstance(edited, str) else None
         return None
 
