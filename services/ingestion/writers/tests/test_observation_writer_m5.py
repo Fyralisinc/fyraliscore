@@ -766,7 +766,7 @@ async def test_writer_out_of_bounds_future_dlqs_no_partition(
 
     dlq_publishes = [
         value for (topic, value, _key) in capture.published
-        if topic == "ingestion.dlq"
+        if topic.startswith("ingestion.dlq")
     ]
     assert len(dlq_publishes) == 1, dlq_publishes
     dlq = orjson.loads(dlq_publishes[0])
@@ -816,7 +816,7 @@ async def test_writer_out_of_bounds_ancient_dlqs_no_partition(
     assert metrics["writer.partition_out_of_bounds"] == 1, metrics
     dlq_publishes = [
         value for (topic, value, _key) in capture.published
-        if topic == "ingestion.dlq"
+        if topic.startswith("ingestion.dlq")
     ]
     assert len(dlq_publishes) == 1
     dlq = orjson.loads(dlq_publishes[0])
@@ -866,7 +866,7 @@ async def test_writer_partition_self_heal_concurrent_same_month(
     assert metrics["writer.partition_missing"] == 0, metrics
     # No DLQ publishes at all.
     dlq_publishes = [
-        v for (t, v, _k) in capture.published if t == "ingestion.dlq"
+        v for (t, v, _k) in capture.published if t.startswith("ingestion.dlq")
     ]
     assert dlq_publishes == [], dlq_publishes
     # Both rows inserted exactly once.
@@ -927,7 +927,7 @@ async def test_writer_duplicate_table_error_treated_as_success(
     assert metrics["writer.partition_autocreated"] == 1, metrics
     assert metrics["writer.partition_missing"] == 0, metrics
     dlq_publishes = [
-        v for (t, v, _k) in capture.published if t == "ingestion.dlq"
+        v for (t, v, _k) in capture.published if t.startswith("ingestion.dlq")
     ]
     assert dlq_publishes == []
     obs_count = await fresh_db.fetchval(
