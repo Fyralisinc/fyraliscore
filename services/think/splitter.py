@@ -469,7 +469,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
     # Synthesize the composing situation.
     situation_entry = deepcopy(base_entry)
     situation_entry.pop("embedding", None)
-    pressure_type = _infer_pressure_type(text)
+    pressure_type = _infer_pressure_type(text) or "execution"
     trimmed = _trim(text, 200)
     sit_prop: dict[str, Any] = {
         "kind": "situation",
@@ -483,8 +483,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
         "status": "forming",
         "shared_mechanism": trimmed,
     }
-    if pressure_type is not None:
-        sit_prop["pressure_type"] = pressure_type
+    sit_prop["pressure_type"] = pressure_type
     situation_entry["proposition"] = sit_prop
     situation_entry["natural"] = f"Composite situation: {trimmed}"
     # Flag for the integrator: patch member_model_ids after atomic

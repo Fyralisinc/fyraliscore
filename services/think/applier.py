@@ -46,6 +46,7 @@ from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedD
 from .observability import log_dropped_op
 from .quality_gate import QualityContext, apply_verdict, score_quality
 from .splitter import split_compound_claim_op
+from .synthesis_decision import summarize_synthesis_decisions
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
@@ -60,6 +61,18 @@ class AlreadyAppliedError(ApplierError):
     without running any ops.
     """
     default_code = "already_applied"
+
+
+_SITUATION_PRESSURE_TYPES = {
+    "capacity",
+    "trust",
+    "revenue",
+    "compliance",
+    "decision",
+    "execution",
+    "market",
+    "resource",
+}
 
 
 # ---------------------------------------------------------------------
@@ -79,6 +92,28 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _ensure_situation_compositional_defaults(entry: dict[str, Any]) -> None:
+    """Align situation inserts with the DB's compositional-field check."""
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict) or prop.get("kind") != "situation":
+        return
+    pressure = prop.get("pressure_type")
+    if not isinstance(pressure, str) or pressure not in _SITUATION_PRESSURE_TYPES:
+        prop["pressure_type"] = "execution"
+    mechanism = prop.get("shared_mechanism")
+    if not isinstance(mechanism, str) or not mechanism.strip():
+        fallback = (
+            prop.get("relationship_summary")
+            or prop.get("summary")
+            or entry.get("natural")
+            or prop.get("situation")
+            or "Situation members share an operational mechanism."
+        )
+        prop["shared_mechanism"] = str(fallback).strip() or (
+            "Situation members share an operational mechanism."
+        )
 
 
 # ---------------------------------------------------------------------
@@ -177,6 +212,7 @@ async def apply_diff(
         "edge_ops": [],
         "act_ops": [],
         "resource_ops": [],
+        "synthesis_decisions": summarize_synthesis_decisions(diff),
         "diff_hash": diff_hash,
         "apply_dropped_op_count": 0,
         "apply_dropped_op_errors": [],
@@ -263,7 +299,14 @@ async def apply_diff(
                 })
                 continue
             prop = op.entry.get("proposition") or {}
-            prop["member_model_ids"] = [str(uid) for uid in members]
+            deduped_members: list[UUID] = []
+            seen_members: set[UUID] = set()
+            for uid in members:
+                if uid in seen_members:
+                    continue
+                seen_members.add(uid)
+                deduped_members.append(uid)
+            prop["member_model_ids"] = [str(uid) for uid in deduped_members]
             op.entry["proposition"] = prop
             # Strip splitter-only audit markers — ModelCreate forbids extras.
             op.entry.pop("member_model_pending", None)
@@ -653,6 +696,7 @@ async def _apply_claim_op(
             entry["born_from_event_id"] = cause_event_id
         for stray in ("title", "description", "id", "model_id"):
             entry.pop(stray, None)
+        _ensure_situation_compositional_defaults(entry)
         # scope_temporal is required; default to an open-ended present window.
         if "scope_temporal" not in entry:
             entry["scope_temporal"] = {

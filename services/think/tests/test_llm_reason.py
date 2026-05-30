@@ -229,6 +229,131 @@ async def test_build_prompt_surfaces_selected_graph_memory_priority():
     assert "reasoning_trace must name at least one relevant selected/graph Model" in pair.user
 
 
+async def test_build_prompt_surfaces_inquiry_context_packet():
+    tenant_id = uuid7()
+    trigger = TriggerContext(kind="T1", tenant_id=tenant_id)
+    bundle = ContextBundle(
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": "Acme cannot launch without SSO.",
+                "sufficiency_verdict": {
+                    "status": "sufficient_for_reasoning",
+                    "reason": "counterevidence checked",
+                },
+                "hypotheses": [
+                    {
+                        "id": "H1",
+                        "claim": "Acme is blocked by SSO.",
+                        "confidence": 0.74,
+                    },
+                    {"id": "H0", "claim": "No update needed."},
+                ],
+                "question_path": [
+                    {
+                        "question_id": "Q1",
+                        "primitive": "DEPENDENCY",
+                        "question": "Is SSO on the critical path?",
+                    }
+                ],
+                "tiers": {
+                    "decisive_evidence": [
+                        {
+                            "evidence_id": "ev1",
+                            "source_type": "observation",
+                            "summary": "CRM says SSO is required.",
+                        }
+                    ],
+                    "supporting_evidence_groups": [],
+                    "omission_ledger": [],
+                },
+            }
+        }
+    )
+
+    pair = build_prompt(trigger, bundle)
+
+    assert "<inquiry_context_packet>" in pair.user
+    assert "Acme cannot launch without SSO" in pair.user
+    assert "sufficient_for_reasoning" in pair.user
+    assert "Q1 [DEPENDENCY]" in pair.user
+
+
+async def test_build_prompt_uses_compact_model_manifest_with_inquiry_packet():
+    tenant_id = uuid7()
+    actionable_id = uuid7()
+    background_id = uuid7()
+    trigger = TriggerContext(kind="T1", tenant_id=tenant_id)
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=actionable_id,
+                proposition_kind="concern",
+                confidence=0.84,
+                activation=0.91,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural="ACTIONABLE_FULL_DETAIL_MARKER " + ("primary context " * 80),
+            ),
+            SimpleNamespace(
+                id=background_id,
+                proposition_kind="state",
+                confidence=0.72,
+                activation=0.51,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural=(
+                    "Background compact intro "
+                    + ("redundant detail " * 40)
+                    + "NONACTIONABLE_TAIL_MARKER"
+                ),
+            ),
+        ],
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": "Acme launch is blocked.",
+                "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+                "tiers": {
+                    "decisive_evidence": [
+                        {
+                            "source_type": "observation",
+                            "source_ref": "observation:00000000-0000-7000-8000-000000000001",
+                            "summary": "Authoritative observation is decisive.",
+                        }
+                    ],
+                    "supporting_evidence_groups": [
+                        {
+                            "claim_supported": "H1",
+                            "evidence_count": 1,
+                            "sources": ["model"],
+                            "summary": "Actionable model supports the leading hypothesis.",
+                            "evidence_ids": ["ev-model-1"],
+                            "source_refs": [f"model:{actionable_id}"],
+                        }
+                    ],
+                    "omission_ledger": [],
+                },
+            }
+        },
+    )
+
+    pair = build_prompt(trigger, bundle)
+    start = pair.user.index("  <models>")
+    end = pair.user.index("  </models>") + len("  </models>")
+    models_section = pair.user[start:end]
+
+    assert "manifest_mode: compact" in models_section
+    assert f"id={actionable_id} detail=full" in models_section
+    assert "ACTIONABLE_FULL_DETAIL_MARKER" in models_section
+    assert f"id={background_id} detail=manifest" in models_section
+    assert "Background compact intro" in models_section
+    assert "NONACTIONABLE_TAIL_MARKER" not in models_section
+    assert len(models_section) < 1800
+
+
 async def test_build_prompt_claims_only_profile_uses_smaller_system_prompt():
     trigger = TriggerContext(kind="T1", tenant_id=uuid7(), observation_id=uuid7())
     bundle = ContextBundle()

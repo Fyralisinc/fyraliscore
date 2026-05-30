@@ -64,6 +64,46 @@ def test_maybe_inject_decision_revisit_adds_scoped_claim_and_transition():
     }
 
 
+def test_maybe_inject_decision_revisit_ignores_drafted_decision():
+    tenant_id = uuid7()
+    obs_id = uuid7()
+    actor_id = uuid7()
+    decision_id = uuid7()
+    content = (
+        "Review wrapped. Outcome: decision is being formally revisited. "
+        "We're not reversing Kafka, but self-managed-vs-Confluent is reopened."
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text=content,
+        seed_occurred_at=datetime.now(timezone.utc),
+    )
+    bundle = ContextBundle(
+        observations=[
+            SimpleNamespace(id=obs_id, content_text=content, actor_id=actor_id)
+        ],
+        acts_summary={
+            "goals": [],
+            "commitments": [],
+            "decisions": [
+                SimpleNamespace(
+                    id=decision_id,
+                    title="Adopt Kafka as the company-wide event bus",
+                    state="drafted",
+                )
+            ],
+        },
+    )
+    diff = RawDiff(trigger_ref=obs_id, tenant_id=tenant_id)
+
+    out = maybe_inject_decision_revisit(diff, trigger, bundle)
+
+    assert out.claim_ops == []
+    assert out.act_ops == []
+
+
 def test_maybe_inject_decision_revisit_ignores_unmatched_text():
     tenant_id = uuid7()
     obs_id = uuid7()

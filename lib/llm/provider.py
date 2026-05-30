@@ -119,6 +119,14 @@ def compute_cost_usd(
     )
 
 
+def _estimate_tokens_from_text(*parts: str | None) -> int:
+    """Cheap fallback for transports that return text but no usage block."""
+    char_count = sum(len(part or "") for part in parts)
+    # The estimate is intentionally conservative enough for dashboards
+    # and budget alarms; exact SDK usage still wins whenever available.
+    return max(1, (char_count + 3) // 4)
+
+
 @dataclass
 class LLMUsage:
     """One call's usage + cost accounting. Accumulated across a Think
@@ -220,6 +228,18 @@ def _extract_openai_usage(response: Any) -> tuple[int, int]:
     usage = getattr(response, "usage", None)
     if usage is None:
         return 0, 0
+    if isinstance(usage, dict):
+        input_tokens = (
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        output_tokens = (
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        return int(input_tokens), int(output_tokens)
     input_tokens = (
         getattr(usage, "prompt_tokens", None)
         or getattr(usage, "input_tokens", None)
@@ -830,6 +850,20 @@ class LLMProvider(abc.ABC):
             )
         )
 
+    def _record_estimated_text_usage(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema_hint: str,
+        content: str,
+    ) -> None:
+        """Record approximate usage for transports without token metadata."""
+        self._record_usage(
+            _estimate_tokens_from_text(system, user, schema_hint),
+            _estimate_tokens_from_text(content),
+        )
+
     @abc.abstractmethod
     async def _raw_call(
         self,
@@ -1270,7 +1304,7 @@ class CodexProvider(LLMProvider):
         del temperature, max_tokens  # The app-server turn owns these controls.
 
         client = _codex_app_server_client()
-        return await _through_breaker(
+        content = await _through_breaker(
             self.config.provider,
             lambda: client.call(
                 model=self.config.model,
@@ -1280,6 +1314,13 @@ class CodexProvider(LLMProvider):
                 timeout_s=self.config.timeout_s,
             ),
         )
+        self._record_estimated_text_usage(
+            system=system,
+            user=user,
+            schema_hint=schema_hint,
+            content=content,
+        )
+        return content
 
     async def _raw_call_cli(
         self,
@@ -1373,7 +1414,14 @@ class CodexProvider(LLMProvider):
                     raise LLMError("empty response from codex cli", model=self.config.model)
                 return content
 
-        return await _through_breaker(self.config.provider, _do_call)
+        content = await _through_breaker(self.config.provider, _do_call)
+        self._record_estimated_text_usage(
+            system=system,
+            user=user,
+            schema_hint=schema_hint,
+            content=content,
+        )
+        return content
 
 
 def _responses_output_text(response: Any) -> str:

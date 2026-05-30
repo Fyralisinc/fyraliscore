@@ -1,0 +1,319 @@
+{
+  "cases": [
+    {
+      "case": "deep_blocker_context",
+      "issues": [],
+      "metrics": {
+        "case": "deep_blocker_context",
+        "elapsed_ms": 58,
+        "evidence_count": 6,
+        "model_detail_full_rows": 3,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 1421,
+        "packet_estimated_tokens": 314,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "persisted_evidence_count": 6,
+        "persisted_question_count": 3,
+        "prompt_chars": 13199,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_CRITICAL_PATH",
+          "Q_OWNER"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "DEPENDENCY",
+          "OWNERSHIP"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_CRITICAL_PATH": 1,
+          "Q_OWNER": 1
+        },
+        "reservoir_evidence_count": 6,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "routing_reason": "signal has enough entity, trust, risk, or commitment weight",
+        "routing_score": 1.0,
+        "semantic_action_count": 3,
+        "sufficiency": "sufficient_for_reasoning"
+      },
+      "passed": true
+    },
+    {
+      "case": "fast_query_bounded",
+      "issues": [],
+      "metrics": {
+        "case": "fast_query_bounded",
+        "elapsed_ms": 39,
+        "evidence_count": 6,
+        "model_detail_full_rows": 3,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 1421,
+        "packet_estimated_tokens": 164,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 12331,
+        "question_ids": [],
+        "question_primitives": [],
+        "question_rounds": {},
+        "reservoir_evidence_count": 6,
+        "retrieval_action_count": 0,
+        "route": "FAST_PATH",
+        "semantic_action_count": 0,
+        "sufficiency": "sufficient_for_reasoning"
+      },
+      "passed": true
+    },
+    {
+      "case": "recurrence_question_quality",
+      "issues": [],
+      "metrics": {
+        "case": "recurrence_question_quality",
+        "elapsed_ms": 46,
+        "evidence_count": 4,
+        "model_detail_full_rows": 2,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 911,
+        "packet_estimated_tokens": 245,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G",
+          "D"
+        ],
+        "prompt_chars": 11031,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_RECURRENCE",
+          "Q_GOAL_IMPACT"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "RECURRENCE",
+          "GOAL_IMPACT"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_GOAL_IMPACT": 1,
+          "Q_RECURRENCE": 1
+        },
+        "reservoir_evidence_count": 4,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "semantic_action_count": 2,
+        "sufficiency": "sufficient_for_reasoning"
+      },
+      "passed": true
+    },
+    {
+      "case": "ambiguous_owner_human_validation",
+      "issues": [],
+      "metrics": {
+        "case": "ambiguous_owner_human_validation",
+        "elapsed_ms": 62,
+        "evidence_count": 4,
+        "model_detail_full_rows": 1,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 672,
+        "packet_estimated_tokens": 224,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 11594,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_CRITICAL_PATH",
+          "Q_OWNER"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "DEPENDENCY",
+          "OWNERSHIP"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_CRITICAL_PATH": 1,
+          "Q_OWNER": 1
+        },
+        "reservoir_evidence_count": 4,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "semantic_action_count": 3,
+        "sufficiency": "human_validation_required"
+      },
+      "passed": true
+    },
+    {
+      "case": "stale_counterevidence_guard",
+      "issues": [],
+      "metrics": {
+        "case": "stale_counterevidence_guard",
+        "elapsed_ms": 48,
+        "evidence_count": 5,
+        "model_detail_full_rows": 2,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 1129,
+        "packet_estimated_tokens": 318,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 12736,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_CRITICAL_PATH",
+          "Q_OWNER"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "DEPENDENCY",
+          "OWNERSHIP"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_CRITICAL_PATH": 1,
+          "Q_OWNER": 1
+        },
+        "reservoir_evidence_count": 5,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "semantic_action_count": 3,
+        "sufficiency": "budget_exhausted"
+      },
+      "passed": true
+    },
+    {
+      "case": "human_validation_bounded",
+      "issues": [],
+      "metrics": {
+        "case": "human_validation_bounded",
+        "elapsed_ms": 43,
+        "evidence_count": 6,
+        "model_detail_full_rows": 3,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 1421,
+        "packet_estimated_tokens": 164,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 12542,
+        "question_ids": [],
+        "question_primitives": [],
+        "question_rounds": {},
+        "reservoir_evidence_count": 6,
+        "retrieval_action_count": 0,
+        "route": "HUMAN_VALIDATION_PATH",
+        "semantic_action_count": 0,
+        "sufficiency": "human_validation_required"
+      },
+      "passed": true
+    },
+    {
+      "case": "question_conditioned_semantic_embedding",
+      "issues": [],
+      "metrics": {
+        "case": "question_conditioned_semantic_embedding",
+        "elapsed_ms": 59,
+        "embedder_query_count": 3,
+        "evidence_count": 7,
+        "model_detail_full_rows": 4,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 1780,
+        "packet_estimated_tokens": 365,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 13777,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_CRITICAL_PATH",
+          "Q_OWNER"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "DEPENDENCY",
+          "OWNERSHIP"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_CRITICAL_PATH": 1,
+          "Q_OWNER": 1
+        },
+        "reservoir_evidence_count": 7,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "semantic_action_count": 3,
+        "sufficiency": "sufficient_for_reasoning"
+      },
+      "passed": true
+    },
+    {
+      "case": "semantic_noise_distractor_guard",
+      "issues": [],
+      "metrics": {
+        "case": "semantic_noise_distractor_guard",
+        "elapsed_ms": 69,
+        "evidence_count": 16,
+        "model_detail_full_rows": 6,
+        "model_detail_manifest_rows": 0,
+        "model_section_chars": 2460,
+        "packet_estimated_tokens": 314,
+        "pathways_run": [
+          "A",
+          "B",
+          "C",
+          "G"
+        ],
+        "prompt_chars": 15971,
+        "question_ids": [
+          "Q_COUNTEREVIDENCE",
+          "Q_CRITICAL_PATH",
+          "Q_OWNER"
+        ],
+        "question_primitives": [
+          "COUNTEREVIDENCE",
+          "DEPENDENCY",
+          "OWNERSHIP"
+        ],
+        "question_rounds": {
+          "Q_COUNTEREVIDENCE": 1,
+          "Q_CRITICAL_PATH": 1,
+          "Q_OWNER": 1
+        },
+        "reservoir_evidence_count": 16,
+        "retrieval_action_count": 7,
+        "route": "DEEP_INQUIRY_PATH",
+        "semantic_action_count": 3,
+        "sufficiency": "sufficient_for_reasoning"
+      },
+      "passed": true
+    }
+  ],
+  "generated_at": "2026-05-28T15:29:45.582698+00:00",
+  "summary": {
+    "passed": 8,
+    "total": 8
+  }
+}

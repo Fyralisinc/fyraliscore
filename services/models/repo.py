@@ -86,6 +86,7 @@ from lib.shared.db import RowHydrationError
 from lib.shared.edge_registry import EDGE_REGISTRY, get_spec
 from lib.shared.errors import CompanyOSError, FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
+from lib.shared.memory_grammar import derive_memory_grammar
 from lib.shared.types import (
     ModelArchiveReason,
     ModelCreate,
@@ -172,6 +173,8 @@ _SELECT_COLS = (
     "evaluate_at", "resolution_criteria", "contributing_models",
     "visible_to_subjects",
     "proposition_kind",
+    "claim_role", "abstraction_level", "time_mode", "modality", "polarity",
+    "domain_tags", "memory_grammar_version",
     "confirmed_count", "contested_count", "last_confirmed_at",
     "confidence_at_assertion",
     "resolved_at", "resolution_outcome",
@@ -966,6 +969,69 @@ async def _sync_model_scope_sidecars(
         )
 
 
+def _uuid_list_from_json(value: Any) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    if not isinstance(value, (list, tuple)):
+        return out
+    for raw in value:
+        try:
+            uid = raw if isinstance(raw, UUID) else UUID(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+async def _sync_model_composition_members(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    tenant_id: UUID,
+    proposition: dict[str, Any],
+    source: str = "model_proposition",
+) -> None:
+    """Mirror situation member_model_ids into a normalized sidecar."""
+    await conn.execute(
+        """
+        DELETE FROM model_composition_members
+        WHERE tenant_id = $1 AND composite_model_id = $2
+        """,
+        tenant_id,
+        model_id,
+    )
+    if not isinstance(proposition, dict) or proposition.get("kind") != "situation":
+        return
+
+    member_ids = [
+        uid
+        for uid in _uuid_list_from_json(proposition.get("member_model_ids"))
+        if uid != model_id
+    ]
+    if len(member_ids) < 2:
+        return
+    evidence_event_ids = _uuid_list_from_json(proposition.get("evidence_event_ids"))
+    await conn.executemany(
+        """
+        INSERT INTO model_composition_members (
+          composite_model_id, tenant_id, member_model_id,
+          member_role, contribution, confidence, evidence_event_ids, source
+        )
+        VALUES ($1, $2, $3, 'member', NULL, 1.0, $4::uuid[], $5)
+        ON CONFLICT (composite_model_id, member_model_id) DO UPDATE
+          SET evidence_event_ids = EXCLUDED.evidence_event_ids,
+              source = EXCLUDED.source
+        """,
+        [
+            (model_id, tenant_id, member_id, evidence_event_ids, source)
+            for member_id in member_ids
+        ],
+    )
+
+
 async def _read_array_part(
     conn: asyncpg.Connection,
     model_id: UUID,
@@ -1269,6 +1335,12 @@ class ModelsRepo:
             )
 
         model_id = model_id_preview  # pre-assigned in step 3 for cycle check
+        grammar = derive_memory_grammar(
+            proposed.proposition,
+            natural=proposed.natural,
+            scope_entities=proposed.scope_entities,
+        )
+        domain_tags = list(proposed.domain_tags or grammar.domain_tags)
 
         # 7. INSERT. "natural" is a reserved keyword in SQL, so it must
         # be quoted in identifier contexts (Wave 0 migration does the
@@ -1284,7 +1356,8 @@ class ModelsRepo:
                 supporting_event_ids, supporting_model_ids, evidential_weight,
                 status, evaluate_at, resolution_criteria,
                 contributing_models, visible_to_subjects,
-                confidence_at_assertion, activation_coefficient
+                confidence_at_assertion, activation_coefficient,
+                domain_tags
             ) VALUES (
                 $1, $2, $3,
                 $4::jsonb, $5, $6,
@@ -1294,7 +1367,8 @@ class ModelsRepo:
                 $15::uuid[], $16::uuid[], $17,
                 $18, $19, $20::jsonb,
                 $21::uuid[], $22,
-                $23, $24
+                $23, $24,
+                $25::text[]
             )
             RETURNING {_SELECT_COLS_SQL}
             """,
@@ -1322,6 +1396,7 @@ class ModelsRepo:
             proposed.visible_to_subjects,
             conf_at_assertion,
             proposed.activation_coefficient,
+            domain_tags,
         )
         assert row is not None
 
@@ -1333,6 +1408,12 @@ class ModelsRepo:
             tenant_id=hydrated.tenant_id,
             scope_actors=hydrated.scope_actors,
             scope_entities=hydrated.scope_entities,
+        )
+        await _sync_model_composition_members(
+            conn,
+            model_id=hydrated.id,
+            tenant_id=hydrated.tenant_id,
+            proposition=hydrated.proposition,
         )
 
         # 7b. Dual-write typed edges to mirror the array columns just
@@ -1408,6 +1489,8 @@ class ModelsRepo:
             entity_kind="model",
             metadata={
                 "proposition_kind": hydrated.proposition_kind,
+                "claim_role": hydrated.claim_role,
+                "abstraction_level": hydrated.abstraction_level,
                 "confidence": hydrated.confidence,
             },
         )

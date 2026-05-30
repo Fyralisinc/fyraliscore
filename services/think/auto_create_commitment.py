@@ -652,7 +652,7 @@ def maybe_inject_decision_revisit(
     decisions = bundle.acts_summary.get("decisions") or []
     candidates: list[tuple[int, Any]] = []
     for d in decisions:
-        if getattr(d, "state", None) == "revisited":
+        if getattr(d, "state", None) != "active":
             continue
         score = _title_match_score(content, getattr(d, "title", None) or "")
         if score >= 1:

@@ -190,7 +190,10 @@ async def test_worker_rejects_trigger_at_max_depth(
         fresh_db, tenant, oid, depth=MAX_CASCADE_DEPTH,
     )
 
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     # Poll + dispatch.
     await worker._poll_and_dispatch()
     # Wait for the (synchronous) in-flight dispatch task to finish.
@@ -222,7 +225,10 @@ async def test_worker_rejects_trigger_above_max_depth(
         fresh_db, tenant, oid, depth=MAX_CASCADE_DEPTH + 25,
     )
 
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     await worker._poll_and_dispatch()
     for t in list(worker._in_flight):
         await t
@@ -244,7 +250,10 @@ async def test_worker_accepts_trigger_below_max_depth(
         fresh_db, tenant, oid, depth=MAX_CASCADE_DEPTH - 1,
     )
 
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     dispatched: list = []
     original = worker._dispatch_trigger
 

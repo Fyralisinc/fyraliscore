@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -33,6 +34,7 @@ from services.think.region_locks import (
     compute_primary_entity,
     compute_region_key_t1,
     region_lock_key,
+    touched_entity_ids,
 )
 
 
@@ -81,6 +83,11 @@ def test_compute_primary_type_precedence():
         {"type": "customer", "id": "zzz"},
         {"type": "resource", "id": "aaa"},
     ]) == ("resource", "aaa")
+    # customer_resource is the same tier too.
+    assert compute_primary_entity([
+        {"type": "actor", "id": "aaa"},
+        {"type": "customer_resource", "id": "bbb"},
+    ]) == ("customer_resource", "bbb")
 
 
 def test_compute_primary_tiebreak_by_id():
@@ -112,6 +119,219 @@ def test_compute_primary_skips_malformed_entries():
         "not a dict",
         {"type": "goal", "id": "g1"},
     ]) == ("goal", "g1")
+
+
+def test_touched_entity_ids_includes_selected_observation_entities():
+    customer_id = str(uuid4())
+    retrieval = SimpleNamespace(
+        models=[],
+        observations=[
+            SimpleNamespace(
+                entities_mentioned=[
+                    {"type": "customer", "id": customer_id},
+                    {"type": "actor", "id": str(uuid4())},
+                ]
+            )
+        ],
+        acts={},
+        resources=[],
+        trigger=None,
+        notes={},
+    )
+
+    touched = set(touched_entity_ids(retrieval))
+    assert ("customer", customer_id) in touched
+    assert ("customer_resource", customer_id) in touched
+    assert ("resource", customer_id) in touched
+
+
+def test_touched_entity_ids_aliases_relational_resources_as_customers():
+    customer_resource_id = str(uuid4())
+    capacity_resource_id = str(uuid4())
+    retrieval = SimpleNamespace(
+        models=[],
+        observations=[],
+        acts={},
+        resources=[
+            SimpleNamespace(id=customer_resource_id, kind="relational"),
+            SimpleNamespace(id=capacity_resource_id, kind="capacity"),
+        ],
+        trigger=None,
+        notes={},
+    )
+
+    touched = set(touched_entity_ids(retrieval))
+    assert ("resource", customer_resource_id) in touched
+    assert ("customer_resource", customer_resource_id) in touched
+    assert ("customer", customer_resource_id) in touched
+    assert ("resource", capacity_resource_id) in touched
+    assert ("customer", capacity_resource_id) not in touched
+
+
+def test_touched_entity_ids_includes_visible_inquiry_packet_refs():
+    direct_model_id = str(uuid4())
+    decisive_model_id = str(uuid4())
+    supporting_model_id = str(uuid4())
+    omitted_model_id = str(uuid4())
+    customer_id = str(uuid4())
+    observation_id = str(uuid4())
+    commitment_id = str(uuid4())
+    resource_id = str(uuid4())
+    retrieval = SimpleNamespace(
+        models=[],
+        observations=[],
+        acts={},
+        resources=[],
+        trigger=None,
+        notes={
+            "inquiry": {
+                "context_packet": {
+                    "resolved_entities": [
+                        {"type": "customer", "id": customer_id},
+                    ],
+                    "source_metadata": {
+                        "model_id": direct_model_id,
+                        "observation_id": observation_id,
+                    },
+                    "tiers": {
+                        "decisive_evidence": [
+                            {
+                                "source_type": "model",
+                                "source_ref": f"model:{decisive_model_id}",
+                            },
+                            {
+                                "source_type": "resource",
+                                "source_ref": f"resource:{resource_id}",
+                            },
+                        ],
+                        "supporting_evidence_groups": [
+                            {
+                                "source_refs": [
+                                    f"model:{supporting_model_id}",
+                                    f"commitment:{commitment_id}",
+                                ],
+                            },
+                        ],
+                        "omission_ledger": [
+                            {"source_ref": f"model:{omitted_model_id}"},
+                        ],
+                    },
+                }
+            }
+        },
+    )
+
+    touched = set(touched_entity_ids(retrieval))
+    assert ("model", direct_model_id) in touched
+    assert ("model", decisive_model_id) in touched
+    assert ("model", supporting_model_id) in touched
+    assert ("model", omitted_model_id) in touched
+    assert ("customer", customer_id) in touched
+    assert ("customer_resource", customer_id) in touched
+    assert ("observation", observation_id) in touched
+    assert ("commitment", commitment_id) in touched
+    assert ("resource", resource_id) in touched
+    assert ("customer_resource", resource_id) in touched
+    assert ("customer", resource_id) in touched
+
+
+def test_touched_entity_ids_includes_structured_model_references():
+    model_id = str(uuid4())
+    member_id = str(uuid4())
+    source_id = str(uuid4())
+    target_id = str(uuid4())
+    supporting_id = str(uuid4())
+    contributing_id = str(uuid4())
+    retrieval = SimpleNamespace(
+        models=[
+            SimpleNamespace(
+                id=model_id,
+                scope_entities=[],
+                supporting_model_ids=[supporting_id],
+                contributing_models=[contributing_id],
+                member_model_ids=[],
+                proposition={
+                    "kind": "situation",
+                    "member_model_ids": [member_id],
+                    "edges": [
+                        {
+                            "source_model_id": source_id,
+                            "target_model_id": target_id,
+                        }
+                    ],
+                },
+            )
+        ],
+        observations=[],
+        acts={},
+        resources=[],
+        trigger=None,
+        notes={},
+    )
+
+    touched = set(touched_entity_ids(retrieval))
+    assert ("model", model_id) in touched
+    assert ("model", member_id) in touched
+    assert ("model", source_id) in touched
+    assert ("model", target_id) in touched
+    assert ("model", supporting_id) in touched
+    assert ("model", contributing_id) in touched
+
+
+def test_touched_entity_ids_includes_model_refs_from_notes():
+    selected_id = str(uuid4())
+    pathway_id = str(uuid4())
+    nested_source_id = str(uuid4())
+    raw_content_id = str(uuid4())
+    dynamic_subject_id = str(uuid4())
+    generic_related_id = str(uuid4())
+    retrieval = SimpleNamespace(
+        models=[],
+        observations=[],
+        acts={},
+        resources=[],
+        trigger=None,
+        notes={
+            "model_selection": {
+                "selected_model_ids": [selected_id],
+                "pathway_survival": {
+                    "semantic": {"selected_model_ids": [pathway_id]},
+                },
+            },
+            "reasoning_frame": {
+                "dynamic_signals": [
+                    {
+                        "dynamic_kind": "oscillating",
+                        "subject_model_ids": [dynamic_subject_id],
+                        "related_model_ids": [generic_related_id],
+                    }
+                ],
+            },
+            "inquiry": {
+                "context_packet": {
+                    "candidate_state_changes": [
+                        {"source_model_id": nested_source_id},
+                    ],
+                    "tiers": {
+                        "decisive_evidence": [
+                            {
+                                "source_type": "model",
+                                "raw_content_ref": raw_content_id,
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+    )
+
+    touched = set(touched_entity_ids(retrieval))
+    assert ("model", selected_id) in touched
+    assert ("model", pathway_id) in touched
+    assert ("model", nested_source_id) in touched
+    assert ("model", raw_content_id) in touched
+    assert ("model", dynamic_subject_id) in touched
+    assert ("model", generic_related_id) in touched
 
 
 # ---------------------------------------------------------------------

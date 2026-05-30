@@ -51,8 +51,8 @@ from lib.shared.errors import MalformedFalsifierError
 #
 # Policy decision (T1a, see tests/synthesis_harness/REPORT.md §5):
 # accept *both* ISO-8601 duration strings (e.g. `P7D`, `PT4H`,
-# `P1M`, `P2W`, `PT30M`) AND the legacy human-readable form
-# (e.g. `7 days`, `4 weeks`, `any 4-week period`, `4w`). The Think prompt
+# `P1M`, `P2W`, `PT30M`) AND human-readable forms
+# (e.g. `7 days`, `4 weeks`, `any 4-week period`). The Think prompt
 # tells the LLM to emit ISO-8601 (services/think/prompt.py:55), but
 # the deadline-resolver evaluator historically only accepted the
 # human form, so falsifiers carrying valid ISO durations were
@@ -71,7 +71,7 @@ _HUMAN_WINDOW_RE = re.compile(
     (?:any\s+)?
     (\d+(?:\.\d+)?)    # number
     [- ]?              # optional separator
-    (second|sec|s|minute|min|m|hour|hr|h|day|d|week|wk|w|month|mo|year|yr|y)
+    (second|sec|minute|min|hour|hr|day|week|month|year|yr)
     s?                 # optional plural
     (?:\s+period)?     # optional "period"
     \s*$
@@ -91,17 +91,9 @@ _HUMAN_UNIT_SECONDS = {
 
 _HUMAN_UNIT_ALIASES = {
     "sec": "second",
-    "s": "second",
     "min": "minute",
-    "m": "minute",
     "hr": "hour",
-    "h": "hour",
-    "d": "day",
-    "wk": "week",
-    "w": "week",
-    "mo": "month",
     "yr": "year",
-    "y": "year",
 }
 
 # ISO-8601 duration: P[nY][nM][nW][nD][T[nH][nM][nS]]. We support the
@@ -130,7 +122,7 @@ def parse_within_window(spec: Any) -> timedelta | None:
 
     Accepts:
       * ISO-8601 duration: `P7D`, `PT4H`, `PT30M`, `P2W`, `P1Y6M`, `P1DT12H`.
-      * Human-readable: `7 days`, `4 weeks`, `6 hours`, `any 4-week period`, `4w`.
+      * Human-readable: `7 days`, `4 weeks`, `6 hours`, `any 4-week period`.
 
     Returns `None` for `None`, empty string, or non-string input — the
     "missing" case. Raises `MalformedFalsifierError` for non-empty
@@ -202,7 +194,7 @@ def parse_within_window(spec: Any) -> timedelta | None:
         raise MalformedFalsifierError(
             f"within_window {spec!r} does not match either the "
             f"ISO-8601 duration grammar (P7D, PT4H, …) or the "
-            f"human-readable grammar (\"7 days\", \"4 weeks\", \"4w\", …)",
+            f"human-readable grammar (\"7 days\", \"4 weeks\", …)",
             field="within_window",
             value=spec,
         )

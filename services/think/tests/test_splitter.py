@@ -231,6 +231,17 @@ def test_pressure_type_inference(natural: str, expected_pressure: str):
     assert sit.entry["proposition"].get("pressure_type") == expected_pressure
 
 
+def test_synthesized_situation_defaults_pressure_type_to_execution():
+    op = _make_op(
+        natural="The rollout has drifted and the owner has changed",
+        prop_kind="state",
+    )
+    out = split_compound_claim_op(op)
+    sit = out[-1]
+    assert sit.entry["proposition"]["kind"] == "situation"
+    assert sit.entry["proposition"]["pressure_type"] == "execution"
+
+
 # ---------------------------------------------------------------------
 # 6. is_compound returns (False, []) for atomic, (True, [reasons]) for
 #    compound

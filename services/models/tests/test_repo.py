@@ -181,11 +181,11 @@ async def test_confidence_within_range_passes_through(
     from services.models.calibration import PROP_KIND_DEFAULTS
     falsifier = None
     if raw_conf > 0.7:
-        falsifier = {
-            "kind": "observation_pattern",
-            "pattern": "x" * 40,
-            "within_window": "4w",
-        }
+            falsifier = {
+                "kind": "observation_pattern",
+                "pattern": "x" * 40,
+                "within_window": "4 weeks",
+            }
     with notify_scope():
         row = await repo.insert(
             _mc(
@@ -336,6 +336,92 @@ async def test_all_ten_proposition_kinds_insert(
         )
     assert row.proposition_kind == prop["kind"]
     assert row.proposition["kind"] == prop["kind"]
+
+
+async def test_memory_grammar_columns_are_derived_on_insert(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+) -> None:
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=prediction_proposition(),
+                natural="Beacon renewal forecast depends on deployment capacity.",
+                embedding=make_embedding("memory-grammar-prediction"),
+                scope_entities=[{"type": "customer", "id": str(uuid7())}],
+                confidence=0.5,
+                scope_temporal={"type": "future", "deadline": "2026-12-01T00:00:00Z"},
+            ),
+            conn=tx_conn,
+        )
+
+    assert row.proposition_kind == "prediction"
+    assert row.claim_role == "prediction"
+    assert row.abstraction_level == "atomic"
+    assert row.time_mode == "future"
+    assert row.modality == "expected"
+    assert row.polarity == "neutral"
+    assert row.domain_tags == ["customers", "people", "systems"]
+    assert row.memory_grammar_version == "v1"
+
+
+async def test_situation_members_are_mirrored_to_composition_sidecar(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    member_a = uuid7()
+    member_b = uuid7()
+    evidence_id = uuid7()
+    prop = {
+        "kind": "situation",
+        "situation": "Beacon renewal risk is now cross-functional",
+        "summary": "Delivery, capacity, and pricing signals now reinforce one risk.",
+        "member_model_ids": [str(member_a), str(member_b)],
+        "relationship_summary": "The members jointly describe a renewal risk loop.",
+        "status": "forming",
+        "pressure_type": "revenue",
+        "shared_mechanism": "All members route through the same renewal readiness gap.",
+        "judgment_change": "Together the claims justify treating the renewal as a situation.",
+        "evidence_event_ids": [str(evidence_id)],
+        "open_falsifier": "Beacon renews and the launch proceeds on schedule.",
+    }
+
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=prop,
+                natural="Beacon renewal risk is now cross-functional.",
+                embedding=embedding,
+                confidence=0.5,
+            ),
+            conn=tx_conn,
+        )
+
+    members = await tx_conn.fetch(
+        """
+        SELECT member_model_id, evidence_event_ids
+        FROM model_composition_members
+        WHERE tenant_id = $1 AND composite_model_id = $2
+        ORDER BY member_model_id::text
+        """,
+        tenant,
+        row.id,
+    )
+    assert {r["member_model_id"] for r in members} == {member_a, member_b}
+    assert all(list(r["evidence_event_ids"]) == [evidence_id] for r in members)
 
 
 async def test_invalid_proposition_kind_rejected(

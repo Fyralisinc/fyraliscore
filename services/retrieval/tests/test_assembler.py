@@ -16,6 +16,7 @@ from services.retrieval.assembler import (
     ContextBundle,
     assemble_context,
 )
+from services.retrieval.config import RetrievalConfig
 from services.retrieval.primary import TriggerContext, primary_retrieve
 
 from services.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -65,6 +66,40 @@ async def test_assembler_respects_size_budgets(
     assert selection["selected_count"] == len(bundle.models)
     assert set(selection["pathway_survival"]).issuperset({"A", "B", "C", "G"})
     assert set(selection["selected_model_ids"]) == {str(m.id) for m in bundle.models}
+
+
+async def test_assembler_uses_configured_default_budgets(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    result = await _retrieve(tx_conn, fresh_db, tenant, fs.hero_commitment_id)
+    bundle = await assemble_context(
+        result,
+        AccessContext(tenant_id=tenant, requestor_actor_id=None),
+        tx_conn,
+        config=RetrievalConfig(
+            assembler_budget_models=7,
+            assembler_budget_observations=3,
+            assembler_budget_acts_total=4,
+            assembler_budget_resources=2,
+        ),
+    )
+
+    assert len(bundle.models) <= 7
+    assert len(bundle.observations) <= 3
+    assert (
+        len(bundle.acts_summary["goals"])
+        + len(bundle.acts_summary["commitments"])
+        + len(bundle.acts_summary["decisions"])
+        <= 4
+    )
+    assert len(bundle.resources_summary) <= 2
+    assert bundle.notes["budgets"] == {
+        "observations": 3,
+        "models": 7,
+        "acts_total": 4,
+        "resources": 2,
+    }
 
 
 async def test_assembler_access_redacts_private_model_for_outside_actor(

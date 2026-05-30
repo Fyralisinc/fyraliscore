@@ -162,6 +162,153 @@ async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
         assert outcome == "success"
 
 
+async def test_apply_dedupes_split_situation_members_after_reconcile(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Duplicate atomic splits can reconcile to the same Model twice."""
+    from services.think.tests.conftest import _insert_observation
+
+    natural = (
+        "Atlas renewal is at risk and Atlas renewal is at risk because "
+        "audit evidence is missing"
+    )
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text=natural)
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(oid),
+                        "proposition": {
+                            "kind": "concern",
+                            "about": "Atlas renewal",
+                            "nature": natural,
+                            "raised_by": "test",
+                        },
+                        "natural": natural,
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.6,
+                        "confidence_at_assertion": 0.6,
+                        "supporting_event_ids": [str(oid)],
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT proposition
+            FROM models
+            WHERE tenant_id = $1
+              AND proposition_kind = 'situation'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            tenant,
+        )
+
+    assert result["split_summary"]["compound_inputs"] == 1
+    assert row is not None
+    proposition = row["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    member_ids = proposition["member_model_ids"]
+    assert len(member_ids) == len(set(member_ids))
+    assert len(member_ids) >= 1
+
+
+async def test_apply_adds_required_situation_compositional_defaults(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Live/provider or splitter situations missing DB-required fields
+    should be normalized before insert."""
+    from services.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="A composite execution pressure emerged.",
+        )
+        member = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Atlas operating pressure is visible.",
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(oid),
+                        "proposition": {
+                            "kind": "situation",
+                            "situation": "Atlas operating pressure",
+                            "summary": "Atlas has linked operating pressure.",
+                            "member_model_ids": [str(member)],
+                            "relationship_summary": (
+                                "Operating signals are linked."
+                            ),
+                            "status": "forming",
+                        },
+                        "natural": "Atlas operating pressure is forming.",
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.6,
+                        "confidence_at_assertion": 0.6,
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT proposition
+            FROM models
+            WHERE tenant_id = $1
+              AND proposition_kind = 'situation'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            tenant,
+        )
+
+    assert result["claim_ops"][0]["op"] == "insert"
+    assert row is not None
+    proposition = row["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    assert proposition["pressure_type"] == "execution"
+    assert proposition["shared_mechanism"]
+
+
 async def test_apply_claim_insert_strips_llm_invented_model_id(
     fresh_db,
     tenant,

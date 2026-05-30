@@ -32,7 +32,6 @@ from services.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
     TriggerKind,
-    primary_retrieve,
 )
 
 
@@ -311,16 +310,29 @@ async def run_retrieval(
     budget_models: int | None = None,
     budget_observations: int | None = None,
 ) -> tuple[RetrievalResult, ContextBundle]:
-    """Run primary_retrieve + assemble_context inside the caller's
-    transaction. Central so every strategy honours the same access
-    control + size budgets."""
+    """Run active fast-path retrieval + assemble_context.
+
+    The new execution layer defaults query retrieval to the proposal's
+    Fast Path: baseline retrieval plus a compact context packet, without
+    the full deep-inquiry loop.
+    """
     from services.retrieval.assembler import (
         _BUDGET_MODELS,
         _BUDGET_OBSERVATIONS,
     )
+    from services.execution.inquiry import InquiryResult, retrieve_for_execution
 
-    retrieval_result = await primary_retrieve(
-        trigger, ctx.conn, embedder=ctx.embedder,
+    active_result = await retrieve_for_execution(
+        trigger,
+        ctx.conn,
+        embedder=ctx.embedder,
+        route="FAST_PATH",
+        mode="fast",
+    )
+    retrieval_result = (
+        active_result.retrieval_result
+        if isinstance(active_result, InquiryResult)
+        else active_result
     )
     bundle = await assemble_context(
         retrieval_result,

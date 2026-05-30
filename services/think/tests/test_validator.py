@@ -380,7 +380,194 @@ async def test_validate_doneverified_authoritative_evidence_passes(fresh_db, ten
         assert len(validated.act_ops) == 1
 
 
-async def test_validate_rejects_commitment_basis_below_threshold(fresh_db, tenant):
+async def test_validate_canonicalizes_unsupported_blocked_to_paused(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        actor_id = uuid7()
+        await conn.execute(
+            "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+            "VALUES ($1, $2, 'human_internal', 'x', 'active')",
+            actor_id, tenant,
+        )
+        cid = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO commitments
+              (id, tenant_id, title, state, owner_id, created_by_event_id,
+               last_state_change_at)
+            VALUES ($1, $2, 'x', 'active', $3, $4, now())
+            """,
+            cid, tenant, actor_id, oid,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="transition_commitment",
+                    confidence_basis=mid,
+                    entity={
+                        "id": str(cid),
+                        "new_state": "blocked",
+                    },
+                ),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.act_ops) == 1
+    entity = validated.act_ops[0].entity
+    assert entity["new_state"] == "paused"
+    assert entity["canonicalized_from_state"] == "blocked"
+    assert (
+        entity["canonicalization_reason"]
+        == "blocked_without_dependency_or_revisited_decision"
+    )
+
+
+async def test_validate_neutralizes_paused_blocked_without_dependency(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        actor_id = uuid7()
+        await conn.execute(
+            "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+            "VALUES ($1, $2, 'human_internal', 'x', 'active')",
+            actor_id, tenant,
+        )
+        cid = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO commitments
+              (id, tenant_id, title, state, owner_id, created_by_event_id,
+               last_state_change_at)
+            VALUES ($1, $2, 'x', 'paused', $3, $4, now())
+            """,
+            cid, tenant, actor_id, oid,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="transition_commitment",
+                    confidence_basis=mid,
+                    entity={
+                        "id": str(cid),
+                        "new_state": "blocked",
+                    },
+                ),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.act_ops == []
+    assert validated.dropped_op_count == 0
+    assert validated.dropped_op_errors == []
+
+
+@pytest.mark.parametrize("new_state", ["paused", "blocked"])
+async def test_validate_neutralizes_proposed_commitment_runtime_state(
+    fresh_db,
+    tenant,
+    new_state,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        actor_id = uuid7()
+        await conn.execute(
+            "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+            "VALUES ($1, $2, 'human_internal', 'x', 'active')",
+            actor_id, tenant,
+        )
+        cid = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO commitments
+              (id, tenant_id, title, state, owner_id, created_by_event_id,
+               last_state_change_at)
+            VALUES ($1, $2, 'x', 'proposed', $3, $4, now())
+            """,
+            cid, tenant, actor_id, oid,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="transition_commitment",
+                    confidence_basis=mid,
+                    entity={
+                        "id": str(cid),
+                        "new_state": new_state,
+                    },
+                ),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.act_ops == []
+    assert validated.dropped_op_count == 0
+    assert validated.dropped_op_errors == []
+
+
+async def test_validate_canonicalizes_drafted_decision_revisited_to_active(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        did = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO decisions (
+              id, tenant_id, title, decision_text, state, created_by_event_id
+            ) VALUES ($1, $2, 'Adopt Kafka', 'Use Kafka', 'drafted', $3)
+            """,
+            did,
+            tenant,
+            oid,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="transition_decision",
+                    confidence_basis=mid,
+                    entity={
+                        "id": str(did),
+                        "new_state": "revisited",
+                    },
+                ),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.act_ops) == 1
+    entity = validated.act_ops[0].entity
+    assert entity["new_state"] == "active"
+    assert entity["canonicalized_from_state"] == "revisited"
+    assert (
+        entity["canonicalization_reason"]
+        == "drafted_decision_cannot_be_revisited"
+    )
+
+
+async def test_validate_neutralizes_commitment_basis_below_threshold(fresh_db, tenant):
     """
     ActOp transition_commitment_to_doneverified requires threshold
     0.80 for non-external, non-critical basis. A 0.70 basis fails.
@@ -430,9 +617,45 @@ async def test_validate_rejects_commitment_basis_below_threshold(fresh_db, tenan
             ],
         )
         validated = await validate(diff, rr, conn, allowed_region=None)
-        # act_op rejected (confidence too low), claim_ops survive.
+        # act_op neutralized (confidence too low), claim_ops survive.
         assert len(validated.act_ops) == 0
         assert len(validated.claim_ops) == 4
+        assert validated.dropped_op_count == 0
+
+
+async def test_validate_all_low_confidence_act_ops_returns_empty_diff(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.60)
+    async with fresh_db.acquire() as conn:
+        did = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO decisions (
+              id, tenant_id, title, decision_text, state, created_by_event_id
+            ) VALUES ($1, $2, 'x', 'x', 'active', $3)
+            """,
+            did, tenant, oid,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="transition_decision",
+                    confidence_basis=mid,
+                    entity={"id": str(did), "new_state": "revisited"},
+                )
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.act_ops == []
+    assert validated.dropped_op_count == 0
+    assert validated.dropped_op_errors == []
 
 
 async def test_validate_all_bad_ops_raises_failure(fresh_db, tenant):
@@ -596,6 +819,76 @@ async def test_validate_accepts_evidence_backed_edge_op(fresh_db, tenant):
         assert len(validated.edge_ops) == 1
         assert validated.edge_ops[0].edge_kind == "contradicts"
         assert validated.edge_ops[0].evidence_event_ids == [obs_id]
+
+
+async def test_validate_neutralizes_existing_graph_cycle_edge(fresh_db, tenant):
+    from services.models.edges_repo import EdgesRepo
+
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        await EdgesRepo().link(
+            conn,
+            source=a,
+            target=b,
+            kind="supports",
+            tenant_id=tenant,
+            detected_by="think_edge_op",
+            confidence=0.8,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=b,
+                    target_model_id=a,
+                    edge_kind="supports",
+                    confidence=0.8,
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.edge_ops == []
+    assert validated.dropped_op_count == 0
+    assert validated.dropped_op_errors == []
+
+
+async def test_validate_neutralizes_same_diff_cycle_edge(fresh_db, tenant):
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="supports",
+                    confidence=0.8,
+                ),
+                EdgeOp(
+                    op="add",
+                    source_model_id=b,
+                    target_model_id=a,
+                    edge_kind="supports",
+                    confidence=0.8,
+                ),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.edge_ops) == 1
+    assert validated.edge_ops[0].source_model_id == a
+    assert validated.edge_ops[0].target_model_id == b
+    assert validated.dropped_op_count == 0
+    assert validated.dropped_op_errors == []
 
 
 async def test_validate_allows_same_diff_insert_as_edge_and_act_basis(

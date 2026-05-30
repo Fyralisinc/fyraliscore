@@ -244,8 +244,28 @@ async def test_github_pr_merge_drives_commitment_doneverified_and_goal_health(
             "SELECT status FROM think_runs WHERE trigger_id = $1",
             trig_id,
         )
+        inquiry_row = await conn.fetchrow(
+            """
+            SELECT stop_status, question_count, evidence_count, context_packet
+            FROM inquiry_sessions
+            WHERE tenant_id = $1 AND signal_ref_id = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            tenant,
+            obs_id,
+        )
 
     assert cstate == "doneverified"
+    assert inquiry_row is not None
+    assert inquiry_row["evidence_count"] > 0
+    context_packet = inquiry_row["context_packet"]
+    if isinstance(context_packet, str):
+        context_packet = json.loads(context_packet)
+    assert context_packet["sufficiency_verdict"]["status"] in {
+        "sufficient_for_reasoning",
+        "budget_exhausted",
+    }
     # The commitment's critical-path terminal state keeps the Goal healthy.
     assert goal_row["cached_health"] in ("healthy", "degraded")
     # At least one state_change transitions OUR commitment to 'doneverified'.

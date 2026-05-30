@@ -63,6 +63,13 @@ from services.ingestion.handlers import (
 )
 from services.observations.events import emit_pending_notifications, notify_scope
 from services.observations.repo import ObservationRepository
+from services.execution import (
+    SignalEnvelope,
+    decide_route,
+    record_routing_decision,
+    routing_decision_status_from_env,
+    should_record_routing_decisions,
+)
 
 
 MAX_PAYLOAD_BYTES = 1 * 1024 * 1024  # 1 MB per BUILD-PLAN tests
@@ -308,8 +315,39 @@ async def ingest(
                             trigger_queue_id=None,
                         )
                 row = await repo.insert(obs_create, conn=conn)
+                signal_type = _signal_type_for_prompt(draft, content)
+                routing_decision = None
+                if should_record_routing_decisions():
+                    envelope = SignalEnvelope.from_observation(
+                        row,
+                        signal_type=signal_type,
+                        trigger_type="T1_EVENT",
+                    )
+                    routing_decision = decide_route(envelope)
+                route_status = routing_decision_status_from_env()
+                effective_enqueue_trigger = enqueue_trigger
+                trigger_kind = "T1"
+                trigger_subkind = "event_arrival"
+                if routing_decision is not None and route_status == "enforced":
+                    if routing_decision.route in {
+                        "IGNORE_OR_ARCHIVE",
+                        "HUMAN_VALIDATION_PATH",
+                    }:
+                        effective_enqueue_trigger = False
+                    elif routing_decision.route == "BACKGROUND_PATH":
+                        trigger_kind = "T3" if row.kind == "anomaly_flagged" else "T4"
+                        trigger_subkind = (
+                            "anomaly_detected"
+                            if trigger_kind == "T3"
+                            else "background_inquiry"
+                        )
+                    elif (
+                        routing_decision.route == "DETERMINISTIC_UPDATE"
+                        and row.kind == "state_change"
+                    ):
+                        trigger_subkind = "state_change"
                 # ---- step 7: enqueue T1 trigger -----------------------
-                if enqueue_trigger:
+                if effective_enqueue_trigger:
                     trigger_queue_id = uuid7()
                     await conn.execute(
                         """
@@ -317,7 +355,7 @@ async def ingest(
                             id, tenant_id, trigger_kind, trigger_subkind,
                             observation_id, model_id, payload
                         ) VALUES (
-                            $1, $2, 'T1', 'event_arrival', $3, NULL, $4::jsonb
+                            $1, $2, $5, $6, $3, NULL, $4::jsonb
                         )
                         """,
                         trigger_queue_id,
@@ -328,9 +366,7 @@ async def ingest(
                                 "source_channel": draft.source_channel,
                                 "kind": row.kind,
                                 "observation_kind": row.kind,
-                                "signal_type": _signal_type_for_prompt(
-                                    draft, content
-                                ),
+                                "signal_type": signal_type,
                                 "trust_tier": row.trust_tier,
                                 "seed_occurred_at": row.occurred_at.isoformat(),
                                 "seed_natural_text": (row.content_text or "")[:2000],
@@ -341,7 +377,21 @@ async def ingest(
                             },
                             default=str,
                         ),
+                        trigger_kind,
+                        trigger_subkind,
                     )
+                if routing_decision is not None:
+                    decision_status = (
+                        "skipped"
+                        if route_status == "enforced"
+                        and not effective_enqueue_trigger
+                        else route_status
+                    )
+                    decision = routing_decision.with_status(
+                        decision_status,
+                        enqueued_trigger_id=trigger_queue_id,
+                    )
+                    await record_routing_decision(conn, decision)
         # Transaction committed — flush NOTIFY.
         if scope.events:
             await emit_pending_notifications(pool, scope.events)

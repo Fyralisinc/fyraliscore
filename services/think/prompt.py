@@ -37,9 +37,13 @@ if TYPE_CHECKING:
 # Per-section char budgets.
 _OBS_CHAR_BUDGET = 4000
 _MODELS_CHAR_BUDGET = 4000
+_MODELS_INQUIRY_CHAR_BUDGET = 2400
 _ACTS_CHAR_BUDGET = 12000
 _RESOURCES_CHAR_BUDGET = 1000
 _PER_ITEM_CHAR_LIMIT = 1500
+_MODEL_DETAIL_CHAR_LIMIT = 700
+_MODEL_MANIFEST_CHAR_LIMIT = 220
+_MODEL_DETAIL_ROW_LIMIT = 8
 _RETRIEVAL_GUIDANCE_ID_LIMIT = 12
 
 
@@ -199,9 +203,17 @@ Act ops:
 - act_ops mutate Goals/Commitments/Decisions. Common cases:
   * PR merged, deployed, ticket closed/moved Done for a known commitment ->
     transition_commitment to doneunverified.
-  * work blocked/waiting/on hold for a known commitment ->
-    transition_commitment to blocked.
-  * a decision is explicitly revisited -> transition_decision to revisited.
+  * work waiting/on hold/stalled for a known commitment ->
+    transition_commitment to paused, but only if that commitment is already
+    active, blocked, paused, or doneunverified. Proposed commitments cannot be
+    paused or blocked; use a scoped concern/state claim instead.
+  * transition_commitment to blocked ONLY when the context explicitly shows
+    an unsatisfied dependency or a revisited constraining decision for that
+    exact commitment; otherwise use paused plus a state/concern claim.
+  * an active decision is explicitly revisited -> transition_decision to
+    revisited. If the matching decision is still drafted, write a scoped
+    concern/state claim instead; drafted decisions can only transition to
+    active.
 - `confidence_basis` MUST be either an existing Model id copied from <models> OR
   the `born_from_event_id` of a claim_ops.insert in the same diff. Use the latter
   when the new claim is the evidence for the transition; the system rewrites it
@@ -267,6 +279,10 @@ edge_ops:
   inserted Model id. Never use other event ids as endpoints. Never use
   customer, commitment, goal, decision, or resource UUIDs as edge endpoints;
   put those non-Model entities in scope_entities on the relevant claim.
+- DAG-scoped edges (`supports`, `instance_of`, `contributes_to_resolution`,
+  `superseded_by`) must not create reciprocal or transitive loops. If the
+  selected graph already implies target reaches source, omit the edge; if
+  direction is uncertain, choose no edge rather than a cyclic support chain.
 - contradicts/weakens require numeric weight. supports/causes/explains/predicts/
   blocks/enables/same_issue_as/co_occurs_with/analogous_to/alternative_to/
   early_warning_for may set weight. instance_of/contributes_to_resolution/
@@ -652,7 +668,7 @@ def build_prompt(
         reason=reason_for_trigger,
     )
     frame = reasoning_frame.to_prompt_section() if reasoning_frame else None
-    context = _build_context_section(bundle, triggering_actor_summary)
+    context = _build_context_section(trigger, bundle, triggering_actor_summary)
     instructions = _build_instructions(trigger)
     parts = [triggering]
     if frame:
@@ -766,6 +782,7 @@ def _relationship_candidate_lines(candidate: dict[str, Any]) -> list[str]:
 
 
 def _build_context_section(
+    trigger: TriggerContext,
     bundle: ContextBundle,
     actor_summary: str | None,
 ) -> str:
@@ -786,6 +803,10 @@ def _build_context_section(
     )
     if retrieval_guidance:
         lines.extend(retrieval_guidance)
+
+    inquiry_packet = _build_inquiry_context_packet_section(bundle)
+    if inquiry_packet:
+        lines.extend(inquiry_packet)
 
     # Observations
     obs_parts = ["  <observations>"]
@@ -810,44 +831,15 @@ def _build_context_section(
     obs_parts.append("  </observations>")
     lines.extend(obs_parts)
 
-    # Models — include existing scope so the LLM sees how peers are
-    # scoped and can reuse the same actor/entity UUIDs for new Models.
-    mod_parts = ["  <models>"]
-    used = 0
-    for m in bundle.models:
-        falsifier = (
-            m.falsifier.get("kind") if isinstance(m.falsifier, dict) else None
+    lines.extend(
+        _build_models_section(
+            trigger,
+            bundle,
+            selected_model_ids=selected_model_ids,
+            graph_model_ids=graph_model_ids,
+            actor_mentions=actor_mentions,
         )
-        for a in m.scope_actors:
-            actor_mentions[str(a)] = actor_mentions.get(str(a), 0) + 1
-        scope_actors_repr = (
-            "[" + ",".join(str(a) for a in m.scope_actors) + "]"
-            if m.scope_actors else "[]"
-        )
-        scope_entities_repr = json.dumps(
-            [
-                {"type": e.get("type"), "id": str(e.get("id"))}
-                for e in m.scope_entities
-                if isinstance(e, dict)
-            ],
-            default=str,
-        )
-        piece = (
-            f"    - id={m.id} kind={m.proposition_kind} "
-            f"retrieval={_retrieval_tags(m.id, selected_model_ids, graph_model_ids)} "
-            f"conf={m.confidence:.2f} act={m.activation:.2f} "
-            f"falsifier={falsifier} status={m.status} "
-            f"scope_actors={scope_actors_repr} "
-            f"scope_entities={_trunc(scope_entities_repr, 400)} "
-            f"natural={_trunc(m.natural, _PER_ITEM_CHAR_LIMIT)}"
-        )
-        if used + len(piece) > _MODELS_CHAR_BUDGET:
-            mod_parts.append("    - [truncated — more models omitted]")
-            break
-        mod_parts.append(piece)
-        used += len(piece)
-    mod_parts.append("  </models>")
-    lines.extend(mod_parts)
+    )
 
     # Acts (goals/commitments/decisions)
     act_parts = ["  <acts>"]
@@ -989,6 +981,205 @@ def _build_context_section(
     return "\n".join(lines)
 
 
+def _build_models_section(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+    actor_mentions: dict[str, int],
+) -> list[str]:
+    inquiry_packet = _inquiry_context_packet(bundle)
+    inquiry_mode = inquiry_packet is not None
+    actionable_ids = _actionable_model_ids(
+        trigger,
+        bundle,
+        graph_model_ids=graph_model_ids,
+    )
+    budget = _MODELS_INQUIRY_CHAR_BUDGET if inquiry_mode else _MODELS_CHAR_BUDGET
+    lines = ["  <models>"]
+    if inquiry_mode:
+        lines.append(
+            "    manifest_mode: compact; use <inquiry_context_packet> as the "
+            "primary evidence summary. Full rows are limited to actionable "
+            "anchors."
+        )
+
+    used = 0
+    detailed_rows = 0
+    for idx, model in enumerate(bundle.models):
+        for actor_id in _model_scope_actors(model):
+            actor_mentions[str(actor_id)] = actor_mentions.get(str(actor_id), 0) + 1
+
+        model_id = _model_id(model)
+        wants_detail = (
+            not inquiry_mode
+            or model_id in actionable_ids
+            or (not actionable_ids and idx < 2)
+        )
+        include_detail = wants_detail and detailed_rows < _MODEL_DETAIL_ROW_LIMIT
+        piece = _format_model_row(
+            model,
+            selected_model_ids=selected_model_ids,
+            graph_model_ids=graph_model_ids,
+            detail=include_detail,
+        )
+        if used + len(piece) > budget:
+            remaining = max(0, len(bundle.models) - idx)
+            lines.append(
+                f"    - [truncated — {remaining} more model manifest rows omitted]"
+            )
+            break
+        lines.append(piece)
+        used += len(piece)
+        if include_detail:
+            detailed_rows += 1
+
+    lines.append("  </models>")
+    return lines
+
+
+def _format_model_row(
+    model: Any,
+    *,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+    detail: bool,
+) -> str:
+    model_id = _model_id(model)
+    natural = _model_natural(model)
+    scope_entities_repr = _model_scope_entities_repr(
+        model,
+        limit=400 if detail else 180,
+    )
+    scope_actors = _model_scope_actors(model)
+    scope_actors_repr = (
+        "[" + ",".join(str(actor_id) for actor_id in scope_actors) + "]"
+        if scope_actors else "[]"
+    )
+    falsifier = getattr(model, "falsifier", None)
+    falsifier_kind = falsifier.get("kind") if isinstance(falsifier, dict) else None
+    detail_label = "full" if detail else "manifest"
+    text_label = "natural" if detail else "summary"
+    text_limit = _MODEL_DETAIL_CHAR_LIMIT if detail else _MODEL_MANIFEST_CHAR_LIMIT
+    return (
+        f"    - id={model_id} detail={detail_label} "
+        f"kind={getattr(model, 'proposition_kind', 'unknown')} "
+        f"retrieval={_retrieval_tags(model_id, selected_model_ids, graph_model_ids)} "
+        f"conf={_score(getattr(model, 'confidence', None))} "
+        f"act={_score(getattr(model, 'activation', None))} "
+        f"falsifier={falsifier_kind} "
+        f"status={getattr(model, 'status', 'unknown')} "
+        f"scope_actors={scope_actors_repr} "
+        f"scope_entities={scope_entities_repr} "
+        f"{text_label}={_trunc(natural, text_limit)}"
+    )
+
+
+def _model_id(model: Any) -> str:
+    return str(getattr(model, "id", "unknown"))
+
+
+def _model_natural(model: Any) -> str:
+    natural = getattr(model, "natural", None)
+    if natural:
+        return str(natural)
+    proposition = getattr(model, "proposition", None)
+    if proposition is not None:
+        return json.dumps(proposition, sort_keys=True, default=str)
+    return ""
+
+
+def _model_scope_actors(model: Any) -> list[Any]:
+    actors = getattr(model, "scope_actors", None) or []
+    return list(actors)
+
+
+def _model_scope_entities_repr(model: Any, *, limit: int) -> str:
+    entities = getattr(model, "scope_entities", None) or []
+    compact = [
+        {"type": e.get("type"), "id": str(e.get("id"))}
+        for e in entities
+        if isinstance(e, dict)
+    ]
+    return _trunc(json.dumps(compact, default=str), limit)
+
+
+def _score(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _inquiry_context_packet(bundle: ContextBundle) -> dict[str, Any] | None:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    packet = notes.get("inquiry_context_packet")
+    return packet if isinstance(packet, dict) else None
+
+
+def _actionable_model_ids(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    graph_model_ids: set[str],
+) -> set[str]:
+    ids = set(graph_model_ids)
+    if trigger.model_id:
+        ids.add(str(trigger.model_id))
+    ids.update(str(mid) for mid in (trigger.member_model_ids or []))
+    ids.update(_model_ids_from_inquiry_packet(bundle))
+    return ids
+
+
+def _model_ids_from_inquiry_packet(bundle: ContextBundle) -> set[str]:
+    packet = _inquiry_context_packet(bundle)
+    if packet is None:
+        return set()
+    tiers = packet.get("tiers") if isinstance(packet.get("tiers"), dict) else {}
+    evidence = tiers.get("decisive_evidence") or []
+    ids: set[str] = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        model_id = _model_id_from_evidence_ref(item)
+        if model_id:
+            ids.add(model_id)
+    for group in tiers.get("supporting_evidence_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        claim_supported = str(group.get("claim_supported") or "")
+        if claim_supported in {"", "model"}:
+            continue
+        for ref in group.get("source_refs") or []:
+            model_id = _model_id_from_source_ref(ref)
+            if model_id:
+                ids.add(model_id)
+    return ids
+
+
+def _model_id_from_evidence_ref(item: dict[str, Any]) -> str | None:
+    if item.get("source_type") != "model":
+        return None
+    for key in ("source_ref", "raw_content_ref", "source_ref_id"):
+        value = item.get(key)
+        if not value:
+            continue
+        model_id = _model_id_from_source_ref(value)
+        if model_id:
+            return model_id
+        if key == "source_ref_id":
+            return str(value)
+    return None
+
+
+def _model_id_from_source_ref(value: Any) -> str | None:
+    text = str(value)
+    if text.startswith("model:"):
+        return text.split(":", 1)[1]
+    return None
+
+
 def _selected_model_sets(bundle: ContextBundle) -> tuple[set[str], set[str]]:
     notes = bundle.notes if isinstance(bundle.notes, dict) else {}
     selection = notes.get("model_selection")
@@ -1104,6 +1295,12 @@ def _build_retrieval_guidance_section(
             "diff when connecting a new claim to existing memory."
         )
         lines.append(
+            "    Do not emit reciprocal or transitive loops for DAG-scoped "
+            "edges: supports, instance_of, contributes_to_resolution, and "
+            "superseded_by. If a selected graph path already runs from the "
+            "target back to the source, omit the edge."
+        )
+        lines.append(
             "    If you insert a new claim that advances, confirms, completes, "
             "or is a milestone within the same workstream as a graph-anchor "
             "Model, add an edge from the new claim's born_from_event_id to "
@@ -1118,6 +1315,75 @@ def _build_retrieval_guidance_section(
         "state change, edge, or action."
     )
     lines.append("  </retrieval_priority>")
+    return lines
+
+
+def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    packet = notes.get("inquiry_context_packet")
+    if not isinstance(packet, dict):
+        return []
+    verdict = packet.get("sufficiency_verdict")
+    hypotheses = packet.get("hypotheses") or []
+    questions = packet.get("question_path") or []
+    tiers = packet.get("tiers") or {}
+    decisive = tiers.get("decisive_evidence") or []
+    supporting = tiers.get("supporting_evidence_groups") or []
+    omissions = tiers.get("omission_ledger") or []
+
+    lines = ["  <inquiry_context_packet>"]
+    lines.append(
+        "    This packet is the adaptive inquiry summary. Treat it as "
+        "retrieval guidance and provenance, not as permission to invent ids."
+    )
+    lines.append(
+        "    signal_summary: "
+        + _trunc(str(packet.get("signal_summary") or ""), 700)
+    )
+    if isinstance(verdict, dict):
+        lines.append(
+            "    sufficiency: "
+            + _trunc(json.dumps(verdict, sort_keys=True, default=str), 900)
+        )
+    if hypotheses:
+        lines.append("    hypotheses:")
+        for h in hypotheses[:5]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(h, sort_keys=True, default=str), 500)
+            )
+    if questions:
+        lines.append("    question_path:")
+        for q in questions[:8]:
+            qid = q.get("question_id") if isinstance(q, dict) else None
+            question = q.get("question") if isinstance(q, dict) else q
+            primitive = q.get("primitive") if isinstance(q, dict) else None
+            lines.append(
+                f"      - {qid or 'Q'} [{primitive or 'question'}]: "
+                + _trunc(str(question), 260)
+            )
+    if decisive:
+        lines.append("    decisive_evidence:")
+        for e in decisive[:12]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(e, sort_keys=True, default=str), 700)
+            )
+    if supporting:
+        lines.append("    supporting_evidence_groups:")
+        for group in supporting[:6]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(group, sort_keys=True, default=str), 500)
+            )
+    if omissions:
+        lines.append("    omission_ledger:")
+        for item in omissions[:6]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(item, sort_keys=True, default=str), 400)
+            )
+    lines.append("  </inquiry_context_packet>")
     return lines
 
 

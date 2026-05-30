@@ -530,6 +530,8 @@ async def primary_retrieve(
             "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
             "scoring_mode": cfg.scoring_mode,
             "assembler_use_mmr": cfg.assembler_use_mmr,
+            "assembler_budget_models": cfg.assembler_budget_models,
+            "assembler_budget_observations": cfg.assembler_budget_observations,
         },
     }
 
@@ -623,6 +625,7 @@ async def primary_retrieve(
                     trigger.tenant_id,
                     conn,
                     scope_actors=effective_scope_actors,
+                    scope_entities=effective_seed_entities,
                     include_entity_mentions=cfg.temporal_include_entity_mentions,
                 )
                 pathway_results.append(pr_c)

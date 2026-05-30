@@ -1179,13 +1179,14 @@ async def pathway_c_temporal(
     conn: asyncpg.Connection,
     *,
     scope_actors: Sequence[UUID] | None = None,
+    scope_entities: Sequence[dict[str, Any]] | None = None,
     max_observations: int = _TEMPORAL_MAX_OBSERVATIONS,
     include_entity_mentions: bool = True,
 ) -> PathwayResult:
     """
     Return Observations in [seed-window, seed+window] (tenant-filtered,
-    optionally actor-filtered), plus active Models whose `created_at`
-    or `last_retrieved_at` falls in the same window.
+    optionally actor/entity-filtered), plus active Models whose
+    `created_at` or `last_retrieved_at` falls in the same window.
 
     The explicit [start, end] filter enables partition pruning on
     `observations` (partitioned monthly by occurred_at).
@@ -1208,13 +1209,24 @@ async def pathway_c_temporal(
         "start": start.isoformat(),
         "end": end.isoformat(),
         "scope_actors_count": len(scope_actors or []),
+        "scope_entities_count": len(scope_entities or []),
         "include_entity_mentions": include_entity_mentions,
     }
+    entity_list: list[dict[str, str]] = []
+    for ent in scope_entities or []:
+        if not isinstance(ent, dict):
+            continue
+        etype = ent.get("type")
+        eid = ent.get("id")
+        if etype is None or eid is None:
+            continue
+        entity_list.append({"type": str(etype), "id": str(eid)})
 
-    # Observations query — tenant + time-range; optional actor filter.
+    # Observations query — tenant + time-range; optional actor/entity filter.
     obs_sql = f"SELECT {_OBS_SELECT_SQL} FROM observations " \
               "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3"
     obs_params: list[Any] = [tenant_id, start, end]
+    obs_scope_clauses: list[str] = []
     if scope_actors:
         actor_ids = list(scope_actors)
         obs_params.append(actor_ids)
@@ -1229,9 +1241,21 @@ async def pathway_c_temporal(
                     f"entities_mentioned @> ${len(obs_params)}::jsonb"
                 )
             mention_sql = " OR ".join(mention_clauses)
-            obs_sql += f" AND (actor_id = ANY($4::uuid[]) OR ({mention_sql}))"
+            obs_scope_clauses.append(
+                f"actor_id = ANY($4::uuid[]) OR ({mention_sql})"
+            )
         else:
-            obs_sql += " AND actor_id = ANY($4::uuid[])"
+            obs_scope_clauses.append("actor_id = ANY($4::uuid[])")
+    if entity_list:
+        mention_clauses = []
+        for ent in entity_list:
+            obs_params.append(_jsonb([ent]))
+            mention_clauses.append(
+                f"entities_mentioned @> ${len(obs_params)}::jsonb"
+            )
+        obs_scope_clauses.append("(" + " OR ".join(mention_clauses) + ")")
+    if obs_scope_clauses:
+        obs_sql += " AND (" + " OR ".join(obs_scope_clauses) + ")"
     obs_sql += " ORDER BY occurred_at DESC LIMIT " + str(int(max_observations))
     obs_rows = await conn.fetch(obs_sql, *obs_params)
     observations = _hydrate_many(obs_rows, _hydrate_obs, notes, "observations")
@@ -1244,9 +1268,15 @@ async def pathway_c_temporal(
                 "  AND COALESCE(last_retrieved_at, created_at) >= $2 " \
                 "  AND COALESCE(last_retrieved_at, created_at) <= $3"
     model_params: list[Any] = [tenant_id, start, end]
+    model_scope_clauses: list[str] = []
     if scope_actors:
         model_params.append(list(scope_actors))
-        model_sql += " AND scope_actors && $4::uuid[]"
+        model_scope_clauses.append(f"scope_actors && ${len(model_params)}::uuid[]")
+    for ent in entity_list:
+        model_params.append(_jsonb([ent]))
+        model_scope_clauses.append(f"scope_entities @> ${len(model_params)}::jsonb")
+    if model_scope_clauses:
+        model_sql += " AND (" + " OR ".join(model_scope_clauses) + ")"
     model_sql += " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT 200"
     model_rows = await conn.fetch(model_sql, *model_params)
     models = _hydrate_many(model_rows, _hydrate_model, notes, "models")

@@ -25,6 +25,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lib.shared.memory_grammar import (
+    AbstractionLevel,
+    ClaimRole,
+    Modality,
+    Polarity,
+    TimeMode,
+)
+
 
 # ---------------------------------------------------------------------
 # Enum literal types — lock the column's set of legal values.
@@ -287,6 +295,16 @@ class ModelRow(_Strict):
     visible_to_subjects: bool = True
     # Post-Wave-0 A1-A2 additions (SCHEMA-LOCK.md amendments)
     proposition_kind: PropositionKind | None = None   # generated stored; hydrated on read
+    # Structural memory grammar (migration 0047). These fields describe
+    # how a Model behaves in the synthesis layer; proposition_kind remains
+    # the compatibility discriminator.
+    claim_role: ClaimRole | None = None
+    abstraction_level: AbstractionLevel | None = None
+    time_mode: TimeMode | None = None
+    modality: Modality | None = None
+    polarity: Polarity | None = None
+    domain_tags: list[str] = Field(default_factory=list)
+    memory_grammar_version: str = "v1"
     confirmed_count: int = 0
     contested_count: int = 0
     last_confirmed_at: datetime | None = None
@@ -330,6 +348,7 @@ class ModelCreate(_Strict):
     resolution_criteria: dict[str, Any] | None = None
     contributing_models: list[UUID] = Field(default_factory=list)
     visible_to_subjects: bool = True
+    domain_tags: list[str] = Field(default_factory=list)
 
 
 # Post-Wave-0 A4 — sidecar table for freeform notes.
