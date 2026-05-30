@@ -243,6 +243,20 @@ async def ingest_from_draft(
             f"channel={channel!r}"
         )
 
+    # ---- step 1.5: GitHub Intelligence Layer inline enrichment -------
+    # For github webhook signals, augment draft.content["intelligence"]
+    # IN PLACE (state transition + code blast radius + causal "why") before
+    # persistence, so the SAME observation row carries the reasoning. Bounded,
+    # flag-gated, and fully swallowed: on timeout/error/disabled the raw draft
+    # is persisted unchanged (the raw-on-failure guarantee).
+    if channel == "github:webhook":
+        try:
+            from services.github_intel.inline import maybe_enrich_github_draft
+
+            await maybe_enrich_github_draft(draft, pool=pool, tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 — enrichment must never break ingest
+            pass
+
     # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
 

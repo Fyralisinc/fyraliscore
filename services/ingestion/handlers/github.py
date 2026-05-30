@@ -161,6 +161,15 @@ def _shape_pull_request(payload: dict[str, Any]) -> ObservationDraft:
     repo_full = _repo_fullname(payload)
     author = _author(payload)
     merged = bool(pr.get("merged"))
+    head = pr.get("head") or {}
+    head_ref = head.get("ref") if isinstance(head, dict) else None
+    head_sha = head.get("sha") if isinstance(head, dict) else None
+    merge_commit_sha = pr.get("merge_commit_sha")
+    # GitHub PR webhooks don't carry the file list; production resolves it via
+    # the Git Data API / clone diff. Tests/synthetic injection may supply it as
+    # pull_request._changed_files so the intelligence layer can compute blast
+    # radius (services/github_intel).
+    changed_files = [p for p in (pr.get("_changed_files") or []) if isinstance(p, str)]
 
     if action == "closed" and merged:
         content_text = (
@@ -208,6 +217,10 @@ def _shape_pull_request(payload: dict[str, Any]) -> ObservationDraft:
             "repo": repo_full,
             "merged": merged,
             "author": author,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "merge_commit_sha": merge_commit_sha,
+            "changed_files": changed_files,
         },
         occurred_at=_parse_iso(pr.get("updated_at") or pr.get("created_at")),
         trust_tier=trust_tier,  # type: ignore[arg-type]
@@ -237,6 +250,21 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
         last = commits[-1]
         if isinstance(last, dict):
             occurred_ts = last.get("timestamp")
+    # Changed files across the push (added/modified/removed) — drives the
+    # code-intel blast radius in services/github_intel.
+    _files: set[str] = set()
+    for _c in (commits if isinstance(commits, list) else []):
+        if isinstance(_c, dict):
+            for _k in ("added", "modified", "removed"):
+                for _p in (_c.get(_k) or []):
+                    if isinstance(_p, str):
+                        _files.add(_p)
+    if isinstance(head_commit, dict):
+        for _k in ("added", "modified", "removed"):
+            for _p in (head_commit.get(_k) or []):
+                if isinstance(_p, str):
+                    _files.add(_p)
+    files = sorted(_files)
     content_text = (
         f"{author} pushed {n} commit(s) to {branch} "
         f"in {repo_full or 'unknown-repo'}"
@@ -258,6 +286,7 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
             "commits_count": n,
             "author": author,
             "after": after,
+            "files": files,
         },
         occurred_at=_parse_iso(occurred_ts) if occurred_ts else _utcnow(),
         trust_tier="authoritative",
