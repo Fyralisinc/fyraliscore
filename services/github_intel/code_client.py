@@ -7,10 +7,13 @@ compute the blast radius against the repo's latest ready snapshot, and
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
 from services.code_intel.graph import CodeGraphRepo
+
+log = logging.getLogger("github_intel.code_client")
 
 
 def extract_changed_paths(
@@ -88,11 +91,13 @@ async def code_rag_for(
         try:
             from lib.embeddings.factory import make_embedder
             embedder = make_embedder()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — embedder unconfigurable: skip code-RAG
+            log.warning("code-RAG skipped: embedder unavailable", exc_info=True)
             return []
     try:
         vec = await embedder.embed(query_text)
     except Exception:  # noqa: BLE001 — embedder down: skip code-RAG gracefully
+        log.warning("code-RAG skipped: embed failed", exc_info=True)
         return []
     graph = CodeGraphRepo(ctx)
     snap = await graph.latest_ready_snapshot(tenant_id, repo)
@@ -100,5 +105,6 @@ async def code_rag_for(
         return []
     try:
         return await graph.search_code(snap.id, vec, k=k)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — search failed: degrade to empty
+        log.warning("code-RAG skipped: search_code failed", exc_info=True)
         return []

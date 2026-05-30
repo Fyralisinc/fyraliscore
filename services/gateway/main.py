@@ -840,6 +840,13 @@ def build_app(
     from services.integrations.router import build_integrations_router
 
     app.include_router(build_integrations_router())
+
+    # GitHub Intelligence Layer — read-only query surface (/github-intel/*).
+    # Bearer-authed (standard middleware) + per-tenant repo allowlist in the
+    # router; no public-path exposure.
+    from services.github_intel.api import build_github_intel_router
+
+    app.include_router(build_github_intel_router())
     return app
 
 
