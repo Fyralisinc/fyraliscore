@@ -101,7 +101,8 @@ async def _publish_to_dlq(
         "compression.type": "zstd",
     })
     for b in envelopes:
-        p.produce("ingestion.dlq", value=b, key=b"key")
+        # Per-source DLQ lane (source-isolation): these tests use slack.
+        p.produce("ingestion.dlq.slack", value=b, key=b"key")
     p.flush(timeout=30)
 
 
@@ -109,7 +110,7 @@ def _create_dlq_topic(bootstrap: str) -> None:
     from confluent_kafka.admin import AdminClient, NewTopic
     admin = AdminClient({"bootstrap.servers": bootstrap})
     futs = admin.create_topics([
-        NewTopic("ingestion.dlq", num_partitions=4, replication_factor=1),
+        NewTopic("ingestion.dlq.slack", num_partitions=4, replication_factor=1),
     ])
     for f in futs.values():
         f.result(timeout=30)
@@ -145,6 +146,7 @@ async def test_dlq_writer_consumes_and_upserts(fresh_db: asyncpg.Pool):
             DLQWriterConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-writer-test-1",
+                source="slack",
                 stop_after=3,
             ),
             pool=fresh_db,
@@ -192,6 +194,7 @@ async def test_dlq_writer_upsert_idempotent(fresh_db: asyncpg.Pool):
             DLQWriterConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-writer-test-2",
+                source="slack",
                 stop_after=2,
             ),
             pool=fresh_db,
@@ -272,6 +275,7 @@ async def test_dlq_writer_respects_rls(fresh_db: asyncpg.Pool):
             DLQWriterConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-writer-test-3",
+                source="slack",
                 stop_after=2,
             ),
             pool=fresh_db,
@@ -441,6 +445,7 @@ async def test_dlq_writer_continues_on_postgres_error(
             DLQWriterConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-writer-test-4",
+                source="slack",
                 stop_after=2,
             ),
             pool=fresh_db,

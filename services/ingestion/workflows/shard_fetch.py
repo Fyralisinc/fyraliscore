@@ -238,6 +238,7 @@ import asyncpg
 import orjson
 
 from services.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingestion.kafka.topics import topic_for
 from services.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingestion.raw_tier.s3 import (
     S3Client,
@@ -558,7 +559,9 @@ async def _write_record_and_build_message(
         ingress_kind="backfill",
     )
     return KafkaMessage(
-        topic=RAW_TOPIC,
+        # Per-source raw topic so backfill traffic for one source cannot
+        # head-of-line block another's lane (source-isolation.md).
+        topic=topic_for("raw", source),
         value=orjson.dumps(envelope.model_dump(mode="json")),
         key=str(tenant_id).encode("utf-8"),
     )

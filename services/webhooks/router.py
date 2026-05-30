@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from typing import Any, Mapping
 
@@ -99,8 +100,16 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
 }
 
 
+# The provisioner creates every ingestion topic with KAFKA_TOPIC_PARTITIONS
+# partitions (default 12 — see scripts/provision_kafka_topics.py). The
+# traffic-signal partition lookup MUST use the same count or it computes a
+# partition the message never lands on. Previously hardcoded to 32, which
+# drifted from the provisioned 12.
+_DEFAULT_NUM_PARTITIONS = int(os.environ.get("KAFKA_TOPIC_PARTITIONS", "12"))
+
+
 def _kafka_partition_for_tenant(
-    tenant_id: Any, *, num_partitions: int = 32,
+    tenant_id: Any, *, num_partitions: int | None = None,
 ) -> int:
     """M-Load: explicit murmur2 partition match with librdkafka.
 
@@ -110,6 +119,9 @@ def _kafka_partition_for_tenant(
     returns unsigned uint32 which is already positive; the mask is a
     no-op but kept conceptually for parity with the librdkafka source.
 
+    `num_partitions` defaults to the provisioned topic partition count
+    (`KAFKA_TOPIC_PARTITIONS`, default 12). Callers/tests may override.
+
     The match between this function's output and the actual landing
     partition is verified by
     `test_kafka_partition_lookup_matches_actual_landing_partition`
@@ -118,6 +130,8 @@ def _kafka_partition_for_tenant(
     partitioners, that test catches the drift.
     """
     import mmh3
+    if num_partitions is None:
+        num_partitions = _DEFAULT_NUM_PARTITIONS
     key_bytes = str(tenant_id).encode("utf-8")
     h = mmh3.hash(key_bytes, seed=0x9747b28c, signed=False)
     return (h & 0x7fffffff) % num_partitions

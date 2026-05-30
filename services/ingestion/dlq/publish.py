@@ -30,6 +30,7 @@ from uuid import UUID
 import orjson
 
 from services.ingestion.dlq.models import DLQEnvelope, WireFailureKind
+from services.ingestion.kafka.topics import topic_for
 
 
 log = logging.getLogger(__name__)
@@ -156,7 +157,11 @@ async def publish_dlq(
 
     try:
         await producer.produce(
-            topic=_DLQ_TOPIC,
+            # Per-source DLQ topic so a failure burst from one source
+            # doesn't delay another's DLQ writes (source-isolation.md).
+            # `source` is validated non-None above and accepted by the
+            # DLQEnvelope SourceLiteral, so it's a known source here.
+            topic=topic_for("dlq", source),
             value=orjson.dumps(env.model_dump(mode="json")),
             key=str(tenant_id).encode("utf-8"),
         )

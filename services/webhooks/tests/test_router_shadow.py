@@ -416,7 +416,8 @@ async def test_envelope_includes_ingress_kind_webhook(_shadow_app, _stub_ingest)
     assert len(produce_calls) == 1
 
     _, kwargs = produce_calls[0]
-    assert kwargs["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): slack body -> slack lane.
+    assert kwargs["topic"] == "ingestion.raw.slack"
     # Key is the tenant_id bytes for partition affinity.
     assert kwargs["key"] == str(_TENANT).encode("utf-8")
 

@@ -24,6 +24,7 @@ from uuid import UUID
 import orjson
 
 from services.ingestion.embedding.models import EmbeddingEnvelope
+from services.ingestion.kafka.topics import topic_for
 
 
 log = logging.getLogger(__name__)
@@ -73,7 +74,10 @@ async def publish_embedding_request(
 
     try:
         await producer.produce(
-            topic=_EMBEDDING_TOPIC,
+            # Per-source embedding topic so one source's backlog cannot
+            # block another's embed lane (source-isolation.md). `source`
+            # is already validated by EmbeddingEnvelope above.
+            topic=topic_for("embedding", source),
             value=orjson.dumps(env.model_dump(mode="json")),
             key=str(tenant_id).encode("utf-8"),
         )

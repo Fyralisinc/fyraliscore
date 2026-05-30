@@ -109,7 +109,8 @@ async def test_cutover_publishes_and_skips_inline(
     assert s3.put_if_absent.await_count == 1
     assert kafka.produce.await_count == 1
     _, kw = kafka.produce.await_args
-    assert kw["topic"] == "ingestion.raw"
+    # Per-source raw topic (source-isolation): discord -> discord lane.
+    assert kw["topic"] == "ingestion.raw.discord"
     assert kw["key"] == str(seeded_tenant).encode("utf-8")
     env = json.loads(kw["value"])
     assert env["source"] == "discord"

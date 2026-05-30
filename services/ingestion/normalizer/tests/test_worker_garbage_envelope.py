@@ -121,7 +121,7 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
         bootstrap = kafka.get_bootstrap_server()
         admin = AdminClient({"bootstrap.servers": bootstrap})
         for fut in admin.create_topics([
-            NewTopic("ingestion.raw", num_partitions=1, replication_factor=1),
+            NewTopic("ingestion.raw.slack", num_partitions=1, replication_factor=1),
         ]).values():
             fut.result(timeout=30)
 
@@ -136,12 +136,12 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
 
         # (a) Byte garbage — not JSON at all.
         raw_producer.produce(
-            "ingestion.raw", value=b"\x00\xff\xfe not json garbage", key=b"a",
+            "ingestion.raw.slack", value=b"\x00\xff\xfe not json garbage", key=b"a",
         )
 
         # (b) Valid JSON, INVALID RawEnvelope (missing required fields).
         raw_producer.produce(
-            "ingestion.raw",
+            "ingestion.raw.slack",
             value=orjson.dumps({"source": "slack", "missing": "fields"}),
             key=b"b",
         )
@@ -160,7 +160,7 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
             ingress_kind="webhook",
         )
         raw_producer.produce(
-            "ingestion.raw",
+            "ingestion.raw.slack",
             value=orjson.dumps(bad_env.model_dump(mode="json")),
             key=b"c",
         )
@@ -191,7 +191,7 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
             ingress_kind="webhook",
         )
         raw_producer.produce(
-            "ingestion.raw",
+            "ingestion.raw.slack",
             value=orjson.dumps(good_env.model_dump(mode="json")),
             key=b"d",
         )
@@ -214,6 +214,9 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
             worker_module.WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-garbage-test",
+                # Source-isolation: pin to slack's lane (all 4 test
+                # messages were produced to ingestion.raw.slack).
+                source="slack",
                 stop_after=4,
             )
         )
@@ -246,11 +249,15 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
         # Messages (a) (byte garbage) and (b) (no tenant_id) skip the
         # DLQ publish because best-effort extraction can't pull a
         # valid (tenant_id, source) pair.
-        topic_counts = {t: 0 for t in {"ingestion.normalized", "ingestion.dlq"}}
+        # Per-source downstream topics (source-isolation): the slack
+        # lane publishes to ingestion.normalized.slack / ingestion.dlq.slack.
+        topic_counts = {
+            t: 0 for t in {"ingestion.normalized.slack", "ingestion.dlq.slack"}
+        }
         for (topic, _, _) in capture.published:
             topic_counts[topic] = topic_counts.get(topic, 0) + 1
-        assert topic_counts["ingestion.normalized"] == 1, topic_counts
-        assert topic_counts["ingestion.dlq"] == 1, topic_counts
+        assert topic_counts["ingestion.normalized.slack"] == 1, topic_counts
+        assert topic_counts["ingestion.dlq.slack"] == 1, topic_counts
         assert len(capture.published) == 2
 
         # 3. Failure metrics incremented correctly.

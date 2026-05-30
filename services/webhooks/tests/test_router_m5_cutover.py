@@ -236,7 +236,11 @@ async def test_router_flag_true_publishes_to_kafka_returns_202(
     # depending on the content_hash sample decision; the raw publish
     # always fires.
     kafka_calls = _cutover_app.state.kafka_producer.produce.await_args_list
-    raw_publishes = [c for c in kafka_calls if c.kwargs.get("topic") == "ingestion.raw"]
+    raw_publishes = [
+        c for c in kafka_calls
+        # Per-source raw topic (source-isolation): ingestion.raw.<source>.
+        if c.kwargs.get("topic", "").startswith("ingestion.raw.")
+    ]
     assert len(raw_publishes) == 1, (
         f"flag=TRUE must publish exactly one record to ingestion.raw; "
         f"got {len(raw_publishes)}: {kafka_calls}"

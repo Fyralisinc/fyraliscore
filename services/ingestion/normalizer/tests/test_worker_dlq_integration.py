@@ -75,9 +75,10 @@ class _InMemoryS3:
 def _make_topics(bootstrap: str) -> None:
     from confluent_kafka.admin import AdminClient, NewTopic
     admin = AdminClient({"bootstrap.servers": bootstrap})
+    # Per-source lanes (source-isolation): all messages here are slack.
     for fut in admin.create_topics([
-        NewTopic("ingestion.raw", num_partitions=1, replication_factor=1),
-        NewTopic("ingestion.dlq", num_partitions=1, replication_factor=1),
+        NewTopic("ingestion.raw.slack", num_partitions=1, replication_factor=1),
+        NewTopic("ingestion.dlq.slack", num_partitions=1, replication_factor=1),
     ]).values():
         fut.result(timeout=30)
 
@@ -92,7 +93,7 @@ def _publish_raw(bootstrap: str, msgs: list[bytes]) -> None:
         "compression.type": "zstd",
     })
     for b in msgs:
-        p.produce("ingestion.raw", value=b, key=b"k")
+        p.produce("ingestion.raw.slack", value=b, key=b"k")
     p.flush(timeout=30)
 
 
@@ -112,7 +113,7 @@ def _drain_dlq(bootstrap: str, expected: int, timeout_s: float = 30.0) -> list[d
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
     })
-    c.subscribe(["ingestion.dlq"])
+    c.subscribe(["ingestion.dlq.slack"])
     out: list[dict] = []
     deadline = asyncio.get_event_loop().time() + timeout_s
     try:
@@ -173,6 +174,7 @@ async def test_normalizer_parse_failure_publishes_dlq_envelope(monkeypatch):
             worker_module.WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-int-test-1",
+                source="slack",
                 stop_after=1,
             )
         )
@@ -253,7 +255,7 @@ async def test_normalizer_dlq_publish_failure_does_not_crash_worker(
             self, topic: str, value: bytes, *, key: bytes | None = None,
             **kwargs,
         ) -> None:
-            if topic == "ingestion.dlq":
+            if topic == "ingestion.dlq.slack":
                 dlq_publish_attempts["n"] += 1
                 raise RuntimeError("simulated Kafka DLQ outage")
             return await original_produce(
@@ -270,6 +272,7 @@ async def test_normalizer_dlq_publish_failure_does_not_crash_worker(
             worker_module.WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="dlq-int-test-2",
+                source="slack",
                 stop_after=3,
             )
         )

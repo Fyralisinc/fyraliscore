@@ -162,7 +162,9 @@ async def test_shard_fetch_publishes_raw_envelope_shape(
 
     assert len(producer.published) == 2
     for topic, value, key in producer.published:
-        assert topic == RAW_TOPIC
+        # Per-source raw topic (source-isolation): slack backfill lands
+        # on its own lane, not the shared ingestion.raw.
+        assert topic == "ingestion.raw.slack"
         assert key == str(tid).encode("utf-8")
         env = RawEnvelope.model_validate(orjson.loads(value))
         assert env.ingress_kind == "backfill"

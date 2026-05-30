@@ -31,6 +31,7 @@ from uuid import UUID
 
 import orjson
 
+from services.ingestion.kafka.topics import topic_for
 from services.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingestion.raw_tier.s3 import (
     S3Client,
@@ -163,11 +164,14 @@ async def shadow_write_raw(
     )
     envelope_bytes = orjson.dumps(envelope.model_dump(mode="json"))
 
-    # ---- 3. Kafka publish (keyed by tenant for partition affinity) ----
+    # ---- 3. Kafka publish (per-source topic; keyed by tenant for
+    # partition affinity within the source's lane) ----
+    # Per-source topic so a slow/large message for one source cannot
+    # head-of-line block another (docs/ingestion/source-isolation.md).
     _bump("shadow_write.kafka_publish.attempts")
     try:
         await kafka_producer.produce(
-            topic=_RAW_TOPIC,
+            topic=topic_for("raw", source),
             value=envelope_bytes,
             key=str(tenant_id).encode("utf-8"),
         )

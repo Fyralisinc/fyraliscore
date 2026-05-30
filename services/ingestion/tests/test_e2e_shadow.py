@@ -171,8 +171,9 @@ async def test_e2e_shadow_100_webhooks_zero_divergence(
 
         admin = AdminClient({"bootstrap.servers": bootstrap})
         for fut in admin.create_topics([
-            NewTopic("ingestion.raw", num_partitions=4, replication_factor=1),
-            NewTopic("ingestion.normalized", num_partitions=4, replication_factor=1),
+            # Per-source lanes (source-isolation): this e2e uses slack.
+            NewTopic("ingestion.raw.slack", num_partitions=4, replication_factor=1),
+            NewTopic("ingestion.normalized.slack", num_partitions=4, replication_factor=1),
         ]).values():
             fut.result(timeout=30)
 
@@ -235,6 +236,7 @@ async def test_e2e_shadow_100_webhooks_zero_divergence(
             normalizer_module.WorkerConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="normalizer-e2e",
+                source="slack",
                 stop_after=100,
             )
         )
@@ -246,6 +248,7 @@ async def test_e2e_shadow_100_webhooks_zero_divergence(
             writer_module.WriterConfig(
                 bootstrap_servers=bootstrap,
                 consumer_group="observation-writer-e2e",
+                source="slack",
                 stop_after=100,
             )
         )

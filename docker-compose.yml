@@ -256,6 +256,11 @@ services:
     healthcheck: *consumer-healthcheck
 
   # ---- Kafka consumer chain ----------------------------------------
+  # These run ALL-SOURCES (INGESTION_SOURCE unset → each worker subscribes
+  # to every per-source topic). That is the right shape for a single-box
+  # dogfood. For per-source isolation (one process per source, independent
+  # lag/scaling), generate and overlay the per-source topology — see
+  # scripts/gen_per_source_compose.py + docs/ingestion/source-isolation.md.
   normalizer:
     <<: *worker
     container_name: company_os_normalizer

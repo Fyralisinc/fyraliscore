@@ -118,7 +118,9 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
     assert produced is True
     assert _producer_stub.produce.await_count == 1
     _, kwargs = _producer_stub.produce.await_args
-    assert kwargs["topic"] == "ingestion.normalized"
+    # Per-source normalized topic (source-isolation): a slack envelope is
+    # published to slack's normalized lane, not the shared topic.
+    assert kwargs["topic"] == "ingestion.normalized.slack"
     assert kwargs["key"] == str(tenant).encode("utf-8")
 
     norm = NormalizedEnvelope.model_validate(json.loads(kwargs["value"]))
