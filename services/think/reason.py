@@ -43,7 +43,10 @@ from services.actors.operating_context import (
     load_actor_operating_context,
     summarize_actor_operating_context,
 )
-from services.dynamics import detect_dynamic_signals
+from services.dynamics import (
+    detect_dynamic_signals,
+    emit_missing_transition_triggers,
+)
 from services.retrieval.assembler import (
     AccessContext,
     ContextBundle,
@@ -657,6 +660,34 @@ async def _run_once(
             reasoning_frame = reasoning_frame.with_dynamic_signals(
                 [s.to_dict() for s in dynamic_signals]
             )
+            # Imaginary-node pattern: when the substrate detects a
+            # state-jump discontinuity, enqueue a T3:missing_transition
+            # trigger for the next Think cycle to run the imputer.
+            # The current run can't process it (different region lock,
+            # different scope), so we defer. The emitter dedupes against
+            # in-queue rows so this is safe under repeated Think runs.
+            try:
+                emitted = await emit_missing_transition_triggers(
+                    conn,
+                    tenant_id=trigger.tenant_id,
+                    signals=dynamic_signals,
+                )
+                if emitted:
+                    first.notes["missing_transition_triggers_emitted"] = [
+                        str(t) for t in emitted
+                    ]
+            except Exception as e:  # noqa: BLE001
+                _raise_if_postgres_error(e)
+                first.notes["missing_transition_emission_error"] = {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                }
+                _log.warning(
+                    "think.missing_transition_emission_failed",
+                    tenant_id=str(trigger.tenant_id),
+                    trigger_kind=trigger.kind,
+                    error=str(e),
+                )
     except Exception as e:  # noqa: BLE001
         _raise_if_postgres_error(e)
         first.notes["dynamic_signal_error"] = {

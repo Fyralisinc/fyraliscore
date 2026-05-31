@@ -353,12 +353,15 @@ async def run_inquiry_retrieval(
     session_id = uuid7()
     candidate_top_n = min(top_n, max(1, int(cfg.candidate_model_limit)))
     effective_top_n = min(candidate_top_n, max(1, int(cfg.result_model_limit)))
+    signal_class = _signal_class_for_trigger(trigger)
+    weak_signal = signal_class == "weak"
+    baseline_top_n = _adaptive_baseline_top_n(candidate_top_n, signal_class)
 
     baseline = await primary_retrieve(
         trigger,
         conn,
         embedder=embedder,
-        top_n=candidate_top_n,
+        top_n=baseline_top_n,
     )
     hypotheses = tuple(_generate_hypotheses(trigger, baseline))
     evidence_by_key: dict[tuple[str, str], EvidenceCard] = {}
@@ -376,13 +379,6 @@ async def run_inquiry_retrieval(
     retrieval_results = [baseline]
     unknowns: set[str] = set(_initial_unknowns(trigger, baseline))
     question_planning_notes: list[dict[str, Any]] = []
-    trigger_lower = _trigger_text(trigger).casefold()
-    weak_signal = (
-        trigger.kind == "T1"
-        and not _signal_has_material_update_intent(trigger_lower)
-        and not _has_broad_signal_language(trigger_lower)
-    )
-
     max_rounds = (
         0
         if mode == "fast" or route in {"FAST_PATH", "HUMAN_VALIDATION_PATH"}
@@ -470,13 +466,16 @@ async def run_inquiry_retrieval(
         if verdict.status != "insufficient_continue":
             break
 
+    evidence_before_rank = len(evidence_by_key)
+    evidence_limit = _adaptive_evidence_limit(
+        cfg,
+        route=route,
+        mode=mode,
+        signal_class=signal_class,
+    )
     evidence_cards = _rank_evidence(
         list(evidence_by_key.values()),
-        limit=(
-            cfg.fast_path_evidence_limit
-            if mode == "fast" or route == "FAST_PATH" or weak_signal
-            else cfg.evidence_reservoir_limit
-        ),
+        limit=evidence_limit,
     )
     if max_rounds == 0:
         verdict = _sufficiency_gate(
@@ -527,13 +526,17 @@ async def run_inquiry_retrieval(
         "requested_top_n": top_n,
         "candidate_top_n": candidate_top_n,
         "effective_top_n": effective_top_n,
+        "baseline_top_n": baseline_top_n,
         "candidate_model_limit": cfg.candidate_model_limit,
         "result_model_limit": cfg.result_model_limit,
+        "signal_class": signal_class,
         "action_model_budget_limit": cfg.action_model_budget_limit,
         "action_observation_budget_limit": cfg.action_observation_budget_limit,
         "llm_question_planning_enabled": cfg.llm_question_planning_enabled,
         "question_planning": question_planning_notes,
         "evidence_count": len(evidence_cards),
+        "evidence_before_rank": evidence_before_rank,
+        "evidence_limit": evidence_limit,
         "sufficiency": _jsonable(asdict(verdict)),
         "context_packet": packet,
     }
@@ -566,6 +569,38 @@ def _route_for_trigger(trigger: TriggerContext) -> SignalRoute:
     if trigger.kind == "T4":
         return "BACKGROUND_PATH"
     return "DEEP_INQUIRY_PATH"
+
+
+def _signal_class_for_trigger(trigger: TriggerContext) -> str:
+    lower = _trigger_text(trigger).casefold()
+    if _has_broad_signal_language(lower):
+        return "broad"
+    if trigger.kind == "T1" and not _signal_has_material_update_intent(lower):
+        return "weak"
+    return "material"
+
+
+def _adaptive_baseline_top_n(candidate_top_n: int, signal_class: str) -> int:
+    if signal_class == "weak":
+        return min(candidate_top_n, 80)
+    if signal_class == "broad":
+        return min(candidate_top_n, 220)
+    return min(candidate_top_n, 150)
+
+
+def _adaptive_evidence_limit(
+    cfg: InquiryConfig,
+    *,
+    route: SignalRoute,
+    mode: Literal["deep", "fast"],
+    signal_class: str,
+) -> int:
+    if mode == "fast" or route == "FAST_PATH" or signal_class == "weak":
+        return max(1, int(cfg.fast_path_evidence_limit))
+    configured = max(1, int(cfg.evidence_reservoir_limit))
+    if signal_class == "broad":
+        return min(configured, max(320, min(560, configured)))
+    return min(configured, max(160, min(360, configured)))
 
 
 def _trigger_text(trigger: TriggerContext) -> str:
@@ -1292,12 +1327,14 @@ async def _execute_action(
             seeds = list(trigger.seed_entity_ids)
             if not seeds and trigger.scope_actors:
                 seeds = [{"type": "actor", "id": str(a)} for a in trigger.scope_actors]
-            return await pathway_a_structural(
+            result = await pathway_a_structural(
                 seeds,
                 trigger.tenant_id,
                 conn,
                 max_hops=cfg.structural_max_hops,
             )
+            _cap_pathway_models(result, capped_budget(action.budget))
+            return result
         if action.path == "semantic":
             query_text = action.query or _trigger_text(trigger)
             # Question-conditioned retrieval needs a question-conditioned
@@ -1319,11 +1356,12 @@ async def _execute_action(
                 event_entities=trigger.seed_entity_ids,
             )
             if _has_broad_signal_language(_trigger_text(trigger).casefold()):
+                broad_lexical_limit = capped_budget(action.budget) * 2
                 lexical_models = await _broad_lexical_model_scan(
                     trigger,
                     query_text,
                     conn,
-                    limit=capped_budget(action.budget) * 3,
+                    limit=broad_lexical_limit,
                 )
                 if lexical_models:
                     by_id = {model.id: model for model in result.models}
@@ -1331,6 +1369,8 @@ async def _execute_action(
                         by_id.setdefault(model.id, model)
                     result.models = list(by_id.values())
                     result.notes["broad_lexical_models"] = len(lexical_models)
+                    result.notes["broad_lexical_limit"] = broad_lexical_limit
+                    _cap_pathway_models(result, capped_budget(action.budget) + broad_lexical_limit)
             return result
         if action.path == "temporal":
             if trigger.seed_occurred_at is None:
@@ -1364,6 +1404,22 @@ async def _execute_action(
     except (RetrievalPathwayError, ValidationError):
         return None
     return None
+
+
+def _cap_pathway_models(result: PathwayResult, limit: int) -> None:
+    limit = max(0, int(limit))
+    before = len(result.models)
+    if limit <= 0 or before <= limit:
+        return
+    result.models = sorted(
+        result.models,
+        key=lambda model: (
+            -float(getattr(model, "activation", 0.0) or 0.0),
+            str(getattr(model, "id", "")),
+        ),
+    )[:limit]
+    result.notes["models_before_adaptive_cap"] = before
+    result.notes["models_after_adaptive_cap"] = len(result.models)
 
 
 async def _broad_lexical_model_scan(

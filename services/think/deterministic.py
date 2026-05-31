@@ -35,6 +35,7 @@ def is_authoritative(trigger: TriggerContext) -> bool:
 
       T1 state_change       → True
       T2 prediction/belief_updated → True
+      T3 missing_transition → True (imaginary-node pattern)
       T4 background_maintenance / entity_resolution_proposal → True
       everything else       → False
     """
@@ -43,6 +44,8 @@ def is_authoritative(trigger: TriggerContext) -> bool:
     if trigger.kind == "T2" and trigger.subkind in (
         "belief_updated", "prediction_overdue", "prediction_deadline"
     ):
+        return True
+    if trigger.kind == "T3" and trigger.subkind == "missing_transition":
         return True
     if trigger.kind == "T4" and trigger.subkind in (
         "background_maintenance",
@@ -70,6 +73,8 @@ async def deterministic_handler(
         return await _handle_t2_prediction(trigger, bundle, conn)
     if trigger.kind == "T1" and trigger.subkind == "state_change":
         return await _handle_t1_state_change(trigger, bundle, conn)
+    if trigger.kind == "T3" and trigger.subkind == "missing_transition":
+        return await _handle_t3_missing_transition(trigger, bundle, conn)
     if trigger.kind == "T4":
         return await _handle_t4_background(trigger, bundle, conn)
     # Fallback: empty diff. Caller treats empty as no-op but still
@@ -428,6 +433,168 @@ async def _handle_t4_background(
     )
 
 
+# -----------------------------------------------------------------
+# T3 missing_transition — imaginary-node hypothesis imputation
+# -----------------------------------------------------------------
+
+
+async def _handle_t3_missing_transition(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    conn: asyncpg.Connection,
+) -> RawDiff:
+    """Imaginary-node pattern: synthesize a low-confidence hypothesis
+    Model that explains a detected substrate state-jump.
+
+    Steps:
+      1. Load source Model snapshot.
+      2. Re-derive the discontinuity from the audit chain (the trigger
+         payload carries `prev_event_id` but state may have shifted
+         between enqueue and processing — fetch fresh).
+      3. Run the deterministic imputer.
+      4. Emit a `missing_transition_detected` state_change observation
+         to provide `born_from_event_id` for the hypothesis Model.
+      5. Return a RawDiff with one ClaimOp(op='insert').
+
+    Idempotency: if the discontinuity has resolved between trigger
+    enqueue and processing (e.g., a corrective audit event landed),
+    `fetch_missing_transition_discontinuity` returns None and we
+    return an empty RawDiff. The applier records the trigger as
+    applied either way.
+
+    Reconciliation: if a similar hypothesis Model already exists
+    (cosine ≥ 0.85), the reconciler converts the insert into a
+    confidence-update / new-confirmation reading — the same path that
+    keeps the substrate clean for any other Model insert.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from services.dynamics import (
+        fetch_missing_transition_discontinuity,
+    )
+    from services.dynamics.hypothesis_imputer import (
+        SourceModelSnapshot,
+        impute_hypothesis,
+    )
+    from services.observations.state_change import emit_state_change
+
+    model_id = trigger.model_id
+    if model_id is None:
+        return RawDiff(
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=(
+                "T3 missing_transition: trigger missing model_id; no-op"
+            ),
+        )
+
+    src_row = await conn.fetchrow(
+        """
+        SELECT id, "natural" AS natural,
+               scope_actors, scope_entities, scope_temporal,
+               status
+        FROM models
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        model_id,
+        trigger.tenant_id,
+    )
+    if src_row is None:
+        return RawDiff(
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=(
+                f"T3 missing_transition: source model {model_id} not found"
+            ),
+        )
+    if src_row["status"] != "active":
+        # Discontinuities on archived Models are settled by definition;
+        # don't fork off a hypothesis that nobody will ratify.
+        return RawDiff(
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=(
+                f"T3 missing_transition: source model {model_id} is "
+                f"{src_row['status']}; no-op"
+            ),
+        )
+
+    # The trigger payload's `prev_event_occurred_at` (set by the emitter)
+    # gives us a tight lookback. If absent, fall back to 30 days.
+    lookback_days = 30
+    if isinstance(trigger.region_spec, dict):
+        prev_iso = trigger.region_spec.get("prev_event_occurred_at")
+        if isinstance(prev_iso, str):
+            try:
+                prev_dt = datetime.fromisoformat(prev_iso.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                lookback_days = max(
+                    7,
+                    int((now - prev_dt).total_seconds() / 86400.0) + 2,
+                )
+            except ValueError:
+                pass
+
+    discontinuity = await fetch_missing_transition_discontinuity(
+        conn,
+        tenant_id=trigger.tenant_id,
+        model_id=model_id,
+        since=datetime.now(timezone.utc) - timedelta(days=lookback_days),
+    )
+    if discontinuity is None:
+        # Resolved between enqueue and processing — idempotent no-op.
+        return RawDiff(
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=(
+                f"T3 missing_transition: discontinuity for model {model_id} "
+                "resolved before processing; no-op"
+            ),
+        )
+
+    source = SourceModelSnapshot(
+        model_id=src_row["id"],
+        natural=src_row["natural"] or "",
+        scope_actors=list(src_row["scope_actors"] or []),
+        scope_entities=_coerce_jsonb_list(src_row["scope_entities"]),
+        scope_temporal=_coerce_jsonb_dict(src_row["scope_temporal"]),
+    )
+    imputed = impute_hypothesis(discontinuity, source)
+
+    born_event_id = await emit_state_change(
+        conn,
+        kind="missing_transition_detected",
+        entity_id=model_id,
+        tenant_id=trigger.tenant_id,
+        entity_kind="model",
+        metadata={
+            "prev_event_id": discontinuity.prev_event_id,
+            "next_event_id": discontinuity.next_event_id,
+            "differing_fields": list(discontinuity.differing_fields),
+            "gap_seconds": discontinuity.gap_seconds,
+            "imputer_source": imputed.proposition.get(
+                "imputation_source", "missing_transition_detector_v1"
+            ),
+        },
+    )
+
+    entry = imputed.to_claim_op_entry(born_from_event_id=born_event_id)
+    claim_op = ClaimOp(op="insert", entry=entry)
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        claim_ops=[claim_op],
+        reasoning_trace=(
+            f"T3 missing_transition: hypothesized intermediate state for "
+            f"model {model_id} across "
+            f"{discontinuity.prev_event_occurred_at.isoformat()}..."
+            f"{discontinuity.next_event_occurred_at.isoformat()} "
+            f"(fields={list(discontinuity.differing_fields)}); "
+            f"confidence={imputed.confidence:.3f}"
+        ),
+    )
+
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -462,6 +629,51 @@ def _clip(v: float, lo: float = 0.05, hi: float = 0.95) -> float:
     if v > hi:
         return hi
     return v
+
+
+def _coerce_jsonb_dict(value: Any) -> dict[str, Any]:
+    """asyncpg may return JSONB columns as dict, bytes, or str depending
+    on codec installation. Normalize to dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except UnicodeDecodeError:
+            return {}
+    if isinstance(value, str):
+        import json
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _coerce_jsonb_list(value: Any) -> list[dict[str, Any]]:
+    """Counterpart of `_coerce_jsonb_dict` for JSONB columns that hold
+    arrays of objects (e.g. `models.scope_entities`)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except UnicodeDecodeError:
+            return []
+    if isinstance(value, str):
+        import json
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return [v for v in parsed if isinstance(v, dict)]
+    return []
 
 
 __all__ = [

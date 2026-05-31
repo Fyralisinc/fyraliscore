@@ -17,12 +17,16 @@ from services.execution.inquiry import (
     InquiryQuestion,
     ModelRelevance,
     _apply_relevance_diversity,
+    _adaptive_baseline_top_n,
+    _adaptive_evidence_limit,
+    _cap_pathway_models,
     _candidate_questions_for_round,
     _has_broad_signal_language,
     _merge_llm_and_safety_questions,
     run_inquiry_retrieval,
 )
 from services.retrieval.assembler import AccessContext, assemble_context
+from services.retrieval.pathways import PathwayResult
 from services.retrieval.primary import TriggerContext
 from services.retrieval.primary import RetrievalResult
 from services.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -390,6 +394,60 @@ def test_coverage_compaction_uses_larger_broad_portfolio_budget():
     assert 24 <= len(compacted) <= 48
     assert dropped >= 16
     assert notes["target_limit"] == 48
+
+
+def test_adaptive_budget_limits_by_signal_class():
+    cfg = InquiryConfig(evidence_reservoir_limit=700, fast_path_evidence_limit=80)
+
+    assert _adaptive_baseline_top_n(220, "weak") == 80
+    assert _adaptive_baseline_top_n(220, "material") == 150
+    assert _adaptive_baseline_top_n(220, "broad") == 220
+    assert (
+        _adaptive_evidence_limit(
+            cfg,
+            route="DEEP_INQUIRY_PATH",
+            mode="deep",
+            signal_class="material",
+        )
+        == 360
+    )
+    assert (
+        _adaptive_evidence_limit(
+            cfg,
+            route="DEEP_INQUIRY_PATH",
+            mode="deep",
+            signal_class="broad",
+        )
+        == 560
+    )
+    assert (
+        _adaptive_evidence_limit(
+            cfg,
+            route="DEEP_INQUIRY_PATH",
+            mode="deep",
+            signal_class="weak",
+        )
+        == 80
+    )
+
+
+def test_pathway_model_cap_records_adaptive_trim():
+    models = [
+        _model_row_for_compaction(
+            natural=f"candidate {idx}",
+            claim_role="concern",
+            domain_tags=["execution"],
+            scope_entities=[{"type": "customer", "id": str(uuid4())}],
+        )
+        for idx in range(12)
+    ]
+    result = PathwayResult(models=models, source_pathway="A")
+
+    _cap_pathway_models(result, 5)
+
+    assert len(result.models) == 5
+    assert result.notes["models_before_adaptive_cap"] == 12
+    assert result.notes["models_after_adaptive_cap"] == 5
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(
