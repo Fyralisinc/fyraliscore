@@ -12,6 +12,17 @@ for the role each table plays in the self-evolution loop.
 """
 from __future__ import annotations
 
+from services.sage.inquiry_traces.emitter import (
+    TraceContext,
+    current_trace_context,
+    emission_enabled,
+    emit_event,
+    emit_events_batch,
+    emit_omitted_evidence,
+    emit_retrieval_plan,
+    reset_trace_context,
+    set_trace_context,
+)
 from services.sage.inquiry_traces.repo import (
     OmittedEvidenceRepo,
     OutcomeEventsRepo,
@@ -37,4 +48,13 @@ __all__ = [
     "RetrievalPlanRow",
     "RetrievalPlansRepo",
     "SageInquiryTraceRepoError",
+    "TraceContext",
+    "current_trace_context",
+    "emission_enabled",
+    "emit_event",
+    "emit_events_batch",
+    "emit_omitted_evidence",
+    "emit_retrieval_plan",
+    "reset_trace_context",
+    "set_trace_context",
 ]
