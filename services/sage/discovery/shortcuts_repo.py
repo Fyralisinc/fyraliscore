@@ -324,14 +324,18 @@ class DiscoveryShortcutsRepo:
         # SELECT-or-INSERT inside the caller's transaction. Callers
         # who care about strict idempotency should pass conn= so this
         # whole upsert runs in one transaction.
+        # Explicit casts on $3/$4/$5: when any of these is None, asyncpg
+        # can't infer the column type from `IS NOT DISTINCT FROM` alone
+        # and raises IndeterminateDatatypeError (or coerces to text and
+        # produces an empty-string uuid error). The casts pin the types.
         find_sql = f"""
             SELECT {_SELECT_COLS_SQL}
               FROM discovery_shortcuts
              WHERE tenant_id      = $1
                AND from_signature = $2::jsonb
-               AND to_model_id    IS NOT DISTINCT FROM $3
-               AND to_region_id   IS NOT DISTINCT FROM $4
-               AND to_affordance  IS NOT DISTINCT FROM $5
+               AND to_model_id    IS NOT DISTINCT FROM $3::uuid
+               AND to_region_id   IS NOT DISTINCT FROM $4::uuid
+               AND to_affordance  IS NOT DISTINCT FROM $5::text
              LIMIT 1
         """
         ctx = await self._acquire(conn)
@@ -368,7 +372,7 @@ class DiscoveryShortcutsRepo:
                   utility_score, expires_at
                 ) VALUES (
                   $1, $2, $3::jsonb,
-                  $4, $5, $6,
+                  $4::uuid, $5::uuid, $6::text,
                   $7, $8
                 )
                 RETURNING {_SELECT_COLS_SQL}

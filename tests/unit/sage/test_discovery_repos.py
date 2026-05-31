@@ -70,8 +70,11 @@ async def test_shortcuts_find_for_signature_exact_match(
 ):
     """A probe signature that exactly matches the stored signature
     surfaces the shortcut."""
-    async with gateway_pool.acquire() as conn:
-        await _set_tenant(conn, tenant_id)
+    # NOTE: do NOT call _set_tenant here. `set_config(..., is_local=true)`
+    # outside a transaction sets the value to '' (empty string) and that
+    # persists across pool release/reacquire, which makes the RLS policy
+    # try to cast '' to uuid and crash. RLS is permissive when the
+    # setting is NULL, which is the desired state for these unit tests.
     repo = DiscoveryShortcutsRepo(gateway_pool, tenant_id=tenant_id)
 
     sig = _sig(

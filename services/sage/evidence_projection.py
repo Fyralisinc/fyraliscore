@@ -540,7 +540,51 @@ class EvidenceProjector:
         for p in counter_picks[2:]:
             omitted.append((p.evidence_id, "counterevidence_cap_reached"))
 
-        # ---- 2. decisive_support (top-2 recent + highest tier) -----
+        # ---- 2a. falsification_relevant (BEFORE decisive_support) ---
+        # Run the falsifier-pattern match before decisive_support so a
+        # supporting obs that matches the falsifier pattern is picked
+        # with reason='falsification_relevant', not consumed silently
+        # by decisive_support. Otherwise, with N<=2 supporting events,
+        # decisive_support would grab everything and falsification_
+        # relevant would never fire.
+        falsifier_kind = (model.falsifier.get("kind") or "").lower()
+        if falsifier_kind in {"observation_pattern", "prediction_deadline"}:
+            pattern = (model.falsifier.get("pattern") or "").lower()
+            for oid in model.supporting_event_ids:
+                if oid in seen_evidence:
+                    continue
+                obs = obs_map.get(oid)
+                if obs is None:
+                    continue
+                if not pattern:
+                    chosen = obs
+                else:
+                    blob = " ".join(
+                        s for s in (
+                            obs.kind, obs.source_channel, obs.content_text,
+                        ) if s
+                    ).lower()
+                    if pattern not in blob:
+                        continue
+                    chosen = obs
+                picks.append(
+                    _Pick(
+                        node_id=model.id,
+                        evidence_id=chosen.id,
+                        evidence_kind="observation",
+                        reason="falsification_relevant",
+                        include_level="evidence_card",
+                        trust_tier=chosen.trust_tier,
+                        occurred_at=chosen.occurred_at,
+                        score=0.7,
+                        fresh=chosen.occurred_at >= fresh_cutoff,
+                        falsification_relevant=True,
+                    )
+                )
+                seen_evidence.add(chosen.id)
+                break  # one falsification pick per model
+
+        # ---- 2b. decisive_support (top-2 recent + highest tier) -----
         support_candidates: list[_Pick] = []
         for oid in model.supporting_event_ids:
             if oid in seen_evidence:
@@ -615,44 +659,9 @@ class EvidenceProjector:
             seen_evidence.add(freshest.id)
 
         # ---- 4. falsification_relevant ------------------------------
-        falsifier_kind = (model.falsifier.get("kind") or "").lower()
-        if falsifier_kind in {"observation_pattern", "prediction_deadline"}:
-            pattern = (model.falsifier.get("pattern") or "").lower()
-            chosen: _ObsRow | None = None
-            for oid in model.supporting_event_ids:
-                if oid in seen_evidence:
-                    continue
-                obs = obs_map.get(oid)
-                if obs is None:
-                    continue
-                # Heuristic match: kind/source/text contains the pattern
-                if not pattern:
-                    chosen = obs
-                    break
-                blob = " ".join(
-                    s for s in (
-                        obs.kind, obs.source_channel, obs.content_text,
-                    ) if s
-                ).lower()
-                if pattern in blob:
-                    chosen = obs
-                    break
-            if chosen is not None:
-                picks.append(
-                    _Pick(
-                        node_id=model.id,
-                        evidence_id=chosen.id,
-                        evidence_kind="observation",
-                        reason="falsification_relevant",
-                        include_level="evidence_card",
-                        trust_tier=chosen.trust_tier,
-                        occurred_at=chosen.occurred_at,
-                        score=0.7,
-                        fresh=chosen.occurred_at >= fresh_cutoff,
-                        falsification_relevant=True,
-                    )
-                )
-                seen_evidence.add(chosen.id)
+        # Moved to stage 2a above (runs before decisive_support so the
+        # falsifier-matching observation isn't silently consumed under
+        # reason='decisive_support').
 
         # ---- 5. explains_confidence --------------------------------
         # Observation referenced by the signal_reading with the largest

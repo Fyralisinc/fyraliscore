@@ -63,7 +63,7 @@ pytestmark = pytest.mark.integration
 # =====================================================================
 
 
-_ZERO_EMBEDDING = "[" + ",".join(["0"] * 768) + "]"
+from tests.unit.sage._seed import seed_model as _shared_seed_model
 
 
 async def _seed_inquiry_session(
@@ -101,39 +101,15 @@ async def _seed_model(
 ) -> UUID:
     """Insert a minimal `models` row so affordance / structural FKs resolve.
 
-    Uses raw SQL with a zero embedding — the optimizer never inspects
-    embedding contents, so the only constraint that matters is the
-    schema-level NOT NULL on `embedding`.
+    Thin wrapper around `tests.unit.sage._seed.seed_model` which handles
+    pgvector embedding binding and confidence_at_assertion correctly.
     """
-    import json
-
-    model_id = uuid7()
-    born_from_event_id = uuid7()
-    prop = proposition or {"kind": "belief", "subject": "test"}
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO models (
-              id, tenant_id, born_from_event_id,
-              proposition, "natural", embedding,
-              scope_temporal,
-              confidence, activation
-            ) VALUES (
-              $1, $2, $3,
-              $4::jsonb, $5, $6::vector,
-              $7::jsonb,
-              0.5, 1.0
-            )
-            """,
-            model_id,
-            tenant_id,
-            born_from_event_id,
-            json.dumps(prop),
-            "test model",
-            _ZERO_EMBEDDING,
-            json.dumps({}),
-        )
-    return model_id
+    return await _shared_seed_model(
+        pool,
+        tenant_id=tenant_id,
+        proposition=proposition,
+        natural="test model",
+    )
 
 
 async def _seed_affordance_profile(

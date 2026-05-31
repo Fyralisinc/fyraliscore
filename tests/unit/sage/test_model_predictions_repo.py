@@ -70,25 +70,11 @@ def _content_embedding(text: str, dim: int = 768) -> list[float]:
 
 
 async def _seed_observation(pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
-    """Insert a minimal observation row; returns its id."""
-    oid = uuid7()
-    await pool.execute(
-        """
-        INSERT INTO observations (
-            id, tenant_id, occurred_at, kind, source_channel,
-            actor_id, content, content_text,
-            embedding, embedding_pending, trust_tier,
-            external_id, entities_mentioned
-        ) VALUES (
-            $1, $2, now(), 'signal', 'test:signal',
-            NULL, '{}'::jsonb, 'seed obs',
-            NULL, TRUE, 'authoritative',
-            $3, '[]'::jsonb
-        )
-        """,
-        oid, tenant_id, f"mp-test-obs-{oid}",
+    """Thin wrapper around the shared observation seeder."""
+    from tests.unit.sage._seed import seed_observation as _shared_seed_observation
+    return await _shared_seed_observation(
+        pool, tenant_id=tenant_id, content_text="seed obs",
     )
-    return oid
 
 
 async def _seed_model(
@@ -98,34 +84,23 @@ async def _seed_model(
     natural: str = "Model under prediction test",
     confidence: float = 0.6,
 ) -> UUID:
-    """Insert a minimal `models` row directly (no pipeline)."""
+    """Insert a minimal `models` row via the shared seed helper.
+
+    The shared helper handles pgvector binding + confidence_at_assertion
+    so this file only owns the per-test parameter shape.
+    """
+    from tests.unit.sage._seed import seed_model as _shared_seed_model
     obs_id = await _seed_observation(pool, tenant_id)
-    mid = uuid7()
-    emb = _content_embedding(natural)
-    proposition = {"kind": "belief", "subject": "test", "assertion": natural}
-    await pool.execute(
-        """
-        INSERT INTO models (
-            id, tenant_id, born_from_event_id,
-            proposition, "natural", embedding,
-            scope_actors, scope_entities, scope_temporal,
-            confidence, activation,
-            status, supporting_event_ids
-        ) VALUES (
-            $1, $2, $3,
-            $4::jsonb, $5, $6,
-            '{}'::uuid[], '[]'::jsonb, $7::jsonb,
-            $8, 1.0,
-            'active', $9::uuid[]
-        )
-        """,
-        mid, tenant_id, obs_id,
-        json.dumps(proposition), natural, emb,
-        json.dumps({"valid_from": "2026-01-01T00:00:00Z", "valid_until": None}),
-        confidence,
-        [obs_id],
+    return await _shared_seed_model(
+        pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        proposition={"kind": "belief", "subject": "test", "assertion": natural},
+        natural=natural,
+        confidence=confidence,
+        supporting_event_ids=[obs_id],
+        embedding=_content_embedding(natural),
     )
-    return mid
 
 
 def _expected(

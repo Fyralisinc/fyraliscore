@@ -77,7 +77,7 @@ async def _seed_observation(
                 $1, $2, $3, $3, $4,
                 $5, NULL, NULL,
                 $6::jsonb, $7,
-                $8::vector, FALSE,
+                $8, FALSE,
                 $9, NULL, NULL, '[]'::jsonb
             )
             """,
@@ -115,7 +115,7 @@ async def _seed_model(
                 id, tenant_id, born_from_event_id,
                 proposition, "natural", embedding,
                 scope_actors, scope_entities, scope_temporal,
-                confidence, activation, falsifier,
+                confidence, confidence_at_assertion, activation, falsifier,
                 signal_readings, reading_contestable,
                 supporting_event_ids, supporting_model_ids, evidential_weight,
                 status, archived_at, archive_reason,
@@ -123,9 +123,9 @@ async def _seed_model(
                 visible_to_subjects
             ) VALUES (
                 $1, $2, $3,
-                $4::jsonb, $5, $6::vector,
+                $4::jsonb, $5, $6,
                 '{}'::uuid[], '[]'::jsonb, $7::jsonb,
-                $8, 1.0, $9::jsonb,
+                $8, $8, 1.0, $9::jsonb,
                 $10::jsonb, TRUE,
                 $11::uuid[], $12::uuid[], 0.5,
                 'active', NULL, NULL,

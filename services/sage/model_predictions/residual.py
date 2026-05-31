@@ -290,15 +290,22 @@ def score_residual_severity(
                     break
 
     satisfied, deviation = _check_value_constraint(constraint, observed_value)
-    base = 0.0 if satisfied else max(deviation, 0.25)
+    if satisfied:
+        return 0.0
+    base = max(deviation, 0.25)
 
+    # Confidence acts as a multiplier in [0.55, 1.0] so even maxed-out
+    # deviations differentiate between low and high confidence predictions
+    # without saturating the [0, 1] cap. A high-confidence prediction
+    # failing is a strictly sharper signal than the same deviation under
+    # a low-confidence one.
     conf = prediction.confidence
-    if conf is not None and not satisfied:
-        # Bump severity by up to +0.25 for a maximally-confident
-        # prediction; less for low-confidence ones.
-        base += 0.25 * max(0.0, min(1.0, float(conf)))
+    if conf is None:
+        sharpness = 0.85  # treat unknown confidence as moderate
+    else:
+        sharpness = 0.55 + 0.45 * max(0.0, min(1.0, float(conf)))
 
-    return max(0.0, min(1.0, base))
+    return max(0.0, min(1.0, base * sharpness))
 
 
 def score_residual_impact(

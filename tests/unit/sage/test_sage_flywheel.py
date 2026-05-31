@@ -43,31 +43,16 @@ from services.gateway.tests.conftest import (  # noqa: F401
 pytestmark = pytest.mark.integration
 
 
-_ZERO_EMBEDDING = "[" + ",".join(["0"] * 768) + "]"
+from tests.unit.sage._seed import seed_model as _shared_seed_model
 
 
 async def _seed_model(pool: asyncpg.Pool, *, tenant_id: UUID) -> UUID:
-    model_id = uuid7()
-    born = uuid7()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO models (
-              id, tenant_id, born_from_event_id,
-              proposition, "natural", embedding,
-              scope_temporal, confidence, activation
-            ) VALUES (
-              $1, $2, $3,
-              $4::jsonb, $5, $6::vector,
-              $7::jsonb, 0.5, 1.0
-            )
-            """,
-            model_id, tenant_id, born,
-            json.dumps({"kind": "belief", "subject": "flywheel"}),
-            "flywheel test model", _ZERO_EMBEDDING,
-            json.dumps({}),
-        )
-    return model_id
+    return await _shared_seed_model(
+        pool,
+        tenant_id=tenant_id,
+        proposition={"kind": "belief", "subject": "flywheel"},
+        natural="flywheel test model",
+    )
 
 
 async def _seed_inquiry_session(
@@ -144,11 +129,11 @@ async def _seed_think_run(
 async def _snapshot_canonical_counts(
     pool: asyncpg.Pool, *, tenant_id: UUID,
 ) -> dict[str, int]:
+    # NOTE: do NOT call `SELECT set_config('app.current_tenant', $1, true)`
+    # outside a transaction — it sets the value to '' (empty string) which
+    # later breaks RLS uuid casts. RLS is permissive when the setting is
+    # NULL, which is the right state for these unit-style assertions.
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.current_tenant', $1, true)",
-            str(tenant_id),
-        )
         models = await conn.fetchval(
             "SELECT count(*) FROM models WHERE tenant_id = $1", tenant_id,
         )
