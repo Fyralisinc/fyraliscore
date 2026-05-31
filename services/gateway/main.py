@@ -230,6 +230,9 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # NOT a Bearer token. The Bearer middleware MUST skip this prefix
     # or every webhook becomes a 401 with `missing_bearer`.
     "/webhooks/",
+    # Finance testing panel (Mercury + QuickBooks). Dev/testing tool scoped by
+    # X-Tenant-Id header (no bearer), same posture as /debug. Env-gated at mount.
+    "/finance/",
 )
 
 
@@ -840,6 +843,16 @@ def build_app(
     from services.integrations.router import build_integrations_router
 
     app.include_router(build_integrations_router())
+
+    # Finance testing control plane (Mercury + QuickBooks): install / backfill /
+    # live-emit / status for the UI panel. On by default (the testing
+    # deliverable); set FINANCE_PANEL_ENABLED=0 to disable in real prod.
+    if os.environ.get("FINANCE_PANEL_ENABLED", "1") != "0":
+        try:
+            from services.gateway.finance_router import build_finance_router
+            app.include_router(build_finance_router())
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            log.error("finance_router_mount_failed", error=str(exc))
     return app
 
 

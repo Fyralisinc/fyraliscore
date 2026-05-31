@@ -33,6 +33,7 @@ export function DebugLayout() {
           <NavLink to="/debug/think-runs" end>think runs</NavLink>
           <NavLink to="/debug/models" end>models</NavLink>
           <NavLink to="/debug/acts" end>acts</NavLink>
+          <NavLink to="/debug/finance" end>finance</NavLink>
           <NavLink to="/debug/renders" end>renders</NavLink>
           <NavLink to="/debug/cache" end>cache</NavLink>
         </nav>

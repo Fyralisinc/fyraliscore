@@ -106,6 +106,34 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("jira", "backfill"): "jira:issue",
     ("jira", "poll"): "jira:issue",
     ("jira", "webhook"): "jira:issue",
+    # Mercury — backfill + poll + webhook (finance). Mercury (banking/cash) has
+    # BOTH a live push surface (HMAC-signed webhooks) AND a historical query
+    # surface (GET /accounts, /account/{id}/transactions). Backfill walks each
+    # account once; the incremental driver re-runs the same fetcher under
+    # ingress_kind="poll" using the transaction `createdAt` high-water cursor;
+    # the webhook ingress delivers live transaction.created events. ALL route to
+    # the single `mercury:transaction` channel; the handler branches on the
+    # reshaped `_fyralis_record_type` (transaction / account_snapshot). external_id
+    # parity across the paths (`mercury:{account}:txn:{id}:{status}` and the
+    # balance snapshot) collapses a backfilled transaction and its live twin to
+    # one observation.
+    ("mercury", "backfill"): "mercury:transaction",
+    ("mercury", "poll"): "mercury:transaction",
+    ("mercury", "webhook"): "mercury:transaction",
+    # QuickBooks — backfill + poll + webhook (finance). QuickBooks Online
+    # (accounting/AR-AP) has BOTH a live push surface (HMAC-SHA256 intuit-signature
+    # webhooks, Intuit eventNotifications) AND a historical query surface (the
+    # query endpoint, SELECT ... WHERE Metadata.LastUpdatedTime). Backfill walks
+    # each entity (Invoice/Bill/BillPayment/Payment) once; the incremental driver
+    # re-runs under ingress_kind="poll" using the LastUpdatedTime high-water; the
+    # webhook ingress delivers thin change events (the poll re-fetch fills the
+    # body). ALL route to the single `quickbooks:object` channel; the handler
+    # branches on the reshaped entity type. external_id parity
+    # (`qbo:{realm}:{entity}:{id}:{SyncToken}`) collapses a backfilled object and
+    # its live twin to one observation.
+    ("quickbooks", "backfill"): "quickbooks:object",
+    ("quickbooks", "poll"): "quickbooks:object",
+    ("quickbooks", "webhook"): "quickbooks:object",
 }
 
 

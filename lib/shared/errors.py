@@ -502,6 +502,67 @@ class JiraApiError(CompanyOSError):
             self._code = code
 
 
+class MercuryApiError(CompanyOSError):
+    """
+    Outbound Mercury banking REST call failure (finance source).
+
+    Stable `code` values:
+      - mercury_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - mercury_api_not_found: 404 — account/resource not visible to the token
+      - mercury_api_rate_limited: 429 with retry budget exhausted
+      - mercury_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "mercury_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class QuickBooksApiError(CompanyOSError):
+    """
+    Outbound QuickBooks Online REST call failure (finance source).
+
+    Stable `code` values:
+      - quickbooks_api_unauthorized: 401/403 — access token expired / no scope
+        (the caller may need to refresh via the rotating refresh token)
+      - quickbooks_api_not_found: 404 — entity/realm not visible
+      - quickbooks_api_rate_limited: 429 (10 req/s, 120/min batch per realm)
+      - quickbooks_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "quickbooks_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -525,4 +586,6 @@ __all__ = [
     "NotionOAuthError",
     "NotionApiError",
     "JiraApiError",
+    "MercuryApiError",
+    "QuickBooksApiError",
 ]

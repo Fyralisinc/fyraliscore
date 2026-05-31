@@ -175,6 +175,8 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "google_calendar": _not_implemented_reconciler("google_calendar", "IN-15"),
     "google_drive": _not_implemented_reconciler("google_drive", "IN-16"),
     "jira":    _not_implemented_reconciler("jira",    "IN-17"),
+    "mercury": _not_implemented_reconciler("mercury", "IN-FIN"),
+    "quickbooks": _not_implemented_reconciler("quickbooks", "IN-FIN"),
 }
 
 
@@ -196,3 +198,5 @@ from services.ingestion.reconcilers import notion as _notion  # noqa: E402,F401
 from services.ingestion.reconcilers import google_calendar as _google_calendar  # noqa: E402,F401
 from services.ingestion.reconcilers import google_drive as _google_drive  # noqa: E402,F401
 from services.ingestion.reconcilers import jira as _jira  # noqa: E402,F401
+from services.ingestion.reconcilers import mercury as _mercury  # noqa: E402,F401
+from services.ingestion.reconcilers import quickbooks as _quickbooks  # noqa: E402,F401

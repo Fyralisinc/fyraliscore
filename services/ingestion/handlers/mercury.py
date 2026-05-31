@@ -1,0 +1,269 @@
+"""services/ingestion/handlers/mercury.py — Mercury transaction/balance handler.
+
+ONE channel `mercury:transaction` (mirrors github:webhook / jira:issue's
+one-channel/many-record-types shape). The handler is a pure function (no DB /
+network) and branches on the input shape to produce exactly ONE observation per
+call:
+
+  - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
+    ∈ {"transaction","account_snapshot"} (set by the fetcher's per-account
+    fan-out).
+  - LIVE WEBHOOK: the raw Mercury webhook body carries a `type`
+    (e.g. "transaction.created", "transaction.updated", "account.updated"); the
+    handler maps it onto the same record builders so a webhook-delivered change
+    and its backfill twin dedup.
+
+Signal mapping (the reasoning value):
+  - transaction (status pending/sent/posted) -> kind="signal"
+  - transaction (status failed/cancelled)    -> kind="state_change" (the
+                                                cash-risk signal: a payment
+                                                failed/declined)
+  - account balance snapshot                 -> kind="signal" (cash position)
+
+external_id — VERSIONED for the MUTABLE entities (the observations repo dedups
+on (source_channel, external_id) IGNORING occurred_at; a status change must land
+as a NEW observation, not silently dedup):
+  - transaction:      mercury:{account_id}:txn:{txn_id}:{status}
+  - account_snapshot: mercury:{account_id}:balance:{as_of_date}
+
+Trust posture: Mercury is the bank's system of record for cash -> `authoritative`.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from lib.shared.errors import ValidationError
+
+from services.ingestion.handlers import (
+    CHANNEL_TRUST_MAP,
+    ObservationDraft,
+    register,
+)
+
+
+_CHANNEL = "mercury:transaction"
+_TRUST = "authoritative"
+
+# Statuses that represent a cash-risk state change (a payment that did not / will
+# not complete). Everything else (pending, sent, posted, completed) is a signal.
+_STATE_CHANGE_STATUSES = frozenset({"failed", "cancelled", "canceled", "declined"})
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    s = value
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    elif len(s) >= 5 and s[-5] in "+-" and s[-3] != ":":
+        s = s[:-2] + ":" + s[-2:]
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _fmt_money(amount: Any) -> str:
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    return f"${abs(val):,.2f}"
+
+
+def _direction(amount: Any) -> str:
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        return "transfer"
+    return "outflow" if val < 0 else "inflow"
+
+
+def _truncate(text: str, limit: int = 600) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# ---------------------------------------------------------------------
+# Per-record-type draft builders (shared by backfill + webhook paths)
+# ---------------------------------------------------------------------
+
+def _transaction_draft(txn: dict[str, Any], account_id: str) -> ObservationDraft:
+    txn_id = str(txn.get("id") or "")
+    if not account_id or not txn_id:
+        raise ValidationError(
+            "mercury transaction missing account_id/id", channel=_CHANNEL,
+        )
+    status = str(txn.get("status") or "unknown").lower()
+    amount = txn.get("amount")
+    counterparty = (
+        txn.get("counterpartyName")
+        or txn.get("counterparty")
+        or txn.get("bankDescription")
+        or "unknown counterparty"
+    )
+    kind_field = txn.get("kind") or "transaction"
+    occurred = (
+        _parse_iso(txn.get("postedAt"))
+        or _parse_iso(txn.get("createdAt"))
+        or _utcnow()
+    )
+    external_id = f"mercury:{account_id}:txn:{txn_id}:{status}"
+
+    direction = _direction(amount)
+    money = _fmt_money(amount)
+    prep = "to" if direction == "outflow" else "from"
+    content_text = f"{money} {direction} {prep} {counterparty} · {status} · {kind_field}"
+
+    entities: list[dict[str, Any]] = [
+        {"type": "mercury_account", "id": account_id},
+    ]
+    if isinstance(counterparty, str) and counterparty and counterparty != "unknown counterparty":
+        entities.append({"type": "organization", "id": counterparty, "role": "counterparty"})
+
+    content: dict[str, Any] = {
+        "object_type": "transaction",
+        "account_id": account_id,
+        "transaction_id": txn_id,
+        "amount": amount,
+        "direction": direction,
+        "status": status,
+        "kind": kind_field,
+        "counterparty": counterparty,
+        "note": txn.get("note"),
+        "bank_description": txn.get("bankDescription"),
+        "posted_at": txn.get("postedAt"),
+        "created_at": txn.get("createdAt"),
+    }
+
+    is_state_change = status in _STATE_CHANGE_STATUSES
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind="state_change" if is_state_change else "signal",
+        source_actor_ref=None,
+        external_id=external_id,
+        entities_hint=entities,
+        raw_payload=txn,
+    )
+
+
+def _account_snapshot_draft(
+    account: dict[str, Any], account_id: str, as_of: str | None,
+) -> ObservationDraft:
+    if not account_id:
+        raise ValidationError(
+            "mercury account snapshot missing account_id", channel=_CHANNEL,
+        )
+    occurred = _parse_iso(as_of) or _utcnow()
+    as_of_date = (as_of or occurred.isoformat())[:10]
+    external_id = f"mercury:{account_id}:balance:{as_of_date}"
+
+    name = account.get("name") or account.get("nickname") or account_id
+    available = account.get("availableBalance")
+    current = account.get("currentBalance")
+    if available is None:
+        available = account.get("balance")
+    content_text = (
+        f"{name} balance: {_fmt_money(available)} available"
+        f" / {_fmt_money(current)} current (as of {as_of_date})"
+    )
+
+    entities: list[dict[str, Any]] = [{"type": "mercury_account", "id": account_id}]
+    content: dict[str, Any] = {
+        "object_type": "account_snapshot",
+        "account_id": account_id,
+        "account_name": name,
+        "account_kind": account.get("type") or account.get("kind"),
+        "available_balance": available,
+        "current_balance": current,
+        "as_of": as_of_date,
+    }
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind="signal",
+        source_actor_ref=None,
+        external_id=external_id,
+        entities_hint=entities,
+        raw_payload=account,
+    )
+
+
+def _account_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
+    """Resolve the account id for a webhook/backfill record."""
+    aid = payload.get("_fyralis_account_id") or payload.get("accountId")
+    if isinstance(aid, str) and aid:
+        return aid
+    if isinstance(obj, dict):
+        cand = obj.get("accountId") or obj.get("account_id")
+        if isinstance(cand, str) and cand:
+            return cand
+    return ""
+
+
+# ---------------------------------------------------------------------
+# Handler
+# ---------------------------------------------------------------------
+
+@register(_CHANNEL)
+async def handle_mercury_transaction(
+    payload: dict[str, Any], headers: dict[str, str]
+) -> ObservationDraft:
+    if not isinstance(payload, dict):
+        raise ValidationError("mercury payload must be a JSON object", channel=_CHANNEL)
+
+    # --- LIVE WEBHOOK path (raw Mercury webhook body) ---
+    event_type = payload.get("type")
+    if isinstance(event_type, str) and event_type:
+        if event_type.startswith("transaction."):
+            txn = payload.get("transaction") or payload.get("data") or {}
+            if isinstance(txn, dict) and txn.get("id"):
+                return _transaction_draft(txn, _account_id_of(payload, txn))
+            raise ValidationError(
+                f"mercury {event_type} missing transaction", channel=_CHANNEL,
+            )
+        if event_type.startswith("account."):
+            account = payload.get("account") or payload.get("data") or {}
+            if isinstance(account, dict):
+                aid = _account_id_of(payload, account) or str(account.get("id") or "")
+                return _account_snapshot_draft(
+                    account, aid, payload.get("as_of"),
+                )
+        raise ValidationError(
+            f"unsupported mercury webhook type {event_type!r}", channel=_CHANNEL,
+        )
+
+    # --- BACKFILL / POLL path (fetcher-tagged records) ---
+    record_type = payload.get("_fyralis_record_type")
+    if record_type == "account_snapshot":
+        return _account_snapshot_draft(
+            payload.get("account") or {},
+            _account_id_of(payload, payload.get("account")),
+            payload.get("as_of"),
+        )
+    if record_type == "transaction" or "transaction" in payload:
+        txn = payload.get("transaction") or {}
+        return _transaction_draft(txn, _account_id_of(payload, txn))
+
+    raise ValidationError(
+        "mercury payload is neither a webhook event nor a tagged record",
+        channel=_CHANNEL,
+    )
+
+
+CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
+
+
+__all__ = ["handle_mercury_transaction"]

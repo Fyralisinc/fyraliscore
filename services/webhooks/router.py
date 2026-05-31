@@ -81,6 +81,9 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     "github": "github",
     "discord": "discord",
     "jira": "jira",
+    # Finance sources — HMAC-signed webhooks route onto the data plane.
+    "mercury": "mercury",
+    "quickbooks": "quickbooks",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -97,6 +100,11 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     # IN-17: Jira webhooks route through the full pipeline (the 202 cutover
     # contract fits — no synchronous-response-shape constraint like Discord).
     "jira": "jira",
+    # Finance sources: Mercury + QuickBooks webhooks fit the 202 cutover
+    # contract (no synchronous-response-shape constraint), so they activate
+    # the full pipeline once the tenant's kafka_path_enabled flag is TRUE.
+    "mercury": "mercury",
+    "quickbooks": "quickbooks",
 }
 
 
@@ -346,6 +354,10 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     # IN-17: inline-ingest fallback channel (used only when the tenant's
     # kafka_path_enabled flag is off; otherwise the cutover 202 path runs).
     "jira": "jira:issue",
+    # Finance sources — inline-ingest fallback channels (cutover 202 path runs
+    # when kafka_path_enabled is TRUE).
+    "mercury": "mercury:transaction",
+    "quickbooks": "quickbooks:object",
 }
 
 

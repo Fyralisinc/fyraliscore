@@ -75,6 +75,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
+    "mercury", "quickbooks",
 ]
 
 
@@ -312,6 +313,36 @@ def _extract_jira(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str
     return _host_from_self(payload.get("self"))
 
 
+def _extract_mercury(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # Finance: a Mercury webhook body carries the affected resource. We register
+    # the installation keyed by the Mercury account/organization id. The seed/
+    # onboarding step writes a provider_installations row (provider='mercury',
+    # installation_id=<organization_id>). The body's top-level `organizationId`
+    # (or the legacy `accountId`) identifies the tenant's install; the synthetic
+    # finance harness sends `organizationId` explicitly. The signing secret is
+    # resolved separately in services/webhooks/secrets.py.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("accountId"))
+
+
+def _extract_quickbooks(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # Finance: QuickBooks Online webhooks deliver an `eventNotifications` array,
+    # each carrying the `realmId` (company id). Installations are registered
+    # keyed by realmId (provider_installations row provider='quickbooks',
+    # installation_id=<realmId>). We read the first notification's realmId; the
+    # synthetic finance harness sends a top-level `realmId` too, so check both.
+    notifications = payload.get("eventNotifications")
+    if isinstance(notifications, list) and notifications:
+        first = notifications[0]
+        if isinstance(first, Mapping):
+            realm = _str_or_none(first.get("realmId"))
+            if realm is not None:
+                return realm
+    return _str_or_none(payload.get("realmId"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -330,6 +361,8 @@ PROVIDER_EXTRACTORS: dict[
     "discord": _extract_discord,
     "notion": _extract_notion,
     "jira": _extract_jira,
+    "mercury": _extract_mercury,
+    "quickbooks": _extract_quickbooks,
 }
 
 
