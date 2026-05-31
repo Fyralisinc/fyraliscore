@@ -112,6 +112,15 @@ class RetrievalConfig:
     # VERIFY against actual LLM limits (audit §7 arg 3); 100K is the
     # current default.
     context_budget_tokens: int = 100_000
+    # Default prompt-facing context budgets. These are intentionally
+    # lower than primary retrieval's candidate reservoir: Think now
+    # receives a compact inquiry packet plus the strongest raw rows, so
+    # the raw row budget should be an evidence anchor set, not another
+    # broad retrieval dump.
+    assembler_budget_observations: int = 12
+    assembler_budget_models: int = 24
+    assembler_budget_acts_total: int = 10
+    assembler_budget_resources: int = 5
     mmr_lambda_diversity: float = 0.5
     # Follow-up FU-1 (RA-4 wire): when True, `assemble_context` will run
     # MMR (token-budgeted) over the Models bucket. Default False so the

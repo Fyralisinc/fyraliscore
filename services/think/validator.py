@@ -13,7 +13,7 @@ Rules enforced:
      checked against the retrieval context.
 
   3. act_ops.* confidence threshold via `compute_threshold`. If
-     basis.confidence < threshold → drop op.
+     basis.confidence < threshold → neutralize the op.
 
   4. act_ops transitions → `can_transition(current_state, new_state,
      kind)` must return True. Illegal → drop op.
@@ -61,6 +61,10 @@ from lib.shared.types import EdgeDetectedBy
 from lib.shared.trust import TrustTier
 
 from services.acts.state_machines import can_transition
+from services.acts.invariants import (
+    count_revisited_constraining_decisions,
+    count_unsatisfied_dependencies,
+)
 from services.models.calibration import apply_calibration
 from services.models.falsifier import is_adequate_falsifier
 from services.models.propositions import validate_proposition
@@ -158,6 +162,16 @@ _CONFIDENCE_MIN = 0.05
 _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
 _ERROR_RATE_HARD_LIMIT = 0.25  # Retained for callers that import it; no longer enforced as a gate.
+_DEFAULT_ABSTRACTION_LEVEL_BY_CLAIM_ROLE: dict[str, str] = {
+    "fact": "atomic",
+    "concern": "atomic",
+    "hypothesis": "atomic",
+    "prediction": "atomic",
+    "capability": "atomic",
+    "recommendation": "atomic",
+    "relation": "relationship",
+    "pattern": "pattern",
+}
 
 _UNCERTAINTY_CONFIDENCE_CAP = 0.69
 _LOW_TRUST_CONFIDENCE_CAP = 0.55
@@ -262,6 +276,56 @@ def _confidence_cap_for_linguistic_uncertainty(
     return None
 
 
+def _repair_non_situation_abstraction_level(entry: dict[str, Any]) -> None:
+    """Normalize a live-LLM grammar slip before proposition validation.
+
+    In the memory grammar, `composite` is reserved for situation Models.
+    Live providers sometimes express a multi-clause signal as
+    claim_role=`concern`/`fact` plus abstraction_level=`composite`. If we
+    reject that here, the downstream splitter never gets a chance to
+    decompose the signal and synthesize the situation Model that should
+    carry the composite meaning.
+    """
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return
+    if prop.get("claim_role") == "situation" or prop.get("legacy_kind") == "situation":
+        return
+    role = prop.get("claim_role")
+    default_level = _DEFAULT_ABSTRACTION_LEVEL_BY_CLAIM_ROLE.get(str(role))
+    if default_level is None:
+        return
+    if prop.get("abstraction_level") in (None, default_level):
+        return
+    prop["abstraction_level"] = default_level
+
+
+def _mark_empty_situation_members_pending(entry: dict[str, Any]) -> None:
+    """Allow explicit situations with deferred member binding.
+
+    A provider can correctly identify the composite situation before it
+    has existing Model ids to cite, especially in sparse retrieval. Mark
+    that as a transient pending-member shape so the splitter/applier can
+    form atomics and patch concrete member_model_ids after insert.
+    """
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return
+    is_situation = (
+        prop.get("claim_role") == "situation"
+        or prop.get("legacy_kind") == "situation"
+        or prop.get("kind") == "situation"
+    )
+    if not is_situation:
+        return
+    members = prop.get("member_model_ids")
+    if isinstance(members, list) and members:
+        return
+    prop["member_model_ids"] = []
+    prop["_pending_members"] = True
+    entry["member_model_pending"] = True
+
+
 def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
     """
     Every entity id this diff mutates. Used by the out-of-region check.
@@ -270,6 +334,15 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
     `region_locks.touched_entity_ids(...)` output.
     """
     out: list[tuple[str, str]] = []
+    pending_model_event_ids: set[UUID] = set()
+    for op in diff.claim_ops:
+        if op.op != "insert" or not op.entry:
+            continue
+        for key in ("born_from_event_id", "model_id", "id"):
+            placeholder_id = _coerce_uuid(op.entry.get(key))
+            if placeholder_id is not None:
+                pending_model_event_ids.add(placeholder_id)
+
     for op in diff.claim_ops:
         if op.op == "insert" and op.entry:
             # New Model's id isn't known yet. We include its
@@ -282,8 +355,10 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
         elif op.model_id is not None:
             out.append(("model", str(op.model_id)))
     for op in diff.edge_ops:
-        out.append(("model", str(op.source_model_id)))
-        out.append(("model", str(op.target_model_id)))
+        for model_id in (op.source_model_id, op.target_model_id):
+            if _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
     for op in diff.act_ops:
         ent = op.entity or {}
         if op.op in (
@@ -457,6 +532,7 @@ async def validate(
     validated_edge_ops: list[EdgeOp] = []
     validated_act_ops: list[ActOp] = []
     validated_resource_ops: list[ResourceOp] = []
+    neutralized_op_count = 0
 
     # --- claim_ops -------------------------------------------------
     context_model_ids = {
@@ -523,6 +599,7 @@ async def validate(
                 conn,
                 tenant_id=diff.tenant_id,
                 pending_model_event_ids=set(pending_claim_basis_confidence),
+                pending_edge_ops=validated_edge_ops,
             )
         except (ValidationError, EdgeRegistryError) as e:
             reason = _classify_edge_drop_reason(e)
@@ -536,6 +613,9 @@ async def validate(
                 failure_reason=reason,
                 original_op=op,
             )
+            continue
+        if v_op is None:
+            neutralized_op_count += 1
             continue
         validated_edge_ops.append(v_op)
 
@@ -562,6 +642,9 @@ async def validate(
                 failure_reason=reason,
                 original_op=op,
             )
+            continue
+        if v_op is None:
+            neutralized_op_count += 1
             continue
         validated_act_ops.append(v_op)
 
@@ -594,7 +677,7 @@ async def validate(
         or validated_act_ops
         or validated_resource_ops
     )
-    if total_ops > 0 and not any_survived:
+    if total_ops > 0 and not any_survived and neutralized_op_count == 0:
         raise ValidationFailure(
             f"validation rejected {len(errors)}/{total_ops} ops "
             f"(every op failed)",
@@ -686,6 +769,8 @@ async def _validate_claim_op(
         # calls can emit one malformed claim next to valid claims; the
         # validator's partial-accept contract should drop that one op
         # instead of letting the applier fail the whole transaction.
+        _repair_non_situation_abstraction_level(entry)
+        _mark_empty_situation_members_pending(entry)
         validate_proposition(entry.get("proposition"))
         # confidence_at_assertion — if the LLM doesn't supply one, use
         # the pre-calibration raw confidence (clipped). This becomes the
@@ -737,7 +822,7 @@ async def _validate_act_op(
     conn: asyncpg.Connection,
     *,
     pending_claim_basis_confidence: dict[UUID, float] | None = None,
-) -> ActOp:
+) -> ActOp | None:
     """
     Threshold + state-machine validation for an Act op.
     """
@@ -758,13 +843,19 @@ async def _validate_act_op(
     threshold = compute_threshold(op, basis)
 
     if basis is not None and float(basis.get("confidence", 0.0)) < threshold:
-        raise ValidationError(
-            f"insufficient confidence for {op.op}: "
-            f"basis={basis.get('confidence')} < threshold={threshold}",
-            op=op.op,
-            basis_confidence=basis.get("confidence"),
-            threshold=threshold,
-        )
+        return None
+
+    if op.op == "create_decision":
+        ent = dict(op.entity or {})
+        title = ent.get("title")
+        decision_text = ent.get("decision_text")
+        if not isinstance(title, str) or not title.strip():
+            raise ValidationError("create_decision requires entity.title")
+        if not isinstance(decision_text, str) or not decision_text.strip():
+            fallback = ent.get("rationale") or title
+            ent["decision_text"] = str(fallback).strip()
+            ent["canonicalized_missing_decision_text"] = True
+        op = op.model_copy(update={"entity": ent})
 
     # Transition legality.
     if op.op == "transition_commitment":
@@ -781,6 +872,46 @@ async def _validate_act_op(
             raise ValidationError(
                 f"transition_commitment: commitment {cid} not found"
             )
+        if row["state"] == new_state:
+            return None
+        # Proposed commitments are not yet runnable work. Live LLMs can read
+        # "not ready / waiting" language as paused or blocked, but the legal
+        # next states are only active or closed. Treat runtime-state requests
+        # against a proposed commitment as a safe no-op.
+        if row["state"] == "proposed" and new_state in {"paused", "blocked"}:
+            return None
+        # The pure state machine allows active -> blocked, but the
+        # Commitment service enforces C2 at apply time: blocked requires
+        # an unsatisfied dependency or revisited constraining decision.
+        # Live LLMs often use "blocked" colloquially for waiting/on-hold
+        # signals. Preserve the useful transition by canonicalizing those
+        # unsupported cases to paused, which is the legal ledger state for
+        # social or approval-style stalls.
+        if new_state == "blocked":
+            n_deps = await count_unsatisfied_dependencies(conn, cid)
+            n_rev = await count_revisited_constraining_decisions(conn, cid)
+            if n_deps == 0 and n_rev == 0:
+                if row["state"] == "paused":
+                    return None
+                paused_ok, paused_reason = can_transition(
+                    row["state"], "paused", "commitment"
+                )
+                if not paused_ok:
+                    raise InvariantViolation(
+                        "C_STATE",
+                        paused_reason,
+                        commitment_id=str(cid),
+                        from_state=row["state"],
+                        to_state="paused",
+                    )
+                updated_entity = dict(op.entity)
+                updated_entity["new_state"] = "paused"
+                updated_entity["canonicalized_from_state"] = "blocked"
+                updated_entity["canonicalization_reason"] = (
+                    "blocked_without_dependency_or_revisited_decision"
+                )
+                op = op.model_copy(update={"entity": updated_entity})
+                new_state = "paused"
         ok, reason = can_transition(row["state"], new_state, "commitment")
         if not ok:
             raise InvariantViolation(
@@ -818,6 +949,8 @@ async def _validate_act_op(
         )
         if row is None:
             raise ValidationError(f"goal {gid} not found")
+        if row["state"] == new_state:
+            return None
         ok, reason = can_transition(row["state"], new_state, "goal")
         if not ok:
             raise InvariantViolation(
@@ -838,6 +971,21 @@ async def _validate_act_op(
         )
         if row is None:
             raise ValidationError(f"decision {did} not found")
+        if row["state"] == new_state:
+            return None
+        if row["state"] == "drafted" and new_state == "revisited":
+            # Revisit is only legal for active decisions. Live LLMs sometimes
+            # use "revisited" to mean a drafted decision has become salient
+            # again; preserve the legal lifecycle movement instead of dropping
+            # the whole bookkeeping op.
+            updated_entity = dict(op.entity)
+            updated_entity["new_state"] = "active"
+            updated_entity["canonicalized_from_state"] = "revisited"
+            updated_entity["canonicalization_reason"] = (
+                "drafted_decision_cannot_be_revisited"
+            )
+            op = op.model_copy(update={"entity": updated_entity})
+            new_state = "active"
         ok, reason = can_transition(row["state"], new_state, "decision")
         if not ok:
             raise InvariantViolation(
@@ -855,7 +1003,8 @@ async def _validate_edge_op(
     *,
     tenant_id: UUID,
     pending_model_event_ids: set[UUID] | None = None,
-) -> EdgeOp:
+    pending_edge_ops: list[EdgeOp] | None = None,
+) -> EdgeOp | None:
     from lib.shared.edge_registry import assert_writable, validate_weight
 
     if op.source_model_id == op.target_model_id:
@@ -931,10 +1080,72 @@ async def _validate_edge_op(
                 "edge_op add requires active model endpoints",
                 inactive=inactive,
             )
+        if await _edge_would_create_cycle(
+            op,
+            conn,
+            tenant_id=tenant_id,
+            pending_edge_ops=pending_edge_ops,
+        ):
+            return None
 
     # Touch spec so linters/tests know this was intentionally looked up.
     _ = spec
     return op
+
+
+async def _edge_would_create_cycle(
+    op: EdgeOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_edge_ops: list[EdgeOp] | None = None,
+) -> bool:
+    from lib.shared.edge_registry import cycle_scope_for
+
+    scope = cycle_scope_for(op.edge_kind)
+    if scope is None:
+        return False
+
+    pending_adjacency: dict[UUID, set[UUID]] = {}
+    for pending in pending_edge_ops or []:
+        if pending.op != "add" or pending.edge_kind not in scope:
+            continue
+        pending_adjacency.setdefault(pending.source_model_id, set()).add(
+            pending.target_model_id
+        )
+
+    seen: set[UUID] = set()
+    frontier: set[UUID] = {op.target_model_id}
+    scope_list = list(scope)
+    for _ in range(512):
+        frontier -= seen
+        if not frontier:
+            return False
+        if op.source_model_id in frontier:
+            return True
+        seen.update(frontier)
+        rows = await conn.fetch(
+            """
+            SELECT target_model_id
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = ANY($2::uuid[])
+              AND edge_kind = ANY($3::text[])
+              AND status = 'active'
+            """,
+            tenant_id,
+            list(frontier),
+            scope_list,
+        )
+        next_frontier = {r["target_model_id"] for r in rows}
+        for node in frontier:
+            next_frontier.update(pending_adjacency.get(node, ()))
+        frontier = next_frontier
+
+    raise ValidationError(
+        "edge_op cycle traversal exceeded depth guard",
+        edge_kind=op.edge_kind,
+    )
 
 
 def _validate_resource_op_shape(op: ResourceOp) -> ResourceOp:

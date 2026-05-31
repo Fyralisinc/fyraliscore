@@ -28,7 +28,11 @@ _log = structlog.get_logger("think.debug_capture")
 
 _STAGES = (
     "trigger",
+    "routing",
     "retrieval",
+    "inquiry",
+    "context_packet",
+    "sufficiency",
     "prompt",
     "response",
     "validation",

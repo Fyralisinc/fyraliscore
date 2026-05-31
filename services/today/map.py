@@ -296,7 +296,7 @@ async def _build_handled(
         """
         SELECT count(*) FROM models
         WHERE tenant_id = $1
-          AND proposition_kind = 'recommendation'
+          AND claim_role = 'recommendation'
           AND (target_actor_id = $2 OR target_actor_id IS NULL)
           AND created_at >= $3
         """,

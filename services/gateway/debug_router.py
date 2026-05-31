@@ -144,6 +144,58 @@ def build_debug_router() -> APIRouter:
                 "ORDER BY enqueued_at",
                 tid, oid,
             )
+            routing_decisions = await conn.fetch(
+                "SELECT id, route, decision_status, score, score_breakdown, "
+                "       estimated_cost, risk_level, sensitivity, reason, "
+                "       enqueued_trigger_id, created_at "
+                "FROM signal_routing_decisions "
+                "WHERE tenant_id = $1 "
+                "  AND signal_ref_type = 'observation' "
+                "  AND signal_ref_id = $2 "
+                "ORDER BY created_at DESC",
+                tid, oid,
+            )
+            inquiry_sessions = await conn.fetch(
+                "SELECT id, route, status, stop_status, round_count, "
+                "       question_count, evidence_count, context_packet, "
+                "       notes, created_at, completed_at "
+                "FROM inquiry_sessions "
+                "WHERE tenant_id = $1 "
+                "  AND signal_ref_type = 'observation' "
+                "  AND signal_ref_id = $2 "
+                "ORDER BY created_at DESC "
+                "LIMIT 10",
+                tid, oid,
+            )
+            inquiry_evidence: list[dict] = []
+            inquiry_questions: list[dict] = []
+            if inquiry_sessions:
+                session_ids = [r["id"] for r in inquiry_sessions]
+                question_rows = await conn.fetch(
+                    "SELECT id, session_id, question_id, round_index, "
+                    "       primitive, question, score, retrieval_actions, "
+                    "       answer, created_at "
+                    "FROM inquiry_question_runs "
+                    "WHERE tenant_id = $1 "
+                    "  AND session_id = ANY($2::uuid[]) "
+                    "ORDER BY round_index, question_id",
+                    tid, session_ids,
+                )
+                inquiry_questions = [_jsonify(r) for r in question_rows]
+                evidence_rows = await conn.fetch(
+                    "SELECT id, session_id, source_type, source_ref, "
+                    "       summary, trust_tier, occurred_at, retrieval_paths, "
+                    "       retrieved_for_questions, supports_hypotheses, "
+                    "       weakens_hypotheses, contradicts_hypotheses, "
+                    "       token_estimate, score "
+                    "FROM inquiry_evidence_items "
+                    "WHERE tenant_id = $1 "
+                    "  AND session_id = ANY($2::uuid[]) "
+                    "ORDER BY score DESC, created_at DESC "
+                    "LIMIT 100",
+                    tid, session_ids,
+                )
+                inquiry_evidence = [_jsonify(r) for r in evidence_rows]
             runs = await conn.fetch(
                 "SELECT tr.* FROM think_runs tr "
                 "WHERE tr.tenant_id = $1 AND tr.trigger_id IN ("
@@ -173,6 +225,10 @@ def build_debug_router() -> APIRouter:
         return {
             "observation": _jsonify(obs),
             "triggers": [_jsonify(r) for r in triggers],
+            "routing_decisions": [_jsonify(r) for r in routing_decisions],
+            "inquiry_sessions": [_jsonify(r) for r in inquiry_sessions],
+            "inquiry_questions": inquiry_questions,
+            "inquiry_evidence": inquiry_evidence,
             "runs": [_jsonify(r) for r in runs],
             "artifacts": artifacts,
             "models_born": [_jsonify(r) for r in models_born],

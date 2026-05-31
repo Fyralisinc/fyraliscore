@@ -5,8 +5,8 @@ Flow per CONTRACTS §2.2:
 
   1. Classify the query (classifier.QueryClassifier).
   2. Dispatch to the per-category strategy (strategies/*).
-  3. Strategy runs primary_retrieve + assemble_context against the
-     caller's DB connection.
+  3. Strategy runs the execution-layer Fast Path retrieval +
+     assemble_context against the caller's DB connection.
   4. Serialize the context bundle + strategy notes into the rendering
      adapter's RenderRequest.
   5. Rendering adapter returns HTML; we wrap it in AnswerQueryResponse.

@@ -37,9 +37,13 @@ if TYPE_CHECKING:
 # Per-section char budgets.
 _OBS_CHAR_BUDGET = 4000
 _MODELS_CHAR_BUDGET = 4000
+_MODELS_INQUIRY_CHAR_BUDGET = 2400
 _ACTS_CHAR_BUDGET = 12000
 _RESOURCES_CHAR_BUDGET = 1000
 _PER_ITEM_CHAR_LIMIT = 1500
+_MODEL_DETAIL_CHAR_LIMIT = 700
+_MODEL_MANIFEST_CHAR_LIMIT = 220
+_MODEL_DETAIL_ROW_LIMIT = 8
 _RETRIEVAL_GUIDANCE_ID_LIMIT = 12
 
 
@@ -91,7 +95,7 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
   "op": "insert",
   "entry": {
     "born_from_event_id": "<uuid - echo the triggering observation_id>",
-    "proposition": {"kind": "<one proposition kind below>", "...": "..."},
+    "proposition": {"kind": "<observation|belief|prediction|norm>", "...": "..."},
     "natural": "<human-readable 1-2 sentence restatement>",
     "confidence": 0.05-0.95,
     "scope_actors": ["<uuid>", ...],
@@ -104,24 +108,35 @@ Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
 - archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
 
-Proposition kinds and required payloads:
-- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
-- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
-- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
-- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
-- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
-- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
-- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
-- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
-- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
-- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid from bundle>",...],"open_falsifier":"<under what observation this composite would be invalid>"}
-- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
-The twelve kinds above are the ONLY valid `kind` values. Do NOT use proposition
-kinds outside this list. Map risk/opportunity language to concern, prediction,
-hypothesis, or recommendation as appropriate.
+Proposition stance and grammar:
+- `kind` has only four valid values: observation, belief, prediction, norm.
+- Use `kind` for epistemic stance only:
+  - observation = something that happened and should not be revised in place.
+  - belief = what we currently hold to be true from observations.
+  - prediction = a falsifiable future claim.
+  - norm = what the organization wants to happen.
+- Put subject semantics in grammar fields, not in `kind`:
+  - `claim_role`: fact | concern | hypothesis | prediction | pattern | situation | capability | relation | recommendation
+  - `abstraction_level`: atomic | relationship | composite | pattern
+  - `time_mode`: past | current | future | recurring | unspecified
+  - `modality`: observed | inferred | expected | normative
+  - `polarity`: positive | negative | mixed | neutral
+  - `domain_tags`: short lowercase tags like ["market"], ["customers"], ["execution"].
 
-Situation compositional fields (mandatory when emitting a `situation`):
+Payload examples:
+- observation -> {"kind":"observation","event":"<what happened>","claim_role":"fact","time_mode":"past","modality":"observed"}
+- belief/fact -> {"kind":"belief","subject":"<entity or UUID>","assertion":"<current truth>","claim_role":"fact"}
+- belief/relation -> {"kind":"belief","subject":"...","relation":"verb phrase","object":"...","claim_role":"relation","abstraction_level":"relationship"}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"...","claim_role":"prediction","time_mode":"future","modality":"expected"}
+- belief/pattern -> {"kind":"belief","signature":"...","observed_tendency":"...","trigger_conditions":"...","claim_role":"pattern","abstraction_level":"pattern","time_mode":"recurring"}
+- belief/concern -> {"kind":"belief","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>","claim_role":"concern","polarity":"negative"}
+- belief/market pattern -> {"kind":"belief","subject_external":"<external entity>","assessment":"...","claim_role":"pattern","domain_tags":["market"]}
+- belief/situation -> {"kind":"belief","claim_role":"situation","abstraction_level":"composite","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid from bundle>",...],"open_falsifier":"<under what observation this composite would be invalid>"}
+- norm/recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+Do NOT invent new proposition kinds. Preserve nuance with `claim_role`,
+`domain_tags`, and the other grammar axes.
+
+Situation compositional fields (mandatory when emitting `kind="belief", claim_role="situation"`):
 - `pressure_type` MUST be one of capacity, trust, revenue, compliance,
   decision, execution, market, resource. Pick the dominant pressure the
   composite expresses; do not invent new categories.
@@ -141,25 +156,22 @@ Situation compositional fields (mandatory when emitting a `situation`):
   would invalidate the composite (e.g., "Globex renews on schedule and
   capacity load drops below 70% for two consecutive weeks").
 
-Proposition kind rubric:
-- Use `state` for observed current facts and completed/progress milestones.
-- Use `concern` for risks, blockers, review comments, edge cases, customer
-  pushback, missing evidence, or "worth testing" / "may churn" warnings.
+Stance/grammar rubric:
+- Use `belief` + `claim_role="fact"` for current facts and progress milestones.
+- Use `belief` + `claim_role="concern"` for risks, blockers, review comments,
+  edge cases, customer pushback, missing evidence, or "worth testing" warnings.
 - Use `prediction` for dated plans, ETAs, future deploys, expected slips,
   "will/should by <date>", or conditional future outcomes.
-- Use `relation` when the important memory is a dependency or causal link
-  between two entities/facts rather than a new standalone fact.
-- Use `situation` when multiple selected Models/edges form one operational
-  condition that matters as a composite. Situation member_model_ids must be
-  existing Model ids from <models>; do not use situations for simple pairwise
-  links that should be edge_ops.
-- Use existing proposition kinds for actor operating context:
-  capability_assessment for evidenced skill/capacity/trust, concern for
-  overload or missing support, relation for ownership/reporting/dependency,
-  pattern for repeated behavior, and hypothesis for uncertain motive or
-  constraint explanations.
-- Use `hypothesis` for uncertain explanations that need investigation.
-- Do not flatten every claim into `state`; the proposition kind is part of
+- Use `belief` + `claim_role="relation"` when the important memory is a
+  dependency or causal link between two entities/facts.
+- Use `belief` + `claim_role="situation"` when multiple selected Models/edges
+  form one operational condition that matters as a composite. Situation
+  member_model_ids must be existing Model ids from <models>; do not use
+  situations for simple pairwise links that should be edge_ops.
+- Use `belief` + `claim_role="capability"` for evidenced skill/capacity/trust,
+  `claim_role="pattern"` for repeated behavior, and `claim_role="hypothesis"`
+  for uncertain motive or constraint explanations.
+- Do not flatten every claim into plain fact; the grammar fields are part of
   retrieval quality and should preserve the signal's semantics.
 
 Recommendations:
@@ -169,7 +181,7 @@ Recommendations:
   ordinary Model archives, or doneunverified transitions the system can apply.
 - New self-reported work is special: if the signal says "I've started",
   "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or
-  equivalent, and <acts> has no matching commitment, emit both a state Model and
+  equivalent, and <acts> has no matching commitment, emit both a fact Model and
   a recommendation with proposed_change.operation="create" and
   target_act_ref={"type":"commitment","id":null}. Payload: title, owner_id from
   actor_id/<actors_in_context>, due_date from the signal or ~30 days out, plus
@@ -199,9 +211,17 @@ Act ops:
 - act_ops mutate Goals/Commitments/Decisions. Common cases:
   * PR merged, deployed, ticket closed/moved Done for a known commitment ->
     transition_commitment to doneunverified.
-  * work blocked/waiting/on hold for a known commitment ->
-    transition_commitment to blocked.
-  * a decision is explicitly revisited -> transition_decision to revisited.
+  * work waiting/on hold/stalled for a known commitment ->
+    transition_commitment to paused, but only if that commitment is already
+    active, blocked, paused, or doneunverified. Proposed commitments cannot be
+    paused or blocked; use a scoped concern/state claim instead.
+  * transition_commitment to blocked ONLY when the context explicitly shows
+    an unsatisfied dependency or a revisited constraining decision for that
+    exact commitment; otherwise use paused plus a state/concern claim.
+  * an active decision is explicitly revisited -> transition_decision to
+    revisited. If the matching decision is still drafted, write a scoped
+    concern/state claim instead; drafted decisions can only transition to
+    active.
 - `confidence_basis` MUST be either an existing Model id copied from <models> OR
   the `born_from_event_id` of a claim_ops.insert in the same diff. Use the latter
   when the new claim is the evidence for the transition; the system rewrites it
@@ -267,6 +287,10 @@ edge_ops:
   inserted Model id. Never use other event ids as endpoints. Never use
   customer, commitment, goal, decision, or resource UUIDs as edge endpoints;
   put those non-Model entities in scope_entities on the relevant claim.
+- DAG-scoped edges (`supports`, `instance_of`, `contributes_to_resolution`,
+  `superseded_by`) must not create reciprocal or transitive loops. If the
+  selected graph already implies target reaches source, omit the edge; if
+  direction is uncertain, choose no edge rather than a cyclic support chain.
 - contradicts/weakens require numeric weight. supports/causes/explains/predicts/
   blocks/enables/same_issue_as/co_occurs_with/analogous_to/alternative_to/
   early_warning_for may set weight. instance_of/contributes_to_resolution/
@@ -321,31 +345,30 @@ claim_ops.insert entry shape:
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 
-Proposition kinds:
-- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
-- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
-- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
-- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
-- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
-- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
-- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
-- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
-- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
-- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid>",...],"open_falsifier":"<sentence: under what observation this composite is invalid>"}
-- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
-The twelve kinds above are the ONLY valid `kind` values.
-When emitting a `situation`, populate `pressure_type` (one of the eight
+Proposition stance:
+- `kind` has only four valid values: observation, belief, prediction, norm.
+- Use grammar fields for semantics: `claim_role`, `abstraction_level`,
+  `time_mode`, `modality`, `polarity`, `domain_tags`.
+- fact -> {"kind":"belief","subject":"<entity or UUID>","assertion":"<truth>","claim_role":"fact"}
+- relation -> {"kind":"belief","subject":"...","relation":"verb phrase","object":"...","claim_role":"relation","abstraction_level":"relationship"}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"...","claim_role":"prediction"}
+- pattern -> {"kind":"belief","signature":"...","observed_tendency":"...","trigger_conditions":"...","claim_role":"pattern","abstraction_level":"pattern","time_mode":"recurring"}
+- concern -> {"kind":"belief","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>","claim_role":"concern","polarity":"negative"}
+- market assessment -> {"kind":"belief","subject_external":"<external entity>","assessment":"...","claim_role":"pattern","domain_tags":["market"]}
+- situation -> {"kind":"belief","claim_role":"situation","abstraction_level":"composite","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid>",...],"open_falsifier":"<sentence: under what observation this composite is invalid>"}
+- recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+Do NOT invent new proposition kinds.
+When emitting a situation, populate `pressure_type` (one of the eight
 categories), `shared_mechanism` (one sentence), `judgment_change` (one
 sentence), and `open_falsifier`. List `affected_decisions`,
 `affected_customers`, `affected_teams`, and cite `evidence_event_ids`
 from the retrieval bundle whenever they are known. Omit a field rather
 than guess.
-Kind rubric: state=current observed fact; concern=risk/blocker/review warning/
+Grammar rubric: fact=current observed truth; concern=risk/blocker/review warning/
 edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
 deploy, expected slip, conditional outcome; relation=dependency or causal link;
 hypothesis=uncertain explanation needing investigation; situation=composite
-condition across multiple selected Models. Do not flatten every claim into state.
+condition across multiple selected Models. Do not flatten every claim into fact.
 
 Falsifier kinds:
 - observation_pattern: {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -359,7 +382,7 @@ Recommendations:
   changes. Do not recommend routine bookkeeping the system can do itself.
 - If the signal says "I've started", "kicking off", "picked up", "I'm building",
   "working on", "I'll deliver", or equivalent, and <acts> has no matching
-  commitment, emit both a state Model and a recommendation with
+  commitment, emit both a fact Model and a recommendation with
   proposed_change.operation="create" and target_act_ref={"type":"commitment",
   "id":null}. Payload: title, owner_id from context, due_date from the signal or
   about 30 days out, plus contributes_to_goal_ids when a goal fits, otherwise
@@ -652,7 +675,7 @@ def build_prompt(
         reason=reason_for_trigger,
     )
     frame = reasoning_frame.to_prompt_section() if reasoning_frame else None
-    context = _build_context_section(bundle, triggering_actor_summary)
+    context = _build_context_section(trigger, bundle, triggering_actor_summary)
     instructions = _build_instructions(trigger)
     parts = [triggering]
     if frame:
@@ -766,6 +789,7 @@ def _relationship_candidate_lines(candidate: dict[str, Any]) -> list[str]:
 
 
 def _build_context_section(
+    trigger: TriggerContext,
     bundle: ContextBundle,
     actor_summary: str | None,
 ) -> str:
@@ -786,6 +810,10 @@ def _build_context_section(
     )
     if retrieval_guidance:
         lines.extend(retrieval_guidance)
+
+    inquiry_packet = _build_inquiry_context_packet_section(bundle)
+    if inquiry_packet:
+        lines.extend(inquiry_packet)
 
     # Observations
     obs_parts = ["  <observations>"]
@@ -810,44 +838,15 @@ def _build_context_section(
     obs_parts.append("  </observations>")
     lines.extend(obs_parts)
 
-    # Models — include existing scope so the LLM sees how peers are
-    # scoped and can reuse the same actor/entity UUIDs for new Models.
-    mod_parts = ["  <models>"]
-    used = 0
-    for m in bundle.models:
-        falsifier = (
-            m.falsifier.get("kind") if isinstance(m.falsifier, dict) else None
+    lines.extend(
+        _build_models_section(
+            trigger,
+            bundle,
+            selected_model_ids=selected_model_ids,
+            graph_model_ids=graph_model_ids,
+            actor_mentions=actor_mentions,
         )
-        for a in m.scope_actors:
-            actor_mentions[str(a)] = actor_mentions.get(str(a), 0) + 1
-        scope_actors_repr = (
-            "[" + ",".join(str(a) for a in m.scope_actors) + "]"
-            if m.scope_actors else "[]"
-        )
-        scope_entities_repr = json.dumps(
-            [
-                {"type": e.get("type"), "id": str(e.get("id"))}
-                for e in m.scope_entities
-                if isinstance(e, dict)
-            ],
-            default=str,
-        )
-        piece = (
-            f"    - id={m.id} kind={m.proposition_kind} "
-            f"retrieval={_retrieval_tags(m.id, selected_model_ids, graph_model_ids)} "
-            f"conf={m.confidence:.2f} act={m.activation:.2f} "
-            f"falsifier={falsifier} status={m.status} "
-            f"scope_actors={scope_actors_repr} "
-            f"scope_entities={_trunc(scope_entities_repr, 400)} "
-            f"natural={_trunc(m.natural, _PER_ITEM_CHAR_LIMIT)}"
-        )
-        if used + len(piece) > _MODELS_CHAR_BUDGET:
-            mod_parts.append("    - [truncated — more models omitted]")
-            break
-        mod_parts.append(piece)
-        used += len(piece)
-    mod_parts.append("  </models>")
-    lines.extend(mod_parts)
+    )
 
     # Acts (goals/commitments/decisions)
     act_parts = ["  <acts>"]
@@ -989,6 +988,205 @@ def _build_context_section(
     return "\n".join(lines)
 
 
+def _build_models_section(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+    actor_mentions: dict[str, int],
+) -> list[str]:
+    inquiry_packet = _inquiry_context_packet(bundle)
+    inquiry_mode = inquiry_packet is not None
+    actionable_ids = _actionable_model_ids(
+        trigger,
+        bundle,
+        graph_model_ids=graph_model_ids,
+    )
+    budget = _MODELS_INQUIRY_CHAR_BUDGET if inquiry_mode else _MODELS_CHAR_BUDGET
+    lines = ["  <models>"]
+    if inquiry_mode:
+        lines.append(
+            "    manifest_mode: compact; use <inquiry_context_packet> as the "
+            "primary evidence summary. Full rows are limited to actionable "
+            "anchors."
+        )
+
+    used = 0
+    detailed_rows = 0
+    for idx, model in enumerate(bundle.models):
+        for actor_id in _model_scope_actors(model):
+            actor_mentions[str(actor_id)] = actor_mentions.get(str(actor_id), 0) + 1
+
+        model_id = _model_id(model)
+        wants_detail = (
+            not inquiry_mode
+            or model_id in actionable_ids
+            or (not actionable_ids and idx < 2)
+        )
+        include_detail = wants_detail and detailed_rows < _MODEL_DETAIL_ROW_LIMIT
+        piece = _format_model_row(
+            model,
+            selected_model_ids=selected_model_ids,
+            graph_model_ids=graph_model_ids,
+            detail=include_detail,
+        )
+        if used + len(piece) > budget:
+            remaining = max(0, len(bundle.models) - idx)
+            lines.append(
+                f"    - [truncated — {remaining} more model manifest rows omitted]"
+            )
+            break
+        lines.append(piece)
+        used += len(piece)
+        if include_detail:
+            detailed_rows += 1
+
+    lines.append("  </models>")
+    return lines
+
+
+def _format_model_row(
+    model: Any,
+    *,
+    selected_model_ids: set[str],
+    graph_model_ids: set[str],
+    detail: bool,
+) -> str:
+    model_id = _model_id(model)
+    natural = _model_natural(model)
+    scope_entities_repr = _model_scope_entities_repr(
+        model,
+        limit=400 if detail else 180,
+    )
+    scope_actors = _model_scope_actors(model)
+    scope_actors_repr = (
+        "[" + ",".join(str(actor_id) for actor_id in scope_actors) + "]"
+        if scope_actors else "[]"
+    )
+    falsifier = getattr(model, "falsifier", None)
+    falsifier_kind = falsifier.get("kind") if isinstance(falsifier, dict) else None
+    detail_label = "full" if detail else "manifest"
+    text_label = "natural" if detail else "summary"
+    text_limit = _MODEL_DETAIL_CHAR_LIMIT if detail else _MODEL_MANIFEST_CHAR_LIMIT
+    return (
+        f"    - id={model_id} detail={detail_label} "
+        f"kind={getattr(model, 'proposition_kind', 'unknown')} "
+        f"retrieval={_retrieval_tags(model_id, selected_model_ids, graph_model_ids)} "
+        f"conf={_score(getattr(model, 'confidence', None))} "
+        f"act={_score(getattr(model, 'activation', None))} "
+        f"falsifier={falsifier_kind} "
+        f"status={getattr(model, 'status', 'unknown')} "
+        f"scope_actors={scope_actors_repr} "
+        f"scope_entities={scope_entities_repr} "
+        f"{text_label}={_trunc(natural, text_limit)}"
+    )
+
+
+def _model_id(model: Any) -> str:
+    return str(getattr(model, "id", "unknown"))
+
+
+def _model_natural(model: Any) -> str:
+    natural = getattr(model, "natural", None)
+    if natural:
+        return str(natural)
+    proposition = getattr(model, "proposition", None)
+    if proposition is not None:
+        return json.dumps(proposition, sort_keys=True, default=str)
+    return ""
+
+
+def _model_scope_actors(model: Any) -> list[Any]:
+    actors = getattr(model, "scope_actors", None) or []
+    return list(actors)
+
+
+def _model_scope_entities_repr(model: Any, *, limit: int) -> str:
+    entities = getattr(model, "scope_entities", None) or []
+    compact = [
+        {"type": e.get("type"), "id": str(e.get("id"))}
+        for e in entities
+        if isinstance(e, dict)
+    ]
+    return _trunc(json.dumps(compact, default=str), limit)
+
+
+def _score(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _inquiry_context_packet(bundle: ContextBundle) -> dict[str, Any] | None:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    packet = notes.get("inquiry_context_packet")
+    return packet if isinstance(packet, dict) else None
+
+
+def _actionable_model_ids(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    graph_model_ids: set[str],
+) -> set[str]:
+    ids = set(graph_model_ids)
+    if trigger.model_id:
+        ids.add(str(trigger.model_id))
+    ids.update(str(mid) for mid in (trigger.member_model_ids or []))
+    ids.update(_model_ids_from_inquiry_packet(bundle))
+    return ids
+
+
+def _model_ids_from_inquiry_packet(bundle: ContextBundle) -> set[str]:
+    packet = _inquiry_context_packet(bundle)
+    if packet is None:
+        return set()
+    tiers = packet.get("tiers") if isinstance(packet.get("tiers"), dict) else {}
+    evidence = tiers.get("decisive_evidence") or []
+    ids: set[str] = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        model_id = _model_id_from_evidence_ref(item)
+        if model_id:
+            ids.add(model_id)
+    for group in tiers.get("supporting_evidence_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        claim_supported = str(group.get("claim_supported") or "")
+        if claim_supported in {"", "model"}:
+            continue
+        for ref in group.get("source_refs") or []:
+            model_id = _model_id_from_source_ref(ref)
+            if model_id:
+                ids.add(model_id)
+    return ids
+
+
+def _model_id_from_evidence_ref(item: dict[str, Any]) -> str | None:
+    if item.get("source_type") != "model":
+        return None
+    for key in ("source_ref", "raw_content_ref", "source_ref_id"):
+        value = item.get(key)
+        if not value:
+            continue
+        model_id = _model_id_from_source_ref(value)
+        if model_id:
+            return model_id
+        if key == "source_ref_id":
+            return str(value)
+    return None
+
+
+def _model_id_from_source_ref(value: Any) -> str | None:
+    text = str(value)
+    if text.startswith("model:"):
+        return text.split(":", 1)[1]
+    return None
+
+
 def _selected_model_sets(bundle: ContextBundle) -> tuple[set[str], set[str]]:
     notes = bundle.notes if isinstance(bundle.notes, dict) else {}
     selection = notes.get("model_selection")
@@ -1104,6 +1302,12 @@ def _build_retrieval_guidance_section(
             "diff when connecting a new claim to existing memory."
         )
         lines.append(
+            "    Do not emit reciprocal or transitive loops for DAG-scoped "
+            "edges: supports, instance_of, contributes_to_resolution, and "
+            "superseded_by. If a selected graph path already runs from the "
+            "target back to the source, omit the edge."
+        )
+        lines.append(
             "    If you insert a new claim that advances, confirms, completes, "
             "or is a milestone within the same workstream as a graph-anchor "
             "Model, add an edge from the new claim's born_from_event_id to "
@@ -1118,6 +1322,75 @@ def _build_retrieval_guidance_section(
         "state change, edge, or action."
     )
     lines.append("  </retrieval_priority>")
+    return lines
+
+
+def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    packet = notes.get("inquiry_context_packet")
+    if not isinstance(packet, dict):
+        return []
+    verdict = packet.get("sufficiency_verdict")
+    hypotheses = packet.get("hypotheses") or []
+    questions = packet.get("question_path") or []
+    tiers = packet.get("tiers") or {}
+    decisive = tiers.get("decisive_evidence") or []
+    supporting = tiers.get("supporting_evidence_groups") or []
+    omissions = tiers.get("omission_ledger") or []
+
+    lines = ["  <inquiry_context_packet>"]
+    lines.append(
+        "    This packet is the adaptive inquiry summary. Treat it as "
+        "retrieval guidance and provenance, not as permission to invent ids."
+    )
+    lines.append(
+        "    signal_summary: "
+        + _trunc(str(packet.get("signal_summary") or ""), 700)
+    )
+    if isinstance(verdict, dict):
+        lines.append(
+            "    sufficiency: "
+            + _trunc(json.dumps(verdict, sort_keys=True, default=str), 900)
+        )
+    if hypotheses:
+        lines.append("    hypotheses:")
+        for h in hypotheses[:5]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(h, sort_keys=True, default=str), 500)
+            )
+    if questions:
+        lines.append("    question_path:")
+        for q in questions[:8]:
+            qid = q.get("question_id") if isinstance(q, dict) else None
+            question = q.get("question") if isinstance(q, dict) else q
+            primitive = q.get("primitive") if isinstance(q, dict) else None
+            lines.append(
+                f"      - {qid or 'Q'} [{primitive or 'question'}]: "
+                + _trunc(str(question), 260)
+            )
+    if decisive:
+        lines.append("    decisive_evidence:")
+        for e in decisive[:12]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(e, sort_keys=True, default=str), 700)
+            )
+    if supporting:
+        lines.append("    supporting_evidence_groups:")
+        for group in supporting[:6]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(group, sort_keys=True, default=str), 500)
+            )
+    if omissions:
+        lines.append("    omission_ledger:")
+        for item in omissions[:6]:
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(item, sort_keys=True, default=str), 400)
+            )
+    lines.append("  </inquiry_context_packet>")
     return lines
 
 
@@ -1160,23 +1433,23 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "\"id\":null}`. Do not skip this with reasoning like "
             "'purely informational' or 'no human approval needed' — the "
             "approval here is the CEO ratifying the new scope into the "
-            "ledger. Co-emit the state Model AND the recommendation; "
+            "ledger. Co-emit the fact Model AND the recommendation; "
             "they are not redundant. Use the create-commitment payload "
             "shape in the system prompt."
         )
     elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
         body.append(
-            "This is a T2:belief_updated trigger — a new state or concern "
+            "This is a T2:belief_updated trigger — a new fact or concern "
             "model was just inserted by a T1 run. Decide whether the CEO "
             "needs to act on this belief.\n"
             "\n"
             "  • If a team member is blocked, waiting on a decision, or "
             "the CEO needs to unblock someone: emit ONE claim_op with "
-            "proposition_kind='recommendation'. Use only actor UUIDs that "
+            "`kind='norm'` and `claim_role='recommendation'`. Use only actor UUIDs that "
             "appear in <actors_in_context> for scope_actors. Write the "
             "natural field as a clear, actionable sentence for the CEO.\n"
             "\n"
-            "  • If the new state Model encodes a self-report of new "
+            "  • If the new fact Model encodes a self-report of new "
             "in-flight work ('started X', 'building Y', 'picked up Z') "
             "AND <acts> has no matching commitment, you MUST emit a "
             "recommendation with proposed_change.operation='create' and "
@@ -1189,7 +1462,7 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "  • If purely informational and no CEO action is needed: "
             "return an empty diff (zero claim_ops). The selected Model that "
             "caused this T2 trigger already records the underlying fact; do "
-            "not create recap, elaboration, or bookkeeping state Models.\n"
+            "not create recap, elaboration, or bookkeeping fact Models.\n"
             "\n"
             "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
             "  - Do NOT set scope_entities unless a UUID appears in <acts> "
@@ -1267,11 +1540,11 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "\n"
             "Decide whether this structural shift warrants any of:\n"
             "  • Naming the neighborhood — emit a `claim_op.update` on "
-            "    one of the member Models recording a `state` "
+            "    one of the member Models recording a `belief` "
             "    proposition that captures the cluster's theme. The "
             "    heuristic name is in <topology_context>; if a more "
             "    accurate human-readable description fits, write a "
-            "    state Model whose subject is the neighborhood theme.\n"
+            "    fact Model whose subject is the neighborhood theme.\n"
             "  • Surfacing the shift to the CEO — when the event kind "
             "    is `emergence`, `merge`, or a high-magnitude `split` "
             "    (>= 0.5), the structural transition often deserves a "

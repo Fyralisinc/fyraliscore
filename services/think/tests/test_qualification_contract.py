@@ -207,7 +207,7 @@ def test_prompt_contract_surfaces_ids_scope_and_topology_context() -> None:
         reason_for_trigger="neighborhood phase shift",
     )
 
-    assert "The twelve kinds above are the ONLY valid `kind` values" in pair.system
+    assert "`kind` has only four valid values" in pair.system
     assert str(obs_id) in pair.user
     assert str(actor_id) in pair.user
     assert str(commitment_id) in pair.user
@@ -307,7 +307,7 @@ async def test_scripted_think_creates_model_audit_state_change_and_post_commit(
             obs_id,
         )
         assert model is not None
-        assert model["proposition_kind"] == "state"
+        assert model["proposition_kind"] == "belief"
         assert model["natural"] == natural
 
         audit_count = await conn.fetchval(

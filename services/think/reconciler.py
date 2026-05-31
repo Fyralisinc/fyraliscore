@@ -58,6 +58,8 @@ import asyncpg
 import structlog
 
 from lib.shared.ids import uuid7
+from lib.shared.memory_grammar import derive_memory_grammar
+from services.models.propositions import canonicalize_proposition
 
 from .diff_schema import ClaimOp
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
@@ -362,6 +364,18 @@ def _kind_rule(prop_kind: str | None) -> KindRule:
     return KindRule()
 
 
+def _semantic_rule_key(proposition: dict[str, Any] | None) -> str | None:
+    if not isinstance(proposition, dict):
+        return None
+    legacy = proposition.get("legacy_kind")
+    if isinstance(legacy, str) and legacy in _KIND_RULES:
+        return legacy
+    grammar = derive_memory_grammar(proposition)
+    if grammar.claim_role in _KIND_RULES:
+        return grammar.claim_role
+    return proposition.get("kind") if isinstance(proposition.get("kind"), str) else None
+
+
 # =====================================================================
 # Graph-structural signal helpers
 # =====================================================================
@@ -521,6 +535,7 @@ async def _find_candidates(
     candidate_scope_actors: list[str],
     candidate_scope_entities: list[dict[str, Any]],
     proposition_kind: str | None,
+    claim_role: str | None,
     recency_window_days: int,
     k: int = 5,
 ) -> list[dict[str, Any]]:
@@ -546,6 +561,9 @@ async def _find_candidates(
     if proposition_kind is not None:
         params.append(proposition_kind)
         where.append(f"proposition_kind = ${len(params)}")
+    if claim_role is not None:
+        params.append(claim_role)
+        where.append(f"claim_role = ${len(params)}")
 
     # Scope predicate: at least one of the two dimensions overlaps.
     # We OR them so a Model that lists the candidate's scope_entities
@@ -730,10 +748,15 @@ async def _reconcile_inner(
     candidate_embedding = _candidate_embedding(entry)
 
     proposition = entry.get("proposition") or {}
-    prop_kind = (
-        proposition.get("kind") if isinstance(proposition, dict) else None
-    )
-    kind_rule = _kind_rule(prop_kind)
+    if isinstance(proposition, dict):
+        try:
+            proposition = canonicalize_proposition(proposition)
+        except Exception:
+            pass
+    prop_kind = proposition.get("kind") if isinstance(proposition, dict) else None
+    grammar = derive_memory_grammar(proposition if isinstance(proposition, dict) else {})
+    rule_key = _semantic_rule_key(proposition if isinstance(proposition, dict) else None)
+    kind_rule = _kind_rule(rule_key)
 
     # Per-kind threshold overrides; otherwise use global defaults.
     auto_merge_threshold = (
@@ -761,6 +784,7 @@ async def _reconcile_inner(
         candidate_scope_actors=candidate_scope_actors,
         candidate_scope_entities=candidate_scope_entities,
         proposition_kind=prop_kind,
+        claim_role=grammar.claim_role,
         recency_window_days=config.recency_window_days,
     )
 
@@ -802,7 +826,7 @@ async def _reconcile_inner(
 
         # situation: factor member-overlap into the adjusted score.
         member_overlap = 0.0
-        if prop_kind == "situation" and candidate_member_ids:
+        if grammar.claim_role == "situation" and candidate_member_ids:
             row_member_ids = _member_model_ids(r.get("proposition"))
             member_overlap = _member_overlap_fraction(
                 candidate_member_ids, row_member_ids,
@@ -873,7 +897,7 @@ async def _reconcile_inner(
 
     # ---- Situation member-overlap shortcut -------------------------
     member_overlap_auto = (
-        prop_kind == "situation"
+        grammar.claim_role == "situation"
         and kind_rule.auto_member_overlap is not None
         and best_member_overlap >= kind_rule.auto_member_overlap
     )
@@ -1035,11 +1059,152 @@ def _build_auto_merge_replacement(
             *existing_readings,
             _confirmation_reading(entry, source_event_id, now),
         ]
+    situation_merge = _build_situation_merge_payload(
+        entry=entry,
+        best_row=best_row,
+        source_event_id=source_event_id,
+    )
+    if situation_merge is not None:
+        changes["__situation_merge"] = situation_merge
     return ClaimOp(
         op="update",
         model_id=matched_id,
         changes=changes,
     )
+
+
+def _build_situation_merge_payload(
+    *,
+    entry: dict[str, Any],
+    best_row: dict[str, Any],
+    source_event_id: UUID | None,
+) -> dict[str, Any] | None:
+    """Return internal applier payload for evolving an existing situation.
+
+    A situation auto-merge should absorb the new composite structure, not just
+    bump confidence. The public LLM diff surface still only sees normal
+    claim_ops; this private payload is emitted by the reconciler and consumed
+    by the applier under the reconciliation_merge audit path.
+    """
+    candidate_prop = _normalize_jsonish(entry.get("proposition"))
+    existing_prop = _normalize_jsonish(best_row.get("proposition"))
+    if not isinstance(candidate_prop, dict) or not isinstance(existing_prop, dict):
+        return None
+    candidate_grammar = derive_memory_grammar(candidate_prop)
+    existing_grammar = derive_memory_grammar(existing_prop)
+    if (
+        candidate_grammar.claim_role != "situation"
+        or existing_grammar.claim_role != "situation"
+    ):
+        return None
+
+    merged = dict(existing_prop)
+    old_members = _member_model_ids(existing_prop)
+    candidate_members = _member_model_ids(candidate_prop)
+    if not candidate_members:
+        return None
+
+    member_ids = _merge_uuid_lists(
+        existing_prop.get("member_model_ids"),
+        candidate_prop.get("member_model_ids"),
+    )
+    if len(member_ids) < 2:
+        return None
+    merged["member_model_ids"] = member_ids
+
+    event_ids = _merge_uuid_lists(
+        existing_prop.get("evidence_event_ids"),
+        candidate_prop.get("evidence_event_ids"),
+        [str(source_event_id)] if source_event_id is not None else [],
+    )
+    if event_ids:
+        merged["evidence_event_ids"] = event_ids
+
+    for key in ("affected_decisions", "affected_customers", "affected_teams"):
+        merged_values = _merge_string_lists(
+            existing_prop.get(key),
+            candidate_prop.get(key),
+        )
+        if merged_values:
+            merged[key] = merged_values
+
+    for key in (
+        "summary",
+        "relationship_summary",
+        "shared_mechanism",
+        "judgment_change",
+        "open_falsifier",
+    ):
+        candidate_value = candidate_prop.get(key)
+        existing_value = merged.get(key)
+        if (
+            isinstance(candidate_value, str)
+            and candidate_value.strip()
+            and (
+                not isinstance(existing_value, str)
+                or len(candidate_value) > len(existing_value)
+            )
+        ):
+            merged[key] = candidate_value
+
+    candidate_status = candidate_prop.get("status")
+    if candidate_status in {"forming", "active", "contested", "resolved"}:
+        existing_status = merged.get("status")
+        if existing_status in {None, "", "forming"} or candidate_status in {
+            "active",
+            "contested",
+            "resolved",
+        }:
+            merged["status"] = candidate_status
+
+    candidate_tags = set(candidate_grammar.domain_tags)
+    candidate_tags.update(str(tag) for tag in (entry.get("domain_tags") or []))
+    candidate_tags.update(
+        str(tag)
+        for tag in candidate_prop.get("domain_tags", [])
+        if isinstance(tag, str)
+    )
+    return {
+        "proposition": merged,
+        "added_member_model_ids": [
+            str(uid) for uid in (candidate_members - old_members)
+        ],
+        "candidate_domain_tags": sorted(tag for tag in candidate_tags if tag),
+        "candidate_natural": str(entry.get("natural") or "")[:1000],
+    }
+
+
+def _merge_uuid_lists(*values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if not isinstance(value, (list, tuple)):
+            continue
+        for raw in value:
+            uid = _coerce_uuid(raw)
+            if uid is None or uid in seen:
+                continue
+            seen.add(uid)
+            out.append(str(uid))
+    return out
+
+
+def _merge_string_lists(*values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, (list, tuple)):
+            continue
+        for raw in value:
+            text = str(raw).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+    return out
 
 
 async def _emit_same_issue_candidate(

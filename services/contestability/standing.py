@@ -66,6 +66,7 @@ async def actor_has_standing_on_model(
     if row is None:
         return StandingResult(granted=False, basis=None)
 
+    tenant_id = row["tenant_id"]
     scope_actors: list[UUID] = list(row["scope_actors"] or [])
     if actor_id in scope_actors:
         return StandingResult(granted=True, basis="scope")
@@ -93,13 +94,16 @@ async def actor_has_standing_on_model(
         except (ValueError, TypeError):
             continue
         c = await conn.fetchrow(
-            "SELECT owner_id FROM commitments WHERE id = $1", commit_id
+            "SELECT owner_id FROM commitments WHERE id = $1 AND tenant_id = $2",
+            commit_id, tenant_id,
         )
         if c is None:
             continue
         if c["owner_id"] == actor_id:
             return StandingResult(granted=True, basis="owner")
-        # Contributors
+        # Contributors. `commitment_contributors` inherits tenant_id
+        # from `commitments` (see migration 0037); the previous
+        # commitments lookup already filtered by tenant_id.
         contrib = await conn.fetchval(
             """
             SELECT 1 FROM commitment_contributors
@@ -117,7 +121,6 @@ async def actor_has_standing_on_model(
         is_in_manager_chain as _is_mgr,
     )
 
-    tenant_id = row["tenant_id"]
     for scoped_actor in scope_actors:
         if not isinstance(scoped_actor, UUID):
             try:

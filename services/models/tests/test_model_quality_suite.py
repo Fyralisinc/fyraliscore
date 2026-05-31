@@ -186,10 +186,10 @@ async def test_compound_signal_splits_into_primitives_plus_situation(
             assert split_summary["atomic_outputs"] >= 3
             assert split_summary["synthesized_situations"] == 1
             kinds = await conn.fetch(
-                "SELECT proposition_kind FROM models WHERE tenant_id = $1",
+                "SELECT claim_role FROM models WHERE tenant_id = $1",
                 tenant,
             )
-            kind_list = [r["proposition_kind"] for r in kinds]
+            kind_list = [r["claim_role"] for r in kinds]
             import json as _json
             assert "situation" in kind_list, (
                 f"ops: {_json.dumps(result['claim_ops'], default=str, indent=2)}"
@@ -198,7 +198,7 @@ async def test_compound_signal_splits_into_primitives_plus_situation(
                 """
                 SELECT proposition
                 FROM models
-                WHERE tenant_id = $1 AND proposition_kind = 'situation'
+                WHERE tenant_id = $1 AND claim_role = 'situation'
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 tenant,
@@ -209,6 +209,136 @@ async def test_compound_signal_splits_into_primitives_plus_situation(
                 import json
                 members = json.loads(members)
             assert members.get("member_model_ids"), members
+
+
+@pytest.mark.asyncio
+async def test_synthesized_situation_is_queryable_by_grammar_and_membership(
+    fresh_db, tenant
+):
+    """A split situation must be a composite belief and a sidecar-backed query anchor."""
+    compound = (
+        "HarborRail procurement evidence is delayed, "
+        "sponsor confidence is dropping, "
+        "ARR renewal is at risk, "
+        "and SOC2 audit review is blocked."
+    )
+    async with fresh_db.acquire() as conn:
+        oid = await _seed_observation(conn, tenant, compound)
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[_insert_op(
+                tenant_id=tenant,
+                born_from_event_id=oid,
+                natural=compound,
+                kind="concern",
+                falsifier={
+                    "kind": "external_evidence",
+                    "description": (
+                        "Procurement evidence lands, sponsor confidence "
+                        "recovers, renewal is confirmed, and SOC2 unblocks."
+                    ),
+                },
+            )],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        async with conn.transaction():
+            result = await apply_diff(
+                diff, conn, trigger_kind="T1",
+                trigger_cause_event_id=oid,
+                models_repo=repo,
+            )
+
+            rows = await conn.fetch(
+                """
+                SELECT id, proposition_kind, claim_role, abstraction_level,
+                       time_mode, modality, polarity, domain_tags, proposition
+                FROM models
+                WHERE tenant_id = $1 AND born_from_event_id = $2
+                ORDER BY created_at, id::text
+                """,
+                tenant,
+                oid,
+            )
+            situation_rows = [r for r in rows if r["claim_role"] == "situation"]
+            atomic_rows = [r for r in rows if r["claim_role"] != "situation"]
+
+            assert result["split_summary"]["compound_inputs"] == 1
+            assert result["split_summary"]["synthesized_situations"] == 1
+            assert len(situation_rows) == 1
+            assert len(atomic_rows) >= 3
+
+            sit = situation_rows[0]
+            prop = sit["proposition"]
+            if isinstance(prop, str):
+                import json
+                prop = json.loads(prop)
+
+            assert sit["proposition_kind"] == "belief"
+            assert sit["claim_role"] == "situation"
+            assert sit["abstraction_level"] == "composite"
+            assert sit["time_mode"] == "current"
+            assert sit["modality"] == "inferred"
+            assert sit["polarity"] == "mixed"
+            assert {"customers", "execution", "risk"}.issubset(
+                set(sit["domain_tags"])
+            )
+            assert prop["kind"] == "belief"
+            assert prop["claim_role"] == "situation"
+            assert prop["pressure_type"] == "revenue"
+            assert prop["shared_mechanism"]
+            assert prop["judgment_change"]
+            assert prop["open_falsifier"].startswith("Procurement evidence lands")
+            assert "member_model_pending" not in prop
+
+            member_ids = {uuid.UUID(raw) for raw in prop["member_model_ids"]}
+            atomic_ids = {r["id"] for r in atomic_rows}
+            assert member_ids == atomic_ids
+            assert len(member_ids) == len(prop["member_model_ids"])
+
+            sidecar_rows = await conn.fetch(
+                """
+                SELECT member_model_id, source, evidence_event_ids
+                FROM model_composition_members
+                WHERE tenant_id = $1 AND composite_model_id = $2
+                ORDER BY member_model_id::text
+                """,
+                tenant,
+                sit["id"],
+            )
+            assert {r["member_model_id"] for r in sidecar_rows} == member_ids
+            assert all(r["source"] == "model_proposition" for r in sidecar_rows)
+            assert all(list(r["evidence_event_ids"]) == [] for r in sidecar_rows)
+
+            grammar_query_id = await conn.fetchval(
+                """
+                SELECT id
+                FROM models
+                WHERE tenant_id = $1
+                  AND proposition_kind = 'belief'
+                  AND claim_role = 'situation'
+                  AND abstraction_level = 'composite'
+                  AND time_mode = 'current'
+                  AND modality = 'inferred'
+                  AND polarity = 'mixed'
+                  AND domain_tags @> ARRAY['customers','execution','risk']::text[]
+                LIMIT 1
+                """,
+                tenant,
+            )
+            assert grammar_query_id == sit["id"]
+
+            reverse_lookup_id = await conn.fetchval(
+                """
+                SELECT composite_model_id
+                FROM model_composition_members
+                WHERE tenant_id = $1 AND member_model_id = $2
+                LIMIT 1
+                """,
+                tenant,
+                next(iter(member_ids)),
+            )
+            assert reverse_lookup_id == sit["id"]
 
 
 # =====================================================================

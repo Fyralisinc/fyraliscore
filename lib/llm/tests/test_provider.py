@@ -18,6 +18,7 @@ from lib.llm.provider import (
     LLMConfigError,
     LLMParseError,
     LLMProvider,
+    LLMUsageAggregator,
     OpenAIProvider,
     build_provider,
     _codex_transport,
@@ -352,6 +353,8 @@ async def test_codex_provider_uses_cli_transport(monkeypatch):
         api_key="oauth-token",
         model="gpt-5.3-codex",
     ))
+    usage = LLMUsageAggregator()
+    provider.set_usage_aggregator(usage)
 
     raw = await provider._raw_call(
         system="system prompt",
@@ -373,6 +376,9 @@ async def test_codex_provider_uses_cli_transport(monkeypatch):
     assert "user prompt" in captured["stdin"]
     assert "Alice ships fast" not in captured["stdin"]
     assert '"properties"' in captured["stdin"]
+    assert usage.call_count == 1
+    assert usage.total_input_tokens > 0
+    assert usage.total_output_tokens > 0
 
 
 async def test_codex_provider_reuses_app_server_transport(monkeypatch):
@@ -471,6 +477,8 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
         api_key="oauth-token",
         model="gpt-5.3-codex",
     ))
+    usage = LLMUsageAggregator()
+    codex.set_usage_aggregator(usage)
 
     first = await codex._raw_call(
         system="system prompt",
@@ -493,6 +501,9 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
     assert captured["args"] == ["codex", "app-server", "--listen", "stdio://"]
     assert captured["turns"][0]["effort"] == "low"
     assert captured["turns"][0]["sandboxPolicy"] == {"type": "readOnly"}
+    assert usage.call_count == 2
+    assert usage.total_input_tokens > 0
+    assert usage.total_output_tokens > 0
 
     if provider_module._CODEX_APP_SERVER_CLIENT is not None:
         await provider_module._CODEX_APP_SERVER_CLIENT._restart()

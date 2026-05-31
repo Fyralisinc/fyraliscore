@@ -155,7 +155,7 @@ class ProbeHandler:
                            proposition->>'text' AS proposition_text
                     FROM models
                     WHERE id = $1 AND tenant_id = $2
-                      AND proposition_kind = 'recommendation'
+                      AND claim_role = 'recommendation'
                     """,
                     card_id, tenant_id,
                 )

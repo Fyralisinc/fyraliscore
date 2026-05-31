@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import Counter
 from typing import Any
 
 import asyncpg
@@ -19,6 +20,7 @@ import pytest
 from lib.shared.errors import FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate, ModelRow
+from services.models.propositions import canonicalize_proposition
 from services.models.repo import ModelsRepo
 from services.models.tests.conftest import every_kind_proposition, make_embedding
 from services.observations.events import notify_scope
@@ -223,7 +225,8 @@ async def test_model_layer_stress_heterogeneous_inserts_preserve_core_invariants
             inserted.append(row)
 
     assert {row.proposition_kind for row in inserted} == {
-        proposition["kind"] for proposition in propositions
+        canonicalize_proposition(proposition)["kind"]
+        for proposition in propositions
     }
     assert all(row.status == "active" for row in inserted)
     assert all(0.05 <= row.confidence <= 0.95 for row in inserted)
@@ -249,10 +252,13 @@ async def test_model_layer_stress_heterogeneous_inserts_preserve_core_invariants
         tenant,
         [row.id for row in inserted],
     )
-    assert {row["proposition_kind"]: row["n"] for row in kind_counts} == {
-        proposition["kind"]: 3
-        for proposition in base_propositions
-    }
+    assert {row["proposition_kind"]: row["n"] for row in kind_counts} == dict(
+        Counter(
+            canonicalize_proposition(proposition)["kind"]
+            for _ in range(3)
+            for proposition in base_propositions
+        )
+    )
 
     state_change_count = await tx_conn.fetchval(
         """

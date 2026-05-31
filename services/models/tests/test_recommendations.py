@@ -55,7 +55,7 @@ def _good_recommendation_proposition(
 
 
 def test_recommendation_kind_in_legal_kinds() -> None:
-    assert "recommendation" in LEGAL_KINDS
+    assert "norm" in LEGAL_KINDS
 
 
 def test_recommendation_proposition_round_trips() -> None:
@@ -66,7 +66,9 @@ def test_recommendation_proposition_round_trips() -> None:
     parsed = validate_proposition(raw)
     assert isinstance(parsed, RecommendationProposition)
     dumped = parsed.model_dump()
-    assert dumped["kind"] == "recommendation"
+    assert dumped["kind"] == "norm"
+    assert dumped["legacy_kind"] == "recommendation"
+    assert dumped["claim_role"] == "recommendation"
     assert dumped["target_act_ref"]["type"] == "commitment"
 
 
@@ -105,7 +107,7 @@ def test_recommendation_accepts_qualitative_only_impact() -> None:
     raw["expected_impact"] = None
     raw["qualitative_impact"] = "key engineer attrition risk"
     parsed = validate_proposition(raw)
-    assert parsed.kind == "recommendation"
+    assert parsed.kind == "norm"
 
 
 def test_recommendation_rejects_missing_target_actor_id() -> None:
@@ -189,7 +191,8 @@ async def test_recommendation_insert_succeeds_with_valid_target(
             ),
             conn=tx_conn,
         )
-    assert row.proposition_kind == "recommendation"
+    assert row.proposition_kind == "norm"
+    assert row.claim_role == "recommendation"
     assert row.target_actor_id == actor_id
     assert row.caused_act_change_id is None
 

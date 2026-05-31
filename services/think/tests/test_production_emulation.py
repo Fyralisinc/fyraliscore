@@ -192,7 +192,7 @@ async def test_self_reported_work_materializes_despite_prompt_injection(
             SELECT id, status, archive_reason, caused_act_change_id,
                    confidence, confidence_at_assertion, proposition
             FROM models
-            WHERE tenant_id = $1 AND proposition_kind = 'recommendation'
+                WHERE tenant_id = $1 AND claim_role = 'recommendation'
             """,
             tenant,
         )

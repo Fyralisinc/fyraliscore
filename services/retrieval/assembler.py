@@ -60,8 +60,8 @@ from .config import CONFIG, RetrievalConfig
 from .primary import RetrievalResult
 
 
-_BUDGET_OBSERVATIONS = 20
-_BUDGET_MODELS = 40
+_BUDGET_OBSERVATIONS = 12
+_BUDGET_MODELS = 24
 _BUDGET_ACTS_TOTAL = 10   # combined across goals + commitments + decisions
 _BUDGET_RESOURCES = 5
 
@@ -594,10 +594,10 @@ async def assemble_context(
     access_context: AccessContext,
     conn: asyncpg.Connection,
     *,
-    budget_observations: int = _BUDGET_OBSERVATIONS,
-    budget_models: int = _BUDGET_MODELS,
-    budget_acts: int = _BUDGET_ACTS_TOTAL,
-    budget_resources: int = _BUDGET_RESOURCES,
+    budget_observations: int | None = None,
+    budget_models: int | None = None,
+    budget_acts: int | None = None,
+    budget_resources: int | None = None,
     config: RetrievalConfig | None = None,
 ) -> ContextBundle:
     """
@@ -612,6 +612,26 @@ async def assemble_context(
     Default False — count-cap path is unchanged.
     """
     cfg = config or CONFIG
+    budget_observations = (
+        int(budget_observations)
+        if budget_observations is not None
+        else int(cfg.assembler_budget_observations)
+    )
+    budget_models = (
+        int(budget_models)
+        if budget_models is not None
+        else int(cfg.assembler_budget_models)
+    )
+    budget_acts = (
+        int(budget_acts)
+        if budget_acts is not None
+        else int(cfg.assembler_budget_acts_total)
+    )
+    budget_resources = (
+        int(budget_resources)
+        if budget_resources is not None
+        else int(cfg.assembler_budget_resources)
+    )
     # --- Access control on Models ---
     # Tenant-scoped first pass (belt + braces — primary_retrieve
     # already did this, but enforce at the edge). Then delegate the
@@ -815,6 +835,12 @@ async def assemble_context(
             selected_models=models_cap,
         ),
     }
+    if isinstance(retrieval_result.notes, dict):
+        inquiry_notes = retrieval_result.notes.get("inquiry")
+        if isinstance(inquiry_notes, dict):
+            notes["inquiry"] = inquiry_notes
+            if isinstance(inquiry_notes.get("context_packet"), dict):
+                notes["inquiry_context_packet"] = inquiry_notes["context_packet"]
 
     return ContextBundle(
         observations=observations_cap,

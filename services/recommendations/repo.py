@@ -43,7 +43,20 @@ class TargetEntitySummary:
 
 @dataclass
 class RecommendationView:
-    """One row in `GET /v1/recommendations`."""
+    """One row in `GET /v1/recommendations`.
+
+    Now covers two distinct claim_roles:
+      - 'recommendation' — normative action proposal; carries
+        proposed_change, target_act_ref, expected_impact.
+        Ratified via Act/Dismiss.
+      - 'hypothesis' — system-imputed intermediate state (imaginary-
+        node pattern). Carries hypothesis_text + bracketed_event_ids
+        in its proposition; proposed_change/target_act_ref are empty.
+        Ratified via Approve/Correct/Other/Dismiss.
+
+    The `claim_role` field lets the UI render the right action chips
+    without re-parsing the proposition JSONB.
+    """
     id: UUID
     proposition_text: str       # the Model.natural sentence
     confidence: float
@@ -59,6 +72,10 @@ class RecommendationView:
     target_entity: TargetEntitySummary | None
     rank_score: float           # impact * confidence; ties broken on created_at DESC
     proposition_kind: str | None = None
+    claim_role: str | None = None
+    # Hypothesis-specific surface (None for recommendation rows).
+    is_system_hypothesis: bool = False
+    hypothesis_text: str | None = None
 
 
 class RecommendationsRepoError(CompanyOSError):
@@ -77,6 +94,7 @@ SELECT
     m."natural"               AS natural,
     m.confidence,
     m.proposition_kind,
+    m.claim_role,
     m.target_actor_id,
     m.supporting_event_ids,
     m.supporting_model_ids,
@@ -84,7 +102,13 @@ SELECT
     m.scope_entities
 FROM models m
 WHERE m.tenant_id           = $1
-  AND m.proposition_kind    = 'recommendation'
+  -- Imaginary-node pattern: hypothesis Models (system-imputed
+  -- intermediate states awaiting ratification) surface in the same
+  -- action list as recommendations, ranked low by design via their
+  -- low confidence. The CEO sees both kinds together; the action
+  -- enum on each (Act vs Approve/Correct/Other/Dismiss) keys off
+  -- claim_role at render time.
+  AND m.claim_role          IN ('recommendation', 'hypothesis')
   AND (m.target_actor_id = $2 OR m.target_actor_id IS NULL)
   AND m.status              = 'active'
   AND m.archived_at IS NULL
@@ -224,6 +248,12 @@ async def list_for_actor(
             ei = None
         rank_score = (ei if ei is not None else 0.0) * float(r["confidence"])
 
+        claim_role = r["claim_role"]
+        is_system_hypothesis = bool(proposition.get("is_system_hypothesis"))
+        hypothesis_text = proposition.get("hypothesis_text")
+        if not isinstance(hypothesis_text, str):
+            hypothesis_text = None
+
         out.append(
             RecommendationView(
                 id=r["id"],
@@ -241,6 +271,9 @@ async def list_for_actor(
                 target_entity=target,
                 rank_score=rank_score,
                 proposition_kind=r["proposition_kind"],
+                claim_role=claim_role,
+                is_system_hypothesis=is_system_hypothesis,
+                hypothesis_text=hypothesis_text,
             )
         )
 

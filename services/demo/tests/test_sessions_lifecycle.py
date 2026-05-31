@@ -51,7 +51,7 @@ async def test_start_session_provisions_tenant_and_actor(
     rec_count = await fresh_db.fetchval(
         """
         SELECT COUNT(*) FROM models
-        WHERE tenant_id = $1 AND proposition_kind = 'recommendation'
+        WHERE tenant_id = $1 AND claim_role = 'recommendation'
         """,
         result.tenant_id,
     )

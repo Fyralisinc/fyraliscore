@@ -18,6 +18,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.shared.memory_grammar import derive_memory_grammar
 from services.retrieval.primary import TriggerContext
 from services.think.diff_schema import ValidatedDiff
 
@@ -91,6 +92,17 @@ _STRUCTURAL_REQUIREMENTS: dict[str, list[tuple[str, Any]]] = {
     "enables": [
         ("mechanism", lambda md: _has_mechanism(md)),
     ],
+}
+
+_SITUATION_PRESSURE_TYPES = {
+    "capacity",
+    "trust",
+    "revenue",
+    "compliance",
+    "decision",
+    "execution",
+    "market",
+    "resource",
 }
 
 
@@ -365,7 +377,10 @@ def _accepted_situation(
         if op.op != "insert" or not isinstance(op.entry, dict):
             continue
         prop = op.entry.get("proposition") or {}
-        if not isinstance(prop, dict) or prop.get("kind") != "situation":
+        if (
+            not isinstance(prop, dict)
+            or derive_memory_grammar(prop).claim_role != "situation"
+        ):
             continue
         members = {
             _coerce_uuid(v)
@@ -382,21 +397,13 @@ def _accepted_situation(
 
 
 def _validate_situation_fields(proposition: dict[str, Any]) -> dict[str, Any]:
-    """Validate situation Model has the required structural fields.
-
-    Phase 1 is adding `pressure_type` and `shared_mechanism` to the
-    situation proposition. Until that ships, the fields are optional —
-    only flag them as missing when the proposition references them
-    explicitly as `None` or when one is present and the other is not.
-    """
-    pressure_type = proposition.get("pressure_type", "__unset__")
-    shared_mechanism = proposition.get("shared_mechanism", "__unset__")
-    if pressure_type == "__unset__" and shared_mechanism == "__unset__":
-        return {"missing": []}
+    """Validate situation Model has the required structural fields."""
+    pressure_type = proposition.get("pressure_type")
+    shared_mechanism = proposition.get("shared_mechanism")
     missing: list[str] = []
-    if pressure_type in (None, "", "__unset__"):
+    if pressure_type not in _SITUATION_PRESSURE_TYPES:
         missing.append("pressure_type")
-    if shared_mechanism in (None, "", "__unset__"):
+    if not isinstance(shared_mechanism, str) or not shared_mechanism.strip():
         missing.append("shared_mechanism")
     return {"missing": missing}
 

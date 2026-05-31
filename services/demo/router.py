@@ -153,7 +153,7 @@ async def start(request: Request) -> JSONResponse:
                   m.id, m.created_at, m.created_at
                 FROM models m
                 WHERE m.tenant_id = $1
-                  AND m.proposition_kind = 'recommendation'
+                  AND m.claim_role = 'recommendation'
                   AND m.status = 'active'
                   AND NOT EXISTS (
                     SELECT 1 FROM decision_deltas d

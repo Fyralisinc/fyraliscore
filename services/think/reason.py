@@ -43,7 +43,10 @@ from services.actors.operating_context import (
     load_actor_operating_context,
     summarize_actor_operating_context,
 )
-from services.dynamics import detect_dynamic_signals
+from services.dynamics import (
+    detect_dynamic_signals,
+    emit_missing_transition_triggers,
+)
 from services.retrieval.assembler import (
     AccessContext,
     ContextBundle,
@@ -52,8 +55,8 @@ from services.retrieval.assembler import (
 from services.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
-    primary_retrieve,
 )
+from services.execution.inquiry import InquiryResult, retrieve_for_execution
 from services.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 from services.retrieval.second_pass import (
     log_second_pass_decision,
@@ -520,6 +523,22 @@ def _actor_ids_for_operating_context(
     return out
 
 
+def _retrieval_question_planning_provider(
+    llm_provider: LLMProvider | None,
+) -> LLMProvider | None:
+    if llm_provider is None:
+        return None
+    allow_custom = os.environ.get(
+        "INQUIRY_ALLOW_CUSTOM_LLM_QUESTION_PROVIDER",
+        "",
+    ).strip().lower()
+    if allow_custom in {"1", "true", "yes", "on"}:
+        return llm_provider
+    if llm_provider.__class__.__module__ == "lib.llm.provider":
+        return llm_provider
+    return None
+
+
 async def _run_once(
     *,
     conn: asyncpg.Connection,
@@ -552,7 +571,23 @@ async def _run_once(
 
     # --- 1. Retrieval ---------------------------------------------
     t0 = time.monotonic()
-    first = await primary_retrieve(trigger, conn, embedder=embedder)
+    active_retrieval = await retrieve_for_execution(
+        trigger,
+        conn,
+        embedder=embedder,
+        llm_provider=_retrieval_question_planning_provider(llm_provider),
+        mode="deep",
+    )
+    inquiry_result = (
+        active_retrieval
+        if isinstance(active_retrieval, InquiryResult)
+        else None
+    )
+    first = (
+        active_retrieval.retrieval_result
+        if isinstance(active_retrieval, InquiryResult)
+        else active_retrieval
+    )
     await _assert_tx_usable(conn, "primary_retrieve")
     try:
         second_pass_decision = should_run_second_pass(
@@ -625,6 +660,34 @@ async def _run_once(
             reasoning_frame = reasoning_frame.with_dynamic_signals(
                 [s.to_dict() for s in dynamic_signals]
             )
+            # Imaginary-node pattern: when the substrate detects a
+            # state-jump discontinuity, enqueue a T3:missing_transition
+            # trigger for the next Think cycle to run the imputer.
+            # The current run can't process it (different region lock,
+            # different scope), so we defer. The emitter dedupes against
+            # in-queue rows so this is safe under repeated Think runs.
+            try:
+                emitted = await emit_missing_transition_triggers(
+                    conn,
+                    tenant_id=trigger.tenant_id,
+                    signals=dynamic_signals,
+                )
+                if emitted:
+                    first.notes["missing_transition_triggers_emitted"] = [
+                        str(t) for t in emitted
+                    ]
+            except Exception as e:  # noqa: BLE001
+                _raise_if_postgres_error(e)
+                first.notes["missing_transition_emission_error"] = {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                }
+                _log.warning(
+                    "think.missing_transition_emission_failed",
+                    tenant_id=str(trigger.tenant_id),
+                    trigger_kind=trigger.kind,
+                    error=str(e),
+                )
     except Exception as e:  # noqa: BLE001
         _raise_if_postgres_error(e)
         first.notes["dynamic_signal_error"] = {
@@ -691,6 +754,68 @@ async def _run_once(
             ],
         },
     )
+    if inquiry_result is not None:
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="inquiry",
+            payload={
+                "session_id": str(inquiry_result.session_id),
+                "route": inquiry_result.route,
+                "hypotheses": [
+                    {
+                        "id": h.id,
+                        "claim": h.claim,
+                        "confidence": h.confidence,
+                        "impact_if_true": h.impact_if_true,
+                    }
+                    for h in inquiry_result.hypotheses
+                ],
+                "questions": [
+                    {
+                        "question_id": q.question_id,
+                        "question": q.question,
+                        "primitive": q.primitive,
+                        "score": q.score,
+                        "round_index": q.round_index,
+                    }
+                    for q in inquiry_result.questions
+                ],
+                "retrieval_actions": [
+                    {
+                        "question_id": a.question_id,
+                        "path": a.path,
+                        "target": a.target,
+                        "budget": a.budget,
+                    }
+                    for a in inquiry_result.retrieval_actions
+                ],
+                "evidence_count": len(inquiry_result.evidence_cards),
+            },
+        )
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="sufficiency",
+            payload={
+                "status": inquiry_result.sufficiency.status,
+                "reason": inquiry_result.sufficiency.reason,
+                "evidence_count": inquiry_result.sufficiency.evidence_count,
+                "answered_questions": inquiry_result.sufficiency.answered_questions,
+                "remaining_unknowns": list(
+                    inquiry_result.sufficiency.remaining_unknowns
+                ),
+            },
+        )
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="context_packet",
+            payload=inquiry_result.context_packet,
+        )
 
     # --- 2. Compute region BEFORE the LLM -------------------------
     allowed_region = touched_entity_ids(first)

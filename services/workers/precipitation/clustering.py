@@ -46,7 +46,7 @@ import numpy as np
 MIN_CLUSTER_SIZE = 3
 DENSITY_THRESHOLD = 0.5
 
-# We only cluster these proposition kinds per spec §19 "repeated
+# We only cluster these claim roles per spec §19 "repeated
 # pattern_instance Models. But instance accumulation doesn't
 # automatically precipitate — it needs a dedicated worker that
 # evaluates whether candidates have enough support" — and per
@@ -97,7 +97,7 @@ async def cluster_active_models(
     params: list = []
     filters = [
         "status = 'active'",
-        f"proposition_kind = ANY($1::text[])",
+        f"claim_role = ANY($1::text[])",
         "embedding IS NOT NULL",
     ]
     params.append(list(CLUSTERABLE_KINDS))
@@ -116,7 +116,7 @@ async def cluster_active_models(
 
     rows = await conn.fetch(
         f"""
-        SELECT id, tenant_id, proposition_kind, "natural", embedding
+        SELECT id, tenant_id, proposition_kind, claim_role, "natural", embedding
         FROM models
         WHERE {' AND '.join(filters)}
         """,
@@ -198,7 +198,7 @@ async def cluster_active_models(
             members = tuple(
                 ClusterMember(
                     model_id=rows[i]["id"],
-                    proposition_kind=rows[i]["proposition_kind"],
+                    proposition_kind=rows[i]["claim_role"] or rows[i]["proposition_kind"],
                     natural=rows[i]["natural"],
                 )
                 for i in sub_idxs

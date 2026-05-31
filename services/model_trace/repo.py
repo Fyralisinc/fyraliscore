@@ -55,23 +55,19 @@ _FORWARD_EDGE_DIRS: tuple[tuple[str, str], ...] = (
 )
 
 
-# Map proposition_kind onto a high-level "kind" label the Model UI
-# uses in trace bubbles (Observation / Claim / Pattern / Belief /
-# Recommendation / Delta). Keep the mapping coarse — the UI only needs
-# enough granularity to render the right icon.
-_KIND_LABELS: dict[str, str] = {
+# Map memory-grammar claim_role onto the high-level "kind" label the
+# Model UI uses in trace bubbles. `proposition_kind` is now only the
+# four epistemic stances, so UI semantics come from claim_role.
+_ROLE_LABELS: dict[str, str] = {
     "recommendation": "recommendation",
     "pattern": "pattern",
-    "pattern_instance": "pattern_instance",
-    "state": "claim",
-    "relation": "claim",
     "prediction": "belief",
     "hypothesis": "belief",
     "concern": "risk",
-    "capability_assessment": "claim",
-    "market_assessment": "claim",
-    "environmental_trend": "pattern",
     "situation": "situation",
+    "capability": "claim",
+    "relation": "claim",
+    "fact": "claim",
 }
 
 
@@ -112,6 +108,7 @@ class TraceStep:
 
 _NODE_COLS_SQL = (
     'm.id, m."natural" AS natural, m.proposition_kind, '
+    "m.claim_role, m.abstraction_level, "
     "m.confidence, m.created_at, m.last_confirmed_at, "
     "m.resolved_at, m.status"
 )
@@ -141,7 +138,12 @@ def _row_to_step(
 ) -> TraceStep:
     natural = (row.get("natural") or "").strip()
     pk = row.get("proposition_kind") or ""
-    kind = _KIND_LABELS.get(pk, pk or "model")
+    role = row.get("claim_role") or ""
+    abstraction = row.get("abstraction_level") or ""
+    if role == "pattern" and abstraction == "atomic":
+        kind = "pattern_instance"
+    else:
+        kind = _ROLE_LABELS.get(role) or pk or "model"
     label = natural[:80] if natural else f"{kind or 'model'}:{str(row['id'])[:8]}"
     summary = natural[:240] if natural else ""
     # Pick the most useful timestamp: resolved_at > last_confirmed_at >

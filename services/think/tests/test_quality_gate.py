@@ -143,7 +143,7 @@ def test_ephemeral_state_downgrades_to_evidence() -> None:
     assert verdict.decision == "downgrade_to_evidence"
     out_op, side = apply_verdict(op, verdict)
     assert out_op is None
-    assert side == []  # evidence path not yet wired
+    assert side == []  # applier selects the DB-backed evidence anchor
     assert any("evidence" in r.lower() for r in verdict.rejection_reasons)
 
 

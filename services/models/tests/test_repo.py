@@ -29,6 +29,7 @@ from lib.shared.errors import FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.models.repo import ModelsRepo
+from services.models.propositions import canonicalize_proposition
 from services.observations.events import notify_scope
 from services.models.tests.conftest import (
     every_kind_proposition,
@@ -101,7 +102,8 @@ async def test_insert_low_confidence_without_falsifier_succeeds(
     # PROP_KIND_DEFAULTS["state"] = 0.95, so 0.5 × 0.95 = 0.475.
     assert row.confidence == pytest.approx(0.475)
     assert row.confidence_at_assertion == 0.5
-    assert row.proposition_kind == "state"
+    assert row.proposition_kind == "belief"
+    assert row.proposition["legacy_kind"] == "state"
     assert row.activation == 1.0
     assert row.confirmed_count == 0
     assert row.contested_count == 0
@@ -181,11 +183,11 @@ async def test_confidence_within_range_passes_through(
     from services.models.calibration import PROP_KIND_DEFAULTS
     falsifier = None
     if raw_conf > 0.7:
-        falsifier = {
-            "kind": "observation_pattern",
-            "pattern": "x" * 40,
-            "within_window": "4w",
-        }
+            falsifier = {
+                "kind": "observation_pattern",
+                "pattern": "x" * 40,
+                "within_window": "4 weeks",
+            }
     with notify_scope():
         row = await repo.insert(
             _mc(
@@ -334,8 +336,144 @@ async def test_all_ten_proposition_kinds_insert(
             ),
             conn=tx_conn,
         )
-    assert row.proposition_kind == prop["kind"]
-    assert row.proposition["kind"] == prop["kind"]
+    canonical = canonicalize_proposition(prop)
+    assert row.proposition_kind == canonical["kind"]
+    assert row.proposition["kind"] == canonical["kind"]
+    if prop["kind"] != canonical["kind"]:
+        assert row.proposition["legacy_kind"] == prop["kind"]
+
+
+async def test_memory_grammar_columns_are_derived_on_insert(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+) -> None:
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=prediction_proposition(),
+                natural="Beacon renewal forecast depends on deployment capacity.",
+                embedding=make_embedding("memory-grammar-prediction"),
+                scope_entities=[{"type": "customer", "id": str(uuid7())}],
+                confidence=0.5,
+                scope_temporal={"type": "future", "deadline": "2026-12-01T00:00:00Z"},
+            ),
+            conn=tx_conn,
+        )
+
+    assert row.proposition_kind == "prediction"
+    assert row.claim_role == "prediction"
+    assert row.abstraction_level == "atomic"
+    assert row.time_mode == "future"
+    assert row.modality == "expected"
+    assert row.polarity == "neutral"
+    assert row.domain_tags == ["customers", "people", "systems"]
+    assert row.memory_grammar_version == "v1"
+
+
+async def test_situation_members_are_mirrored_to_composition_sidecar(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    member_a = uuid7()
+    member_b = uuid7()
+    evidence_id = uuid7()
+    prop = {
+        "kind": "situation",
+        "situation": "Beacon renewal risk is now cross-functional",
+        "summary": "Delivery, capacity, and pricing signals now reinforce one risk.",
+        "member_model_ids": [str(member_a), str(member_b)],
+        "relationship_summary": "The members jointly describe a renewal risk loop.",
+        "status": "forming",
+        "pressure_type": "revenue",
+        "shared_mechanism": "All members route through the same renewal readiness gap.",
+        "judgment_change": "Together the claims justify treating the renewal as a situation.",
+        "evidence_event_ids": [str(evidence_id)],
+        "open_falsifier": "Beacon renews and the launch proceeds on schedule.",
+    }
+
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=prop,
+                natural="Beacon renewal risk is now cross-functional.",
+                embedding=embedding,
+                confidence=0.5,
+            ),
+            conn=tx_conn,
+        )
+
+    members = await tx_conn.fetch(
+        """
+        SELECT member_model_id, evidence_event_ids
+        FROM model_composition_members
+        WHERE tenant_id = $1 AND composite_model_id = $2
+        ORDER BY member_model_id::text
+        """,
+        tenant,
+        row.id,
+    )
+    assert {r["member_model_id"] for r in members} == {member_a, member_b}
+    assert all(list(r["evidence_event_ids"]) == [evidence_id] for r in members)
+
+
+async def test_situation_insert_defaults_compositional_fields_at_repo_boundary(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    member_a = uuid7()
+    member_b = uuid7()
+    prop = {
+        "kind": "situation",
+        "situation": "Atlas operating pressure is forming",
+        "summary": "Delivery pressure and renewal pressure are linked.",
+        "member_model_ids": [str(member_a), str(member_b)],
+        "relationship_summary": "Both members route through one delivery gap.",
+        "status": "forming",
+    }
+
+    with notify_scope():
+        row = await repo.insert(
+            _mc(
+                tenant=tenant,
+                born_from_event=born_from_event,
+                actor_id=actor_id,
+                proposition=prop,
+                natural="Atlas operating pressure is forming.",
+                embedding=embedding,
+                confidence=0.5,
+                falsifier={
+                    "kind": "external_evidence",
+                    "description": "Atlas renewal closes and delivery unblocks.",
+                },
+            ),
+            conn=tx_conn,
+        )
+
+    assert row.proposition_kind == "belief"
+    assert row.claim_role == "situation"
+    assert row.proposition["pressure_type"] == "execution"
+    assert row.proposition["shared_mechanism"] == prop["relationship_summary"]
+    assert row.proposition["judgment_change"]
+    assert row.proposition["open_falsifier"] == (
+        "Atlas renewal closes and delivery unblocks."
+    )
 
 
 async def test_invalid_proposition_kind_rejected(
@@ -614,7 +752,7 @@ async def test_retrieve_bumps_activation_clipped_at_1_confidence_untouched(
     assert got[0].activation == pytest.approx(1.0)   # 0.9 + 0.15 → clipped 1.0
     assert got[0].last_retrieved_at is not None
     # Cold-start calibration applied on insert; confidence untouched by retrieval.
-    expected_conf = 0.5 * 0.95  # state default
+    expected_conf = 0.5 * 0.95  # belief default
     assert got[0].confidence == pytest.approx(expected_conf)
 
     got2 = await repo.retrieve([row.id], conn=tx_conn)
@@ -793,7 +931,7 @@ async def test_reconsolidation_never_touches_confidence(
             ),
             conn=tx_conn,
         )
-    # Cold-start calibration discounts: 0.45 × 0.95 (state default) = 0.4275.
+    # Cold-start calibration discounts: 0.45 × 0.95 (belief default) = 0.4275.
     # Retrieval must never mutate that value.
     expected_conf = 0.45 * 0.95
     for _ in range(10):
@@ -1829,7 +1967,8 @@ async def test_get_by_id_round_trip(
     got = await repo.get_by_id(row.id, conn=tx_conn)
     assert got is not None
     assert got.id == row.id
-    assert got.proposition["kind"] == "state"
+    assert got.proposition["kind"] == "belief"
+    assert got.proposition["legacy_kind"] == "state"
     assert got.proposition["subject"] == "rt"
     # Cold-start calibration: 0.5 × 0.95 = 0.475; assertion unchanged.
     assert got.confidence == pytest.approx(0.475)

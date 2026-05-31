@@ -79,8 +79,9 @@ async def load_actor_operating_context(
 
     model_rows = await conn.fetch(
         """
-        SELECT id, "natural", proposition_kind, confidence, activation,
-               scope_actors, created_at
+        SELECT id, "natural", proposition_kind, claim_role,
+               abstraction_level, confidence, activation, scope_actors,
+               created_at
         FROM models
         WHERE tenant_id = $1
           AND status = 'active'
@@ -153,18 +154,18 @@ async def load_actor_operating_context(
             if not natural:
                 continue
             item = _model_line(row)
-            kind = str(row["proposition_kind"] or "")
+            role = str(row["claim_role"] or "")
             text = natural.lower()
-            if kind == "capability_assessment":
+            if role == "capability":
                 capabilities.append(item)
-            elif kind == "relation":
+            elif role == "relation":
                 relationship_context.append(item)
-            elif kind == "concern":
+            elif role == "concern":
                 if _looks_like_support_need(text):
                     support_needs.append(item)
                 else:
                     risk_factors.append(item)
-            elif kind in {"pattern", "pattern_instance"}:
+            elif role == "pattern":
                 constraints.append(item)
             elif _looks_like_constraint(text):
                 constraints.append(item)
@@ -242,7 +243,7 @@ def _append_group(lines: list[str], label: str, values: tuple[str, ...]) -> None
 
 def _model_line(row: asyncpg.Record) -> str:
     return (
-        f"model {row['id']} ({row['proposition_kind']}, "
+        f"model {row['id']} ({row['claim_role'] or row['proposition_kind']}, "
         f"conf={float(row['confidence']):.2f}): {row['natural']}"
     )
 

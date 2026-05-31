@@ -10,6 +10,7 @@ fixture dataset. We assert on:
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
+from lib.shared.ids import uuid7
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 
 from services.models.edges_repo import EdgesRepo
@@ -268,8 +270,8 @@ async def test_pathway_d_returns_patterns_and_instances(
     )
     assert result.source_pathway == "D"
     # Fixture creates 10 pattern Models with that signature.
-    pattern_kinds = {m.proposition_kind for m in result.models}
-    assert "pattern" in pattern_kinds or "pattern_instance" in pattern_kinds
+    pattern_roles = {m.claim_role for m in result.models}
+    assert "pattern" in pattern_roles
     assert result.notes["patterns_returned"] >= 1
 
 
@@ -279,7 +281,10 @@ async def test_pathway_d_no_signature_returns_all_patterns(
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
     result = await pathway_d_pattern(None, tenant, tx_conn, limit=50)
     # Should surface at least the 10 pattern Models.
-    pattern_models = [m for m in result.models if m.proposition_kind == "pattern"]
+    pattern_models = [
+        m for m in result.models
+        if m.claim_role == "pattern" and m.abstraction_level == "pattern"
+    ]
     assert len(pattern_models) >= 10
 
 
@@ -386,3 +391,85 @@ async def test_pathway_g_ignores_expired_edges(
     ids = {m.id for m in result.models}
     assert seed_id in ids
     assert target_id not in ids
+
+
+async def test_pathway_g_traverses_situation_composition_members(
+    tx_conn, fresh_db, tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    member_a = fs.model_ids[3]
+    member_b = fs.model_ids[4]
+    born_from_event_id = await tx_conn.fetchval(
+        "SELECT born_from_event_id FROM models WHERE id = $1",
+        member_a,
+    )
+    situation_id = uuid7()
+    proposition = {
+        "kind": "belief",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "time_mode": "current",
+        "modality": "inferred",
+        "polarity": "mixed",
+        "situation": "Atlas delivery readiness pressure",
+        "summary": "Two delivery facts combine into one readiness pressure.",
+        "member_model_ids": [str(member_a), str(member_b)],
+        "relationship_summary": "The members describe the same operational risk.",
+        "status": "forming",
+        "pressure_type": "execution",
+        "shared_mechanism": "Both members point at delivery readiness.",
+        "judgment_change": "Together they are more useful as one situation.",
+        "evidence_event_ids": [str(born_from_event_id)],
+        "open_falsifier": "Delivery readiness is confirmed by the owner.",
+    }
+    await tx_conn.execute(
+        """
+        INSERT INTO models
+          (id, tenant_id, born_from_event_id, proposition, "natural",
+           embedding, scope_actors, scope_entities, scope_temporal,
+           confidence, activation, status, confidence_at_assertion,
+           activation_coefficient)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, '{}'::uuid[], '[]'::jsonb,
+                '{}'::jsonb, 0.72, 1.0, 'active', 0.72, 1.0)
+        """,
+        situation_id,
+        tenant,
+        born_from_event_id,
+        json.dumps(proposition),
+        "Atlas delivery readiness pressure",
+        make_embedding("Atlas delivery readiness pressure"),
+    )
+    await tx_conn.executemany(
+        """
+        INSERT INTO model_composition_members (
+          composite_model_id, tenant_id, member_model_id, source
+        )
+        VALUES ($1, $2, $3, 'test')
+        """,
+        [
+            (situation_id, tenant, member_a),
+            (situation_id, tenant, member_b),
+        ],
+    )
+
+    from_situation = await pathway_g_model_edges(
+        tenant,
+        tx_conn,
+        seed_model_ids=[situation_id],
+        max_hops=1,
+    )
+    situation_ids = {m.id for m in from_situation.models}
+    assert situation_id in situation_ids
+    assert {member_a, member_b} <= situation_ids
+    assert from_situation.notes["composition_rows_seen"] >= 2
+
+    from_member = await pathway_g_model_edges(
+        tenant,
+        tx_conn,
+        seed_model_ids=[member_a],
+        max_hops=1,
+    )
+    member_ids = {m.id for m in from_member.models}
+    assert member_a in member_ids
+    assert situation_id in member_ids
+    assert from_member.notes["composition_rows_seen"] >= 1

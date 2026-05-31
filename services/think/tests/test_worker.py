@@ -106,7 +106,10 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
     t_b = await _enqueue_trigger_row(fresh_db, tenant, obs)
 
     # Worker polls but we stub `_dispatch_trigger` so no actual Think runs.
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     dispatched: list = []
 
     async def fake_dispatch(row):
@@ -184,7 +187,11 @@ async def test_poll_does_not_overlease_when_in_flight_is_full(
     worker_id = "overlease-test-worker"
     worker = ThinkWorker(
         fresh_db,
-        config=WorkerConfig(poll_batch=3, worker_id=worker_id),
+        config=WorkerConfig(
+            poll_batch=3,
+            worker_id=worker_id,
+            tenant_filter=tenant,
+        ),
     )
     release = asyncio.Event()
     dispatched: list[UUID] = []
@@ -239,10 +246,10 @@ async def test_two_workers_pick_different_rows(fresh_db, tenant, tenant_cleanup)
     w2_got: list = []
 
     w1 = ThinkWorker(fresh_db, config=WorkerConfig(
-        poll_batch=2, worker_id="w1",
+        poll_batch=2, worker_id="w1", tenant_filter=tenant,
     ))
     w2 = ThinkWorker(fresh_db, config=WorkerConfig(
-        poll_batch=2, worker_id="w2",
+        poll_batch=2, worker_id="w2", tenant_filter=tenant,
     ))
 
     async def fake_dispatch_w1(row):
@@ -278,7 +285,10 @@ async def test_poll_skips_already_locked_rows(fresh_db, tenant, tenant_cleanup):
             trig,
         )
 
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     dispatched: list = []
 
     async def fake_dispatch(row):
@@ -300,7 +310,10 @@ async def test_poll_skips_completed_rows(fresh_db, tenant, tenant_cleanup):
             "UPDATE think_trigger_queue SET completed_at = now() WHERE id = $1",
             trig,
         )
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     dispatched: list = []
 
     async def fake_dispatch(r):
@@ -322,7 +335,10 @@ async def test_poll_respects_scheduled_for_future(fresh_db, tenant, tenant_clean
             "SET scheduled_for = now() + interval '10 minutes' WHERE id = $1",
             trig,
         )
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_batch=50))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+    )
     dispatched: list = []
 
     async def fake_dispatch(r):
@@ -349,7 +365,12 @@ async def test_per_tenant_concurrency_cap(fresh_db, tenant, tenant_cleanup):
     ]
 
     worker = ThinkWorker(
-        fresh_db, config=WorkerConfig(poll_batch=10, max_concurrency_per_tenant=4),
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            max_concurrency_per_tenant=4,
+            tenant_filter=tenant,
+        ),
     )
 
     active = {"count": 0, "max_seen": 0}
@@ -391,7 +412,7 @@ async def test_queue_depth_counts_pending_rows(fresh_db, tenant, tenant_cleanup)
     obs = await _seed_signal_observation(fresh_db, tenant)
     for _ in range(5):
         await _enqueue_trigger_row(fresh_db, tenant, obs)
-    worker = ThinkWorker(fresh_db, config=WorkerConfig())
+    worker = ThinkWorker(fresh_db, config=WorkerConfig(tenant_filter=tenant))
     depth = await worker._queue_depth()
     assert depth >= 5
 
@@ -406,7 +427,7 @@ async def test_backpressure_does_not_prevent_enqueue(
         await _enqueue_trigger_row(fresh_db, tenant, obs)
     worker = ThinkWorker(
         fresh_db,
-        config=WorkerConfig(backpressure_limit=5),
+        config=WorkerConfig(backpressure_limit=5, tenant_filter=tenant),
     )
     depth = await worker._queue_depth()
     assert depth >= 12
@@ -425,14 +446,20 @@ async def test_backpressure_does_not_prevent_enqueue(
 
 
 async def test_stop_sets_shutdown_event(fresh_db, tenant, tenant_cleanup):
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_interval_s=0.05))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_interval_s=0.05, tenant_filter=tenant),
+    )
     await worker.stop()
     assert worker._shutdown_event.is_set()
 
 
 async def test_run_exits_on_shutdown_event(fresh_db, tenant, tenant_cleanup):
     """A fresh worker with an empty queue responds to stop() quickly."""
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_interval_s=0.05))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_interval_s=0.05, tenant_filter=tenant),
+    )
 
     async def stopper():
         await asyncio.sleep(0.1)
@@ -448,7 +475,10 @@ async def test_run_waits_for_in_flight_tasks_on_shutdown(
 ):
     """If the worker has in-flight tasks, run() awaits them on
     shutdown before returning."""
-    worker = ThinkWorker(fresh_db, config=WorkerConfig(poll_interval_s=0.05))
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(poll_interval_s=0.05, tenant_filter=tenant),
+    )
 
     finished = []
 
@@ -481,7 +511,8 @@ async def test_mark_trigger_failed_bumps_attempts(
     obs = await _seed_signal_observation(fresh_db, tenant)
     trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
     worker = ThinkWorker(
-        fresh_db, config=WorkerConfig(trigger_max_attempts=5),
+        fresh_db,
+        config=WorkerConfig(trigger_max_attempts=5, tenant_filter=tenant),
     )
     await _lock_trigger(fresh_db, trig, worker.config.worker_id)
     await worker._mark_trigger_failed(trig, "boom1")
@@ -500,7 +531,8 @@ async def test_mark_trigger_failed_eventually_dead_letters(
     obs = await _seed_signal_observation(fresh_db, tenant)
     trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
     worker = ThinkWorker(
-        fresh_db, config=WorkerConfig(trigger_max_attempts=3),
+        fresh_db,
+        config=WorkerConfig(trigger_max_attempts=3, tenant_filter=tenant),
     )
     for i in range(3):
         await _lock_trigger(fresh_db, trig, worker.config.worker_id)
@@ -735,7 +767,11 @@ async def test_process_trigger_rehydrates_full_payload_for_retrieval(
             row = await conn.fetchrow(
                 "SELECT * FROM think_trigger_queue WHERE id = $1", trig,
             )
-        w = ThinkWorker(fresh_db, config=WorkerConfig(), llm_provider=ScriptedProvider([]))
+        w = ThinkWorker(
+            fresh_db,
+            config=WorkerConfig(tenant_filter=tenant),
+            llm_provider=ScriptedProvider([]),
+        )
         await w._process_trigger(row)
     finally:
         # Restore the real `think` binding so subsequent tests aren't polluted.

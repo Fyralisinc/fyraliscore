@@ -50,9 +50,10 @@ from lib.shared.errors import MalformedFalsifierError
 # `within_window` parser — single source of truth.
 #
 # Policy decision (T1a, see tests/synthesis_harness/REPORT.md §5):
-# accept *both* ISO-8601 duration strings (e.g. `P7D`, `PT4H`,
-# `P1M`, `P2W`, `PT30M`) AND the legacy human-readable form
-# (e.g. `7 days`, `4 weeks`, `any 4-week period`, `4w`). The Think prompt
+# accept ISO-8601 duration strings (e.g. `P7D`, `PT4H`, `P1M`,
+# `P2W`, `PT30M`), compact shorthand (`4w`, `6h`, `30m`), AND
+# human-readable forms (e.g. `7 days`, `4 weeks`,
+# `any 4-week period`). The Think prompt
 # tells the LLM to emit ISO-8601 (services/think/prompt.py:55), but
 # the deadline-resolver evaluator historically only accepted the
 # human form, so falsifiers carrying valid ISO durations were
@@ -71,12 +72,17 @@ _HUMAN_WINDOW_RE = re.compile(
     (?:any\s+)?
     (\d+(?:\.\d+)?)    # number
     [- ]?              # optional separator
-    (second|sec|s|minute|min|m|hour|hr|h|day|d|week|wk|w|month|mo|year|yr|y)
+    (second|sec|minute|min|hour|hr|day|week|month|year|yr)
     s?                 # optional plural
     (?:\s+period)?     # optional "period"
     \s*$
     """,
     re.IGNORECASE | re.VERBOSE,
+)
+
+_COMPACT_WINDOW_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)(s|m|h|d|w|y)\s*$",
+    re.IGNORECASE,
 )
 
 _HUMAN_UNIT_SECONDS = {
@@ -91,16 +97,17 @@ _HUMAN_UNIT_SECONDS = {
 
 _HUMAN_UNIT_ALIASES = {
     "sec": "second",
-    "s": "second",
     "min": "minute",
-    "m": "minute",
     "hr": "hour",
+    "yr": "year",
+}
+
+_COMPACT_UNIT_ALIASES = {
+    "s": "second",
+    "m": "minute",
     "h": "hour",
     "d": "day",
-    "wk": "week",
     "w": "week",
-    "mo": "month",
-    "yr": "year",
     "y": "year",
 }
 
@@ -130,7 +137,8 @@ def parse_within_window(spec: Any) -> timedelta | None:
 
     Accepts:
       * ISO-8601 duration: `P7D`, `PT4H`, `PT30M`, `P2W`, `P1Y6M`, `P1DT12H`.
-      * Human-readable: `7 days`, `4 weeks`, `6 hours`, `any 4-week period`, `4w`.
+      * Compact shorthand: `4w`, `6h`, `30m`.
+      * Human-readable: `7 days`, `4 weeks`, `6 hours`, `any 4-week period`.
 
     Returns `None` for `None`, empty string, or non-string input — the
     "missing" case. Raises `MalformedFalsifierError` for non-empty
@@ -196,13 +204,27 @@ def parse_within_window(spec: Any) -> timedelta | None:
             )
         return timedelta(seconds=total_seconds)
 
+    # Compact shorthand. `m` means minute here; ISO month remains `P1M`.
+    m = _COMPACT_WINDOW_RE.match(s)
+    if m is not None:
+        n = float(m.group(1))
+        unit = _COMPACT_UNIT_ALIASES[m.group(2).lower()]
+        total = n * _HUMAN_UNIT_SECONDS[unit]
+        if total <= 0:
+            raise MalformedFalsifierError(
+                f"within_window {spec!r} resolves to non-positive duration",
+                field="within_window",
+                value=spec,
+            )
+        return timedelta(seconds=total)
+
     # Human-readable grammar.
     m = _HUMAN_WINDOW_RE.match(s)
     if m is None:
         raise MalformedFalsifierError(
             f"within_window {spec!r} does not match either the "
             f"ISO-8601 duration grammar (P7D, PT4H, …) or the "
-            f"human-readable grammar (\"7 days\", \"4 weeks\", \"4w\", …)",
+            f"human-readable grammar (\"7 days\", \"4 weeks\", …)",
             field="within_window",
             value=spec,
         )

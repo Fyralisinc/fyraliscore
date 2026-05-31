@@ -23,7 +23,9 @@ from uuid import UUID
 import pytest
 
 from lib.shared.ids import uuid7
+from lib.shared.types import ModelCreate
 
+from services.models.repo import ModelsRepo
 from services.retrieval.config import (
     CONFIG,
     RetrievalConfig,
@@ -48,6 +50,10 @@ def test_ra5_config_defaults_match_spec():
     assert cfg.temporal_window_minutes == 60
     assert cfg.temporal_include_entity_mentions is True
     assert cfg.context_budget_tokens == 100_000
+    assert cfg.assembler_budget_observations == 12
+    assert cfg.assembler_budget_models == 24
+    assert cfg.assembler_budget_acts_total == 10
+    assert cfg.assembler_budget_resources == 5
     assert cfg.mmr_lambda_diversity == 0.5
     assert cfg.second_pass_sparse_threshold == 5
     assert cfg.second_pass_bridge_confidence_threshold == 0.7
@@ -56,9 +62,11 @@ def test_ra5_config_defaults_match_spec():
 def test_ra5_config_env_overrides_int(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_K", "40")
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_HNSW_EF_SEARCH", "200")
+    monkeypatch.setenv("RETRIEVAL_ASSEMBLER_BUDGET_MODELS", "18")
     cfg = RetrievalConfig.from_env()
     assert cfg.semantic_k == 40
     assert cfg.semantic_hnsw_ef_search == 200
+    assert cfg.assembler_budget_models == 18
 
 
 def test_ra5_config_env_overrides_bool(monkeypatch):
@@ -255,6 +263,98 @@ async def test_ra5_pathway_c_includes_entity_mentions_when_enabled(
     excl_ids = {o.id for o in r_excl.observations}
     assert obsA in excl_ids
     assert obsB not in excl_ids
+
+
+@pytest.mark.integration
+async def test_ra5_pathway_c_scope_entities_filter_observations_and_models(
+    tx_conn, fresh_db, tenant
+):
+    """Entity-scoped temporal retrieval should not fall back to tenant-wide
+    recent Models when no actor scope is present."""
+    seed = datetime.now(timezone.utc)
+    hero_commitment = uuid7()
+    other_commitment = uuid7()
+    hero_entity = {"type": "commitment", "id": str(hero_commitment)}
+    other_entity = {"type": "commitment", "id": str(other_commitment)}
+    hero_obs = await _insert_obs_with_mention(
+        tx_conn,
+        tenant,
+        occurred_at=seed,
+        actor_id=None,
+        mentions=[hero_entity],
+    )
+    other_obs = await _insert_obs_with_mention(
+        tx_conn,
+        tenant,
+        occurred_at=seed + timedelta(minutes=1),
+        actor_id=None,
+        mentions=[other_entity],
+    )
+    born_obs = await _insert_obs_with_mention(
+        tx_conn,
+        tenant,
+        occurred_at=seed,
+        actor_id=None,
+        mentions=[],
+    )
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    hero_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=born_obs,
+            proposition={
+                "kind": "concern",
+                "about": "hero",
+                "nature": "temporal scope",
+                "raised_by": "test",
+            },
+            natural="hero commitment temporal model",
+            embedding=make_embedding("hero commitment temporal model"),
+            scope_entities=[hero_entity],
+            scope_temporal={"type": "now"},
+            confidence=0.6,
+            confidence_at_assertion=0.6,
+        ),
+        conn=tx_conn,
+    )
+    other_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=born_obs,
+            proposition={
+                "kind": "concern",
+                "about": "other",
+                "nature": "temporal noise",
+                "raised_by": "test",
+            },
+            natural="other commitment temporal noise",
+            embedding=make_embedding("other commitment temporal noise"),
+            scope_entities=[other_entity],
+            scope_temporal={"type": "now"},
+            confidence=0.6,
+            confidence_at_assertion=0.6,
+        ),
+        conn=tx_conn,
+    )
+
+    result = await pathway_c_temporal(
+        seed,
+        timedelta(minutes=30),
+        tenant,
+        tx_conn,
+        scope_entities=[hero_entity],
+    )
+
+    assert {o.id for o in result.observations} == {hero_obs}
+    assert hero_obs in {o.id for o in result.observations}
+    assert other_obs not in {o.id for o in result.observations}
+    assert hero_model.id in {m.id for m in result.models}
+    assert other_model.id not in {m.id for m in result.models}
+    assert result.notes["scope_entities_count"] == 1
 
 
 @pytest.mark.integration

@@ -69,6 +69,9 @@ try:
     )
 except Exception:  # pragma: no cover — defensive
     PROP_KIND_DEFAULTS = {
+        "observation":           0.95,
+        "belief":                0.95,
+        "norm":                  0.85,
         "state":                 0.95,
         "relation":              0.93,
         "prediction":            0.85,

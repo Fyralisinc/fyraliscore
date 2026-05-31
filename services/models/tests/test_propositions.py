@@ -16,6 +16,7 @@ from services.models.propositions import (
     SituationProposition,
     StateProposition,
     PredictionProposition,
+    canonicalize_proposition,
     validate_proposition,
 )
 
@@ -30,33 +31,34 @@ def test_all_base_proposition_kinds_validate_and_round_trip() -> None:
     seen: set[str] = set()
     for raw in every_kind_proposition():
         parsed = validate_proposition(raw)
-        assert parsed.kind == raw["kind"]
+        canonical = canonicalize_proposition(raw)
+        assert parsed.kind == canonical["kind"]
         dumped = parsed.model_dump()
-        assert dumped["kind"] == raw["kind"]
+        assert dumped["kind"] == canonical["kind"]
+        if raw["kind"] != canonical["kind"]:
+            assert dumped["legacy_kind"] == raw["kind"]
         seen.add(raw["kind"])
     # The base kinds covered exactly once; recommendation lives
     # in a dedicated test file because of its DB-backed validators.
-    assert seen == LEGAL_KINDS - {"recommendation"}
+    assert seen == {
+        "state",
+        "relation",
+        "prediction",
+        "pattern",
+        "pattern_instance",
+        "capability_assessment",
+        "hypothesis",
+        "concern",
+        "market_assessment",
+        "environmental_trend",
+        "situation",
+    }
 
 
 def test_legal_kinds_matches_spec() -> None:
-    """Original Wave-0 set, plus recommendation and situation.
-    Changing this set requires a SCHEMA-LOCK amendment + migration."""
+    """The base discriminator is the four-stance ontology."""
     assert LEGAL_KINDS == frozenset(
-        {
-            "state",
-            "relation",
-            "prediction",
-            "pattern",
-            "pattern_instance",
-            "capability_assessment",
-            "hypothesis",
-            "concern",
-            "market_assessment",
-            "environmental_trend",
-            "recommendation",
-            "situation",
-        }
+        {"observation", "belief", "prediction", "norm"}
     )
 
 
@@ -85,7 +87,36 @@ def test_missing_required_field_for_kind_rejected() -> None:
         validate_proposition({"kind": "state", "subject": "alice"})
     # Pydantic collected the error under context['errors']
     errs = exc.value.context.get("errors", [])
-    assert any("assertion" in str(e.get("loc", "")) for e in errs)
+    assert errs
+
+
+def test_claim_role_contract_rejects_kind_role_mismatch() -> None:
+    with pytest.raises(ValidationError) as exc:
+        validate_proposition(
+            {
+                "kind": "prediction",
+                "claim_role": "fact",
+                "expected": "Beacon renews",
+                "resolution": "renewal state",
+            }
+        )
+
+    assert "claim_role" in str(exc.value.context)
+
+
+def test_claim_role_contract_rejects_malformed_relation() -> None:
+    with pytest.raises(ValidationError) as exc:
+        validate_proposition(
+            {
+                "kind": "belief",
+                "claim_role": "relation",
+                "abstraction_level": "relationship",
+                "subject": "Alice",
+                "relation": "blocks",
+            }
+        )
+
+    assert "requires one of" in exc.value.message
 
 
 def test_state_proposition_accepts_dict_subject() -> None:
@@ -151,13 +182,20 @@ def test_situation_proposition_compositional_fields_round_trip() -> None:
     }
     parsed = validate_proposition(raw)
     assert isinstance(parsed, SituationProposition)
+    assert parsed.kind == "belief"
+    assert parsed.legacy_kind == "situation"
+    assert parsed.claim_role == "situation"
     assert parsed.pressure_type == "capacity"
     assert parsed.shared_mechanism.startswith("All three claims")
     assert parsed.affected_customers == ["Globex Inc"]
     assert parsed.evidence_event_ids == evidence_ids
 
     back = parsed.model_dump()
+    assert back["kind"] == "belief"
+    assert back["legacy_kind"] == "situation"
     for key, expected in raw.items():
+        if key == "kind":
+            continue
         assert back[key] == expected, f"round-trip lost field {key!r}"
 
 

@@ -1142,7 +1142,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:
@@ -1224,7 +1224,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:
@@ -1265,6 +1265,121 @@ def _register_routes(app: FastAPI) -> None:
             {
                 "recommendation_id": str(rec_id),
                 "archived_with_reason": reason.strip(),
+            },
+            status_code=200,
+        )
+
+    # ---------------- /v1/recommendations/{id}/ratify ----------------
+    # Imaginary-node ratification: Approve / Correct / Other / Dismiss
+    # for hypothesis Models (claim_role='hypothesis'). The endpoint
+    # accepts the same `recommendation_id` URL slot for surface
+    # uniformity even though hypothesis Models aren't strictly
+    # recommendations — they surface in the same list endpoint and
+    # share the same target_actor ownership semantics.
+    @app.post("/v1/recommendations/{recommendation_id}/ratify")
+    async def ratify_hypothesis_endpoint(
+        recommendation_id: str, request: Request,
+    ) -> JSONResponse:
+        from services.recommendations.handlers import (
+            AlreadyArchivedError,
+            ratify_hypothesis,
+        )
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover
+            return _unauth("missing_bearer")
+        try:
+            model_id = UUID(recommendation_id)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                {"error": "invalid_model_id"}, status_code=400,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid_body"}, status_code=400)
+        action = body.get("action")
+        if action not in ("approve", "correct", "other", "dismiss"):
+            return JSONResponse(
+                {"error": "invalid_action",
+                 "valid": ["approve", "correct", "other", "dismiss"]},
+                status_code=400,
+            )
+        explanation = body.get("explanation")
+        if explanation is not None and not isinstance(explanation, str):
+            return JSONResponse(
+                {"error": "invalid_explanation"}, status_code=400,
+            )
+        correction = body.get("correction")
+        if correction is not None and not isinstance(correction, dict):
+            return JSONResponse(
+                {"error": "invalid_correction"}, status_code=400,
+            )
+
+        deps = _deps(request)
+        try:
+            async with deps.pool.acquire() as conn:
+                async with conn.transaction():
+                    target_row = await conn.fetchrow(
+                        "SELECT target_actor_id FROM models "
+                        "WHERE id = $1 AND tenant_id = $2 "
+                        "  AND claim_role = 'hypothesis'",
+                        model_id, auth.tenant_id,
+                    )
+                    if target_row is None:
+                        return JSONResponse(
+                            {"error": "not_found"}, status_code=404,
+                        )
+                    if (
+                        target_row["target_actor_id"] is not None
+                        and target_row["target_actor_id"] != auth.actor_id
+                    ):
+                        return JSONResponse(
+                            {"error": "forbidden",
+                             "reason": "not_target_actor"},
+                            status_code=403,
+                        )
+
+                    result = await ratify_hypothesis(
+                        model_id=model_id,
+                        actor_id=auth.actor_id,
+                        tenant_id=auth.tenant_id,
+                        action=action,
+                        explanation=explanation,
+                        correction=correction,
+                        conn=conn,
+                    )
+        except AlreadyArchivedError as e:
+            return JSONResponse(
+                {"error": "already_archived", "detail": e.to_dict()},
+                status_code=409,
+            )
+        except ValidationError as e:
+            return JSONResponse(
+                {"error": "validation_error", "detail": e.to_dict()},
+                status_code=400,
+            )
+        except CompanyOSError as e:
+            return JSONResponse(
+                {"error": e.code, "detail": e.to_dict()},
+                status_code=400,
+            )
+
+        return JSONResponse(
+            {
+                "model_id": str(result.model_id),
+                "action": result.action,
+                "archived": result.archived,
+                "trigger_id": (
+                    str(result.trigger_id) if result.trigger_id else None
+                ),
+                "captured_observation_id": (
+                    str(result.captured_observation_id)
+                    if result.captured_observation_id else None
+                ),
             },
             status_code=200,
         )
@@ -2065,7 +2180,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:
@@ -2200,6 +2315,15 @@ def _serialize_recommendation(view: Any) -> dict[str, Any]:
         "created_at": view.created_at.isoformat(),
         "scope_entities": view.scope_entities,
         "rank_score": view.rank_score,
+        # Phase 3 (imaginary-node pattern): claim_role lets the UI pick
+        # the right action chips (Act vs Approve/Correct/Other/Dismiss).
+        # The two hypothesis-specific fields are populated for
+        # claim_role='hypothesis' rows and absent/empty otherwise.
+        "claim_role": getattr(view, "claim_role", None),
+        "is_system_hypothesis": bool(
+            getattr(view, "is_system_hypothesis", False)
+        ),
+        "hypothesis_text": getattr(view, "hypothesis_text", None),
         "target_entity": (
             {
                 "type": target.type,

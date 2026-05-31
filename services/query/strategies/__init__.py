@@ -7,7 +7,7 @@ Every strategy exports:
   - `build_trigger(parsed, tenant_id) -> TriggerContext`
       configures the retrieval pathway mix for this category.
   - `async gather(parsed, tenant_id, conn, *, models_repo=None) -> ContextBundle`
-      runs primary_retrieve + assemble_context and attaches
+      runs execution Fast Path retrieval + assemble_context and attaches
       category-specific annotations to the bundle.
 
 The registry `STRATEGIES` maps QueryCategory -> strategy module so

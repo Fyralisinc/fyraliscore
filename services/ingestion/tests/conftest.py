@@ -30,6 +30,10 @@ import pytest_asyncio
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
 from services.gateway.db_bootstrap import _register_codecs
+from tests.db_baseline import (
+    install_test_tenant_auto_register,
+    seed_test_baseline,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -168,7 +172,9 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     try:
         async with pool.acquire() as conn:
             await _run_migrations(conn)
+            await install_test_tenant_auto_register(conn)
             await _truncate_all(conn)
+            await seed_test_baseline(conn)
         yield pool
     finally:
         # Terminate first so any in-flight connections are force-closed
