@@ -82,3 +82,9 @@ tests/synthesis_harness/runs/
 # Real-LLM local run artifacts
 tests/real_llm/cache/
 tests/real_llm/reports/runs/
+
+# ---- Internal dev notes (kept locally, not published) ----
+CLAUDE.md
+MODEL-THINK-RETRIEVAL-DEEP-DIVE.md
+RETRIEVAL-REVAMP-IMPLEMENTATION-PLAN.md
+V1_PR_PROMPTS.md
