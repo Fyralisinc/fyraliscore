@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -9,9 +10,18 @@ import pytest
 from lib.llm.provider import LLMConfig, LLMProvider
 from lib.shared.types import ModelCreate
 from services.models.repo import ModelsRepo
-from services.execution.inquiry import InquiryConfig, run_inquiry_retrieval
+from services.execution.inquiry import (
+    Hypothesis,
+    InquiryConfig,
+    InquiryQuestion,
+    _candidate_questions_for_round,
+    _has_broad_signal_language,
+    _merge_llm_and_safety_questions,
+    run_inquiry_retrieval,
+)
 from services.retrieval.assembler import AccessContext, assemble_context
 from services.retrieval.primary import TriggerContext
+from services.retrieval.primary import RetrievalResult
 from services.retrieval.tests._fixtures import build_fixture, make_embedding
 
 
@@ -48,6 +58,163 @@ class _ScriptedQuestionProvider(LLMProvider):
             }
         )
         return self.responses.pop(0)
+
+
+class _SlowQuestionProvider(LLMProvider):
+    def __init__(self):
+        super().__init__(LLMConfig(provider="anthropic", api_key="test", model="m"))
+
+    async def _raw_call(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        schema_hint: str,
+    ) -> str:
+        await asyncio.sleep(1.0)
+        return "{}"
+
+
+def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
+    assert not _has_broad_signal_language(
+        "the named owner is split across escalations and the delivery date is slipping"
+    )
+    assert _has_broad_signal_language(
+        "board update across all enterprise customers: renewal risk is rising"
+    )
+
+
+async def test_question_planning_timeout_falls_back_to_deterministic(monkeypatch, tenant):
+    monkeypatch.setenv("INQUIRY_LLM_QUESTION_TIMEOUT_SECONDS", "0.01")
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_natural_text="customer launch depends on security approval",
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+    )
+    baseline = RetrievalResult(trigger=trigger)
+    questions, note = await _candidate_questions_for_round(
+        trigger,
+        baseline,
+        (
+            Hypothesis(
+                id="H1",
+                claim="The approval dependency may block launch.",
+                confidence=0.5,
+                impact_if_true="high",
+            ),
+        ),
+        {},
+        {"counterevidence"},
+        llm_provider=_SlowQuestionProvider(),
+        config=InquiryConfig(),
+        round_index=1,
+    )
+    assert note["mode"] == "deterministic_fallback"
+    assert note["reason"] == "TimeoutError"
+    assert questions
+
+
+def test_safety_question_boosts_same_primitive_llm_priority():
+    llm_goal = InquiryQuestion(
+        question_id="Q_GOAL_IMPACT",
+        question="Does this affect a customer goal?",
+        primitive="GOAL_IMPACT",
+        tests_hypotheses=("H1",),
+        expected_value=0.55,
+        expected_cost=0.30,
+        retrieval_target="goal_resource_bridge",
+        stop_condition="goal impact known",
+        score=0.37,
+    )
+    safety_goal = InquiryQuestion(
+        question_id="Q_GOAL_IMPACT",
+        question="Which goal, customer, or resource is affected?",
+        primitive="GOAL_IMPACT",
+        tests_hypotheses=("H1",),
+        expected_value=0.86,
+        expected_cost=0.20,
+        retrieval_target="goal_resource_bridge",
+        stop_condition="goal impact known",
+        score=0.81,
+    )
+
+    merged, added = _merge_llm_and_safety_questions([llm_goal], [safety_goal])
+
+    assert added == 0
+    assert merged[0].primitive == "GOAL_IMPACT"
+    assert merged[0].question == llm_goal.question
+    assert merged[0].score == safety_goal.score
+
+
+def test_high_value_safety_question_is_added_when_llm_omits_it():
+    llm_questions = [
+        InquiryQuestion(
+            question_id="Q_COUNTEREVIDENCE",
+            question="What evidence would disprove this?",
+            primitive="COUNTEREVIDENCE",
+            tests_hypotheses=("H1",),
+            expected_value=0.7,
+            expected_cost=0.2,
+            retrieval_target="counterevidence",
+            stop_condition="counterevidence known",
+            score=0.56,
+        ),
+        InquiryQuestion(
+            question_id="Q_COMMITMENT",
+            question="Which promises are implicated?",
+            primitive="COMMITMENT",
+            tests_hypotheses=("H1",),
+            expected_value=0.6,
+            expected_cost=0.2,
+            retrieval_target="commitments",
+            stop_condition="commitments known",
+            score=0.48,
+        ),
+        InquiryQuestion(
+            question_id="Q_OWNERSHIP",
+            question="Who owns the work?",
+            primitive="OWNERSHIP",
+            tests_hypotheses=("H1",),
+            expected_value=0.58,
+            expected_cost=0.2,
+            retrieval_target="owners",
+            stop_condition="owners known",
+            score=0.46,
+        ),
+        InquiryQuestion(
+            question_id="Q_RECURRENCE",
+            question="Has this happened before?",
+            primitive="RECURRENCE",
+            tests_hypotheses=("H1",),
+            expected_value=0.62,
+            expected_cost=0.2,
+            retrieval_target="recurrence",
+            stop_condition="recurrence known",
+            score=0.50,
+        ),
+    ]
+    safety_dependency = InquiryQuestion(
+        question_id="Q_CRITICAL_PATH",
+        question="What dependency could make this block the critical path?",
+        primitive="DEPENDENCY",
+        tests_hypotheses=("H1",),
+        expected_value=0.9,
+        expected_cost=0.2,
+        retrieval_target="critical_path",
+        stop_condition="dependency known",
+        score=0.82,
+    )
+
+    merged, added = _merge_llm_and_safety_questions(
+        llm_questions,
+        [safety_dependency],
+    )
+
+    assert added == 1
+    assert "DEPENDENCY" in {question.primitive for question in merged}
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(

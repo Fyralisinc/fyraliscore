@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal, Optional
 from uuid import UUID
 
 from lib.shared.ids import uuid7
+from lib.shared.memory_grammar import derive_memory_grammar
 from services.judgment.scoring import JudgmentScores, clamp_score
 
 
@@ -43,6 +44,16 @@ ReviewStatus = Literal[
 
 
 _CAUSAL_EDGE_KINDS = {"causes", "explains", "blocks", "enables"}
+_SITUATION_PRESSURE_TYPES = {
+    "capacity",
+    "trust",
+    "revenue",
+    "compliance",
+    "decision",
+    "execution",
+    "market",
+    "resource",
+}
 
 
 # Edge kinds that deterministic / topology generators are allowed to
@@ -218,13 +229,33 @@ def make_situation_candidate(
     members = tuple(dict.fromkeys(member_model_ids))
     if len(members) < 2:
         raise ValueError("situation candidate requires at least two member models")
+    candidate_metadata = dict(metadata or {})
+    pressure_type = candidate_metadata.get("pressure_type")
+    if pressure_type not in _SITUATION_PRESSURE_TYPES:
+        pressure_type = "execution"
     proposition = {
-        "kind": "situation",
+        "kind": "belief",
+        "legacy_kind": "situation",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "time_mode": "current",
+        "modality": "inferred",
+        "polarity": "mixed",
         "situation": situation,
         "summary": summary,
         "member_model_ids": [str(m) for m in members],
         "relationship_summary": relationship_summary,
         "status": "forming",
+        "pressure_type": pressure_type,
+        "shared_mechanism": relationship_summary,
+        "judgment_change": (
+            "Treat the member models as one composite situation because "
+            f"{relationship_summary}"
+        ),
+        "open_falsifier": (
+            "The shared mechanism no longer holds, or the member models "
+            "stop being jointly true."
+        ),
     }
     return RelationshipCandidate(
         id=uuid7(),
@@ -238,7 +269,7 @@ def make_situation_candidate(
         explanation=relationship_summary,
         scores=scores,
         source=source,
-        metadata=metadata or {},
+        metadata=candidate_metadata,
         review_status=review_status,
     )
 
@@ -618,7 +649,8 @@ def _rule_contradicts(
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
     if left.proposition_kind != "state" or right.proposition_kind != "state":
-        return None
+        if left.proposition_kind != "belief" or right.proposition_kind != "belief":
+            return None
     if not left.polarity or not right.polarity:
         return None
     if left.polarity == right.polarity:
@@ -660,7 +692,7 @@ def _rule_enables(
     for source, target in ((left, right), (right, left)):
         if not source.capability_surface:
             continue
-        if target.proposition_kind != "capability_assessment":
+        if _claim_role(target) != "capability":
             continue
         metadata = {
             **scope_meta,
@@ -691,6 +723,15 @@ def _rule_enables(
             expected_delay="unknown",
         )
     return None
+
+
+def _claim_role(model: ModelSignal) -> str:
+    if model.proposition_kind == "capability_assessment":
+        return "capability"
+    if model.proposition_kind == "situation":
+        return "situation"
+    grammar = derive_memory_grammar(model.proposition)
+    return grammar.claim_role
 
 
 _CANDIDATE_RULES: dict[str, CandidateRule] = {

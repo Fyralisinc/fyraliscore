@@ -63,6 +63,9 @@ COLD_START_BUCKET_HIGH = 1.01
 # insert, so the defaults are load-bearing for the Model insert
 # falsifier-adequacy threshold (Invariant M2, confidence > 0.7).
 PROP_KIND_DEFAULTS: dict[str, float] = {
+    "observation":           0.95,
+    "belief":                0.95,
+    "norm":                  0.85,
     "state":                 0.95,
     "relation":              0.93,
     "prediction":            0.85,

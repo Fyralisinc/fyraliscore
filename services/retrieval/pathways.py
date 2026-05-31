@@ -105,6 +105,8 @@ _MODEL_SELECT_COLS = (
     "evaluate_at", "resolution_criteria", "contributing_models",
     "visible_to_subjects",
     "proposition_kind",
+    "claim_role", "abstraction_level", "time_mode", "modality", "polarity",
+    "domain_tags", "memory_grammar_version",
     "confirmed_count", "contested_count", "last_confirmed_at",
     "confidence_at_assertion",
     "resolved_at", "resolution_outcome",
@@ -1295,8 +1297,8 @@ async def pathway_c_temporal(
 
 
 # =====================================================================
-# Pathway D — Pattern (Models with proposition_kind='pattern' matching
-# a signature, plus their pattern_instance Models)
+# Pathway D — Pattern (Models with claim_role='pattern' matching a
+# signature, plus their pattern-instance Models)
 # =====================================================================
 
 
@@ -1327,7 +1329,8 @@ async def pathway_d_pattern(
             FROM models
             WHERE tenant_id = $1
               AND status = 'active'
-              AND proposition_kind = 'pattern'
+              AND claim_role = 'pattern'
+              AND abstraction_level = 'pattern'
             ORDER BY activation DESC, created_at DESC
             LIMIT $2
         """
@@ -1339,7 +1342,8 @@ async def pathway_d_pattern(
             FROM models
             WHERE tenant_id = $1
               AND status = 'active'
-              AND proposition_kind = 'pattern'
+              AND claim_role = 'pattern'
+              AND abstraction_level = 'pattern'
               AND proposition -> 'signature' @> $2::jsonb
             ORDER BY activation DESC, created_at DESC
             LIMIT $3
@@ -1375,7 +1379,8 @@ async def pathway_d_pattern(
               FROM models m
               WHERE m.tenant_id = $1
                 AND m.status = 'active'
-                AND m.proposition_kind = 'pattern_instance'
+                AND m.claim_role = 'pattern'
+                AND m.time_mode = 'past'
                 AND (m.proposition ->> 'pattern_id') = ANY($3::text[])
             ),
             instance_ids AS (

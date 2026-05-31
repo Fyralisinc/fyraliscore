@@ -214,7 +214,7 @@ async def test_apply_dedupes_split_situation_members_after_reconcile(
             SELECT proposition
             FROM models
             WHERE tenant_id = $1
-              AND proposition_kind = 'situation'
+              AND claim_role = 'situation'
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -228,7 +228,7 @@ async def test_apply_dedupes_split_situation_members_after_reconcile(
         proposition = json.loads(proposition)
     member_ids = proposition["member_model_ids"]
     assert len(member_ids) == len(set(member_ids))
-    assert len(member_ids) >= 1
+    assert len(member_ids) >= 2
 
 
 async def test_apply_adds_required_situation_compositional_defaults(
@@ -246,11 +246,17 @@ async def test_apply_adds_required_situation_compositional_defaults(
             tenant,
             content_text="A composite execution pressure emerged.",
         )
-        member = await _insert_applier_model(
+        member_a = await _insert_applier_model(
             conn,
             tenant,
             oid,
             "Atlas operating pressure is visible.",
+        )
+        member_b = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Atlas delivery pressure is visible.",
         )
         diff = ValidatedDiff(
             trigger_ref=uuid7(),
@@ -265,7 +271,7 @@ async def test_apply_adds_required_situation_compositional_defaults(
                             "kind": "situation",
                             "situation": "Atlas operating pressure",
                             "summary": "Atlas has linked operating pressure.",
-                            "member_model_ids": [str(member)],
+                            "member_model_ids": [str(member_a), str(member_b)],
                             "relationship_summary": (
                                 "Operating signals are linked."
                             ),
@@ -293,7 +299,7 @@ async def test_apply_adds_required_situation_compositional_defaults(
             SELECT proposition
             FROM models
             WHERE tenant_id = $1
-              AND proposition_kind = 'situation'
+              AND claim_role = 'situation'
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -307,6 +313,8 @@ async def test_apply_adds_required_situation_compositional_defaults(
         proposition = json.loads(proposition)
     assert proposition["pressure_type"] == "execution"
     assert proposition["shared_mechanism"]
+    assert proposition["judgment_change"]
+    assert proposition["open_falsifier"]
 
 
 async def test_apply_claim_insert_strips_llm_invented_model_id(

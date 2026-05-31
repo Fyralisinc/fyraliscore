@@ -783,7 +783,7 @@ async def _render_calibration(
         FROM models
         WHERE tenant_id = $1
           AND target_actor_id = $2
-          AND proposition_kind = 'recommendation'
+          AND claim_role = 'recommendation'
           AND status = 'archived'
           AND archived_at >= $3
           AND coalesce(proposition->>'proposition_kind', $4) IS NOT DISTINCT FROM $4
@@ -1909,4 +1909,3 @@ async def _build_just_updated(
             f"<strong>Just learned</strong> · {body}"
         )
     }
-

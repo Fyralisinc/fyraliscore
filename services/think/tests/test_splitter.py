@@ -95,6 +95,66 @@ def test_empty_entry_passes_through_unchanged():
     assert out == [op]
 
 
+def test_explicit_situation_passes_through_unchanged():
+    members = [str(uuid4()), str(uuid4())]
+    op = _make_op(
+        natural="Atlas operating pressure is forming.",
+        prop_kind="situation",
+        extra_prop={
+            "situation": "Atlas operating pressure",
+            "summary": "Atlas has linked operating pressure.",
+            "member_model_ids": members,
+            "relationship_summary": "Operating signals are linked.",
+            "status": "forming",
+        },
+    )
+    out = split_compound_claim_op(op)
+    assert out == [op]
+
+
+def test_explicit_situation_with_empty_members_can_split():
+    natural = (
+        "Atlas renewal risk is rising, DeltaFleet has the same freshness "
+        "issue, and support capacity is saturated."
+    )
+    op = _make_op(
+        natural=natural,
+        prop_kind="situation",
+        extra_prop={
+            "kind": "belief",
+            "claim_role": "situation",
+            "abstraction_level": "composite",
+            "situation": "Reliability issue is becoming cross-customer pressure",
+            "summary": natural,
+            "member_model_ids": [],
+            "relationship_summary": "Customer and support signals share one reliability mechanism.",
+            "status": "forming",
+        },
+    )
+    out = split_compound_claim_op(op)
+    assert len(out) >= 3
+    assert out[-1].entry["proposition"]["claim_role"] == "situation"
+    assert out[-1].entry.get("member_model_pending") is True
+
+
+def test_explicit_norm_passes_through_unchanged():
+    op = _make_op(
+        natural="Create a recovery plan and assign a sponsor.",
+        prop_kind="norm",
+        extra_prop={
+            "claim_role": "recommendation",
+            "target_actor_id": str(uuid4()),
+            "proposed_change": {
+                "operation": "create",
+                "payload": {"title": "Recovery plan"},
+            },
+            "qualitative_impact": "Reduces execution risk.",
+        },
+    )
+    out = split_compound_claim_op(op)
+    assert out == [op]
+
+
 # ---------------------------------------------------------------------
 # 2. 4-clause compound -> 4 atomic + 1 situation
 # ---------------------------------------------------------------------
@@ -119,7 +179,8 @@ def test_four_clause_compound_splits_into_four_atomic_plus_situation():
     sit = out[-1]
     assert sit.op == "insert"
     assert sit.entry is not None
-    assert sit.entry["proposition"]["kind"] == "situation"
+    assert sit.entry["proposition"]["kind"] == "belief"
+    assert sit.entry["proposition"]["claim_role"] == "situation"
     assert sit.entry["proposition"]["status"] == "forming"
     assert sit.entry["proposition"]["member_model_ids"] == []
     assert sit.entry.get("member_model_pending") is True
@@ -127,9 +188,7 @@ def test_four_clause_compound_splits_into_four_atomic_plus_situation():
     for atomic in out[:-1]:
         assert atomic.op == "insert"
         assert atomic.entry is not None
-        assert atomic.entry["proposition"]["kind"] in {
-            "state", "concern", "prediction",
-        }
+        assert atomic.entry["proposition"]["kind"] in {"belief", "prediction"}
         # Each must preserve provenance / scope_temporal.
         assert atomic.entry.get("born_from_event_id") == op.entry["born_from_event_id"]
         assert atomic.entry.get("scope_temporal") == op.entry["scope_temporal"]
@@ -154,11 +213,12 @@ def test_single_actor_compound_splits_correctly():
     # Expect >=2 atomic + 1 situation.
     assert len(out) >= 3
     sit = out[-1]
-    assert sit.entry["proposition"]["kind"] == "situation"
+    assert sit.entry["proposition"]["kind"] == "belief"
+    assert sit.entry["proposition"]["claim_role"] == "situation"
     # At least one of the atomics should be classified as a concern
     # (because of "at risk").
-    kinds = [o.entry["proposition"]["kind"] for o in out[:-1]]
-    assert "concern" in kinds
+    roles = [o.entry["proposition"].get("claim_role") for o in out[:-1]]
+    assert "concern" in roles
 
 
 # ---------------------------------------------------------------------
@@ -227,7 +287,8 @@ def test_pressure_type_inference(natural: str, expected_pressure: str):
     out = split_compound_claim_op(op)
     assert len(out) >= 2  # at least 1 atomic + 1 situation
     sit = out[-1]
-    assert sit.entry["proposition"]["kind"] == "situation"
+    assert sit.entry["proposition"]["kind"] == "belief"
+    assert sit.entry["proposition"]["claim_role"] == "situation"
     assert sit.entry["proposition"].get("pressure_type") == expected_pressure
 
 
@@ -238,7 +299,8 @@ def test_synthesized_situation_defaults_pressure_type_to_execution():
     )
     out = split_compound_claim_op(op)
     sit = out[-1]
-    assert sit.entry["proposition"]["kind"] == "situation"
+    assert sit.entry["proposition"]["kind"] == "belief"
+    assert sit.entry["proposition"]["claim_role"] == "situation"
     assert sit.entry["proposition"]["pressure_type"] == "execution"
 
 

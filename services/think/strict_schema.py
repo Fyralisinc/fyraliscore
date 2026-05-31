@@ -18,35 +18,43 @@ _UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 _UUID_STR = {"type": "string", "pattern": _UUID_PATTERN}
 
 
-def _proposition_variant(kind: str, fields: list[str]) -> dict:
-    """One concrete proposition kind as a strict object."""
+def _proposition_variant(kind: str, fields: list[str], *, claim_role: str | None = None) -> dict:
+    """One concrete proposition stance/role shape as a strict object."""
     properties: dict = {"kind": {"type": "string", "enum": [kind]}}
+    required = ["kind", *fields]
+    if claim_role is not None:
+        properties["claim_role"] = {"type": "string", "enum": [claim_role]}
+        required.append("claim_role")
     for f in fields:
-        properties[f] = {"type": "string"}
+        if f == "domain_tags":
+            properties[f] = {"type": "array", "items": {"type": "string"}}
+        else:
+            properties[f] = {"type": "string"}
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["kind", *fields],
+        "required": required,
         "properties": properties,
     }
 
 
 _PROPOSITION_KINDS: list[dict] = [
-    _proposition_variant("state",                 ["subject", "assertion"]),
-    _proposition_variant("relation",              ["subject", "relation", "object"]),
-    _proposition_variant("prediction",            ["expected", "resolution"]),
-    _proposition_variant("pattern",               ["signature", "observed_tendency", "trigger_conditions"]),
-    _proposition_variant("pattern_instance",      ["pattern_id", "matched_context"]),
-    _proposition_variant("capability_assessment", ["capability_id", "assessment"]),
-    _proposition_variant("hypothesis",            ["hypothesis_text", "test_conditions"]),
-    _proposition_variant("concern",               ["about", "nature", "raised_by"]),
-    _proposition_variant("market_assessment",     ["subject_external", "assessment"]),
-    _proposition_variant("environmental_trend",   ["signature", "direction", "strength"]),
+    _proposition_variant("observation", ["event"], claim_role="fact"),
+    _proposition_variant("belief", ["subject", "assertion"], claim_role="fact"),
+    _proposition_variant("belief", ["subject", "relation", "object"], claim_role="relation"),
+    _proposition_variant("prediction", ["expected", "resolution"], claim_role="prediction"),
+    _proposition_variant("belief", ["signature", "observed_tendency", "trigger_conditions"], claim_role="pattern"),
+    _proposition_variant("belief", ["capability_id", "assessment"], claim_role="capability"),
+    _proposition_variant("belief", ["hypothesis_text", "test_conditions"], claim_role="hypothesis"),
+    _proposition_variant("belief", ["about", "nature", "raised_by"], claim_role="concern"),
+    _proposition_variant("belief", ["subject_external", "assessment", "domain_tags"], claim_role="pattern"),
     {
         "type": "object",
         "additionalProperties": False,
         "required": [
             "kind",
+            "claim_role",
+            "abstraction_level",
             "situation",
             "summary",
             "member_model_ids",
@@ -65,7 +73,9 @@ _PROPOSITION_KINDS: list[dict] = [
             "open_falsifier",
         ],
         "properties": {
-            "kind": {"type": "string", "enum": ["situation"]},
+            "kind": {"type": "string", "enum": ["belief"]},
+            "claim_role": {"type": "string", "enum": ["situation"]},
+            "abstraction_level": {"type": "string", "enum": ["composite"]},
             "situation": {"type": "string"},
             "summary": {"type": "string"},
             "member_model_ids": {"type": "array", "items": _UUID_STR},
@@ -131,6 +141,7 @@ _PROPOSITION_KINDS: list[dict] = [
         "additionalProperties": False,
         "required": [
             "kind",
+            "claim_role",
             "target_act_ref",
             "proposed_change",
             "expected_impact",
@@ -138,7 +149,8 @@ _PROPOSITION_KINDS: list[dict] = [
             "target_actor_id",
         ],
         "properties": {
-            "kind": {"type": "string", "enum": ["recommendation"]},
+            "kind": {"type": "string", "enum": ["norm"]},
+            "claim_role": {"type": "string", "enum": ["recommendation"]},
             "target_act_ref": {
                 "anyOf": [
                     {

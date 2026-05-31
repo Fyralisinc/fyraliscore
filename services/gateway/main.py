@@ -1142,7 +1142,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:
@@ -1224,7 +1224,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:
@@ -2065,7 +2065,7 @@ def _register_routes(app: FastAPI) -> None:
                     target_row = await conn.fetchrow(
                         "SELECT target_actor_id FROM models "
                         "WHERE id = $1 AND tenant_id = $2 "
-                        "  AND proposition_kind = 'recommendation'",
+                        "  AND claim_role = 'recommendation'",
                         rec_id, auth.tenant_id,
                     )
                     if target_row is None:

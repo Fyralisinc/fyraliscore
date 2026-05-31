@@ -1,8 +1,9 @@
 """Shared Model memory grammar.
 
-The grammar separates substrate organization from product projections.
-`proposition_kind` remains the compatibility discriminator, but these
-axes describe what kind of memory object a Model is in structural terms.
+The grammar separates epistemic stance from subject semantics. The base
+`proposition.kind` should stay small and stable (observation, belief,
+prediction, norm); these axes describe what kind of memory object a Model
+is in structural terms.
 """
 from __future__ import annotations
 
@@ -39,10 +40,22 @@ class MemoryGrammar:
     domain_tags: tuple[str, ...] = field(default_factory=tuple)
 
 
-_KIND_GRAMMAR: dict[str, tuple[ClaimRole, AbstractionLevel, TimeMode, Modality, Polarity]] = {
+_VALID_CLAIM_ROLES = set(ClaimRole.__args__)  # type: ignore[attr-defined]
+_VALID_ABSTRACTION_LEVELS = set(AbstractionLevel.__args__)  # type: ignore[attr-defined]
+_VALID_TIME_MODES = set(TimeMode.__args__)  # type: ignore[attr-defined]
+_VALID_MODALITIES = set(Modality.__args__)  # type: ignore[attr-defined]
+_VALID_POLARITIES = set(Polarity.__args__)  # type: ignore[attr-defined]
+
+_STANCE_GRAMMAR: dict[str, tuple[ClaimRole, AbstractionLevel, TimeMode, Modality, Polarity]] = {
+    "observation": ("fact", "atomic", "past", "observed", "neutral"),
+    "belief": ("fact", "atomic", "current", "inferred", "neutral"),
+    "prediction": ("prediction", "atomic", "future", "expected", "neutral"),
+    "norm": ("recommendation", "atomic", "future", "normative", "mixed"),
+}
+
+_LEGACY_KIND_GRAMMAR: dict[str, tuple[ClaimRole, AbstractionLevel, TimeMode, Modality, Polarity]] = {
     "state": ("fact", "atomic", "current", "observed", "neutral"),
     "relation": ("relation", "relationship", "current", "inferred", "neutral"),
-    "prediction": ("prediction", "atomic", "future", "expected", "neutral"),
     "pattern": ("pattern", "pattern", "recurring", "inferred", "neutral"),
     "pattern_instance": ("pattern", "atomic", "past", "observed", "neutral"),
     "capability_assessment": ("capability", "atomic", "current", "inferred", "neutral"),
@@ -51,7 +64,7 @@ _KIND_GRAMMAR: dict[str, tuple[ClaimRole, AbstractionLevel, TimeMode, Modality, 
     "market_assessment": ("fact", "atomic", "current", "inferred", "neutral"),
     "environmental_trend": ("pattern", "pattern", "recurring", "inferred", "neutral"),
     "situation": ("situation", "composite", "current", "inferred", "mixed"),
-    "recommendation": ("recommendation", "atomic", "future", "normative", "mixed"),
+    "recommendation": _STANCE_GRAMMAR["norm"],
 }
 
 _ENTITY_DOMAIN_TAGS: dict[str, str] = {
@@ -87,27 +100,66 @@ def derive_memory_grammar(
     later LLM-assisted refinement through explicit updates.
     """
     kind = ""
+    legacy_kind = ""
     if isinstance(proposition, dict):
         raw_kind = proposition.get("kind")
         if isinstance(raw_kind, str):
             kind = raw_kind
-    role, abstraction, time_mode, modality, polarity = _KIND_GRAMMAR.get(
-        kind,
-        ("fact", "atomic", "unspecified", "inferred", "neutral"),
+        raw_legacy = proposition.get("legacy_kind")
+        if isinstance(raw_legacy, str):
+            legacy_kind = raw_legacy
+    role, abstraction, time_mode, modality, polarity = (
+        _LEGACY_KIND_GRAMMAR.get(legacy_kind)
+        or _STANCE_GRAMMAR.get(kind)
+        or _LEGACY_KIND_GRAMMAR.get(kind)
+        or ("fact", "atomic", "unspecified", "inferred", "neutral")
     )
+    if isinstance(proposition, dict):
+        role = _explicit_axis(
+            proposition.get("claim_role"),
+            _VALID_CLAIM_ROLES,
+            role,
+        )
+        abstraction = _explicit_axis(
+            proposition.get("abstraction_level"),
+            _VALID_ABSTRACTION_LEVELS,
+            abstraction,
+        )
+        time_mode = _explicit_axis(
+            proposition.get("time_mode"),
+            _VALID_TIME_MODES,
+            time_mode,
+        )
+        modality = _explicit_axis(
+            proposition.get("modality"),
+            _VALID_MODALITIES,
+            modality,
+        )
+        polarity = _explicit_axis(
+            proposition.get("polarity"),
+            _VALID_POLARITIES,
+            polarity,
+        )
     return MemoryGrammar(
         claim_role=role,
         abstraction_level=abstraction,
         time_mode=time_mode,
         modality=modality,
         polarity=polarity,
-        domain_tags=tuple(_derive_domain_tags(scope_entities, natural)),
+        domain_tags=tuple(_derive_domain_tags(scope_entities, natural, proposition)),
     )
+
+
+def _explicit_axis(value: Any, allowed: set[str], fallback: Any) -> Any:
+    if isinstance(value, str) and value in allowed:
+        return value
+    return fallback
 
 
 def _derive_domain_tags(
     scope_entities: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     natural: str,
+    proposition: dict[str, Any] | None = None,
 ) -> list[str]:
     tags: list[str] = []
     seen: set[str] = set()
@@ -116,6 +168,15 @@ def _derive_domain_tags(
         if tag not in seen:
             seen.add(tag)
             tags.append(tag)
+
+    if isinstance(proposition, dict):
+        raw_tags = proposition.get("domain_tags")
+        if isinstance(raw_tags, (list, tuple)):
+            for raw_tag in raw_tags:
+                if isinstance(raw_tag, str):
+                    tag = raw_tag.strip().lower().replace(" ", "_")
+                    if tag:
+                        add(tag)
 
     for raw in scope_entities or ():
         if not isinstance(raw, dict):

@@ -13,7 +13,26 @@ BEGIN;
 -- A1 — additions to models.
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS proposition_kind TEXT
-    GENERATED ALWAYS AS (proposition->>'kind') STORED;
+    GENERATED ALWAYS AS (
+      CASE proposition->>'kind'
+        WHEN 'observation' THEN 'observation'
+        WHEN 'belief' THEN 'belief'
+        WHEN 'prediction' THEN 'prediction'
+        WHEN 'norm' THEN 'norm'
+        WHEN 'recommendation' THEN 'norm'
+        WHEN 'state' THEN 'belief'
+        WHEN 'relation' THEN 'belief'
+        WHEN 'pattern' THEN 'belief'
+        WHEN 'pattern_instance' THEN 'belief'
+        WHEN 'capability_assessment' THEN 'belief'
+        WHEN 'hypothesis' THEN 'belief'
+        WHEN 'concern' THEN 'belief'
+        WHEN 'market_assessment' THEN 'belief'
+        WHEN 'environmental_trend' THEN 'belief'
+        WHEN 'situation' THEN 'belief'
+        ELSE proposition->>'kind'
+      END
+    ) STORED;
 
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS confirmed_count INTEGER NOT NULL DEFAULT 0;

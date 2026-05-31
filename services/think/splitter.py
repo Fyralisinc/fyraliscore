@@ -355,6 +355,28 @@ def _trim(s: str, limit: int) -> str:
     return s[: limit - 3].rstrip() + "..."
 
 
+def _is_unsplittable_proposition(prop: Any) -> bool:
+    """Return True for proposition roles the splitter must preserve."""
+    if not isinstance(prop, dict):
+        return False
+    kind = prop.get("kind")
+    claim_role = prop.get("claim_role")
+    legacy_kind = prop.get("legacy_kind")
+    is_situation = (
+        kind == "situation"
+        or claim_role == "situation"
+        or legacy_kind == "situation"
+    )
+    if is_situation:
+        members = prop.get("member_model_ids")
+        return isinstance(members, list) and len(members) >= 2
+    return (
+        kind in {"recommendation", "norm"}
+        or claim_role in {"recommendation"}
+        or legacy_kind in {"recommendation"}
+    )
+
+
 # ---------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------
@@ -425,7 +447,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
       * `embedding` is dropped (set to None) so downstream backfills.
 
     The synthesized situation carries:
-      * `proposition.kind = "situation"`
+      * `proposition.kind = "belief"` and `claim_role = "situation"`
       * `summary` and `shared_mechanism` = trimmed compound text
       * `pressure_type` inferred via keyword heuristic
       * `status = "forming"`
@@ -437,6 +459,9 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
         return [op]
 
     entry = op.entry
+    if _is_unsplittable_proposition(entry.get("proposition")):
+        return [op]
+
     compound, reasons = is_compound(entry)
     if not compound:
         return [op]
@@ -472,7 +497,12 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
     pressure_type = _infer_pressure_type(text) or "execution"
     trimmed = _trim(text, 200)
     sit_prop: dict[str, Any] = {
-        "kind": "situation",
+        "kind": "belief",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "time_mode": "current",
+        "modality": "inferred",
+        "polarity": "mixed",
         "situation": trimmed,
         "summary": trimmed,
         "member_model_ids": [],
@@ -503,7 +533,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
 
 
 def _atomic_kind_for(piece: str) -> str:
-    """Pick a single proposition kind for an atomic conjunct."""
+    """Pick a single semantic role for an atomic conjunct."""
     kinds = _kind_signals(piece)
     # Priority: concern > prediction > state. Concern is the most
     # information-dense and easiest to misclassify as state.
@@ -538,7 +568,9 @@ def _atomic_proposition(
 
     if kind == "concern":
         return {
-            "kind": "concern",
+            "kind": "belief",
+            "claim_role": "concern",
+            "polarity": "negative",
             "about": base_subject,
             "nature": piece_clean,
             "raised_by": base_raised_by,
@@ -551,7 +583,8 @@ def _atomic_proposition(
         }
     # state default
     return {
-        "kind": "state",
+        "kind": "belief",
+        "claim_role": "fact",
         "subject": base_subject,
         "assertion": piece_clean,
     }

@@ -35,6 +35,7 @@ from lib.shared.edge_registry import EdgeRegistryError
 from services.acts import commitments as commitments_svc
 from services.acts import decisions as decisions_svc
 from services.acts import goals as goals_svc
+from services.models.propositions import ensure_situation_compositional_defaults
 from services.models.repo import ModelsRepo
 from services.observations.state_change import emit_state_change
 from services.resources import deployments as deployments_svc
@@ -63,18 +64,6 @@ class AlreadyAppliedError(ApplierError):
     default_code = "already_applied"
 
 
-_SITUATION_PRESSURE_TYPES = {
-    "capacity",
-    "trust",
-    "revenue",
-    "compliance",
-    "decision",
-    "execution",
-    "market",
-    "resource",
-}
-
-
 # ---------------------------------------------------------------------
 # Diff hashing for applied_triggers.diff_hash
 # ---------------------------------------------------------------------
@@ -92,28 +81,6 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def _ensure_situation_compositional_defaults(entry: dict[str, Any]) -> None:
-    """Align situation inserts with the DB's compositional-field check."""
-    prop = entry.get("proposition")
-    if not isinstance(prop, dict) or prop.get("kind") != "situation":
-        return
-    pressure = prop.get("pressure_type")
-    if not isinstance(pressure, str) or pressure not in _SITUATION_PRESSURE_TYPES:
-        prop["pressure_type"] = "execution"
-    mechanism = prop.get("shared_mechanism")
-    if not isinstance(mechanism, str) or not mechanism.strip():
-        fallback = (
-            prop.get("relationship_summary")
-            or prop.get("summary")
-            or entry.get("natural")
-            or prop.get("situation")
-            or "Situation members share an operational mechanism."
-        )
-        prop["shared_mechanism"] = str(fallback).strip() or (
-            "Situation members share an operational mechanism."
-        )
 
 
 # ---------------------------------------------------------------------
@@ -224,7 +191,7 @@ async def apply_diff(
 
     # --- 1. claim_ops ---------------------------------------------
     _belief_updated_model_ids: list[UUID] = []
-    _T2_BELIEF_KINDS = {"state", "concern", "expectation"}
+    _T2_BELIEF_KINDS = {"belief", "state", "concern", "expectation"}
     # T5: reconcile each claim_op.insert before applying. If the
     # reconciler decides auto_merge, we substitute the replacement
     # update op for the original insert. human_review and no_match
@@ -306,6 +273,14 @@ async def apply_diff(
                     continue
                 seen_members.add(uid)
                 deduped_members.append(uid)
+            if len(deduped_members) < 2:
+                ops_summary["claim_ops"].append({
+                    "op": "skip",
+                    "reason": "situation_skipped_insufficient_atomic_members_after_quality_gate",
+                    "split_group_id": gid,
+                    "member_count": len(deduped_members),
+                })
+                continue
             prop["member_model_ids"] = [str(uid) for uid in deduped_members]
             op.entry["proposition"] = prop
             # Strip splitter-only audit markers — ModelCreate forbids extras.
@@ -696,7 +671,7 @@ async def _apply_claim_op(
             entry["born_from_event_id"] = cause_event_id
         for stray in ("title", "description", "id", "model_id"):
             entry.pop(stray, None)
-        _ensure_situation_compositional_defaults(entry)
+        ensure_situation_compositional_defaults(entry)
         # scope_temporal is required; default to an open-ended present window.
         if "scope_temporal" not in entry:
             entry["scope_temporal"] = {

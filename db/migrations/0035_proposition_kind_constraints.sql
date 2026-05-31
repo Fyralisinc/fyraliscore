@@ -35,6 +35,9 @@ ALTER TABLE models
     proposition_kind IS NOT NULL
     AND proposition_kind IN (
       'state',
+      'observation',
+      'belief',
+      'norm',
       'relation',
       'prediction',
       'pattern',

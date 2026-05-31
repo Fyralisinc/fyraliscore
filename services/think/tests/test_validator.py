@@ -222,6 +222,136 @@ async def test_validate_caps_confidence_for_hedged_source_text(fresh_db, tenant)
         assert validated.claim_ops[0].entry["confidence"] == 0.69
 
 
+async def test_validate_repairs_non_situation_composite_claim_before_drop(fresh_db, tenant):
+    """
+    Live LLMs sometimes describe a multi-clause signal as a composite
+    concern/fact. Composite meaning belongs to situation Models, but the
+    splitter runs after validation, so validator must preserve the op by
+    normalizing the atomic role's abstraction level.
+    """
+    rr = _retrieval_result(tenant)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "concern",
+                        "abstraction_level": "composite",
+                        "about": "Atlas renewal",
+                        "nature": (
+                            "Security review is blocked, exec sponsor confidence "
+                            "is dropping, and renewal timing is at risk."
+                        ),
+                    },
+                    "natural": (
+                        "Security review is blocked, exec sponsor confidence is "
+                        "dropping, and renewal timing is at risk."
+                    ),
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.6,
+                    "confidence_at_assertion": 0.6,
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    prop = validated.claim_ops[0].entry["proposition"]
+    assert prop["claim_role"] == "concern"
+    assert prop["abstraction_level"] == "atomic"
+
+
+async def test_validate_repairs_non_situation_wrong_abstraction_level(fresh_db, tenant):
+    """Live LLMs also emit concern/fact with relationship/pattern levels."""
+    rr = _retrieval_result(tenant)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "abstraction_level": "relationship",
+                        "subject": "DeltaFleet reliability signal",
+                        "assertion": "DeltaFleet has the same freshness issue.",
+                    },
+                    "natural": "DeltaFleet has the same freshness issue.",
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.6,
+                    "confidence_at_assertion": 0.6,
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    prop = validated.claim_ops[0].entry["proposition"]
+    assert prop["claim_role"] == "fact"
+    assert prop["abstraction_level"] == "atomic"
+
+
+async def test_validate_marks_empty_situation_members_pending(fresh_db, tenant):
+    """
+    Sparse retrieval can leave a live LLM with no existing Model ids to
+    cite even when it correctly identifies an explicit situation. Keep
+    the transient shape alive so splitter/applier can bind members.
+    """
+    rr = _retrieval_result(tenant)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "situation",
+                        "abstraction_level": "composite",
+                        "situation": "Reliability issue is cross-customer pressure",
+                        "summary": (
+                            "Atlas renewal risk, DeltaFleet freshness issues, "
+                            "and support saturation share one mechanism."
+                        ),
+                        "member_model_ids": [],
+                        "relationship_summary": "Customer signals share a reliability mechanism.",
+                        "pressure_type": "revenue",
+                        "shared_mechanism": "The same reliability issue is gating multiple customers.",
+                    },
+                    "natural": (
+                        "Atlas renewal risk is rising, DeltaFleet has the same "
+                        "freshness issue, and support capacity is saturated."
+                    ),
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.6,
+                    "confidence_at_assertion": 0.6,
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    entry = validated.claim_ops[0].entry
+    assert entry["member_model_pending"] is True
+    assert entry["proposition"]["_pending_members"] is True
+
+
 async def test_validate_rejects_update_to_confidence_at_assertion(fresh_db, tenant):
     rr = _retrieval_result(tenant)
     mid, _ = await _make_model(fresh_db, tenant, confidence=0.5)
@@ -565,6 +695,35 @@ async def test_validate_canonicalizes_drafted_decision_revisited_to_active(
         entity["canonicalization_reason"]
         == "drafted_decision_cannot_be_revisited"
     )
+
+
+async def test_validate_canonicalizes_create_decision_missing_decision_text(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, _ = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="create_decision",
+                    confidence_basis=mid,
+                    entity={
+                        "title": "Decide Granite Insurance go/no-go",
+                        "rationale": "Legal evidence and reviewer capacity now collide.",
+                    },
+                ),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.act_ops) == 1
+    entity = validated.act_ops[0].entity
+    assert entity["decision_text"] == "Legal evidence and reviewer capacity now collide."
+    assert entity["canonicalized_missing_decision_text"] is True
 
 
 async def test_validate_neutralizes_commitment_basis_below_threshold(fresh_db, tenant):

@@ -19,70 +19,89 @@ BEGIN;
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS claim_role TEXT
     GENERATED ALWAYS AS (
-      CASE proposition->>'kind'
-        WHEN 'state' THEN 'fact'
-        WHEN 'relation' THEN 'relation'
-        WHEN 'prediction' THEN 'prediction'
-        WHEN 'pattern' THEN 'pattern'
-        WHEN 'pattern_instance' THEN 'pattern'
-        WHEN 'capability_assessment' THEN 'capability'
-        WHEN 'hypothesis' THEN 'hypothesis'
-        WHEN 'concern' THEN 'concern'
-        WHEN 'market_assessment' THEN 'fact'
-        WHEN 'environmental_trend' THEN 'pattern'
-        WHEN 'situation' THEN 'situation'
-        WHEN 'recommendation' THEN 'recommendation'
-        ELSE 'fact'
-      END
+      COALESCE(
+        proposition->>'claim_role',
+        CASE COALESCE(proposition->>'legacy_kind', proposition->>'kind')
+          WHEN 'relation' THEN 'relation'
+          WHEN 'prediction' THEN 'prediction'
+          WHEN 'pattern' THEN 'pattern'
+          WHEN 'pattern_instance' THEN 'pattern'
+          WHEN 'capability_assessment' THEN 'capability'
+          WHEN 'hypothesis' THEN 'hypothesis'
+          WHEN 'concern' THEN 'concern'
+          WHEN 'environmental_trend' THEN 'pattern'
+          WHEN 'situation' THEN 'situation'
+          WHEN 'recommendation' THEN 'recommendation'
+          WHEN 'norm' THEN 'recommendation'
+          ELSE 'fact'
+        END
+      )
     ) STORED;
 
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS abstraction_level TEXT
     GENERATED ALWAYS AS (
-      CASE proposition->>'kind'
-        WHEN 'relation' THEN 'relationship'
-        WHEN 'pattern' THEN 'pattern'
-        WHEN 'environmental_trend' THEN 'pattern'
-        WHEN 'situation' THEN 'composite'
-        ELSE 'atomic'
-      END
+      COALESCE(
+        proposition->>'abstraction_level',
+        CASE COALESCE(proposition->>'legacy_kind', proposition->>'kind')
+          WHEN 'relation' THEN 'relationship'
+          WHEN 'pattern' THEN 'pattern'
+          WHEN 'environmental_trend' THEN 'pattern'
+          WHEN 'situation' THEN 'composite'
+          ELSE 'atomic'
+        END
+      )
     ) STORED;
 
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS time_mode TEXT
     GENERATED ALWAYS AS (
-      CASE proposition->>'kind'
-        WHEN 'prediction' THEN 'future'
-        WHEN 'recommendation' THEN 'future'
-        WHEN 'pattern' THEN 'recurring'
-        WHEN 'environmental_trend' THEN 'recurring'
-        WHEN 'pattern_instance' THEN 'past'
-        WHEN 'hypothesis' THEN 'unspecified'
-        ELSE 'current'
-      END
+      COALESCE(
+        proposition->>'time_mode',
+        CASE COALESCE(proposition->>'legacy_kind', proposition->>'kind')
+          WHEN 'prediction' THEN 'future'
+          WHEN 'recommendation' THEN 'future'
+          WHEN 'norm' THEN 'future'
+          WHEN 'pattern' THEN 'recurring'
+          WHEN 'environmental_trend' THEN 'recurring'
+          WHEN 'pattern_instance' THEN 'past'
+          WHEN 'hypothesis' THEN 'unspecified'
+          WHEN 'observation' THEN 'past'
+          ELSE 'current'
+        END
+      )
     ) STORED;
 
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS modality TEXT
     GENERATED ALWAYS AS (
-      CASE proposition->>'kind'
-        WHEN 'state' THEN 'observed'
-        WHEN 'pattern_instance' THEN 'observed'
-        WHEN 'prediction' THEN 'expected'
-        WHEN 'recommendation' THEN 'normative'
-        ELSE 'inferred'
-      END
+      COALESCE(
+        proposition->>'modality',
+        CASE COALESCE(proposition->>'legacy_kind', proposition->>'kind')
+          WHEN 'state' THEN 'observed'
+          WHEN 'pattern_instance' THEN 'observed'
+          WHEN 'observation' THEN 'observed'
+          WHEN 'prediction' THEN 'expected'
+          WHEN 'recommendation' THEN 'normative'
+          WHEN 'norm' THEN 'normative'
+          ELSE 'inferred'
+        END
+      )
     ) STORED;
 
 ALTER TABLE models
   ADD COLUMN IF NOT EXISTS polarity TEXT
     GENERATED ALWAYS AS (
-      CASE proposition->>'kind'
-        WHEN 'concern' THEN 'negative'
-        WHEN 'situation' THEN 'mixed'
-        WHEN 'recommendation' THEN 'mixed'
-        ELSE 'neutral'
-      END
+      COALESCE(
+        proposition->>'polarity',
+        CASE COALESCE(proposition->>'legacy_kind', proposition->>'kind')
+          WHEN 'concern' THEN 'negative'
+          WHEN 'situation' THEN 'mixed'
+          WHEN 'recommendation' THEN 'mixed'
+          WHEN 'norm' THEN 'mixed'
+          ELSE 'neutral'
+        END
+      )
     ) STORED;
 
 ALTER TABLE models

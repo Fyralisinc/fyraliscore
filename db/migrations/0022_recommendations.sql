@@ -32,7 +32,13 @@ ALTER TABLE models
   ADD COLUMN IF NOT EXISTS target_actor_id UUID
     GENERATED ALWAYS AS (
       CASE
-        WHEN proposition->>'kind' = 'recommendation'
+        WHEN (
+          proposition->>'kind' = 'recommendation'
+          OR (
+            proposition->>'kind' = 'norm'
+            AND proposition->>'claim_role' = 'recommendation'
+          )
+        )
          AND proposition->>'target_actor_id' IS NOT NULL
         THEN (proposition->>'target_actor_id')::uuid
         ELSE NULL
@@ -50,6 +56,6 @@ ALTER TABLE models
 -- index isn't required — keep it small + selective.
 CREATE INDEX IF NOT EXISTS recommendations_active_idx
   ON models (tenant_id, target_actor_id, created_at DESC)
-  WHERE proposition_kind = 'recommendation' AND status = 'active';
+  WHERE proposition_kind = 'norm' AND status = 'active';
 
 COMMIT;

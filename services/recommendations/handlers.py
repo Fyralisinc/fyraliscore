@@ -81,7 +81,7 @@ async def _load_active_recommendation(
                target_actor_id
         FROM models
         WHERE id = $1 AND tenant_id = $2
-          AND proposition_kind = 'recommendation'
+          AND claim_role = 'recommendation'
         """,
         recommendation_id,
         tenant_id,

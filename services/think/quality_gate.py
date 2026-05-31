@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
+from lib.shared.memory_grammar import derive_memory_grammar
 from services.think.diff_schema import ClaimOp
 
 # Reconciler ReconcileResult is imported as a forward type only. We avoid
@@ -440,18 +441,23 @@ def _score_kind_fit(op: ClaimOp) -> tuple[float, list[str]]:
     entry = op.entry or {}
     prop = entry.get("proposition") or {}
     kind = prop.get("kind")
+    grammar = derive_memory_grammar(
+        prop if isinstance(prop, dict) else {},
+        natural=str(entry.get("natural") or ""),
+        scope_entities=entry.get("scope_entities") or [],
+    )
     text = _entry_text(op)
 
     if not isinstance(kind, str) or not kind:
         reasons.append("kind_fit: proposition.kind missing")
         return 0.0, reasons
 
-    if kind == "state":
+    if kind in {"state", "belief"} and grammar.claim_role == "fact":
         # Present-tense factual claim. If text uses should/will/might it
         # is really an action / prediction.
         if text and _NON_FACTUAL_MARKERS.search(text):
             reasons.append(
-                "kind_fit: kind=state but text uses non-factual markers "
+                "kind_fit: factual belief uses non-factual markers "
                 "(should/will/might/need to)"
             )
             return 0.4, reasons
@@ -468,29 +474,31 @@ def _score_kind_fit(op: ClaimOp) -> tuple[float, list[str]]:
                 return 0.4, reasons
         return 1.0, reasons
 
-    if kind == "concern":
+    if kind == "concern" or grammar.claim_role == "concern":
         if text and not _CONCERN_MARKERS.search(text):
             reasons.append(
-                "kind_fit: kind=concern but text reads as pure factual "
+                "kind_fit: concern claim reads as pure factual "
                 "(no worry/risk/uncertainty marker)"
             )
             return 0.5, reasons
         return 1.0, reasons
 
-    if kind == "recommendation":
+    if kind == "recommendation" or grammar.claim_role == "recommendation":
         # Recommendations have a structured `proposed_change.operation`,
         # but the surfaced text should also contain an action verb.
         prop_change = prop.get("proposed_change") or {}
         has_op = isinstance(prop_change, dict) and bool(prop_change.get("operation"))
         if text and not _ACTION_VERBS.search(text) and not has_op:
             reasons.append(
-                "kind_fit: kind=recommendation but text is descriptive "
+                "kind_fit: recommendation claim is descriptive "
                 "(no action verb) and proposed_change.operation missing"
             )
             return 0.3, reasons
         return 1.0, reasons
 
-    if kind == "pattern_instance":
+    if kind == "pattern_instance" or (
+        grammar.claim_role == "pattern" and grammar.time_mode == "past"
+    ):
         pid = prop.get("pattern_id")
         if not isinstance(pid, str) or not pid.strip():
             reasons.append(
@@ -499,7 +507,7 @@ def _score_kind_fit(op: ClaimOp) -> tuple[float, list[str]]:
             return 0.0, reasons
         return 1.0, reasons
 
-    if kind == "situation":
+    if kind == "situation" or grammar.claim_role == "situation":
         members = prop.get("member_model_ids")
         # A splitter may emit a pending marker — e.g. entry["pending_split"]
         # or proposition["_pending_members"] — recognise either.

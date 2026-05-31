@@ -5,11 +5,11 @@
       "issues": [],
       "metrics": {
         "case": "deep_blocker_context",
-        "elapsed_ms": 58,
+        "elapsed_ms": 47,
         "evidence_count": 6,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 1421,
+        "model_section_chars": 1422,
         "packet_estimated_tokens": 314,
         "pathways_run": [
           "A",
@@ -19,7 +19,7 @@
         ],
         "persisted_evidence_count": 6,
         "persisted_question_count": 3,
-        "prompt_chars": 13199,
+        "prompt_chars": 13426,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -50,11 +50,11 @@
       "issues": [],
       "metrics": {
         "case": "fast_query_bounded",
-        "elapsed_ms": 39,
+        "elapsed_ms": 32,
         "evidence_count": 6,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 1421,
+        "model_section_chars": 1422,
         "packet_estimated_tokens": 164,
         "pathways_run": [
           "A",
@@ -62,7 +62,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 12331,
+        "prompt_chars": 12558,
         "question_ids": [],
         "question_primitives": [],
         "question_rounds": {},
@@ -79,11 +79,11 @@
       "issues": [],
       "metrics": {
         "case": "recurrence_question_quality",
-        "elapsed_ms": 46,
+        "elapsed_ms": 54,
         "evidence_count": 4,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 911,
+        "model_section_chars": 900,
         "packet_estimated_tokens": 245,
         "pathways_run": [
           "A",
@@ -92,7 +92,7 @@
           "G",
           "D"
         ],
-        "prompt_chars": 11031,
+        "prompt_chars": 11246,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_RECURRENCE",
@@ -109,9 +109,9 @@
           "Q_RECURRENCE": 1
         },
         "reservoir_evidence_count": 4,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
-        "semantic_action_count": 2,
+        "semantic_action_count": 3,
         "sufficiency": "sufficient_for_reasoning"
       },
       "passed": true
@@ -121,11 +121,11 @@
       "issues": [],
       "metrics": {
         "case": "ambiguous_owner_human_validation",
-        "elapsed_ms": 62,
+        "elapsed_ms": 37,
         "evidence_count": 4,
         "model_detail_full_rows": 1,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 672,
+        "model_section_chars": 671,
         "packet_estimated_tokens": 224,
         "pathways_run": [
           "A",
@@ -133,7 +133,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 11594,
+        "prompt_chars": 11819,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -162,7 +162,7 @@
       "issues": [],
       "metrics": {
         "case": "stale_counterevidence_guard",
-        "elapsed_ms": 48,
+        "elapsed_ms": 52,
         "evidence_count": 5,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
@@ -174,7 +174,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 12736,
+        "prompt_chars": 12962,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -203,11 +203,11 @@
       "issues": [],
       "metrics": {
         "case": "human_validation_bounded",
-        "elapsed_ms": 43,
+        "elapsed_ms": 33,
         "evidence_count": 6,
-        "model_detail_full_rows": 3,
+        "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 1421,
+        "model_section_chars": 1117,
         "packet_estimated_tokens": 164,
         "pathways_run": [
           "A",
@@ -215,7 +215,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 12542,
+        "prompt_chars": 12388,
         "question_ids": [],
         "question_primitives": [],
         "question_rounds": {},
@@ -232,12 +232,12 @@
       "issues": [],
       "metrics": {
         "case": "question_conditioned_semantic_embedding",
-        "elapsed_ms": 59,
+        "elapsed_ms": 45,
         "embedder_query_count": 3,
         "evidence_count": 7,
-        "model_detail_full_rows": 4,
+        "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 1780,
+        "model_section_chars": 1477,
         "packet_estimated_tokens": 365,
         "pathways_run": [
           "A",
@@ -245,7 +245,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 13777,
+        "prompt_chars": 13624,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -274,11 +274,11 @@
       "issues": [],
       "metrics": {
         "case": "semantic_noise_distractor_guard",
-        "elapsed_ms": 69,
+        "elapsed_ms": 50,
         "evidence_count": 16,
-        "model_detail_full_rows": 6,
+        "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
-        "model_section_chars": 2460,
+        "model_section_chars": 1438,
         "packet_estimated_tokens": 314,
         "pathways_run": [
           "A",
@@ -286,7 +286,7 @@
           "C",
           "G"
         ],
-        "prompt_chars": 15971,
+        "prompt_chars": 14463,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -311,7 +311,7 @@
       "passed": true
     }
   ],
-  "generated_at": "2026-05-28T15:29:45.582698+00:00",
+  "generated_at": "2026-05-30T18:26:49.407429+00:00",
   "summary": {
     "passed": 8,
     "total": 8

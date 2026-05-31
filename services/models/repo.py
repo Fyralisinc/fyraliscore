@@ -98,7 +98,11 @@ from lib.shared.types import (
 from services.models.calibration import apply_calibration
 from services.models.edges_repo import EdgesRepo
 from services.models.falsifier import is_adequate_falsifier
-from services.models.propositions import validate_proposition
+from services.models.propositions import (
+    canonicalize_proposition,
+    ensure_situation_compositional_defaults,
+    validate_proposition,
+)
 from services.models.recommendations import validate_recommendation
 from services.observations.state_change import emit_state_change
 from services.topology import LatentTopologyService
@@ -1003,7 +1007,11 @@ async def _sync_model_composition_members(
         tenant_id,
         model_id,
     )
-    if not isinstance(proposition, dict) or proposition.get("kind") != "situation":
+    grammar = derive_memory_grammar(proposition)
+    if (
+        not isinstance(proposition, dict)
+        or grammar.claim_role != "situation"
+    ):
         return
 
     member_ids = [
@@ -1229,8 +1237,16 @@ class ModelsRepo:
                 )
 
         # -- 2. Validate proposition JSON ------------------------------
-        validated_prop = validate_proposition(proposed.proposition)
-        prop_kind: PropositionKind = validated_prop.kind  # type: ignore[assignment]
+        canonical_prop = canonicalize_proposition(proposed.proposition)
+        defaults_entry = {
+            "proposition": canonical_prop,
+            "natural": proposed.natural,
+            "falsifier": proposed.falsifier,
+        }
+        ensure_situation_compositional_defaults(defaults_entry)
+        validate_proposition(canonical_prop)
+        proposed = proposed.model_copy(update={"proposition": canonical_prop})
+        prop_kind: PropositionKind = canonical_prop["kind"]  # type: ignore[assignment]
 
         # confidence_at_assertion is the pre-calibration number. We
         # preserve it immutably (clipped into bounds to satisfy the
@@ -1285,7 +1301,12 @@ class ModelsRepo:
         # -- 3b. Recommendation cross-field validation.
         # Pydantic enforces shape; here we check live DB state:
         # target entity exists in tenant, transition reachable.
-        if prop_kind == "recommendation":
+        grammar = derive_memory_grammar(
+            proposed.proposition,
+            natural=proposed.natural,
+            scope_entities=proposed.scope_entities,
+        )
+        if grammar.claim_role == "recommendation":
             await validate_recommendation(
                 proposed.proposition,
                 tenant_id=proposed.tenant_id,
@@ -1335,11 +1356,6 @@ class ModelsRepo:
             )
 
         model_id = model_id_preview  # pre-assigned in step 3 for cycle check
-        grammar = derive_memory_grammar(
-            proposed.proposition,
-            natural=proposed.natural,
-            scope_entities=proposed.scope_entities,
-        )
         domain_tags = list(proposed.domain_tags or grammar.domain_tags)
 
         # 7. INSERT. "natural" is a reserved keyword in SQL, so it must
@@ -1519,7 +1535,7 @@ class ModelsRepo:
         # that a new recommendation has landed. No-op outside demo
         # mode (publish is a fan-out to in-process subscribers; if no
         # one is listening, nothing happens).
-        if hydrated.proposition_kind == "recommendation" and hydrated.target_actor_id:
+        if hydrated.claim_role == "recommendation" and hydrated.target_actor_id:
             from services.demo.sse import publish_recommendation_event
 
             await publish_recommendation_event(

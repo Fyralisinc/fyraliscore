@@ -133,11 +133,10 @@ async def test_every_proposition_kind_roundtrips_through_retrieval(
         tenant,
     )
     kinds = {r["proposition_kind"] for r in rows}
-    assert "pattern" in kinds
-    assert "pattern_instance" in kinds
-    # state/prediction/relation/hypothesis/concern from the i>=20 Models.
-    assert "state" in kinds
+    assert "belief" in kinds
     assert "prediction" in kinds
+    # Legacy state/relation/hypothesis/concern rows collapse to belief.
+    assert kinds <= {"belief", "prediction", "observation", "norm"}
 
 
 async def test_pathway_results_distinct_per_trigger_kind(

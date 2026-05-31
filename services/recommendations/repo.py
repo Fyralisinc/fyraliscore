@@ -84,7 +84,7 @@ SELECT
     m.scope_entities
 FROM models m
 WHERE m.tenant_id           = $1
-  AND m.proposition_kind    = 'recommendation'
+  AND m.claim_role          = 'recommendation'
   AND (m.target_actor_id = $2 OR m.target_actor_id IS NULL)
   AND m.status              = 'active'
   AND m.archived_at IS NULL

@@ -162,6 +162,16 @@ _CONFIDENCE_MIN = 0.05
 _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
 _ERROR_RATE_HARD_LIMIT = 0.25  # Retained for callers that import it; no longer enforced as a gate.
+_DEFAULT_ABSTRACTION_LEVEL_BY_CLAIM_ROLE: dict[str, str] = {
+    "fact": "atomic",
+    "concern": "atomic",
+    "hypothesis": "atomic",
+    "prediction": "atomic",
+    "capability": "atomic",
+    "recommendation": "atomic",
+    "relation": "relationship",
+    "pattern": "pattern",
+}
 
 _UNCERTAINTY_CONFIDENCE_CAP = 0.69
 _LOW_TRUST_CONFIDENCE_CAP = 0.55
@@ -264,6 +274,56 @@ def _confidence_cap_for_linguistic_uncertainty(
     if any(marker in text for marker in _UNCERTAINTY_MARKERS):
         return _UNCERTAINTY_CONFIDENCE_CAP
     return None
+
+
+def _repair_non_situation_abstraction_level(entry: dict[str, Any]) -> None:
+    """Normalize a live-LLM grammar slip before proposition validation.
+
+    In the memory grammar, `composite` is reserved for situation Models.
+    Live providers sometimes express a multi-clause signal as
+    claim_role=`concern`/`fact` plus abstraction_level=`composite`. If we
+    reject that here, the downstream splitter never gets a chance to
+    decompose the signal and synthesize the situation Model that should
+    carry the composite meaning.
+    """
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return
+    if prop.get("claim_role") == "situation" or prop.get("legacy_kind") == "situation":
+        return
+    role = prop.get("claim_role")
+    default_level = _DEFAULT_ABSTRACTION_LEVEL_BY_CLAIM_ROLE.get(str(role))
+    if default_level is None:
+        return
+    if prop.get("abstraction_level") in (None, default_level):
+        return
+    prop["abstraction_level"] = default_level
+
+
+def _mark_empty_situation_members_pending(entry: dict[str, Any]) -> None:
+    """Allow explicit situations with deferred member binding.
+
+    A provider can correctly identify the composite situation before it
+    has existing Model ids to cite, especially in sparse retrieval. Mark
+    that as a transient pending-member shape so the splitter/applier can
+    form atomics and patch concrete member_model_ids after insert.
+    """
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return
+    is_situation = (
+        prop.get("claim_role") == "situation"
+        or prop.get("legacy_kind") == "situation"
+        or prop.get("kind") == "situation"
+    )
+    if not is_situation:
+        return
+    members = prop.get("member_model_ids")
+    if isinstance(members, list) and members:
+        return
+    prop["member_model_ids"] = []
+    prop["_pending_members"] = True
+    entry["member_model_pending"] = True
 
 
 def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
@@ -709,6 +769,8 @@ async def _validate_claim_op(
         # calls can emit one malformed claim next to valid claims; the
         # validator's partial-accept contract should drop that one op
         # instead of letting the applier fail the whole transaction.
+        _repair_non_situation_abstraction_level(entry)
+        _mark_empty_situation_members_pending(entry)
         validate_proposition(entry.get("proposition"))
         # confidence_at_assertion — if the LLM doesn't supply one, use
         # the pre-calibration raw confidence (clipped). This becomes the
@@ -782,6 +844,18 @@ async def _validate_act_op(
 
     if basis is not None and float(basis.get("confidence", 0.0)) < threshold:
         return None
+
+    if op.op == "create_decision":
+        ent = dict(op.entity or {})
+        title = ent.get("title")
+        decision_text = ent.get("decision_text")
+        if not isinstance(title, str) or not title.strip():
+            raise ValidationError("create_decision requires entity.title")
+        if not isinstance(decision_text, str) or not decision_text.strip():
+            fallback = ent.get("rationale") or title
+            ent["decision_text"] = str(fallback).strip()
+            ent["canonicalized_missing_decision_text"] = True
+        op = op.model_copy(update={"entity": ent})
 
     # Transition legality.
     if op.op == "transition_commitment":

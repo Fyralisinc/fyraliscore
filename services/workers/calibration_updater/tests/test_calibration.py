@@ -271,7 +271,7 @@ async def test_per_kind_separation(
     fresh_db, tx_conn, tenant, actor_id, born_from_event
 ):
     """
-    Actor A's 'prediction' offset doesn't leak into 'state' kind.
+    Actor A's 'prediction' offset doesn't leak into 'belief' stance.
     Insert 20 prediction resolutions (all wrong → low empirical rate,
     so offset ≈ 0.3 clipped) and 20 state resolutions (all right →
     offset ≈ 1.5 clipped).
@@ -303,8 +303,9 @@ async def test_per_kind_separation(
     kinds = {(r["proposition_kind"], float(r["bucket_low"])): float(r["offset"]) for r in rows}
     # Prediction bucket (0.7, 0.8): 0 / 0.75 = 0, clipped to 0.3.
     assert math.isclose(kinds[("prediction", 0.7)], OFFSET_MIN, abs_tol=1e-6)
-    # State bucket (0.0, 0.2): 1 / 0.1 = 10, clipped to 1.5.
-    assert math.isclose(kinds[("state", 0.0)], OFFSET_MAX, abs_tol=1e-6)
+    # Legacy state canonicalizes to belief; bucket (0.0, 0.2):
+    # 1 / 0.1 = 10, clipped to 1.5.
+    assert math.isclose(kinds[("belief", 0.0)], OFFSET_MAX, abs_tol=1e-6)
 
 
 @pytest.mark.asyncio

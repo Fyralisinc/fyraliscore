@@ -268,8 +268,8 @@ async def test_pathway_d_returns_patterns_and_instances(
     )
     assert result.source_pathway == "D"
     # Fixture creates 10 pattern Models with that signature.
-    pattern_kinds = {m.proposition_kind for m in result.models}
-    assert "pattern" in pattern_kinds or "pattern_instance" in pattern_kinds
+    pattern_roles = {m.claim_role for m in result.models}
+    assert "pattern" in pattern_roles
     assert result.notes["patterns_returned"] >= 1
 
 
@@ -279,7 +279,10 @@ async def test_pathway_d_no_signature_returns_all_patterns(
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
     result = await pathway_d_pattern(None, tenant, tx_conn, limit=50)
     # Should surface at least the 10 pattern Models.
-    pattern_models = [m for m in result.models if m.proposition_kind == "pattern"]
+    pattern_models = [
+        m for m in result.models
+        if m.claim_role == "pattern" and m.abstraction_level == "pattern"
+    ]
     assert len(pattern_models) >= 10
 
 

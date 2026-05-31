@@ -27,11 +27,15 @@ A row in [models](db/migrations/0001_foundation.sql#L99-L145) (extended through 
 | **Epistemic** | `confidence` ∈ [0.05, 0.95], `confidence_at_assertion` (immutable), `activation`, `falsifier`, `signal_readings` | How strong, how fresh, how to disprove |
 | **Provenance** | `born_from_event_id`, `supporting_event_ids`, `supporting_model_ids`, audit chain in `audit_events` | Why we believe it |
 
-### 1.2 Proposition kinds (the ontology)
+### 1.2 Proposition stances and claim roles
 
-12 discriminated kinds validated in [services/models/propositions.py](services/models/propositions.py): `state, relation, prediction, pattern, pattern_instance, capability_assessment, hypothesis, concern, market_assessment, environmental_trend, situation, recommendation`.
+`proposition.kind` is now the four-stance ontology validated in [services/models/propositions.py](services/models/propositions.py): `observation`, `belief`, `prediction`, `norm`.
 
-`situation` is special — it's a **composite Model** referencing other Models via [model_composition_members](db/migrations/0047_memory_grammar_and_composition.sql) (e.g., "Acme's enterprise rollout is at risk" composing five member Models).
+Subject semantics live in `claim_role` and the other memory-grammar axes. Legacy payloads such as `state`, `concern`, `pattern`, `situation`, and `recommendation` are accepted at the boundary and canonicalized into the four stances while preserving the old semantic bucket as `legacy_kind`.
+
+[lib/shared/claim_role_registry.py](lib/shared/claim_role_registry.py) gives each `claim_role` a structural contract, so the system gets role-specific validation without returning to a large discriminator taxonomy.
+
+`claim_role='situation'` is special — it's a **composite Model** referencing other Models via [model_composition_members](db/migrations/0047_memory_grammar_and_composition.sql) (e.g., "Acme's enterprise rollout is at risk" composing five member Models).
 
 ### 1.3 Memory grammar (the new orthogonal layer, migration 0047)
 
@@ -50,7 +54,7 @@ This lets retrieval/rendering/topology filter memory by *structural role* withou
 
 `ModelsRepo.insert()` is a 9-step pipeline:
 1. **Falsifier adequacy** — required if confidence > 0.7. Five kinds in [services/models/falsifier.py](services/models/falsifier.py): `observation_pattern`, `commitment_outcome`, `prediction_deadline`, `resource_threshold`, `explicit_contestation`.
-2. **Proposition shape** validated via Pydantic discriminated union.
+2. **Proposition shape** validated via Pydantic discriminated union plus the claim-role registry contracts.
 3. **Confidence calibration** (Wave 4-C) and clipping to [0.05, 0.95].
 4. **Scope actor existence** check.
 5. **Embedding** — uses Ollama `nomic-embed-text` if not supplied.

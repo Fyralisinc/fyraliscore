@@ -341,12 +341,13 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
     assert row["promoted_at"] is not None
     assert row["promoted_pattern_model_id"] == pattern_id
 
-    # Pattern Model exists with kind='pattern'.
+    # Pattern Model exists as a four-stance belief with pattern role.
     pat_row = await tx_conn.fetchrow(
-        "SELECT proposition_kind, supporting_model_ids FROM models WHERE id=$1",
+        "SELECT proposition_kind, claim_role, supporting_model_ids FROM models WHERE id=$1",
         pattern_id,
     )
-    assert pat_row["proposition_kind"] == "pattern"
+    assert pat_row["proposition_kind"] == "belief"
+    assert pat_row["claim_role"] == "pattern"
     assert len(pat_row["supporting_model_ids"]) == 3
 
     # Constituents back-link to the Pattern.
@@ -354,7 +355,7 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
         """
         SELECT id FROM models
         WHERE tenant_id=$1
-          AND proposition_kind='concern'
+          AND claim_role='concern'
           AND $2 = ANY(supporting_model_ids)
         """,
         tenant, pattern_id,

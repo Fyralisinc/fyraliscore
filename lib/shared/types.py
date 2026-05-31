@@ -83,12 +83,7 @@ ModelArchiveReason = Literal[
 
 ModelStatusNoteKind = Literal["first_person_override", "manual", "system"]
 
-PropositionKind = Literal[
-    "state", "relation", "prediction", "pattern", "pattern_instance",
-    "capability_assessment", "hypothesis", "concern",
-    "market_assessment", "environmental_trend",
-    "recommendation", "situation",
-]
+PropositionKind = Literal["observation", "belief", "prediction", "norm"]
 
 GoalState = Literal["active", "paused", "achieved", "abandoned"]
 GoalAltitude = Literal["strategic", "operational", "tactical"]
@@ -294,7 +289,7 @@ class ModelRow(_Strict):
     contributing_models: list[UUID] = Field(default_factory=list)
     visible_to_subjects: bool = True
     # Post-Wave-0 A1-A2 additions (SCHEMA-LOCK.md amendments)
-    proposition_kind: PropositionKind | None = None   # generated stored; hydrated on read
+    proposition_kind: str | None = None   # generated stored; hydrated on read
     # Structural memory grammar (migration 0047). These fields describe
     # how a Model behaves in the synthesis layer; proposition_kind remains
     # the compatibility discriminator.

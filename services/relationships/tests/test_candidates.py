@@ -45,11 +45,18 @@ def test_situation_candidate_carries_first_class_proposition() -> None:
     assert candidate.candidate_kind == "situation"
     assert candidate.member_model_ids == (m1, m2)
     assert candidate.proposed_proposition is not None
-    assert candidate.proposed_proposition["kind"] == "situation"
+    assert candidate.proposed_proposition["kind"] == "belief"
+    assert candidate.proposed_proposition["claim_role"] == "situation"
     assert candidate.proposed_proposition["member_model_ids"] == [
         str(m1),
         str(m2),
     ]
+    assert candidate.proposed_proposition["pressure_type"] == "execution"
+    assert candidate.proposed_proposition["shared_mechanism"] == (
+        "The delay increases the impact of pricing concern."
+    )
+    assert candidate.proposed_proposition["judgment_change"]
+    assert candidate.proposed_proposition["open_falsifier"]
     assert candidate.judgment_leverage_score > 0.6
 
 

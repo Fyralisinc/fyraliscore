@@ -58,6 +58,8 @@ import asyncpg
 import structlog
 
 from lib.shared.ids import uuid7
+from lib.shared.memory_grammar import derive_memory_grammar
+from services.models.propositions import canonicalize_proposition
 
 from .diff_schema import ClaimOp
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
@@ -362,6 +364,18 @@ def _kind_rule(prop_kind: str | None) -> KindRule:
     return KindRule()
 
 
+def _semantic_rule_key(proposition: dict[str, Any] | None) -> str | None:
+    if not isinstance(proposition, dict):
+        return None
+    legacy = proposition.get("legacy_kind")
+    if isinstance(legacy, str) and legacy in _KIND_RULES:
+        return legacy
+    grammar = derive_memory_grammar(proposition)
+    if grammar.claim_role in _KIND_RULES:
+        return grammar.claim_role
+    return proposition.get("kind") if isinstance(proposition.get("kind"), str) else None
+
+
 # =====================================================================
 # Graph-structural signal helpers
 # =====================================================================
@@ -521,6 +535,7 @@ async def _find_candidates(
     candidate_scope_actors: list[str],
     candidate_scope_entities: list[dict[str, Any]],
     proposition_kind: str | None,
+    claim_role: str | None,
     recency_window_days: int,
     k: int = 5,
 ) -> list[dict[str, Any]]:
@@ -546,6 +561,9 @@ async def _find_candidates(
     if proposition_kind is not None:
         params.append(proposition_kind)
         where.append(f"proposition_kind = ${len(params)}")
+    if claim_role is not None:
+        params.append(claim_role)
+        where.append(f"claim_role = ${len(params)}")
 
     # Scope predicate: at least one of the two dimensions overlaps.
     # We OR them so a Model that lists the candidate's scope_entities
@@ -730,10 +748,15 @@ async def _reconcile_inner(
     candidate_embedding = _candidate_embedding(entry)
 
     proposition = entry.get("proposition") or {}
-    prop_kind = (
-        proposition.get("kind") if isinstance(proposition, dict) else None
-    )
-    kind_rule = _kind_rule(prop_kind)
+    if isinstance(proposition, dict):
+        try:
+            proposition = canonicalize_proposition(proposition)
+        except Exception:
+            pass
+    prop_kind = proposition.get("kind") if isinstance(proposition, dict) else None
+    grammar = derive_memory_grammar(proposition if isinstance(proposition, dict) else {})
+    rule_key = _semantic_rule_key(proposition if isinstance(proposition, dict) else None)
+    kind_rule = _kind_rule(rule_key)
 
     # Per-kind threshold overrides; otherwise use global defaults.
     auto_merge_threshold = (
@@ -761,6 +784,7 @@ async def _reconcile_inner(
         candidate_scope_actors=candidate_scope_actors,
         candidate_scope_entities=candidate_scope_entities,
         proposition_kind=prop_kind,
+        claim_role=grammar.claim_role,
         recency_window_days=config.recency_window_days,
     )
 
@@ -802,7 +826,7 @@ async def _reconcile_inner(
 
         # situation: factor member-overlap into the adjusted score.
         member_overlap = 0.0
-        if prop_kind == "situation" and candidate_member_ids:
+        if grammar.claim_role == "situation" and candidate_member_ids:
             row_member_ids = _member_model_ids(r.get("proposition"))
             member_overlap = _member_overlap_fraction(
                 candidate_member_ids, row_member_ids,
@@ -873,7 +897,7 @@ async def _reconcile_inner(
 
     # ---- Situation member-overlap shortcut -------------------------
     member_overlap_auto = (
-        prop_kind == "situation"
+        grammar.claim_role == "situation"
         and kind_rule.auto_member_overlap is not None
         and best_member_overlap >= kind_rule.auto_member_overlap
     )

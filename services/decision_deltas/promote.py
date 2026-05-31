@@ -1,7 +1,7 @@
 """
 services/decision_deltas/promote.py — recommendation -> decision delta.
 
-A recommendation lives on `models` with proposition_kind='recommendation'.
+A recommendation lives on `models` with claim_role='recommendation'.
 Its proposition JSONB carries target_act_ref, proposed_change,
 expected_impact, qualitative_impact, target_actor_id. To re-skin that
 row as a Decision Delta we:
@@ -51,17 +51,17 @@ async def promote_from_recommendation(
     """Read a recommendation row and insert a matching Decision Delta.
 
     Returns the new delta id. Raises ValidationError if the source
-    row is missing, wrong tenant, or wrong proposition_kind.
+    row is missing, wrong tenant, or not a recommendation.
     """
     rec = await conn.fetchrow(
         """
         SELECT id, tenant_id, "natural" AS natural, confidence,
                proposition, supporting_event_ids,
-               proposition_kind, status, target_actor_id
+               proposition_kind, claim_role, status, target_actor_id
         FROM models
         WHERE id = $1
           AND tenant_id = $2
-          AND proposition_kind = 'recommendation'
+          AND claim_role = 'recommendation'
         """,
         recommendation_id, tenant_id,
     )

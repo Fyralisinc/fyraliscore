@@ -120,10 +120,14 @@ def _claim_decision(
     else:
         entry = op.entry or {}
         prop = entry.get("proposition") if isinstance(entry, dict) else {}
-        kind = prop.get("kind") if isinstance(prop, dict) else None
-        if kind == "situation":
+        grammar = derive_memory_grammar(
+            prop if isinstance(prop, dict) else {},
+            natural=str(entry.get("natural") or ""),
+            scope_entities=entry.get("scope_entities") or [],
+        )
+        if grammar.claim_role == "situation":
             decision = "create_or_update_situation"
-        elif kind == "recommendation":
+        elif grammar.claim_role == "recommendation":
             decision = "create_action_proposal"
         else:
             decision = "create_atomic_model"

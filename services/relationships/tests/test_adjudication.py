@@ -141,6 +141,8 @@ async def test_adjudication_accepts_candidate_when_situation_inserted(
                 "member_model_ids": [str(m) for m in members],
                 "relationship_summary": "The members interact.",
                 "status": "forming",
+                "pressure_type": "execution",
+                "shared_mechanism": "The members interact.",
             },
             "natural": "renewal risk pressure",
             "embedding": [1.0] + [0.0] * 767,
@@ -173,6 +175,68 @@ async def test_adjudication_accepts_candidate_when_situation_inserted(
     assert result.accepted_model_id == accepted_model_id
     assert row is not None
     assert row["accepted_model_id"] == accepted_model_id
+
+
+async def test_adjudication_flags_situation_missing_structural_fields(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    members = (uuid7(), uuid7())
+    accepted_model_id = uuid7()
+    repo = RelationshipCandidatesRepo()
+    candidate = make_situation_candidate(
+        tenant_id=tenant_id,
+        situation="renewal risk pressure",
+        summary="Several models describe one renewal risk.",
+        relationship_summary="The members interact as one situation.",
+        member_model_ids=members,
+        basis="topology_suggested",
+        scores=JudgmentScores(impact=0.9, actionability=0.7, confidence=0.7),
+        source="latent_topology",
+    )
+    claim = ClaimOp(
+        op="insert",
+        entry={
+            "proposition": {
+                "kind": "situation",
+                "situation": "renewal risk pressure",
+                "summary": "Several models describe one renewal risk.",
+                "member_model_ids": [str(m) for m in members],
+                "relationship_summary": "The members interact.",
+                "status": "forming",
+            },
+            "natural": "renewal risk pressure",
+            "embedding": [1.0] + [0.0] * 767,
+            "scope_temporal": {},
+            "confidence": 0.7,
+            "confidence_at_assertion": 0.7,
+        },
+    )
+
+    async with fresh_db.acquire() as conn:
+        await repo.insert(conn, candidate)
+        result = await adjudicate_candidate_for_trigger(
+            conn,
+            trigger=_trigger(tenant_id, candidate.id, members),
+            diff=_diff(tenant_id, claim_ops=[claim]),
+            applied={
+                "claim_ops": [
+                    {
+                        "op": "insert",
+                        "model_id": str(accepted_model_id),
+                        "proposition_kind": "situation",
+                    }
+                ],
+            },
+        )
+
+    assert result is not None
+    assert result.review_status == "needs_review"
+    assert result.decision_reason == "needs_review_situation_missing_fields"
+    assert set(result.metadata["missing_fields"]) == {
+        "pressure_type",
+        "shared_mechanism",
+    }
 
 
 async def test_adjudication_rejects_candidate_on_empty_diff(

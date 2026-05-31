@@ -95,7 +95,7 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
   "op": "insert",
   "entry": {
     "born_from_event_id": "<uuid - echo the triggering observation_id>",
-    "proposition": {"kind": "<one proposition kind below>", "...": "..."},
+    "proposition": {"kind": "<observation|belief|prediction|norm>", "...": "..."},
     "natural": "<human-readable 1-2 sentence restatement>",
     "confidence": 0.05-0.95,
     "scope_actors": ["<uuid>", ...],
@@ -108,24 +108,35 @@ Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
 - archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
 
-Proposition kinds and required payloads:
-- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
-- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
-- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
-- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
-- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
-- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
-- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
-- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
-- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
-- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid from bundle>",...],"open_falsifier":"<under what observation this composite would be invalid>"}
-- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
-The twelve kinds above are the ONLY valid `kind` values. Do NOT use proposition
-kinds outside this list. Map risk/opportunity language to concern, prediction,
-hypothesis, or recommendation as appropriate.
+Proposition stance and grammar:
+- `kind` has only four valid values: observation, belief, prediction, norm.
+- Use `kind` for epistemic stance only:
+  - observation = something that happened and should not be revised in place.
+  - belief = what we currently hold to be true from observations.
+  - prediction = a falsifiable future claim.
+  - norm = what the organization wants to happen.
+- Put subject semantics in grammar fields, not in `kind`:
+  - `claim_role`: fact | concern | hypothesis | prediction | pattern | situation | capability | relation | recommendation
+  - `abstraction_level`: atomic | relationship | composite | pattern
+  - `time_mode`: past | current | future | recurring | unspecified
+  - `modality`: observed | inferred | expected | normative
+  - `polarity`: positive | negative | mixed | neutral
+  - `domain_tags`: short lowercase tags like ["market"], ["customers"], ["execution"].
 
-Situation compositional fields (mandatory when emitting a `situation`):
+Payload examples:
+- observation -> {"kind":"observation","event":"<what happened>","claim_role":"fact","time_mode":"past","modality":"observed"}
+- belief/fact -> {"kind":"belief","subject":"<entity or UUID>","assertion":"<current truth>","claim_role":"fact"}
+- belief/relation -> {"kind":"belief","subject":"...","relation":"verb phrase","object":"...","claim_role":"relation","abstraction_level":"relationship"}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"...","claim_role":"prediction","time_mode":"future","modality":"expected"}
+- belief/pattern -> {"kind":"belief","signature":"...","observed_tendency":"...","trigger_conditions":"...","claim_role":"pattern","abstraction_level":"pattern","time_mode":"recurring"}
+- belief/concern -> {"kind":"belief","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>","claim_role":"concern","polarity":"negative"}
+- belief/market pattern -> {"kind":"belief","subject_external":"<external entity>","assessment":"...","claim_role":"pattern","domain_tags":["market"]}
+- belief/situation -> {"kind":"belief","claim_role":"situation","abstraction_level":"composite","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid from bundle>",...],"open_falsifier":"<under what observation this composite would be invalid>"}
+- norm/recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+Do NOT invent new proposition kinds. Preserve nuance with `claim_role`,
+`domain_tags`, and the other grammar axes.
+
+Situation compositional fields (mandatory when emitting `kind="belief", claim_role="situation"`):
 - `pressure_type` MUST be one of capacity, trust, revenue, compliance,
   decision, execution, market, resource. Pick the dominant pressure the
   composite expresses; do not invent new categories.
@@ -145,25 +156,22 @@ Situation compositional fields (mandatory when emitting a `situation`):
   would invalidate the composite (e.g., "Globex renews on schedule and
   capacity load drops below 70% for two consecutive weeks").
 
-Proposition kind rubric:
-- Use `state` for observed current facts and completed/progress milestones.
-- Use `concern` for risks, blockers, review comments, edge cases, customer
-  pushback, missing evidence, or "worth testing" / "may churn" warnings.
+Stance/grammar rubric:
+- Use `belief` + `claim_role="fact"` for current facts and progress milestones.
+- Use `belief` + `claim_role="concern"` for risks, blockers, review comments,
+  edge cases, customer pushback, missing evidence, or "worth testing" warnings.
 - Use `prediction` for dated plans, ETAs, future deploys, expected slips,
   "will/should by <date>", or conditional future outcomes.
-- Use `relation` when the important memory is a dependency or causal link
-  between two entities/facts rather than a new standalone fact.
-- Use `situation` when multiple selected Models/edges form one operational
-  condition that matters as a composite. Situation member_model_ids must be
-  existing Model ids from <models>; do not use situations for simple pairwise
-  links that should be edge_ops.
-- Use existing proposition kinds for actor operating context:
-  capability_assessment for evidenced skill/capacity/trust, concern for
-  overload or missing support, relation for ownership/reporting/dependency,
-  pattern for repeated behavior, and hypothesis for uncertain motive or
-  constraint explanations.
-- Use `hypothesis` for uncertain explanations that need investigation.
-- Do not flatten every claim into `state`; the proposition kind is part of
+- Use `belief` + `claim_role="relation"` when the important memory is a
+  dependency or causal link between two entities/facts.
+- Use `belief` + `claim_role="situation"` when multiple selected Models/edges
+  form one operational condition that matters as a composite. Situation
+  member_model_ids must be existing Model ids from <models>; do not use
+  situations for simple pairwise links that should be edge_ops.
+- Use `belief` + `claim_role="capability"` for evidenced skill/capacity/trust,
+  `claim_role="pattern"` for repeated behavior, and `claim_role="hypothesis"`
+  for uncertain motive or constraint explanations.
+- Do not flatten every claim into plain fact; the grammar fields are part of
   retrieval quality and should preserve the signal's semantics.
 
 Recommendations:
@@ -173,7 +181,7 @@ Recommendations:
   ordinary Model archives, or doneunverified transitions the system can apply.
 - New self-reported work is special: if the signal says "I've started",
   "kicking off", "picked up", "I'm building", "working on", "I'll deliver", or
-  equivalent, and <acts> has no matching commitment, emit both a state Model and
+  equivalent, and <acts> has no matching commitment, emit both a fact Model and
   a recommendation with proposed_change.operation="create" and
   target_act_ref={"type":"commitment","id":null}. Payload: title, owner_id from
   actor_id/<actors_in_context>, due_date from the signal or ~30 days out, plus
@@ -337,31 +345,30 @@ claim_ops.insert entry shape:
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 
-Proposition kinds:
-- state -> {"kind":"state","subject":"<entity or UUID>","assertion":"<truth>"}
-- relation -> {"kind":"relation","subject":"...","relation":"verb phrase","object":"..."}
-- prediction -> {"kind":"prediction","expected":"...","resolution":"..."}
-- pattern -> {"kind":"pattern","signature":"...","observed_tendency":"...","trigger_conditions":"..."}
-- pattern_instance -> {"kind":"pattern_instance","pattern_id":"<uuid>","matched_context":"..."}
-- capability_assessment -> {"kind":"capability_assessment","capability_id":"<uuid or name>","assessment":"..."}
-- hypothesis -> {"kind":"hypothesis","hypothesis_text":"...","test_conditions":"..."}
-- concern -> {"kind":"concern","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>"}
-- market_assessment -> {"kind":"market_assessment","subject_external":"<external entity>","assessment":"..."}
-- environmental_trend -> {"kind":"environmental_trend","signature":"...","direction":"up|down|mixed","strength":"weak|moderate|strong"}
-- situation -> {"kind":"situation","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid>",...],"open_falsifier":"<sentence: under what observation this composite is invalid>"}
-- recommendation -> {"kind":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
-The twelve kinds above are the ONLY valid `kind` values.
-When emitting a `situation`, populate `pressure_type` (one of the eight
+Proposition stance:
+- `kind` has only four valid values: observation, belief, prediction, norm.
+- Use grammar fields for semantics: `claim_role`, `abstraction_level`,
+  `time_mode`, `modality`, `polarity`, `domain_tags`.
+- fact -> {"kind":"belief","subject":"<entity or UUID>","assertion":"<truth>","claim_role":"fact"}
+- relation -> {"kind":"belief","subject":"...","relation":"verb phrase","object":"...","claim_role":"relation","abstraction_level":"relationship"}
+- prediction -> {"kind":"prediction","expected":"...","resolution":"...","claim_role":"prediction"}
+- pattern -> {"kind":"belief","signature":"...","observed_tendency":"...","trigger_conditions":"...","claim_role":"pattern","abstraction_level":"pattern","time_mode":"recurring"}
+- concern -> {"kind":"belief","about":"<subject>","nature":"<concern>","raised_by":"<actor or role>","claim_role":"concern","polarity":"negative"}
+- market assessment -> {"kind":"belief","subject_external":"<external entity>","assessment":"...","claim_role":"pattern","domain_tags":["market"]}
+- situation -> {"kind":"belief","claim_role":"situation","abstraction_level":"composite","situation":"<named composite condition>","summary":"<what is jointly true>","member_model_ids":["<model uuid>",...],"relationship_summary":"<how the member claims interact>","status":"forming|active|resolved|contested|null","pressure_type":"capacity|trust|revenue|compliance|decision|execution|market|resource","shared_mechanism":"<one sentence: why these members belong together>","judgment_change":"<one sentence: what becomes clear only when seen together>","affected_decisions":["<string>",...],"affected_customers":["<entity name or actor id>",...],"affected_teams":["<string>",...],"evidence_event_ids":["<observation uuid>",...],"open_falsifier":"<sentence: under what observation this composite is invalid>"}
+- recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
+Do NOT invent new proposition kinds.
+When emitting a situation, populate `pressure_type` (one of the eight
 categories), `shared_mechanism` (one sentence), `judgment_change` (one
 sentence), and `open_falsifier`. List `affected_decisions`,
 `affected_customers`, `affected_teams`, and cite `evidence_event_ids`
 from the retrieval bundle whenever they are known. Omit a field rather
 than guess.
-Kind rubric: state=current observed fact; concern=risk/blocker/review warning/
+Grammar rubric: fact=current observed truth; concern=risk/blocker/review warning/
 edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
 deploy, expected slip, conditional outcome; relation=dependency or causal link;
 hypothesis=uncertain explanation needing investigation; situation=composite
-condition across multiple selected Models. Do not flatten every claim into state.
+condition across multiple selected Models. Do not flatten every claim into fact.
 
 Falsifier kinds:
 - observation_pattern: {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -375,7 +382,7 @@ Recommendations:
   changes. Do not recommend routine bookkeeping the system can do itself.
 - If the signal says "I've started", "kicking off", "picked up", "I'm building",
   "working on", "I'll deliver", or equivalent, and <acts> has no matching
-  commitment, emit both a state Model and a recommendation with
+  commitment, emit both a fact Model and a recommendation with
   proposed_change.operation="create" and target_act_ref={"type":"commitment",
   "id":null}. Payload: title, owner_id from context, due_date from the signal or
   about 30 days out, plus contributes_to_goal_ids when a goal fits, otherwise
@@ -1426,23 +1433,23 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "\"id\":null}`. Do not skip this with reasoning like "
             "'purely informational' or 'no human approval needed' — the "
             "approval here is the CEO ratifying the new scope into the "
-            "ledger. Co-emit the state Model AND the recommendation; "
+            "ledger. Co-emit the fact Model AND the recommendation; "
             "they are not redundant. Use the create-commitment payload "
             "shape in the system prompt."
         )
     elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
         body.append(
-            "This is a T2:belief_updated trigger — a new state or concern "
+            "This is a T2:belief_updated trigger — a new fact or concern "
             "model was just inserted by a T1 run. Decide whether the CEO "
             "needs to act on this belief.\n"
             "\n"
             "  • If a team member is blocked, waiting on a decision, or "
             "the CEO needs to unblock someone: emit ONE claim_op with "
-            "proposition_kind='recommendation'. Use only actor UUIDs that "
+            "`kind='norm'` and `claim_role='recommendation'`. Use only actor UUIDs that "
             "appear in <actors_in_context> for scope_actors. Write the "
             "natural field as a clear, actionable sentence for the CEO.\n"
             "\n"
-            "  • If the new state Model encodes a self-report of new "
+            "  • If the new fact Model encodes a self-report of new "
             "in-flight work ('started X', 'building Y', 'picked up Z') "
             "AND <acts> has no matching commitment, you MUST emit a "
             "recommendation with proposed_change.operation='create' and "
@@ -1455,7 +1462,7 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "  • If purely informational and no CEO action is needed: "
             "return an empty diff (zero claim_ops). The selected Model that "
             "caused this T2 trigger already records the underlying fact; do "
-            "not create recap, elaboration, or bookkeeping state Models.\n"
+            "not create recap, elaboration, or bookkeeping fact Models.\n"
             "\n"
             "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
             "  - Do NOT set scope_entities unless a UUID appears in <acts> "
@@ -1533,11 +1540,11 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "\n"
             "Decide whether this structural shift warrants any of:\n"
             "  • Naming the neighborhood — emit a `claim_op.update` on "
-            "    one of the member Models recording a `state` "
+            "    one of the member Models recording a `belief` "
             "    proposition that captures the cluster's theme. The "
             "    heuristic name is in <topology_context>; if a more "
             "    accurate human-readable description fits, write a "
-            "    state Model whose subject is the neighborhood theme.\n"
+            "    fact Model whose subject is the neighborhood theme.\n"
             "  • Surfacing the shift to the CEO — when the event kind "
             "    is `emergence`, `merge`, or a high-magnitude `split` "
             "    (>= 0.5), the structural transition often deserves a "

@@ -8,6 +8,7 @@ reservoir, sufficiency, and a compact context packet for reasoning.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -374,12 +375,20 @@ async def run_inquiry_retrieval(
     retrieval_results = [baseline]
     unknowns: set[str] = set(_initial_unknowns(trigger, baseline))
     question_planning_notes: list[dict[str, Any]] = []
+    trigger_lower = _trigger_text(trigger).casefold()
+    weak_signal = (
+        trigger.kind == "T1"
+        and not _signal_has_material_update_intent(trigger_lower)
+        and not _has_broad_signal_language(trigger_lower)
+    )
 
     max_rounds = (
         0
         if mode == "fast" or route in {"FAST_PATH", "HUMAN_VALIDATION_PATH"}
         else cfg.max_rounds
     )
+    if weak_signal and max_rounds > 1:
+        max_rounds = 1
     stop_status: InquiryStopStatus = "insufficient_continue"
     stop_reason = "inquiry has not run"
 
@@ -397,7 +406,10 @@ async def run_inquiry_retrieval(
         question_planning_notes.append(planning_note)
         selected = _select_questions(
             candidate_questions,
-            questions_per_round=cfg.questions_per_round,
+            questions_per_round=(
+                min(cfg.questions_per_round, 2)
+                if weak_signal else cfg.questions_per_round
+            ),
             round_index=round_index,
             already_asked={q.primitive for q in all_questions},
         )
@@ -461,7 +473,7 @@ async def run_inquiry_retrieval(
         list(evidence_by_key.values()),
         limit=(
             cfg.fast_path_evidence_limit
-            if mode == "fast" or route == "FAST_PATH"
+            if mode == "fast" or route == "FAST_PATH" or weak_signal
             else cfg.evidence_reservoir_limit
         ),
     )
@@ -510,6 +522,7 @@ async def run_inquiry_retrieval(
         "max_rounds": max_rounds,
         "question_count": len(all_questions),
         "retrieval_action_count": len(all_actions),
+        "weak_signal_budgeted": weak_signal,
         "requested_top_n": top_n,
         "candidate_top_n": candidate_top_n,
         "effective_top_n": effective_top_n,
@@ -633,6 +646,8 @@ def _initial_unknowns(trigger: TriggerContext, baseline: RetrievalResult) -> lis
     lower = _trigger_text(trigger).casefold()
     if _has_risk_language(lower):
         unknowns.append("whether the blocker is on the critical path")
+    if _has_dependency_language(lower):
+        unknowns.append("whether the dependency is binding")
     if not baseline.acts.get("commitments"):
         unknowns.append("affected commitment")
     if not baseline.acts.get("goals"):
@@ -662,7 +677,12 @@ def _candidate_questions(
             primitive="DEPENDENCY",
             tests_hypotheses=hids[:2] or ("H1",),
             expected_value=(
-                0.60 if broad else (0.88 if _has_risk_language(lower) else 0.55)
+                0.60
+                if broad else (
+                    0.90
+                    if _has_risk_language(lower) or _has_dependency_language(lower)
+                    else 0.55
+                )
             ),
             expected_cost=0.24,
             retrieval_target="commitment_graph+recent_observations",
@@ -710,7 +730,12 @@ def _candidate_questions(
             primitive="GOAL_IMPACT",
             tests_hypotheses=hids[:3] or ("H1",),
             expected_value=(
-                0.94 if broad else (0.68 if "affected goal" in unknowns else 0.38)
+                0.94
+                if broad else (
+                    0.86
+                    if _has_revenue_impact_language(lower)
+                    else (0.68 if "affected goal" in unknowns else 0.38)
+                )
             ),
             expected_cost=0.20,
             retrieval_target="goal_resource_bridge",
@@ -814,7 +839,7 @@ async def _candidate_questions_for_round(
         }
 
     try:
-        plan = await _generate_llm_question_plan(
+        plan_call = _generate_llm_question_plan(
             trigger,
             baseline,
             hypotheses,
@@ -823,6 +848,13 @@ async def _candidate_questions_for_round(
             llm_provider=llm_provider,
             config=config,
         )
+        timeout_s = float(
+            os.environ.get("INQUIRY_LLM_QUESTION_TIMEOUT_SECONDS", "30")
+        )
+        if timeout_s > 0:
+            plan = await asyncio.wait_for(plan_call, timeout=timeout_s)
+        else:
+            plan = await plan_call
         llm_questions = _normalize_llm_questions(plan.questions, hypotheses)
         if not llm_questions:
             return deterministic, {
@@ -1018,9 +1050,28 @@ def _merge_llm_and_safety_questions(
     by_primitive = {q.primitive: q for q in llm_questions}
     safety_added = 0
     for q in deterministic:
-        if q.primitive in by_primitive:
+        existing = by_primitive.get(q.primitive)
+        if existing is not None:
+            if q.score > existing.score:
+                by_primitive[q.primitive] = replace(
+                    existing,
+                    expected_value=max(existing.expected_value, q.expected_value),
+                    expected_cost=min(existing.expected_cost, q.expected_cost),
+                    tests_hypotheses=(
+                        existing.tests_hypotheses or q.tests_hypotheses
+                    ),
+                    score=q.score,
+                )
             continue
-        if q.primitive == "COUNTEREVIDENCE" or len(by_primitive) < 4:
+        force_high_value_safety = (
+            q.primitive in {"DEPENDENCY", "GOAL_IMPACT", "RECURRENCE"}
+            and q.score >= 0.75
+        )
+        if (
+            q.primitive == "COUNTEREVIDENCE"
+            or len(by_primitive) < 4
+            or force_high_value_safety
+        ):
             by_primitive[q.primitive] = q
             safety_added += 1
     ordered: list[InquiryQuestion] = []
@@ -1079,6 +1130,20 @@ def _select_questions(
         and "RECURRENCE" not in already_asked
     ):
         priority_ids.append("Q_RECURRENCE")
+    dependency = by_id.get("Q_CRITICAL_PATH")
+    if (
+        dependency is not None
+        and dependency.expected_value >= 0.86
+        and "DEPENDENCY" not in already_asked
+    ):
+        priority_ids.append("Q_CRITICAL_PATH")
+    goal_impact = by_id.get("Q_GOAL_IMPACT")
+    if (
+        goal_impact is not None
+        and goal_impact.expected_value >= 0.86
+        and "GOAL_IMPACT" not in already_asked
+    ):
+        priority_ids.append("Q_GOAL_IMPACT")
 
     for question_id in priority_ids:
         question = by_id.get(question_id)
@@ -1111,6 +1176,13 @@ def _compile_retrieval_plan(
     if question.primitive == "DEPENDENCY":
         return [
             RetrievalAction(question.question_id, "structural", "commitment_graph", filters=common),
+            RetrievalAction(
+                question.question_id,
+                "model_edge",
+                "dependency_model_edges",
+                filters=common,
+                budget=60,
+            ),
             RetrievalAction(
                 question.question_id,
                 "temporal",
@@ -1858,13 +1930,22 @@ def _signal_has_material_update_intent(lower: str) -> bool:
 
 def _has_broad_signal_language(lower: str) -> bool:
     scrubbed = _scrub_negated_signal_language(lower)
-    return bool(
+    broad_terms = bool(
         re.search(
-            r"\b(all|across|portfolio|company-wide|team-wide|board|exec|"
-            r"every|customers|renewals|pipeline|runway|fleet|global)\b",
+            r"\b(all|portfolio|company-wide|team-wide|board|exec|"
+            r"every|customers|renewals|pipeline|fleet|global)\b",
             scrubbed,
         )
     )
+    broad_across = bool(
+        re.search(
+            r"\bacross\s+(?:all\s+|the\s+)?(?:enterprise\s+)?"
+            r"(?:customers|accounts|renewals|pipeline|portfolio|teams|"
+            r"company|org|organization|business|segments)\b",
+            scrubbed,
+        )
+    )
+    return broad_terms or broad_across
 
 
 def _scrub_negated_signal_language(lower: str) -> str:
@@ -2766,6 +2847,27 @@ def _has_risk_language(lower: str) -> bool:
         re.search(
             r"\b(blocked|blocker|cannot|can't|unable|risk|churn|escalat|incident|"
             r"outage|breach|failed|failure|delay|slip|overdue|urgent|critical)\b",
+            lower,
+        )
+    )
+
+
+def _has_dependency_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(depends?|dependency|critical path|binding constraint|"
+            r"blocked by|tied to|requires?|reversed?|exception|policy|"
+            r"approval depends|review depends)\b",
+            lower,
+        )
+    )
+
+
+def _has_revenue_impact_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(revenue|renewal|churn|invoice|finance|pricing|arr|"
+            r"sponsor|commercial|forecast|expansion)\b",
             lower,
         )
     )
