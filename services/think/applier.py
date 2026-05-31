@@ -578,12 +578,147 @@ async def apply_diff(
         diff.trigger_ref,
     )
 
+    # --- 7. Phase 1 outcome events --------------------------------
+    # The apply succeeded (we just updated applied_triggers to
+    # 'success'), so every model_id referenced by the validated diff
+    # got "used in a valid diff" for the topology optimizer's
+    # bookkeeping. We also emit one event per pair of model_ids that
+    # the diff connected via an existing model_edges edge. Both emits
+    # are best-effort and require an active TraceContext (installed by
+    # the inquiry runtime); when none is set they are no-ops.
+    await _emit_valid_diff_outcome_events(
+        diff,
+        applied_model_ids=applied_model_ids,
+        conn=conn,
+    )
+
     return {
         **ops_summary,
         "applied_model_ids": applied_model_ids,
         "state_changes_emitted": state_changes_emitted,
         "reasoning_trace": diff.reasoning_trace,
     }
+
+
+async def _emit_valid_diff_outcome_events(
+    diff: ValidatedDiff,
+    *,
+    applied_model_ids: list[UUID],
+    conn: asyncpg.Connection,
+) -> None:
+    """Emit `node_used_in_valid_diff` + `path_used_in_valid_diff`.
+
+    Called after a ValidatedDiff applies successfully. Pure
+    best-effort: every call wrapped so a Sage trace hiccup never
+    rolls back the apply transaction.
+
+    Node events: one per distinct model_id touched by the diff
+    (insert results + claim_op model_ids + edge endpoints).
+
+    Path events: one per pair of model_ids connected by an existing
+    `model_edges` row. We batch the existence check in a single SQL
+    query so a 20-node diff costs ~1 query, not 20*19.
+    """
+    try:
+        from services.sage.inquiry_traces.emitter import (
+            current_trace_context,
+            emit_event,
+            emission_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not emission_enabled():
+        return
+    ctx = current_trace_context()
+    if ctx is None:
+        return
+
+    # Collect every model_id the diff touched. Include applied (insert
+    # results) + update/archive targets + edge endpoints + the
+    # confidence_basis on act_ops (a Model that grounded the decision).
+    node_ids: set[UUID] = set()
+    for mid in applied_model_ids:
+        if isinstance(mid, UUID):
+            node_ids.add(mid)
+    for op in diff.claim_ops:
+        if isinstance(getattr(op, "model_id", None), UUID):
+            node_ids.add(op.model_id)
+    for op in diff.edge_ops:
+        if isinstance(getattr(op, "source_model_id", None), UUID):
+            node_ids.add(op.source_model_id)
+        if isinstance(getattr(op, "target_model_id", None), UUID):
+            node_ids.add(op.target_model_id)
+    for op in diff.act_ops:
+        basis = getattr(op, "confidence_basis", None)
+        if isinstance(basis, UUID):
+            node_ids.add(basis)
+
+    for mid in sorted(node_ids, key=str):
+        try:
+            await emit_event(
+                "node_used_in_valid_diff",
+                {"model_id": str(mid)},
+                ctx=ctx,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            import structlog
+            structlog.get_logger(__name__).warning(
+                "sage_trace.node_event_failed",
+                model_id=str(mid),
+                error=str(exc),
+            )
+
+    # Detect connected pairs by querying model_edges once with the full
+    # node set on each side. Symmetric kinds are stored as two rows in
+    # 0031, so we still see both directions if the diff hit either end.
+    if len(node_ids) < 2:
+        return
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT source_model_id, target_model_id, edge_kind
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = ANY($2::uuid[])
+              AND target_model_id = ANY($2::uuid[])
+            """,
+            diff.tenant_id,
+            list(node_ids),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; tolerate
+                                # missing/renamed table in test DBs
+        import structlog
+        structlog.get_logger(__name__).warning(
+            "sage_trace.path_lookup_failed",
+            error=str(exc),
+        )
+        return
+
+    seen_pairs: set[tuple[str, str, str]] = set()
+    for r in rows:
+        src = str(r["source_model_id"])
+        tgt = str(r["target_model_id"])
+        kind = r["edge_kind"]
+        key = (src, tgt, kind)
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        try:
+            await emit_event(
+                "path_used_in_valid_diff",
+                {
+                    "source_model_id": src,
+                    "target_model_id": tgt,
+                    "edge_kind": kind,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            import structlog
+            structlog.get_logger(__name__).warning(
+                "sage_trace.path_event_failed",
+                source=src, target=tgt, edge_kind=kind,
+                error=str(exc),
+            )
 
 
 # ---------------------------------------------------------------------

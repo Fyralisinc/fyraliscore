@@ -57,6 +57,12 @@ from services.retrieval.primary import (
     TriggerContext,
 )
 from services.execution.inquiry import InquiryResult, retrieve_for_execution
+from services.sage.inquiry_traces.emitter import (
+    TraceContext as _SageTraceContext,
+    emission_enabled as _sage_emission_enabled,
+    reset_trace_context as _sage_reset_trace_context,
+    set_trace_context as _sage_set_trace_context,
+)
 from services.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 from services.retrieval.second_pass import (
     log_second_pass_decision,
@@ -817,6 +823,74 @@ async def _run_once(
             payload=inquiry_result.context_packet,
         )
 
+    # Phase 1 trace wiring — install a TraceContext for the rest of the
+    # pipeline so validator drops and applier successes feed the
+    # `inquiry_outcome_events` table tied to this inquiry session. The
+    # emitter is a no-op when no session is in flight (deterministic
+    # T2 paths) or when SAGE_TRACE_EMIT=0.
+    sage_trace_token = None
+    if inquiry_result is not None and _sage_emission_enabled():
+        sage_trace_token = _sage_set_trace_context(
+            _SageTraceContext(
+                tenant_id=trigger.tenant_id,
+                inquiry_session_id=inquiry_result.session_id,
+                conn=conn,
+                metadata={
+                    "trigger_kind": trigger_kind_full,
+                    "run_id": str(record.id),
+                },
+            )
+        )
+    try:
+        return await _run_pipeline_after_retrieval(
+            conn=conn,
+            trigger=trigger,
+            pool=pool,
+            llm_provider=llm_provider,
+            access_context=access_context,
+            triggering_content=triggering_content,
+            reason_for_trigger=reason_for_trigger,
+            record=record,
+            first=first,
+            inquiry_result=inquiry_result,
+            reasoning_frame=reasoning_frame,
+            actor_operating_summary_placeholder=None,
+            adjudicate_candidate_for_trigger=adjudicate_candidate_for_trigger,
+            loaded_relationship_candidate=loaded_relationship_candidate,
+            trigger_kind_full=trigger_kind_full,
+            expanded_region=expanded_region,
+        )
+    finally:
+        if sage_trace_token is not None:
+            _sage_reset_trace_context(sage_trace_token)
+
+
+async def _run_pipeline_after_retrieval(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    pool: asyncpg.Pool,
+    llm_provider: LLMProvider | None,
+    access_context: AccessContext | None,
+    triggering_content: str | None,
+    reason_for_trigger: str | None,
+    record: ThinkRunRecord,
+    first: RetrievalResult,
+    inquiry_result: InquiryResult | None,
+    reasoning_frame: ReasoningFrame,
+    actor_operating_summary_placeholder: Any,
+    adjudicate_candidate_for_trigger: Any,
+    loaded_relationship_candidate: Any,
+    trigger_kind_full: str,
+    expanded_region: set[tuple[str, str]] | None,
+) -> ThinkRunOutcome:
+    """Body of the pipeline that runs under the Phase 1 TraceContext.
+
+    Split out so the SAGE trace context wraps validation + apply
+    without forcing the entire `_run_once` to live inside a `try:`.
+    The function signature is intentionally keyword-only and verbose:
+    no behavioural change vs. the inline version, just hoisting.
+    """
     # --- 2. Compute region BEFORE the LLM -------------------------
     allowed_region = touched_entity_ids(first)
     if expanded_region:

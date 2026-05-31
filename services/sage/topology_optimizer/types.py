@@ -16,7 +16,7 @@ surface, mirroring the way the spec separates the two columns at §22.1.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import UUID
 
 

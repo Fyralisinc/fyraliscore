@@ -75,6 +75,58 @@ from .observability import log_dropped_op
 from .thresholds import compute_threshold
 
 
+# Phase 1 trace emission — best-effort, gated by SAGE_TRACE_EMIT and
+# the presence of a TraceContext. The classifier below maps each
+# validator drop reason to the spec §15.1 event type:
+#
+#   bad-reference family  → 'validation_failed_due_to_bad_reference'
+#   missing-evidence /    → 'validation_failed_due_to_missing_evidence'
+#     unclassified
+#
+# When no TraceContext is installed (e.g. unit tests calling validate()
+# directly without an inquiry session), every emit is a no-op.
+_BAD_REFERENCE_REASONS = frozenset({
+    "invalid_entity_reference",
+    "missing_entity_reference",
+    "missing_model_reference",
+})
+
+
+def _outcome_event_for_drop_reason(reason: str) -> str:
+    if reason in _BAD_REFERENCE_REASONS:
+        return "validation_failed_due_to_bad_reference"
+    return "validation_failed_due_to_missing_evidence"
+
+
+async def _emit_validation_drop_event(
+    *,
+    op_type: str,
+    op_kind: str,
+    reason: str,
+    error_message: str,
+) -> None:
+    """Append an outcome event for a dropped op. Pure best-effort.
+
+    Imported inline so this module stays free of a hard dependency on
+    services.sage (matches the local-import pattern used elsewhere for
+    optional surfaces).
+    """
+    try:
+        from services.sage.inquiry_traces.emitter import emit_event
+    except Exception:  # noqa: BLE001
+        return
+    event_type = _outcome_event_for_drop_reason(reason)
+    await emit_event(
+        event_type,
+        {
+            "op_type": op_type,
+            "op_kind": op_kind,
+            "failure_reason": reason,
+            "error_message": error_message[:500],
+        },
+    )
+
+
 _ALLOWED_EDGE_DETECTED_BY = set(get_args(EdgeDetectedBy))
 
 
@@ -545,9 +597,8 @@ async def validate(
             )
         except (FalsifierInadequateError, MalformedFalsifierError, ValidationError) as e:
             reason = _classify_claim_drop_reason(e)
-            errors.append(
-                f"claim_op {op.op}: {e.message if hasattr(e, 'message') else str(e)}"
-            )
+            err_msg = e.message if hasattr(e, "message") else str(e)
+            errors.append(f"claim_op {op.op}: {err_msg}")
             # OP-4: structured dropped-op log + metrics counter.
             log_dropped_op(
                 trigger_id=diff.trigger_ref,
@@ -556,6 +607,13 @@ async def validate(
                 op_type="claim",
                 failure_reason=reason,
                 original_op=op,
+            )
+            # Phase 1: outcome event for the self-evolution loop.
+            await _emit_validation_drop_event(
+                op_type="claim",
+                op_kind=op.op,
+                reason=reason,
+                error_message=err_msg,
             )
             continue
         # For update/archive, the target Model must exist. Retrieval
@@ -567,9 +625,8 @@ async def validate(
                 "SELECT 1 FROM models WHERE id = $1", v_op.model_id
             )
             if not exists:
-                errors.append(
-                    f"claim_op {v_op.op}: model {v_op.model_id} not found"
-                )
+                err_msg = f"model {v_op.model_id} not found"
+                errors.append(f"claim_op {v_op.op}: {err_msg}")
                 log_dropped_op(
                     trigger_id=diff.trigger_ref,
                     tenant_id=diff.tenant_id,
@@ -577,6 +634,12 @@ async def validate(
                     op_type="claim",
                     failure_reason="missing_model_reference",
                     original_op=op,
+                )
+                await _emit_validation_drop_event(
+                    op_type="claim",
+                    op_kind=v_op.op,
+                    reason="missing_model_reference",
+                    error_message=err_msg,
                 )
                 continue
         validated_claim_ops.append(v_op)
@@ -613,6 +676,12 @@ async def validate(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _emit_validation_drop_event(
+                op_type="edge",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+            )
             continue
         if v_op is None:
             neutralized_op_count += 1
@@ -642,6 +711,12 @@ async def validate(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _emit_validation_drop_event(
+                op_type="act",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+            )
             continue
         if v_op is None:
             neutralized_op_count += 1
@@ -653,14 +728,21 @@ async def validate(
         try:
             v_op = _validate_resource_op_shape(op)
         except ValidationError as e:
+            reason = _classify_resource_drop_reason(e)
             errors.append(f"resource_op {op.op}: {e.message}")
             log_dropped_op(
                 trigger_id=diff.trigger_ref,
                 tenant_id=diff.tenant_id,
                 op_kind=op.op,
                 op_type="resource",
-                failure_reason=_classify_resource_drop_reason(e),
+                failure_reason=reason,
                 original_op=op,
+            )
+            await _emit_validation_drop_event(
+                op_type="resource",
+                op_kind=op.op,
+                reason=reason,
+                error_message=e.message,
             )
             continue
         validated_resource_ops.append(v_op)

@@ -2834,6 +2834,7 @@ async def _persist_inquiry(
             ],
         )
     if not result.evidence_cards:
+        await _emit_phase1_traces(conn, result, trigger)
         return
     await conn.executemany(
         """
@@ -2876,6 +2877,247 @@ async def _persist_inquiry(
             for card in result.evidence_cards
         ],
     )
+    await _emit_phase1_traces(conn, result, trigger)
+
+
+async def _emit_phase1_traces(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    """Write Phase 1 trace rows: retrieval_plans, omitted_evidence, and
+    the packet inclusion/omission outcome events.
+
+    Best-effort by design — the emitter helpers swallow per-row errors
+    with a warning so a Sage write hiccup never aborts the inquiry
+    persistence path. We still wrap the whole batch in a try/except
+    because an unexpected import-time error (e.g. missing migration in
+    a test DB) should NOT bring the existing pipeline down.
+    """
+    # Local import keeps the inquiry runtime free of an import-cycle
+    # risk against services.sage and lets the trace surface stay
+    # optional in environments that haven't installed migration 0049.
+    try:
+        from services.sage.inquiry_traces.emitter import (
+            TraceContext,
+            emission_enabled,
+            emit_event,
+            emit_omitted_evidence,
+            emit_retrieval_plan,
+            reset_trace_context,
+            set_trace_context,
+        )
+    except Exception as exc:  # noqa: BLE001 — never block the pipeline
+        import structlog
+        structlog.get_logger(__name__).warning(
+            "sage_trace.import_failed",
+            session_id=str(result.session_id),
+            error=str(exc),
+        )
+        return
+
+    if not emission_enabled():
+        return
+
+    # Confirm the Phase 1 tables exist before any write attempts. The
+    # repo path already swallows errors, but skipping early avoids
+    # adding noise to every legacy / pre-0049 deployment's logs.
+    plans_table = await conn.fetchval(
+        "SELECT to_regclass('public.retrieval_plans')"
+    )
+    if plans_table is None:
+        return
+
+    ctx = TraceContext(
+        tenant_id=trigger.tenant_id,
+        inquiry_session_id=result.session_id,
+        conn=conn,
+        metadata={
+            "trigger_kind": getattr(trigger, "kind", None),
+            "route": result.route,
+        },
+    )
+    token = set_trace_context(ctx)
+    try:
+        # --- 1. retrieval_plans (one per question, revision 0) -------
+        # We reuse the planning data already computed on the question +
+        # the action set the planner compiled — no second pass over the
+        # LLM, no new fields on the question struct.
+        actions_by_question: dict[str, list[RetrievalAction]] = {}
+        for action in result.retrieval_actions:
+            actions_by_question.setdefault(action.question_id, []).append(action)
+        for question in result.questions:
+            actions = actions_by_question.get(question.question_id, [])
+            paths_payload = [
+                {
+                    "path": a.path,
+                    "target": a.target,
+                    "budget": int(a.budget),
+                }
+                for a in actions
+            ]
+            intents_payload = [
+                {
+                    "primitive": question.primitive,
+                    "question": question.question,
+                    "retrieval_target": question.retrieval_target,
+                    "expected_value": float(question.expected_value),
+                    "expected_cost": float(question.expected_cost),
+                    "tests_hypotheses": list(question.tests_hypotheses),
+                }
+            ]
+            budgets_payload = {
+                "action_count": len(actions),
+                "total_budget": sum(int(a.budget) for a in actions),
+            }
+            success_conditions_payload = (
+                [{"stop_condition": question.stop_condition}]
+                if question.stop_condition else []
+            )
+            notes_payload = {
+                "round_index": int(question.round_index),
+                "score": round(float(question.score), 4),
+            }
+            await emit_retrieval_plan(
+                question_id=question.question_id,
+                plan_revision=0,
+                intents=intents_payload,
+                paths=paths_payload,
+                budgets=budgets_payload,
+                success_conditions=success_conditions_payload,
+                notes=notes_payload,
+                ctx=ctx,
+            )
+
+        # --- 2. omitted_evidence + packet inclusion/omission events --
+        # The packet builder already computes which cards are decisive
+        # vs. supporting (grouped) vs. omitted via the tiers structure
+        # and the omission_ledger. We re-derive the per-evidence-id set
+        # of "made the packet" using the same packet dict so the trace
+        # stays consistent with what the LLM actually saw.
+        packet = result.context_packet or {}
+        tiers = packet.get("tiers", {}) or {}
+        decisive_ids: set[str] = set()
+        for item in tiers.get("decisive_evidence", []) or []:
+            ev_id = item.get("evidence_id")
+            if ev_id:
+                decisive_ids.add(str(ev_id))
+        grouped_ids: set[str] = set()
+        for group in tiers.get("supporting_evidence_groups", []) or []:
+            for ev_id in group.get("evidence_ids", []) or []:
+                grouped_ids.add(str(ev_id))
+        used_ids = decisive_ids | grouped_ids
+        budget_used = (packet.get("budget") or {}).get(
+            "estimated_tokens_used", 0,
+        )
+        budget_cap = (packet.get("budget") or {}).get(
+            "token_budget", 0,
+        )
+
+        for card in result.evidence_cards:
+            ev_id_str = str(card.evidence_id)
+            paths_payload = [
+                {"path": p} for p in sorted(card.retrieval_paths)
+            ]
+            common_payload: dict[str, Any] = {
+                "evidence_id": ev_id_str,
+                "source_type": card.source_type,
+                "source_ref_id": (
+                    str(card.source_ref_id) if card.source_ref_id else None
+                ),
+                "source_ref": card.source_ref,
+                "score": round(float(card.score), 4),
+                "retrieval_paths": sorted(card.retrieval_paths),
+            }
+            if ev_id_str in used_ids:
+                tier = (
+                    "decisive" if ev_id_str in decisive_ids
+                    else "supporting"
+                )
+                await emit_event(
+                    "retrieved_evidence_used_in_packet",
+                    {**common_payload, "tier": tier},
+                    ctx=ctx,
+                )
+            else:
+                # Pick the most specific omission reason we can infer
+                # from the card. The packet compiler's omission_ledger
+                # uses free text; we map to the closed enum so the
+                # topology optimizer can group on a stable key.
+                reason = _classify_omission_reason(
+                    card,
+                    packet_budget_cap=budget_cap,
+                    packet_budget_used=budget_used,
+                )
+                first_question = (
+                    sorted(card.retrieved_for_questions)[0]
+                    if card.retrieved_for_questions else None
+                )
+                await emit_omitted_evidence(
+                    source_type=card.source_type,
+                    source_ref=card.source_ref,
+                    source_ref_id=card.source_ref_id,
+                    question_id=first_question,
+                    retrieval_paths=paths_payload,
+                    omission_reason=reason,
+                    reason_detail="dropped during packet compilation",
+                    score=float(card.score),
+                    metadata={
+                        "trust_tier": card.trust_tier,
+                        "retrieved_for_questions": sorted(
+                            card.retrieved_for_questions
+                        ),
+                        "supports_hypotheses": sorted(card.supports_hypotheses),
+                        "weakens_hypotheses": sorted(card.weakens_hypotheses),
+                        "contradicts_hypotheses": sorted(
+                            card.contradicts_hypotheses
+                        ),
+                    },
+                    ctx=ctx,
+                )
+                await emit_event(
+                    "retrieved_evidence_omitted",
+                    {**common_payload, "omission_reason": reason},
+                    ctx=ctx,
+                )
+    finally:
+        reset_trace_context(token)
+
+
+def _classify_omission_reason(
+    card: "EvidenceCard",
+    *,
+    packet_budget_cap: int,
+    packet_budget_used: int,
+) -> str:
+    """Map an evidence card to one of the closed `OMISSION_REASONS`.
+
+    The packet compiler's own logic is the source of truth for "what
+    landed in the packet"; here we just produce a stable categorical
+    tag for the topology optimizer. Rules:
+
+      * model row with no hypothesis link → `generic_hub`
+        (matches `_is_low_value_model_noise`)
+      * cards crowded out when the packet is at/near its token cap →
+        `budget_exhausted`
+      * everything else → `redundant` (this is the fallback for
+        supporting-evidence groups capped at N items per group, which
+        is the dominant exclusion path in practice).
+    """
+    is_model_noise = (
+        card.source_type == "model"
+        and not card.supports_hypotheses
+        and not card.weakens_hypotheses
+        and not card.contradicts_hypotheses
+    )
+    if is_model_noise:
+        return "generic_hub"
+    if (
+        packet_budget_cap > 0
+        and packet_budget_used >= int(packet_budget_cap * 0.95)
+    ):
+        return "budget_exhausted"
+    return "redundant"
 
 
 def _evidence_to_dict(card: EvidenceCard) -> dict[str, Any]:
