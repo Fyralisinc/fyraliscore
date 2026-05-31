@@ -8,6 +8,7 @@ environmental_trend, concern, or situation.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -77,6 +78,14 @@ async def detect_dynamic_signals(
         )
         signals.extend(
             await _detect_topology_dynamics(
+                conn,
+                tenant_id=tenant_id,
+                model_ids=model_tuple,
+                since=ref - audit_window,
+            )
+        )
+        signals.extend(
+            await _detect_missing_transition_anomalies(
                 conn,
                 tenant_id=tenant_id,
                 model_ids=model_tuple,
@@ -299,4 +308,311 @@ def _clamp(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
 
-__all__ = ["DynamicSignal", "detect_dynamic_signals"]
+# =====================================================================
+# Missing-transition (imaginary-node) anomaly
+#
+# When the substrate's invariant `event_i.new_state == event_j.previous_state`
+# (for consecutive audit_events on the same Model) is violated, *something
+# mutated the Model between event_i and event_j without emitting a matching
+# audit_event*. That "something" is precisely the off-system event class
+# the imaginary-node pattern targets: a decision, hand-off, or hallway
+# correction the system never observed.
+#
+# The detector itself only emits the *signal*. The hypothesis imputer
+# (services/dynamics/hypothesis_imputer.py) takes the signal plus the
+# enriched discontinuity payload and synthesizes a low-confidence
+# `claim_role='hypothesis'` Model that a CEO can Approve / Correct /
+# Other / Dismiss.
+#
+# Volatile fields (activation, last_retrieved_at, embedding-derived
+# columns) are excluded from the diff so the detector never fires on
+# pure reconsolidation activity.
+# =====================================================================
+
+
+_VOLATILE_AUDIT_FIELDS: frozenset[str] = frozenset(
+    {
+        "activation",
+        "last_retrieved_at",
+        "retrieval_count",
+        "embedding",
+        "embedding_pending",
+        "updated_at",
+    }
+)
+
+
+@dataclass(frozen=True)
+class MissingTransitionDiscontinuity:
+    """Structured payload describing one detected substrate discontinuity.
+
+    Carries enough context for the hypothesis imputer to synthesize a
+    natural-language hypothesis without re-querying the substrate.
+
+    `differing_fields` is the symmetric-difference set of keys whose value
+    changed between `prev_event_new_state` and `next_event_previous_state`
+    (volatile fields excluded). It will always be non-empty for an emitted
+    discontinuity — a discontinuity with no material diff is suppressed.
+    """
+
+    model_id: UUID
+    prev_event_id: int | None
+    next_event_id: int | None
+    prev_event_occurred_at: datetime
+    next_event_occurred_at: datetime
+    prev_event_cause_id: UUID | None
+    next_event_cause_id: UUID | None
+    prev_state: dict[str, Any]
+    next_state: dict[str, Any]
+    differing_fields: tuple[str, ...]
+
+    @property
+    def gap(self) -> timedelta:
+        return self.next_event_occurred_at - self.prev_event_occurred_at
+
+    @property
+    def gap_seconds(self) -> float:
+        return self.gap.total_seconds()
+
+
+def _coerce_state_jsonb(value: Any) -> dict[str, Any]:
+    """audit_events.{previous,next}_state may come back as dict, bytes, or
+    JSON-encoded string depending on the asyncpg codec path. Normalize."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except UnicodeDecodeError:
+            return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _material_diff(
+    prev_new: dict[str, Any], next_prev: dict[str, Any]
+) -> tuple[str, ...]:
+    """Return the sorted tuple of fields that differ between the two
+    snapshots, excluding volatile fields. The substrate invariant is
+    `prev_new == next_prev`; any non-volatile diff is a discontinuity."""
+    keys = set(prev_new.keys()) | set(next_prev.keys())
+    differing: list[str] = []
+    for key in keys:
+        if key in _VOLATILE_AUDIT_FIELDS:
+            continue
+        if prev_new.get(key) != next_prev.get(key):
+            differing.append(key)
+    return tuple(sorted(differing))
+
+
+def _missing_transition_strength(
+    differing_fields: tuple[str, ...], gap_seconds: float
+) -> float:
+    """Stronger signal when (a) more fields diverged, and (b) the gap is
+    small enough that the missed mutation likely sat between observed
+    activity. A 1-second gap with one differing field still counts —
+    a deterministic write path always emits a matching audit_event."""
+    base = 0.45 + 0.10 * min(5, len(differing_fields))
+    # Gap penalty: huge gaps weaken the signal (the system may have
+    # been unattended; later mutations are not necessarily missed
+    # transitions in the imaginary-node sense). Cap at 30 days.
+    gap_days = max(0.0, gap_seconds) / 86400.0
+    decay = max(0.0, 1.0 - gap_days / 30.0)
+    return _clamp(base * (0.5 + 0.5 * decay))
+
+
+def _missing_transition_summary(
+    model_id: UUID,
+    differing_fields: tuple[str, ...],
+    gap: timedelta,
+) -> str:
+    fields_str = ", ".join(differing_fields[:3])
+    if len(differing_fields) > 3:
+        fields_str += f", +{len(differing_fields) - 3} more"
+    hours = max(0.0, gap.total_seconds() / 3600.0)
+    if hours < 24:
+        gap_str = f"{hours:.1f}h"
+    else:
+        gap_str = f"{hours / 24:.1f}d"
+    return (
+        f"Model {model_id} shows a state discontinuity across consecutive "
+        f"audit events ({gap_str} apart, fields: {fields_str}); an "
+        f"unrecorded mutation likely occurred between them."
+    )
+
+
+async def _detect_missing_transition_anomalies(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_ids: tuple[UUID, ...],
+    since: datetime,
+) -> list[DynamicSignal]:
+    """Detect substrate state-jump anomalies and emit signals.
+
+    Algorithm:
+      1. Fetch material audit_events for the given Models ordered by
+         (model_id, occurred_at, event_id) — event_id breaks same-instant
+         ties deterministically.
+      2. For each Model, walk consecutive pairs (event_i, event_j).
+         The substrate invariant requires
+         `event_i.new_state == event_j.previous_state` (modulo volatile
+         fields). When the invariant is violated, an unrecorded mutation
+         happened between the two events.
+      3. Emit one DynamicSignal per discontinuity, carrying the diff +
+         bracketing events so the imputer can construct a hypothesis Model
+         without re-querying.
+
+    Excluded by design:
+      - `confidence_update` events (confidence-only changes are tracked
+        by recurring_update; they're not state discontinuities).
+      - `create` events as the prior in a pair (previous_state is NULL).
+      - Volatile fields (`activation`, `last_retrieved_at`, etc.) — these
+        churn under normal reconsolidation and would otherwise create
+        false positives.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT model_id, event_id, occurred_at, cause_id, cause_type,
+               previous_state, new_state
+        FROM audit_events
+        WHERE tenant_id = $1
+          AND model_id = ANY($2::uuid[])
+          AND occurred_at >= $3
+          AND cause_type IN ('create', 'field_update', 'reconciliation_merge')
+        ORDER BY model_id, occurred_at, event_id
+        """,
+        tenant_id,
+        list(model_ids),
+        since,
+    )
+    if not rows:
+        return []
+
+    per_model: dict[UUID, list[asyncpg.Record]] = {}
+    for row in rows:
+        per_model.setdefault(row["model_id"], []).append(row)
+
+    out: list[DynamicSignal] = []
+    for model_id, events in per_model.items():
+        if len(events) < 2:
+            continue
+        for i in range(len(events) - 1):
+            prev = events[i]
+            curr = events[i + 1]
+            prev_new = _coerce_state_jsonb(prev["new_state"])
+            curr_prev = _coerce_state_jsonb(curr["previous_state"])
+            # `create` events have NULL previous_state but their new_state
+            # bootstraps the chain. We compare against the *next* event's
+            # previous_state. If the next event is also a `create` (which
+            # shouldn't happen on the same model_id but the substrate
+            # allows it via reconciliation_merge), we skip rather than
+            # raise a false positive.
+            if not prev_new and not curr_prev:
+                continue
+            differing = _material_diff(prev_new, curr_prev)
+            if not differing:
+                continue
+            gap = curr["occurred_at"] - prev["occurred_at"]
+            evidence: list[UUID] = []
+            if prev["cause_id"] is not None:
+                evidence.append(prev["cause_id"])
+            if curr["cause_id"] is not None:
+                evidence.append(curr["cause_id"])
+            out.append(
+                DynamicSignal(
+                    dynamic_kind="missing_transition",
+                    summary=_missing_transition_summary(
+                        model_id, differing, gap
+                    ),
+                    strength=_missing_transition_strength(
+                        differing, gap.total_seconds()
+                    ),
+                    confidence=0.55,
+                    subject_model_ids=(model_id,),
+                    evidence_event_ids=tuple(evidence),
+                )
+            )
+    return out
+
+
+async def fetch_missing_transition_discontinuity(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    since: datetime,
+) -> MissingTransitionDiscontinuity | None:
+    """Re-derive the most recent discontinuity for one Model and return
+    the enriched payload the imputer needs.
+
+    Why a separate function: detect_dynamic_signals returns the lightweight
+    DynamicSignal envelope (UUIDs + summary + strength), but the imputer
+    needs the actual bracketing JSONB snapshots. Rather than fattening the
+    DynamicSignal dataclass with raw audit state (which would leak through
+    every downstream consumer), the imputer calls this targeted query.
+
+    Returns None when the discontinuity has been resolved (e.g., a later
+    audit_event filled the gap) or when the Model no longer has at least
+    two material audit events in the window.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT event_id, occurred_at, cause_id, cause_type,
+               previous_state, new_state
+        FROM audit_events
+        WHERE tenant_id = $1
+          AND model_id = $2
+          AND occurred_at >= $3
+          AND cause_type IN ('create', 'field_update', 'reconciliation_merge')
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT 16
+        """,
+        tenant_id,
+        model_id,
+        since,
+    )
+    if len(rows) < 2:
+        return None
+
+    # rows are DESC; walk pairs (newer=rows[i], older=rows[i+1]) to find
+    # the most-recent discontinuity. This makes "what does the imputer
+    # explain?" deterministic: always the latest unrecorded mutation.
+    for i in range(len(rows) - 1):
+        newer = rows[i]
+        older = rows[i + 1]
+        older_new = _coerce_state_jsonb(older["new_state"])
+        newer_prev = _coerce_state_jsonb(newer["previous_state"])
+        if not older_new and not newer_prev:
+            continue
+        differing = _material_diff(older_new, newer_prev)
+        if not differing:
+            continue
+        return MissingTransitionDiscontinuity(
+            model_id=model_id,
+            prev_event_id=older["event_id"],
+            next_event_id=newer["event_id"],
+            prev_event_occurred_at=older["occurred_at"],
+            next_event_occurred_at=newer["occurred_at"],
+            prev_event_cause_id=older["cause_id"],
+            next_event_cause_id=newer["cause_id"],
+            prev_state=older_new,
+            next_state=newer_prev,
+            differing_fields=differing,
+        )
+    return None
+
+
+__all__ = [
+    "DynamicSignal",
+    "MissingTransitionDiscontinuity",
+    "detect_dynamic_signals",
+    "fetch_missing_transition_discontinuity",
+]

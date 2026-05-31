@@ -4,16 +4,19 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from lib.llm.provider import LLMConfig, LLMProvider
-from lib.shared.types import ModelCreate
+from lib.shared.types import ModelCreate, ModelRow
 from services.models.repo import ModelsRepo
 from services.execution.inquiry import (
     Hypothesis,
     InquiryConfig,
     InquiryQuestion,
+    ModelRelevance,
+    _apply_relevance_diversity,
     _candidate_questions_for_round,
     _has_broad_signal_language,
     _merge_llm_and_safety_questions,
@@ -75,6 +78,75 @@ class _SlowQuestionProvider(LLMProvider):
     ) -> str:
         await asyncio.sleep(1.0)
         return "{}"
+
+
+def _model_row_for_compaction(
+    *,
+    natural: str,
+    claim_role: str,
+    domain_tags: list[str],
+    scope_entities: list[dict[str, str]],
+    supporting_model_ids: list[Any] | None = None,
+) -> ModelRow:
+    now = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+    return ModelRow(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        born_from_event_id=uuid4(),
+        proposition={"kind": "belief", "assertion": natural},
+        natural=natural,
+        embedding=[0.1, 0.2, 0.3],
+        scope_actors=[],
+        scope_entities=scope_entities,
+        scope_temporal={"type": "now"},
+        confidence=0.7,
+        activation=0.6,
+        supporting_event_ids=[],
+        supporting_model_ids=list(supporting_model_ids or []),
+        evidential_weight=0.5,
+        status="active",
+        archived_at=None,
+        archive_reason=None,
+        created_at=now,
+        last_retrieved_at=None,
+        retrieval_count=0,
+        evaluate_at=None,
+        resolution_criteria=None,
+        contributing_models=[],
+        visible_to_subjects=True,
+        proposition_kind="belief",
+        claim_role=claim_role,
+        abstraction_level="atomic",
+        time_mode="current",
+        modality="inferred",
+        polarity="negative" if claim_role == "concern" else "neutral",
+        domain_tags=domain_tags,
+        memory_grammar_version="v1",
+        confirmed_count=0,
+        contested_count=0,
+        last_confirmed_at=None,
+        confidence_at_assertion=0.7,
+        resolved_at=None,
+        resolution_outcome=None,
+        activation_coefficient=1.0,
+        target_actor_id=None,
+        caused_act_change_id=None,
+    )
+
+
+def _relevance_for_model(model: ModelRow, score: float) -> ModelRelevance:
+    return ModelRelevance(
+        model_id=model.id,
+        final_score=score,
+        base_score=0.12,
+        lexical_score=0.2,
+        scope_score=0.16,
+        path_score=0.06,
+        evidence_score=0.06,
+        provenance_score=0.04,
+        penalty=0.0,
+        reasons=("test",),
+    )
 
 
 def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
@@ -251,6 +323,73 @@ def test_safety_question_boosts_existing_llm_expected_value():
     assert merged[0].question == llm_dependency.question
     assert merged[0].expected_value == safety_dependency.expected_value
     assert merged[0].score == llm_dependency.score
+
+
+def test_coverage_compaction_caps_dense_material_neighborhoods():
+    same_customer = str(uuid4())
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    for idx in range(54):
+        model = _model_row_for_compaction(
+            natural=f"same customer revenue risk duplicate {idx}",
+            claim_role="concern",
+            domain_tags=["revenue", "customers"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+        )
+        pairs.append((model, _relevance_for_model(model, 0.62 - idx * 0.001)))
+    for idx, role in enumerate(("pattern", "situation", "fact", "relation")):
+        support_id = uuid4()
+        model = _model_row_for_compaction(
+            natural=f"novel {role} coverage for adjacent customer {idx}",
+            claim_role=role,
+            domain_tags=["execution", "customers"],
+            scope_entities=[{"type": "customer", "id": str(uuid4())}],
+            supporting_model_ids=[support_id],
+        )
+        pairs.append((model, _relevance_for_model(model, 0.46 - idx * 0.01)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=64,
+        weak_signal=False,
+        broad_signal=False,
+        threshold=0.30,
+        min_keep=4,
+        model_pathways={model.id: {"semantic"} for model, _ in pairs},
+        model_questions={model.id: {"Q_GOAL_IMPACT"} for model, _ in pairs},
+    )
+
+    roles = {model.claim_role for model, _ in compacted}
+    assert len(compacted) <= 36
+    assert dropped >= 20
+    assert {"pattern", "situation"} <= roles
+    assert notes["strategy"] == "coverage_aware"
+
+
+def test_coverage_compaction_uses_larger_broad_portfolio_budget():
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    for idx in range(64):
+        model = _model_row_for_compaction(
+            natural=f"portfolio renewal risk customer {idx}",
+            claim_role="concern",
+            domain_tags=["portfolio", "revenue"],
+            scope_entities=[{"type": "customer", "id": str(uuid4())}],
+        )
+        pairs.append((model, _relevance_for_model(model, 0.58 - idx * 0.001)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=64,
+        weak_signal=False,
+        broad_signal=True,
+        threshold=0.24,
+        min_keep=18,
+        model_pathways={model.id: {"semantic", "temporal"} for model, _ in pairs},
+        model_questions={model.id: {"Q_GOAL_IMPACT"} for model, _ in pairs},
+    )
+
+    assert 24 <= len(compacted) <= 48
+    assert dropped >= 16
+    assert notes["target_limit"] == 48
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(

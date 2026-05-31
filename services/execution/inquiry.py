@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -1632,11 +1633,16 @@ def _select_relevant_models(
             cutoff_reason = "top_n cap reached after relevance gate"
             break
 
-    selected_pairs, duplicate_drops = _apply_relevance_diversity(
+    selected_pairs_before_compaction = len(selected_pairs)
+    selected_pairs, duplicate_drops, compaction_notes = _apply_relevance_diversity(
         selected_pairs,
         top_n=top_n,
         weak_signal=weak_signal,
         broad_signal=broad_signal,
+        threshold=threshold,
+        min_keep=min_material,
+        model_pathways=model_pathways,
+        model_questions=model_questions,
     )
     selected = [model for model, _ in selected_pairs]
     notes = {
@@ -1651,6 +1657,8 @@ def _select_relevant_models(
         "dropped_below_threshold": dropped_below_threshold,
         "dropped_redundant": duplicate_drops,
         "cutoff_reason": cutoff_reason,
+        "selected_before_compaction": selected_pairs_before_compaction,
+        "coverage_compaction": compaction_notes,
         "top_scores": [
             _jsonable(
                 {
@@ -1890,22 +1898,183 @@ def _apply_relevance_diversity(
     top_n: int,
     weak_signal: bool,
     broad_signal: bool,
-) -> tuple[list[tuple[ModelRow, ModelRelevance]], int]:
-    cluster_limit = 2 if weak_signal else (10 if broad_signal else 5)
-    cluster_counts: dict[tuple[Any, ...], int] = {}
+    threshold: float,
+    min_keep: int,
+    model_pathways: dict[UUID, set[str]] | None = None,
+    model_questions: dict[UUID, set[str]] | None = None,
+) -> tuple[list[tuple[ModelRow, ModelRelevance]], int, dict[str, Any]]:
+    if not selected_pairs or top_n <= 0:
+        return [], len(selected_pairs), {
+            "strategy": "coverage_aware",
+            "target_limit": 0,
+            "selected_before": len(selected_pairs),
+            "selected_after": 0,
+        }
+
+    target_limit = min(top_n, _coverage_compaction_target(len(selected_pairs), top_n, weak_signal, broad_signal))
+    floor = min(target_limit, max(1, int(min_keep or 0)))
+    model_pathways = model_pathways or {}
+    model_questions = model_questions or {}
+    remaining = list(selected_pairs[:top_n])
     out: list[tuple[ModelRow, ModelRelevance]] = []
-    dropped = 0
-    for model, rel in selected_pairs:
-        key = _model_relevance_cluster_key(model)
-        count = cluster_counts.get(key, 0)
-        if count >= cluster_limit and rel.final_score < 0.72:
-            dropped += 1
-            continue
-        cluster_counts[key] = count + 1
-        out.append((model, rel))
-        if len(out) >= top_n:
+    covered: Counter[str] = Counter()
+    cluster_counts: Counter[tuple[Any, ...]] = Counter()
+
+    def add_pair(pair: tuple[ModelRow, ModelRelevance]) -> None:
+        model, rel = pair
+        out.append(pair)
+        cluster_counts[_model_relevance_cluster_key(model)] += 1
+        for feature, _weight in _model_coverage_features(
+            model,
+            model_pathways.get(model.id, set()),
+            model_questions.get(model.id, set()),
+        ):
+            covered[feature] += 1
+
+    while remaining and len(out) < floor:
+        add_pair(remaining.pop(0))
+
+    while remaining and len(out) < target_limit:
+        best_idx = 0
+        best_utility = float("-inf")
+        for idx, pair in enumerate(remaining):
+            model, rel = pair
+            utility = _coverage_selection_utility(
+                model,
+                rel,
+                covered,
+                cluster_counts,
+                broad_signal=broad_signal,
+                weak_signal=weak_signal,
+                model_pathways=model_pathways.get(model.id, set()),
+                model_questions=model_questions.get(model.id, set()),
+            )
+            # A tiny position prior keeps ties stable and favors the relevance
+            # ordering produced by the scorer.
+            utility -= idx * 0.0005
+            if utility > best_utility:
+                best_utility = utility
+                best_idx = idx
+
+        best_pair = remaining[best_idx]
+        if (
+            len(out) >= floor
+            and len(out) >= 8
+            and best_utility < max(0.20, threshold + (0.03 if broad_signal else 0.05))
+        ):
             break
-    return out, dropped
+        add_pair(remaining.pop(best_idx))
+
+    dropped = max(0, len(selected_pairs[:top_n]) - len(out))
+    notes = {
+        "strategy": "coverage_aware",
+        "target_limit": target_limit,
+        "selected_before": len(selected_pairs),
+        "selected_after": len(out),
+        "dropped": dropped,
+        "coverage_features": len(covered),
+        "cluster_count": len(cluster_counts),
+    }
+    return out, dropped, notes
+
+
+def _coverage_compaction_target(
+    selected_count: int,
+    top_n: int,
+    weak_signal: bool,
+    broad_signal: bool,
+) -> int:
+    if weak_signal:
+        return min(top_n, 8)
+    if broad_signal:
+        return min(top_n, max(24, min(48, selected_count)))
+    if selected_count >= max(32, int(top_n * 0.75)):
+        return min(top_n, 36)
+    return min(top_n, selected_count)
+
+
+def _coverage_selection_utility(
+    model: ModelRow,
+    rel: ModelRelevance,
+    covered: Counter[str],
+    cluster_counts: Counter[tuple[Any, ...]],
+    *,
+    broad_signal: bool,
+    weak_signal: bool,
+    model_pathways: set[str],
+    model_questions: set[str],
+) -> float:
+    features = _model_coverage_features(model, model_pathways, model_questions)
+    novelty = sum(weight / (1 + covered[feature]) for feature, weight in features)
+    cluster_count = cluster_counts[_model_relevance_cluster_key(model)]
+    redundancy_penalty = 0.0
+    if cluster_count:
+        redundancy_penalty += 0.07 * cluster_count
+    if weak_signal and cluster_count:
+        redundancy_penalty += 0.12
+    entity_pressure = _entity_coverage_pressure(model, covered)
+    role_pressure = _role_coverage_pressure(model, covered)
+    if entity_pressure:
+        redundancy_penalty += 0.04 * entity_pressure
+    if role_pressure and not broad_signal:
+        redundancy_penalty += 0.03 * role_pressure
+    return rel.final_score + min(0.28, novelty) - redundancy_penalty
+
+
+def _model_coverage_features(
+    model: ModelRow,
+    model_pathways: set[str],
+    model_questions: set[str],
+) -> list[tuple[str, float]]:
+    features: list[tuple[str, float]] = []
+    kind = getattr(model, "proposition_kind", None)
+    if kind:
+        features.append((f"kind:{kind}", 0.035))
+    role = getattr(model, "claim_role", None)
+    if role:
+        features.append((f"role:{role}", 0.055))
+    level = getattr(model, "abstraction_level", None)
+    if level:
+        features.append((f"level:{level}", 0.025))
+    time_mode = getattr(model, "time_mode", None)
+    if time_mode:
+        features.append((f"time:{time_mode}", 0.02))
+    polarity = getattr(model, "polarity", None)
+    if polarity:
+        features.append((f"polarity:{polarity}", 0.02))
+    for tag in sorted(str(tag) for tag in (getattr(model, "domain_tags", []) or []))[:5]:
+        features.append((f"domain:{tag}", 0.035))
+    for entity_type, entity_id in sorted(_canonical_entity_pairs(getattr(model, "scope_entities", []) or []))[:8]:
+        features.append((f"entity:{entity_type}:{entity_id}", 0.075))
+        features.append((f"entity_type:{entity_type}", 0.025))
+    for actor_id in sorted(str(actor) for actor in (getattr(model, "scope_actors", []) or []))[:4]:
+        features.append((f"actor:{actor_id}", 0.035))
+    for support_id in sorted(str(mid) for mid in (getattr(model, "supporting_model_ids", []) or []))[:4]:
+        features.append((f"support:{support_id}", 0.06))
+    for path in sorted(str(path) for path in model_pathways)[:6]:
+        features.append((f"path:{path}", 0.04))
+    for question in sorted(str(question) for question in model_questions)[:6]:
+        features.append((f"question:{question}", 0.035))
+    if not features:
+        token_key = tuple(sorted(_relevance_tokens(getattr(model, "natural", "") or ""))[:3])
+        if token_key:
+            features.append((f"text:{token_key}", 0.02))
+    return features
+
+
+def _entity_coverage_pressure(model: ModelRow, covered: Counter[str]) -> int:
+    pairs = _canonical_entity_pairs(getattr(model, "scope_entities", []) or [])
+    return max((covered[f"entity:{entity_type}:{entity_id}"] for entity_type, entity_id in pairs), default=0)
+
+
+def _role_coverage_pressure(model: ModelRow, covered: Counter[str]) -> int:
+    role = getattr(model, "claim_role", None)
+    if role:
+        return covered[f"role:{role}"]
+    kind = getattr(model, "proposition_kind", None)
+    if kind:
+        return covered[f"kind:{kind}"]
+    return 0
 
 
 def _model_relevance_cluster_key(model: ModelRow) -> tuple[Any, ...]:
