@@ -132,6 +132,8 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "google_calendar": _not_implemented_planner("google_calendar", "IN-15"),
     "google_drive": _not_implemented_planner("google_drive", "IN-16"),
     "jira":    _not_implemented_planner("jira",    "IN-17"),
+    "mercury": _not_implemented_planner("mercury", "IN-FIN"),
+    "quickbooks": _not_implemented_planner("quickbooks", "IN-FIN"),
 }
 
 
@@ -155,3 +157,5 @@ from services.ingestion.planners import notion as _notion  # noqa: E402,F401
 from services.ingestion.planners import google_calendar as _google_calendar  # noqa: E402,F401
 from services.ingestion.planners import google_drive as _google_drive  # noqa: E402,F401
 from services.ingestion.planners import jira as _jira  # noqa: E402,F401
+from services.ingestion.planners import mercury as _mercury  # noqa: E402,F401
+from services.ingestion.planners import quickbooks as _quickbooks  # noqa: E402,F401

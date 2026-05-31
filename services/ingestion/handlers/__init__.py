@@ -166,6 +166,8 @@ from services.ingestion.handlers import notion  # noqa: E402,F401
 from services.ingestion.handlers import google_calendar  # noqa: E402,F401
 from services.ingestion.handlers import google_drive  # noqa: E402,F401
 from services.ingestion.handlers import jira  # noqa: E402,F401
+from services.ingestion.handlers import mercury  # noqa: E402,F401
+from services.ingestion.handlers import quickbooks  # noqa: E402,F401
 
 
 __all__ = [

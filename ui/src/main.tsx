@@ -14,6 +14,7 @@ import { ModelsList, ModelDetail } from "./debug/pages/Models";
 import { Acts } from "./debug/pages/Acts";
 import { Renders } from "./debug/pages/Renders";
 import { Cache } from "./debug/pages/Cache";
+import { Finance } from "./debug/pages/Finance";
 import "./index.css";
 
 // Router: CEO view at /, inspector at /debug/*.
@@ -38,6 +39,7 @@ ReactDOM.createRoot(root).render(
           <Route path="models" element={<ModelsList />} />
           <Route path="models/:id" element={<ModelDetail />} />
           <Route path="acts" element={<Acts />} />
+          <Route path="finance" element={<Finance />} />
           <Route path="renders" element={<Renders />} />
           <Route path="cache" element={<Cache />} />
         </Route>

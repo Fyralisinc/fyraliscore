@@ -193,7 +193,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks")
 
 
 # ---------------------------------------------------------------------
@@ -328,6 +328,54 @@ SELECT ji.id, ji.tenant_id, ji.base_url, ji.account_email, ji.secret_ref,
  LIMIT 1
 """
 
+# Finance: Mercury mirrors the Jira/Calendar loader (A18.2) — the planner needs
+# the 1-to-N active-account list aggregated onto the install so it can emit one
+# shard per account (no DB I/O in the planner). The api_token lives in
+# encrypted_secrets behind secret_ref; base_url is needed by the client.
+_LOAD_MERCURY_INSTALL_SQL = """
+SELECT mi.id, mi.tenant_id, mi.base_url, mi.secret_ref, mi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'account_id', ma.account_id,
+             'account_name', ma.account_name,
+             'account_kind', ma.account_kind,
+             'txn_cursor', ma.txn_cursor
+           ) ORDER BY ma.account_id
+         ) FILTER (WHERE ma.id IS NOT NULL),
+         '[]'::json
+       ) AS accounts
+  FROM mercury_installations mi
+  LEFT JOIN mercury_accounts ma
+    ON ma.mercury_installation_id = mi.id AND ma.state = 'active'
+ WHERE mi.tenant_id = $1 AND mi.disabled_at IS NULL
+ GROUP BY mi.id
+ LIMIT 1
+"""
+
+# Finance: QuickBooks mirrors the Jira loader — one shard per (realm, entity
+# type). The access token lives in encrypted_secrets behind secret_ref; realm_id
+# + base_url are needed by the client.
+_LOAD_QUICKBOOKS_INSTALL_SQL = """
+SELECT qi.id, qi.tenant_id, qi.realm_id, qi.base_url, qi.secret_ref,
+       qi.refresh_secret_ref, qi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', qe.entity_type,
+             'updated_cursor', qe.updated_cursor
+           ) ORDER BY qe.entity_type
+         ) FILTER (WHERE qe.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM quickbooks_installations qi
+  LEFT JOIN quickbooks_entities qe
+    ON qe.quickbooks_installation_id = qi.id AND qe.state = 'active'
+ WHERE qi.tenant_id = $1 AND qi.disabled_at IS NULL
+ GROUP BY qi.id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -441,6 +489,10 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
     if source == "jira":
         return await conn.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
+    if source == "mercury":
+        return await conn.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
+    if source == "quickbooks":
+        return await conn.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

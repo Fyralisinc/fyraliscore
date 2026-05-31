@@ -23,7 +23,9 @@ from services.webhooks.signatures import (
     github,
     jira,
     linear,
+    mercury,
     notion,
+    quickbooks,
     slack,
     stripe,
 )
@@ -38,6 +40,8 @@ VERIFIERS: dict[str, Verifier] = {
     "discord": discord.verifier,
     "notion": notion.verifier,
     "jira": jira.verifier,
+    "mercury": mercury.verifier,
+    "quickbooks": quickbooks.verifier,
 }
 
 

@@ -326,3 +326,126 @@
   color: #ff7b72;
   margin-bottom: 12px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Finance ingestion console (/debug/finance)                          */
+/* The bare .card/.kv/.note/.pill/.muted classes are otherwise only    */
+/* defined scoped under .detail/.debug-table, so the finance page fell  */
+/* through to the light global theme. These rules give it the same      */
+/* GitHub-dark register as the rest of the inspector. Scoped to         */
+/* .finance-console so nothing leaks back out.                          */
+/* ------------------------------------------------------------------ */
+.finance-console .card {
+  background: #0a0e14;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.finance-console h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: #e6edf3;
+}
+.finance-console .note {
+  color: #8b949e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.finance-console .muted {
+  color: #8b949e;
+}
+.finance-console .mono {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas, monospace;
+  color: #79c0ff;
+}
+/* status / log semantic colors */
+.finance-console .ok {
+  color: #3fb950;
+}
+.finance-console .warm {
+  color: #d29922;
+}
+.finance-console .error,
+.finance-console .err {
+  color: #f85149;
+}
+
+/* key/value status rows */
+.finance-console .kv {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  color: #c9d1d9;
+  font-size: 12.5px;
+}
+.finance-console .kv b {
+  color: #e6edf3;
+  font-weight: 600;
+}
+.finance-console .kv b.muted {
+  color: #8b949e;
+  font-weight: 500;
+}
+
+/* sub-resource pills (accounts / entities) */
+.finance-console .pill {
+  display: inline-block;
+  padding: 2px 9px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 11px;
+  font-size: 11px;
+  color: #c9d1d9;
+}
+
+/* buttons (tenant + action row). Reuse the inspector button look. */
+.finance-console button {
+  background: #1f242c;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  padding: 5px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+.finance-console button:hover:not(:disabled) {
+  background: #2a323d;
+  border-color: #3d444d;
+}
+.finance-console button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* the activity-log timeline lines are plain rows, not the boxed
+   signal-detail steps — flatten them. */
+.finance-console .timeline .step {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #161b22;
+  border-radius: 0;
+  padding: 4px 2px;
+  font-size: 12px;
+}
+.finance-console .timeline .ts {
+  color: #6e7681;
+  font-size: 11.5px;
+  margin-right: 8px;
+}
+
+.finance-console .empty {
+  padding: 18px;
+  text-align: center;
+  color: #6e7681;
+  font-size: 12.5px;
+}
+.finance-console .truncate {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

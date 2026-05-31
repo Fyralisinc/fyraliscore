@@ -229,6 +229,63 @@ async def build_jira_client(
     return client
 
 
+async def build_mercury_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Mercury read-client. API token is long-lived: resolved once from the
+    secret store via `install['secret_ref']` (or preset in spammer mode). The
+    base URL routes through the endpoint resolver so backfill can point at the
+    local spammer's `/mercury` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.integrations.mercury.client import MercuryClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = MercuryClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-mercury" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /mercury; prod uses the
+        # canonical Mercury API host (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("mercury_api") if spammer else None),
+    )
+    return client
+
+
+async def build_quickbooks_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """QuickBooks read-client. OAuth access token is resolved once from the
+    secret store via `install['secret_ref']` (or preset in spammer mode). The
+    realm-scoped base URL is per-install (`install['base_url']`); in spammer
+    mode it is overridden via the endpoint resolver so backfill points at the
+    local spammer's `/quickbooks` sub-path. `realm_id` scopes every query."""
+    from lib.integrations.endpoints import endpoint
+    from services.integrations.quickbooks.client import QuickBooksClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    realm_id = str(install["realm_id"]) if "realm_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = QuickBooksClient(
+        base_url=base_url,
+        realm_id=realm_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-quickbooks" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("quickbooks_api") if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -262,9 +319,19 @@ async def open_jira_client(install: asyncpg.Record) -> Opener:
     return await build_jira_client(install), _noop
 
 
+async def open_mercury_client(install: asyncpg.Record) -> Opener:
+    return await build_mercury_client(install), _noop
+
+
+async def open_quickbooks_client(install: asyncpg.Record) -> Opener:
+    return await build_quickbooks_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_discord_client",
     "build_notion_client", "build_jira_client",
+    "build_mercury_client", "build_quickbooks_client",
     "open_github_client", "open_slack_client", "open_discord_client",
     "open_notion_client", "open_jira_client",
+    "open_mercury_client", "open_quickbooks_client",
 ]

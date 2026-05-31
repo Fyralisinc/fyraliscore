@@ -408,6 +408,29 @@ SELECT id, tenant_id, base_url, account_email, secret_ref, cloud_id,
  LIMIT 1
 """
 
+# Finance: Mercury is a per-tenant API-token install (not in
+# provider_installations). The fetcher works one account at a time via
+# shard_identifier; the install row carries base_url + secret_ref the
+# MercuryClient needs.
+_LOAD_MERCURY_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, secret_ref, disabled_at
+  FROM mercury_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# Finance: QuickBooks is a per-tenant OAuth install (not in
+# provider_installations). The fetcher works one entity type at a time via
+# shard_identifier; the install row carries realm_id + base_url + secret_ref
+# (access token) + refresh_secret_ref the QuickBooksClient needs.
+_LOAD_QUICKBOOKS_INSTALL_SQL = """
+SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM quickbooks_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -492,6 +515,10 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
     if source == "jira":
         return await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
+    if source == "mercury":
+        return await pool.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
+    if source == "quickbooks":
+        return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

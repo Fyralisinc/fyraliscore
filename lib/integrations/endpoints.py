@@ -52,6 +52,14 @@ _PROD: dict[str, str] = {
     # uniformly; the prod default is intentionally empty (never used in
     # production — build_jira_client passes the per-install base_url instead).
     "jira_api": "",
+    # Finance: Mercury banking API. Single global host.
+    "mercury_api": "https://api.mercury.com/api/v1",
+    # Finance: QuickBooks Online. NOTE — the realm-scoped path
+    # (`/v3/company/{realmId}`) is per-install on quickbooks_installations.base_url
+    # and used directly in production. This entry is the host prefix used ONLY so
+    # the local spammer sub-path convention (`/quickbooks`) resolves uniformly;
+    # build_quickbooks_client passes the per-install base_url in production.
+    "quickbooks_api": "https://quickbooks.api.intuit.com",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -67,6 +75,8 @@ _ENV: dict[str, str] = {
     "google_calendar_api": "GOOGLE_CALENDAR_API_BASE_URL",
     "google_drive_api": "GOOGLE_DRIVE_API_BASE_URL",
     "jira_api": "JIRA_API_BASE_URL",
+    "mercury_api": "MERCURY_API_BASE_URL",
+    "quickbooks_api": "QUICKBOOKS_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -83,6 +93,8 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "google_calendar_api": "/gcal/calendar/v3",
     "google_drive_api": "/gdrive/drive/v3",
     "jira_api": "/jira",
+    "mercury_api": "/mercury",
+    "quickbooks_api": "/quickbooks",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

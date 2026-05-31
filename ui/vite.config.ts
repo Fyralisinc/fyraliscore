@@ -14,6 +14,11 @@ import { mockBackend } from "./mock-server";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const useMock = env.USE_MOCK === "1" || env.VITE_USE_MOCK === "1";
+  // Where /api and /stream proxy to. Defaults to the dev-stack gateway on :8000;
+  // override (e.g. VITE_GATEWAY_TARGET=http://localhost:8010) to point at an
+  // isolated gateway such as scripts/run_finance_demo_gateway.py.
+  const gatewayTarget = env.VITE_GATEWAY_TARGET || "http://localhost:8000";
+  const wsTarget = env.VITE_GATEWAY_WS_TARGET || gatewayTarget.replace(/^http/, "ws");
   return {
     plugins: [react(), ...(useMock ? [mockBackend()] : [])],
     resolve: {
@@ -27,12 +32,12 @@ export default defineConfig(({ mode }) => {
         ? undefined
         : {
             "/api": {
-              target: "http://localhost:8000",
+              target: gatewayTarget,
               changeOrigin: true,
               rewrite: (p) => p.replace(/^\/api/, ""),
             },
             "/stream": {
-              target: "ws://localhost:8000",
+              target: wsTarget,
               ws: true,
               rewrite: (p) => p.replace(/^\/stream/, ""),
             },
