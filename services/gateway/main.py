@@ -233,6 +233,9 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # Finance testing panel (Mercury + QuickBooks). Dev/testing tool scoped by
     # X-Tenant-Id header (no bearer), same posture as /debug. Env-gated at mount.
     "/finance/",
+    # Slack DM testing panel (per-user OAuth DM ingestion). Same posture as
+    # /finance — X-Tenant-Id header, no bearer, env-gated at mount.
+    "/slack/",
 )
 
 
@@ -853,6 +856,16 @@ def build_app(
             app.include_router(build_finance_router())
         except Exception as exc:  # noqa: BLE001 — never block startup
             log.error("finance_router_mount_failed", error=str(exc))
+
+    # Slack DM testing control plane (per-user OAuth human↔human DM ingestion):
+    # install / backfill / live-emit / status. On by default (the testing
+    # deliverable); set SLACK_DM_PANEL_ENABLED=0 to disable in real prod.
+    if os.environ.get("SLACK_DM_PANEL_ENABLED", "1") != "0":
+        try:
+            from services.gateway.slack_router import build_slack_router
+            app.include_router(build_slack_router())
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            log.error("slack_router_mount_failed", error=str(exc))
     return app
 
 
