@@ -734,8 +734,13 @@ def _evaluate_case(case: StressCase, result: Any, elapsed_ms: float) -> dict[str
         "expected_model_count": len(case.expected_model_ids),
         "expected_evidence_hits": len(evidence_hits),
         "expected_final_hits": len(final_hits),
-        "expected_hit_refs": evidence_hits[:12],
-        "final_hit_model_ids": final_hits[:12],
+        "evidence_hit_count": len(evidence_hits),
+        "final_hit_count": len(final_hits),
+        "evidence_hit_min": arch.evidence_hit_min,
+        "final_hit_min": arch.final_hit_min,
+        "expected_hit_refs": evidence_hits,
+        "evidence_hit_refs": evidence_hits,
+        "final_hit_model_ids": final_hits,
     }
 
 
@@ -809,11 +814,13 @@ async def _run_campaign(
             elapsed_ms = (time.monotonic() - case_started) * 1000
             evaluated = _evaluate_case(case, result, elapsed_ms)
             print(
-                "  selected={selected} evidence={evidence} hits={hits}/{expected} "
+                "  selected={selected} evidence={evidence} "
+                "hits={evidence_hits}/{expected} final={final_hits}/{expected} "
                 "class={klass} status={status}".format(
                     selected=evaluated["selected_count"],
                     evidence=evaluated["evidence_count"],
-                    hits=evaluated["expected_evidence_hits"],
+                    evidence_hits=evaluated["evidence_hit_count"],
+                    final_hits=evaluated["final_hit_count"],
                     expected=evaluated["expected_model_count"],
                     klass=evaluated["signal_class"],
                     status="pass" if evaluated["passed"] else "issue",
@@ -938,18 +945,20 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
         "",
         "## Cases",
         "",
-        "| Case | Class | Evidence | Selected | Hits | Latency ms | Status |",
-        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+        "| Case | Class | Evidence | Selected | Evidence Hits | Final Hits | Latency ms | Status |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ])
     for result in campaign["results"]:
         lines.append(
-            "| {case} | {klass} | {evidence} | {selected} | {hits}/{expected} | "
+            "| {case} | {klass} | {evidence} | {selected} | "
+            "{evidence_hits}/{expected} | {final_hits}/{expected} | "
             "{latency} | {status} |".format(
                 case=result["case"],
                 klass=result["signal_class"],
                 evidence=result["evidence_count"],
                 selected=result["selected_count"],
-                hits=result["expected_evidence_hits"],
+                evidence_hits=result.get("evidence_hit_count", result["expected_evidence_hits"]),
+                final_hits=result.get("final_hit_count", result["expected_final_hits"]),
                 expected=result["expected_model_count"],
                 latency=result["elapsed_ms"],
                 status="pass" if result["passed"] else "issue",

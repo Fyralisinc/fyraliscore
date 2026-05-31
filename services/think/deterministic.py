@@ -29,13 +29,22 @@ from .diff_schema import ClaimOp, RawDiff
 # ---------------------------------------------------------------------
 
 
+_T2_HYPOTHESIS_RATIFICATION_SUBKINDS: frozenset[str] = frozenset({
+    "hypothesis_approved",
+    "hypothesis_corrected",
+    "hypothesis_other",
+})
+
+
 def is_authoritative(trigger: TriggerContext) -> bool:
     """
     Spec §7 `is_authoritative`:
 
       T1 state_change       → True
       T2 prediction/belief_updated → True
-      T3 missing_transition → True (imaginary-node pattern)
+      T2 hypothesis_{approved,corrected,other} → True
+                            (imaginary-node ratification path)
+      T3 missing_transition → True (imaginary-node detection path)
       T4 background_maintenance / entity_resolution_proposal → True
       everything else       → False
     """
@@ -43,6 +52,11 @@ def is_authoritative(trigger: TriggerContext) -> bool:
         return True
     if trigger.kind == "T2" and trigger.subkind in (
         "belief_updated", "prediction_overdue", "prediction_deadline"
+    ):
+        return True
+    if (
+        trigger.kind == "T2"
+        and trigger.subkind in _T2_HYPOTHESIS_RATIFICATION_SUBKINDS
     ):
         return True
     if trigger.kind == "T3" and trigger.subkind == "missing_transition":
@@ -69,6 +83,11 @@ async def deterministic_handler(
     """
     Dispatch to the per-subkind handler. Returns a RawDiff.
     """
+    if (
+        trigger.kind == "T2"
+        and trigger.subkind in _T2_HYPOTHESIS_RATIFICATION_SUBKINDS
+    ):
+        return await _handle_t2_hypothesis_ratification(trigger, bundle, conn)
     if trigger.kind == "T2":
         return await _handle_t2_prediction(trigger, bundle, conn)
     if trigger.kind == "T1" and trigger.subkind == "state_change":
@@ -431,6 +450,332 @@ async def _handle_t4_background(
         resource_ops=[],
         reasoning_trace=f"T4 deterministic handler; subkind={trigger.subkind}",
     )
+
+
+# -----------------------------------------------------------------
+# T2 hypothesis ratification — imaginary-node Approve / Correct / Other
+# -----------------------------------------------------------------
+
+# User-ratified hypotheses get a confidence floor and ceiling well below
+# the directly-observed band ([0.85, 0.95]). The user is reconstructing,
+# not observing — so even a confident "yes" caps lower than a fresh
+# observation. The ceiling is the load-bearing invariant on this lineage.
+USER_RATIFIED_HYPOTHESIS_CONFIDENCE: float = 0.65
+USER_RATIFIED_HYPOTHESIS_CONFIDENCE_CEILING: float = 0.70
+
+# User-corrected fact-Models — the user wrote the new claim, so it's
+# slightly more authoritative than a system-imputed-then-approved one.
+USER_CORRECTED_FACT_CONFIDENCE: float = 0.65
+USER_CORRECTED_FACT_CONFIDENCE_CEILING: float = 0.75
+
+
+async def _handle_t2_hypothesis_ratification(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    conn: asyncpg.Connection,
+) -> RawDiff:
+    """Dispatch the three Think-routed ratification actions to their
+    per-subkind handlers."""
+    if trigger.subkind == "hypothesis_approved":
+        return await _handle_t2_hypothesis_approved(trigger, bundle, conn)
+    if trigger.subkind == "hypothesis_corrected":
+        return await _handle_t2_hypothesis_corrected(trigger, bundle, conn)
+    if trigger.subkind == "hypothesis_other":
+        return await _handle_t2_hypothesis_other(trigger, bundle, conn)
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        reasoning_trace=(
+            f"unrecognized T2 hypothesis subkind {trigger.subkind!r}; "
+            "no-op"
+        ),
+    )
+
+
+async def _handle_t2_hypothesis_approved(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    conn: asyncpg.Connection,
+) -> RawDiff:
+    """User confirmed the system's hypothesis. Bump confidence into the
+    user-ratified band, add a ratification signal_readings entry, and
+    increment confirmed_count. The Model stays a hypothesis (the user's
+    "yes" is testimony, not a fresh observation) — we don't try to flip
+    claim_role because `proposition` isn't in the applier's allowed-
+    update columns."""
+    model_id = trigger.model_id
+    if model_id is None:
+        return _empty_diff(trigger, "no model_id")
+
+    row = await conn.fetchrow(
+        """
+        SELECT id, confidence, confirmed_count, signal_readings,
+               claim_role, status
+        FROM models
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        model_id, trigger.tenant_id,
+    )
+    if row is None:
+        return _empty_diff(trigger, f"hypothesis {model_id} not found")
+    if row["status"] != "active":
+        return _empty_diff(
+            trigger, f"hypothesis {model_id} already {row['status']}"
+        )
+    if row["claim_role"] != "hypothesis":
+        return _empty_diff(
+            trigger,
+            f"model {model_id} is claim_role={row['claim_role']!r}, "
+            "not a hypothesis",
+        )
+
+    current_conf = float(row["confidence"])
+    # Idempotent boost: bring to band, but never decrease. If a previous
+    # approval already pushed us above the target, leave it alone.
+    new_conf = _clip(
+        max(current_conf, USER_RATIFIED_HYPOTHESIS_CONFIDENCE),
+        lo=0.05,
+        hi=USER_RATIFIED_HYPOTHESIS_CONFIDENCE_CEILING,
+    )
+
+    sig = trigger.seed_signature or {}
+    actor_id = _safe_uuid(sig.get("actor_id"))
+
+    # Build a new signal_readings entry. Existing readings are preserved.
+    import json as _json
+    existing_raw = row["signal_readings"]
+    if isinstance(existing_raw, (bytes, bytearray)):
+        try:
+            existing = _json.loads(existing_raw.decode())
+        except Exception:
+            existing = []
+    elif isinstance(existing_raw, str):
+        try:
+            existing = _json.loads(existing_raw)
+        except Exception:
+            existing = []
+    elif isinstance(existing_raw, list):
+        existing = existing_raw
+    else:
+        existing = []
+    if not isinstance(existing, list):
+        existing = []
+    existing = [r for r in existing if isinstance(r, dict)]
+
+    existing.append({
+        "kind": "ratification",
+        "ratification_kind": "hypothesis_approved",
+        "actor_id": str(actor_id) if actor_id else None,
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "claim": "user approved",
+    })
+
+    changes: dict[str, Any] = {
+        "confidence": new_conf,
+        "signal_readings": existing,
+        "confirmed_count": int(row["confirmed_count"] or 0) + 1,
+        "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    claim_op = ClaimOp(op="update", model_id=model_id, changes=changes)
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        claim_ops=[claim_op],
+        reasoning_trace=(
+            f"T2 hypothesis_approved: model {model_id} ratified by "
+            f"actor {actor_id}; confidence {current_conf:.3f} → {new_conf:.3f}"
+        ),
+    )
+
+
+async def _handle_t2_hypothesis_corrected(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    conn: asyncpg.Connection,
+) -> RawDiff:
+    """User rejected the hypothesis and supplied a correction. Archive
+    the hypothesis Model and insert a new fact-Model carrying the
+    user's claim, with `was_system_hypothesis=True` provenance so the
+    lineage is preserved."""
+    model_id = trigger.model_id
+    if model_id is None:
+        return _empty_diff(trigger, "no model_id")
+
+    sig = trigger.seed_signature or {}
+    correction = sig.get("correction")
+    if not isinstance(correction, dict) or not correction.get("natural"):
+        return _empty_diff(
+            trigger,
+            "T2 hypothesis_corrected: missing correction.natural in payload",
+        )
+
+    row = await conn.fetchrow(
+        """
+        SELECT id, claim_role, status, scope_actors, scope_entities,
+               scope_temporal, supporting_model_ids, born_from_event_id,
+               proposition
+        FROM models
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        model_id, trigger.tenant_id,
+    )
+    if row is None:
+        return _empty_diff(trigger, f"hypothesis {model_id} not found")
+    if row["status"] != "active":
+        return _empty_diff(
+            trigger, f"hypothesis {model_id} already {row['status']}"
+        )
+    if row["claim_role"] != "hypothesis":
+        return _empty_diff(
+            trigger,
+            f"model {model_id} is claim_role={row['claim_role']!r}, "
+            "not a hypothesis",
+        )
+
+    actor_id = _safe_uuid(sig.get("actor_id"))
+    captured_obs_id = _safe_uuid(sig.get("captured_observation_id"))
+    # Born_from_event_id for the new fact-Model: the user's correction
+    # observation if present, else the ratification observation. Either
+    # is a legitimate cause for the substrate's audit chain.
+    born_event = captured_obs_id or trigger.observation_id
+    if born_event is None:
+        return _empty_diff(
+            trigger,
+            "T2 hypothesis_corrected: no usable born_from_event_id",
+        )
+
+    overrides = correction.get("proposition_overrides") or {}
+    natural_text = str(correction["natural"]).strip()[:2000]
+    proposition: dict[str, Any] = {
+        "kind": "belief",
+        "assertion": natural_text,
+        "was_system_hypothesis": True,
+        "lineage": {
+            "source_hypothesis_id": str(model_id),
+            "correction_actor_id": str(actor_id) if actor_id else None,
+            "correction_observation_id": (
+                str(captured_obs_id) if captured_obs_id else None
+            ),
+        },
+    }
+    if isinstance(overrides, dict):
+        for k, v in overrides.items():
+            if k in ("kind", "lineage"):
+                # Don't let user payload subvert the kind or lineage
+                # provenance fields.
+                continue
+            proposition[k] = v
+
+    falsifier = {
+        "kind": "observation_pattern",
+        "pattern": (
+            "Explicit ingestion evidence contradicting the user-supplied "
+            f"correction for hypothesis {model_id}."
+        ),
+        "within_window": "30d",
+    }
+
+    fact_entry: dict[str, Any] = {
+        "proposition": proposition,
+        "natural": natural_text,
+        "confidence": USER_CORRECTED_FACT_CONFIDENCE,
+        "confidence_at_assertion": USER_CORRECTED_FACT_CONFIDENCE,
+        "falsifier": falsifier,
+        "scope_actors": list(row["scope_actors"] or []),
+        "scope_entities": _coerce_jsonb_list(row["scope_entities"]),
+        "scope_temporal": _coerce_jsonb_dict(row["scope_temporal"]),
+        "supporting_event_ids": [born_event],
+        "supporting_model_ids": [model_id] + list(
+            row["supporting_model_ids"] or []
+        ),
+        "born_from_event_id": born_event,
+    }
+
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="archive",
+                model_id=model_id,
+                reason="hypothesis_user_corrected",
+            ),
+            ClaimOp(op="insert", entry=fact_entry),
+        ],
+        reasoning_trace=(
+            f"T2 hypothesis_corrected: archive hypothesis {model_id}; "
+            f"insert user-corrected fact-Model with "
+            f"confidence={USER_CORRECTED_FACT_CONFIDENCE:.3f}"
+        ),
+    )
+
+
+async def _handle_t2_hypothesis_other(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    conn: asyncpg.Connection,
+) -> RawDiff:
+    """User said "something else happened" and provided free-form
+    context. The ratify handler already captured the explanation as an
+    observation; here we just archive the hypothesis. Future Think runs
+    can ingest the explanation observation and synthesize structured
+    claims from it independently."""
+    model_id = trigger.model_id
+    if model_id is None:
+        return _empty_diff(trigger, "no model_id")
+
+    row = await conn.fetchrow(
+        "SELECT claim_role, status FROM models "
+        "WHERE id = $1 AND tenant_id = $2",
+        model_id, trigger.tenant_id,
+    )
+    if row is None:
+        return _empty_diff(trigger, f"hypothesis {model_id} not found")
+    if row["status"] != "active":
+        return _empty_diff(
+            trigger, f"hypothesis {model_id} already {row['status']}"
+        )
+    if row["claim_role"] != "hypothesis":
+        return _empty_diff(
+            trigger,
+            f"model {model_id} is claim_role={row['claim_role']!r}, "
+            "not a hypothesis",
+        )
+
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="archive",
+                model_id=model_id,
+                reason="hypothesis_user_other",
+            ),
+        ],
+        reasoning_trace=(
+            f"T2 hypothesis_other: archive hypothesis {model_id}; "
+            "explanation captured as observation by ratify handler"
+        ),
+    )
+
+
+def _empty_diff(trigger: TriggerContext, why: str) -> RawDiff:
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        reasoning_trace=why,
+    )
+
+
+def _safe_uuid(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (ValueError, TypeError):
+        return None
 
 
 # -----------------------------------------------------------------
