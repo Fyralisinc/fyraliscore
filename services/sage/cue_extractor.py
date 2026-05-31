@@ -70,6 +70,16 @@ class StructuredCues:
 # Kept intentionally small — the alias table is the primary source of
 # truth; this dictionary just catches the cases where a tenant has not
 # yet seeded an alias for an obvious common term.
+# Subset of systems that should always render as uppercase acronyms
+# even if longer than the generic 4-char heuristic.
+_FORCE_UPPER_SYSTEMS: frozenset[str] = frozenset(
+    {
+        "sso", "oauth", "oauth2", "oidc", "saml", "scim", "mfa", "rbac",
+        "k8s", "ci", "ci/cd", "api", "rest", "iam", "rds", "s3", "pii", "phi",
+    }
+)
+
+
 _BUILTIN_SYSTEMS: frozenset[str] = frozenset(
     {
         "sso",
@@ -218,7 +228,7 @@ _RELATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bconflict(?:s|ed|ing)?\b", re.IGNORECASE), "contradicts"),
     (re.compile(r"\bcaused?\s+by\b", re.IGNORECASE), "caused_by"),
     (re.compile(r"\bbecause\s+of\b", re.IGNORECASE), "caused_by"),
-    (re.compile(r"\benables?\b|\bunblocks?\b", re.IGNORECASE), "enables"),
+    (re.compile(r"\benable(?:s|d|ing)?\b|\bunblock(?:s|ed|ing)?\b", re.IGNORECASE), "enables"),
     (re.compile(r"\bpredicts?\b|\bforecasts?\b", re.IGNORECASE), "predicts"),
     (re.compile(r"\brecurring\b|\brepeated(?:ly)?\b|\bagain\b", re.IGNORECASE), "recurring"),
     (re.compile(r"\bpattern\b", re.IGNORECASE), "recurring"),
@@ -507,9 +517,14 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
     seen_sys: set[str] = set()
     for sys_name in _BUILTIN_SYSTEMS:
         if re.search(rf"\b{re.escape(sys_name)}\b", lower):
-            # Surface in canonical UPPER form if it's an acronym
-            # (<=4 chars), else title-case.
-            display = sys_name.upper() if len(sys_name) <= 4 else sys_name
+            # Surface in canonical UPPER form for known acronyms or
+            # any sys_name <=4 chars (good enough heuristic). Longer
+            # technology names render in lower-case canonical form.
+            display = (
+                sys_name.upper()
+                if sys_name in _FORCE_UPPER_SYSTEMS or len(sys_name) <= 4
+                else sys_name
+            )
             if display not in seen_sys:
                 systems.append(display)
                 seen_sys.add(display)
@@ -525,7 +540,9 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
             continue
         # Skip if this phrase (or any of its tokens) is already covered
         # by an alias hit or a builtin system.
-        if phrase.casefold() in {a for a in aliases_map.keys()}:
+        if phrase.casefold() in aliases_map:
+            continue
+        if phrase.casefold() in _BUILTIN_SYSTEMS:
             continue
         if phrase in seen_explicit:
             continue

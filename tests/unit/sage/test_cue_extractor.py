@@ -20,7 +20,7 @@ from services.sage.cue_extractor import CueExtractor, StructuredCues
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.new_event_loop().run_until_complete(coro)
 
 
 def _extractor(aliases: dict[str, str] | None = None) -> CueExtractor:
