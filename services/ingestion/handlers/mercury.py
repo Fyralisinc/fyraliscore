@@ -90,6 +90,68 @@ def _truncate(text: str, limit: int = 600) -> str:
 
 
 # ---------------------------------------------------------------------
+# Rich-field extraction (the signals beyond the core money movement)
+# ---------------------------------------------------------------------
+
+# Bank identifiers that must NOT land verbatim in the reasoning layer — masked
+# to the last 4 chars so the rail/counterparty mapping is still useful without
+# leaking full account/routing/IBAN numbers into observations + LLM context.
+_SENSITIVE_ROUTING_KEYS = frozenset({"accountNumber", "routingNumber", "iban"})
+
+
+def _mask_secret(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > 4:
+        return "••" + value[-4:]
+    return value
+
+
+def _redact_routing(obj: Any) -> Any:
+    """Deep copy of a `details` sub-tree with sensitive bank ids masked."""
+    if isinstance(obj, dict):
+        return {
+            k: (_mask_secret(v) if k in _SENSITIVE_ROUTING_KEYS else _redact_routing(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_routing(x) for x in obj]
+    return obj
+
+
+def _txn_extras(txn: dict[str, Any]) -> dict[str, Any]:
+    """The richer Mercury transaction fields beyond the core money signal.
+
+    Only present (non-None) keys are returned so `content` stays lean. These are
+    already fetched over the wire by the client; the handler is where they were
+    previously dropped.
+    """
+    raw: dict[str, Any] = {
+        # cash-risk detail — WHY a payment failed (pairs with state_change).
+        "reason_for_failure": txn.get("reasonForFailure"),
+        "failed_at": txn.get("failedAt"),
+        # forward cash-flow — projected settlement of a pending payment.
+        "estimated_delivery_date": txn.get("estimatedDeliveryDate"),
+        # free spend classification + bookkeeping mapping.
+        "mercury_category": txn.get("mercuryCategory"),
+        "general_ledger_code_name": txn.get("generalLedgerCodeName"),
+        # stable counterparty identity + the memo that travels on the payment.
+        "counterparty_id": txn.get("counterpartyId"),
+        "counterparty_nickname": txn.get("counterpartyNickname"),
+        "external_memo": txn.get("externalMemo"),
+        # true all-in cost (links to the fee transaction).
+        "fee_id": txn.get("feeId"),
+        "dashboard_link": txn.get("dashboardLink"),
+        # FX exposure (currency from/to, amount, rate, fee).
+        "currency_exchange_info": txn.get("currencyExchangeInfo"),
+    }
+    extras = {k: v for k, v in raw.items() if v is not None}
+    # rail/counterparty-bank mapping (ACH / wire / card), PII-redacted.
+    details = txn.get("details")
+    if isinstance(details, dict) and details:
+        extras["details"] = _redact_routing(details)
+    return extras
+
+
+# ---------------------------------------------------------------------
 # Per-record-type draft builders (shared by backfill + webhook paths)
 # ---------------------------------------------------------------------
 
@@ -115,10 +177,17 @@ def _transaction_draft(txn: dict[str, Any], account_id: str) -> ObservationDraft
     )
     external_id = f"mercury:{account_id}:txn:{txn_id}:{status}"
 
+    is_state_change = status in _STATE_CHANGE_STATUSES
+
     direction = _direction(amount)
     money = _fmt_money(amount)
     prep = "to" if direction == "outflow" else "from"
     content_text = f"{money} {direction} {prep} {counterparty} · {status} · {kind_field}"
+    # Surface WHY a payment failed inline — turns a bare failure into an
+    # actionable liquidity / counterparty-risk signal.
+    reason = txn.get("reasonForFailure")
+    if is_state_change and isinstance(reason, str) and reason:
+        content_text = f"{content_text} — {reason}"
 
     entities: list[dict[str, Any]] = [
         {"type": "mercury_account", "id": account_id},
@@ -140,8 +209,9 @@ def _transaction_draft(txn: dict[str, Any], account_id: str) -> ObservationDraft
         "posted_at": txn.get("postedAt"),
         "created_at": txn.get("createdAt"),
     }
-
-    is_state_change = status in _STATE_CHANGE_STATUSES
+    # Merge the richer fields (failure reason, category, GL code, FX, rail
+    # routing, memos) — additive, only present keys.
+    content.update(_txn_extras(txn))
     return ObservationDraft(
         source_channel=_CHANNEL,
         content_text=_truncate(content_text),
@@ -187,6 +257,14 @@ def _account_snapshot_draft(
         "current_balance": current,
         "as_of": as_of_date,
     }
+    # Entity-attribution context for the cash position (no account/routing PII).
+    for src, dst in (
+        ("status", "account_status"),
+        ("legalBusinessName", "legal_business_name"),
+        ("createdAt", "account_created_at"),
+    ):
+        if account.get(src) is not None:
+            content[dst] = account.get(src)
     return ObservationDraft(
         source_channel=_CHANNEL,
         content_text=_truncate(content_text),

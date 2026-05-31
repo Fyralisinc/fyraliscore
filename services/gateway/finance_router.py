@@ -155,22 +155,39 @@ def _mercury_backfill_records(account_id: str, n: int, seed: int) -> list[dict]:
             "currentBalance": round(512000 - seed * 1375.5, 2),
         },
     })
+    categories = ["SaaS", "Travel", "Payroll", "Cloud Infra", "Revenue"]
     for i in range(n):
         cp, amount, kind = _MERCURY_COUNTERPARTIES[(seed + i) % len(_MERCURY_COUNTERPARTIES)]
         created = _iso_z(base - timedelta(days=n - i, hours=(seed + i) % 12))
+        txn: dict = {
+            "id": f"txn-{account_id}-{seed}-{i}",
+            "amount": amount,
+            "counterpartyName": cp,
+            "counterpartyId": f"cp-{abs(hash(cp)) % 100000}",
+            "status": "sent",
+            "kind": kind,
+            "createdAt": created,
+            "postedAt": created,
+            "bankDescription": f"{cp} {kind}",
+            "externalMemo": f"Memo for {cp}",
+            "mercuryCategory": categories[(seed + i) % len(categories)],
+            "generalLedgerCodeName": f"GL-{6000 + ((seed + i) % 5) * 10}",
+            "estimatedDeliveryDate": _iso_z(base - timedelta(days=n - i - 1)),
+        }
+        # Rail/counterparty-bank routing — masked by the handler before it lands.
+        if kind == "externalTransfer" and amount < 0:
+            txn["details"] = {
+                "electronicRoutingInfo": {
+                    "accountNumber": f"00012345{(seed + i) % 10000:04d}",
+                    "routingNumber": "021000021",
+                    "bankName": "Acme Partner Bank",
+                    "electronicAccountType": "businessChecking",
+                },
+            }
         recs.append({
             "_fyralis_record_type": "transaction",
             "_fyralis_account_id": account_id,
-            "transaction": {
-                "id": f"txn-{account_id}-{seed}-{i}",
-                "amount": amount,
-                "counterpartyName": cp,
-                "status": "sent",
-                "kind": kind,
-                "createdAt": created,
-                "postedAt": created,
-                "bankDescription": f"{cp} {kind}",
-            },
+            "transaction": txn,
         })
     return recs
 
@@ -180,18 +197,24 @@ def _mercury_live_event(account_id: str, seq: int) -> tuple[dict, str]:
     cp, amount, kind = _MERCURY_COUNTERPARTIES[seq % len(_MERCURY_COUNTERPARTIES)]
     # Alternate a failed payment in to exercise the state_change path.
     status = "failed" if seq % 4 == 3 else "sent"
+    txn: dict = {
+        "id": f"txn-live-{account_id}-{seq}",
+        "amount": amount,
+        "counterpartyName": cp,
+        "counterpartyId": f"cp-{abs(hash(cp)) % 100000}",
+        "status": status,
+        "kind": kind,
+        "createdAt": _iso_z(_now()),
+        "mercuryCategory": "Revenue" if amount > 0 else "Operating",
+    }
+    if status == "failed":
+        txn["reasonForFailure"] = "insufficient funds at counterparty bank"
+        txn["failedAt"] = _iso_z(_now())
     return {
         "type": "transaction.created",
         "organizationId": _org_id_for(account_id),
         "accountId": account_id,
-        "transaction": {
-            "id": f"txn-live-{account_id}-{seq}",
-            "amount": amount,
-            "counterpartyName": cp,
-            "status": status,
-            "kind": kind,
-            "createdAt": _iso_z(_now()),
-        },
+        "transaction": txn,
     }, _org_id_for(account_id)
 
 
@@ -206,39 +229,81 @@ def _qbo_backfill_records(entity: str, realm_id: str, n: int, seed: int) -> list
     for i in range(n):
         eid = f"{entity[:3].lower()}-{seed}-{i}"
         updated = _iso_qbo(base - timedelta(days=n - i))
+        _class = ["Sales", "Services", "Marketing"][(seed + i) % 3]
+        _dept = ["East", "West"][(seed + i) % 2]
         if entity == "Invoice":
             overdue = (seed + i) % 3 == 0
             due = (base - timedelta(days=2)) if overdue else (base + timedelta(days=20))
+            total = round(2000 + i * 1500.0, 2)
+            item = ["Platform License", "Onboarding", "Support Plan"][(seed + i) % 3]
             entity_obj = {
                 "Id": eid, "SyncToken": "0", "DocNumber": f"INV-{seed}{i}",
-                "TotalAmt": round(2000 + i * 1500.0, 2),
-                "Balance": round(2000 + i * 1500.0, 2),
+                "TotalAmt": total,
+                "Balance": total,
                 "CustomerRef": {"value": "1", "name": ["Globex", "Initech", "Hooli"][(seed + i) % 3]},
                 "TxnDate": (base - timedelta(days=20)).strftime("%Y-%m-%d"),
                 "DueDate": due.strftime("%Y-%m-%d"),
+                "Line": [{
+                    "Id": "1", "LineNum": 1, "Amount": total,
+                    "Description": item, "DetailType": "SalesItemLineDetail",
+                    "SalesItemLineDetail": {
+                        "ItemRef": {"value": "5", "name": item},
+                        "Qty": 1, "UnitPrice": total,
+                        "ClassRef": {"value": "3", "name": _class},
+                    },
+                }],
+                "TxnTaxDetail": {"TotalTax": round(total * 0.08, 2),
+                                 "TaxLine": [{"Amount": round(total * 0.08, 2)}]},
+                "ClassRef": {"value": "3", "name": _class},
+                "DepartmentRef": {"value": "2", "name": _dept},
+                "CurrencyRef": {"value": "USD", "name": "US Dollar"},
                 "MetaData": {"LastUpdatedTime": updated},
             }
         elif entity == "Bill":
+            total = round(800 + i * 600.0, 2)
+            vendor = ["AWS", "Datadog", "Figma"][(seed + i) % 3]
+            acct = ["Cloud Infra", "Observability", "Design Tools"][(seed + i) % 3]
             entity_obj = {
                 "Id": eid, "SyncToken": "0",
-                "TotalAmt": round(800 + i * 600.0, 2),
-                "Balance": round(800 + i * 600.0, 2),
-                "VendorRef": {"value": "7", "name": ["AWS", "Datadog", "Figma"][(seed + i) % 3]},
+                "TotalAmt": total,
+                "Balance": total,
+                "VendorRef": {"value": "7", "name": vendor},
                 "TxnDate": (base - timedelta(days=15)).strftime("%Y-%m-%d"),
+                "Line": [{
+                    "Id": "1", "Amount": total, "Description": acct,
+                    "DetailType": "AccountBasedExpenseLineDetail",
+                    "AccountBasedExpenseLineDetail": {
+                        "AccountRef": {"value": "33", "name": acct},
+                        "ClassRef": {"value": "3", "name": _class},
+                    },
+                }],
+                "DepartmentRef": {"value": "2", "name": _dept},
+                "CurrencyRef": {"value": "USD", "name": "US Dollar"},
                 "MetaData": {"LastUpdatedTime": updated},
             }
         elif entity == "BillPayment":
+            total = round(800 + i * 600.0, 2)
             entity_obj = {
                 "Id": eid, "SyncToken": "0",
-                "TotalAmt": round(800 + i * 600.0, 2),
+                "TotalAmt": total,
                 "VendorRef": {"value": "7", "name": "AWS"},
+                "PayType": "Check",
+                "CheckPayment": {"BankAccountRef": {"value": "35", "name": "Operating Checking"}},
+                "LinkedTxn": [{"TxnId": f"bil-{seed}-{i}", "TxnType": "Bill"}],
                 "MetaData": {"LastUpdatedTime": updated},
             }
         else:  # Payment
+            total = round(3000 + i * 1200.0, 2)
             entity_obj = {
                 "Id": eid, "SyncToken": "0",
-                "TotalAmt": round(3000 + i * 1200.0, 2),
+                "TotalAmt": total,
+                "UnappliedAmt": 0.0,
                 "CustomerRef": {"value": "1", "name": "Initech"},
+                "DepositToAccountRef": {"value": "35", "name": "Operating Checking"},
+                "PaymentMethodRef": {"value": "2", "name": "Wire"},
+                "PaymentRefNum": f"WIRE-{seed}{i}",
+                "Line": [{"Amount": total,
+                          "LinkedTxn": [{"TxnId": f"inv-{seed}-{i}", "TxnType": "Invoice"}]}],
                 "MetaData": {"LastUpdatedTime": updated},
             }
         recs.append({
