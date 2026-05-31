@@ -125,6 +125,71 @@ async def test_backfill_and_webhook_dedup_to_same_external_id():
     assert backfill.external_id == webhook.external_id
 
 
+# --- rich-field ingestion ---------------------------------------------------
+
+async def test_transaction_rich_fields_captured():
+    draft = await handle_mercury_transaction(_txn(
+        mercuryCategory="SaaS",
+        generalLedgerCodeName="GL-6010",
+        externalMemo="Invoice #42",
+        counterpartyId="cp-9",
+        estimatedDeliveryDate="2026-05-22T00:00:00.000Z",
+        currencyExchangeInfo={"convertedFromCurrency": "EUR", "rate": 1.08},
+    ), {})
+    c = draft.content
+    assert c["mercury_category"] == "SaaS"
+    assert c["general_ledger_code_name"] == "GL-6010"
+    assert c["external_memo"] == "Invoice #42"
+    assert c["counterparty_id"] == "cp-9"
+    assert c["estimated_delivery_date"] == "2026-05-22T00:00:00.000Z"
+    assert c["currency_exchange_info"]["rate"] == 1.08
+
+
+async def test_failure_reason_in_content_and_text():
+    draft = await handle_mercury_transaction(_txn(
+        status="failed", reasonForFailure="insufficient funds",
+    ), {})
+    assert draft.kind == "state_change"
+    assert draft.content["reason_for_failure"] == "insufficient funds"
+    assert "insufficient funds" in draft.content_text
+
+
+async def test_details_routing_is_pii_redacted():
+    draft = await handle_mercury_transaction(_txn(details={
+        "electronicRoutingInfo": {
+            "accountNumber": "000123456789",
+            "routingNumber": "021000021",
+            "bankName": "Acme Partner Bank",
+        },
+    }), {})
+    routing = draft.content["details"]["electronicRoutingInfo"]
+    # last-4 only — full account/routing numbers must NOT land verbatim.
+    assert routing["accountNumber"] == "••6789"
+    assert routing["routingNumber"] == "••0021"
+    assert routing["bankName"] == "Acme Partner Bank"  # non-sensitive kept
+
+
+async def test_extras_absent_keys_not_emitted():
+    """A bare transaction must not bloat content with None-valued extras."""
+    draft = await handle_mercury_transaction(_txn(), {})
+    assert "reason_for_failure" not in draft.content
+    assert "details" not in draft.content
+    assert "mercury_category" not in draft.content
+
+
+async def test_snapshot_attribution_fields():
+    draft = await handle_mercury_transaction({
+        "_fyralis_record_type": "account_snapshot",
+        "_fyralis_account_id": _ACCT,
+        "as_of": "2026-05-31T00:00:00.000Z",
+        "account": {"id": _ACCT, "name": "Operating Checking", "type": "checking",
+                    "availableBalance": 1.0, "currentBalance": 1.0,
+                    "status": "active", "legalBusinessName": "Fyralis Inc"},
+    }, {})
+    assert draft.content["account_status"] == "active"
+    assert draft.content["legal_business_name"] == "Fyralis Inc"
+
+
 async def test_unknown_payload_raises():
     from lib.shared.errors import ValidationError
     with pytest.raises(ValidationError):

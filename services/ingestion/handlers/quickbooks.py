@@ -118,6 +118,134 @@ def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# ---------------------------------------------------------------------
+# Rich-field extraction (the signals beyond the AR/AP-health header)
+# ---------------------------------------------------------------------
+
+def _ref_name(ref: Any) -> str | None:
+    """Human name of a QBO ReferenceType ({value, name}), value as fallback."""
+    if isinstance(ref, dict):
+        name = ref.get("name")
+        if isinstance(name, str) and name:
+            return name
+        val = ref.get("value")
+        return str(val) if val not in (None, "") else None
+    return None
+
+
+def _line_summary(line: dict[str, Any]) -> dict[str, Any]:
+    """Flatten one QBO Line into the bits that carry revenue/expense meaning.
+
+    Covers sales (SalesItemLineDetail) and expense
+    (Account-/Item-BasedExpenseLineDetail) lines — the *what was sold / bought*
+    that header TotalAmt hides."""
+    summary: dict[str, Any] = {
+        "amount": line.get("Amount"),
+        "description": line.get("Description"),
+        "detail_type": line.get("DetailType"),
+    }
+    sid = line.get("SalesItemLineDetail")
+    if isinstance(sid, dict):
+        summary["item"] = _ref_name(sid.get("ItemRef"))
+        summary["quantity"] = sid.get("Qty")
+        summary["unit_price"] = sid.get("UnitPrice")
+        summary["class"] = _ref_name(sid.get("ClassRef"))
+    for key in ("AccountBasedExpenseLineDetail", "ItemBasedExpenseLineDetail"):
+        d = line.get(key)
+        if isinstance(d, dict):
+            summary["account"] = _ref_name(d.get("AccountRef"))
+            summary.setdefault("item", _ref_name(d.get("ItemRef")))
+            summary["class"] = _ref_name(d.get("ClassRef"))
+            billable = _ref_name(d.get("CustomerRef"))
+            if billable:
+                summary["billable_customer"] = billable
+    return {k: v for k, v in summary.items() if v is not None}
+
+
+def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
+    """The richer QBO entity fields beyond the header money signal.
+
+    Already returned by `SELECT *`; the handler is where they were dropped.
+    Only present keys are returned so `content` stays lean."""
+    extras: dict[str, Any] = {}
+
+    # Line items — product-level revenue / expense-category breakdown.
+    lines = entity.get("Line")
+    if isinstance(lines, list):
+        summaries = [
+            s for ln in lines
+            if isinstance(ln, dict)
+            and ln.get("DetailType") not in ("SubTotalLineDetail",)
+            for s in (_line_summary(ln),) if s
+        ]
+        if summaries:
+            extras["line_items"] = summaries
+
+    # LinkedTxn — the AR/AP graph edges (Invoice<->Payment, PO->Bill->Payment).
+    linked = entity.get("LinkedTxn")
+    if isinstance(linked, list) and linked:
+        edges = [
+            {"txn_id": lt.get("TxnId"), "txn_type": lt.get("TxnType")}
+            for lt in linked if isinstance(lt, dict) and lt.get("TxnId")
+        ]
+        if edges:
+            extras["linked_txns"] = edges
+
+    # Tax — total + (if present) the lightweight rate breakdown.
+    tax = entity.get("TxnTaxDetail")
+    if isinstance(tax, dict) and tax:
+        tax_out: dict[str, Any] = {}
+        if tax.get("TotalTax") is not None:
+            tax_out["total_tax"] = tax.get("TotalTax")
+        if isinstance(tax.get("TaxLine"), list):
+            tax_out["lines"] = len(tax["TaxLine"])
+        if tax_out:
+            extras["tax"] = tax_out
+
+    # Multi-currency normalization.
+    for src, dst in (
+        ("HomeTotalAmt", "home_total_amount"),
+        ("HomeBalance", "home_balance"),
+        ("ExchangeRate", "exchange_rate"),
+    ):
+        if entity.get(src) is not None:
+            extras[dst] = entity.get(src)
+
+    # Cash-position nuance on Payments.
+    if entity.get("UnappliedAmt") is not None:
+        extras["unapplied_amount"] = entity.get("UnappliedAmt")
+    dep = _ref_name(entity.get("DepositToAccountRef"))
+    if dep:
+        extras["deposit_to_account"] = dep
+    ar = _ref_name(entity.get("ARAccountRef"))
+    if ar:
+        extras["ar_account"] = ar
+    ap = _ref_name(entity.get("APAccountRef"))
+    if ap:
+        extras["ap_account"] = ap
+
+    # Payment channel (how cash moved + funding account).
+    pm = _ref_name(entity.get("PaymentMethodRef"))
+    if pm:
+        extras["payment_method"] = pm
+    if entity.get("PaymentRefNum"):
+        extras["payment_ref_num"] = entity.get("PaymentRefNum")
+    if entity.get("PayType"):
+        extras["pay_type"] = entity.get("PayType")
+
+    # Segmentation dimensions for P&L attribution.
+    for src, dst in (
+        ("ClassRef", "class"),
+        ("DepartmentRef", "department"),
+        ("ProjectRef", "project"),
+    ):
+        name = _ref_name(entity.get(src))
+        if name:
+            extras[dst] = name
+
+    return extras
+
+
 def _classify(entity_kind: str, entity: dict[str, Any]) -> tuple[str, str]:
     """Return (kind, status_word) for the entity.
 
@@ -196,6 +324,14 @@ def _entity_draft(
         if isinstance(entity.get("VendorRef"), dict) else None,
         "last_updated": updated,
     }
+    # Merge the richer fields (line items, linked txns, tax, multi-currency,
+    # payment channel, P&L dimensions) — additive, only present keys.
+    content.update(_entity_extras(entity))
+    # Surface line-item depth inline so the reasoning layer sees there's detail.
+    line_items = content.get("line_items")
+    if isinstance(line_items, list) and line_items:
+        n = len(line_items)
+        content_text = f"{content_text} · {n} line{'s' if n != 1 else ''}"
 
     return ObservationDraft(
         source_channel=_CHANNEL,

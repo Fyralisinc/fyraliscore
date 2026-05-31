@@ -156,6 +156,43 @@ Returns company metadata. Used only to verify auth/realm reachability; not an ob
 
 ---
 
+## 3b. Extended fields now ingested (beyond the core money signal)
+
+The fetcher always passed the **full** transaction / entity object through; these
+richer fields were previously dropped when the handler built `content`. They now
+land in `content` (JSONB — additive; `external_id` / `kind` unchanged, so dedup
+parity is preserved). Only present keys are written (no None-bloat).
+
+**Mercury transaction** → `content`:
+`reason_for_failure`, `failed_at` (why a payment died — pairs with `state_change`),
+`estimated_delivery_date` (forward cash-flow), `mercury_category` +
+`general_ledger_code_name` (spend classification / bookkeeping),
+`counterparty_id`, `counterparty_nickname`, `external_memo`, `fee_id`,
+`dashboard_link`, `currency_exchange_info` (FX exposure), and `details` (ACH /
+wire / card rail routing + counterparty bank). The failure reason is also
+appended to `content_text`.
+**Mercury account snapshot** → `account_status`, `legal_business_name`,
+`account_created_at`.
+> **PII hygiene:** `details.*` is deep-copied with `accountNumber`,
+> `routingNumber`, and `iban` **masked to last-4** (`••6789`) before it lands —
+> full bank identifiers never reach the reasoning layer / LLM context.
+
+**QuickBooks entity** → `content`:
+`line_items[]` (per line: amount, description, detail_type, item, quantity,
+unit_price, account, class, billable_customer — product-level revenue/expense
+breakdown), `linked_txns[]` (the AR/AP graph: Invoice↔Payment, PO→Bill→Payment),
+`tax` (total_tax + line count), `home_total_amount` / `home_balance` /
+`exchange_rate` (multi-currency), `unapplied_amount` / `deposit_to_account` /
+`ar_account` / `ap_account` (cash nuance), `payment_method` / `payment_ref_num` /
+`pay_type` (payment channel), and `class` / `department` / `project` (P&L
+segmentation). Line-item count is appended to `content_text`.
+
+These are exercised by the finance UI console's synthetic backfill and asserted
+by the handler unit tests. The deferred **Finance Intelligence** layer is the
+intended consumer (runway from `estimated_delivery_date`, spend analytics from
+`line_items` + `mercury_category`, AR/AP reconciliation from `linked_txns`,
+multi-currency normalization from `exchange_rate`).
+
 ## 4. Field → pipeline quick reference
 
 | Concept | Mercury | QuickBooks |
