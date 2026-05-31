@@ -13,6 +13,7 @@ ops that fail; the retry-at-apply path is a Wave-5 enhancement.
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -103,7 +104,10 @@ async def llm_reason(
             policy = retry_policy_for(e)
             total_allowed = min(max_attempts, 1 + policy.max_attempts)
             if attempt < total_allowed - 1:
-                backoff_s = policy.delay_for(attempt + 1)
+                base_backoff_s = policy.delay_for(attempt + 1)
+                # Jitter ±25% to avoid thundering herd when many
+                # concurrent triggers hit a provider rate-limit at once.
+                backoff_s = base_backoff_s * random.uniform(0.75, 1.25)
                 _log.warning(
                     "think.llm_retryable_failure",
                     attempt=attempt,

@@ -50,7 +50,13 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from lib.llm.provider import LLMError, LLMParseError, LLMProvider
+from lib.llm.provider import (
+    LLMError,
+    LLMParseError,
+    LLMProvider,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from lib.shared.ids import uuid7
 from services.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.context import (
@@ -138,22 +144,6 @@ class ResolverLLMBudget:
             )
             self._buckets[tenant_id] = b
         return b.take(now, self.refill_per_s)
-
-
-# =====================================================================
-# Exceptions the resolver translates from LLM SDK layers.
-# =====================================================================
-
-class LLMRateLimitError(LLMError):
-    """Raised when the LLM provider returns a 429. Re-queue with backoff."""
-
-    default_code = "llm_rate_limited"
-
-
-class LLMTimeoutError(LLMError):
-    """Raised when the LLM provider times out. Re-queue with backoff."""
-
-    default_code = "llm_timeout"
 
 
 # =====================================================================

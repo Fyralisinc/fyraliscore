@@ -205,7 +205,7 @@ def test_high_value_safety_question_is_added_when_llm_omits_it():
         expected_cost=0.2,
         retrieval_target="critical_path",
         stop_condition="dependency known",
-        score=0.82,
+        score=0.66,
     )
 
     merged, added = _merge_llm_and_safety_questions(
@@ -215,6 +215,42 @@ def test_high_value_safety_question_is_added_when_llm_omits_it():
 
     assert added == 1
     assert "DEPENDENCY" in {question.primitive for question in merged}
+
+
+def test_safety_question_boosts_existing_llm_expected_value():
+    llm_dependency = InquiryQuestion(
+        question_id="Q_CRITICAL_PATH",
+        question="What dependency is involved?",
+        primitive="DEPENDENCY",
+        tests_hypotheses=("H1",),
+        expected_value=0.52,
+        expected_cost=0.2,
+        retrieval_target="critical_path",
+        stop_condition="dependency known",
+        score=0.70,
+    )
+    safety_dependency = InquiryQuestion(
+        question_id="Q_CRITICAL_PATH",
+        question="What dependency could make this block the critical path?",
+        primitive="DEPENDENCY",
+        tests_hypotheses=("H1",),
+        expected_value=0.9,
+        expected_cost=0.24,
+        retrieval_target="critical_path",
+        stop_condition="dependency known",
+        score=0.66,
+    )
+
+    merged, added = _merge_llm_and_safety_questions(
+        [llm_dependency],
+        [safety_dependency],
+    )
+
+    assert added == 0
+    assert merged[0].primitive == "DEPENDENCY"
+    assert merged[0].question == llm_dependency.question
+    assert merged[0].expected_value == safety_dependency.expected_value
+    assert merged[0].score == llm_dependency.score
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(

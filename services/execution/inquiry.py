@@ -1052,7 +1052,7 @@ def _merge_llm_and_safety_questions(
     for q in deterministic:
         existing = by_primitive.get(q.primitive)
         if existing is not None:
-            if q.score > existing.score:
+            if q.score > existing.score or q.expected_value > existing.expected_value:
                 by_primitive[q.primitive] = replace(
                     existing,
                     expected_value=max(existing.expected_value, q.expected_value),
@@ -1060,12 +1060,12 @@ def _merge_llm_and_safety_questions(
                     tests_hypotheses=(
                         existing.tests_hypotheses or q.tests_hypotheses
                     ),
-                    score=q.score,
+                    score=max(existing.score, q.score),
                 )
             continue
         force_high_value_safety = (
             q.primitive in {"DEPENDENCY", "GOAL_IMPACT", "RECURRENCE"}
-            and q.score >= 0.75
+            and (q.expected_value >= 0.86 or q.score >= 0.75)
         )
         if (
             q.primitive == "COUNTEREVIDENCE"
