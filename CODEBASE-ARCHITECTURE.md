@@ -224,7 +224,7 @@ Pathways:
 | B semantic | Vector similarity against seed text. |
 | C temporal | Recent relevant context. |
 | D pattern | Pattern/background retrieval. |
-| G model-edge | Typed Model graph traversal over support, tension, causal, blocking, analogy, co-occurrence, and warning edges; explicit Model triggers traverse from the Model itself, while entity-only triggers derive graph seeds from normalized scope sidecars. Rejected/retired/expired edges do not retrieve. |
+| G memory graph | Typed Model graph traversal over support, tension, causal, blocking, analogy, co-occurrence, and warning edges, plus normalized situation-member traversal through `model_composition_members`; explicit Model triggers traverse from the Model itself, while entity-only triggers derive graph seeds from normalized scope sidecars. Rejected/retired/expired edges do not retrieve. |
 
 Trigger-specific weights combine pathway outputs. T1 retrieval uses entity seeds supplied by ingestion and also backfills `entities_mentioned`, actor, text, and embedding from the triggering Observation row, so older/sparse queue payloads still retrieve against the real customer/commitment/resource scope that ingestion resolved. T2/model-triggered retrieval is intentionally graph-forward so typed Model edges can outrank generic semantic or structural neighbors when evaluating an existing belief. Results are merged/ranked, then `ModelsRepo.retrieve()` reconsolidates returned models by increasing retrieval count/activation and updating `last_retrieved_at`.
 

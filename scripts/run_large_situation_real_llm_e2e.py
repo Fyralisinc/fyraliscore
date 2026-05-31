@@ -626,6 +626,7 @@ async def _collect_case_result(
         "split_summary": ops.get("split_summary") or {},
         "quality_summary": ops.get("quality_summary") or {},
         "reconcile_summary": ops.get("reconcile_summary") or {},
+        "memory_aggregation": ops.get("memory_aggregation") or {},
         "valid_situation_count": len(valid_situations),
         "valid_situations": valid_situations[:5],
     }
@@ -659,7 +660,11 @@ async def run(config: RunnerConfig) -> dict[str, Any]:
             await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
 
         for case_index, case in enumerate(CASE_DEFINITIONS[: config.case_count], start=1):
-            case_run_id = f"{run_id}:case-{case_index}:{case['name']}"
+            # build_scenario namespaces actor identity mappings, but that
+            # helper truncates the namespace slug. Keep the case discriminator
+            # at the front so multi-case runs do not collide on global
+            # (source_channel, source_actor_ref) identity keys.
+            case_run_id = f"case-{case_index}-{case['name']}:{run_id}"
             print(
                 f"[case {case_index}/{config.case_count}] materializing {case['name']}",
                 flush=True,
@@ -790,16 +795,19 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- Passed: {summary['passes']}",
         f"- Elapsed seconds: {summary['elapsed_seconds']}",
         "",
-        "| Case | Active Models | Retrieved | Valid Situations | Status |",
-        "| --- | ---: | ---: | ---: | --- |",
+        "| Case | Active Models | Retrieved | Valid Situations | New Model Pressure | Absorption | Status |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for result in summary["results"]:
+        memory = result.get("memory_aggregation") or {}
         lines.append(
-            "| {case} | {models} | {retrieved} | {situations} | {status} |".format(
+            "| {case} | {models} | {retrieved} | {situations} | {pressure:.2f} | {absorption:.2f} | {status} |".format(
                 case=result["case_name"],
                 models=result["active_models"],
                 retrieved=result["retrieval_model_count"],
                 situations=result["valid_situation_count"],
+                pressure=float(memory.get("new_model_pressure") or 0.0),
+                absorption=float(memory.get("absorption_ratio") or 0.0),
                 status=result["run_status"],
             )
         )

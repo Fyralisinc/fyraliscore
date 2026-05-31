@@ -657,8 +657,9 @@ def apply_verdict(
 
     - accept                 → (op, [])
     - reject                 → (None, []) — caller drops the op
-    - downgrade_to_evidence  → (None, []) — evidence path not yet wired;
-                                rejection_reasons already carries the note
+    - downgrade_to_evidence  → (None, []) — applier attaches the evidence
+                                to an existing Model anchor when possible;
+                                rejection_reasons carries the rationale
     - needs_review           → (op, []) — caller inspects verdict.decision
                                 to queue review
     """
@@ -668,8 +669,9 @@ def apply_verdict(
     if decision == "reject":
         return None, []
     if decision == "downgrade_to_evidence":
-        # Evidence emission is the integrator's responsibility; the gate
-        # currently returns no side-op so it stays a no-op as documented.
+        # Evidence emission is the applier's responsibility. The gate
+        # returns no side-op because the applier needs DB state to select
+        # the existing Model anchor.
         return None, []
     if decision == "needs_review":
         return op, []

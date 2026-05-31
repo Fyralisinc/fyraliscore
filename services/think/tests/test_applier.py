@@ -722,6 +722,588 @@ async def test_reconciler_folds_llm_insert_without_embedding_into_existing_model
     assert readings[-1]["source_event_id"] == str(new_event)
 
 
+async def test_quality_downgrade_attaches_observe_reading_without_new_model(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.think.tests.conftest import _insert_observation
+
+    scope_entity = {"type": "customer", "id": str(uuid7())}
+    anchor_natural = "Acme renewal call felt rough after the customer review."
+    signal_natural = "Yesterday's call with Acme felt rough."
+    async with fresh_db.acquire() as conn:
+        old_event = await _insert_observation(
+            conn, tenant, content_text=anchor_natural,
+        )
+        new_event = await _insert_observation(
+            conn, tenant, content_text=signal_natural,
+        )
+        anchor_model = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO models (
+                id, tenant_id, born_from_event_id,
+                proposition, "natural", embedding,
+                scope_actors, scope_entities, scope_temporal,
+                confidence, activation, status, confidence_at_assertion,
+                activation_coefficient
+            ) VALUES (
+                $1, $2, $3,
+                $4::jsonb, $5, $6,
+                '{}'::uuid[], $7::jsonb, '{}'::jsonb,
+                0.6, 1.0, 'active', 0.6, 1.0
+            )
+            """,
+            anchor_model,
+            tenant,
+            old_event,
+            json.dumps({
+                "kind": "belief",
+                "claim_role": "fact",
+                "subject": "Acme",
+                "assertion": anchor_natural,
+            }),
+            anchor_natural,
+            deterministic_text_embedding(anchor_natural),
+            json.dumps([scope_entity]),
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(new_event),
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "fact",
+                            "subject": "Acme",
+                            "assertion": signal_natural,
+                        },
+                        "natural": signal_natural,
+                        "scope_actors": [],
+                        "scope_entities": [scope_entity],
+                        "scope_temporal": {},
+                        "confidence": 0.5,
+                        "confidence_at_assertion": 0.5,
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=new_event,
+            )
+
+        model_count = await conn.fetchval(
+            "SELECT count(*) FROM models WHERE tenant_id = $1",
+            tenant,
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT signal_readings, supporting_event_ids, evidential_weight
+            FROM models WHERE id = $1
+            """,
+            anchor_model,
+        )
+        sidecar_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM model_signal_readings
+            WHERE model_id = $1 AND source_event_id = $2
+            """,
+            anchor_model,
+            new_event,
+        )
+
+    assert model_count == 1
+    assert result["quality_summary"]["downgrade_to_evidence"] == 1
+    assert result["memory_aggregation"]["evidence_attachments"] == 1
+    assert result["memory_aggregation"]["model_inserts"] == 0
+    assert result["claim_ops"][0]["op"] == "downgrade_to_evidence"
+    assert result["claim_ops"][0]["decision"] == "attached_to_existing_model"
+    assert result["claim_ops"][0]["model_id"] == str(anchor_model)
+    readings = row["signal_readings"]
+    if isinstance(readings, str):
+        readings = json.loads(readings)
+    assert readings[-1]["kind"] == "observe"
+    assert readings[-1]["source_event_id"] == str(new_event)
+    assert new_event in row["supporting_event_ids"]
+    assert float(row["evidential_weight"]) > 0.5
+    assert sidecar_count == 1
+
+
+async def test_scoped_atomic_near_duplicate_absorbs_without_new_model(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Borderline scoped atomics should reinforce existing memory, not clone."""
+    from services.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        old_event = uuid7()
+        new_event = uuid7()
+        await conn.executemany(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, $3,
+                    $4, FALSE, 'authoritative')
+            """,
+            [
+                (
+                    old_event,
+                    tenant,
+                    "Atlas evidence old",
+                    make_embedding("Atlas evidence old"),
+                ),
+                (
+                    new_event,
+                    tenant,
+                    "Atlas evidence new",
+                    make_embedding("Atlas evidence new"),
+                ),
+            ],
+        )
+        customer_id = uuid7()
+        scope_entity = {"type": "customer", "id": str(customer_id)}
+        v1 = [0.0] * 768
+        v1[0] = 1.0
+        v2 = [0.0] * 768
+        v2[0] = 0.78
+        v2[1] = (1.0 - 0.78 ** 2) ** 0.5
+
+        existing_model = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO models
+              (id, tenant_id, born_from_event_id, proposition, "natural",
+               embedding, scope_actors, scope_entities, scope_temporal,
+               confidence, activation, status, confidence_at_assertion,
+               activation_coefficient, supporting_event_ids, domain_tags)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, '{}'::uuid[], $7::jsonb,
+                    '{}'::jsonb, 0.61, 1.0, 'active', 0.61, 1.0,
+                    ARRAY[$3]::uuid[], ARRAY['customers','execution']::text[])
+            """,
+            existing_model,
+            tenant,
+            old_event,
+            json.dumps({
+                "kind": "belief",
+                "claim_role": "fact",
+                "abstraction_level": "atomic",
+                "subject": "Atlas renewal evidence",
+                "assertion": "Atlas renewal evidence is delayed",
+            }),
+            "Atlas renewal evidence is delayed.",
+            v1,
+            json.dumps([scope_entity]),
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(new_event),
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "fact",
+                            "abstraction_level": "atomic",
+                            "subject": "Atlas renewal evidence",
+                            "assertion": (
+                                "Atlas renewal evidence remains delayed"
+                            ),
+                        },
+                        "natural": "Atlas renewal evidence remains delayed.",
+                        "embedding": v2,
+                        "scope_actors": [],
+                        "scope_entities": [scope_entity],
+                        "scope_temporal": {},
+                        "confidence": 0.64,
+                        "confidence_at_assertion": 0.64,
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=new_event,
+            )
+        model_count = await conn.fetchval(
+            "SELECT count(*) FROM models WHERE tenant_id = $1",
+            tenant,
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT signal_readings, supporting_event_ids, evidential_weight,
+                   confirmed_count, last_confirmed_at
+            FROM models WHERE id = $1
+            """,
+            existing_model,
+        )
+        sidecar_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_signal_readings
+            WHERE model_id = $1 AND source_event_id = $2
+              AND reading_kind = 'confirm'
+            """,
+            existing_model,
+            new_event,
+        )
+
+    assert model_count == 1
+    assert result["reconcile_summary"]["human_review"] == 1
+    assert result["memory_aggregation"]["model_inserts"] == 0
+    assert result["memory_aggregation"]["near_duplicate_absorptions"] == 1
+    assert result["memory_aggregation"]["absorption_ratio"] == pytest.approx(1.0)
+    assert result["claim_ops"][0]["op"] == "absorb_near_duplicate"
+    assert result["claim_ops"][0]["decision"] == "attached_to_matched_model"
+    assert result["claim_ops"][0]["model_id"] == str(existing_model)
+    readings = row["signal_readings"]
+    if isinstance(readings, str):
+        readings = json.loads(readings)
+    assert readings[-1]["kind"] == "confirm"
+    assert readings[-1]["source_event_id"] == str(new_event)
+    assert new_event in row["supporting_event_ids"]
+    assert float(row["evidential_weight"]) > 0.5
+    assert row["confirmed_count"] == 1
+    assert row["last_confirmed_at"] is not None
+    assert sidecar_count == 1
+
+
+async def test_situation_auto_merge_expands_existing_composite(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Overlapping situations should evolve one composite instead of cloning."""
+    from services.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        old_event = uuid7()
+        new_event = uuid7()
+        await conn.executemany(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, $3,
+                    $4, FALSE, 'authoritative')
+            """,
+            [
+                (
+                    old_event,
+                    tenant,
+                    "old renewal pressure",
+                    make_embedding("old renewal pressure"),
+                ),
+                (
+                    new_event,
+                    tenant,
+                    "new renewal pressure",
+                    make_embedding("new renewal pressure"),
+                ),
+            ],
+        )
+        members = [uuid7() for _ in range(5)]
+        new_member = uuid7()
+        existing_prop = {
+            "kind": "belief",
+            "claim_role": "situation",
+            "abstraction_level": "composite",
+            "time_mode": "current",
+            "modality": "inferred",
+            "polarity": "mixed",
+            "situation": "Atlas renewal delivery pressure",
+            "summary": "Atlas renewal, delivery, and audit readiness are linked.",
+            "member_model_ids": [str(m) for m in members],
+            "relationship_summary": "The members reinforce one renewal risk.",
+            "status": "forming",
+            "pressure_type": "revenue",
+            "shared_mechanism": "The same delivery gap affects renewal readiness.",
+            "judgment_change": "The risk is cross-functional.",
+            "evidence_event_ids": [str(old_event)],
+            "open_falsifier": "Atlas renewal closes and delivery risk clears.",
+        }
+        existing_model = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO models
+              (id, tenant_id, born_from_event_id, proposition, "natural",
+               embedding, scope_actors, scope_entities, scope_temporal,
+               confidence, activation, status, confidence_at_assertion,
+               activation_coefficient, domain_tags)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, '{}'::uuid[], '[]'::jsonb,
+                    '{}'::jsonb, 0.62, 1.0, 'active', 0.62, 1.0,
+                    ARRAY['customers','execution']::text[])
+            """,
+            existing_model,
+            tenant,
+            old_event,
+            json.dumps(existing_prop),
+            "Atlas renewal delivery pressure is forming.",
+            deterministic_text_embedding("Atlas renewal delivery pressure"),
+        )
+        candidate_prop = {
+            **existing_prop,
+            "summary": (
+                "Atlas renewal, delivery, audit readiness, and support capacity "
+                "are linked."
+            ),
+            "member_model_ids": [str(m) for m in members[:4]] + [str(new_member)],
+            "affected_customers": ["Atlas"],
+            "evidence_event_ids": [str(new_event)],
+        }
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(new_event),
+                        "proposition": candidate_prop,
+                        "natural": "Atlas renewal delivery pressure is widening.",
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.72,
+                        "confidence_at_assertion": 0.72,
+                        "domain_tags": ["customers", "execution", "revenue"],
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=new_event,
+            )
+
+        model_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM models
+            WHERE tenant_id = $1 AND claim_role = 'situation'
+            """,
+            tenant,
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT proposition, domain_tags, signal_readings, supporting_event_ids
+            FROM models
+            WHERE id = $1
+            """,
+            existing_model,
+        )
+        member_rows = await conn.fetch(
+            """
+            SELECT member_model_id, source, evidence_event_ids
+            FROM model_composition_members
+            WHERE tenant_id = $1 AND composite_model_id = $2
+            ORDER BY member_model_id::text
+            """,
+            tenant,
+            existing_model,
+        )
+        sidecar_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_signal_readings
+            WHERE model_id = $1 AND source_event_id = $2
+              AND reading_kind = 'confirm'
+            """,
+            existing_model,
+            new_event,
+        )
+
+    assert model_count == 1
+    assert result["reconcile_summary"]["auto_merge"] == 1
+    assert result["memory_aggregation"]["model_inserts"] == 0
+    assert result["memory_aggregation"]["situation_model_updates"] == 1
+    assert result["memory_aggregation"]["situation_member_additions"] == 1
+    assert result["claim_ops"][0]["op"] == "update"
+    assert result["claim_ops"][0]["internal_situation_merge"] is True
+    assert result["claim_ops"][0]["situation_members_added"] == 1
+
+    proposition = row["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    assert set(proposition["member_model_ids"]) == {
+        str(m) for m in members + [new_member]
+    }
+    assert {r["member_model_id"] for r in member_rows} == {*members, new_member}
+    assert all(r["source"] == "reconciliation_merge" for r in member_rows)
+    assert all(new_event in r["evidence_event_ids"] for r in member_rows)
+    assert set(row["domain_tags"]) >= {"customers", "execution", "revenue"}
+    assert new_event in row["supporting_event_ids"]
+    readings = row["signal_readings"]
+    if isinstance(readings, str):
+        readings = json.loads(readings)
+    assert readings[-1]["kind"] == "confirm"
+    assert readings[-1]["source_event_id"] == str(new_event)
+    assert sidecar_count == 1
+
+
+async def test_same_event_situations_coalesce_into_one_composite(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Direct and synthesized same-event situations should share one anchor."""
+    from services.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        event_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, $3,
+                    $4, FALSE, 'authoritative')
+            """,
+            event_id,
+            tenant,
+            "Atlas renewal and delivery pressure",
+            make_embedding("Atlas renewal and delivery pressure"),
+        )
+        first_members = [uuid7(), uuid7()]
+        second_members = [uuid7(), uuid7()]
+
+        def situation_prop(title: str, members: list[UUID]) -> dict:
+            return {
+                "kind": "belief",
+                "claim_role": "situation",
+                "abstraction_level": "composite",
+                "time_mode": "current",
+                "modality": "inferred",
+                "polarity": "mixed",
+                "domain_tags": ["customers", "execution", "revenue"],
+                "situation": title,
+                "summary": f"{title} is visible for Atlas.",
+                "member_model_ids": [str(m) for m in members],
+                "relationship_summary": "The members reinforce one Atlas risk.",
+                "status": "forming",
+                "pressure_type": "revenue",
+                "shared_mechanism": (
+                    "The same delivery readiness gap affects Atlas renewal."
+                ),
+                "judgment_change": (
+                    "Together the claims justify one composite situation."
+                ),
+                "evidence_event_ids": [str(event_id)],
+                "open_falsifier": "Atlas renewal risk clears.",
+            }
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(event_id),
+                        "proposition": situation_prop(
+                            "Atlas renewal pressure",
+                            first_members,
+                        ),
+                        "natural": "Atlas renewal pressure is forming.",
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.68,
+                        "confidence_at_assertion": 0.68,
+                        "domain_tags": ["customers", "execution", "revenue"],
+                    },
+                ),
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(event_id),
+                        "proposition": situation_prop(
+                            "Atlas delivery readiness pressure",
+                            second_members,
+                        ),
+                        "natural": (
+                            "Atlas delivery readiness pressure is part of the "
+                            "same renewal risk."
+                        ),
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.66,
+                        "confidence_at_assertion": 0.66,
+                        "domain_tags": ["customers", "execution", "revenue"],
+                    },
+                ),
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=event_id,
+            )
+        rows = await conn.fetch(
+            """
+            SELECT id, proposition, supporting_event_ids
+            FROM models
+            WHERE tenant_id = $1 AND claim_role = 'situation'
+            """,
+            tenant,
+        )
+        sidecar_members = await conn.fetch(
+            """
+            SELECT member_model_id, source
+            FROM model_composition_members
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+
+    assert len(rows) == 1
+    assert result["memory_aggregation"]["model_inserts"] == 1
+    assert result["memory_aggregation"]["situation_model_updates"] == 1
+    assert result["memory_aggregation"]["situation_member_additions"] == 2
+    assert result["claim_ops"][1]["decision"] == "same_event_situation_coalesced"
+    prop = rows[0]["proposition"]
+    if isinstance(prop, str):
+        prop = json.loads(prop)
+    assert set(prop["member_model_ids"]) == {
+        str(m) for m in first_members + second_members
+    }
+    assert set(r["member_model_id"] for r in sidecar_members) == {
+        *first_members,
+        *second_members,
+    }
+    assert all(
+        r["source"] == "same_event_situation_coalesce"
+        for r in sidecar_members
+    )
+    assert event_id in rows[0]["supporting_event_ids"]
+
+
 async def test_apply_idempotency_second_apply_raises(fresh_db, tenant, tenant_cleanup):
     from services.think.tests.conftest import make_embedding
     async with fresh_db.acquire() as conn:

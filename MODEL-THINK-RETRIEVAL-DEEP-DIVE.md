@@ -108,9 +108,9 @@ Five pathways with trigger-aware weights:
 | **B semantic** | pgvector cosine on `models.embedding` | 0.34 / 0.18 / — |
 | **C temporal** | Recent observations within window | 0.16 / — / — |
 | **D pattern** | Pattern/background-kind Models | — / — / 0.42 |
-| **G model-edge** | Typed `model_edges` traversal (active edges only) | 0.16 / **0.52** / 0.30 |
+| **G memory graph** | Typed `model_edges` traversal plus `model_composition_members` situation-member expansion | 0.16 / **0.52** / 0.30 |
 
-**T2 is intentionally graph-forward** — when reasoning about an existing belief, typed edges should outrank generic semantic neighbors. Scores combine via weighted decay (or RRF if `RETRIEVAL_SCORING_MODE=rrf`). Final tiebreak: `-score, -activation, id`.
+**T2 is intentionally graph-forward** — when reasoning about an existing belief, typed edges and situation composition should outrank generic semantic neighbors. Situation Models now pull their member Models through Pathway G, and member Models pull their parent situations back in, so composite memory acts as an actual retrieval gravity well rather than only a row-level abstraction. Scores combine via weighted decay (or RRF if `RETRIEVAL_SCORING_MODE=rrf`). Final tiebreak: `-score, -activation, id`.
 
 Every returned Model triggers `ModelsRepo.retrieve()` reconsolidation (activation +0.15, count++).
 

@@ -523,6 +523,13 @@ async def test_db_situation_auto_merges_on_high_member_overlap(
         result.signal_breakdown.get("situation_member_overlap", 0.0)
         >= 0.79
     )
+    assert result.replacement_op is not None
+    assert result.replacement_op.changes is not None
+    merge_payload = result.replacement_op.changes["__situation_merge"]
+    assert merge_payload["added_member_model_ids"] == [str(new_members[-1])]
+    assert set(merge_payload["proposition"]["member_model_ids"]) == {
+        str(m) for m in members + [new_members[-1]]
+    }
 
 
 @pytest.mark.asyncio

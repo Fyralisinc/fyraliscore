@@ -1415,7 +1415,7 @@ async def pathway_d_pattern(
 
 
 # =====================================================================
-# Pathway G — Model-edge traversal (typed memory graph expansion)
+# Pathway G — Model graph traversal (edges + composition expansion)
 # =====================================================================
 
 
@@ -1430,11 +1430,14 @@ async def pathway_g_model_edges(
     max_hops: int = _DEFAULT_EDGE_MAX_HOPS,
     limit: int = _EDGE_MAX_MODELS,
 ) -> PathwayResult:
-    """Traverse the typed Model graph around known seed Models.
+    """Traverse the Model graph around known seed Models.
 
     This is the retrieval path for hidden/non-obvious links: a Model can be
     semantically distant yet relevant because it contradicts, blocks,
-    explains, predicts, or shares an underlying issue with the seed.
+    explains, predicts, shares an underlying issue with the seed, or belongs
+    to the same composite situation. Composition membership is graph structure
+    too, even though it lives in `model_composition_members` instead of
+    `model_edges`.
     """
     notes: dict[str, Any] = {
         "seed_model_ids": len(seed_model_ids or []),
@@ -1508,10 +1511,38 @@ async def pathway_g_model_edges(
         mid: (0, 0, "seed") for mid in seeds
     }
     edge_rows_seen = 0
+    composition_rows_seen = 0
 
     for hop in range(1, max_hops + 1):
         if not frontier or len(visited) >= limit:
             break
+        composition_rows = await conn.fetch(
+            """
+            SELECT composite_model_id, member_model_id, confidence, source
+            FROM model_composition_members
+            WHERE tenant_id = $1
+              AND (
+                composite_model_id = ANY($2::uuid[])
+                OR member_model_id = ANY($2::uuid[])
+              )
+            ORDER BY confidence DESC, created_at DESC
+            LIMIT $3
+            """,
+            tenant_id,
+            list(frontier),
+            limit * 4,
+        )
+        composition_rows_seen += len(composition_rows)
+
+        next_candidates: list[tuple[UUID, int, str]] = []
+        for pos, row in enumerate(composition_rows):
+            composite = row["composite_model_id"]
+            member = row["member_model_id"]
+            if composite in frontier:
+                next_candidates.append((member, pos, "composition_member"))
+            if member in frontier:
+                next_candidates.append((composite, pos, "composition_parent"))
+
         rows = await conn.fetch(
             """
             SELECT source_model_id, target_model_id, edge_kind, confidence,
@@ -1543,16 +1574,20 @@ async def pathway_g_model_edges(
             limit * 4,
         )
         edge_rows_seen += len(rows)
-        next_frontier: set[UUID] = set()
-        for pos, row in enumerate(rows):
+        edge_pos_offset = len(next_candidates)
+        for pos, row in enumerate(rows, start=edge_pos_offset):
             source = row["source_model_id"]
             target = row["target_model_id"]
             other = target if source in frontier else source
+            next_candidates.append((other, pos, row["edge_kind"]))
+
+        next_frontier: set[UUID] = set()
+        for other, pos, relation_kind in next_candidates:
             if other in visited:
                 continue
             visited.add(other)
             next_frontier.add(other)
-            rank_by_model[other] = (hop, pos, row["edge_kind"])
+            rank_by_model[other] = (hop, pos, relation_kind)
             if len(visited) >= limit:
                 break
         frontier = next_frontier
@@ -1581,6 +1616,7 @@ async def pathway_g_model_edges(
         )
     )
     notes["edge_rows_seen"] = edge_rows_seen
+    notes["composition_rows_seen"] = composition_rows_seen
     notes["models_returned"] = len(models)
     notes["hops_executed"] = max((rank_by_model.get(m.id, (0, 0, ""))[0] for m in models), default=0)
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -30,12 +31,14 @@ import asyncpg
 
 from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
+from lib.shared.memory_grammar import derive_memory_grammar
 from lib.shared.types import ModelCreate
 from lib.shared.edge_registry import EdgeRegistryError
 from services.acts import commitments as commitments_svc
 from services.acts import decisions as decisions_svc
 from services.acts import goals as goals_svc
 from services.models.propositions import ensure_situation_compositional_defaults
+from services.models.propositions import canonicalize_proposition, validate_proposition
 from services.models.repo import ModelsRepo
 from services.observations.state_change import emit_state_change
 from services.resources import deployments as deployments_svc
@@ -45,7 +48,7 @@ from services.resources.deployments import release as release_deployment
 
 from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
 from .observability import log_dropped_op
-from .quality_gate import QualityContext, apply_verdict, score_quality
+from .quality_gate import QualityContext, QualityVerdict, apply_verdict, score_quality
 from .splitter import split_compound_claim_op
 from .synthesis_decision import summarize_synthesis_decisions
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
@@ -315,6 +318,24 @@ async def apply_diff(
                 )
                 op_after_verdict, side_ops = apply_verdict(op, verdict)
                 if op_after_verdict is None:
+                    if verdict.decision == "downgrade_to_evidence":
+                        result = await _apply_evidence_downgrade(
+                            op,
+                            conn,
+                            tenant_id=diff.tenant_id,
+                            cause_event_id=trigger_cause_event_id,
+                            verdict=verdict,
+                            preferred_model_id=(
+                                recon_result.matched_model_id
+                                if recon_result is not None
+                                else None
+                            ),
+                        )
+                        if gid is not None:
+                            result["summary"]["split_group_id"] = gid
+                        ops_summary["claim_ops"].append(result["summary"])
+                        state_changes_emitted += result.get("state_changes", 0)
+                        continue
                     # rejected or downgraded — record and skip apply.
                     ops_summary["claim_ops"].append({
                         "op": "skip",
@@ -333,6 +354,42 @@ async def apply_diff(
                 op = op_after_verdict
                 # side_ops currently empty (evidence path unwired); future
                 # evidence emission would loop them through _apply_claim_op.
+
+        if gid is None and _should_absorb_near_duplicate(op, recon_result, verdict):
+            result = await _apply_near_duplicate_absorption(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+                verdict=verdict,
+                recon_result=recon_result,
+            )
+            if gid is not None:
+                result["summary"]["split_group_id"] = gid
+            ops_summary["claim_ops"].append(result["summary"])
+            state_changes_emitted += result.get("state_changes", 0)
+            continue
+
+        if op.op == "insert" and _entry_is_situation(op.entry):
+            result = await _coalesce_same_event_situation_insert(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+            if result is not None:
+                if recon_result is not None and recon_result.decision != "skipped":
+                    result["summary"]["reconcile_decision"] = recon_result.decision
+                if verdict is not None:
+                    result["summary"]["quality_decision"] = verdict.decision
+                    result["summary"]["quality_overall"] = verdict.overall_score
+                if gid is not None:
+                    result["summary"]["split_group_id"] = gid
+                ops_summary["claim_ops"].append(result["summary"])
+                if result.get("model_id") is not None:
+                    applied_model_ids.append(result["model_id"])
+                state_changes_emitted += result.get("state_changes", 0)
+                continue
 
         # When the reconciler converted an insert into an update, the
         # audit chain should record the transition as
@@ -510,6 +567,12 @@ async def apply_diff(
             )
 
     # --- 6. Mark applied_triggers success (still in same tx) ------
+    ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
+        ops_summary,
+        original_claim_op_count=len(diff.claim_ops),
+        expanded_claim_op_count=len(expanded_ops),
+    )
+
     await conn.execute(
         "UPDATE applied_triggers SET outcome = 'success' WHERE trigger_id = $1",
         diff.trigger_ref,
@@ -648,6 +711,1127 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
 }
 
 
+_EVIDENCE_TOKEN_STOPWORDS = {
+    "about", "after", "also", "and", "are", "because", "been", "but",
+    "call", "case", "customer", "from", "has", "have", "into", "now",
+    "that", "the", "their", "this", "with", "without",
+}
+
+
+async def _apply_evidence_downgrade(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    cause_event_id: UUID | None,
+    verdict: QualityVerdict,
+    preferred_model_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Attach a non-durable claim as evidence to an existing memory anchor.
+
+    Low-durability signals are often real information but bad durable Models:
+    one meeting felt rough, one Slack reply sounded uncertain, one customer
+    repeated a known worry. The right substrate move is evidence attachment
+    when an existing Model already has enough gravity, otherwise leave the
+    original Observation as the durable record and avoid creating memory mass.
+    """
+    entry = dict(op.entry or {})
+    source_event_id = (
+        _coerce_uuid_or_none(entry.get("born_from_event_id"))
+        or cause_event_id
+    )
+    anchor_id = await _select_evidence_anchor_model(
+        conn,
+        tenant_id=tenant_id,
+        entry=entry,
+        preferred_model_id=preferred_model_id,
+    )
+    if anchor_id is None:
+        return {
+            "summary": {
+                "op": "skip",
+                "decision": "downgrade_to_evidence_skipped_no_anchor",
+                "reason": "quality_gate_downgrade_to_evidence",
+                "detail": "no_suitable_model_anchor",
+                "quality_verdict": _quality_verdict_summary(verdict),
+            },
+            "model_id": None,
+            "state_changes": 0,
+        }
+
+    result = await _append_observe_reading(
+        conn,
+        tenant_id=tenant_id,
+        model_id=anchor_id,
+        source_event_id=source_event_id,
+        entry=entry,
+        verdict=verdict,
+    )
+    return result
+
+
+async def _select_evidence_anchor_model(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    entry: dict[str, Any],
+    preferred_model_id: UUID | None,
+) -> UUID | None:
+    if preferred_model_id is not None:
+        row = await conn.fetchrow(
+            """
+            SELECT id
+            FROM models
+            WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+            """,
+            tenant_id,
+            preferred_model_id,
+        )
+        if row is not None:
+            return row["id"]
+
+    scope_actors = [
+        uid for raw in (entry.get("scope_actors") or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    ]
+    scope_entities = [
+        ent for ent in (entry.get("scope_entities") or [])
+        if isinstance(ent, dict) and ent.get("id") is not None
+    ]
+    if not scope_actors and not scope_entities:
+        return None
+
+    clauses: list[str] = []
+    params: list[Any] = [tenant_id]
+    if scope_actors:
+        params.append(scope_actors)
+        clauses.append(f"scope_actors && ${len(params)}::uuid[]")
+    for ent in scope_entities:
+        params.append(json.dumps([ent], sort_keys=True, default=str))
+        clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+
+    rows = await conn.fetch(
+        f"""
+        SELECT id, proposition, "natural", confidence, claim_role,
+               abstraction_level, polarity, domain_tags
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND ({' OR '.join(clauses)})
+        ORDER BY created_at DESC
+        LIMIT 40
+        """,
+        *params,
+    )
+    if not rows:
+        return None
+
+    prop = _canonical_prop_for_entry(entry)
+    grammar = derive_memory_grammar(
+        prop,
+        natural=str(entry.get("natural") or ""),
+        scope_entities=scope_entities,
+    )
+    text = _evidence_entry_text(entry)
+    best_id: UUID | None = None
+    best_score = 0.0
+    for row in rows:
+        row_prop = _json_obj(row["proposition"])
+        row_text = " ".join(
+            part for part in (
+                str(row["natural"] or ""),
+                json.dumps(row_prop, sort_keys=True, default=str),
+            )
+            if part
+        )
+        lexical = _token_overlap_score(text, row_text)
+        score = lexical * 0.65
+        if row["claim_role"] == grammar.claim_role:
+            score += 0.18
+        if row["polarity"] == grammar.polarity:
+            score += 0.08
+        row_tags = {str(tag) for tag in (row["domain_tags"] or [])}
+        grammar_tags = set(grammar.domain_tags)
+        if row_tags and grammar_tags and row_tags & grammar_tags:
+            score += 0.12
+        if row["abstraction_level"] in {"composite", "pattern"}:
+            score -= 0.05
+        score += min(0.05, max(0.0, float(row["confidence"] or 0.0)) * 0.05)
+
+        # Require at least some textual overlap. Scope alone is too blunt:
+        # all memory for one customer/commitment would otherwise attract every
+        # throwaway comment about that customer.
+        if lexical < 0.08:
+            continue
+        if score > best_score:
+            best_score = score
+            best_id = row["id"]
+
+    if best_id is None or best_score < 0.22:
+        return None
+    return best_id
+
+
+async def _append_observe_reading(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    source_event_id: UUID | None,
+    entry: dict[str, Any],
+    verdict: QualityVerdict,
+) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """
+        SELECT signal_readings, supporting_event_ids, evidential_weight
+        FROM models
+        WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+        FOR UPDATE
+        """,
+        tenant_id,
+        model_id,
+    )
+    if row is None:
+        return {
+            "summary": {
+                "op": "downgrade_to_evidence",
+                "decision": "skipped_missing_anchor",
+                "model_id": str(model_id),
+                "quality_verdict": _quality_verdict_summary(verdict),
+            },
+            "model_id": None,
+            "state_changes": 0,
+        }
+
+    now = datetime.now(timezone.utc)
+    text = _evidence_entry_text(entry)
+    reading = {
+        "kind": "observe",
+        "at": now.isoformat(),
+        "source_event_id": str(source_event_id) if source_event_id else None,
+        "confidence": float(
+            entry.get("confidence", entry.get("confidence_at_assertion", 0.5))
+            or 0.5
+        ),
+        "natural": text[:500],
+        "quality_decision": verdict.decision,
+    }
+    existing_readings = _json_list(row["signal_readings"])
+    existing_readings.append(reading)
+
+    supporting_event_ids = [
+        uid for raw in (row["supporting_event_ids"] or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    ]
+    if source_event_id is not None and source_event_id not in supporting_event_ids:
+        supporting_event_ids.append(source_event_id)
+
+    previous_state = {
+        "signal_readings": _audit_jsonable(row["signal_readings"]),
+        "supporting_event_ids": _audit_jsonable(row["supporting_event_ids"]),
+        "evidential_weight": _audit_jsonable(row["evidential_weight"]),
+    }
+    evidential_weight = min(1.0, float(row["evidential_weight"] or 0.5) + 0.02)
+    await conn.execute(
+        """
+        UPDATE models
+        SET signal_readings = $3::jsonb,
+            supporting_event_ids = $4::uuid[],
+            evidential_weight = $5
+        WHERE tenant_id = $1 AND id = $2
+        """,
+        tenant_id,
+        model_id,
+        json.dumps(existing_readings, default=str),
+        supporting_event_ids,
+        evidential_weight,
+    )
+
+    detail = {
+        "downgraded_from": "claim_op.insert",
+        "natural": text[:1000],
+        "proposition": _audit_jsonable(entry.get("proposition") or {}),
+        "quality_verdict": _quality_verdict_summary(verdict),
+    }
+    await conn.execute(
+        """
+        INSERT INTO model_signal_readings (
+            id, model_id, tenant_id, reading_kind,
+            observed_at, source_event_id, detail
+        ) VALUES (
+            $1, $2, $3, 'observe',
+            $4, $5, $6::jsonb
+        )
+        """,
+        uuid7(),
+        model_id,
+        tenant_id,
+        now,
+        source_event_id,
+        json.dumps(detail, default=str),
+    )
+
+    await emit_state_change(
+        conn,
+        kind="model_evidence_attached",
+        entity_id=model_id,
+        tenant_id=tenant_id,
+        cause_event_id=source_event_id,
+        entity_kind="model",
+        metadata={"reading_kind": "observe", "quality_decision": verdict.decision},
+    )
+
+    from .audit import CAUSE_FIELD_UPDATE, emit_audit_event
+
+    await emit_audit_event(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        cause_type=CAUSE_FIELD_UPDATE,
+        new_state={
+            "signal_readings": existing_readings,
+            "supporting_event_ids": [str(uid) for uid in supporting_event_ids],
+            "evidential_weight": evidential_weight,
+        },
+        previous_state=previous_state,
+        cause_id=source_event_id,
+        changed_fields=[
+            "signal_readings",
+            "supporting_event_ids",
+            "evidential_weight",
+        ],
+    )
+
+    return {
+        "summary": {
+            "op": "downgrade_to_evidence",
+            "decision": "attached_to_existing_model",
+            "model_id": str(model_id),
+            "source_event_id": str(source_event_id) if source_event_id else None,
+            "reading_kind": "observe",
+            "quality_verdict": _quality_verdict_summary(verdict),
+        },
+        "model_id": model_id,
+        "state_changes": 1,
+    }
+
+
+def _should_absorb_near_duplicate(
+    op: ClaimOp,
+    recon_result: Any,
+    verdict: QualityVerdict | None,
+) -> bool:
+    if (
+        op.op != "insert"
+        or not isinstance(op.entry, dict)
+        or recon_result is None
+        or recon_result.decision != "human_review"
+        or recon_result.matched_model_id is None
+        or verdict is None
+        or verdict.decision not in {"accept", "needs_review"}
+    ):
+        return False
+
+    prop = _canonical_prop_for_entry(op.entry)
+    grammar = derive_memory_grammar(
+        prop,
+        natural=str(op.entry.get("natural") or ""),
+        scope_entities=[
+            ent for ent in (op.entry.get("scope_entities") or [])
+            if isinstance(ent, dict)
+        ],
+    )
+    if grammar.claim_role not in {"fact", "concern", "capability"}:
+        return False
+    if grammar.abstraction_level != "atomic":
+        return False
+
+    breakdown = dict(getattr(recon_result, "signal_breakdown", {}) or {})
+    adjusted = float(
+        breakdown.get(
+            "adjusted_score",
+            getattr(recon_result, "cosine_similarity", 0.0) or 0.0,
+        )
+    )
+    cosine = float(getattr(recon_result, "cosine_similarity", 0.0) or 0.0)
+    has_scope = bool(op.entry.get("scope_actors") or op.entry.get("scope_entities"))
+    graph_boost = float(breakdown.get("graph_boost", 0.0) or 0.0)
+
+    if has_scope and adjusted >= 0.75:
+        return True
+    if graph_boost >= 0.10 and adjusted >= 0.72:
+        return True
+    if not has_scope and cosine >= 0.95:
+        return True
+    return False
+
+
+async def _apply_near_duplicate_absorption(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    cause_event_id: UUID | None,
+    verdict: QualityVerdict | None,
+    recon_result: Any,
+) -> dict[str, Any]:
+    model_id = getattr(recon_result, "matched_model_id", None)
+    if model_id is None:
+        return {
+            "summary": {
+                "op": "skip",
+                "reason": "near_duplicate_absorption_missing_match",
+            },
+            "model_id": None,
+            "state_changes": 0,
+        }
+
+    entry = dict(op.entry or {})
+    source_event_id = (
+        _coerce_uuid_or_none(entry.get("born_from_event_id"))
+        or cause_event_id
+    )
+    row = await conn.fetchrow(
+        """
+        SELECT signal_readings, supporting_event_ids, evidential_weight,
+               confirmed_count
+        FROM models
+        WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+        FOR UPDATE
+        """,
+        tenant_id,
+        model_id,
+    )
+    if row is None:
+        return {
+            "summary": {
+                "op": "skip",
+                "reason": "near_duplicate_absorption_missing_model",
+                "model_id": str(model_id),
+            },
+            "model_id": None,
+            "state_changes": 0,
+        }
+
+    now = datetime.now(timezone.utc)
+    text = _evidence_entry_text(entry)
+    reading = {
+        "kind": "confirm",
+        "at": now.isoformat(),
+        "source_event_id": str(source_event_id) if source_event_id else None,
+        "confidence": float(
+            entry.get("confidence", entry.get("confidence_at_assertion", 0.5))
+            or 0.5
+        ),
+        "natural": text[:500],
+        "reconcile_decision": getattr(recon_result, "decision", None),
+        "reconcile_cosine": getattr(recon_result, "cosine_similarity", None),
+        "quality_decision": verdict.decision if verdict is not None else None,
+    }
+    existing_readings = _json_list(row["signal_readings"])
+    existing_readings.append(reading)
+    supporting_event_ids = [
+        uid for raw in (row["supporting_event_ids"] or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    ]
+    if source_event_id is not None and source_event_id not in supporting_event_ids:
+        supporting_event_ids.append(source_event_id)
+    evidential_weight = min(1.0, float(row["evidential_weight"] or 0.5) + 0.03)
+    confirmed_count = int(row["confirmed_count"] or 0) + 1
+
+    previous_state = {
+        "signal_readings": _audit_jsonable(row["signal_readings"]),
+        "supporting_event_ids": _audit_jsonable(row["supporting_event_ids"]),
+        "evidential_weight": _audit_jsonable(row["evidential_weight"]),
+        "confirmed_count": _audit_jsonable(row["confirmed_count"]),
+    }
+    await conn.execute(
+        """
+        UPDATE models
+        SET signal_readings = $3::jsonb,
+            supporting_event_ids = $4::uuid[],
+            evidential_weight = $5,
+            confirmed_count = $6,
+            last_confirmed_at = $7
+        WHERE tenant_id = $1 AND id = $2
+        """,
+        tenant_id,
+        model_id,
+        json.dumps(existing_readings, default=str),
+        supporting_event_ids,
+        evidential_weight,
+        confirmed_count,
+        now,
+    )
+
+    detail = {
+        "absorbed_from": "claim_op.insert",
+        "natural": text[:1000],
+        "proposition": _audit_jsonable(entry.get("proposition") or {}),
+        "quality_verdict": (
+            _quality_verdict_summary(verdict)
+            if verdict is not None
+            else None
+        ),
+        "reconcile": {
+            "decision": getattr(recon_result, "decision", None),
+            "cosine": getattr(recon_result, "cosine_similarity", None),
+            "decision_reason": getattr(recon_result, "decision_reason", None),
+            "signal_breakdown": getattr(recon_result, "signal_breakdown", {}),
+        },
+    }
+    await conn.execute(
+        """
+        INSERT INTO model_signal_readings (
+            id, model_id, tenant_id, reading_kind,
+            observed_at, source_event_id, detail
+        ) VALUES (
+            $1, $2, $3, 'confirm',
+            $4, $5, $6::jsonb
+        )
+        """,
+        uuid7(),
+        model_id,
+        tenant_id,
+        now,
+        source_event_id,
+        json.dumps(detail, default=str),
+    )
+
+    await emit_state_change(
+        conn,
+        kind="model_near_duplicate_absorbed",
+        entity_id=model_id,
+        tenant_id=tenant_id,
+        cause_event_id=source_event_id,
+        entity_kind="model",
+        metadata={"reading_kind": "confirm", "source": "reconciler_human_review"},
+    )
+
+    from .audit import CAUSE_FIELD_UPDATE, emit_audit_event
+
+    await emit_audit_event(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        cause_type=CAUSE_FIELD_UPDATE,
+        new_state={
+            "signal_readings": existing_readings,
+            "supporting_event_ids": [str(uid) for uid in supporting_event_ids],
+            "evidential_weight": evidential_weight,
+            "confirmed_count": confirmed_count,
+            "last_confirmed_at": now.isoformat(),
+        },
+        previous_state=previous_state,
+        cause_id=source_event_id,
+        changed_fields=[
+            "confirmed_count",
+            "evidential_weight",
+            "last_confirmed_at",
+            "signal_readings",
+            "supporting_event_ids",
+        ],
+    )
+
+    return {
+        "summary": {
+            "op": "absorb_near_duplicate",
+            "decision": "attached_to_matched_model",
+            "model_id": str(model_id),
+            "source_event_id": str(source_event_id) if source_event_id else None,
+            "reading_kind": "confirm",
+            "reconcile_decision": getattr(recon_result, "decision", None),
+            "reconcile_matched_model_id": str(model_id),
+            "reconcile_cosine": getattr(recon_result, "cosine_similarity", None),
+            "quality_decision": verdict.decision if verdict is not None else None,
+            "quality_overall": (
+                verdict.overall_score if verdict is not None else None
+            ),
+        },
+        "model_id": model_id,
+        "state_changes": 1,
+    }
+
+
+def _canonical_prop_for_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return {}
+    try:
+        return canonicalize_proposition(prop)
+    except Exception:
+        return dict(prop)
+
+
+def _quality_verdict_summary(verdict: QualityVerdict) -> dict[str, Any]:
+    return {
+        "decision": verdict.decision,
+        "atomicity": verdict.atomicity_score,
+        "durability": verdict.durability_score,
+        "kind_fit": verdict.kind_fit_score,
+        "overall": verdict.overall_score,
+        "rejection_reasons": list(verdict.rejection_reasons),
+    }
+
+
+def _evidence_entry_text(entry: dict[str, Any]) -> str:
+    prop = entry.get("proposition") or {}
+    parts = [str(entry.get("natural") or "")]
+    if isinstance(prop, dict):
+        for key in (
+            "assertion", "summary", "claim", "nature", "event",
+            "assessment", "hypothesis_text", "observed_tendency",
+            "situation", "relationship_summary", "expected",
+        ):
+            value = prop.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, dict):
+                parts.extend(str(v) for v in value.values() if isinstance(v, str))
+    return " ".join(part.strip() for part in parts if part and str(part).strip())
+
+
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return list(decoded) if isinstance(decoded, list) else []
+    return []
+
+
+def _token_overlap_score(left: str, right: str) -> float:
+    left_tokens = _evidence_tokens(left)
+    right_tokens = _evidence_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = left_tokens & right_tokens
+    if not overlap:
+        return 0.0
+    recall = len(overlap) / len(left_tokens)
+    precision = len(overlap) / len(right_tokens)
+    return min(1.0, 0.7 * recall + 0.3 * min(1.0, precision * 3.0))
+
+
+def _evidence_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(text).casefold())
+        if token not in _EVIDENCE_TOKEN_STOPWORDS and not token.isdigit()
+    }
+
+
+def _coerce_uuid_or_none(v: Any) -> UUID | None:
+    if v is None:
+        return None
+    if isinstance(v, UUID):
+        return v
+    try:
+        return UUID(str(v))
+    except (ValueError, TypeError):
+        return None
+
+
+def _summarize_memory_aggregation(
+    ops_summary: dict[str, Any],
+    *,
+    original_claim_op_count: int,
+    expanded_claim_op_count: int,
+) -> dict[str, Any]:
+    claim_ops = [
+        item for item in ops_summary.get("claim_ops", [])
+        if isinstance(item, dict)
+    ]
+    inserts = [item for item in claim_ops if item.get("op") == "insert"]
+    updates = [item for item in claim_ops if item.get("op") == "update"]
+    archives = [item for item in claim_ops if item.get("op") == "archive"]
+    situation_updates = [
+        item for item in updates
+        if item.get("internal_situation_merge") is True
+    ]
+    evidence_attachments = [
+        item for item in claim_ops
+        if item.get("op") == "downgrade_to_evidence"
+        and item.get("decision") == "attached_to_existing_model"
+    ]
+    near_duplicate_absorptions = [
+        item for item in claim_ops
+        if item.get("op") == "absorb_near_duplicate"
+        and item.get("decision") == "attached_to_matched_model"
+    ]
+    skipped = [item for item in claim_ops if item.get("op") == "skip"]
+    situations = [
+        item for item in inserts
+        if item.get("claim_role") == "situation"
+        or item.get("abstraction_level") == "composite"
+    ]
+    atomic_inserts = [item for item in inserts if item not in situations]
+    expanded = max(0, int(expanded_claim_op_count))
+    non_insert_absorptions = (
+        len(updates)
+        + len(evidence_attachments)
+        + len(near_duplicate_absorptions)
+        + len(skipped)
+    )
+    return {
+        "original_claim_ops": max(0, int(original_claim_op_count)),
+        "expanded_claim_ops": expanded,
+        "model_inserts": len(inserts),
+        "atomic_model_inserts": len(atomic_inserts),
+        "situation_model_inserts": len(situations),
+        "situation_model_updates": len(situation_updates),
+        "situation_member_additions": sum(
+            int(item.get("situation_members_added") or 0)
+            for item in situation_updates
+        ),
+        "model_updates": len(updates),
+        "model_archives": len(archives),
+        "evidence_attachments": len(evidence_attachments),
+        "near_duplicate_absorptions": len(near_duplicate_absorptions),
+        "skipped_claim_writes": len(skipped),
+        "edge_ops": len(ops_summary.get("edge_ops") or []),
+        "act_ops": len(ops_summary.get("act_ops") or []),
+        "resource_ops": len(ops_summary.get("resource_ops") or []),
+        "new_model_pressure": (
+            len(inserts) / expanded if expanded else 0.0
+        ),
+        "absorption_ratio": (
+            non_insert_absorptions / expanded if expanded else 1.0
+        ),
+    }
+
+
+async def _append_signal_readings_sidecar_delta(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    previous_readings: Any,
+    new_readings: Any,
+) -> None:
+    """Mirror newly appended JSONB signal readings into the typed sidecar."""
+    previous = _json_list(previous_readings)
+    current = _json_list(new_readings)
+    if not current:
+        return
+
+    previous_counts: dict[str, int] = {}
+    for reading in previous:
+        key = _reading_key(reading)
+        previous_counts[key] = previous_counts.get(key, 0) + 1
+
+    rows: list[tuple[Any, ...]] = []
+    now = datetime.now(timezone.utc)
+    for reading in current:
+        if not isinstance(reading, dict):
+            continue
+        key = _reading_key(reading)
+        if previous_counts.get(key, 0) > 0:
+            previous_counts[key] -= 1
+            continue
+        rows.append(
+            (
+                uuid7(),
+                model_id,
+                tenant_id,
+                _normalized_reading_kind(reading.get("kind")),
+                _coerce_dt(reading.get("at")) or now,
+                _coerce_uuid_or_none(reading.get("source_event_id")),
+                json.dumps(
+                    {
+                        "source": "signal_readings_jsonb_sync",
+                        "reading": _audit_jsonable(reading),
+                    },
+                    default=str,
+                ),
+            )
+        )
+    if not rows:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO model_signal_readings (
+            id, model_id, tenant_id, reading_kind,
+            observed_at, source_event_id, detail
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        """,
+        rows,
+    )
+
+
+def _reading_key(reading: Any) -> str:
+    return json.dumps(_audit_jsonable(reading), sort_keys=True, default=str)
+
+
+def _normalized_reading_kind(value: Any) -> str:
+    kind = str(value or "").strip().casefold()
+    if kind in {"confirm", "contest", "observe", "falsify"}:
+        return kind
+    return "observe"
+
+
+async def _apply_situation_merge_payload(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    payload: dict[str, Any],
+    cause_event_id: UUID | None,
+    audit_cause_override: str | None,
+) -> dict[str, Any]:
+    proposition = payload.get("proposition")
+    if not isinstance(proposition, dict):
+        raise ValidationError("situation merge payload missing proposition")
+    entry = {"proposition": dict(proposition)}
+    ensure_situation_compositional_defaults(entry)
+    merged_prop = canonicalize_proposition(entry["proposition"])
+    validate_proposition(merged_prop)
+    grammar = derive_memory_grammar(merged_prop)
+    if grammar.claim_role != "situation":
+        raise ValidationError("situation merge payload did not produce a situation")
+
+    row = await conn.fetchrow(
+        """
+        SELECT proposition, domain_tags, supporting_event_ids
+        FROM models
+        WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+        FOR UPDATE
+        """,
+        tenant_id,
+        model_id,
+    )
+    if row is None:
+        return {
+            "summary": {
+                "situation_members_added": 0,
+                "decision": "skipped_missing_model",
+            },
+            "state_changes": 0,
+        }
+
+    candidate_tags = [
+        str(tag) for tag in (payload.get("candidate_domain_tags") or [])
+        if str(tag).strip()
+    ]
+    domain_tags = _merge_string_sequence(
+        row["domain_tags"] or [],
+        grammar.domain_tags,
+        candidate_tags,
+    )
+    previous_state = {
+        "proposition": _audit_jsonable(row["proposition"]),
+        "domain_tags": _audit_jsonable(row["domain_tags"]),
+        "supporting_event_ids": _audit_jsonable(row["supporting_event_ids"]),
+    }
+    supporting_event_ids = [
+        uid for raw in (row["supporting_event_ids"] or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    ]
+    if cause_event_id is not None and cause_event_id not in supporting_event_ids:
+        supporting_event_ids.append(cause_event_id)
+    await conn.execute(
+        """
+        UPDATE models
+        SET proposition = $3::jsonb,
+            domain_tags = $4::text[],
+            supporting_event_ids = $5::uuid[]
+        WHERE tenant_id = $1 AND id = $2
+        """,
+        tenant_id,
+        model_id,
+        json.dumps(merged_prop, sort_keys=True, default=str),
+        domain_tags,
+        supporting_event_ids,
+    )
+
+    from services.models.repo import _sync_model_composition_members
+
+    await _sync_model_composition_members(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        proposition=merged_prop,
+        source=str(
+            payload.get("composition_source")
+            or audit_cause_override
+            or "reconciliation_merge"
+        ),
+    )
+
+    await emit_state_change(
+        conn,
+        kind="model_updated",
+        entity_id=model_id,
+        tenant_id=tenant_id,
+        cause_event_id=cause_event_id,
+        entity_kind="model",
+        metadata={
+            "columns": [
+                "domain_tags",
+                "model_composition_members",
+                "proposition",
+                "supporting_event_ids",
+            ],
+            "lifecycle": "situation_merge",
+        },
+    )
+
+    from .audit import CAUSE_FIELD_UPDATE, emit_audit_event
+
+    await emit_audit_event(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        cause_type=audit_cause_override or CAUSE_FIELD_UPDATE,
+        new_state={
+            "proposition": _audit_jsonable(merged_prop),
+            "domain_tags": domain_tags,
+            "supporting_event_ids": [str(uid) for uid in supporting_event_ids],
+        },
+        previous_state=previous_state,
+        cause_id=cause_event_id,
+        changed_fields=[
+            "domain_tags",
+            "model_composition_members",
+            "proposition",
+            "supporting_event_ids",
+        ],
+    )
+
+    added_members = [
+        str(raw) for raw in (payload.get("added_member_model_ids") or [])
+        if _coerce_uuid_or_none(raw) is not None
+    ]
+    return {
+        "summary": {
+            "situation_members_added": len(set(added_members)),
+            "decision": "situation_merged",
+        },
+        "state_changes": 1,
+    }
+
+
+def _merge_string_sequence(*values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, (list, tuple, set)):
+            continue
+        for raw in value:
+            text = str(raw).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _entry_is_situation(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return False
+    try:
+        grammar = derive_memory_grammar(prop)
+    except Exception:
+        return False
+    return grammar.claim_role == "situation"
+
+
+async def _coalesce_same_event_situation_insert(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    cause_event_id: UUID | None,
+) -> dict[str, Any] | None:
+    entry = dict(op.entry or {})
+    source_event_id = (
+        _coerce_uuid_or_none(entry.get("born_from_event_id"))
+        or cause_event_id
+    )
+    if source_event_id is None:
+        return None
+    anchor = await _select_same_event_situation_anchor(
+        conn,
+        tenant_id=tenant_id,
+        source_event_id=source_event_id,
+        entry=entry,
+    )
+    if anchor is None:
+        return None
+
+    from .reconciler import _build_situation_merge_payload
+
+    payload = _build_situation_merge_payload(
+        entry=entry,
+        best_row=anchor,
+        source_event_id=source_event_id,
+    )
+    if payload is None:
+        return None
+    payload["composition_source"] = "same_event_situation_coalesce"
+    merge_result = await _apply_situation_merge_payload(
+        conn,
+        tenant_id=tenant_id,
+        model_id=anchor["id"],
+        payload=payload,
+        cause_event_id=source_event_id,
+        audit_cause_override="reconciliation_merge",
+    )
+    return {
+        "summary": {
+            "op": "update",
+            "decision": "same_event_situation_coalesced",
+            "model_id": str(anchor["id"]),
+            "claim_role": "situation",
+            "internal_situation_merge": True,
+            "situation_members_added": merge_result["summary"][
+                "situation_members_added"
+            ],
+        },
+        "model_id": anchor["id"],
+        "state_changes": merge_result["state_changes"],
+    }
+
+
+async def _select_same_event_situation_anchor(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    source_event_id: UUID,
+    entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    rows = await conn.fetch(
+        """
+        SELECT id, proposition, "natural", scope_actors, scope_entities,
+               domain_tags
+        FROM models
+        WHERE tenant_id = $1
+          AND born_from_event_id = $2
+          AND status = 'active'
+          AND claim_role = 'situation'
+        ORDER BY created_at ASC
+        LIMIT 8
+        """,
+        tenant_id,
+        source_event_id,
+    )
+    if not rows:
+        return None
+
+    candidate_prop = _canonical_prop_for_entry(entry)
+    candidate_grammar = derive_memory_grammar(
+        candidate_prop,
+        natural=str(entry.get("natural") or ""),
+        scope_entities=[
+            ent for ent in (entry.get("scope_entities") or [])
+            if isinstance(ent, dict)
+        ],
+    )
+    candidate_text = _evidence_entry_text(entry)
+    candidate_tags = set(candidate_grammar.domain_tags)
+    candidate_tags.update(str(tag) for tag in (entry.get("domain_tags") or []))
+    candidate_pressure = candidate_prop.get("pressure_type")
+
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for row in rows:
+        row_prop = _json_obj(row["proposition"])
+        if not row_prop:
+            continue
+        row_grammar = derive_memory_grammar(row_prop)
+        if row_grammar.claim_role != "situation":
+            continue
+        row_text = " ".join(
+            part for part in (
+                str(row["natural"] or ""),
+                json.dumps(row_prop, sort_keys=True, default=str),
+            )
+            if part
+        )
+        score = _token_overlap_score(candidate_text, row_text) * 0.45
+        row_tags = set(row_grammar.domain_tags)
+        row_tags.update(str(tag) for tag in (row["domain_tags"] or []))
+        if row_tags and candidate_tags and row_tags & candidate_tags:
+            score += 0.20
+        if (
+            candidate_pressure
+            and row_prop.get("pressure_type") == candidate_pressure
+        ):
+            score += 0.18
+        if _scope_overlaps(
+            entry.get("scope_actors") or [],
+            entry.get("scope_entities") or [],
+            row["scope_actors"] or [],
+            row["scope_entities"] or [],
+        ):
+            score += 0.22
+        # Same event is already a strong prior; this floor lets two
+        # splitter/direct situations with good tags coalesce even when their
+        # member_model_ids are disjoint.
+        if score > best_score:
+            best_score = score
+            best = dict(row)
+
+    if best is None or best_score < 0.24:
+        return None
+    return best
+
+
+def _scope_overlaps(
+    left_actors: Any,
+    left_entities: Any,
+    right_actors: Any,
+    right_entities: Any,
+) -> bool:
+    left_actor_ids = {
+        uid for raw in (left_actors or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    }
+    right_actor_ids = {
+        uid for raw in (right_actors or [])
+        if (uid := _coerce_uuid_or_none(raw)) is not None
+    }
+    if left_actor_ids and right_actor_ids and left_actor_ids & right_actor_ids:
+        return True
+
+    left_entity_keys = {
+        (str(ent.get("type") or ""), str(ent.get("id") or ""))
+        for ent in (left_entities or [])
+        if isinstance(ent, dict) and ent.get("id")
+    }
+    right_entity_keys = {
+        (str(ent.get("type") or ""), str(ent.get("id") or ""))
+        for ent in (right_entities or [])
+        if isinstance(ent, dict) and ent.get("id")
+    }
+    return bool(left_entity_keys and right_entity_keys and left_entity_keys & right_entity_keys)
+
+
 async def _apply_claim_op(
     op: ClaimOp,
     conn: asyncpg.Connection,
@@ -698,6 +1882,9 @@ async def _apply_claim_op(
                 "model_id": str(row.id),
                 "confidence": row.confidence,
                 "proposition_kind": row.proposition_kind,
+                "claim_role": row.claim_role,
+                "abstraction_level": row.abstraction_level,
+                "domain_tags": list(row.domain_tags or []),
             },
             "model_id": row.id,
             "state_changes": 1,  # insert emits a state_change
@@ -705,12 +1892,20 @@ async def _apply_claim_op(
     if op.op == "update":
         if op.model_id is None or not op.changes:
             raise ValidationError("apply_claim_op update: bad op")
+        raw_changes = dict(op.changes)
+        situation_merge_payload = None
+        if audit_cause_override == "reconciliation_merge":
+            maybe_payload = raw_changes.pop("__situation_merge", None)
+            if isinstance(maybe_payload, dict):
+                situation_merge_payload = maybe_payload
         changes = {
-            k: v for k, v in op.changes.items()
+            k: v for k, v in raw_changes.items()
             if k in _ALLOWED_MODEL_UPDATE_COLUMNS
         }
-        if not changes:
+        if not changes and situation_merge_payload is None:
             raise ValidationError("apply_claim_op update: no allowed columns")
+        emitted = 0
+        changed_fields_for_summary = set(changes.keys())
         if "confidence" in changes:
             # bulk path handles emit_state_change + audit cleanly. Pass
             # the audit override so a reconciler-substituted update is
@@ -724,8 +1919,6 @@ async def _apply_claim_op(
             )
             changes.pop("confidence")
             emitted = 1
-        else:
-            emitted = 0
         # For remaining columns, build an UPDATE + emit a state_change
         # + emit an audit_events row. We snapshot the touched columns
         # before and after so the audit chain captures the diff.
@@ -746,6 +1939,11 @@ async def _apply_claim_op(
             if pre_row is not None:
                 for k in changes.keys():
                     pre_snapshot[k] = _audit_jsonable(pre_row[k])
+            previous_signal_readings = (
+                pre_row["signal_readings"]
+                if pre_row is not None and "signal_readings" in changes
+                else None
+            )
 
             set_clauses = []
             params: list[Any] = []
@@ -830,11 +2028,45 @@ async def _apply_claim_op(
                 changed_fields=sorted(list(changes.keys())),
             )
             emitted += 1
+            if "signal_readings" in changes:
+                await _append_signal_readings_sidecar_delta(
+                    conn,
+                    tenant_id=tenant_id,
+                    model_id=op.model_id,
+                    previous_readings=previous_signal_readings,
+                    new_readings=changes["signal_readings"],
+                )
+        situation_merge_summary: dict[str, Any] | None = None
+        if situation_merge_payload is not None:
+            merge_result = await _apply_situation_merge_payload(
+                conn,
+                tenant_id=tenant_id,
+                model_id=op.model_id,
+                payload=situation_merge_payload,
+                cause_event_id=cause_event_id,
+                audit_cause_override=audit_cause_override,
+            )
+            emitted += merge_result["state_changes"]
+            situation_merge_summary = merge_result["summary"]
+            changed_fields_for_summary.update(
+                ("proposition", "domain_tags", "model_composition_members")
+            )
         return {
             "summary": {
                 "op": "update",
                 "model_id": str(op.model_id),
-                "changed": sorted(list(op.changes.keys())),
+                "changed": sorted(changed_fields_for_summary),
+                **({"claim_role": "situation"} if situation_merge_summary else {}),
+                **(
+                    {
+                        "internal_situation_merge": True,
+                        "situation_members_added": situation_merge_summary[
+                            "situation_members_added"
+                        ],
+                    }
+                    if situation_merge_summary
+                    else {}
+                ),
             },
             "model_id": op.model_id,
             "state_changes": emitted,
