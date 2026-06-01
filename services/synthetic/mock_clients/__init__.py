@@ -33,6 +33,7 @@ from services.synthetic.mock_clients.google_calendar import (
     MockGoogleCalendarClient,
 )
 from services.synthetic.mock_clients.slack import MockSlackClient
+from services.synthetic.mock_clients.slack_user import MockSlackUserClient
 
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "MockGmailClient",
     "MockGoogleCalendarClient",
     "MockSlackClient",
+    "MockSlackUserClient",
 ]
