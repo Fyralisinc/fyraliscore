@@ -86,6 +86,13 @@ dev = [
     "testcontainers[kafka]>=4.0",
     "import-linter>=2.0",       # architecture: enforce layer import boundaries
 ]
+# Internal documentation site (MkDocs). Build/serve locally with `mkdocs serve`;
+# not part of the runtime or test path. mkdocs-material pulls in mkdocs and
+# pymdown-extensions (used for the Mermaid superfences in mkdocs.yml), so no
+# separate mermaid plugin is required. See docs/ and CONTRIBUTING / CLAUDE.md.
+docs = [
+    "mkdocs-material>=9.5",     # Material theme; brings mkdocs + pymdown-extensions
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
