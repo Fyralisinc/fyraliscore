@@ -89,6 +89,11 @@ nav:
       - Runtime & Data Plane: architecture/data-plane.md
   - Services: services.md
   - Glossary: glossary.md
+  - Codebase status:
+      - Overview: status/index.md
+      - Feature status: status/feature-status.md
+      - Wiring gaps: status/wiring-gaps.md
+      - Legacy & test-only: status/dead-legacy.md
   - Decisions (ADRs):
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
