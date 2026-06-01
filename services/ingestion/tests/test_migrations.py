@@ -28,16 +28,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 
-# The six migrations under test. Order matters: 0045 must precede 0046
-# (FK), and 0049 is the CONCURRENTLY one which exercises the runner's
+# The six migrations under test. Order matters: 0056 must precede 0057
+# (FK), and 0060 is the CONCURRENTLY one which exercises the runner's
 # non-transactional code path.
+# NOTE: renumbered on the cannonical merge branch (were 0045-0050 on the
+# ingestion lineage; main 0001-0048 took those numbers, so ingestion's
+# migrations shifted to 0049+).
 M1_MIGRATIONS = [
-    "0045_onboarding_runs_and_shards.sql",
-    "0046_ingestion_failures.sql",
-    "0047_onboarding_triggers_outbox.sql",
-    "0048_gateway_session_state.sql",
-    "0049_entity_aliases_normalized_index.sql",
-    "0050_tenant_flags.sql",
+    "0056_onboarding_runs_and_shards.sql",
+    "0057_ingestion_failures.sql",
+    "0058_onboarding_triggers_outbox.sql",
+    "0059_gateway_session_state.sql",
+    "0060_entity_aliases_normalized_index.sql",
+    "0061_tenant_flags.sql",
 ]
 
 
