@@ -45,8 +45,8 @@ reasoning substrate. What is **missing** today, and what this feature adds:
 - **Breadth fallback = tree-sitter.** For languages without a usable SCIP indexer (or when a SCIP run fails/times out), parse with tree-sitter to still capture files→symbols→imports with `precision='heuristic'`. The graph schema carries a `precision` column so SCIP-exact and tree-sitter-heuristic edges coexist and consumers can filter to `exact` only.
 - **Language-pluggable indexer interface:** an `Indexer` Protocol (`language_id`, `file_extensions`, `index(working_copy) -> IndexResult`) with a registry dispatching per language. Adding a language = drop one indexer impl + register it; the graph schema, embeddings, and workers stay language-agnostic. Run the SCIP-indexer toolchain as subprocesses inside the worker image.
 
-### A3. Code graph schema — `db/migrations/0063_code_intel.sql`
-Next number after `0062_jira.sql`; follows existing conventions (BEGIN/COMMIT, `IF NOT EXISTS`, `tenant_id` FK, ENABLE+FORCE RLS with the `*_tenant_isolation` template). **Header must note: this is NOT an ingestion source — it emits no observations and touches none of the four source-registry CHECK tables**, so it sidesteps the 0061/0062 source-CHECK landmine.
+### A3. Code graph schema — `db/migrations/0066_code_intel.sql`
+Next number after `0065_slack_dm_installations.sql`; follows existing conventions (BEGIN/COMMIT, `IF NOT EXISTS`, `tenant_id` FK, ENABLE+FORCE RLS with the `*_tenant_isolation` template). **Header must note: this is NOT an ingestion source — it emits no observations and touches none of the four source-registry CHECK tables**, so it sidesteps the 0061/0062 source-CHECK landmine.
 
 Tables (versioned by commit sha so re-index is incremental):
 - `code_snapshots` — one row per `(tenant, repo, commit_sha)`; `branch`, `parent_snapshot_id`, `status (pending|indexing|ready|failed|skipped_too_large)`, `index_kind (full|incremental)`, counts. `UNIQUE(tenant_id, repo_full_name, commit_sha)` = idempotency key.
@@ -70,7 +70,7 @@ Tables (versioned by commit sha so re-index is incremental):
 
 ## Part B — State + signal-enrichment engine (`services/github_intel/`)
 
-### B1. Current-state model (FSM tables) — `db/migrations/0064_github_intel_state.sql`
+### B1. Current-state model (FSM tables) — `db/migrations/0067_github_intel_state.sql`
 Tenant-scoped + RLS. Each state row carries `state_version BIGINT` and `last_event_at TIMESTAMPTZ`; **transitions apply only when incoming `occurred_at >= last_event_at`** (ordering guard).
 - `github_repo_state` — `(tenant, repo)`; `default_branch`, `head_sha` (= code-snapshot join key).
 - `github_branch_state` — `(tenant, repo, branch)`; `head_sha`, `is_deleted`.
@@ -100,7 +100,7 @@ content: {
 ```
 On timeout/error the key is simply absent → the **raw** signal is what gets ingested. `content_text` (the embedding/think seed) is composed from raw fields + (when present) the `explanation`, so downstream embedding and the generic `think` layer benefit from the insight.
 
-**(2) Structured system-of-record** — `db/migrations/0065_github_intel_enrichment.sql`: `github_signal_enrichment`, joined to `observations` by `observation_id` (`UNIQUE(observation_id)` = idempotency anchor, upsert on reprocess): `state_before`/`state_after`/`state_changed`; `affected_files`/`affected_symbols`/`blast_radius`/`code_snapshot_sha`; `related_entities`; `cause`/`effect`/`explanation`/`confidence`/`reasoning_path`. This is what makes current-state queries, audit, and blast-radius lookups cheap (Option A) — `content.intelligence` is the per-signal view; the tables are the queryable truth.
+**(2) Structured system-of-record** — `db/migrations/0068_github_intel_enrichment.sql`: `github_signal_enrichment`, joined to `observations` by `observation_id` (`UNIQUE(observation_id)` = idempotency anchor, upsert on reprocess): `state_before`/`state_after`/`state_changed`; `affected_files`/`affected_symbols`/`blast_radius`/`code_snapshot_sha`; `related_entities`; `cause`/`effect`/`explanation`/`confidence`/`reasoning_path`. This is what makes current-state queries, audit, and blast-radius lookups cheap (Option A) — `content.intelligence` is the per-signal view; the tables are the queryable truth.
 
 Consumers (none blocking): query/API "explain this signal" + "current state of repo/PR"; the generic think layer also receives the insight via `content_text` (and optionally a follow-up `think_trigger_queue` row, subkind `github_enriched`).
 

@@ -1,4 +1,4 @@
--- 0063_code_intel.sql
+-- 0066_code_intel.sql
 --   GitHub Intelligence Layer — code-comprehension model (services/code_intel).
 --
 -- A living, commit-sha-versioned code graph per repo: files -> symbols ->

@@ -39,8 +39,8 @@ is **complete and verified end-to-end** on the live dev stack.
 - `services/ingestion/handlers/github.py` — push `files`, PR `head_sha`/
   `head_ref`/`merge_commit_sha`/`changed_files` added to `content` (drive blast
   radius without the raw payload).
-- `db/migrations/0063_code_intel.sql`, `0064_github_intel_state.sql`,
-  `0065_github_intel_enrichment.sql`.
+- `db/migrations/0066_code_intel.sql`, `0067_github_intel_state.sql`,
+  `0068_github_intel_enrichment.sql`.
 - `scripts/run_github_intel_worker.py` + `docker-compose.yml` service
   `github_intel_worker`.
 

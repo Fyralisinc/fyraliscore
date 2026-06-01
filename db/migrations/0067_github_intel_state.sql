@@ -1,4 +1,4 @@
--- 0064_github_intel_state.sql
+-- 0067_github_intel_state.sql
 --   GitHub Intelligence Layer — current-state model (services/github_intel).
 --
 -- Dedicated GitHub-state FSMs fed by the existing github:webhook observations.
@@ -8,7 +8,7 @@
 -- so out-of-order / replayed / backfilled webhooks never regress live state.
 --
 -- NOT AN INGESTION SOURCE — emits no observations, touches no source-CHECK
--- tables. See 0063 header.
+-- tables. See 0066 header.
 --
 -- §II compliance: append-only, idempotent, tenant-isolation RLS (0061 template).
 

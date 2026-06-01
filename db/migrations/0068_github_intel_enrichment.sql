@@ -1,4 +1,4 @@
--- 0065_github_intel_enrichment.sql
+-- 0068_github_intel_enrichment.sql
 --   GitHub Intelligence Layer — signal enrichment record + ordered work queue.
 --
 -- github_signal_enrichment is the structured system-of-record: one row per
@@ -14,8 +14,8 @@
 -- observation_id is an FK-by-convention UUID (NOT a real FK) because the
 -- observations PK is the composite (id, occurred_at) of a partitioned table.
 --
--- NOT AN INGESTION SOURCE. See 0063 header. The code-reindex signal reuses the
--- code_intel_index_triggers outbox created in 0063.
+-- NOT AN INGESTION SOURCE. See 0066 header. The code-reindex signal reuses the
+-- code_intel_index_triggers outbox created in 0066.
 --
 -- §II compliance: append-only, idempotent, tenant-isolation RLS (0061 template).
 
