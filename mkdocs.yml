@@ -1,0 +1,90 @@
+# Internal documentation site for Fyralis Core.
+# Build/preview locally:  mkdocs serve   (deps: pip install -e ".[docs]")
+# Strict build:           mkdocs build --strict
+# This site is internal coordination/understanding docs — NOT a public API/SDK ref.
+site_name: Fyralis Core — Internal Docs
+site_description: >-
+  Internal engineering and AI-agent documentation for Fyralis Core, the
+  organizational-intelligence runtime. How the system works and why.
+docs_dir: docs
+use_directory_urls: true
+
+theme:
+  name: material
+  features:
+    - navigation.sections   # group nav by section
+    - navigation.top        # back-to-top button
+    - navigation.instant    # SPA-style instant loading
+    - navigation.tracking   # update URL with the active anchor
+    - toc.follow            # keep the ToC in sync while scrolling
+    - search.suggest        # search-as-you-type suggestions
+    - search.highlight      # highlight matches on the result page
+    - content.code.copy     # copy button on code blocks
+    - content.tooltips      # rich tooltips
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        # Material's built-in Mermaid support (no separate plugin needed).
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+# The pre-existing docs/ trees were written as GitHub-relative docs and link
+# directly to source files (.py/.sql), which MkDocs cannot resolve. They are
+# kept on disk but excluded from the built site so `--strict` stays clean.
+# TODO(human): decide whether to port these in (convert their source links).
+exclude_docs: |
+  github-intelligence/
+  ingestion/
+  history/
+  testing/
+  mockups/
+  hardening-backlog.md
+
+nav:
+  - Home: index.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - App — Gateway & Transport: architecture/app.md
+      - Ingest — Signal Intake: architecture/ingest.md
+      - Reasoning — Think Pipeline: architecture/reasoning.md
+      - Domain — Substrate: architecture/domain.md
+      - Product — CEO Surfaces: architecture/product.md
+      - Platform — Authz & Routing: architecture/platform.md
+      - Workers — Background Jobs: architecture/workers.md
+      - Shared Libraries (lib): architecture/lib.md
+      - Runtime & Data Plane: architecture/data-plane.md
+  - Services: services.md
+  - Glossary: glossary.md
+  - Decisions (ADRs):
+      - Overview: adr/README.md
+      - ADR Template: adr/0000-template.md
