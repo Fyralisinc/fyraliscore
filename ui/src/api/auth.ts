@@ -19,6 +19,18 @@ export function getAuthHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Manually set a bearer token — used by the GitHub Intelligence panel so a
+// tester can authenticate against a specific tenant (the demo picker mints a
+// fresh per-session tenant that can't see dogfood-seeded data).
+export function setDemoAuthToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // ignore
+  }
+}
+
 // When the gateway rejects our token (server restarted, session pruned),
 // drop the stale token and bounce the user to the picker so they can
 // pick a company again instead of staring at endless 401s.

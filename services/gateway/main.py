@@ -866,6 +866,13 @@ def build_app(
             app.include_router(build_slack_router())
         except Exception as exc:  # noqa: BLE001 — never block startup
             log.error("slack_router_mount_failed", error=str(exc))
+
+    # GitHub Intelligence Layer — read-only query surface (/github-intel/*).
+    # Bearer-authed (standard middleware) + per-tenant repo allowlist in the
+    # router; no public-path exposure.
+    from services.github_intel.api import build_github_intel_router
+
+    app.include_router(build_github_intel_router())
     return app
 
 

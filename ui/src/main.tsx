@@ -6,6 +6,7 @@ import DemoPicker from "./pages/DemoPicker";
 import Structure from "./pages/Structure";
 import History from "./pages/History";
 import MyMind from "./pages/MyMind";
+import GitHubIntel from "./pages/GitHubIntel";
 import { DebugLayout } from "./debug/DebugLayout";
 import { SignalsList } from "./debug/pages/SignalsList";
 import { SignalDetailPage } from "./debug/pages/SignalDetail";
@@ -30,6 +31,7 @@ ReactDOM.createRoot(root).render(
         <Route path="/structure" element={<Structure />} />
         <Route path="/history" element={<History />} />
         <Route path="/mind" element={<MyMind />} />
+        <Route path="/github" element={<GitHubIntel />} />
         <Route path="/debug" element={<DebugLayout />}>
           <Route index element={<Navigate to="signals" replace />} />
           <Route path="signals" element={<SignalsList />} />
