@@ -372,7 +372,7 @@ label and increments a counter the operator can query.
   (e.g., a Slack team_id → tenant_id mapping). The mapping
   mechanism itself is in scope only insofar as FR-014 requires it
   exist and behave deterministically.
-- The downstream ingestion pipeline (`services/ingestion/core.py`
+- The downstream ingestion pipeline (`services/ingest/ingestion/core.py`
   and its handlers) is the canonical Observation producer and is
   not modified by this spec beyond being invoked from a new entry
   point.

@@ -4,9 +4,9 @@ maintenance jobs.
 Jobs exported here:
 
 * ``hourly_decay_job`` — spec §2 / §12 / Wave 1-C decay. Thin wrapper
-  around ``services.models.decay.hourly_decay``. Runs every hour.
+  around ``services.domain.models.decay.hourly_decay``. Runs every hour.
 * ``archive_decayed_job`` — spec §2 / Wave 1-C decay archival. Thin
-  wrapper around ``services.models.decay.archive_decayed``. Runs daily.
+  wrapper around ``services.domain.models.decay.archive_decayed``. Runs daily.
 * ``entity_alias_cleanup`` — drops aliases with ``confirmed_count = 0
   AND contested_count = 0 AND last_used_at < now() - 90 days``. (Spec
   says "usage_count"; S6.1 actually stores ``confirmed_count`` +
@@ -37,7 +37,7 @@ import asyncpg
 
 from lib.shared.db import get_pool
 from lib.shared.ids import uuid7
-from services.models.decay import archive_decayed, hourly_decay
+from services.domain.models.decay import archive_decayed, hourly_decay
 
 
 log = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ async def archive_decayed_job(
     *, conn: asyncpg.Connection | None = None
 ) -> int:
     """Archive Models whose activation < 0.05 AND stale retrieval > 30d.
-    Thin wrapper around ``services.models.decay.archive_decayed``.
+    Thin wrapper around ``services.domain.models.decay.archive_decayed``.
     """
     return await archive_decayed(conn=conn)
 
@@ -264,7 +264,7 @@ async def access_matview_refresh(
 
     Concurrently=None auto-detects (use CONCURRENTLY when populated).
     """
-    from services.access_control.materialized import refresh_all  # lazy
+    from services.platform.access_control.materialized import refresh_all  # lazy
     runner: Any = conn if conn is not None else get_pool()
     if conn is None:
         async with runner.acquire() as held:

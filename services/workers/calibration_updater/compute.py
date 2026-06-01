@@ -29,7 +29,7 @@ Spec §9 "Cold-start handling" says "Use proposition-kind defaults
 (predictions: 0.85x offset; states: 0.95x; patterns: 0.90x)". We
 materialise those defaults as actual DB rows keyed on a catch-all
 bucket (0.0-1.0) so the read path in
-`services/models/calibration.py::apply_calibration` can be a single
+`services/domain/models/calibration.py::apply_calibration` can be a single
 indexed SELECT without special-casing cold start.
 """
 from __future__ import annotations

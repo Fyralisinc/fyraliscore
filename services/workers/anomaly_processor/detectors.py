@@ -641,7 +641,7 @@ async def detect_resource_overcommit(
     Capacity resources whose cumulative deploys exceed (utilization_threshold)
     of total_units. Spec §18 "Resource threshold anomaly".
 
-    Uses the same math as `services/resources/bridge.capability_at_risk`
+    Uses the same math as `services/domain/resources/bridge.capability_at_risk`
     so the two modules agree on what counts as over-committed. Bridge
     returns the pair (resource, deploying_commitments); we return a
     candidate keyed on the resource.

@@ -33,16 +33,16 @@ from __future__ import annotations
 
 import sys
 
-from services.ingestion.kafka.topics import INGESTION_SOURCES
+from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 
 # (stage-label, module path, base consumer-group). One worker per source
 # per stage. dlq_writer intentionally omitted (stays all-sources).
 _STAGES = (
-    ("normalizer", "services.ingestion.normalizer.worker"),
-    ("observation-writer", "services.ingestion.writers.observation_writer"),
+    ("normalizer", "services.ingest.ingestion.normalizer.worker"),
+    ("observation-writer", "services.ingest.ingestion.writers.observation_writer"),
     (
         "embedding-worker",
-        "services.ingestion.writers.embedding_worker.embedding_worker",
+        "services.ingest.ingestion.writers.embedding_worker.embedding_worker",
     ),
 )
 

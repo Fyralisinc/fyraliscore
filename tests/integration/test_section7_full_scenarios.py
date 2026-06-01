@@ -194,7 +194,7 @@ pytestmark_query_coverage = pytest.mark.skipif(
 @pytest.fixture
 async def gateway_app():
     """Build the gateway app with lifespan so all Week-4+ routers mount."""
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app()
     async with app.router.lifespan_context(app):
@@ -251,7 +251,7 @@ async def test_section7_test5_staleness_threshold(monkeypatch) -> None:
     if not os.environ.get("DATABASE_URL"):
         pytest.skip("DATABASE_URL unset — integration only")
     import asyncpg
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     # Ensure the scheduler doesn't race us by overwriting the cached_at
     # we're about to backdate.

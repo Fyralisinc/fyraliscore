@@ -38,7 +38,7 @@ When 5 coroutines fire identical inserts into one tenant via `apply_diff()` dire
 - All 5 inserts succeed → 5 active Models for one underlying truth
 - Audit table records 5 × `no_match` (zero `auto_merge`)
 
-**Why it matters.** Production goes through `services.think.reason.think()`, which acquires a region lock before calling `apply_diff`. But there are at least three callers that **don't** route through `think()` and therefore bypass the lock:
+**Why it matters.** Production goes through `services.reasoning.think.reason.think()`, which acquires a region lock before calling `apply_diff`. But there are at least three callers that **don't** route through `think()` and therefore bypass the lock:
 
 * The reconciliation harness (`cases_reconciliation.py`) calls `apply_diff` directly.
 * Observation backfill paths (`scripts/backfill_*`) call repos directly.

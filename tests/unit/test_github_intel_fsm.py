@@ -8,9 +8,9 @@ Pure-logic guarantees the demo's correctness rests on:
 """
 from __future__ import annotations
 
-from services.github_intel import fsm
-from services.github_intel.enrichment import proposed_transition, _related_entities
-from services.code_intel.parsing import PythonAstIndexer
+from services.ingest.github_intel import fsm
+from services.ingest.github_intel.enrichment import proposed_transition, _related_entities
+from services.ingest.code_intel.parsing import PythonAstIndexer
 
 
 # ---- classify --------------------------------------------------------

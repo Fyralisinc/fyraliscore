@@ -34,7 +34,7 @@ def _sim_mount_env(monkeypatch):
     # Keep the GRT scheduler off — not under test here, avoids
     # background-task noise on the test loop.
     monkeypatch.setenv("GATEWAY_START_GRT_SCHEDULER", "0")
-    # services.synthetic refuses to run in prod; this test harness
+    # services.ingest.synthetic refuses to run in prod; this test harness
     # is a dev-equivalent.
     monkeypatch.setenv("COMPANY_OS_ENV", "test")
     yield
@@ -46,7 +46,7 @@ async def test_sim_health_responds_through_gateway(fresh_db, _sim_mount_env):
     `/simulation/health` through the same ASGI transport.
     """
     import httpx
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app(pool=fresh_db)
     async with app.router.lifespan_context(app):
@@ -70,7 +70,7 @@ async def test_sim_channels_responds_through_gateway(fresh_db, _sim_mount_env):
     attached (not just the health endpoint).
     """
     import httpx
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app(pool=fresh_db)
     async with app.router.lifespan_context(app):
@@ -94,7 +94,7 @@ async def test_sim_personas_responds_through_gateway(fresh_db, _sim_mount_env):
     seeding required for a GET, though the mount does seed actors).
     """
     import httpx
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app(pool=fresh_db)
     async with app.router.lifespan_context(app):
@@ -120,7 +120,7 @@ async def test_gateway_does_not_double_create_pool(fresh_db, _sim_mount_env):
     a second pool. We assert the gateway deps.pool and the
     `app.state.sim_deps.pool` are the same object.
     """
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app(pool=fresh_db)
     async with app.router.lifespan_context(app):

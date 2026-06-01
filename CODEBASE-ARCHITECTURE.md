@@ -1,10 +1,26 @@
 # Fyralis Core Architecture
 
-Last reviewed from the codebase on 2026-05-24.
+Last reviewed from the codebase on 2026-06-01 (re-layered; see [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md)).
 
 Fyralis Core is an organizational intelligence runtime. It ingests company signals, stores them as tenant-scoped observations, reasons over them into a live model of the organization, and renders the result into CEO-facing product surfaces.
 
 The repository is intentionally a monolith at the source level: the FastAPI gateway, domain services, workers, migrations, simulation tooling, and React UI live together. Operationally, the system is split into a gateway process, a small set of polling/background workers, PostgreSQL with pgvector, Ollama for embeddings, external LLM providers for reasoning/rendering, and a Vite/React frontend.
+
+## 0. Source Layout (Layers)
+
+`services/` is grouped into six architectural layers (plus the already-layered `workers/`), ordered so higher layers depend on lower ones. The directory tree mirrors the data flow: signal → ingest → domain substrate → reasoning → product surface → app transport. Each layer is a PEP 420 namespace package with a `README.md`; boundaries are enforced by `lint-imports` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+| Layer | Packages | Role |
+|---|---|---|
+| [services/app](services/app) | gateway, webhooks, realtime | HTTP/WS entrypoints and request dispatch. |
+| [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering, demo | CEO-facing surfaces composed from substrate + reasoning. |
+| [services/reasoning](services/reasoning) | think, retrieval, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, topology, scoring. |
+| [services/ingest](services/ingest) | ingestion, integrations, synthetic, code_intel, github_intel | Signal intake, third-party integrations, synthetic signals. |
+| [services/domain](services/domain) | models, acts, resources, observations, actors, entity_aliases, bridge, falsifiers | The core persisted substrate. |
+| [services/platform](services/platform) | access_control, execution | Cross-cutting infrastructure (authz, execution routing). |
+| [services/workers](services/workers) | anomaly_processor, entity_resolver, calibration_updater, deadline_resolver, precipitation, edge_drift, topology_sweeper, maintenance, … | Background worker packages. |
+
+`lib/` (`shared`, `llm`, `embeddings`, `topology`, `nexus`, `integrations`) is the shared lower layer and must not import `services` (enforced). The re-layering resolved prior name collisions: `services/reasoning/topology` is now clearly distinct from `lib/topology`, `services/ingest/integrations` from `lib/integrations`, and `services/product/demo` (runtime) from the top-level `demo/` (data generation).
 
 ## 1. System Map
 
@@ -53,19 +69,19 @@ source event
 
 | Component | Code | Responsibility |
 |---|---|---|
-| Gateway | [services/gateway/main.py](services/gateway/main.py) | Main FastAPI app, dependency lifecycle, middleware, core routes, router mounting. |
+| Gateway | [services/app/gateway/main.py](services/app/gateway/main.py) | Main FastAPI app, dependency lifecycle, middleware, core routes, router mounting. |
 | UI | [ui/src/main.tsx](ui/src/main.tsx) | React Router app for `/today`, `/model`, `/forecasts`, `/ledger`, `/debug`. |
 | Database | [db/migrations](db/migrations) | Schema for substrate data, queues, cache, demo, topology, predictions, RLS policies. |
-| Execution routing | [services/execution](services/execution) | Deterministic route gate for signals and future query/job entry points. The current rollout records shadow decisions without changing T1 Think enqueue behavior. |
+| Execution routing | [services/platform/execution](services/platform/execution) | Deterministic route gate for signals and future query/job entry points. The current rollout records shadow decisions without changing T1 Think enqueue behavior. |
 | Embeddings | [lib/embeddings](lib/embeddings) | Ollama/OpenAI embedder abstraction. Current schemas expect 768-dimensional vectors. |
 | LLM | [lib/llm/provider.py](lib/llm/provider.py) | Structured-output provider abstraction over Anthropic, OpenAI, and DeepSeek, with retry and cost tracking. |
-| Think worker | [services/think/worker.py](services/think/worker.py) | Polls reasoning queues and invokes the `think()` pipeline. |
-| Post-commit worker | [services/think/post_commit.py](services/think/post_commit.py) | Durable at-least-once side effects after reasoning commits. |
+| Think worker | [services/reasoning/think/worker.py](services/reasoning/think/worker.py) | Polls reasoning queues and invokes the `think()` pipeline. |
+| Post-commit worker | [services/reasoning/think/post_commit.py](services/reasoning/think/post_commit.py) | Durable at-least-once side effects after reasoning commits. |
 | Topology sweeper | [services/workers/topology_sweeper](services/workers/topology_sweeper) | Periodically refreshes latent relationship candidates over a bounded high-activation frontier. |
-| Judgment scoring | [services/judgment](services/judgment) | Shared leverage scoring for relationship/situation candidates and future attention-ranking surfaces. |
-| Rendering | [services/rendering](services/rendering) | LLM-backed UI prose generation with voice-rule checks and render cost records. |
-| CEO view cache | [services/greeting](services/greeting) | Snapshot composition, cache writes, `/view/ceo/home`, and WS streaming. |
-| Demo subsystem | [services/demo](services/demo) | Demo companies, per-session tenants, snapshots, auth tokens, simulator, SSE. |
+| Judgment scoring | [services/reasoning/judgment](services/reasoning/judgment) | Shared leverage scoring for relationship/situation candidates and future attention-ranking surfaces. |
+| Rendering | [services/product/rendering](services/product/rendering) | LLM-backed UI prose generation with voice-rule checks and render cost records. |
+| CEO view cache | [services/product/greeting](services/product/greeting) | Snapshot composition, cache writes, `/view/ceo/home`, and WS streaming. |
+| Demo subsystem | [services/product/demo](services/product/demo) | Demo companies, per-session tenants, snapshots, auth tokens, simulator, SSE. |
 
 Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_worker`, `post_commit_worker`, `topology_sweeper`, `ui`, `nginx-proxy`, and `acme-companion` in [docker-compose.yml](docker-compose.yml). Several worker packages are implemented but are not first-class compose services yet.
 
@@ -75,11 +91,11 @@ Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_wor
 
 **Identifiers.** Backend-generated IDs use `uuid7()` from [lib/shared/ids.py](lib/shared/ids.py) for time-ordered UUIDs. Demo/session/token code may use database UUID generation in SQL in a few adapter paths.
 
-**Database access.** Python services use `asyncpg` pools and repositories. Tests generally run against real PostgreSQL, not an in-memory fake. The gateway pool registers codecs for JSON/vector compatibility via [services/gateway/db_bootstrap.py](services/gateway/db_bootstrap.py).
+**Database access.** Python services use `asyncpg` pools and repositories. Tests generally run against real PostgreSQL, not an in-memory fake. The gateway pool registers codecs for JSON/vector compatibility via [services/app/gateway/db_bootstrap.py](services/app/gateway/db_bootstrap.py).
 
 **Vectors.** `observations`, `models`, and `entity_aliases` store `VECTOR(768)`. Ollama's `nomic-embed-text` is the default local backend; [lib/embeddings/factory.py](lib/embeddings/factory.py) can choose OpenAI when configured.
 
-**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's provider schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. Each Think system prompt also starts with a source-tuned reasoning profile: ingestion carries normalized `signal_type`/trust metadata into the queue, and [services/think/prompt.py](services/think/prompt.py) chooses a working stance and abstraction level based on signal provenance, trigger kind, and whether the call can touch claims, graph edges, Acts, Resources, or topology. `.env.example` sets DeepSeek as the local default; `LLM_PROVIDER=codex` uses OpenAI Responses when API-key auth is present and a persistent Codex app-server for local ChatGPT/Codex login auth. For local Codex dogfood, app-server/CLI transport follows the model in `~/.codex/config.toml`; use `CODEX_MODEL`, not generic `LLM_MODEL`, only when deliberately overriding that local Codex model. The provider library itself falls back to Anthropic if no provider env is set.
+**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's provider schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. Each Think system prompt also starts with a source-tuned reasoning profile: ingestion carries normalized `signal_type`/trust metadata into the queue, and [services/reasoning/think/prompt.py](services/reasoning/think/prompt.py) chooses a working stance and abstraction level based on signal provenance, trigger kind, and whether the call can touch claims, graph edges, Acts, Resources, or topology. `.env.example` sets DeepSeek as the local default; `LLM_PROVIDER=codex` uses OpenAI Responses when API-key auth is present and a persistent Codex app-server for local ChatGPT/Codex login auth. For local Codex dogfood, app-server/CLI transport follows the model in `~/.codex/config.toml`; use `CODEX_MODEL`, not generic `LLM_MODEL`, only when deliberately overriding that local Codex model. The provider library itself falls back to Anthropic if no provider env is set.
 
 **Observability records.** Runtime state is heavily persisted: `think_runs`, `think_run_costs`, `think_run_artifacts`, `view_render_costs`, `audit_events`, `reconciliation_events`, `relationship_maintenance_log`, and debug routes all exist to make reasoning inspectable.
 
@@ -94,7 +110,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 | Actors | `actors`, `actor_identity_mappings`, `actor_sessions` | People/agents, source identity mapping, bearer-session auth. |
 | Observations | `observations` | Append-oriented signals, partitioned by `occurred_at`, indexed by actor/channel/kind/entities/vector. |
 | Models | `models`, `model_status_notes`, `model_signal_readings`, `model_scope_entities`, `model_scope_actors`, `model_composition_members` | Beliefs/propositions with confidence, activation, falsifiers, signal readings, lifecycle, structural memory grammar, normalized scope anchors, normalized situation membership, and vector search. |
-| Acts | `goals`, `commitments`, `decisions`, `commitment_contributors` | Executable organizational state. State machines live under [services/acts](services/acts). |
+| Acts | `goals`, `commitments`, `decisions`, `commitment_contributors` | Executable organizational state. State machines live under [services/domain/acts](services/domain/acts). |
 | Act graph | `contributes_to`, `depends_on`, `constrained_by` | Relationships among goals, commitments, and decisions. |
 | Resources | `resources`, `resource_transactions`, `resource_deployments`, `customer_commitments` | Assets, transactions, deployments, and customer/revenue bridge data. |
 | Entity aliases | `entity_aliases` | Fast-path entity resolution by alias text/vector. |
@@ -116,7 +132,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 
 ## 5. Gateway Architecture
 
-[services/gateway/main.py](services/gateway/main.py) is the main process entry point.
+[services/app/gateway/main.py](services/app/gateway/main.py) is the main process entry point.
 
 Startup through `build_app()`:
 
@@ -158,30 +174,30 @@ Important public or auth-bypassed route families include `/healthz`, `/auth/sess
 
 ## 6. Ingestion Path
 
-The ingestion implementation lives in [services/ingestion/core.py](services/ingestion/core.py). It normalizes all channels into an `ObservationDraft` and persists an observation.
+The ingestion implementation lives in [services/ingest/ingestion/core.py](services/ingest/ingestion/core.py). It normalizes all channels into an `ObservationDraft` and persists an observation.
 
 Flow:
 
 1. Gateway receives `POST /ingest/{channel}` and verifies channel-specific requirements such as Slack signatures.
-2. `get_handler(channel)` returns a handler from [services/ingestion/handlers](services/ingestion/handlers).
+2. `get_handler(channel)` returns a handler from [services/ingest/ingestion/handlers](services/ingest/ingestion/handlers).
 3. The handler emits `ObservationDraft`: source channel, content text, raw JSON content, actor ref, external ID, occurred time, trust tier, entity hints, and kind.
 4. Ingestion pre-assigns an observation UUID.
 5. `ActorRepo` maps source actor refs to actor IDs when possible.
 6. `EntityAliasRepo` performs fast-path entity lookup from 1-3 gram candidate phrases.
 7. The embedder generates a 768-dimensional vector. Failures store `embedding_pending=True`.
 8. `ObservationRepository.insert()` writes to the partitioned `observations` table and dedups on source channel/external ID behavior.
-9. [services/execution/routing.py](services/execution/routing.py) computes a deterministic routing decision for the normalized signal.
+9. [services/platform/execution/routing.py](services/platform/execution/routing.py) computes a deterministic routing decision for the normalized signal.
 10. A `think_trigger_queue` row is written unless the observation was deduped, trigger enqueueing was disabled, or routing is explicitly enforced and the route is `IGNORE_OR_ARCHIVE` / `HUMAN_VALIDATION_PATH`. In shadow mode, ingestion preserves the current T1 enqueue. In enforced mode, background/anomaly routes can enqueue T3/T4 work and deterministic state changes can use the `state_change` subkind.
 11. The routing decision is recorded in `signal_routing_decisions` when `EXECUTION_ROUTING_SHADOW=1` or routing enforcement is enabled.
 12. Post-commit observation notifications are emitted for downstream workers/listeners.
 
 Candidate phrases from actual signal text that do not match known aliases are stored at `content._unresolved_phrases`. [services/workers/entity_resolver/worker.py](services/workers/entity_resolver/worker.py) is the lightweight deferred pass for those vague human-language aliases: it reads top-level unresolved phrases plus legacy metadata shapes, builds a small LLM context from the source observation's resolved entities, recent same-channel observations, exact prior aliases, active Models, and a bounded known-alias candidate set, then asks the configured LLM to return an existing canonical ref or null. High-confidence resolutions insert a new alias, append the entity to `observations.entities_mentioned`, emit an entity-resolution state-change observation, and re-enqueue T1 for material entity types. Medium-confidence resolutions go to `entity_review_queue`.
 
-The trust map is centralized in [services/ingestion/handlers/__init__.py](services/ingestion/handlers/__init__.py). Handler files exist for Slack, system/internal, email, GitHub, Linear, calendar, and related channels; confirm import/registration behavior when adding a new production channel.
+The trust map is centralized in [services/ingest/ingestion/handlers/__init__.py](services/ingest/ingestion/handlers/__init__.py). Handler files exist for Slack, system/internal, email, GitHub, Linear, calendar, and related channels; confirm import/registration behavior when adding a new production channel.
 
 ## 7. Think Pipeline
 
-The core reasoning entry point is [services/think/reason.py](services/think/reason.py). The queue runner is [services/think/worker.py](services/think/worker.py).
+The core reasoning entry point is [services/reasoning/think/reason.py](services/reasoning/think/reason.py). The queue runner is [services/reasoning/think/worker.py](services/reasoning/think/worker.py).
 
 ### Trigger Kinds
 
@@ -197,7 +213,7 @@ The core reasoning entry point is [services/think/reason.py](services/think/reas
 
 ### Retrieval
 
-The active product retrieval entrypoint is [services/execution/inquiry.py](services/execution/inquiry.py). It defaults on through `EXECUTION_RETRIEVAL_ENGINE=inquiry` and can roll back to the legacy/current pathway resolver with `EXECUTION_RETRIEVAL_ENGINE=legacy`.
+The active product retrieval entrypoint is [services/platform/execution/inquiry.py](services/platform/execution/inquiry.py). It defaults on through `EXECUTION_RETRIEVAL_ENGINE=inquiry` and can roll back to the legacy/current pathway resolver with `EXECUTION_RETRIEVAL_ENGINE=legacy`.
 
 The inquiry runtime implements the execution proposal's end-to-end retrieval path:
 
@@ -214,7 +230,7 @@ The inquiry runtime implements the execution proposal's end-to-end retrieval pat
 
 Query strategies use the same execution layer in `FAST_PATH` mode: baseline retrieval and packet compilation only, no full inquiry loop. Think uses deep mode before validation/apply.
 
-The low-level pathway resolver remains in [services/retrieval/primary.py](services/retrieval/primary.py).
+The low-level pathway resolver remains in [services/reasoning/retrieval/primary.py](services/reasoning/retrieval/primary.py).
 
 Pathways:
 
@@ -228,7 +244,7 @@ Pathways:
 
 Trigger-specific weights combine pathway outputs. T1 retrieval uses entity seeds supplied by ingestion and also backfills `entities_mentioned`, actor, text, and embedding from the triggering Observation row, so older/sparse queue payloads still retrieve against the real customer/commitment/resource scope that ingestion resolved. T2/model-triggered retrieval is intentionally graph-forward so typed Model edges can outrank generic semantic or structural neighbors when evaluating an existing belief. Results are merged/ranked, then `ModelsRepo.retrieve()` reconsolidates returned models by increasing retrieval count/activation and updating `last_retrieved_at`.
 
-[services/retrieval/assembler.py](services/retrieval/assembler.py) compresses retrieval results into a bounded context bundle: observations, models, acts, resources, and bridge context. It includes access-control filtering, optional MMR selection for model diversity under a token budget, relevance anchors that preserve the strongest retrieved Models before diversity pressure is applied, graph anchors that preserve the strongest Pathway G model-edge hits under MMR, and prompt-survival telemetry in `bundle.notes["model_selection"]` so retrieval evals and production traces can see which pathway candidates actually reached the LLM-facing context. [services/think/context_use.py](services/think/context_use.py) then grades Think diffs against that selected context, reporting which selected Models, graph-selected Models, and selected observations were referenced by claim updates, edge endpoints/evidence, act confidence bases, or, for empty diffs, exact full UUID references in `reasoning_trace`. This separates a justified no-op that actually inspected memory from a successful run that ignored retrieval. The final context-use report is stored in `think_runs.ops_applied["context_use"]` and emitted into in-memory Think metrics by grade (`graph_context_used`, `justified_noop_context_used`, `model_context_used`, `observation_context_used`, `unused_selected_context`, or `no_selected_context`), making it possible to audit whether a successful Think run merely had good retrieval available or actually used that retrieved memory in the diff it committed. [services/think/quality_report.py](services/think/quality_report.py) builds the operator report used by `/debug/think-quality`, aggregating recent grade counts, quality gates, ignored memory ids, graph-context misses, low-use runs, missing telemetry, and LLM cost/token totals. Its telemetry coverage gate is scoped to successful Think runs, its no-op analysis backfills exact trace UUID references from stored artifacts, and its flags distinguish justified no-op successes from graph-applicable mutating runs that ignored graph-selected Models. `/debug/think-quality/cases` extracts flagged successful runs into replay-ready cases with trigger, observation, captured artifacts, context-use data, and suggested eval assertions; [services/think/quality_promoter.py](services/think/quality_promoter.py) and [scripts/promote_think_quality_cases.py](scripts/promote_think_quality_cases.py) promote those cases into versioned JSON fixtures under [tests/quality_replay](tests/quality_replay).
+[services/reasoning/retrieval/assembler.py](services/reasoning/retrieval/assembler.py) compresses retrieval results into a bounded context bundle: observations, models, acts, resources, and bridge context. It includes access-control filtering, optional MMR selection for model diversity under a token budget, relevance anchors that preserve the strongest retrieved Models before diversity pressure is applied, graph anchors that preserve the strongest Pathway G model-edge hits under MMR, and prompt-survival telemetry in `bundle.notes["model_selection"]` so retrieval evals and production traces can see which pathway candidates actually reached the LLM-facing context. [services/reasoning/think/context_use.py](services/reasoning/think/context_use.py) then grades Think diffs against that selected context, reporting which selected Models, graph-selected Models, and selected observations were referenced by claim updates, edge endpoints/evidence, act confidence bases, or, for empty diffs, exact full UUID references in `reasoning_trace`. This separates a justified no-op that actually inspected memory from a successful run that ignored retrieval. The final context-use report is stored in `think_runs.ops_applied["context_use"]` and emitted into in-memory Think metrics by grade (`graph_context_used`, `justified_noop_context_used`, `model_context_used`, `observation_context_used`, `unused_selected_context`, or `no_selected_context`), making it possible to audit whether a successful Think run merely had good retrieval available or actually used that retrieved memory in the diff it committed. [services/reasoning/think/quality_report.py](services/reasoning/think/quality_report.py) builds the operator report used by `/debug/think-quality`, aggregating recent grade counts, quality gates, ignored memory ids, graph-context misses, low-use runs, missing telemetry, and LLM cost/token totals. Its telemetry coverage gate is scoped to successful Think runs, its no-op analysis backfills exact trace UUID references from stored artifacts, and its flags distinguish justified no-op successes from graph-applicable mutating runs that ignored graph-selected Models. `/debug/think-quality/cases` extracts flagged successful runs into replay-ready cases with trigger, observation, captured artifacts, context-use data, and suggested eval assertions; [services/reasoning/think/quality_promoter.py](services/reasoning/think/quality_promoter.py) and [scripts/promote_think_quality_cases.py](scripts/promote_think_quality_cases.py) promote those cases into versioned JSON fixtures under [tests/quality_replay](tests/quality_replay).
 
 ### Reason, Validate, Apply
 
@@ -240,11 +256,11 @@ The Think transaction performs:
 4. Assemble context.
 5. Build a `ReasoningFrame` from the trigger and retrieved Models. The frame normalizes T1/T2/T3/T4/T6 into the concrete question the run should answer, with `T4:latent_relationship_candidate` dedicated to topology candidate interpretation. It records seed/candidate Model ids, sets allowed op surfaces and small budgets, includes ephemeral dynamic signals when detectors find them, and is stored in retrieval/debug/apply artifacts.
 6. Route authoritative/deterministic cases to deterministic handlers; otherwise call the configured LLM through `llm_reason`. `T2:belief_updated` is deterministic bookkeeping, so belief-update cascades drain without a secondary LLM call unless the trigger has prediction-resolution shape.
-7. Validate the raw diff against [services/think/diff_schema.py](services/think/diff_schema.py) and semantic rules in `validator.py`. Same-diff Model placeholders are allowed through `born_from_event_id`, `entry.model_id`, or `entry.id` so live LLMs can refer to a newly inserted Model from edge/action ops in the same response.
+7. Validate the raw diff against [services/reasoning/think/diff_schema.py](services/reasoning/think/diff_schema.py) and semantic rules in `validator.py`. Same-diff Model placeholders are allowed through `born_from_event_id`, `entry.model_id`, or `entry.id` so live LLMs can refer to a newly inserted Model from edge/action ops in the same response.
 8. Compute context-use telemetry for the validated diff against the assembled prompt context.
 9. Acquire advisory region locks based on touched tenant/entities, plus a short per-tenant model-write advisory lock around apply-time memory mutation.
 10. Reconcile model inserts against existing models before applying.
-11. Apply claim ops, edge ops, act ops, and resource ops with [services/think/applier.py](services/think/applier.py). The applier strips LLM-invented persistent ids from new Model entries, maps same-diff placeholders to the actual inserted ids, canonicalizes `superseded_by` edges so the stored direction is old Model -> replacement Model, skips edges that collapse to self-edges after reconciliation, and keeps `model_edges` strictly Model-to-Model; customer, commitment, goal, decision, and resource ids belong in `scope_entities` instead.
+11. Apply claim ops, edge ops, act ops, and resource ops with [services/reasoning/think/applier.py](services/reasoning/think/applier.py). The applier strips LLM-invented persistent ids from new Model entries, maps same-diff placeholders to the actual inserted ids, canonicalizes `superseded_by` edges so the stored direction is old Model -> replacement Model, skips edges that collapse to self-edges after reconciliation, and keeps `model_edges` strictly Model-to-Model; customer, commitment, goal, decision, and resource ids belong in `scope_entities` instead.
 12. Emit state-change observations, audit events, cascades, and reeval triggers.
 13. Enqueue durable post-commit actions.
 14. Record LLM cost, applied-op summaries, context-use telemetry, and run status.
@@ -258,21 +274,21 @@ Diffs mutate four surfaces:
 | `act_ops` | Goals, commitments, decisions, and act graph edges. |
 | `resource_ops` | Resources, transactions, deployments, releases. |
 
-For LLM ergonomics, validation and apply support same-diff references: an `edge_op` endpoint or `act_op.confidence_basis` may point at the `born_from_event_id` of a `claim_ops.insert` in the same raw diff. The validator checks that the pending claim exists and is strong enough, then [services/think/applier.py](services/think/applier.py) rewrites that event id to the actual inserted Model id before applying edges or act transitions. This lets the LLM express "new observation creates a Model, and that Model supports/justifies this edge/action" in one production transaction without inventing a future UUID.
+For LLM ergonomics, validation and apply support same-diff references: an `edge_op` endpoint or `act_op.confidence_basis` may point at the `born_from_event_id` of a `claim_ops.insert` in the same raw diff. The validator checks that the pending claim exists and is strong enough, then [services/reasoning/think/applier.py](services/reasoning/think/applier.py) rewrites that event id to the actual inserted Model id before applying edges or act transitions. This lets the LLM express "new observation creates a Model, and that Model supports/justifies this edge/action" in one production transaction without inventing a future UUID.
 
-[services/think/auto_create_commitment.py](services/think/auto_create_commitment.py) is the deterministic safety-net layer for high-value cases the LLM may under-emit. It is intentionally narrow and idempotent: self-reported new work can become a create-commitment recommendation, explicit blocked/on-hold signals can transition the best matching commitment, explicit decision-revisit signals can add a decision-scoped concern plus `transition_decision`, explicit future-dated plans can be split out of state-only output into a prediction with a deadline falsifier, and explicit customer churn/renewal-risk signals can become customer-scoped concern Models when a resolved customer id exists. The goal is not to replace reasoning; it is to preserve production invariants when live model output is semantically close but operationally incomplete.
+[services/reasoning/think/auto_create_commitment.py](services/reasoning/think/auto_create_commitment.py) is the deterministic safety-net layer for high-value cases the LLM may under-emit. It is intentionally narrow and idempotent: self-reported new work can become a create-commitment recommendation, explicit blocked/on-hold signals can transition the best matching commitment, explicit decision-revisit signals can add a decision-scoped concern plus `transition_decision`, explicit future-dated plans can be split out of state-only output into a prediction with a deadline falsifier, and explicit customer churn/renewal-risk signals can become customer-scoped concern Models when a resolved customer id exists. The goal is not to replace reasoning; it is to preserve production invariants when live model output is semantically close but operationally incomplete.
 
-[services/think/llm_reason.py](services/think/llm_reason.py) selects the smallest safe output surface for each reasoning call. It uses the claims-only schema and compact system prompt for signals with no Models, Acts, or Resources in context, and for `T2:belief_updated` calls that have no selected graph-anchor Models. It keeps the full schema whenever selected graph memory is present, any Act or Resource context is present, or the trigger kind can mutate graph/action/resource surfaces. The current measured static prompt/schema floors are roughly 3.5k input tokens for claims-only calls versus 4.9k for full graph/action calls before retrieved observations/models/acts/resources are added; live DeepSeek runs show small no-surface calls around 6.2k input tokens, non-graph `T2:belief_updated` calls around 6.7k-8.2k, and graph/action-bearing calls higher by design.
+[services/reasoning/think/llm_reason.py](services/reasoning/think/llm_reason.py) selects the smallest safe output surface for each reasoning call. It uses the claims-only schema and compact system prompt for signals with no Models, Acts, or Resources in context, and for `T2:belief_updated` calls that have no selected graph-anchor Models. It keeps the full schema whenever selected graph memory is present, any Act or Resource context is present, or the trigger kind can mutate graph/action/resource surfaces. The current measured static prompt/schema floors are roughly 3.5k input tokens for claims-only calls versus 4.9k for full graph/action calls before retrieved observations/models/acts/resources are added; live DeepSeek runs show small no-surface calls around 6.2k input tokens, non-graph `T2:belief_updated` calls around 6.7k-8.2k, and graph/action-bearing calls higher by design.
 
-[services/actors/operating_context.py](services/actors/operating_context.py) derives actor operating context from existing substrate data instead of introducing an `actor_model` proposition kind. It summarizes actor-scoped Models, owned commitments, blocked work, recent observations, capability assessments, concerns, patterns, and relations into the existing `<actor_context>` prompt section. Actor operating claims remain ordinary Models scoped through `scope_actors`: capability assessments, concerns, relations, patterns, hypotheses, or states depending on the evidence.
+[services/domain/actors/operating_context.py](services/domain/actors/operating_context.py) derives actor operating context from existing substrate data instead of introducing an `actor_model` proposition kind. It summarizes actor-scoped Models, owned commitments, blocked work, recent observations, capability assessments, concerns, patterns, and relations into the existing `<actor_context>` prompt section. Actor operating claims remain ordinary Models scoped through `scope_actors`: capability assessments, concerns, relations, patterns, hypotheses, or states depending on the evidence.
 
-[services/dynamics/detectors.py](services/dynamics/detectors.py) similarly keeps organizational dynamics ephemeral. It reads existing `audit_events`, legacy `topology_events`, observations, and active Models to surface signals such as oscillation, recurring updates, stale memory, legacy graph phase shifts, and high actor activity into the `ReasoningFrame`. Important dynamics can be promoted through existing proposition kinds (`pattern`, `pattern_instance`, `environmental_trend`, `concern`, or `situation`) rather than a separate dynamics table.
+[services/reasoning/dynamics/detectors.py](services/reasoning/dynamics/detectors.py) similarly keeps organizational dynamics ephemeral. It reads existing `audit_events`, legacy `topology_events`, observations, and active Models to surface signals such as oscillation, recurring updates, stale memory, legacy graph phase shifts, and high actor activity into the `ReasoningFrame`. Important dynamics can be promoted through existing proposition kinds (`pattern`, `pattern_instance`, `environmental_trend`, `concern`, or `situation`) rather than a separate dynamics table.
 
 Application is idempotent through `applied_triggers`. A duplicate trigger short-circuits rather than re-running side effects.
 
 ## 8. Models, Reconciliation, Audit, and Topology
 
-[services/models/repo.py](services/models/repo.py) is the main Models repository. Inserts validate proposition shape, falsifier adequacy above confidence thresholds, scope actor existence, confidence clipping, embeddings, recommendation shape, state-change emission, audit events, typed edges, and latent topology candidate generation.
+[services/domain/models/repo.py](services/domain/models/repo.py) is the main Models repository. Inserts validate proposition shape, falsifier adequacy above confidence thresholds, scope actor existence, confidence clipping, embeddings, recommendation shape, state-change emission, audit events, typed edges, and latent topology candidate generation.
 
 Key model-side concepts:
 
@@ -284,17 +300,17 @@ Key model-side concepts:
 | Situation composition | `model_composition_members` | Normalized membership sidecar for composite Models. Situation JSON still carries `member_model_ids` for compatibility, but queries and lifecycle work can traverse membership without JSONB-only parsing. |
 | Confidence | model column + calibration modules | Main strength/credence signal. |
 | Activation | model column | Recency/importance signal raised by retrieval and decayed by maintenance. |
-| Falsifier | [services/models/falsifier.py](services/models/falsifier.py) | Required for strong claims and recommendations. |
+| Falsifier | [services/domain/models/falsifier.py](services/domain/models/falsifier.py) | Required for strong claims and recommendations. |
 | Signal readings | `model_signal_readings` sidecar | Per-signal evidence contributions. |
-| Typed edges | `model_edges` + [services/models/edges_repo.py](services/models/edges_repo.py) | First-class model graph with support, tension, causal, blocking, analogy, co-occurrence, and warning relationships. Edges carry confidence, evidence ids, explanations, review status, confirmation counts, and decay/expiry hints. Reconfirmations merge evidence and cannot downgrade an accepted review status. |
+| Typed edges | `model_edges` + [services/domain/models/edges_repo.py](services/domain/models/edges_repo.py) | First-class model graph with support, tension, causal, blocking, analogy, co-occurrence, and warning relationships. Edges carry confidence, evidence ids, explanations, review status, confirmation counts, and decay/expiry hints. Reconfirmations merge evidence and cannot downgrade an accepted review status. |
 | Normalized scope | `model_scope_entities`, `model_scope_actors` | Insert-time sidecars mirror `models.scope_entities` / `scope_actors` so retrieval and graph expansion can anchor Models without JSONB-only scans; malformed legacy non-UUID entity ids stay in JSONB but are skipped by the sidecar. |
 | Scope bridge | `customer_commitments` + Pathway A + `ModelsRepo.search_by_scope` + Think prompt resource context | Customer lookups normalize `customer` and `customer_resource`, expand across linked commitments, and commitment lookups can expand back to customers. When the explicit bridge is missing, customer lookup falls back to obvious commitment-title matches against the customer identity. Think prompts render resource identity/description and instruct customer-linked commitment Models to carry both scopes, preserving precise commitment workflows while making customer-level memory retrieval robust. |
-| Revenue bridge compatibility | [services/resources/bridge.py](services/resources/bridge.py), [services/bridge/queries.py](services/bridge/queries.py) | Customer health and revenue-at-risk queries accept both canonical `arr_cents` resources and legacy/demo `arr_usd` resources, and Bridge state-change queries understand both `metadata.new_state` and older `to_state` observation shapes. |
-| Topology | [services/topology/field.py](services/topology/field.py), [services/topology/eval_harness.py](services/topology/eval_harness.py), [services/workers/topology_sweeper](services/workers/topology_sweeper), `relationship_candidates` | Active latent relationship field. Each new/changed Model is converted into an impact signature over flows, pressures, surfaces, stakes, time shape, evidence, and action/falsifier surface. The field searches bounded semantic, surface, consequence, and evidence pools, scores consequence interactions, persists only high-yield edge/situation candidates, and enqueues at most a small T4 Think pass for top candidates. The sweeper periodically revisits high-activation Models so older memory can connect to newer memory without a full all-pairs recompute. The eval harness measures whether expected hidden pairs/situations are found before accepted typed edges exist. |
+| Revenue bridge compatibility | [services/domain/resources/bridge.py](services/domain/resources/bridge.py), [services/domain/bridge/queries.py](services/domain/bridge/queries.py) | Customer health and revenue-at-risk queries accept both canonical `arr_cents` resources and legacy/demo `arr_usd` resources, and Bridge state-change queries understand both `metadata.new_state` and older `to_state` observation shapes. |
+| Topology | [services/reasoning/topology/field.py](services/reasoning/topology/field.py), [services/reasoning/topology/eval_harness.py](services/reasoning/topology/eval_harness.py), [services/workers/topology_sweeper](services/workers/topology_sweeper), `relationship_candidates` | Active latent relationship field. Each new/changed Model is converted into an impact signature over flows, pressures, surfaces, stakes, time shape, evidence, and action/falsifier surface. The field searches bounded semantic, surface, consequence, and evidence pools, scores consequence interactions, persists only high-yield edge/situation candidates, and enqueues at most a small T4 Think pass for top candidates. The sweeper periodically revisits high-activation Models so older memory can connect to newer memory without a full all-pairs recompute. The eval harness measures whether expected hidden pairs/situations are found before accepted typed edges exist. |
 | Accepted-memory topology (legacy schema) | `model_neighborhoods`, `model_neighborhood_membership`, `topology_events`, `topo_dirty_queue` | Retired graph-derived positional embeddings, neighborhoods, topology events, and projection helpers. The Python repos/workers for this engine have been removed; database tables remain for compatibility/history and current map/Today/decision-delta surfaces that read historical rows. |
-| Relationship candidates | [services/relationships](services/relationships), `relationship_candidates` | Ranked pre-acceptance hypotheses for new edges or situation Models, scored by shared judgment leverage. Topology candidates carry score components and impact signatures in metadata. Candidate adjudication marks each row accepted, rejected, or needs-review after T4 Think interprets the proposal. Causal candidates require an explicit mechanism summary and can carry intervention surface, expected delay, and confounders in metadata before promotion. |
+| Relationship candidates | [services/reasoning/relationships](services/reasoning/relationships), `relationship_candidates` | Ranked pre-acceptance hypotheses for new edges or situation Models, scored by shared judgment leverage. Topology candidates carry score components and impact signatures in metadata. Candidate adjudication marks each row accepted, rejected, or needs-review after T4 Think interprets the proposal. Causal candidates require an explicit mechanism summary and can carry intervention surface, expected delay, and confounders in metadata before promotion. |
 
-Reconciliation is first-class in [services/think/reconciler.py](services/think/reconciler.py). Insert claim ops are checked against existing models; decisions are recorded in `reconciliation_events`. Auto-merge decisions convert inserts into evidence-preserving updates: confidence is updated, `supporting_event_ids` gains the new event, `signal_readings` records a confirmation reading, and confirmation timestamps/counts advance. Human-review/no-match decisions preserve auditability and avoid silent destructive merges. Live strict-schema LLM outputs usually omit embeddings, so the reconciler uses the same deterministic lexical fallback as the applier before insert; this lets production-like diffs deduplicate before duplicate Models land.
+Reconciliation is first-class in [services/reasoning/think/reconciler.py](services/reasoning/think/reconciler.py). Insert claim ops are checked against existing models; decisions are recorded in `reconciliation_events`. Auto-merge decisions convert inserts into evidence-preserving updates: confidence is updated, `supporting_event_ids` gains the new event, `signal_readings` records a confirmation reading, and confirmation timestamps/counts advance. Human-review/no-match decisions preserve auditability and avoid silent destructive merges. Live strict-schema LLM outputs usually omit embeddings, so the reconciler uses the same deterministic lexical fallback as the applier before insert; this lets production-like diffs deduplicate before duplicate Models land.
 
 Audit events in `audit_events` record model changes, reversals, and reconciliation merge chains. This is the main answer to "why did this belief change?"
 
@@ -304,9 +320,9 @@ The CEO-facing product surface is composed from cached backend state rather than
 
 ### Greeting/CEO Cache
 
-[services/greeting/scheduler.py](services/greeting/scheduler.py) keeps `view_ceo_cache` fresh for registered tenants.
+[services/product/greeting/scheduler.py](services/product/greeting/scheduler.py) keeps `view_ceo_cache` fresh for registered tenants.
 
-Refresh triggers include scheduled intervals, time-of-day boundaries, Postgres `LISTEN view_ceo_refresh`, and polling of post-commit actions as a fallback. The scheduler composes substrate snapshots via [services/greeting/snapshot.py](services/greeting/snapshot.py), sends render requests, writes cache keys, and publishes WebSocket updates.
+Refresh triggers include scheduled intervals, time-of-day boundaries, Postgres `LISTEN view_ceo_refresh`, and polling of post-commit actions as a fallback. The scheduler composes substrate snapshots via [services/product/greeting/snapshot.py](services/product/greeting/snapshot.py), sends render requests, writes cache keys, and publishes WebSocket updates.
 
 Cache keys:
 
@@ -318,15 +334,15 @@ Cache keys:
 | `status` | Health/calibration/needs-you summary. |
 | `close_line` | Closing summary line. |
 
-[services/greeting/api.py](services/greeting/api.py) assembles these into `GET /view/ceo/home`. [services/greeting/stream.py](services/greeting/stream.py) exposes WS streaming.
+[services/product/greeting/api.py](services/product/greeting/api.py) assembles these into `GET /view/ceo/home`. [services/product/greeting/stream.py](services/product/greeting/stream.py) exposes WS streaming.
 
 ### Rendering
 
-[services/rendering/core.py](services/rendering/core.py) builds prompts for greetings, cards, query chips, card reasoning, and conversation turns. It calls the LLM provider, runs voice-rule checks, retries once on reject-level violations, and writes `view_render_costs` when a pool is configured.
+[services/product/rendering/core.py](services/product/rendering/core.py) builds prompts for greetings, cards, query chips, card reasoning, and conversation turns. It calls the LLM provider, runs voice-rule checks, retries once on reject-level violations, and writes `view_render_costs` when a pool is configured.
 
 ### Query
 
-[services/query/core.py](services/query/core.py) powers Ask flows:
+[services/product/query/core.py](services/product/query/core.py) powers Ask flows:
 
 ```text
 query
@@ -337,11 +353,11 @@ query
   -> AnswerQueryResponse with retrieval trace and cost
 ```
 
-Strategies live in [services/query/strategies](services/query/strategies). The gateway wires query routes during CEO-view setup and shares the gateway embedder so semantic retrieval works for `/view/ceo/ask`.
+Strategies live in [services/product/query/strategies](services/product/query/strategies). The gateway wires query routes during CEO-view setup and shares the gateway embedder so semantic retrieval works for `/view/ceo/ask`.
 
 ### Conversations
 
-[services/conversations](services/conversations) stores and handles card-scoped probe threads. The Today UI can ask follow-up questions against a specific card without losing card context.
+[services/product/conversations](services/product/conversations) stores and handles card-scoped probe threads. The Today UI can ask follow-up questions against a specific card without losing card context.
 
 ## 10. UI Architecture
 
@@ -376,7 +392,7 @@ Flow:
 5. Simulator endpoints inject signals and increment demo counters.
 6. `/v1/recommendations/stream` streams recommendation/demo events.
 
-Implementation lives in [services/demo/router.py](services/demo/router.py), [services/demo/sessions.py](services/demo/sessions.py), and [services/demo/snapshot.py](services/demo/snapshot.py). Demo model routing in [services/demo/model_routing.py](services/demo/model_routing.py) can choose cheaper/faster models per tenant/call kind.
+Implementation lives in [services/product/demo/router.py](services/product/demo/router.py), [services/product/demo/sessions.py](services/product/demo/sessions.py), and [services/product/demo/snapshot.py](services/product/demo/snapshot.py). Demo model routing in [services/product/demo/model_routing.py](services/product/demo/model_routing.py) can choose cheaper/faster models per tenant/call kind.
 
 The gateway can also mount simulation helpers and static Slack UI from [simulation](simulation) when `GATEWAY_MOUNT_SIM=1`.
 
@@ -394,8 +410,8 @@ The gateway can also mount simulation helpers and static Slack UI from [simulati
 
 | Worker | Code | Behavior |
 |---|---|---|
-| Realtime dispatcher | [services/realtime](services/realtime) | WebSocket dispatch/replay machinery. |
-| Greeting scheduler | [services/greeting/scheduler.py](services/greeting/scheduler.py) | Scheduled and trigger-driven cache refresh. |
+| Realtime dispatcher | [services/app/realtime](services/app/realtime) | WebSocket dispatch/replay machinery. |
+| Greeting scheduler | [services/product/greeting/scheduler.py](services/product/greeting/scheduler.py) | Scheduled and trigger-driven cache refresh. |
 
 ### Implemented Worker Modules
 
@@ -416,7 +432,7 @@ Treat these as available architecture modules, not all as currently deployed ser
 
 ## 13. Security and Access Control
 
-Authentication is bearer-token based through `actor_sessions` and [services/gateway/auth.py](services/gateway/auth.py). `/auth/session` can mint sessions, optionally guarded by `AUTH_BOOTSTRAP_SECRET`.
+Authentication is bearer-token based through `actor_sessions` and [services/app/gateway/auth.py](services/app/gateway/auth.py). `/auth/session` can mint sessions, optionally guarded by `AUTH_BOOTSTRAP_SECRET`.
 
 Authorization layers:
 
@@ -425,7 +441,7 @@ Authorization layers:
 | Gateway auth | Bearer token -> `AuthContext(actor_id, tenant_id, expires_at)`. |
 | Rate limiting | Per actor/tenant token buckets. |
 | Request tenant scoping | Request handlers use tenant from auth/header/default env. |
-| Access-control services | [services/access_control](services/access_control) contains role hierarchy, materialized visibility, checks, audit. |
+| Access-control services | [services/platform/access_control](services/platform/access_control) contains role hierarchy, materialized visibility, checks, audit. |
 | RLS | Later migrations enable permissive tenant policies on many tables. |
 | Debug routes | Mounted only for `dev`, `staging`, or `test` environment names. |
 
@@ -461,7 +477,7 @@ pytest -m ollama
 RUN_REAL_LLM=1 pytest -m real_llm
 ```
 
-The suite is organized by service package (`services/*/tests`) plus cross-service tests under [tests](tests). `pyproject.toml` configures pytest, strict markers, async mode, and warning filters. The integration harness installs a test-only tenant auto-registration trigger and reseeds demo company configs after destructive table truncation so older raw-SQL fixtures still exercise the current tenant-FK schema and demo routes do not run against an empty registry. Retrieval quality cases in [services/retrieval/tests/test_retrieval_quality_harness.py](services/retrieval/tests/test_retrieval_quality_harness.py) assert business-level reachability and exclusions across customer scope, commitment bridges, typed model edges, rejected/archived edge neighbors, decision constraints, actor-only signals, pattern/instance retrieval, mixed-size top-N behavior, recall aggregation, latency smoke limits, context-assembly survival for high-value graph hits, and multi-tenant isolation. The inquiry E2E harness in [tests/retrieval_e2e](tests/retrieval_e2e) seeds blocker, fast-query, recurrence, and cross-tenant distractor scenarios, then asserts route, question path, retrieval actions, evidence reservoir, sufficiency, context packet, compact model prompt, and efficiency metrics; it writes [tests/retrieval_e2e/_last_run.json](tests/retrieval_e2e/_last_run.json) when `RETRIEVAL_E2E_REPORT` is not disabled. Think context-use tests in [services/think/tests/test_context_use.py](services/think/tests/test_context_use.py), Think quality-report/promotion tests in [services/think/tests](services/think/tests), quality replay contract tests in [tests/quality_replay](tests/quality_replay), and the opt-in real-LLM eval in [tests/real_llm/tests/test_context_use_outcome.py](tests/real_llm/tests/test_context_use_outcome.py) check whether selected context is actually referenced by generated diffs and whether production records expose actionable quality failures, quality gates, replayable cases, and promotable fixtures; the integration case also runs a full Think transaction, applies an edge derived from selected graph context, and verifies the resulting `context_use` report persisted in `think_runs.ops_applied`. Deterministic Think-safety tests cover the production fallbacks for commitment creation, block transitions, decision revisits, future-plan prediction splitting, cheap `T2:belief_updated` cascade drain, live-LLM same-diff Model placeholder handling, strict-schema no-embedding reconciliation, supersession direction canonicalization, and bounded worker leasing under local in-flight pressure. The real-LLM harness under [tests/real_llm](tests/real_llm) provisions a proper tenant row before materializing scenario fixtures, seeds aliases for foundation customers/goals/commitments/decisions, infers obvious customer-commitment links from scenario titles, then runs DeepSeek-backed Think flows through the same migrations, queues, embeddings, provider cache, validator, and applier path used in production. Scenario 04, [tests/real_llm/scenarios/04_scale_chaos_b2b.yaml](tests/real_llm/scenarios/04_scale_chaos_b2b.yaml), is a large synthetic-customer corpus for memory/retrieval stress: 22 actors, 10 customers, 24 commitments, 8 decisions, and 119 signals across customer risk, aliases, stale replays, billing disputes, legal/security constraints, forecast contradictions, and hidden-connection evidence. Its lightweight structural test guards corpus coherence without services, while [tests/real_llm/tests/test_scale_chaos_ingestion.py](tests/real_llm/tests/test_scale_chaos_ingestion.py) can be opted in with `RUN_SCALE_CHAOS_FULL=1` to inject the entire corpus through production ingestion, embeddings, observation storage, and T1 enqueue without spending LLM tokens. [tests/real_llm/tests/test_entity_resolver_real_llm.py](tests/real_llm/tests/test_entity_resolver_real_llm.py) hits DeepSeek on the actual-content alias path, proving `NBI` can be resolved from a scenario signal that says "Nimbus Bank as NBI" into the existing Nimbus customer resource. [tests/real_llm/tests/test_scale_chaos_end_to_end.py](tests/real_llm/tests/test_scale_chaos_end_to_end.py) is the curated full-chain proof: it ingests that alias signal, resolves it with DeepSeek, injects a six-signal Nimbus crisis slice, runs Think/DeepSeek through validation and apply, then verifies Models/state changes and Bridge revenue/customer-detail surfaces. Scenarios 05 and 06, [tests/real_llm/scenarios/05_industrial_ops.yaml](tests/real_llm/scenarios/05_industrial_ops.yaml) and [tests/real_llm/scenarios/06_fintech_risk.yaml](tests/real_llm/scenarios/06_fintech_risk.yaml), are deep synthetic-company corpora for durability: industrial safety/telemetry/supplier risk and fintech ledger/KYC/fraud/regulatory risk. [tests/real_llm/tests/test_deep_durability_end_to_end.py](tests/real_llm/tests/test_deep_durability_end_to_end.py) can be opted in with `RUN_DURABILITY_E2E=1` to inject every signal in those corpora, resolve actual-content aliases (`TFI`, `MRA`, `ACS`, `BRCU`) with DeepSeek, drain Think, assert no pending or failed runs, verify context-use telemetry, confirm model/state-change creation, and check Bridge customer surfaces. [scripts/run_1000_signal_model_layer_probe.py](scripts/run_1000_signal_model_layer_probe.py) is the heavyweight single-customer scale probe: it materializes one company, injects up to 1000 diverse production-shaped signals across incidents, sales, security, legal, finance, roadmap, telemetry, aliases, contradictions, stale replays, market moves, and noise, optionally drains live DeepSeek-backed Think, then writes `run_summary.json`, `model_layer_summary.md`, `models.jsonl`, `model_edges.jsonl`, and `signal_manifest.jsonl` under `tests/real_llm/reports/runs/` for later graph-shape analysis; the summary now includes graph-health metrics for component shape, isolated Models, soft/actionable edge ratios, duplicate directed edges, self/orphan edges, and exact duplicate natural-language groups. The latest live hardening loop used these harnesses to test real output behavior for proposition-kind diversity, decision revisits, act cascades, customer-health Bridge queries, graph-context edge creation, cross-component customer-crisis chains, and full-corpus durability, then tightened prompt guidance and deterministic safety nets where live behavior was semantically close but operationally incomplete.
+The suite is organized by service package (`services/*/tests`) plus cross-service tests under [tests](tests). `pyproject.toml` configures pytest, strict markers, async mode, and warning filters. The integration harness installs a test-only tenant auto-registration trigger and reseeds demo company configs after destructive table truncation so older raw-SQL fixtures still exercise the current tenant-FK schema and demo routes do not run against an empty registry. Retrieval quality cases in [services/reasoning/retrieval/tests/test_retrieval_quality_harness.py](services/reasoning/retrieval/tests/test_retrieval_quality_harness.py) assert business-level reachability and exclusions across customer scope, commitment bridges, typed model edges, rejected/archived edge neighbors, decision constraints, actor-only signals, pattern/instance retrieval, mixed-size top-N behavior, recall aggregation, latency smoke limits, context-assembly survival for high-value graph hits, and multi-tenant isolation. The inquiry E2E harness in [tests/retrieval_e2e](tests/retrieval_e2e) seeds blocker, fast-query, recurrence, and cross-tenant distractor scenarios, then asserts route, question path, retrieval actions, evidence reservoir, sufficiency, context packet, compact model prompt, and efficiency metrics; it writes [tests/retrieval_e2e/_last_run.json](tests/retrieval_e2e/_last_run.json) when `RETRIEVAL_E2E_REPORT` is not disabled. Think context-use tests in [services/reasoning/think/tests/test_context_use.py](services/reasoning/think/tests/test_context_use.py), Think quality-report/promotion tests in [services/reasoning/think/tests](services/reasoning/think/tests), quality replay contract tests in [tests/quality_replay](tests/quality_replay), and the opt-in real-LLM eval in [tests/real_llm/tests/test_context_use_outcome.py](tests/real_llm/tests/test_context_use_outcome.py) check whether selected context is actually referenced by generated diffs and whether production records expose actionable quality failures, quality gates, replayable cases, and promotable fixtures; the integration case also runs a full Think transaction, applies an edge derived from selected graph context, and verifies the resulting `context_use` report persisted in `think_runs.ops_applied`. Deterministic Think-safety tests cover the production fallbacks for commitment creation, block transitions, decision revisits, future-plan prediction splitting, cheap `T2:belief_updated` cascade drain, live-LLM same-diff Model placeholder handling, strict-schema no-embedding reconciliation, supersession direction canonicalization, and bounded worker leasing under local in-flight pressure. The real-LLM harness under [tests/real_llm](tests/real_llm) provisions a proper tenant row before materializing scenario fixtures, seeds aliases for foundation customers/goals/commitments/decisions, infers obvious customer-commitment links from scenario titles, then runs DeepSeek-backed Think flows through the same migrations, queues, embeddings, provider cache, validator, and applier path used in production. Scenario 04, [tests/real_llm/scenarios/04_scale_chaos_b2b.yaml](tests/real_llm/scenarios/04_scale_chaos_b2b.yaml), is a large synthetic-customer corpus for memory/retrieval stress: 22 actors, 10 customers, 24 commitments, 8 decisions, and 119 signals across customer risk, aliases, stale replays, billing disputes, legal/security constraints, forecast contradictions, and hidden-connection evidence. Its lightweight structural test guards corpus coherence without services, while [tests/real_llm/tests/test_scale_chaos_ingestion.py](tests/real_llm/tests/test_scale_chaos_ingestion.py) can be opted in with `RUN_SCALE_CHAOS_FULL=1` to inject the entire corpus through production ingestion, embeddings, observation storage, and T1 enqueue without spending LLM tokens. [tests/real_llm/tests/test_entity_resolver_real_llm.py](tests/real_llm/tests/test_entity_resolver_real_llm.py) hits DeepSeek on the actual-content alias path, proving `NBI` can be resolved from a scenario signal that says "Nimbus Bank as NBI" into the existing Nimbus customer resource. [tests/real_llm/tests/test_scale_chaos_end_to_end.py](tests/real_llm/tests/test_scale_chaos_end_to_end.py) is the curated full-chain proof: it ingests that alias signal, resolves it with DeepSeek, injects a six-signal Nimbus crisis slice, runs Think/DeepSeek through validation and apply, then verifies Models/state changes and Bridge revenue/customer-detail surfaces. Scenarios 05 and 06, [tests/real_llm/scenarios/05_industrial_ops.yaml](tests/real_llm/scenarios/05_industrial_ops.yaml) and [tests/real_llm/scenarios/06_fintech_risk.yaml](tests/real_llm/scenarios/06_fintech_risk.yaml), are deep synthetic-company corpora for durability: industrial safety/telemetry/supplier risk and fintech ledger/KYC/fraud/regulatory risk. [tests/real_llm/tests/test_deep_durability_end_to_end.py](tests/real_llm/tests/test_deep_durability_end_to_end.py) can be opted in with `RUN_DURABILITY_E2E=1` to inject every signal in those corpora, resolve actual-content aliases (`TFI`, `MRA`, `ACS`, `BRCU`) with DeepSeek, drain Think, assert no pending or failed runs, verify context-use telemetry, confirm model/state-change creation, and check Bridge customer surfaces. [scripts/run_1000_signal_model_layer_probe.py](scripts/run_1000_signal_model_layer_probe.py) is the heavyweight single-customer scale probe: it materializes one company, injects up to 1000 diverse production-shaped signals across incidents, sales, security, legal, finance, roadmap, telemetry, aliases, contradictions, stale replays, market moves, and noise, optionally drains live DeepSeek-backed Think, then writes `run_summary.json`, `model_layer_summary.md`, `models.jsonl`, `model_edges.jsonl`, and `signal_manifest.jsonl` under `tests/real_llm/reports/runs/` for later graph-shape analysis; the summary now includes graph-health metrics for component shape, isolated Models, soft/actionable edge ratios, duplicate directed edges, self/orphan edges, and exact duplicate natural-language groups. The latest live hardening loop used these harnesses to test real output behavior for proposition-kind diversity, decision revisits, act cascades, customer-health Bridge queries, graph-context edge creation, cross-component customer-crisis chains, and full-corpus durability, then tightened prompt guidance and deterministic safety nets where live behavior was semantically close but operationally incomplete.
 
 The inquiry adversarial slice currently covers stale counterevidence, ambiguous ownership, bounded human-validation routing, question-conditioned semantic embedding, and same-actor semantic-noise cases.
 
@@ -480,7 +496,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 
 ### Add a New Ingestion Channel
 
-1. Add a handler in [services/ingestion/handlers](services/ingestion/handlers).
+1. Add a handler in [services/ingest/ingestion/handlers](services/ingest/ingestion/handlers).
 2. Register it with `@register("channel:name")`.
 3. Add the channel trust tier to `CHANNEL_TRUST_MAP`.
 4. Ensure the handler module is imported so registration runs.
@@ -489,7 +505,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 
 ### Add a New Model Proposition Kind
 
-1. Update proposition validation in [services/models/propositions.py](services/models/propositions.py).
+1. Update proposition validation in [services/domain/models/propositions.py](services/domain/models/propositions.py).
 2. Add migration/check constraints if needed.
 3. Update prompts, `diff_schema`, validator/applier logic if the LLM can emit it.
 4. Add retrieval/rendering behavior if it should appear in UI context.
@@ -515,12 +531,12 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 
 | Risk | Why it matters | Where to look |
 |---|---|---|
-| Gateway is large | Many product adapters and legacy routes live in one file, increasing coupling. | [services/gateway/main.py](services/gateway/main.py), route modules under [services/gateway](services/gateway). |
+| Gateway is large | `build_app()` is ~3,800 lines; many handlers + wiring in one file. A sequenced decomposition plan is recorded in CODEBASE-MANAGEMENT.md §8.2 (deferred because it needs a running gateway+DB to verify). | [services/app/gateway/main.py](services/app/gateway/main.py), route modules under [services/app/gateway](services/app/gateway). |
 | Worker deployment gap | Some worker modules still exist as available packages before becoming default compose services. Topology sweeper is now launched by compose and local scripts. | [services/workers](services/workers), [docker-compose.yml](docker-compose.yml). |
 | Dev auth shortcuts | Static tokens/default tenant are convenient but easy to misconfigure in shared envs. | `.env.example`, gateway public path config. |
-| Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingestion/handlers/__init__.py](services/ingestion/handlers/__init__.py). |
+| Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingest/ingestion/handlers/__init__.py](services/ingest/ingestion/handlers/__init__.py). |
 | Spec references are historical | Many docstrings reference older `ARCHITECTURE-FINAL.md`, `SCHEMA-LOCK.md`, and `CONTRACTS.md` files not present in this checkout. | Code and migrations are the effective source of truth. |
-| Mixed old/new UI API surfaces | `/view/ceo/*`, `/today/*`, `/model/*`, spec routes, and legacy redirects coexist. | [ui/src/main.tsx](ui/src/main.tsx), [services/gateway](services/gateway). |
+| Mixed old/new UI API surfaces | `/view/ceo/*`, `/today/*`, `/model/*`, spec routes, and legacy redirects coexist. | [ui/src/main.tsx](ui/src/main.tsx), [services/app/gateway](services/app/gateway). |
 | RLS vs app-level tenancy | RLS policies exist, but most correctness still depends on passing tenant IDs through app code. | migrations `0036`-`0041`, repositories. |
 
 ## 18. Source of Truth
@@ -529,7 +545,7 @@ When code and docs disagree, prefer this order:
 
 1. Database migrations in [db/migrations](db/migrations).
 2. Repository/service implementations under [services](services) and [lib](lib).
-3. Route wiring in [services/gateway/main.py](services/gateway/main.py) and [ui/src/main.tsx](ui/src/main.tsx).
+3. Route wiring in [services/app/gateway/main.py](services/app/gateway/main.py) and [ui/src/main.tsx](ui/src/main.tsx).
 4. Tests under [services](services), [tests](tests), and [ui/src/tests](ui/src/tests).
 5. Design documents such as this one.
 

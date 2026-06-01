@@ -223,27 +223,27 @@ services:
   oauth_poller:
     <<: *worker
     container_name: company_os_oauth_poller
-    command: python -m services.ingestion.workflows.oauth_poller
+    command: python -m services.ingest.ingestion.workflows.oauth_poller
 
   tenant_onboarding:
     <<: *worker
     container_name: company_os_tenant_onboarding
-    command: python -m services.ingestion.workflows.tenant_onboarding
+    command: python -m services.ingest.ingestion.workflows.tenant_onboarding
 
   source_onboarding:
     <<: *worker
     container_name: company_os_source_onboarding
-    command: python -m services.ingestion.workflows.source_onboarding
+    command: python -m services.ingest.ingestion.workflows.source_onboarding
 
   shard_fetch:
     <<: *worker
     container_name: company_os_shard_fetch
-    command: python -m services.ingestion.workflows.shard_fetch
+    command: python -m services.ingest.ingestion.workflows.shard_fetch
 
   reconciler:
     <<: *worker
     container_name: company_os_reconciler
-    command: python -m services.ingestion.workflows.reconciler
+    command: python -m services.ingest.ingestion.workflows.reconciler
 
   # Steady-state safety net: re-runs per-source gap detection for
   # already-reconciled runs on a schedule, re-sharing when a live event
@@ -252,7 +252,7 @@ services:
   periodic_reconciler:
     <<: *worker
     container_name: company_os_periodic_reconciler
-    command: python -m services.ingestion.workflows.periodic_reconciler
+    command: python -m services.ingest.ingestion.workflows.periodic_reconciler
     healthcheck: *consumer-healthcheck
 
   # ---- Kafka consumer chain ----------------------------------------
@@ -264,25 +264,25 @@ services:
   normalizer:
     <<: *worker
     container_name: company_os_normalizer
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck: *consumer-healthcheck
 
   observation_writer:
     <<: *worker
     container_name: company_os_observation_writer
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck: *consumer-healthcheck
 
   dlq_writer:
     <<: *worker
     container_name: company_os_dlq_writer
-    command: python -m services.ingestion.writers.dlq_writer.dlq_writer
+    command: python -m services.ingest.ingestion.writers.dlq_writer.dlq_writer
     healthcheck: *consumer-healthcheck
 
   embedding_worker:
     <<: *worker
     container_name: company_os_embedding_worker
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck: *consumer-healthcheck
 
   # DB-scanning safety net: embeds observations left embedding_pending by
@@ -292,7 +292,7 @@ services:
   embedding_backlog:
     <<: *worker
     container_name: company_os_embedding_backlog
-    command: python -m services.ingestion.recovery.embedding_backlog
+    command: python -m services.ingest.ingestion.recovery.embedding_backlog
     healthcheck: *consumer-healthcheck
 
   # ---- live source workers -----------------------------------------

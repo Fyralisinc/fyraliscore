@@ -15,11 +15,11 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from services.relationships.repo import (
+from services.reasoning.relationships.repo import (
     RelationshipCandidateMetrics,
     RelationshipCandidatesRepo,
 )
-from services.topology import LatentTopologyService, TopologySweepReport
+from services.reasoning.topology import LatentTopologyService, TopologySweepReport
 
 
 _log = structlog.get_logger(__name__)

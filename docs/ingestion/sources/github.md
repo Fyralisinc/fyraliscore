@@ -16,26 +16,26 @@
 ## Auth & install
 
 GitHub App, self-serve install
-([services/integrations/github/oauth.py](../../../services/integrations/github/oauth.py)):
+([services/ingest/integrations/github/oauth.py](../../../services/ingest/integrations/github/oauth.py)):
 `/integrations/github/install` → `/callback` (public allowlist entry) UPSERTs the
 install and seeds `selected_repositories`.
 
-- [jwt.py](../../../services/integrations/github/jwt.py) — `mint_app_jwt` RS256
+- [jwt.py](../../../services/ingest/integrations/github/jwt.py) — `mint_app_jwt` RS256
   from `GITHUB_APP_PRIVATE_KEY` env, **re-read on every mint** so rotation is a
   no-op deploy.
-- [client.py](../../../services/integrations/github/client.py) — installation
+- [client.py](../../../services/ingest/integrations/github/client.py) — installation
   access-token cache + outbound chokepoint; 404/401 disables the install (no
   secret deletion — auth is App-level).
-- [lifecycle.py](../../../services/integrations/github/lifecycle.py) —
+- [lifecycle.py](../../../services/ingest/integrations/github/lifecycle.py) —
   `installation.*` + `installation_repositories.*` dispatch.
-- [replay_cache.py](../../../services/integrations/github/replay_cache.py) —
+- [replay_cache.py](../../../services/ingest/integrations/github/replay_cache.py) —
   in-process LRU keyed on `(installation_id, X-GitHub-Delivery)`;
   defense-in-depth, observation-layer dedup is the correctness backstop.
 
 ## Ingress (live)
 
 `gateway /webhooks/github` → signature verified (single App secret;
-[signatures/github.py](../../../services/webhooks/signatures/github.py)). Handled
+[signatures/github.py](../../../services/app/webhooks/signatures/github.py)). Handled
 events: `pull_request`, `push`, `issues`, `issue_comment`,
 `pull_request_review`, `check_run`.
 
@@ -51,8 +51,8 @@ secret path is permitted in prod for GitHub **without**
 
 ## Backfill
 
-[planners/github.py](../../../services/ingestion/planners/github.py) shards per
-accessible repo; [fetchers/github.py](../../../services/ingestion/fetchers/github.py)
+[planners/github.py](../../../services/ingest/ingestion/planners/github.py) shards per
+accessible repo; [fetchers/github.py](../../../services/ingest/ingestion/fetchers/github.py)
 pulls events → `RawEnvelope` (`ingress_kind="backfill"`) → same `github:webhook`
 channel.
 

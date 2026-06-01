@@ -37,10 +37,10 @@ from dotenv import load_dotenv
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.shared.migrations import apply_migrations_dir
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
-from services.synthetic.core import SyntheticSignal, inject
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.synthetic.core import SyntheticSignal, inject
 from tests.real_llm.infrastructure.scenario_loader import (
     Scenario,
     _resolve_actor_ref,
@@ -300,7 +300,7 @@ async def run_signal_t1_triggers_until_complete(
     production ThinkWorker `_process_trigger` path; it simply selects the
     exact T1 rows created by ingestion.
     """
-    from services.think.worker import ThinkWorker, WorkerConfig
+    from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
     cfg = WorkerConfig.from_env()
     cfg.poll_interval_s = 0.05

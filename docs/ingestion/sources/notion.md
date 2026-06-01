@@ -26,24 +26,24 @@ backfill fetcher under `ingress_kind="poll"`.
 
 ## Auth & install
 
-[services/integrations/notion/oauth.py](../../../services/integrations/notion/oauth.py):
+[services/ingest/integrations/notion/oauth.py](../../../services/ingest/integrations/notion/oauth.py):
 `/integrations/notion/install` → `/callback` (public allowlist). Long-lived bot
-token, no refresh. Outbound [client.py](../../../services/integrations/notion/client.py)
+token, no refresh. Outbound [client.py](../../../services/ingest/integrations/notion/client.py)
 (`search` / db-query / blocks / comments) honors 429 `Retry-After`.
 
 ## Backfill / poll (the quartet)
 
-- [planners/notion.py](../../../services/ingestion/planners/notion.py) — one
+- [planners/notion.py](../../../services/ingest/ingestion/planners/notion.py) — one
   `notion_database` shard per DB + one `notion_page_tree` shard.
-- [fetchers/notion.py](../../../services/ingestion/fetchers/notion.py) —
+- [fetchers/notion.py](../../../services/ingest/ingestion/fetchers/notion.py) —
   **resumable work-stack tree walk**: the cursor *is* the stack. One Notion list
   call per invocation; `end_of_data` when the stack empties. A 429 re-pushes the
   current item with its cursor unadvanced; a 404 on one object skips it and keeps
   walking. Block recursion is depth-capped (`NOTION_BLOCK_DEPTH_CAP`, default 3)
   with an explicit `content._truncated` marker beyond the cap.
-- [reconcilers/notion.py](../../../services/ingestion/reconcilers/notion.py) —
+- [reconcilers/notion.py](../../../services/ingest/ingestion/reconcilers/notion.py) —
   gap probe: live latest edit vs cursor high-water.
-- [handlers/notion.py](../../../services/ingestion/handlers/notion.py) — **one
+- [handlers/notion.py](../../../services/ingest/ingestion/handlers/notion.py) — **one
   channel `notion:object`**; branches on the native `object` field
   (page/block/comment), setting `kind` + `content.object_type` per record. A DB
   row with a `status` property → `kind=state_change`.

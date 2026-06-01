@@ -83,7 +83,7 @@ services:
     # In-process S3 mock. Used by services run locally (not by unit
     # tests — unit tests use the moto Python library directly via
     # `@mock_aws` or patching at the aioboto3 client layer; this
-    # container is for `python -m services.ingestion.normalizer` style
+    # container is for `python -m services.ingest.ingestion.normalizer` style
     # local runs).
     image: motoserver/moto:latest
     container_name: fyralis_dev_moto_s3

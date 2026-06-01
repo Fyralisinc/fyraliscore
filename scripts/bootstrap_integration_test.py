@@ -29,11 +29,11 @@ if str(_REPO_ROOT) not in sys.path:
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.gateway.auth import create_session
-from services.integrations.discord.oauth import (
+from services.app.gateway.auth import create_session
+from services.ingest.integrations.discord.oauth import (
     issue_state_token as discord_issue_state_token,
 )
-from services.integrations.slack.oauth import (
+from services.ingest.integrations.slack.oauth import (
     issue_state_token as slack_issue_state_token,
 )
 

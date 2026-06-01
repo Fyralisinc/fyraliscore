@@ -11,8 +11,8 @@ import signal
 import asyncpg
 import structlog
 
-from services.gateway.db_bootstrap import _register_codecs
-from services.integrations.gmail.history_poller import run_forever
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.integrations.gmail.history_poller import run_forever
 
 
 async def _main() -> None:

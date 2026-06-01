@@ -7,7 +7,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import MalformedFalsifierError
-from services.models.falsifier import (
+from services.domain.models.falsifier import (
     is_adequate_falsifier,
     parse_within_window,
 )

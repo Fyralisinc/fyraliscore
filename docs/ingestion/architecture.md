@@ -62,7 +62,7 @@ flowchart TD
 ```
 
 The synchronous **fallback** collapses all of the above into one call:
-[`services/ingestion/core.py::ingest()`](../../services/ingestion/core.py) runs
+[`services/ingest/ingestion/core.py::ingest()`](../../services/ingest/ingestion/core.py) runs
 handler → resolve → embed → INSERT in a single transaction against Postgres,
 with no Kafka/S3 hop.
 
@@ -107,13 +107,13 @@ fallback write and a later pipeline replay converge to the same single row.
 ### The gate is read in two places (both default FALSE)
 
 Flag `ingestion.kafka_path_enabled`, 30 s TTL cache
-([feature_flags/client.py](../../services/ingestion/feature_flags/client.py)):
+([feature_flags/client.py](../../services/ingest/ingestion/feature_flags/client.py)):
 
 1. **Webhook router**
-   ([services/webhooks/router.py](../../services/webhooks/router.py)) — decides
+   ([services/app/webhooks/router.py](../../services/app/webhooks/router.py)) — decides
    *cutover vs inline* at ingress for cutover-enabled providers.
 2. **Observation writer**
-   ([writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py))
+   ([writers/observation_writer.py](../../services/ingest/ingestion/writers/observation_writer.py))
    — per envelope, decides *full write vs shadow-only*; a FALSE tenant's
    normalized envelopes are recorded as shadow events and **not** persisted.
 
@@ -138,13 +138,13 @@ flowchart LR
 
 | Stage | Entry / file | Topic in → out | Notes |
 |---|---|---|---|
-| **1. Ingress** | webhook [router.py::receive](../../services/webhooks/router.py); push [gmail_pubsub.py](../../services/webhooks/gmail_pubsub.py); poll/backfill [shard_fetch.py](../../services/ingestion/workflows/shard_fetch.py) | — → `ingestion.raw` | size check, tenant resolution, signature verify |
-| **2. Shadow-write raw** | [shadow_write.py::shadow_write_raw](../../services/ingestion/shadow_write.py) | — → `ingestion.raw` (+ S3) | `build_raw_s3_key`, content hash, `PutIfAbsent`, produce **+ flush** at the webhook boundary |
-| **3. Normalize** | [normalizer/worker.py](../../services/ingestion/normalizer/worker.py) (`python -m services.ingestion.normalizer.worker`) | `ingestion.raw` → `ingestion.normalized` | **no DB**; fetch raw from S3 → `resolve_channel(source, ingress_kind, meta)` → `get_handler(channel)` → `ObservationDraft` → `NormalizedEnvelope` |
-| **4. Write observation** | [writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py) | `ingestion.normalized` → Postgres `observations` | flag-gated `_full_mode_write` → `ingest_from_draft` (actor resolve, fast-path entities, embed, dedup, INSERT, enqueue T1) |
-| **5. Async tails** | [writers/embedding_worker/](../../services/ingestion/writers/embedding_worker/), [recovery/embedding_backlog/](../../services/ingestion/recovery/embedding_backlog/), [writers/dlq_writer/](../../services/ingestion/writers/dlq_writer/), [dlq/publish.py](../../services/ingestion/dlq/publish.py) | `ingestion.embedding`, `ingestion.dlq` | embeds pending rows; persists failures to `ingestion_failures` |
+| **1. Ingress** | webhook [router.py::receive](../../services/app/webhooks/router.py); push [gmail_pubsub.py](../../services/app/webhooks/gmail_pubsub.py); poll/backfill [shard_fetch.py](../../services/ingest/ingestion/workflows/shard_fetch.py) | — → `ingestion.raw` | size check, tenant resolution, signature verify |
+| **2. Shadow-write raw** | [shadow_write.py::shadow_write_raw](../../services/ingest/ingestion/shadow_write.py) | — → `ingestion.raw` (+ S3) | `build_raw_s3_key`, content hash, `PutIfAbsent`, produce **+ flush** at the webhook boundary |
+| **3. Normalize** | [normalizer/worker.py](../../services/ingest/ingestion/normalizer/worker.py) (`python -m services.ingest.ingestion.normalizer.worker`) | `ingestion.raw` → `ingestion.normalized` | **no DB**; fetch raw from S3 → `resolve_channel(source, ingress_kind, meta)` → `get_handler(channel)` → `ObservationDraft` → `NormalizedEnvelope` |
+| **4. Write observation** | [writers/observation_writer.py](../../services/ingest/ingestion/writers/observation_writer.py) | `ingestion.normalized` → Postgres `observations` | flag-gated `_full_mode_write` → `ingest_from_draft` (actor resolve, fast-path entities, embed, dedup, INSERT, enqueue T1) |
+| **5. Async tails** | [writers/embedding_worker/](../../services/ingest/ingestion/writers/embedding_worker/), [recovery/embedding_backlog/](../../services/ingest/ingestion/recovery/embedding_backlog/), [writers/dlq_writer/](../../services/ingest/ingestion/writers/dlq_writer/), [dlq/publish.py](../../services/ingest/ingestion/dlq/publish.py) | `ingestion.embedding`, `ingestion.dlq` | embeds pending rows; persists failures to `ingestion_failures` |
 
-The **inline core** ([core.py](../../services/ingestion/core.py)) is the shared
+The **inline core** ([core.py](../../services/ingest/ingestion/core.py)) is the shared
 implementation of stage-4 logic: `ingest()` (fallback entry) and the writer's
 `_full_mode_write()` both converge on `ingest_from_draft()`, so the observation
 produced is byte-identical regardless of path (verified by
@@ -186,7 +186,7 @@ classDiagram
 `SourceLiteral = slack | github | discord | gmail | notion | google_calendar |
 google_drive | jira` and `IngressKindLiteral = webhook | gateway | pubsub |
 backfill | poll`
-([raw_tier/envelope.py](../../services/ingestion/raw_tier/envelope.py)).
+([raw_tier/envelope.py](../../services/ingest/ingestion/raw_tier/envelope.py)).
 
 ---
 
@@ -235,7 +235,7 @@ Drive).
 ## 5. Per-source landing — how each of the 8 reaches `observations`
 
 Every source has a **planner → fetcher → handler → reconciler** quartet
-([services/ingestion/{planners,fetchers,handlers,reconcilers}/&lt;source&gt;.py](../../services/ingestion/))
+([services/ingest/ingestion/{planners,fetchers,handlers,reconcilers}/&lt;source&gt;.py](../../services/ingest/ingestion/))
 for the poll/backfill path, plus its source-specific ingress.
 **Backfill/poll always feeds the full pipeline**: `shard_fetch` writes the raw
 body to S3 and produces a `RawEnvelope` to `ingestion.raw` exactly like a
@@ -262,7 +262,7 @@ flowchart LR
 
 ### Cutover-enabled webhook sources
 
-In `_CUTOVER_ENABLED_PROVIDERS` ([router.py](../../services/webhooks/router.py)).
+In `_CUTOVER_ENABLED_PROVIDERS` ([router.py](../../services/app/webhooks/router.py)).
 Flag TRUE → router calls `_attempt_kafka_path` → `202`; flag FALSE or Kafka down
 → inline `ingest()`.
 
@@ -276,7 +276,7 @@ Flag TRUE → router calls `_attempt_kafka_path` → `202`; flag FALSE or Kafka 
 
 ### Push (Pub/Sub) source
 
-- **[gmail](sources/gmail.md)** — Google Pub/Sub push hits the dedicated endpoint [gmail_pubsub.py](../../services/webhooks/gmail_pubsub.py) (NOT the generic router), which publishes to `ingestion.raw` via the canonical `app.state.kafka_producer`/`s3_raw_client` (with `flush()`). Channel `gmail:`, `ingress_kind="pubsub"`. Backfill/poll via the History API (`ingress_kind="poll"`).
+- **[gmail](sources/gmail.md)** — Google Pub/Sub push hits the dedicated endpoint [gmail_pubsub.py](../../services/app/webhooks/gmail_pubsub.py) (NOT the generic router), which publishes to `ingestion.raw` via the canonical `app.state.kafka_producer`/`s3_raw_client` (with `flush()`). Channel `gmail:`, `ingress_kind="pubsub"`. Backfill/poll via the History API (`ingress_kind="poll"`).
 
 ### Poll/backfill-only sources (no webhook)
 
@@ -303,7 +303,7 @@ Flag TRUE → router calls `_attempt_kafka_path` → `202`; flag FALSE or Kafka 
 | google_drive | — | — | ✅ | `google_drive:file` (+comment/revision) | no |
 | discord | interactions inline (by design) | — | ✅ messages | `discord:message`, `discord:interaction` | interactions only |
 
-### Channel → trust tier ([handlers/__init__.py](../../services/ingestion/handlers/__init__.py) `CHANNEL_TRUST_MAP`)
+### Channel → trust tier ([handlers/__init__.py](../../services/ingest/ingestion/handlers/__init__.py) `CHANNEL_TRUST_MAP`)
 
 | Channel | Trust tier |
 |---|---|
@@ -377,18 +377,18 @@ Adding/keeping a source on the pipeline means it must appear in **all** of these
 (missing any one silently drops the source — usually a `normalizer_parse_error`
 DLQ or a never-started run). All 8 are currently present in all of them:
 
-- [raw_tier/envelope.py](../../services/ingestion/raw_tier/envelope.py) — `SourceLiteral` + `IngressKindLiteral`
-- [raw_tier/s3.py](../../services/ingestion/raw_tier/s3.py) `build_raw_s3_key` — source guard
-- [normalizer/invariants.py](../../services/ingestion/normalizer/invariants.py) `_S3_KEY_RE` — source alternation
-- [core.py](../../services/ingestion/core.py) — embedding gate
-- [progress/events.py](../../services/ingestion/progress/events.py) — `Source` Literal
-- [dlq/publish.py](../../services/ingestion/dlq/publish.py) — `_VALID_SOURCES`
-- [workflows/tenant_onboarding.py](../../services/ingestion/workflows/tenant_onboarding.py) — `VALID_SOURCES` + `_LOAD_ACTIVE_SOURCES_SQL` `provider IN (...)`
-- [workflows/source_onboarding.py](../../services/ingestion/workflows/source_onboarding.py) — `VALID_SOURCES` + install-load SQL
-- [workflows/shard_fetch.py](../../services/ingestion/workflows/shard_fetch.py) — install-load SQL
-- [handlers/__init__.py](../../services/ingestion/handlers/__init__.py) — handler import (runs `@register`); trust tier via `CHANNEL_TRUST_MAP` entry **or** the handler's own `setdefault` at import (gcal/drive/jira/notion)
+- [raw_tier/envelope.py](../../services/ingest/ingestion/raw_tier/envelope.py) — `SourceLiteral` + `IngressKindLiteral`
+- [raw_tier/s3.py](../../services/ingest/ingestion/raw_tier/s3.py) `build_raw_s3_key` — source guard
+- [normalizer/invariants.py](../../services/ingest/ingestion/normalizer/invariants.py) `_S3_KEY_RE` — source alternation
+- [core.py](../../services/ingest/ingestion/core.py) — embedding gate
+- [progress/events.py](../../services/ingest/ingestion/progress/events.py) — `Source` Literal
+- [dlq/publish.py](../../services/ingest/ingestion/dlq/publish.py) — `_VALID_SOURCES`
+- [workflows/tenant_onboarding.py](../../services/ingest/ingestion/workflows/tenant_onboarding.py) — `VALID_SOURCES` + `_LOAD_ACTIVE_SOURCES_SQL` `provider IN (...)`
+- [workflows/source_onboarding.py](../../services/ingest/ingestion/workflows/source_onboarding.py) — `VALID_SOURCES` + install-load SQL
+- [workflows/shard_fetch.py](../../services/ingest/ingestion/workflows/shard_fetch.py) — install-load SQL
+- [handlers/__init__.py](../../services/ingest/ingestion/handlers/__init__.py) — handler import (runs `@register`); trust tier via `CHANNEL_TRUST_MAP` entry **or** the handler's own `setdefault` at import (gcal/drive/jira/notion)
 - DB migrations — the four M6 source `CHECK` constraints (the newest migration must carry forward every prior source; see [0062_jira.sql](../../db/migrations/0062_jira.sql))
-- Webhook-only sources also need: [router.py](../../services/webhooks/router.py) maps (`_PROVIDER_TO_SHADOW_SOURCE`, `_CUTOVER_ENABLED_PROVIDERS`, `_PROVIDER_CHANNEL`) + a `tenant_resolver` extractor + a `signatures/<provider>.py` verifier
+- Webhook-only sources also need: [router.py](../../services/app/webhooks/router.py) maps (`_PROVIDER_TO_SHADOW_SOURCE`, `_CUTOVER_ENABLED_PROVIDERS`, `_PROVIDER_CHANNEL`) + a `tenant_resolver` extractor + a `signatures/<provider>.py` verifier
 
 > **Migration landmine.** The newest source (added after the last widening
 > migration) poisons the prior widening migration's test re-run against a
@@ -404,9 +404,9 @@ Registered handlers that are **not** production ingestion sources — kept becau
 they have live callers/tests, but with **no** planner/fetcher/reconciler and not
 in the source registry:
 
-- [handlers/email.py](../../services/ingestion/handlers/email.py) (`email:inbound`) and [handlers/calendar.py](../../services/ingestion/handlers/calendar.py) (`calendar:sync`) — imported only by [services/demo/simulator.py](../../services/demo/simulator.py) (demo UI routes friendly payloads through inline `ingest()`). Superseded for real ingestion by `gmail` / `google_calendar`.
-- [handlers/linear.py](../../services/ingestion/handlers/linear.py) (`linear:webhook`) and [handlers/stripe.py](../../services/ingestion/handlers/stripe.py) (`stripe:webhook`) — registered handlers with signature verifiers + tests, but no source-registry/quartet wiring; not reachable via the production webhook router. Legacy/forward-looking.
-- [handlers/system.py](../../services/ingestion/handlers/system.py) (`internal:*`) — system-originated observations (state_change / anomaly / prediction_resolution), not external ingress.
+- [handlers/email.py](../../services/ingest/ingestion/handlers/email.py) (`email:inbound`) and [handlers/calendar.py](../../services/ingest/ingestion/handlers/calendar.py) (`calendar:sync`) — imported only by [services/product/demo/simulator.py](../../services/product/demo/simulator.py) (demo UI routes friendly payloads through inline `ingest()`). Superseded for real ingestion by `gmail` / `google_calendar`.
+- [handlers/linear.py](../../services/ingest/ingestion/handlers/linear.py) (`linear:webhook`) and [handlers/stripe.py](../../services/ingest/ingestion/handlers/stripe.py) (`stripe:webhook`) — registered handlers with signature verifiers + tests, but no source-registry/quartet wiring; not reachable via the production webhook router. Legacy/forward-looking.
+- [handlers/system.py](../../services/ingest/ingestion/handlers/system.py) (`internal:*`) — system-originated observations (state_change / anomaly / prediction_resolution), not external ingress.
 
 ---
 

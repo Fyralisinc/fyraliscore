@@ -7,8 +7,8 @@
 > per-source contract).
 
 Source of truth for this map:
-- Mercury: [`services/integrations/mercury/client.py`](../../services/integrations/mercury/client.py) + [`services/ingestion/handlers/mercury.py`](../../services/ingestion/handlers/mercury.py)
-- QuickBooks: [`services/integrations/quickbooks/client.py`](../../services/integrations/quickbooks/client.py) + [`services/ingestion/handlers/quickbooks.py`](../../services/ingestion/handlers/quickbooks.py)
+- Mercury: [`services/ingest/integrations/mercury/client.py`](../../services/ingest/integrations/mercury/client.py) + [`services/ingest/ingestion/handlers/mercury.py`](../../services/ingest/ingestion/handlers/mercury.py)
+- QuickBooks: [`services/ingest/integrations/quickbooks/client.py`](../../services/ingest/integrations/quickbooks/client.py) + [`services/ingest/ingestion/handlers/quickbooks.py`](../../services/ingest/ingestion/handlers/quickbooks.py)
 
 Every field below is read by the real client/handler — nothing here is aspirational.
 

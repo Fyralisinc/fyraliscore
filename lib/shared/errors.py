@@ -52,7 +52,7 @@ class ValidationError(CompanyOSError):
 class InvariantViolation(CompanyOSError):
     """
     A domain invariant (C1-C10, G1-G4, per spec §3) was violated.
-    Raised at INSERT/transition time by services/acts/invariants.py
+    Raised at INSERT/transition time by services/domain/acts/invariants.py
     and by the Think validator.
     """
     default_code = "invariant_violation"
@@ -192,7 +192,7 @@ class CalibrationMissingError(CompanyOSError):
 
 
 # ---------------------------------------------------------------------
-# Webhook tenant resolution (services/webhooks/tenant_resolver.py)
+# Webhook tenant resolution (services/app/webhooks/tenant_resolver.py)
 # ---------------------------------------------------------------------
 
 class InstallationConflictError(CompanyOSError):
@@ -240,7 +240,7 @@ class SecretNotFoundError(CompanyOSError):
 
 
 # ---------------------------------------------------------------------
-# OAuth install flow (services/integrations/slack/oauth.py)
+# OAuth install flow (services/ingest/integrations/slack/oauth.py)
 # ---------------------------------------------------------------------
 
 class StateTokenInvalidError(CompanyOSError):

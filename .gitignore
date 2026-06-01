@@ -90,7 +90,9 @@ tests/real_llm/cache/
 tests/real_llm/reports/runs/
 
 # ---- Internal dev notes (kept locally, not published) ----
-CLAUDE.md
+# NOTE: CLAUDE.md (project instructions) and V1_PR_PROMPTS.md are tracked and
+# published — CLAUDE.md at the repo root, V1_PR_PROMPTS.md archived under
+# docs/history/. They were previously listed here, which contradicted their
+# tracked state; removed so ignore intent matches reality.
 MODEL-THINK-RETRIEVAL-DEEP-DIVE.md
 RETRIEVAL-REVAMP-IMPLEMENTATION-PLAN.md
-V1_PR_PROMPTS.md

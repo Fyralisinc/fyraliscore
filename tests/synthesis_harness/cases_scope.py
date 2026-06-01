@@ -1,6 +1,6 @@
 """Scope routing test cases.
 
-The scope-routing layer is `services/think/region_locks.py`:
+The scope-routing layer is `services/reasoning/think/region_locks.py`:
 - `compute_primary_entity` deterministic precedence
 - `region_lock_key` stable hash
 - `touched_entity_ids` extraction from a retrieval-like object
@@ -16,7 +16,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.think.region_locks import (
+from services.reasoning.think.region_locks import (
     compute_primary_entity,
     region_lock_key,
     touched_entity_ids,

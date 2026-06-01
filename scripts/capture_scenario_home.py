@@ -2,7 +2,7 @@
 
 Invoked once per scenario (acme_tuesday, quiet_week, two_fires) after
 `simulation.scenarios.replay` + Think drain. Spins up the Gateway app
-in-process (via `services.gateway.main.build_app` + ASGI transport),
+in-process (via `services.app.gateway.main.build_app` + ASGI transport),
 forces a fresh `/view/ceo/force-refresh` to fill `view_ceo_cache`
 against the live substrate, then captures:
 
@@ -52,7 +52,7 @@ async def _capture(scenario: str, ask_query: str | None) -> int:
     os.environ.setdefault("LLM_PROVIDER", "deepseek")
     os.environ.setdefault("LLM_MODEL", "deepseek-chat")
 
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app()
     # Boot uvicorn on a local port so WS can connect via real ws://. We

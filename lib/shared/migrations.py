@@ -45,6 +45,7 @@ import logging
 import pathlib
 import re
 from collections.abc import Iterable
+from datetime import date
 
 import asyncpg
 
@@ -208,12 +209,84 @@ async def apply_migrations_dir(
                     "migration_cause": str(e.cause),
                 },
             )
+
+    # Fresh test/dev DBs only get current-month + 3 partitions from the
+    # foundation migration; widen the window so historical inserts work.
+    await ensure_test_partition_window(conn)
     return applied
+
+
+# ---------------------------------------------------------------------
+# Test/dev partition window.
+#
+# The foundation migration range-partitions `observations` and
+# `resource_transactions` by month and attaches only the current month +
+# 3 ahead. Tests routinely insert recent-historical rows (e.g. a 30-day
+# customer-health timeline), which land in PAST months with no partition →
+# "no partition of relation ... found for row". On a fresh test/dev DB we
+# widen the window backward (and a little forward) so those inserts land.
+#
+# Inlined here rather than importing
+# services.domain.observations.partitions, so `lib` stays independent of
+# `services` (enforced by the import-linter contract in pyproject.toml).
+# Runs only for parents that are actually range-partitioned in this DB, so
+# it is a no-op for unrelated migration directories. Fully idempotent.
+# ---------------------------------------------------------------------
+_PARTITIONED_PARENTS = ("observations", "resource_transactions")
+
+
+def _shift_month(d: date, delta: int) -> date:
+    """First-of-month `delta` calendar months from `d` (delta may be negative)."""
+    total = d.year * 12 + (d.month - 1) + delta
+    return date(total // 12, total % 12 + 1, 1)
+
+
+async def ensure_test_partition_window(
+    conn: asyncpg.Connection,
+    *,
+    months_back: int = 12,
+    months_ahead: int = 3,
+) -> list[str]:
+    """Attach monthly partitions spanning [today-months_back, today+months_ahead]
+    for the foundation range-partitioned parents.
+
+    Anchored to the database's own ``CURRENT_DATE`` (matching the foundation
+    migration). Idempotent via ``CREATE TABLE IF NOT EXISTS ... PARTITION OF``.
+    Returns the names of partitions newly created. No-op for parents that are
+    not range-partitioned tables in this database.
+    """
+    today: date = await conn.fetchval("SELECT CURRENT_DATE")
+    start = _shift_month(today.replace(day=1), -months_back)
+    span = months_back + 1 + months_ahead
+    created: list[str] = []
+    for parent in _PARTITIONED_PARENTS:
+        is_partitioned = await conn.fetchval(
+            "SELECT c.relkind = 'p' FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relname = $1 AND n.nspname = 'public'",
+            parent,
+        )
+        if not is_partitioned:
+            continue
+        cur = start
+        for _ in range(span):
+            nxt = _shift_month(cur, 1)
+            name = f"{parent}_{cur.strftime('%Y_%m')}"
+            existed = await conn.fetchval("SELECT to_regclass($1)", name)
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{name}" PARTITION OF "{parent}" '
+                f"FOR VALUES FROM ('{cur.isoformat()}') TO ('{nxt.isoformat()}')"
+            )
+            if existed is None:
+                created.append(name)
+            cur = nxt
+    return created
 
 
 __all__ = [
     "MigrationError",
     "apply_migration",
     "apply_migrations_dir",
+    "ensure_test_partition_window",
     "_assert_unique_prefixes",
 ]

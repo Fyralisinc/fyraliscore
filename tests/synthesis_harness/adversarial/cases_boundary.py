@@ -18,8 +18,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -456,7 +456,7 @@ CASE_MISSING_MODEL = Case(
 
 
 async def _run_empty_window(_pool: asyncpg.Pool, _ctx: dict) -> dict:
-    from services.models.falsifier import is_adequate_falsifier
+    from services.domain.models.falsifier import is_adequate_falsifier
     from lib.shared.errors import MalformedFalsifierError
     falsifier = {
         "kind": "observation_pattern",
@@ -956,7 +956,7 @@ CASE_WRONG_DIM = Case(
 
 
 async def _run_zero_vector(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.think.reconciler import reconcile_claim_op
+    from services.reasoning.think.reconciler import reconcile_claim_op
     bad_vec = [0.0] * 768  # zero vector
     op = ClaimOp(
         op="insert",

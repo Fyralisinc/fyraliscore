@@ -96,7 +96,7 @@ async def init_pool(
       (M3 ShardFetchWorkflow workers, M5 normalizer pool) flip this
       flag for their pools; M1 only ships the capability.
 
-      See services/ingestion/db_config.py for which worker classes
+      See services/ingest/ingestion/db_config.py for which worker classes
       will use which mode.
 
       NOTE: this differs in name from the M1 prompt's "create_pool"

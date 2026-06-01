@@ -4,7 +4,7 @@ encrypted secret store and point a provider_installations row at it.
 
 Under prod guards (FYRALIS_ENV=prod) the gateway resolves webhook signing
 secrets ONLY from `provider_installations.secret_ref` → the envelope-
-encrypted store (services/webhooks/secrets.py). Slack and Discord populate
+encrypted store (services/app/webhooks/secrets.py). Slack and Discord populate
 this automatically during their OAuth callback. GitHub does NOT — its
 install callback writes the installation row with secret_ref=NULL — so the
 GitHub App webhook secret must be seeded here once, after install.
@@ -37,7 +37,7 @@ if str(_REPO_ROOT) not in sys.path:
 import asyncpg
 
 from lib.shared.secrets import build_secret_store
-from services.gateway.db_bootstrap import _register_codecs
+from services.app.gateway.db_bootstrap import _register_codecs
 
 _PROVIDERS = ("github", "slack", "discord", "linear", "stripe")
 

@@ -159,8 +159,8 @@ async def _drop_throwaway_db(admin_url: str, name: str) -> None:
 async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
     """Run the REAL fetcher loop for one shard, ingesting each fanned-out
     record. Returns the external_ids of NON-deduped observations."""
-    from services.ingestion.core import ingest
-    from services.ingestion.fetchers.jira import fetch_page_jira
+    from services.ingest.ingestion.core import ingest
+    from services.ingest.ingestion.fetchers.jira import fetch_page_jira
 
     ingested: list[str] = []
     cursor, guard = None, 0
@@ -180,7 +180,7 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.synthetic.mock_servers.jira import start_mock_jira
+    from services.ingest.synthetic.mock_servers.jira import start_mock_jira
 
     fixtures = _build_fixtures()
 
@@ -203,11 +203,11 @@ async def run(args) -> int:
         db_url = admin_url.rsplit("/", 1)[0] + "/" + created_db
         _hr("DATABASE"); print(f"  Created throwaway DB: {created_db}")
 
-    from services.gateway.db_bootstrap import _register_codecs
+    from services.app.gateway.db_bootstrap import _register_codecs
     pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5, init=_register_codecs)
     try:
         from lib.shared.migrations import apply_migrations_dir
-        from services.observations.partitions import ensure_partitions
+        from services.domain.observations.partitions import ensure_partitions
         async with pool.acquire() as conn:
             await apply_migrations_dir(conn, _REPO_ROOT / "db" / "migrations")
         await ensure_partitions(pool, months_ahead=3)
@@ -219,7 +219,7 @@ async def run(args) -> int:
 
         # 2. Enumerate projects via the REAL client (proves list_projects).
         _hr("ENUMERATE PROJECTS (JiraClient.list_projects)")
-        from services.ingestion.fetchers._clients import build_jira_client
+        from services.ingest.ingestion.fetchers._clients import build_jira_client
 
         class _Inst:
             _d = {"id": uuid4(), "tenant_id": _TENANT_ID,
@@ -237,7 +237,7 @@ async def run(args) -> int:
         # 3. Provision the install (jira_installations + jira_projects + trigger)
         #    AND the webhook provider_installations row (live path).
         _hr("PROVISION (jira.onboarding.finalize_install)")
-        from services.integrations.jira.onboarding import (
+        from services.ingest.integrations.jira.onboarding import (
             finalize_install, register_webhook_installation,
         )
         install_id = await finalize_install(
@@ -259,9 +259,9 @@ async def run(args) -> int:
 
         # 4. Plan shards exactly as SourceOnboarding does.
         _hr("PLAN (planner over the loader SQL)")
-        from services.ingestion.planners.context import PlannerContext
-        from services.ingestion.planners.jira import plan_shards_jira
-        from services.ingestion.workflows.source_onboarding import _LOAD_JIRA_INSTALL_SQL
+        from services.ingest.ingestion.planners.context import PlannerContext
+        from services.ingest.ingestion.planners.jira import plan_shards_jira
+        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_JIRA_INSTALL_SQL
         install_row = await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, _TENANT_ID)
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_jira(ctx)
@@ -304,7 +304,7 @@ async def run(args) -> int:
 
         # 7. Dedup: re-ingest a backfilled issue twin -> deduped.
         _hr("DEDUP (backfill vs re-fetch twin)")
-        from services.ingestion.core import ingest
+        from services.ingest.ingestion.core import ingest
         twin = dict(fixtures[_PROJECT]["issues"][0])
         twin["_fyralis_record_type"] = "issue"
         twin["_fyralis_site"] = _SITE

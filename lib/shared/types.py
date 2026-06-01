@@ -240,7 +240,7 @@ class ObservationRow(_Strict):
 
 
 class ObservationCreate(_Strict):
-    """Payload passed into services/observations/repo.insert()."""
+    """Payload passed into services/domain/observations/repo.insert()."""
     id: UUID | None = None              # DB/ingestion assigns UUID v7 if None
     tenant_id: UUID
     occurred_at: datetime

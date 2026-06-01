@@ -24,10 +24,10 @@ from uuid import UUID
 
 import asyncpg
 
-from services.retrieval.primary import TriggerContext
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, RawDiff, ValidatedDiff
-from services.think.reason import think
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, RawDiff, ValidatedDiff
+from services.reasoning.think.reason import think
 from lib.llm.provider import LLMConfig, build_provider
 from lib.shared.ids import uuid7
 

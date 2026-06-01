@@ -14,14 +14,14 @@ import yaml
 
 from lib.embeddings.ollama import OllamaClient
 from lib.shared.ids import uuid7
-from services.acts import commitments as commitments_svc
-from services.acts import decisions as decisions_svc
-from services.acts import goals as goals_svc
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.resources import customer_commitments as customer_commitments_svc
-from services.resources import repo as resources_repo
-from services.synthetic.core import SyntheticSignal, inject
+from services.domain.acts import commitments as commitments_svc
+from services.domain.acts import decisions as decisions_svc
+from services.domain.acts import goals as goals_svc
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.domain.resources import customer_commitments as customer_commitments_svc
+from services.domain.resources import repo as resources_repo
+from services.ingest.synthetic.core import SyntheticSignal, inject
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]

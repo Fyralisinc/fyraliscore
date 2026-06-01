@@ -42,11 +42,11 @@ os.environ.setdefault("COMPANY_OS_ENV", "test")
 os.environ.setdefault("FYRALIS_ENV", "test")
 
 from lib.shared.migrations import apply_migrations_dir  # noqa: E402
-from services.gateway.db_bootstrap import _register_codecs  # noqa: E402
-from services.observations.partitions import ensure_partitions  # noqa: E402
-from services.actors.repo import ActorRepo  # noqa: E402
-from services.entity_aliases.repo import EntityAliasRepo  # noqa: E402
-from services.gateway.finance_router import build_finance_router  # noqa: E402
+from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
+from services.domain.observations.partitions import ensure_partitions  # noqa: E402
+from services.domain.actors.repo import ActorRepo  # noqa: E402
+from services.domain.entity_aliases.repo import EntityAliasRepo  # noqa: E402
+from services.app.gateway.finance_router import build_finance_router  # noqa: E402
 
 ADMIN_DSN = os.environ.get(
     "FINANCE_DEMO_ADMIN_DSN",

@@ -26,18 +26,18 @@ reasoning substrate. What is **missing** today, and what this feature adds:
 - **Shape:** a **dedicated GitHub-state subsystem** (own schema/FSMs tuned to GitHub semantics), fed by the existing `observations`, *not* a thin extension of the generic think layer.
 
 ### The two halves
-1. **Code-comprehension index** (`services/code_intel/`) — a living, SCIP-precise code graph + semantic code-RAG per repo, keyed by commit sha, self-updating on push/merge. Provider-agnostic; GitHub is just the fetch source.
-2. **State + signal-enrichment engine** (`services/github_intel/`) — GitHub-specific FSMs (PR lifecycle, CI, issues, branches) driven by observations. It enriches each signal **inline at normalize time** (writing `content.intelligence` into the observation, with a bounded timeout that degrades to the raw signal), and maintains structured FSM/enrichment tables as the system-of-record, using the code graph for blast radius and an LLM for the causal "why".
+1. **Code-comprehension index** (`services/ingest/code_intel/`) — a living, SCIP-precise code graph + semantic code-RAG per repo, keyed by commit sha, self-updating on push/merge. Provider-agnostic; GitHub is just the fetch source.
+2. **State + signal-enrichment engine** (`services/ingest/github_intel/`) — GitHub-specific FSMs (PR lifecycle, CI, issues, branches) driven by observations. It enriches each signal **inline at normalize time** (writing `content.intelligence` into the observation, with a bounded timeout that degrades to the raw signal), and maintains structured FSM/enrichment tables as the system-of-record, using the code graph for blast radius and an LLM for the causal "why".
 
 ---
 
-## Part A — Code-comprehension index (`services/code_intel/`)
+## Part A — Code-comprehension index (`services/ingest/code_intel/`)
 
 ### A1. Code fetch
-- Pull repo content with the **existing GitHub App installation token** via `git clone` (token as `x-access-token:<token>@github.com/...`). Reuse `GithubClient.mint_installation_token()` in [services/integrations/github/client.py](services/integrations/github/client.py); add only `clone_url_for(owner, repo, installation_id)` (never logged).
+- Pull repo content with the **existing GitHub App installation token** via `git clone` (token as `x-access-token:<token>@github.com/...`). Reuse `GithubClient.mint_installation_token()` in [services/ingest/integrations/github/client.py](services/ingest/integrations/github/client.py); add only `clone_url_for(owner, repo, installation_id)` (never logged).
 - **Why git clone over the Trees/Blobs API:** the Git Data tree API truncates at ~100k entries / 7MB (silently breaks on monorepos) and per-blob fetches burn the 5000/h REST budget; git transport is exempt from that limit and `git diff` gives exact incremental deltas.
 - Initial: `git clone --filter=blob:none --depth=1 --single-branch --branch <default>`. Incremental: prefer the push payload's `added/modified/removed`; fall back to `git fetch` + `git diff --name-status <before>..<after>` when the payload is truncated.
-- **Working copy:** ephemeral worker fs (`/tmp/code_intel/<tenant>/<repo>/`) for parsing; durable **S3 cache** of the bare repo (reuse `services/ingestion/raw_tier/s3.py` patterns + existing MinIO/S3) so incrementals fetch only the delta. Cap with `CODE_INTEL_MAX_REPO_MB` → snapshot `status='skipped_too_large'` (never silently partial).
+- **Working copy:** ephemeral worker fs (`/tmp/code_intel/<tenant>/<repo>/`) for parsing; durable **S3 cache** of the bare repo (reuse `services/ingest/ingestion/raw_tier/s3.py` patterns + existing MinIO/S3) so incrementals fetch only the delta. Cap with `CODE_INTEL_MAX_REPO_MB` → snapshot `status='skipped_too_large'` (never silently partial).
 - **GitHub App permission prerequisite:** SCIP indexing + clone require `contents: read`. The event-only IN-13 install may lack it → this is a **re-consent / onboarding prerequisite**; clone 403 must fail cleanly to `status='failed'` with a clear `last_error`.
 
 ### A2. Indexing (SCIP-primary, tree-sitter fallback)
@@ -55,20 +55,20 @@ Tables (versioned by commit sha so re-index is incremental):
 - `code_edges` — `edge_kind (contains|imports|references)`, src/dst symbol+file, `dst_unresolved` (external specifier), `precision (exact|heuristic)`. Reverse index on `(snapshot_id, dst_symbol_id)` powers blast radius.
 - `code_embeddings` — `VECTOR(768)` (nomic-embed-text, matches platform lock), `embedding_pending`, HNSW cosine index, per-symbol chunk.
 
-**Blast radius** = recursive reverse traversal over `code_edges` (`dst_symbol_id` = changed symbol → `src_symbol_id` = dependents), bounded by `CODE_INTEL_MAX_BLAST_HOPS` — same bounded-traversal shape as `services/topology`.
+**Blast radius** = recursive reverse traversal over `code_edges` (`dst_symbol_id` = changed symbol → `src_symbol_id` = dependents), bounded by `CODE_INTEL_MAX_BLAST_HOPS` — same bounded-traversal shape as `services/reasoning/topology`.
 
 ### A4. Embeddings / code-RAG
 - Chunk **per symbol** (`qualified_name + signature + docstring + body`, split oversized bodies); file-level only for symbol-less files. Reuse `make_embedder()` ([lib/embeddings/factory.py](lib/embeddings/factory.py)) → Ollama; mirror the existing `embedding_worker` pending-flag fill pass so the graph is queryable before vectors finish.
 - Retrieval: embed signal text → HNSW cosine over `code_embeddings` scoped to the **latest `ready` snapshot per repo** → join to symbols/files, optionally expand neighbors via `code_edges`.
 
-### A5. Self-update workers (`LongRunningService`, reuse `services/ingestion/workflows/runtime.py`)
-- **Trigger:** [services/ingestion/handlers/github.py](services/ingestion/handlers/github.py) writes a `code_intel_index_triggers` outbox row on default-branch `push` and merged-PR events (one INSERT, flag-gated; observation path untouched).
+### A5. Self-update workers (`LongRunningService`, reuse `services/ingest/ingestion/workflows/runtime.py`)
+- **Trigger:** [services/ingest/ingestion/handlers/github.py](services/ingest/ingestion/handlers/github.py) writes a `code_intel_index_triggers` outbox row on default-branch `push` and merged-PR events (one INSERT, flag-gated; observation path untouched).
 - **`full_index`** (bootstrap): clone → `code_snapshots(status=indexing)` → walk tree → run SCIP/tree-sitter indexers → write files/symbols/edges + pending embeddings → `status=ready`. Idempotent via snapshot UNIQUE; crash leaves `indexing` and restarts cleanly (children CASCADE off snapshot).
 - **`incremental_update`**: resolve prior `ready` snapshot as parent → fetch new sha → diff changed paths → new snapshot row → **copy-forward unchanged files/symbols/edges/embeddings** (by `blob_sha`/`symbol_hash`, vectors intact) → re-index only the delta → `status=ready` → refresh S3 cache. Readers always use the latest `ready` snapshot, so an in-flight update never exposes a half-built model; re-resolving parent to latest-ready self-heals out-of-order pushes.
 
 ---
 
-## Part B — State + signal-enrichment engine (`services/github_intel/`)
+## Part B — State + signal-enrichment engine (`services/ingest/github_intel/`)
 
 ### B1. Current-state model (FSM tables) — `db/migrations/0067_github_intel_state.sql`
 Tenant-scoped + RLS. Each state row carries `state_version BIGINT` and `last_event_at TIMESTAMPTZ`; **transitions apply only when incoming `occurred_at >= last_event_at`** (ordering guard).
@@ -108,7 +108,7 @@ Consumers (none blocking): query/API "explain this signal" + "current state of r
 
 The work splits in two so the *content* is enriched at ingest time (default-enriched, raw-on-failure) **without** putting unbounded/out-of-order state writes on the parallel normalize stage:
 
-**(a) Inline enrichment at normalize (writes `content.intelligence`).** Extend the github handler / a normalize-stage hook ([services/ingestion/handlers/github.py](services/ingestion/handlers/github.py)) so that after building the raw draft it runs a **bounded** enrichment (`GITHUB_INTEL_INLINE_TIMEOUT_MS`):
+**(a) Inline enrichment at normalize (writes `content.intelligence`).** Extend the github handler / a normalize-stage hook ([services/ingest/ingestion/handlers/github.py](services/ingest/ingestion/handlers/github.py)) so that after building the raw draft it runs a **bounded** enrichment (`GITHUB_INTEL_INLINE_TIMEOUT_MS`):
 - `classify(content)` → compute the proposed transition; **read-only** lookups: load the current FSM state snapshot + Part A blast radius at the relevant `head_sha`/commit (no writes here, keeping the stage effectively stateless).
 - Rule fast-path for obvious transitions (no LLM); LLM only for non-trivial blast radius / ambiguity, gated by `github_intel.llm_enabled`, and only if it fits the remaining timeout budget.
 - Merge the result into `content.intelligence` and recompose `content_text`. **Any exception or timeout → return the raw draft unchanged** (raw is ingested). This step never blocks the webhook 202 (it's on the async normalize path) and never fails the ingest.
@@ -122,7 +122,7 @@ This means the inline step composes `content.intelligence` against the state *as
 
 ### B4. Causal reasoning
 - **Deterministic fast-path** (`is_obvious`) for the bulk: `merged=true`→"merged into <base>", issue close/reopen, check completion, branch head update — confidence ~1.0, **no LLM**.
-- **LLM** only for non-trivial blast radius or ambiguous transitions, gated by `github_intel.llm_enabled`. Reuse [services/think/llm_reason.py](services/think/llm_reason.py) patterns (`LLMProvider.structured`, backoff, terminal parse error). Inputs: action + prior state + delta + blast-radius code context + recent related signals. Strict Pydantic `CausalExplanation` (`cause`, `effect`, `state_change`, `affected_entities[]`, `explanation`, `confidence`). On failure: persist rule-derived enrichment with lowered confidence — never drop the signal.
+- **LLM** only for non-trivial blast radius or ambiguous transitions, gated by `github_intel.llm_enabled`. Reuse [services/reasoning/think/llm_reason.py](services/reasoning/think/llm_reason.py) patterns (`LLMProvider.structured`, backoff, terminal parse error). Inputs: action + prior state + delta + blast-radius code context + recent related signals. Strict Pydantic `CausalExplanation` (`cause`, `effect`, `state_change`, `affected_entities[]`, `explanation`, `confidence`). On failure: persist rule-derived enrichment with lowered confidence — never drop the signal.
 
 ### B5. State ↔ code consistency (self-updating)
 A state-changing action: (1) advances GitHub-state tables (cheap, authoritative — first), then (2) emits a `github_code_reindex` signal keyed `reindex:{repo}:{sha}` (sha = `merge_commit_sha` or `push.after`), consumed by Part A's incremental worker with sha dedup. **`(repo, sha)` is the only join key — never wall-clock.** Enrichment records the `code_snapshot_sha` it used; a blast radius computed against an un-indexed sha is recorded as such (reconcilable later), not silently trusted.
@@ -131,7 +131,7 @@ A state-changing action: (1) advances GitHub-state tables (cheap, authoritative 
 
 ## Integration & ops
 - **Scope:** feeder filters `source_channel='github:webhook'` only.
-- **Feature flags** (reuse `TenantFlags`, 30s TTL, [services/ingestion/feature_flags/client.py](services/ingestion/feature_flags/client.py)): `code_intel.enabled`, `code_intel.incremental_enabled`, `github_intel.enabled`, `github_intel.llm_enabled`. All default false → opt-in per tenant (dogfood tenant first).
+- **Feature flags** (reuse `TenantFlags`, 30s TTL, [services/ingest/ingestion/feature_flags/client.py](services/ingest/ingestion/feature_flags/client.py)): `code_intel.enabled`, `code_intel.incremental_enabled`, `github_intel.enabled`, `github_intel.llm_enabled`. All default false → opt-in per tenant (dogfood tenant first).
 - **docker-compose** (`x-worker` anchor): `code_intel_full_index`, `code_intel_incremental`, `github_intel_worker`. Add `git` + the SCIP indexer toolchains to the worker image (`Dockerfile`).
 - **Deps:** `pyproject.toml`/`uv.lock` — `tree_sitter` + grammars (fallback) pinned exactly; SCIP indexers installed in-image.
 - **Env:** `CODE_INTEL_MAX_REPO_MB`, `CODE_INTEL_WORK_DIR`, `CODE_INTEL_S3_PREFIX`, `CODE_INTEL_MAX_BLAST_HOPS`, `CODE_INTEL_CLONE_DEPTH`, `CODE_INTEL_SCIP_TIMEOUT_MS`, `CODE_INTEL_MAX_CONCURRENT_INDEXES`, `CODE_INTEL_SNAPSHOT_RETENTION`, `GITHUB_INTEL_MAX_CONCURRENCY`, `GITHUB_INTEL_INLINE_TIMEOUT_MS` (bounds the inline enrichment before raw fallback); reuse `OLLAMA_URL`, `GITHUB_APP_*`, S3/MinIO vars.
@@ -156,9 +156,9 @@ Cloning is the right *mechanism* (the Trees/Blobs API truncates and burns the RE
 **Net:** precise full-codebase blast radius needs a full index **once per repo**, but it is gated (opt-in), shallow, ephemeral, capped (size + concurrency + SCIP timeout), GC'd (retention), and **delta-only afterward**. The only thing that doesn't scale — unbounded eager full-SCIP of every repo — is exactly what these controls prevent. New env vars: `CODE_INTEL_SCIP_TIMEOUT_MS`, `CODE_INTEL_MAX_CONCURRENT_INDEXES`, `CODE_INTEL_SNAPSHOT_RETENTION` (added to the env list above).
 
 ## Critical files
-- New: `services/code_intel/**`, `services/github_intel/**`, `scripts/run_github_intel_worker.py`, migrations `0063`–`0065`.
-- Extend: [services/integrations/github/client.py](services/integrations/github/client.py) (clone URL), [services/ingestion/handlers/github.py](services/ingestion/handlers/github.py) (index-trigger INSERT), `docker-compose.yml`, `Dockerfile`, `pyproject.toml`.
-- Reuse: [services/ingestion/workflows/runtime.py](services/ingestion/workflows/runtime.py) (worker base), [lib/embeddings/factory.py](lib/embeddings/factory.py), [services/think/llm_reason.py](services/think/llm_reason.py), [services/ingestion/feature_flags/client.py](services/ingestion/feature_flags/client.py).
+- New: `services/ingest/code_intel/**`, `services/ingest/github_intel/**`, `scripts/run_github_intel_worker.py`, migrations `0063`–`0065`.
+- Extend: [services/ingest/integrations/github/client.py](services/ingest/integrations/github/client.py) (clone URL), [services/ingest/ingestion/handlers/github.py](services/ingest/ingestion/handlers/github.py) (index-trigger INSERT), `docker-compose.yml`, `Dockerfile`, `pyproject.toml`.
+- Reuse: [services/ingest/ingestion/workflows/runtime.py](services/ingest/ingestion/workflows/runtime.py) (worker base), [lib/embeddings/factory.py](lib/embeddings/factory.py), [services/reasoning/think/llm_reason.py](services/reasoning/think/llm_reason.py), [services/ingest/ingestion/feature_flags/client.py](services/ingest/ingestion/feature_flags/client.py).
 
 ## Phased build order
 1. **Code graph foundation** — migration 0063; indexer interface + registry; SCIP ingest + tree-sitter fallback; graph repo + blast-radius query. Unit-test parsing against this repo. *Gate: query symbols/edges for a synthetic snapshot.*
@@ -176,6 +176,6 @@ Cloning is the right *mechanism* (the Trees/Blobs API truncates and burns the RE
 ## Verification
 - **Unit:** indexer parsing on in-repo fixtures (symbol counts, edge precision); `fsm.py` transition tables over synthetic `content`; idempotency (re-process → upsert, not duplicate).
 - **Integration (live PG):** full index of this repo → assert `code_snapshots.status='ready'` + non-zero symbol/edge counts; blast-radius query returns dependents of a known symbol.
-- **End-to-end (docker-compose, dogfood tenant with flags on):** replay a captured push/PR/merge webhook via the existing synthetic/mock framework (`services/synthetic/mock_servers/`) → assert (a) the observation row's `content.intelligence` is present with correct `state_change` + `cause`/`effect`/`explanation` + `affected`, (b) the `github_signal_enrichment` row + FSM state match (`state_before`/`state_after`, `blast_radius`, `code_snapshot_sha`), (c) a merge advances `github_repo_state.head_sha` and emits a `github_code_reindex` signal that produces a new `ready` code snapshot.
+- **End-to-end (docker-compose, dogfood tenant with flags on):** replay a captured push/PR/merge webhook via the existing synthetic/mock framework (`services/ingest/synthetic/mock_servers/`) → assert (a) the observation row's `content.intelligence` is present with correct `state_change` + `cause`/`effect`/`explanation` + `affected`, (b) the `github_signal_enrichment` row + FSM state match (`state_before`/`state_after`, `blast_radius`, `code_snapshot_sha`), (c) a merge advances `github_repo_state.head_sha` and emits a `github_code_reindex` signal that produces a new `ready` code snapshot.
 - **Raw-fallback (the key new guarantee):** force the inline step to fail/exceed `GITHUB_INTEL_INLINE_TIMEOUT_MS` (fault injection) → assert the observation is still written with **raw content and no `intelligence` key**, ingest returns success, and worker (b) still later writes the structured enrichment row. Confirms "on failure/timeout, the raw GitHub signal is what gets ingested."
 - **LLM path:** with `github_intel.llm_enabled`, a non-trivial merge yields `reasoning_path='llm'` and a coherent causal explanation; with it off (or over budget), rule fast-path still produces an enrichment.

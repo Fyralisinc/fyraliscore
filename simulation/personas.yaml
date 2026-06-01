@@ -1,7 +1,7 @@
 # Simulation personas — Company OS dogfood cast.
 #
 # Each persona is authored content on the caller's side; when signals
-# are injected via services/synthetic/core.inject() they flow through
+# are injected via services/ingest/synthetic/core.inject() they flow through
 # the uniform ingestion path and the persona's slack/github/email
 # refs resolve to this UUID via actor_identity_mappings.
 #

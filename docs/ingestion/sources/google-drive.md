@@ -18,16 +18,16 @@
 
 Reuses the Gmail DWD substrate; scope `drive.readonly` (needed to **export** Doc/
 Sheet/Slide bodies, not just metadata).
-[google_drive/onboarding.py](../../../services/integrations/google_drive/onboarding.py)
+[google_drive/onboarding.py](../../../services/ingest/integrations/google_drive/onboarding.py)
 resolves targets and finalizes the install.
 
 ## Backfill & incremental (the quartet)
 
-- [planners/google_drive.py](../../../services/ingestion/planners/google_drive.py)
+- [planners/google_drive.py](../../../services/ingest/ingestion/planners/google_drive.py)
   — **two target kinds** (D6): `my_drive` (per resolved user) + `shared_drive`
   (enumerated via `drives.list?useDomainAdminAccess`).
-- [fetchers/google_drive.py](../../../services/ingestion/fetchers/google_drive.py)
-  via [google_drive/client.py](../../../services/integrations/google_drive/client.py):
+- [fetchers/google_drive.py](../../../services/ingest/ingestion/fetchers/google_drive.py)
+  via [google_drive/client.py](../../../services/ingest/integrations/google_drive/client.py):
   - **Changes API is the syncToken analog** (D2): backfill captures
     `changes.getStartPageToken` **up front** (so edits during the window aren't
     lost), then walks `files.list`; poll runs `changes.list?pageToken=…`.
@@ -37,8 +37,8 @@ resolves targets and finalizes the install.
     PDF-page caps). A small `request_bytes` was added to the shared
     `GoogleHttpClient` for the non-JSON export/media bodies.
   - **Comments + revision history** are pulled per file as extra record types (D9).
-- [reconcilers/google_drive.py](../../../services/ingestion/reconcilers/google_drive.py).
-- [handlers/google_drive.py](../../../services/ingestion/handlers/google_drive.py)
+- [reconcilers/google_drive.py](../../../services/ingest/ingestion/reconcilers/google_drive.py).
+- [handlers/google_drive.py](../../../services/ingest/ingestion/handlers/google_drive.py)
   — **one channel `google_drive:file`** for files, comments, and revisions
   (the normalizer routes one channel per source and `core.ingest` requires
   `draft.source_channel == channel`); distinguished by `content.object_type` +

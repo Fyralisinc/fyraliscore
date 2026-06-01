@@ -46,7 +46,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# This is a dev/test harness: it loads services/synthetic (which refuses to
+# This is a dev/test harness: it loads services/ingest/synthetic (which refuses to
 # import under a prod env) and must not engage prod-only safety guards. Declare
 # the env before any service import.
 os.environ.setdefault("COMPANY_OS_ENV", "test")
@@ -213,8 +213,8 @@ async def _seed_tenant(pool: asyncpg.Pool) -> None:
 async def _drain_shard_into_observations(pool, install_row, shard_identifier) -> list[str]:
     """Run the REAL fetcher loop for one shard, ingesting each record.
     Returns (external_ids ingested, last cursor next_sync_token)."""
-    from services.ingestion.core import ingest
-    from services.ingestion.fetchers.google_calendar import fetch_page_google_calendar
+    from services.ingest.ingestion.core import ingest
+    from services.ingest.ingestion.fetchers.google_calendar import fetch_page_google_calendar
 
     ingested: list[str] = []
     cursor, next_sync_token, guard = None, None, 0
@@ -239,7 +239,7 @@ async def _drain_shard_into_observations(pool, install_row, shard_identifier) ->
 
 
 async def run(args) -> int:
-    from services.synthetic.mock_servers.google_calendar import start_mock_calendar
+    from services.ingest.synthetic.mock_servers.google_calendar import start_mock_calendar
 
     fixtures = _build_fixtures()
 
@@ -254,7 +254,7 @@ async def run(args) -> int:
     os.environ["GMAIL_SERVICE_ACCOUNT_JSON_FILE"] = sa_path
     os.environ["GMAIL_SERVICE_ACCOUNT_CLIENT_ID"] = "100000000000000000001"
     os.environ["GOOGLE_CALENDAR_API_BASE_URL"] = base_url
-    from services.integrations.gmail import dwd as _dwd
+    from services.ingest.integrations.gmail import dwd as _dwd
     _dwd._reset_minter_for_tests()
     print(f"  Service account   : {sa_path} (impersonation via DWD)")
 
@@ -273,18 +273,18 @@ async def run(args) -> int:
         _hr("DATABASE")
         print(f"  Created throwaway DB: {created_db}")
 
-    from services.gateway.db_bootstrap import _register_codecs
+    from services.app.gateway.db_bootstrap import _register_codecs
     pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5, init=_register_codecs)
     try:
         await _apply_migrations(pool)
-        from services.observations.partitions import ensure_partitions
+        from services.domain.observations.partitions import ensure_partitions
         await ensure_partitions(pool, months_ahead=3)
         await _seed_tenant(pool)
         print("  Migrations applied, partitions ensured, tenant seeded.")
 
         # 4. Provision the install (writes install + calendars + onboarding trigger).
         _hr("PROVISION (onboarding.finalize_install)")
-        from services.integrations.google_calendar.onboarding import finalize_install
+        from services.ingest.integrations.google_calendar.onboarding import finalize_install
         install_id = await finalize_install(
             pool,
             tenant_id=_TENANT_ID,
@@ -308,9 +308,9 @@ async def run(args) -> int:
 
         # 5. Plan shards exactly as SourceOnboarding does (loader SQL -> planner).
         _hr("PLAN (planner over the loader SQL)")
-        from services.ingestion.planners.context import PlannerContext
-        from services.ingestion.planners.google_calendar import plan_shards_google_calendar
-        from services.ingestion.workflows.source_onboarding import _LOAD_GCAL_INSTALL_SQL
+        from services.ingest.ingestion.planners.context import PlannerContext
+        from services.ingest.ingestion.planners.google_calendar import plan_shards_google_calendar
+        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GCAL_INSTALL_SQL
         install_row = await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, _TENANT_ID)
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_google_calendar(ctx)
@@ -372,7 +372,7 @@ async def run(args) -> int:
 
         # 8. Dedup: re-ingest a backfilled event (poll twin) -> deduped, no new row.
         _hr("DEDUP (backfill vs poll twin)")
-        from services.ingestion.core import ingest
+        from services.ingest.ingestion.core import ingest
         twin = dict(fixtures["bob@acme.com"]["events"][0])
         twin["_fyralis_calendar_id"] = "bob@acme.com"
         twin["_fyralis_owner_email"] = "bob@acme.com"
@@ -381,9 +381,9 @@ async def run(args) -> int:
 
         # 9. Reconciler gap probe against the live (mock) calendar.
         _hr("RECONCILER GAP PROBE (has_updates_since)")
-        from services.integrations.gmail.client import GoogleHttpClient
-        from services.integrations.gmail.dwd import get_minter
-        from services.integrations.google_calendar.client import GoogleCalendarClient
+        from services.ingest.integrations.gmail.client import GoogleHttpClient
+        from services.ingest.integrations.gmail.dwd import get_minter
+        from services.ingest.integrations.google_calendar.client import GoogleCalendarClient
         http = GoogleHttpClient(get_minter())
         await http.__aenter__()
         try:

@@ -36,11 +36,11 @@ from dotenv import load_dotenv
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
-from services.synthetic.core import SyntheticSignal, inject
-from services.think.text_embedding import deterministic_text_embedding
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.synthetic.core import SyntheticSignal, inject
+from services.reasoning.think.text_embedding import deterministic_text_embedding
 from tests.real_llm.infrastructure.scenario_loader import materialize
 
 from scripts.run_1000_signal_model_layer_probe import (

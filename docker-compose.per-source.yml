@@ -39,7 +39,7 @@ services:
       INGESTION_SOURCE: slack
     env_file: .env.production
     container_name: company_os_normalizer_slack
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -75,7 +75,7 @@ services:
       INGESTION_SOURCE: github
     env_file: .env.production
     container_name: company_os_normalizer_github
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -111,7 +111,7 @@ services:
       INGESTION_SOURCE: discord
     env_file: .env.production
     container_name: company_os_normalizer_discord
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -147,7 +147,7 @@ services:
       INGESTION_SOURCE: gmail
     env_file: .env.production
     container_name: company_os_normalizer_gmail
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -183,7 +183,7 @@ services:
       INGESTION_SOURCE: notion
     env_file: .env.production
     container_name: company_os_normalizer_notion
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -219,7 +219,7 @@ services:
       INGESTION_SOURCE: google_calendar
     env_file: .env.production
     container_name: company_os_normalizer_google_calendar
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -255,7 +255,7 @@ services:
       INGESTION_SOURCE: google_drive
     env_file: .env.production
     container_name: company_os_normalizer_google_drive
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -291,7 +291,7 @@ services:
       INGESTION_SOURCE: jira
     env_file: .env.production
     container_name: company_os_normalizer_jira
-    command: python -m services.ingestion.normalizer.worker
+    command: python -m services.ingest.ingestion.normalizer.worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -328,7 +328,7 @@ services:
       INGESTION_SOURCE: slack
     env_file: .env.production
     container_name: company_os_observation_writer_slack
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -364,7 +364,7 @@ services:
       INGESTION_SOURCE: github
     env_file: .env.production
     container_name: company_os_observation_writer_github
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -400,7 +400,7 @@ services:
       INGESTION_SOURCE: discord
     env_file: .env.production
     container_name: company_os_observation_writer_discord
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -436,7 +436,7 @@ services:
       INGESTION_SOURCE: gmail
     env_file: .env.production
     container_name: company_os_observation_writer_gmail
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -472,7 +472,7 @@ services:
       INGESTION_SOURCE: notion
     env_file: .env.production
     container_name: company_os_observation_writer_notion
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -508,7 +508,7 @@ services:
       INGESTION_SOURCE: google_calendar
     env_file: .env.production
     container_name: company_os_observation_writer_google_calendar
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -544,7 +544,7 @@ services:
       INGESTION_SOURCE: google_drive
     env_file: .env.production
     container_name: company_os_observation_writer_google_drive
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -580,7 +580,7 @@ services:
       INGESTION_SOURCE: jira
     env_file: .env.production
     container_name: company_os_observation_writer_jira
-    command: python -m services.ingestion.writers.observation_writer
+    command: python -m services.ingest.ingestion.writers.observation_writer
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -617,7 +617,7 @@ services:
       INGESTION_SOURCE: slack
     env_file: .env.production
     container_name: company_os_embedding_worker_slack
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -653,7 +653,7 @@ services:
       INGESTION_SOURCE: github
     env_file: .env.production
     container_name: company_os_embedding_worker_github
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -689,7 +689,7 @@ services:
       INGESTION_SOURCE: discord
     env_file: .env.production
     container_name: company_os_embedding_worker_discord
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -725,7 +725,7 @@ services:
       INGESTION_SOURCE: gmail
     env_file: .env.production
     container_name: company_os_embedding_worker_gmail
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -761,7 +761,7 @@ services:
       INGESTION_SOURCE: notion
     env_file: .env.production
     container_name: company_os_embedding_worker_notion
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -797,7 +797,7 @@ services:
       INGESTION_SOURCE: google_calendar
     env_file: .env.production
     container_name: company_os_embedding_worker_google_calendar
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -833,7 +833,7 @@ services:
       INGESTION_SOURCE: google_drive
     env_file: .env.production
     container_name: company_os_embedding_worker_google_drive
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s
@@ -869,7 +869,7 @@ services:
       INGESTION_SOURCE: jira
     env_file: .env.production
     container_name: company_os_embedding_worker_jira
-    command: python -m services.ingestion.writers.embedding_worker.embedding_worker
+    command: python -m services.ingest.ingestion.writers.embedding_worker.embedding_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s

@@ -204,19 +204,19 @@ def write_fixture() -> str:
 
 # --------------------------------------------------------------------- main
 async def main() -> None:
-    from services.gateway.db_bootstrap import create_gateway_pool
+    from services.app.gateway.db_bootstrap import create_gateway_pool
     from lib.shared.tenant_context import tenant_transaction
-    from services.ingestion.feature_flags.client import TenantFlags
-    from services.ingestion.handlers import get_handler
-    from services.ingestion.core import ingest_from_draft
-    from services.code_intel.indexer import index_working_copy
-    from services.code_intel.embed import fill_pending_embeddings
-    from services.code_intel.graph import CodeGraphRepo
-    from services.code_intel.reindex import drain_reindex_triggers
-    from services.github_intel.config import (
+    from services.ingest.ingestion.feature_flags.client import TenantFlags
+    from services.ingest.ingestion.handlers import get_handler
+    from services.ingest.ingestion.core import ingest_from_draft
+    from services.ingest.code_intel.indexer import index_working_copy
+    from services.ingest.code_intel.embed import fill_pending_embeddings
+    from services.ingest.code_intel.graph import CodeGraphRepo
+    from services.ingest.code_intel.reindex import drain_reindex_triggers
+    from services.ingest.github_intel.config import (
         GITHUB_INTEL_ENABLED, GITHUB_INTEL_LLM_ENABLED, CODE_INTEL_ENABLED,
     )
-    from services.github_intel.worker import drain, enqueue_new_github_observations
+    from services.ingest.github_intel.worker import drain, enqueue_new_github_observations
 
     pool = await create_gateway_pool(DSN, min_size=2, max_size=8)
     await ensure_tenant(pool)

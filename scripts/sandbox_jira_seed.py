@@ -75,12 +75,12 @@ async def _run(args: argparse.Namespace) -> int:
     base_url = args.base_url.rstrip("/")
 
     from lib.shared.secrets import build_secret_store
-    from services.gateway.db_bootstrap import _register_codecs
-    from services.integrations.jira.client import JiraClient
-    from services.integrations.jira.onboarding import (
+    from services.app.gateway.db_bootstrap import _register_codecs
+    from services.ingest.integrations.jira.client import JiraClient
+    from services.ingest.integrations.jira.onboarding import (
         finalize_install, register_webhook_installation,
     )
-    from services.ingestion.feature_flags.client import (
+    from services.ingest.ingestion.feature_flags.client import (
         KAFKA_PATH_ENABLED, TenantFlags,
     )
 

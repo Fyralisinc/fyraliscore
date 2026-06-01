@@ -44,14 +44,14 @@ dependencies = [
     # dedup + N2 replay-from-raw both require byte-equal serialization
     # across deployments. Patch updates are allowed; major/minor bumps
     # require re-verifying the round-trip test in
-    # services/integrations/discord/gateway/tests/test_dispatch_shadow.py.
+    # services/ingest/integrations/discord/gateway/tests/test_dispatch_shadow.py.
     "orjson>=3.11,<3.12",                       # normalizer hot path + Gateway shadow canonical bytes
     "opentelemetry-api>=1.20",                  # tracing
     "opentelemetry-sdk>=1.20",
     "opentelemetry-instrumentation-asyncpg>=0.40b0",
     "opentelemetry-instrumentation-aiokafka>=0.40b0",
     # M-Load: mmh3 for librdkafka-compatible murmur2 partition hashing
-    # used by services/webhooks/router.py::_kafka_partition_for_tenant.
+    # used by services/app/webhooks/router.py::_kafka_partition_for_tenant.
     # Pin minor; librdkafka's partitioner algorithm is stable across
     # versions but bumping mmh3 should be re-verified against the
     # actual landing partition (test_kafka_partition_lookup_matches_actual_landing_partition).
@@ -84,6 +84,7 @@ dev = [
     # test; the test asserts `@pytest.mark.requires_docker` and skips
     # cleanly when Docker isn't available.
     "testcontainers[kafka]>=4.0",
+    "import-linter>=2.0",       # architecture: enforce layer import boundaries
 ]
 
 [tool.setuptools.packages.find]
@@ -129,3 +130,54 @@ markers = [
     "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
     "requires_docker: requires a running Docker daemon and (typically) the M2 dev compose stack (docker-compose.dev.yml — Kafka, moto-s3). Skipped cleanly when Docker isn't available.",
 ]
+
+# ---------------------------------------------------------------------------
+# Architecture boundary enforcement (import-linter).
+#
+# Run:  lint-imports        (installed via the [dev] extra)
+#
+# These contracts encode ONLY invariants that are empirically true today, so
+# the check is green on a clean tree and a violation always means a real
+# regression — not an aspirational rule the codebase already breaks. The known
+# layer-up coupling that does exist (services.domain.models.repo -> reasoning/
+# product) is documented in CODEBASE-MANAGEMENT.md as tracked tech-debt rather
+# than enforced against, to keep this gate honest.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["lib", "services"]
+
+[[tool.importlinter.contracts]]
+name = "lib is independent of services (shared libraries never import app code)"
+type = "forbidden"
+source_modules = ["lib"]
+forbidden_modules = ["services"]
+# Documented exceptions. The first three are deliberate lazy (function-local)
+# imports in the LLM provider so reasoning schemas/circuit-breaker stay
+# decoupled at module-load time; the rest are test-only fixtures in lib/.
+ignore_imports = [
+    "lib.llm.provider -> services.reasoning.think.circuit_breaker",
+    "lib.llm.provider -> services.reasoning.think.diff_schema",
+    "lib.llm.provider -> services.reasoning.think.strict_schema",
+    "lib.llm.tests.test_provider -> services.reasoning.think.diff_schema",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.gmail.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.github.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.slack.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.discord.client",
+]
+
+[[tool.importlinter.contracts]]
+name = "reasoning core does not directly import the app, product, or ingest layers"
+type = "forbidden"
+source_modules = ["services.reasoning"]
+forbidden_modules = [
+    "services.app",
+    "services.product",
+    "services.ingest",
+]
+# Direct-only: this catches a reasoning module that *newly* reaches up into a
+# gateway/product/ingest helper (the common regression). A transitive path
+# already exists today (reasoning -> domain.models.repo -> product.*); that
+# upward edge in models.repo is documented as tracked debt in
+# CODEBASE-MANAGEMENT.md, so enforcing transitively here would be a red gate
+# for a pre-existing condition rather than a guard against new regressions.
+allow_indirect_imports = true

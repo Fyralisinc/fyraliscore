@@ -1,8 +1,8 @@
 # GitHub Intelligence — Read API
 
 Read-only HTTP surface over the GitHub Intelligence Layer, mounted on the gateway
-at `/github-intel/*` (`services/github_intel/api.py`, registered in
-`services/gateway/main.py`). It exposes FSM state, the enriched-signal feed,
+at `/github-intel/*` (`services/ingest/github_intel/api.py`, registered in
+`services/app/gateway/main.py`). It exposes FSM state, the enriched-signal feed,
 per-signal causal explanations, PR detail, code blast-radius, and code-RAG search.
 
 ## Auth & authorization
@@ -69,7 +69,7 @@ Sample `/blast-radius?path=app/db.py`:
 ```
 
 ## Tests
-`services/gateway/tests/test_github_intel_endpoints.py` — integration tests over the
+`services/app/gateway/tests/test_github_intel_endpoints.py` — integration tests over the
 real gateway app (`client` + `valid_session` fixtures): every endpoint, the
 `{owner}/{repo}` reassembly, 401 unauth, 404 unauthorized-repo / unknown PR / unknown
 signal, 400 bad params, and the blast-radius / code-search paths.

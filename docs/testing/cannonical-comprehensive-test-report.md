@@ -33,7 +33,7 @@ The goal was to confirm Fyralis works **end-to-end as a product** and that the m
 
 ### Environment (the "intended" dev environment)
 - **Throwaway** Postgres (`pgvector/pgvector:pg16`) on `:5433` — isolated from the live dev stack on `:5434` so live workers could never eat test triggers and a stray `TRUNCATE` could never touch dev data.
-- All **79 migrations** applied per sector (`main 0001–0048` + ingestion `0049–0079`); observation partitions pre-created across a ±10-month window (the partitioned `observations` table needs them; only `services/observations` wires this in by default).
+- All **79 migrations** applied per sector (`main 0001–0048` + ingestion `0049–0079`); observation partitions pre-created across a ±10-month window (the partitioned `observations` table needs them; only `services/domain/observations` wires this in by default).
 - Primary role: **superuser** (matches the project's `.env` dev role, which the integration tests are written for). RLS isolation was validated **separately** under a non-superuser `fyralis_test` role (§7).
 
 ### Harness design (`/tmp/fulltest/harness.py`)
@@ -150,7 +150,7 @@ The raw run's 113 failures + 202 errors decomposed into exactly these classes �
 Committed in `4480c37`:
 
 1. **`lib/shared/tests/test_migrations_unit.py`** — the dup-prefix check was deliberately **softened to a warning** on the merge (to tolerate main's intentional dual `0014`/`0043` prefixes). Updated `test_assert_unique_prefixes_*` to assert the warning path instead of a `RuntimeError`.
-2. **`services/ingestion/tests/test_migrations.py`** — `M1_MIGRATIONS` hard-coded `0045–0050`; those ingestion migrations were **renumbered to `0056–0061`** (main owns `0001–0048`). Updated the filename list.
+2. **`services/ingest/ingestion/tests/test_migrations.py`** — `M1_MIGRATIONS` hard-coded `0045–0050`; those ingestion migrations were **renumbered to `0056–0061`** (main owns `0001–0048`). Updated the filename list.
 
 Verified: **22 passed, 1 skipped**. No other code/test references to renumbered migration files exist outside documentation (docs carry old numbers — cosmetic).
 

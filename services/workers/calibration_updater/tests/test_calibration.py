@@ -4,7 +4,7 @@ services/workers/calibration_updater/tests/test_calibration.py — Wave 4-C test
 Covers the six test cases from BUILD-PLAN §5 Prompt 4.C "Calibration"
 plus helpers for the pure-compute layer.
 
-Fixture pattern mirrors services/models/tests/conftest.py (per-test
+Fixture pattern mirrors services/domain/models/tests/conftest.py (per-test
 transaction, tenant-UUID isolation, no TRUNCATE — hermetic alongside
 parallel waves).
 """
@@ -19,7 +19,7 @@ import pytest
 
 from lib.shared.ids import uuid7
 
-from services.models.calibration import apply_calibration
+from services.domain.models.calibration import apply_calibration
 from services.workers.calibration_updater.compute import (
     CONFIDENCE_BUCKETS,
     DEFAULT_OFFSETS,
@@ -380,8 +380,8 @@ async def test_existing_models_tests_still_pass_regression(
 
     For a state-kind Model with no prior history: 0.6 × 0.95 = 0.57.
     """
-    from services.models.repo import ModelsRepo
-    from services.models.calibration import PROP_KIND_DEFAULTS
+    from services.domain.models.repo import ModelsRepo
+    from services.domain.models.calibration import PROP_KIND_DEFAULTS
     from lib.shared.types import ModelCreate
     emb = [0.0] * 768
     emb[2] = 1.0
@@ -425,7 +425,7 @@ async def _run_inline(
         _harvest_stats,
         _recompute_all_offsets,
     )
-    from services.models.repo import ModelsRepo
+    from services.domain.models.repo import ModelsRepo
 
     harvested = await _harvest_stats(tx_conn, tenant_id=tenant)
     offsets_written = await _recompute_all_offsets(tx_conn, tenant_id=tenant)

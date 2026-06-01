@@ -7,13 +7,13 @@ import asyncpg
 import pytest
 
 from lib.embeddings.ollama import OllamaClient
-from services.actors.repo import ActorRepo
-from services.bridge.queries import (
+from services.domain.actors.repo import ActorRepo
+from services.domain.bridge.queries import (
     RevenueAtRiskReport,
     capability_at_risk,
     revenue_at_risk,
 )
-from services.entity_aliases.repo import EntityAliasRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 from tests.real_llm.infrastructure.scenario_loader import (
     Scenario,
@@ -150,11 +150,11 @@ async def test_customer_health_summary_query_returns_results(
       - health_timeline is a non-empty list of HealthPoints
       - served_commitments and active_deployments exist as lists
     """
-    from services.bridge.dashboards import (
+    from services.domain.bridge.dashboards import (
         CustomerDetailDashboard,
         render_customer_detail,
     )
-    from services.bridge.queries import HealthPoint
+    from services.domain.bridge.queries import HealthPoint
 
     await inject_sequence(
         scenario_02,

@@ -33,13 +33,13 @@ import asyncio
 import os
 from uuid import uuid4
 
-from services.ingestion.fetchers import notion as nt
-from services.ingestion.fetchers.notion import fetch_page_notion
-from services.ingestion.handlers.notion import handle_notion_object
-from services.ingestion.planners.context import PlannerContext
-from services.ingestion.planners.notion import plan_shards_notion
-from services.integrations.notion.client import NotionClient
-from services.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.ingestion.fetchers import notion as nt
+from services.ingest.ingestion.fetchers.notion import fetch_page_notion
+from services.ingest.ingestion.handlers.notion import handle_notion_object
+from services.ingest.ingestion.planners.context import PlannerContext
+from services.ingest.ingestion.planners.notion import plan_shards_notion
+from services.ingest.integrations.notion.client import NotionClient
+from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 
 
 class _Install:

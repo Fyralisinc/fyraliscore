@@ -16,9 +16,9 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
-from services.think.region_locks import region_lock_key
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.region_locks import region_lock_key
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -151,7 +151,7 @@ CASE_CODEC_ISOLATION = Case(
 
 
 async def _run_no_cross_retrieval(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.retrieval.primary import (
+    from services.reasoning.retrieval.primary import (
         TriggerContext,
         primary_retrieve,
     )

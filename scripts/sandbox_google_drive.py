@@ -231,8 +231,8 @@ async def _seed_tenant(pool: asyncpg.Pool) -> None:
 async def _drain_shard_into_observations(pool, install_row, shard_identifier):
     """Run the REAL fetcher loop for one shard, ingesting each record.
     Returns (external_ids ingested, last cursor next_start_page_token)."""
-    from services.ingestion.core import ingest
-    from services.ingestion.fetchers.google_drive import fetch_page_google_drive
+    from services.ingest.ingestion.core import ingest
+    from services.ingest.ingestion.fetchers.google_drive import fetch_page_google_drive
 
     ingested: list[str] = []
     cursor, next_tok, guard = None, None, 0
@@ -257,7 +257,7 @@ async def _drain_shard_into_observations(pool, install_row, shard_identifier):
 
 
 async def run(args) -> int:
-    from services.synthetic.mock_servers.google_drive import start_mock_drive
+    from services.ingest.synthetic.mock_servers.google_drive import start_mock_drive
 
     fixtures = _build_fixtures()
 
@@ -270,7 +270,7 @@ async def run(args) -> int:
     os.environ["GMAIL_SERVICE_ACCOUNT_JSON_FILE"] = sa_path
     os.environ["GMAIL_SERVICE_ACCOUNT_CLIENT_ID"] = "100000000000000000001"
     os.environ["GOOGLE_DRIVE_API_BASE_URL"] = base_url
-    from services.integrations.gmail import dwd as _dwd
+    from services.ingest.integrations.gmail import dwd as _dwd
     _dwd._reset_minter_for_tests()
     print(f"  Service account: {sa_path} (impersonation via DWD)")
 
@@ -288,18 +288,18 @@ async def run(args) -> int:
         _hr("DATABASE")
         print(f"  Created throwaway DB: {created_db}")
 
-    from services.gateway.db_bootstrap import _register_codecs
+    from services.app.gateway.db_bootstrap import _register_codecs
     pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5, init=_register_codecs)
     try:
         await _apply_migrations(pool)
-        from services.observations.partitions import ensure_partitions
+        from services.domain.observations.partitions import ensure_partitions
         await ensure_partitions(pool, months_ahead=3)
         await _seed_tenant(pool)
         print("  Migrations applied, partitions ensured, tenant seeded.")
 
         # PROVISION
         _hr("PROVISION (onboarding.finalize_install)")
-        from services.integrations.google_drive.onboarding import (
+        from services.ingest.integrations.google_drive.onboarding import (
             DriveTarget, finalize_install,
         )
         targets = [
@@ -325,9 +325,9 @@ async def run(args) -> int:
 
         # PLAN
         _hr("PLAN (planner over the loader SQL)")
-        from services.ingestion.planners.context import PlannerContext
-        from services.ingestion.planners.google_drive import plan_shards_google_drive
-        from services.ingestion.workflows.source_onboarding import _LOAD_GDRIVE_INSTALL_SQL
+        from services.ingest.ingestion.planners.context import PlannerContext
+        from services.ingest.ingestion.planners.google_drive import plan_shards_google_drive
+        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GDRIVE_INSTALL_SQL
         install_row = await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, _TENANT_ID)
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_google_drive(ctx)
@@ -419,7 +419,7 @@ async def run(args) -> int:
 
         # DEDUP (backfill vs poll twin)
         _hr("DEDUP (identical re-fetch)")
-        from services.ingestion.core import ingest
+        from services.ingest.ingestion.core import ingest
         twin = dict(fixtures["files"][0])  # d-roadmap version 3 (same as backfill)
         twin["_fyralis_drive_id"] = "my-drive"
         twin["_fyralis_drive_kind"] = "my_drive"
@@ -433,7 +433,7 @@ async def run(args) -> int:
 
         # RECONCILER gap probe
         _hr("RECONCILER (gap probe)")
-        from services.ingestion.reconcilers import google_drive as gd_recon
+        from services.ingest.ingestion.reconcilers import google_drive as gd_recon
         gd_recon.set_pool_provider(pool)
         # The mock always reports changes from any token, so the probe finds a gap.
         done_shards = await pool.fetch(

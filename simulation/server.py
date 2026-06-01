@@ -5,7 +5,7 @@ Hosts:
   simulation/slack_ui/ on disk).
 - POST /simulation/inject — accepts a JSON message from the UI
   composer, builds a SyntheticSignal, and routes it through
-  services.synthetic.core.inject().
+  services.ingest.synthetic.core.inject().
 - GET /simulation/personas — the persona registry.
 - GET /simulation/channels — the fixed channel list.
 - GET /simulation/messages?channel=... — the last 20 messages in a
@@ -17,7 +17,7 @@ Run as standalone (owns its own pool + lifespan):
       uvicorn simulation.server:app --port 8765
 
 Run mounted inside the gateway (shares the gateway's pool):
-    See `services/gateway/main.py::_configure_ceo_view`, which calls
+    See `services/app/gateway/main.py::_configure_ceo_view`, which calls
     `build_sim_router(...)` with the gateway's deps and includes the
     returned APIRouter. `GATEWAY_MOUNT_SIM=1` (default on in dev/test)
     opts in.
@@ -47,12 +47,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # Env guard fires at import.
-import services.synthetic  # noqa: F401
+import services.ingest.synthetic  # noqa: F401
 from lib.embeddings.ollama import OllamaClient
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
-from services.synthetic.core import SyntheticSignal, inject
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.synthetic.core import SyntheticSignal, inject
 
 from simulation.personas import (
     Persona,

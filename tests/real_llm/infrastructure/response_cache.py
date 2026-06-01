@@ -11,7 +11,7 @@ Cache layout:
     tests/real_llm/cache/<epoch_hash>/<key>.json
 
 Where <epoch_hash> is the first 12 chars of sha256 over the contents
-of services/think/{reason,prompt,llm_reason}.py — so editing any of
+of services/reasoning/think/{reason,prompt,llm_reason}.py — so editing any of
 those files rotates the epoch and invalidates all cached entries.
 
 Env knobs:
@@ -33,9 +33,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_CACHE_DIR = _REPO_ROOT / "tests" / "real_llm" / "cache"
 
 _EPOCH_SOURCES = (
-    _REPO_ROOT / "services" / "think" / "reason.py",
-    _REPO_ROOT / "services" / "think" / "prompt.py",
-    _REPO_ROOT / "services" / "think" / "llm_reason.py",
+    _REPO_ROOT / "services" / "reasoning" / "think" / "reason.py",
+    _REPO_ROOT / "services" / "reasoning" / "think" / "prompt.py",
+    _REPO_ROOT / "services" / "reasoning" / "think" / "llm_reason.py",
 )
 
 

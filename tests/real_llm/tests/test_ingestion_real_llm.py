@@ -8,9 +8,9 @@ import asyncpg
 import pytest
 
 from lib.embeddings.ollama import OllamaClient
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.synthetic.core import SyntheticSignal, inject
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.ingest.synthetic.core import SyntheticSignal, inject
 from tests.real_llm.infrastructure.assertion_helpers import (
     assert_at_least_one_model_matching,
     assert_model_count_in_range,

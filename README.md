@@ -256,7 +256,7 @@ individually:
 
 ```bash
 # Gateway only
-uvicorn services.gateway.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn services.app.gateway.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Think worker
 python scripts/run_think_worker.py
@@ -302,18 +302,29 @@ it (`brew services stop postgresql`) or change the port in
 
 ```
 .
-├── CODEBASE-ARCHITECTURE.md  # Architecture & module reference
+├── CODEBASE-ARCHITECTURE.md  # Architecture & module reference (incl. §0 layer map)
+├── CODEBASE-MANAGEMENT.md    # Why the codebase is organized this way (decision record)
+├── CONTRIBUTING.md           # Conventions, import rules, how to extend
 ├── README.md                 # This file
 ├── .env.example              # Env template (copy to .env)
 ├── docker-compose.yml        # Postgres (pgvector) + Ollama
-├── pyproject.toml            # Python package + dev deps
+├── pyproject.toml            # Python package, dev deps, import-linter contracts
 ├── conftest.py               # Pytest fixtures (DB pool, etc.)
 ├── db/migrations/            # SQL migrations, applied in filename order
-├── lib/                      # Shared libraries (db, llm, embeddings, nexus)
-├── services/                 # Domain services (gateway, think, query, …)
+├── lib/                      # Shared lower layer (shared/db, llm, embeddings, …)
+├── services/                 # Backend, grouped into architectural layers:
+│   ├── app/                  #   HTTP/WS entry & dispatch (gateway, webhooks, realtime)
+│   ├── product/              #   CEO-facing surfaces (greeting, today, query, …)
+│   ├── reasoning/            #   Think pipeline, retrieval, topology, scoring
+│   ├── ingest/               #   Signal intake, integrations, synthetic
+│   ├── domain/               #   Core persisted substrate (models, acts, resources, …)
+│   ├── platform/             #   Cross-cutting infra (access_control, execution)
+│   └── workers/              #   Background worker packages
 ├── simulation/               # Slack-like simulator + personas
 ├── scripts/                  # CLI utilities and dogfood orchestration
 ├── tests/                    # Cross-service integration + real-LLM tests
-├── lsob/                     # LSOB packages (baselines, evaluators)
 └── ui/                       # Vite/React frontend
 ```
+
+See [CODEBASE-ARCHITECTURE.md §0](CODEBASE-ARCHITECTURE.md) for the layer map and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the enforced import boundaries.

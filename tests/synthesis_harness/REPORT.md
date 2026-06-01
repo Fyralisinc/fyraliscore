@@ -26,14 +26,14 @@ without colliding (every production query filters by `tenant_id`).
 
 | #  | Finding                                                       | Status |
 |----|---------------------------------------------------------------|--------|
-| 1  | No "reconciliation" component to test in isolation            | **resolved (T5)** — `services/think/reconciler.py` runs between validate and apply on every `claim_op.insert`; four-signal match (cosine + scope + kind + recency); decisions audited in `reconciliation_events`; 10 harness scenarios cover the four behaviors |
+| 1  | No "reconciliation" component to test in isolation            | **resolved (T5)** — `services/reasoning/think/reconciler.py` runs between validate and apply on every `claim_op.insert`; four-signal match (cosine + scope + kind + recency); decisions audited in `reconciliation_events`; 10 harness scenarios cover the four behaviors |
 | 2  | Scope routing has 3 orthogonal concerns                       | resolved — independent test cases per concern |
 | 3  | Pathway B always pulls everything below k                     | open — known design choice; rank-based assertions used instead |
 | 4  | RRF rank-position-based, not score-additive                   | open — informational; assertion uses score ordering |
 | 5  | Falsifier evaluation has tight, undocumented vocabulary       | **resolved (T1a)** — parser accepts ISO-8601 + human; malformed raises `MalformedFalsifierError` |
 | 6  | Contestability has two paths that look one but aren't         | resolved — separate test cases for belief vs reading |
 | 7  | Cascade has hidden invariant coupling                         | **resolved (T1b)** — invariant violations surface on `CascadeResult.invariant_violations` + metric |
-| 8  | asyncpg + pgvector codec state is connection-sticky           | **resolved (T2)** — `pgvector_pool_init` + `PGVECTOR_REGISTERED_POOL_IDS` documented in `services/models/PGVECTOR_REGISTRY.md` |
+| 8  | asyncpg + pgvector codec state is connection-sticky           | **resolved (T2)** — `pgvector_pool_init` + `PGVECTOR_REGISTERED_POOL_IDS` documented in `services/domain/models/PGVECTOR_REGISTRY.md` |
 | 9  | Migrations are idempotent in spirit, not in transaction handling | **resolved (T3)** — `lib/shared/migrations.py` wraps each file in a transaction; production `psql --single-transaction` |
 | 10 | No automatic test for "Think produced a sensible Model"       | partly addressed (T4) — calibration measurement layer now tracks ECE drift over time; absolute calibration remains a future-work concern |
 
@@ -47,7 +47,7 @@ arriving via different `trigger_id`s produced two near-duplicate
 Models; the LLM was the only mechanism keeping the surface
 deduplicated.
 
-**T5 fix:** `services/think/reconciler.py` runs between validate
+**T5 fix:** `services/reasoning/think/reconciler.py` runs between validate
 and apply on every `claim_op.insert`. It looks for an existing
 active Model in the same tenant matching on **all four** of:
 embedding cosine similarity, scope overlap, identical proposition
@@ -66,26 +66,26 @@ apply on its own account, and is opt-out via `RECONCILE_ENABLED`.
 Per-trigger-id idempotency via `applied_triggers` is unchanged —
 T5 added a *content-level* dedup pass alongside it.
 
-See [services/think/RECONCILIATION_DESIGN.md](../../services/think/RECONCILIATION_DESIGN.md)
+See [services/reasoning/think/RECONCILIATION_DESIGN.md](../../services/reasoning/think/RECONCILIATION_DESIGN.md)
 for the design rationale and
-[services/think/RECONCILIATION_README.md](../../services/think/RECONCILIATION_README.md)
+[services/reasoning/think/RECONCILIATION_README.md](../../services/reasoning/think/RECONCILIATION_README.md)
 for the operator guide.
 
 ### 2. Scope routing has three orthogonal concerns that are easy to conflate
 
 - **Region key** (`region_lock_key` /
-  [region_locks.py:134-161](../../services/think/region_locks.py#L134))
+  [region_locks.py:134-161](../../services/reasoning/think/region_locks.py#L134))
   — deterministic SHA-256-based hash for `pg_advisory_xact_lock`.
   Tenant-partitioned. Permutation-stable.
 - **Primary entity** (`compute_primary_entity` /
-  [region_locks.py:56-85](../../services/think/region_locks.py#L56))
+  [region_locks.py:56-85](../../services/reasoning/think/region_locks.py#L56))
   — fixed precedence `commitment > goal > decision >
   resource/customer > actor`, with id-asc tiebreak. Used in T1 region
   key. Without this, two semantically identical triggers whose
   `entities_mentioned` differ in order would land on different
   advisory locks and racing workers would not serialize.
 - **Touched entity set** (`touched_entity_ids` /
-  [region_locks.py:227-291](../../services/think/region_locks.py#L227))
+  [region_locks.py:227-291](../../services/reasoning/think/region_locks.py#L227))
   — what region the LLM is *allowed* to mutate. Computed from
   retrieval output before the LLM call; the validator rejects diffs
   that touch entities outside this set, and the caller re-runs
@@ -115,7 +115,7 @@ weight rebalancing, not from any pathway filtering its own results.
 Six dimensions (structural, semantic, temporal, pattern, activation,
 provenance) each rank candidates. The fused score is `Σ w_dim / (k +
 rank_dim)` with `k=60`
-([scoring.py:65](../../services/retrieval/scoring.py#L65)). A Model
+([scoring.py:65](../../services/reasoning/retrieval/scoring.py#L65)). A Model
 missing from a dimension contributes zero to that term — it is *not*
 penalized. So a Model present in two pathways at any rank beats a
 Model present in only one at the same rank.
@@ -127,7 +127,7 @@ with high activation (0.9) present only in B.
 ### 5. Falsifier evaluation has a tight, undocumented vocabulary
 
 Five legal kinds, each with a kind-specific shape and adequacy rule
-([falsifier.py:46-141](../../services/models/falsifier.py#L46)). What
+([falsifier.py:46-141](../../services/domain/models/falsifier.py#L46)). What
 tripped the harness build:
 
 - `within_window` is **not** ISO-8601 ("P7D" silently parses as
@@ -165,13 +165,13 @@ keeps the worker robust but makes silent misconfiguration easy.
 Both paths increment `contested_count` and enqueue a T3 trigger. The
 status `contested_false` is in the schema but not written by any
 current code path — it's reserved for future T3 LLM output
-([prompt.py:601](../../services/think/prompt.py#L601),
+([prompt.py:601](../../services/reasoning/think/prompt.py#L601),
 [types.py:57](../../lib/shared/types.py#L57)). Confirmed this by
 exhaustive grep.
 
 The standing matrix has four bases (scope, owner, contributor,
 manager_chain). manager_chain depends on
-`services.access_control.hierarchy.is_in_manager_chain`, which is
+`services.platform.access_control.hierarchy.is_in_manager_chain`, which is
 real now — so a synthetic test that *omits* a manager chain still
 relies on it returning False, not raising.
 
@@ -205,11 +205,11 @@ The most expensive bug in the harness build. Three observations:
    Python lists.
 2. Without registration, the same `vector` columns must be passed as
    text literals like `'[0.1, 0.2, …]'::vector`.
-3. `services/models/repo.py` registers vector lazily on each
+3. `services/domain/models/repo.py` registers vector lazily on each
    connection it touches and tracks the registered set in a
    module-level `_VECTOR_REGISTERED_IDS` int-id set. Pathway B
    branches on this set
-   ([pathways.py:638-656](../../services/retrieval/pathways.py#L638))
+   ([pathways.py:638-656](../../services/reasoning/retrieval/pathways.py#L638))
    to decide whether to bind the seed vector as numpy array or
    string literal.
 

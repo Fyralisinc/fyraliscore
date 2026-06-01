@@ -16,8 +16,8 @@
 
 ## Auth & install
 
-[services/integrations/jira/onboarding.py](../../../services/integrations/jira/onboarding.py)
-+ [jira/client.py](../../../services/integrations/jira/client.py). Auth is HTTP
+[services/ingest/integrations/jira/onboarding.py](../../../services/ingest/integrations/jira/onboarding.py)
++ [jira/client.py](../../../services/ingest/integrations/jira/client.py). Auth is HTTP
 **Basic** with `(email, api_token)`. Backfill uses dedicated `jira_*` tables;
 **live webhook tenant resolution reuses the generic `provider_installations`
 edge** (no Jira-specific resolver table).
@@ -25,22 +25,22 @@ edge** (no Jira-specific resolver table).
 ## Ingress (live)
 
 `gateway /webhooks/jira/events` → HMAC `X-Hub-Signature` verified, GitHub-style
-([signatures/jira.py](../../../services/webhooks/signatures/jira.py)) → full
+([signatures/jira.py](../../../services/app/webhooks/signatures/jira.py)) → full
 pipeline (cutover-enabled, in `_CUTOVER_ENABLED_PROVIDERS`) or inline fallback.
 Channel `jira:issue`.
 
 ## Backfill
 
-[planners/jira.py](../../../services/ingestion/planners/jira.py) +
-[fetchers/jira.py](../../../services/ingestion/fetchers/jira.py) use
+[planners/jira.py](../../../services/ingest/ingestion/planners/jira.py) +
+[fetchers/jira.py](../../../services/ingest/ingestion/fetchers/jira.py) use
 **`POST /rest/api/3/search/jql`** — the classic `GET /rest/api/3/search` endpoint
 has returned **HTTP 410 Gone since 2025**. Incremental via the per-project
 `updated` high-water cursor; produces `RawEnvelope`
 (`ingress_kind="backfill"`/`"poll"`) → `jira:issue`.
 
-- [reconcilers/jira.py](../../../services/ingestion/reconcilers/jira.py) — gap
+- [reconcilers/jira.py](../../../services/ingest/ingestion/reconcilers/jira.py) — gap
   probe vs the `updated` high-water.
-- [handlers/jira.py](../../../services/ingestion/handlers/jira.py) → `jira:issue`,
+- [handlers/jira.py](../../../services/ingest/ingestion/handlers/jira.py) → `jira:issue`,
   trust `authoritative`.
 
 ## Migration & the 0061 collision history

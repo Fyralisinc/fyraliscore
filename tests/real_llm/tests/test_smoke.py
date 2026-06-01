@@ -18,8 +18,8 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from lib.embeddings.ollama import OllamaClient
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 from tests.real_llm.infrastructure.scenario_loader import (

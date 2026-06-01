@@ -812,8 +812,8 @@ async def test_t3_payload_populates_trigger_context(
 ):
     """Verify our T3 enqueue payload is consumed correctly by the
     Wave 3 worker's `_populate_seed_fields` (bug #1 patch)."""
-    from services.think.worker import _populate_seed_fields
-    from services.retrieval.primary import TriggerContext
+    from services.reasoning.think.worker import _populate_seed_fields
+    from services.reasoning.retrieval.primary import TriggerContext
 
     async with fresh_db.acquire() as conn:
         r = await insert_resource(

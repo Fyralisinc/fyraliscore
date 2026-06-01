@@ -18,26 +18,26 @@
 ## Auth — reuses the Gmail DWD substrate (D1)
 
 One Google auth path: the same service account is granted the Calendar scope, via
-[gmail/dwd.py](../../../services/integrations/gmail/dwd.py) `get_minter()`,
+[gmail/dwd.py](../../../services/ingest/integrations/gmail/dwd.py) `get_minter()`,
 `GoogleHttpClient`, `DirectoryClient`, `resolve_inclusion`. Calendar keeps its own
 `google_calendar_installations` + `google_calendar_calendars` tables (independent
 lifecycle / scope auditing) but shares the minter.
-[google_calendar/onboarding.py](../../../services/integrations/google_calendar/onboarding.py)
+[google_calendar/onboarding.py](../../../services/ingest/integrations/google_calendar/onboarding.py)
 resolves workspace users → calendars and finalizes the install (UPSERT install +
 calendars + onboarding trigger).
 
 ## Backfill & incremental (the quartet)
 
-- [planners/google_calendar.py](../../../services/ingestion/planners/google_calendar.py)
+- [planners/google_calendar.py](../../../services/ingest/ingestion/planners/google_calendar.py)
   — one shard per included user's primary calendar (D5/D6).
-- [fetchers/google_calendar.py](../../../services/ingestion/fetchers/google_calendar.py)
-  via [google_calendar/client.py](../../../services/integrations/google_calendar/client.py)
+- [fetchers/google_calendar.py](../../../services/ingest/ingestion/fetchers/google_calendar.py)
+  via [google_calendar/client.py](../../../services/ingest/integrations/google_calendar/client.py)
   — `events.list` full sync returns a `nextSyncToken` on the last page; the poll
   re-run passes it for **deltas only** (D2). On `410 GONE` the fetcher reseeds a
   windowed full sync. Strictly better than a hand-rolled high-water mark.
-- [reconcilers/google_calendar.py](../../../services/ingestion/reconcilers/google_calendar.py)
+- [reconcilers/google_calendar.py](../../../services/ingest/ingestion/reconcilers/google_calendar.py)
   — `has_updates_since` probe.
-- [handlers/google_calendar.py](../../../services/ingestion/handlers/google_calendar.py)
+- [handlers/google_calendar.py](../../../services/ingest/ingestion/handlers/google_calendar.py)
   — **one channel `google_calendar:event`**; branches on `status` (`cancelled` →
   `kind=state_change`, else `signal`) (D3). Trust `authoritative` (D4) — a
   calendar event is the system of record for scheduling.

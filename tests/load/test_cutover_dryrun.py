@@ -50,7 +50,7 @@ async def test_cutover_dryrun_one_hour():
     Expected runtime: ~1 hour (default duration). Output metrics
     documented in m-load-runbook.md §4.
     """
-    from services.synthetic.cutover_load import LoadConfig, run
+    from services.ingest.synthetic.cutover_load import LoadConfig, run
 
     config = LoadConfig(
         target_url=os.environ["CUTOVER_DRYRUN_TARGET_URL"],

@@ -25,7 +25,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.gateway.auth import create_session
+from services.app.gateway.auth import create_session
 from lib.shared.ids import uuid7
 
 DSN = os.environ.get("DATABASE_URL", "postgresql://company_os:company_os@localhost:5434/company_os")

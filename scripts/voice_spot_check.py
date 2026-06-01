@@ -80,8 +80,8 @@ ORDER BY cached_at DESC;
 
 async def _voice_spot_check(tenant_id: UUID, limit: int) -> int:
     import asyncpg
-    from services.gateway.db_bootstrap import _register_codecs
-    from services.rendering.voice_rules import (
+    from services.app.gateway.db_bootstrap import _register_codecs
+    from services.product.rendering.voice_rules import (
         RuleContext,
         Severity,
         check_all,
@@ -176,7 +176,7 @@ async def _voice_spot_check(tenant_id: UUID, limit: int) -> int:
 
 async def _cost_dashboard(tenant_id: UUID) -> int:
     import asyncpg
-    from services.gateway.db_bootstrap import _register_codecs
+    from services.app.gateway.db_bootstrap import _register_codecs
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:

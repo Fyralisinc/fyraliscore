@@ -64,28 +64,28 @@ def test_all_endpoints_snapshot():
 # ---------------------------------------------------------------------
 def test_gmail_client_uses_resolver(monkeypatch):
     monkeypatch.setenv("GMAIL_API_BASE_URL", "http://spammer/gmail/gmail/v1")
-    from services.integrations.gmail.client import GmailClient
+    from services.ingest.integrations.gmail.client import GmailClient
     c = GmailClient(http=None)  # init stores base only; no network
     assert c._base == "http://spammer/gmail/gmail/v1"
 
 
 def test_github_client_uses_resolver(monkeypatch):
     monkeypatch.setenv("GITHUB_API_BASE_URL", "http://spammer/github")
-    from services.integrations.github.client import GithubClient
+    from services.ingest.integrations.github.client import GithubClient
     c = GithubClient(pool=None)
     assert c._api_base_url == "http://spammer/github"
 
 
 def test_github_client_explicit_param_wins(monkeypatch):
     monkeypatch.setenv("GITHUB_API_BASE_URL", "http://env/github")
-    from services.integrations.github.client import GithubClient
+    from services.ingest.integrations.github.client import GithubClient
     c = GithubClient(pool=None, api_base_url="http://explicit/gh")
     assert c._api_base_url == "http://explicit/gh"
 
 
 def test_slack_client_uses_resolver(monkeypatch):
     monkeypatch.setenv("SLACK_API_BASE_URL", "http://spammer/slack/api")
-    from services.integrations.slack.client import SlackClient
+    from services.ingest.integrations.slack.client import SlackClient
     c = SlackClient(pool=None, secret_store=None, tenant_id=uuid4(),
                     installation_row_id=uuid4(), team_id="T1")
     assert c._api_base == "http://spammer/slack/api"
@@ -93,7 +93,7 @@ def test_slack_client_uses_resolver(monkeypatch):
 
 def test_discord_client_uses_resolver(monkeypatch):
     monkeypatch.setenv("DISCORD_API_BASE_URL", "http://spammer/discord/api/v10")
-    from services.integrations.discord.client import DiscordClient
+    from services.ingest.integrations.discord.client import DiscordClient
     c = DiscordClient(pool=None, secret_store=None, tenant_id=uuid4(),
                       installation_row_id=uuid4(), guild_id="G1")
     assert c._api_base == "http://spammer/discord/api/v10"

@@ -28,10 +28,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from services.rendering.api import create_app
-from services.rendering.core import RenderingService
-from services.rendering.tests.scripted import ScriptedProvider
-from services.rendering.voice_rules import RuleContext, check_all, has_rejections
+from services.product.rendering.api import create_app
+from services.product.rendering.core import RenderingService
+from services.product.rendering.tests.scripted import ScriptedProvider
+from services.product.rendering.voice_rules import RuleContext, check_all, has_rejections
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CAPTURES_DIR = ROOT / "tests" / "integration" / "captures"
@@ -167,8 +167,8 @@ async def test_card_reasoning_http_adapter_fallback_on_rnd_outage() -> None:
     """GRT's HttpRenderingAdapter should fall back to the placeholder
     synthesis when the rendering endpoint errors, never surfacing a
     crash to `GET /view/ceo/home`."""
-    from services.greeting.rendering_adapter import HttpRenderingAdapter
-    from services.greeting.snapshot import (
+    from services.product.greeting.rendering_adapter import HttpRenderingAdapter
+    from services.product.greeting.snapshot import (
         ConversationContext,
         FounderContext,
         SubstrateSnapshot,
@@ -236,7 +236,7 @@ async def test_card_reasoning_live_endpoint() -> None:
     """Live exercise of POST /rendering/card-reasoning: hits DeepSeek
     through the rendering service, asserts voice-compliant output with
     a `.cite` span in at least one evidence entry."""
-    from services.rendering.core import RenderingService
+    from services.product.rendering.core import RenderingService
 
     svc = RenderingService.from_env()
     app = create_app(service=svc)

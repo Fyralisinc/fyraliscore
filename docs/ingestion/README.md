@@ -36,18 +36,18 @@ regardless of route.
 | [Jira](sources/jira.md) | webhook | HMAC webhook → pipeline (cutover) | `POST /rest/api/3/search/jql` | `jira:issue` | `authoritative` |
 
 `ingress_kind` is one of `webhook`, `gateway`, `pubsub`, `backfill`, `poll`
-([raw_tier/envelope.py](../../services/ingestion/raw_tier/envelope.py)). The
+([raw_tier/envelope.py](../../services/ingest/ingestion/raw_tier/envelope.py)). The
 normalizer maps `(source, ingress_kind) → channel`
-([normalizer/channel_mapping.py](../../services/ingestion/normalizer/channel_mapping.py)).
+([normalizer/channel_mapping.py](../../services/ingest/ingestion/normalizer/channel_mapping.py)).
 
 ## The five pipeline stages
 
 | # | Stage | Entry point | Topic in → out |
 |---|---|---|---|
 | 1 | **Ingress** | webhook router / gmail pubsub / `shard_fetch` | — → `ingestion.raw` |
-| 2 | **Shadow-write raw** | [shadow_write.py](../../services/ingestion/shadow_write.py) | — → `ingestion.raw` (+ S3) |
-| 3 | **Normalize** | [normalizer/worker.py](../../services/ingestion/normalizer/worker.py) (no DB) | `ingestion.raw` → `ingestion.normalized` |
-| 4 | **Write observation** | [writers/observation_writer.py](../../services/ingestion/writers/observation_writer.py) | `ingestion.normalized` → Postgres `observations` |
+| 2 | **Shadow-write raw** | [shadow_write.py](../../services/ingest/ingestion/shadow_write.py) | — → `ingestion.raw` (+ S3) |
+| 3 | **Normalize** | [normalizer/worker.py](../../services/ingest/ingestion/normalizer/worker.py) (no DB) | `ingestion.raw` → `ingestion.normalized` |
+| 4 | **Write observation** | [writers/observation_writer.py](../../services/ingest/ingestion/writers/observation_writer.py) | `ingestion.normalized` → Postgres `observations` |
 | 5 | **Async tails** | embedding worker, embedding backlog, DLQ writer | `ingestion.embedding`, `ingestion.dlq` |
 
 See [architecture.md](architecture.md) for the full diagrams of each stage, the
@@ -60,10 +60,10 @@ two-path decision, the per-source ingress, and the onboarding/backfill chain.
    verified, tenant is resolved, body is shadow-written to `ingestion.raw`, and
    the provider gets a `202 Accepted` (cutover) or `200/201` (inline fallback).
 2. **Push** — Gmail's Google Pub/Sub notification hits the dedicated
-   [gmail_pubsub.py](../../services/webhooks/gmail_pubsub.py) endpoint, which
+   [gmail_pubsub.py](../../services/app/webhooks/gmail_pubsub.py) endpoint, which
    fetches the real message and publishes it to `ingestion.raw`.
 3. **Poll / backfill** — for **all 8** sources the
-   [shard_fetch](../../services/ingestion/workflows/shard_fetch.py) worker pulls
+   [shard_fetch](../../services/ingest/ingestion/workflows/shard_fetch.py) worker pulls
    from the provider API and produces a `RawEnvelope` to `ingestion.raw` exactly
    like a webhook. Backfill/poll **never** calls inline `ingest()`.
 
@@ -71,7 +71,7 @@ two-path decision, the per-source ingress, and the onboarding/backfill chain.
 
 The full pipeline only persists for a tenant whose flag
 `ingestion.kafka_path_enabled` is `TRUE`
-([feature_flags/client.py](../../services/ingestion/feature_flags/client.py),
+([feature_flags/client.py](../../services/ingest/ingestion/feature_flags/client.py),
 30 s TTL cache, **defaults to FALSE**). A fresh tenant's envelopes flow through
 Kafka but the writer records them as *shadow events* and does not persist. Enable
 per tenant:

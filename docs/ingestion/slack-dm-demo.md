@@ -76,8 +76,8 @@ overlap.
 
 ## How the pieces fit (code)
 
-- Handler (DM subtypes + channel_type/subtype): [services/ingestion/handlers/slack.py](../../services/ingestion/handlers/slack.py)
-- Console: [services/gateway/slack_router.py](../../services/gateway/slack_router.py) (mounted in [main.py](../../services/gateway/main.py), env gate `SLACK_DM_PANEL_ENABLED`)
+- Handler (DM subtypes + channel_type/subtype): [services/ingest/ingestion/handlers/slack.py](../../services/ingest/ingestion/handlers/slack.py)
+- Console: [services/app/gateway/slack_router.py](../../services/app/gateway/slack_router.py) (mounted in [main.py](../../services/app/gateway/main.py), env gate `SLACK_DM_PANEL_ENABLED`)
 - Per-user identity table: [db/migrations/0065_slack_dm_installations.sql](../../db/migrations/0065_slack_dm_installations.sql)
 - Driver: [scripts/slack_dm_demo.sh](../../scripts/slack_dm_demo.sh)
 
@@ -121,7 +121,7 @@ What it exercises:
 | **produce** | Each record → raw tier (S3, content-addressed) → `RawEnvelope` pointer on `ingestion.raw.slack` (the real shard_fetch producer functions). |
 | **consume** | The running `normalizer` → `ingestion.normalized.slack` → `observation_writer` → `observations` (gated by the tenant's `ingestion.kafka_path_enabled` flag). |
 
-The synthetic **spammer** (`services/synthetic/spammer/server.py`) serves the
+The synthetic **spammer** (`services/ingest/synthetic/spammer/server.py`) serves the
 Slack reads: a per-user token `spam-slack-user::<team>::<user>` requesting
 `types=im,mpim` returns that consenting user's DM conversations; a **bot token
 gets none** (the real Slack ceiling). DM fixtures come from

@@ -1,4 +1,4 @@
-"""Launcher for services.think.post_commit.process_batch — polling loop.
+"""Launcher for services.reasoning.think.post_commit.process_batch — polling loop.
 
 Runs `process_batch` every POST_COMMIT_WORKER_POLL_INTERVAL_S seconds
 and exits cleanly on SIGTERM/SIGINT.
@@ -12,7 +12,7 @@ import signal
 import asyncpg
 import structlog
 
-from services.think.post_commit import WorkerStats, process_batch
+from services.reasoning.think.post_commit import WorkerStats, process_batch
 
 
 async def _main() -> None:

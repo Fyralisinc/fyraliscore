@@ -1,6 +1,6 @@
 """Emit a SQL snapshot file from a validated GeneratedBundle.
 
-Targets `services/demo/snapshot.py:load_snapshot` — uses the placeholder
+Targets `services/product/demo/snapshot.py:load_snapshot` — uses the placeholder
 tenant id `00000000-0000-0000-0000-000000000000`, which the loader
 substitutes for the real tenant_id at load time. Inserts are emitted in
 dependency order with `ON CONFLICT (id) DO NOTHING` for idempotency.
@@ -37,7 +37,7 @@ PLACEHOLDER_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 def emit_sql(bundle: GeneratedBundle) -> str:
     """Render the entity bundle into one SQL string.
 
-    The emitted SQL has no BEGIN/COMMIT — the loader (services/demo/
+    The emitted SQL has no BEGIN/COMMIT — the loader (services/product/demo/
     snapshot.py:load_snapshot) runs inside its own transaction, and
     nesting BEGIN/COMMIT silently ends the outer transaction in
     asyncpg's multi-statement execute path."""

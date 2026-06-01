@@ -4,7 +4,7 @@
 The deployed broker runs with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`,
 so the topics must be created explicitly before any producer/consumer
 starts. This is the production counterpart of the validation harness's
-delete+recreate (`services/synthetic/validation_runs/cleanup.py`) — it
+delete+recreate (`services/ingest/synthetic/validation_runs/cleanup.py`) — it
 only *creates* missing topics and never deletes data.
 
 Run once on deploy (the compose `kafka-init` one-shot calls it):
@@ -29,7 +29,7 @@ import sys
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import TopicAlreadyExistsError
 
-from services.ingestion.kafka.topics import all_data_plane_topics
+from services.ingest.ingestion.kafka.topics import all_data_plane_topics
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("provision_kafka_topics")

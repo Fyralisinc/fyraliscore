@@ -774,7 +774,7 @@ def get_response_cache() -> Any:
 # OP-3 follow-up (FU-2) — circuit-breaker opt-out.
 #
 # Real provider `_raw_call` / `_do_call` methods route through
-# `services.think.circuit_breaker.get_breaker(name).call(fn)`. If the
+# `services.reasoning.think.circuit_breaker.get_breaker(name).call(fn)`. If the
 # breaker module itself goes wrong in production, set
 # `LLM_CIRCUIT_BREAKER_DISABLED=1` to bypass the wrap per call (the
 # envelope below becomes a no-op pass-through). Read on every call so
@@ -800,9 +800,9 @@ async def _through_breaker(name: str, fn: Callable[[], Any]) -> Any:
     """
     if not _circuit_breaker_enabled():
         return await fn()
-    # Lazy import — keeps lib/llm from hard-depending on services/think
+    # Lazy import — keeps lib/llm from hard-depending on services/reasoning/think
     # at module import time.
-    from services.think.circuit_breaker import get_breaker
+    from services.reasoning.think.circuit_breaker import get_breaker
     return await get_breaker(name).call(fn)
 
 
@@ -1928,12 +1928,12 @@ def _deepseek_supports_strict_tool_calling(model_name: str | None) -> bool:
 def _strict_schema_for(schema: type[BaseModel]) -> dict | None:
     """Return the registered strict-mode schema for a Pydantic class, or None."""
     try:
-        from services.think.diff_schema import (
+        from services.reasoning.think.diff_schema import (
             RawDiff,
             RawDiffClaimsOnly,
             ValidatedDiff,
         )
-        from services.think.strict_schema import (
+        from services.reasoning.think.strict_schema import (
             RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA,
             RAW_DIFF_STRICT_SCHEMA,
         )

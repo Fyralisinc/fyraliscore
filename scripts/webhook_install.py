@@ -25,7 +25,7 @@ Exit codes:
 
 Print is the script's stdout/stderr contract; it is NOT "service code"
 under Constitution §VIII's no-print() rule. The resolver itself
-(services/webhooks/tenant_resolver.py) uses structlog exclusively.
+(services/app/webhooks/tenant_resolver.py) uses structlog exclusively.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ from lib.shared.errors import (
     InstallationConflictError,
     InstallationNotFoundError,
 )
-from services.webhooks.tenant_resolver import (
+from services.app.webhooks.tenant_resolver import (
     InstallationCache,
     RegisterInstallationRequest,
     TenantResolverDeps,

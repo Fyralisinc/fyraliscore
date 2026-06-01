@@ -41,9 +41,9 @@ from lib.llm.provider import (
     set_response_cache,
 )
 from lib.shared.ids import uuid7
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
 from tests.real_llm.infrastructure.response_cache import LLMResponseCache
 from tests.real_llm.infrastructure.scenario_loader import (
     Scenario,
@@ -127,7 +127,7 @@ async def llm_runtime_state() -> AsyncGenerator[None, None]:
     loops, so each test should start with a clean breaker window and
     close any app-server subprocess before the loop is torn down.
     """
-    from services.think.circuit_breaker import reset_breakers
+    from services.reasoning.think.circuit_breaker import reset_breakers
 
     reset_breakers()
     try:
@@ -146,7 +146,7 @@ async def think_worker(
     Tests that call wait_for_think_to_drain() depend on this fixture being
     active so triggers actually get processed.
     """
-    from services.think.worker import ThinkWorker, WorkerConfig
+    from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
     cfg = WorkerConfig.from_env()
     # Keep real-LLM tests aligned with production safety defaults. The Think

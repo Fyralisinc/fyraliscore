@@ -1,4 +1,4 @@
-"""Launcher for services.integrations.discord.gateway.worker — one process.
+"""Launcher for services.ingest.integrations.discord.gateway.worker — one process.
 
 Mirrors the shape of `scripts/run_think_worker.py` and
 `scripts/run_post_commit_worker.py`. Loads env, builds deps, runs the
@@ -26,18 +26,18 @@ if str(_REPO_ROOT) not in sys.path:
 
 from lib.embeddings.ollama import OllamaClient  # noqa: E402
 from lib.shared.secrets import build_secret_store  # noqa: E402
-from services.actors.repo import ActorRepo  # noqa: E402
-from services.entity_aliases.repo import EntityAliasRepo  # noqa: E402
-from services.gateway.db_bootstrap import _register_codecs  # noqa: E402
-from services.ingestion.feature_flags import TenantFlags  # noqa: E402
-from services.ingestion.kafka.producer import (  # noqa: E402
+from services.domain.actors.repo import ActorRepo  # noqa: E402
+from services.domain.entity_aliases.repo import EntityAliasRepo  # noqa: E402
+from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
+from services.ingest.ingestion.feature_flags import TenantFlags  # noqa: E402
+from services.ingest.ingestion.kafka.producer import (  # noqa: E402
     IdempotentProducer,
     ProducerConfig,
 )
-from services.ingestion.raw_tier.s3 import S3Client  # noqa: E402
-from services.integrations.discord.gateway.dispatch import DispatchDeps  # noqa: E402
-from services.integrations.discord.gateway.worker import GatewayWorker  # noqa: E402
-from services.webhooks.tenant_resolver import (  # noqa: E402
+from services.ingest.ingestion.raw_tier.s3 import S3Client  # noqa: E402
+from services.ingest.integrations.discord.gateway.dispatch import DispatchDeps  # noqa: E402
+from services.ingest.integrations.discord.gateway.worker import GatewayWorker  # noqa: E402
+from services.app.webhooks.tenant_resolver import (  # noqa: E402
     InstallationCache,
     TenantResolverDeps,
     build_tenant_resolver,
@@ -83,7 +83,7 @@ async def _main() -> int:
         # ingestion.raw → normalizer → observation_writer) for tenants with
         # `ingestion.kafka_path_enabled=TRUE`, instead of inline ingest().
         # The Gateway client's dispatch loop drives delivery (it flushes the
-        # producer every batch — services/integrations/discord/gateway/
+        # producer every batch — services/ingest/integrations/discord/gateway/
         # client.py), so no explicit flush is needed here. Guarded +
         # swallow-on-failure: a Kafka/S3 outage must not stop the worker
         # consuming Discord events (it falls back to inline ingest()).

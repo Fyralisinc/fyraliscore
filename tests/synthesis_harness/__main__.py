@@ -123,10 +123,10 @@ async def main(
         return 2
 
     # Pool init callback registers pgvector codec on every connection
-    # the pool ever produces. See services/models/PGVECTOR_REGISTRY.md
+    # the pool ever produces. See services/domain/models/PGVECTOR_REGISTRY.md
     # for the contract. Any new pool that reads via Pathway B (the
     # gateway, the Think worker, this harness) must do this.
-    from services.models.repo import pgvector_pool_init
+    from services.domain.models.repo import pgvector_pool_init
 
     pool = await asyncpg.create_pool(
         dsn, min_size=2, max_size=20, init=pgvector_pool_init,

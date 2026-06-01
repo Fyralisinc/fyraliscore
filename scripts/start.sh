@@ -174,7 +174,7 @@ record_pid() { echo "$1" >> "$PIDFILE"; }
 UV_LOG_LEVEL="$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')"
 
 log "Starting gateway on :${GATEWAY_PORT}…"
-.venv/bin/uvicorn services.gateway.main:app \
+.venv/bin/uvicorn services.app.gateway.main:app \
   --host 0.0.0.0 --port "${GATEWAY_PORT}" \
   --log-level "${UV_LOG_LEVEL}" \
   > "$LOGDIR/gateway.log" 2>&1 &

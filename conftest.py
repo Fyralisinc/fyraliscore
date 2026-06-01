@@ -53,6 +53,79 @@ def _requires_db(request: pytest.FixtureRequest) -> str:
     return dsn
 
 
+# ---------------------------------------------------------------------
+# RLS test role.
+#
+# A SUPERUSER / BYPASSRLS connection sees through every row-level-security
+# policy regardless of FORCE, so RLS isolation tests connected as such a
+# role can only *skip* (they cannot prove isolation). Many local/dev DBs
+# connect as a superuser. This fixture provisions a dedicated NON-super,
+# NON-bypassrls app role (idempotent) and yields a pool connected as it, so
+# the RLS policies are actually exercised. If the configured role already
+# can't bypass RLS (e.g. CI), it is used directly.
+#
+# Credentials are for a local test DB only — never a production secret.
+# ---------------------------------------------------------------------
+RLS_TEST_ROLE = "fyralis_rls_test"
+RLS_TEST_PW = "rls_test_pw"
+
+
+async def _provision_rls_app_role(super_dsn: str) -> str:
+    conn = await asyncpg.connect(super_dsn)
+    try:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM pg_roles WHERE rolname = $1", RLS_TEST_ROLE
+        )
+        if not exists:
+            await conn.execute(
+                f'CREATE ROLE "{RLS_TEST_ROLE}" LOGIN PASSWORD '
+                f"'{RLS_TEST_PW}' NOSUPERUSER NOBYPASSRLS"
+            )
+        await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{RLS_TEST_ROLE}"')
+        await conn.execute(
+            "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
+            f'ON ALL TABLES IN SCHEMA public TO "{RLS_TEST_ROLE}"'
+        )
+        await conn.execute(
+            "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
+            f'TO "{RLS_TEST_ROLE}"'
+        )
+    finally:
+        await conn.close()
+    host_tail = super_dsn.split("@", 1)[1]  # host:port/db[?params]
+    return f"postgresql://{RLS_TEST_ROLE}:{RLS_TEST_PW}@{host_tail}"
+
+
+@pytest_asyncio.fixture
+async def rls_app_pool() -> AsyncGenerator[asyncpg.Pool, None]:
+    """Pool whose role does NOT bypass RLS, so policies are enforced.
+
+    Skips cleanly if DATABASE_URL is unset, or if the non-super role cannot
+    be provisioned (e.g. a locked-down environment without CREATEROLE)."""
+    dsn = _database_url()
+    if not dsn:
+        pytest.skip("DATABASE_URL not set")
+    probe = await asyncpg.connect(dsn)
+    try:
+        bypasses = await probe.fetchval(
+            "SELECT usesuper OR usebypassrls FROM pg_user WHERE usename = current_user"
+        )
+    finally:
+        await probe.close()
+    if bypasses:
+        try:
+            app_dsn = await _provision_rls_app_role(dsn)
+        except asyncpg.PostgresError as e:
+            pytest.skip(f"cannot provision non-super RLS test role: {e}")
+    else:
+        app_dsn = dsn  # already a non-super role (e.g. CI)
+    pool = await asyncpg.create_pool(app_dsn, min_size=1, max_size=3)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
 async def _run_migrations(conn: asyncpg.Connection) -> None:
     # T3: each migration runs in its own transaction so partial
     # failures roll back cleanly instead of poisoning the

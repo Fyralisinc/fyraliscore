@@ -1,6 +1,6 @@
 """services/workers/anomaly_processor/tests/conftest.py — Wave 4-B test helpers.
 
-Same pattern as services/think/tests/conftest.py: per-test asyncpg
+Same pattern as services/reasoning/think/tests/conftest.py: per-test asyncpg
 pool with pgvector/JSONB codec, tenant-UUID hermetic boundary, and
 rich cleanup. Anomaly tests also cleanup `signal_memory_fabric`
 (new to Wave 4-B).

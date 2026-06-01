@@ -49,7 +49,7 @@ async def pool(db_pool):
     applied, then builds a gateway pool from DATABASE_URL (the codecs the
     observation repo + code-graph reads expect).
     """
-    from services.gateway.db_bootstrap import create_gateway_pool
+    from services.app.gateway.db_bootstrap import create_gateway_pool
     p = await create_gateway_pool(os.environ["DATABASE_URL"])
     try:
         yield p
@@ -95,16 +95,16 @@ def _write_fixture() -> str:
 
 
 async def _enable(pool, tenant_id):
-    from services.ingestion.feature_flags.client import TenantFlags
-    from services.github_intel.config import GITHUB_INTEL_ENABLED, CODE_INTEL_ENABLED
+    from services.ingest.ingestion.feature_flags.client import TenantFlags
+    from services.ingest.github_intel.config import GITHUB_INTEL_ENABLED, CODE_INTEL_ENABLED
     flags = TenantFlags(pool)
     await flags.set_bool(tenant_id, CODE_INTEL_ENABLED, True, set_by="test")
     await flags.set_bool(tenant_id, GITHUB_INTEL_ENABLED, True, set_by="test")
 
 
 async def _inject(pool, tenant_id, event, payload):
-    from services.ingestion.handlers import get_handler
-    from services.ingestion.core import ingest_from_draft
+    from services.ingest.ingestion.handlers import get_handler
+    from services.ingest.ingestion.core import ingest_from_draft
     handler = get_handler("github:webhook")
     draft = await handler(payload, {"X-GitHub-Event": event})
     res = await ingest_from_draft(channel="github:webhook", draft=draft, pool=pool,
@@ -115,8 +115,8 @@ async def _inject(pool, tenant_id, event, payload):
 
 async def test_full_pipeline_enriches_and_tracks_state(pool, tenant_id, U, repo):
     from lib.shared.tenant_context import tenant_transaction
-    from services.code_intel.indexer import index_working_copy
-    from services.github_intel.worker import drain, enqueue_new_github_observations
+    from services.ingest.code_intel.indexer import index_working_copy
+    from services.ingest.github_intel.worker import drain, enqueue_new_github_observations
 
     await _enable(pool, tenant_id)
 
@@ -195,7 +195,7 @@ async def test_full_pipeline_enriches_and_tracks_state(pool, tenant_id, U, repo)
 async def test_ordering_guard_late_event_does_not_regress(pool, tenant_id, U, repo):
     """Drain a merge, THEN a late 'opened' (earlier occurred_at) — must not regress."""
     from lib.shared.tenant_context import tenant_transaction
-    from services.github_intel.worker import drain, enqueue_new_github_observations
+    from services.ingest.github_intel.worker import drain, enqueue_new_github_observations
 
     await _enable(pool, tenant_id)
 
@@ -235,8 +235,8 @@ async def test_ordering_guard_late_event_does_not_regress(pool, tenant_id, U, re
 
 async def test_raw_on_failure_when_disabled(pool, tenant_id, U, repo):
     """github_intel.enabled=False -> raw signal ingested, NO intelligence key."""
-    from services.ingestion.feature_flags.client import TenantFlags
-    from services.github_intel.config import GITHUB_INTEL_ENABLED
+    from services.ingest.ingestion.feature_flags.client import TenantFlags
+    from services.ingest.github_intel.config import GITHUB_INTEL_ENABLED
     await TenantFlags(pool).set_bool(tenant_id, GITHUB_INTEL_ENABLED, False, set_by="test")
 
     draft = await _inject(pool, tenant_id, "issue_comment", {
@@ -250,7 +250,7 @@ async def test_raw_on_failure_when_disabled(pool, tenant_id, U, repo):
 async def test_inline_timeout_falls_back_to_raw(pool, tenant_id, U, repo, monkeypatch):
     """If the inline enrichment exceeds its budget, the raw signal is ingested."""
     import asyncio
-    import services.github_intel.inline as inline_mod
+    import services.ingest.github_intel.inline as inline_mod
     await _enable(pool, tenant_id)
 
     async def _slow(*a, **k):

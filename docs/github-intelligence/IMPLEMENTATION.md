@@ -5,7 +5,7 @@ is **complete and verified end-to-end** on the live dev stack.
 
 ## What's built
 
-### Part A — code comprehension (`services/code_intel/`)
+### Part A — code comprehension (`services/ingest/code_intel/`)
 - `parsing.py` — language-pluggable `LanguageIndexer` Protocol + registry. Shipped
   backbone is a **zero-dependency Python `ast` indexer** (precise for Python).
   tree-sitter / SCIP slot in behind the same Protocol (the `precision` column on
@@ -19,7 +19,7 @@ is **complete and verified end-to-end** on the live dev stack.
 - `reindex.py` — drains `code_intel_index_triggers` to re-index at a new sha
   (the self-update loop), linking `parent_snapshot_id`.
 
-### Part B — state + enrichment (`services/github_intel/`)
+### Part B — state + enrichment (`services/ingest/github_intel/`)
 - `fsm.py` — `classify()` + PR-lifecycle / issue-status / CI-rollup transitions +
   the deterministic **rule reasoning** fast path (no LLM for the bulk).
 - `state_store.py` — `read_state_snapshot` (inline read-only) + `apply_event`
@@ -34,9 +34,9 @@ is **complete and verified end-to-end** on the live dev stack.
   drain → authoritative FSM + `github_signal_enrichment` + reindex emission.
 
 ### Wiring
-- `services/ingestion/core.py` — inline enrichment hook in `ingest_from_draft`
+- `services/ingest/ingestion/core.py` — inline enrichment hook in `ingest_from_draft`
   for `github:webhook` (raw-on-failure; never breaks ingest).
-- `services/ingestion/handlers/github.py` — push `files`, PR `head_sha`/
+- `services/ingest/ingestion/handlers/github.py` — push `files`, PR `head_sha`/
   `head_ref`/`merge_commit_sha`/`changed_files` added to `content` (drive blast
   radius without the raw payload).
 - `db/migrations/0066_code_intel.sql`, `0067_github_intel_state.sql`,

@@ -61,7 +61,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# services.synthetic refuses to import under a prod env; this is a dev/test
+# services.ingest.synthetic refuses to import under a prod env; this is a dev/test
 # harness. Declare before any service import.
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 os.environ.setdefault("FYRALIS_ENV", "test")
@@ -164,7 +164,7 @@ def _drive_file(fid: str, name: str, owner: str, version: int, *,
 
 def build_org():
     """Construct the WorkspaceOrg fixture for acme.com."""
-    from services.synthetic.mock_servers.google_workspace import WorkspaceOrg
+    from services.ingest.synthetic.mock_servers.google_workspace import WorkspaceOrg
 
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
@@ -329,7 +329,7 @@ async def _drop_throwaway_db(admin_url: str, name: str) -> None:
 
 
 async def _open_pool(db_url: str) -> asyncpg.Pool:
-    from services.gateway.db_bootstrap import _register_codecs
+    from services.app.gateway.db_bootstrap import _register_codecs
     return await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5, init=_register_codecs)
 
 
@@ -337,7 +337,7 @@ async def _bootstrap_schema(pool: asyncpg.Pool) -> None:
     """Fresh DB: apply migrations strictly, ensure observation partitions,
     seed the tenant."""
     from lib.shared.migrations import apply_migrations_dir
-    from services.observations.partitions import ensure_partitions
+    from services.domain.observations.partitions import ensure_partitions
     async with pool.acquire() as conn:
         await apply_migrations_dir(conn, _REPO_ROOT / "db" / "migrations")
     await ensure_partitions(pool, months_ahead=3)
@@ -377,7 +377,7 @@ async def _seed_gmail_install(pool: asyncpg.Pool, org, emails: list[str]) -> UUI
 # Pipeline drive (real fetcher loop → real ingest), per shard.
 # =====================================================================
 async def _drain(pool, fetch_fn, channel, install_row, shard_identifier) -> list[str]:
-    from services.ingestion.core import ingest
+    from services.ingest.ingestion.core import ingest
     ingested: list[str] = []
     cursor, guard = None, 0
     while True:
@@ -409,14 +409,14 @@ async def test_google_workspace_org_ingestion_e2e():
 async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
     from uuid import uuid4
 
-    from services.integrations.gmail import dwd as _dwd
-    from services.integrations.gmail.client import (
+    from services.ingest.integrations.gmail import dwd as _dwd
+    from services.ingest.integrations.gmail.client import (
         DirectoryClient, GoogleHttpClient,
     )
-    from services.integrations.gmail.dwd import get_minter
-    from services.integrations.gmail.directory import resolve_inclusion
-    from services.integrations.google_drive.client import GoogleDriveClient, resolve_scope
-    from services.synthetic.mock_servers.google_workspace import start_mock_workspace
+    from services.ingest.integrations.gmail.dwd import get_minter
+    from services.ingest.integrations.gmail.directory import resolve_inclusion
+    from services.ingest.integrations.google_drive.client import GoogleDriveClient, resolve_scope
+    from services.ingest.synthetic.mock_servers.google_workspace import start_mock_workspace
 
     org = build_org()
     server, env = start_mock_workspace(org)
@@ -465,11 +465,11 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
             pass  # keep http open; drive_client shares it for shared-drive enum
 
         # -- 2. Onboard all three sources from the SAME resolved set.
-        from services.integrations.google_calendar.onboarding import (
+        from services.ingest.integrations.google_calendar.onboarding import (
             finalize_install as finalize_calendar,
             resolve_calendar_targets,
         )
-        from services.integrations.google_drive.onboarding import (
+        from services.ingest.integrations.google_drive.onboarding import (
             finalize_install as finalize_drive,
             resolve_drive_targets,
         )
@@ -499,11 +499,11 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         await http.__aexit__(None, None, None)
 
         # -- 3. Plan shards exactly as SourceOnboarding does (loader SQL → planner).
-        from services.ingestion.planners.context import PlannerContext
-        from services.ingestion.planners.gmail import plan_shards_gmail
-        from services.ingestion.planners.google_calendar import plan_shards_google_calendar
-        from services.ingestion.planners.google_drive import plan_shards_google_drive
-        from services.ingestion.workflows.source_onboarding import (
+        from services.ingest.ingestion.planners.context import PlannerContext
+        from services.ingest.ingestion.planners.gmail import plan_shards_gmail
+        from services.ingest.ingestion.planners.google_calendar import plan_shards_google_calendar
+        from services.ingest.ingestion.planners.google_drive import plan_shards_google_drive
+        from services.ingest.ingestion.workflows.source_onboarding import (
             _LOAD_GCAL_INSTALL_SQL, _LOAD_GDRIVE_INSTALL_SQL, _LOAD_GMAIL_INSTALL_SQL,
         )
 
@@ -522,9 +522,9 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         assert len(drive_shards) == 4, "3 My Drives + 1 Shared Drive"
 
         # -- 4. Backfill: real fetcher → real ingest, per source, per shard.
-        from services.ingestion.fetchers.gmail import fetch_page_gmail
-        from services.ingestion.fetchers.google_calendar import fetch_page_google_calendar
-        from services.ingestion.fetchers.google_drive import fetch_page_google_drive
+        from services.ingest.ingestion.fetchers.gmail import fetch_page_gmail
+        from services.ingest.ingestion.fetchers.google_calendar import fetch_page_google_calendar
+        from services.ingest.ingestion.fetchers.google_drive import fetch_page_google_drive
 
         for s in gmail_shards:
             await _drain(pool, fetch_page_gmail, "gmail:", gmail_row, s.shard_identifier)
@@ -604,7 +604,7 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         assert helios == 1, "shared-drive file not ingested"
 
         # Cross-path dedup: re-ingesting an already-seen calendar event no-ops.
-        from services.ingestion.core import ingest
+        from services.ingest.ingestion.core import ingest
         twin = dict(org.calendar["bob@acme.com"]["events"][0])
         twin["_fyralis_calendar_id"] = "bob@acme.com"
         twin["_fyralis_owner_email"] = "bob@acme.com"

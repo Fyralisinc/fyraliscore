@@ -34,7 +34,7 @@ python scripts/demo_github_intel.py
 #    Either rebuild it (docker compose build gateway && docker compose up -d gateway)
 #    or run from source on another port and point the UI at it (shown here):
 MASTER_KEK=dev-kek KAFKA_BOOTSTRAP_SERVERS="" \
-  .venv/bin/uvicorn services.gateway.main:app --host 127.0.0.1 --port 8011
+  .venv/bin/uvicorn services.app.gateway.main:app --host 127.0.0.1 --port 8011
 
 # 3. start the UI dev server, proxied at that gateway:
 cd ui && npm install

@@ -30,7 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import asyncpg
 
-from services.gateway.db_bootstrap import _register_codecs
+from services.app.gateway.db_bootstrap import _register_codecs
 
 
 def _parse_args() -> argparse.Namespace:

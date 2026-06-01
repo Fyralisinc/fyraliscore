@@ -29,8 +29,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from . import _fixtures as F
 from ._runner import Case
@@ -44,7 +44,7 @@ from ._runner import Case
 def _proposition_for(kind: str, natural: str) -> dict:
     """Build a minimally-valid proposition dict for the given kind.
 
-    `services.models.propositions.validate_proposition` requires
+    `services.domain.models.propositions.validate_proposition` requires
     kind-specific fields. The harness only exercises `state` and
     `concern` so we hard-code those shapes; extending to other
     kinds is straightforward when needed.
@@ -905,7 +905,7 @@ async def _run_kill_switch(pool: asyncpg.Pool, ctx: dict) -> dict:
     # case will leak into every other case in flight. Direct config
     # injection tests the same `enabled=False` short-circuit without
     # touching shared state.
-    from services.think.reconciler import ReconcilerConfig, reconcile_claim_op
+    from services.reasoning.think.reconciler import ReconcilerConfig, reconcile_claim_op
 
     op = _state_insert_op(
         tenant_id=ctx["tenant"],

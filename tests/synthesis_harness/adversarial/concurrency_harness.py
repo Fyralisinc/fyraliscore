@@ -21,8 +21,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -338,7 +338,7 @@ async def _setup_shared_goal(pool: asyncpg.Pool, _ctx: dict) -> dict:
 async def _cascade_for(
     pool: asyncpg.Pool, *, tenant_id: UUID, commit_id: UUID, obs: UUID,
 ) -> dict:
-    from services.think.cascade import CascadeEvent, cascade
+    from services.reasoning.think.cascade import CascadeEvent, cascade
     seed = CascadeEvent(
         id=uuid7(),
         kind="commitment_state_change",
@@ -459,7 +459,7 @@ async def _setup_target_model(pool: asyncpg.Pool, _ctx: dict) -> dict:
 async def _contest_one(
     pool: asyncpg.Pool, *, tenant_id: UUID, model_id: UUID, actor_id: UUID,
 ) -> dict:
-    from services.contestability.service import ContestationInput, contest_model
+    from services.reasoning.contestability.service import ContestationInput, contest_model
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():

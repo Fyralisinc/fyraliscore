@@ -1,4 +1,4 @@
-"""Unit tests for services.calibration.classify_card.
+"""Unit tests for services.reasoning.calibration.classify_card.
 
 Verifies the claim-class derivation rules and the unclassifiable
 fallthrough to None.
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.calibration import classify_card
+from services.reasoning.calibration import classify_card
 
 
 def test_classify_renewal_risk_from_revenue_at_risk_string():

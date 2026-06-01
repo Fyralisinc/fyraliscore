@@ -43,7 +43,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# Dev/test harness: loads services/synthetic (refuses to import under prod env).
+# Dev/test harness: loads services/ingest/synthetic (refuses to import under prod env).
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 os.environ.setdefault("FYRALIS_ENV", "test")
 
@@ -186,19 +186,19 @@ async def run(args) -> int:
         await _create_db(admin_url, db_name)
         db_url = admin_url.rsplit("/", 1)[0] + "/" + db_name
         os.environ["DATABASE_URL"] = db_url
-        from services.gateway.db_bootstrap import _register_codecs
+        from services.app.gateway.db_bootstrap import _register_codecs
         pool = await asyncpg.create_pool(dsn=db_url, min_size=2, max_size=10,
                                          init=_register_codecs)
         from lib.shared.migrations import apply_migrations_dir
         async with pool.acquire() as conn:
             await apply_migrations_dir(conn, _REPO_ROOT / "db" / "migrations")
-        from services.observations.partitions import ensure_partitions
+        from services.domain.observations.partitions import ensure_partitions
         await ensure_partitions(pool, months_ahead=6)
         print(f"  throwaway DB {db_name} migrated, partitions ensured")
 
         # 4. Run the FULL 7-worker harness for a google_calendar tenant.
         print("==== HARNESS (7 real worker subprocesses) ====")
-        from services.synthetic.backfill_harness import (
+        from services.ingest.synthetic.backfill_harness import (
             BackfillHarness, BackfillScenario,
             assert_all_complete, assert_completion_emitted_per_tenant,
             assert_no_duplicate_observations,

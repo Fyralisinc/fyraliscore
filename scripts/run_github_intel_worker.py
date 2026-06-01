@@ -19,9 +19,9 @@ import os
 import signal
 from uuid import UUID
 
-from services.ingestion.workflows.runtime import make_workflow_pool
-from services.github_intel.config import GITHUB_INTEL_ENABLED
-from services.github_intel.worker import drain, enqueue_new_github_observations
+from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+from services.ingest.github_intel.config import GITHUB_INTEL_ENABLED
+from services.ingest.github_intel.worker import drain, enqueue_new_github_observations
 
 
 def _tenants() -> list[UUID]:
@@ -43,7 +43,7 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    from services.ingestion.feature_flags.client import TenantFlags
+    from services.ingest.ingestion.feature_flags.client import TenantFlags
     flags = TenantFlags(pool)
     try:
         while not stop.is_set():
@@ -53,7 +53,7 @@ async def main() -> None:
                 await enqueue_new_github_observations(pool, tenant)
                 await drain(pool, tenant, worker_id="github_intel_worker")
                 if reindex_root:
-                    from services.code_intel.reindex import drain_reindex_triggers
+                    from services.ingest.code_intel.reindex import drain_reindex_triggers
                     await drain_reindex_triggers(pool, tenant, root_path=reindex_root)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=poll)

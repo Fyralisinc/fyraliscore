@@ -50,7 +50,7 @@ class Persona:
         """source_actor_ref value for Slack — e.g. 'slack:alice'.
 
         Shaped to match the ingestion handler's expectation
-        ('<channel>:<external_ref>') per services/actors/repo.py.
+        ('<channel>:<external_ref>') per services/domain/actors/repo.py.
         Returns None if this persona has no Slack presence.
         """
         if not self.slack_handle:

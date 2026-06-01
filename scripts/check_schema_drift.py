@@ -529,7 +529,7 @@ EXPECTED_TABLES: dict[str, Table] = {
     "topo_dirty_queue": Table(
         # 0032_topology_layer.sql — retired S2 propagation queue.
         # Kept for schema compatibility; active topology now emits
-        # relationship_candidates from services.topology.field.
+        # relationship_candidates from services.reasoning.topology.field.
         columns=dict([
             _col("id", UUID, False),
             _col("tenant_id", UUID, False),
@@ -802,7 +802,7 @@ EXPECTED_TABLES: dict[str, Table] = {
     "calibration_offsets": Table(
         # 0011_calibration_tables.sql — ARCHITECTURE-FINAL.md §9 lines
         # 2612-2622 verbatim. Bucketed offsets per (actor, kind).
-        # Consumed by services/models/calibration.py::apply_calibration
+        # Consumed by services/domain/models/calibration.py::apply_calibration
         # on every Think-insert path to adjust raw confidence before
         # the [0.05, 0.95] clip.
         columns=dict([

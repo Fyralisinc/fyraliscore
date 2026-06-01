@@ -122,15 +122,15 @@ external API ─┬─ backfill/poll (planner → fetcher, ShardFetch loop)
 ### Per-source code surface (mirrors Jira / Google Drive)
 - **Source registration** — add `"mercury"`/`"quickbooks"` to the 17 allowlist
   sites (see §5). The `SourceLiteral` in
-  [raw_tier/envelope.py](../../services/ingestion/raw_tier/envelope.py) is the
+  [raw_tier/envelope.py](../../services/ingest/ingestion/raw_tier/envelope.py) is the
   single source of truth that Kafka topics + provisioning derive from.
-- **Integration client** — `services/integrations/{src}/client.py` (+
+- **Integration client** — `services/ingest/integrations/{src}/client.py` (+
   `onboarding.py`, `metrics.py`). Mercury mirrors
-  [jira/client.py](../../services/integrations/jira/client.py) (Basic auth from
+  [jira/client.py](../../services/ingest/integrations/jira/client.py) (Basic auth from
   `secret_ref`); QuickBooks mirrors the OAuth bot-token shape
-  ([notion/oauth.py](../../services/integrations/notion/oauth.py)) + the
-  [oauth_poller](../../services/ingestion/workflows/oauth_poller.py) for refresh.
-- **Client builders** — `services/ingestion/fetchers/_clients.py`: both
+  ([notion/oauth.py](../../services/ingest/integrations/notion/oauth.py)) + the
+  [oauth_poller](../../services/ingest/ingestion/workflows/oauth_poller.py) for refresh.
+- **Client builders** — `services/ingest/ingestion/fetchers/_clients.py`: both
   `build_{src}_client` AND `open_{src}_client` (the fetcher imports the opener;
   a missing opener passes unit tests but fails the real worker).
 - **Planner / Fetcher / Reconciler / Handler** — register into
@@ -138,7 +138,7 @@ external API ─┬─ backfill/poll (planner → fetcher, ShardFetch loop)
   `@register(channel)`. Contracts: `ShardPlan(shard_kind, shard_identifier,
   seed_cursor)`, `FetchResult(records, next_cursor, end_of_data)`,
   `ReconcileResult(records, gap_closed, detail)`, `ObservationDraft(...)`.
-- **Webhook edge** — `services/webhooks/signatures/{src}.py` (HMAC) +
+- **Webhook edge** — `services/app/webhooks/signatures/{src}.py` (HMAC) +
   `tenant_resolver._extract_{src}` + router maps
   (`_PROVIDER_TO_SHADOW_SOURCE`, `_CUTOVER_ENABLED_PROVIDERS`,
   `_PROVIDER_CHANNEL`). Tenant resolution + secret loading reuse
@@ -186,22 +186,22 @@ Every file below hardcodes the valid-source set; missing one silently drops the
 new source at a different stage. Verified by `grep -rln "'jira'" services/ lib/
 scripts/`:
 
-1. [raw_tier/envelope.py](../../services/ingestion/raw_tier/envelope.py) — `SourceLiteral`
-2. [raw_tier/s3.py](../../services/ingestion/raw_tier/s3.py) — `build_raw_s3_key` source guard
-3. [normalizer/invariants.py](../../services/ingestion/normalizer/invariants.py) — `_S3_KEY_RE`
-4. [normalizer/channel_mapping.py](../../services/ingestion/normalizer/channel_mapping.py) — (source, ingress_kind) → channel
-5. [core.py](../../services/ingestion/core.py) — embedding gate
-6. [shadow_write.py](../../services/ingestion/shadow_write.py)
-7. [dlq/publish.py](../../services/ingestion/dlq/publish.py) — `_VALID_SOURCES`
-8. [progress/events.py](../../services/ingestion/progress/events.py)
-9. [kafka/topics.py](../../services/ingestion/kafka/topics.py) (derives from `SourceLiteral`)
-10. [workflows/tenant_onboarding.py](../../services/ingestion/workflows/tenant_onboarding.py) — `VALID_SOURCES` + `_LOAD_ACTIVE_SOURCES_SQL`
-11. [workflows/source_onboarding.py](../../services/ingestion/workflows/source_onboarding.py) — `VALID_SOURCES` + install-load SQL (`SELECT secret_ref`)
-12. [workflows/shard_fetch.py](../../services/ingestion/workflows/shard_fetch.py) — install-load SQL
-13. [feels_onboarded_monitor.py](../../services/ingestion/feels_onboarded_monitor.py)
-14. [recovery/embedding_backlog.py](../../services/ingestion/recovery/embedding_backlog.py)
-15. [webhooks/router.py](../../services/webhooks/router.py) — provider maps
-16. [webhooks/tenant_resolver.py](../../services/webhooks/tenant_resolver.py) — `ResolverProvider` + extractor
+1. [raw_tier/envelope.py](../../services/ingest/ingestion/raw_tier/envelope.py) — `SourceLiteral`
+2. [raw_tier/s3.py](../../services/ingest/ingestion/raw_tier/s3.py) — `build_raw_s3_key` source guard
+3. [normalizer/invariants.py](../../services/ingest/ingestion/normalizer/invariants.py) — `_S3_KEY_RE`
+4. [normalizer/channel_mapping.py](../../services/ingest/ingestion/normalizer/channel_mapping.py) — (source, ingress_kind) → channel
+5. [core.py](../../services/ingest/ingestion/core.py) — embedding gate
+6. [shadow_write.py](../../services/ingest/ingestion/shadow_write.py)
+7. [dlq/publish.py](../../services/ingest/ingestion/dlq/publish.py) — `_VALID_SOURCES`
+8. [progress/events.py](../../services/ingest/ingestion/progress/events.py)
+9. [kafka/topics.py](../../services/ingest/ingestion/kafka/topics.py) (derives from `SourceLiteral`)
+10. [workflows/tenant_onboarding.py](../../services/ingest/ingestion/workflows/tenant_onboarding.py) — `VALID_SOURCES` + `_LOAD_ACTIVE_SOURCES_SQL`
+11. [workflows/source_onboarding.py](../../services/ingest/ingestion/workflows/source_onboarding.py) — `VALID_SOURCES` + install-load SQL (`SELECT secret_ref`)
+12. [workflows/shard_fetch.py](../../services/ingest/ingestion/workflows/shard_fetch.py) — install-load SQL
+13. [feels_onboarded_monitor.py](../../services/ingest/ingestion/feels_onboarded_monitor.py)
+14. [recovery/embedding_backlog.py](../../services/ingest/ingestion/recovery/embedding_backlog.py)
+15. [webhooks/router.py](../../services/app/webhooks/router.py) — provider maps
+16. [webhooks/tenant_resolver.py](../../services/app/webhooks/tenant_resolver.py) — `ResolverProvider` + extractor
 17. [scripts/provision_kafka_topics.py](../../scripts/provision_kafka_topics.py)
 
 ---
@@ -212,14 +212,14 @@ A mock-driven environment where a user can, **from the browser**, start a
 backfill and concurrently drive live ingestion for both sources.
 
 ### Mock source servers
-`services/synthetic/mock_servers/mercury.py` + `quickbooks.py` — FastAPI apps
+`services/ingest/synthetic/mock_servers/mercury.py` + `quickbooks.py` — FastAPI apps
 serving per-tenant fixtures (accounts/transactions; invoices/bills/payments),
 reachable via `SYNTHETIC_SOURCE_API_BASE` sub-paths `/mercury`, `/quickbooks`
 (added to [lib/integrations/endpoints.py](../../lib/integrations/endpoints.py)).
 
-### Gateway control endpoints (`services/gateway/finance_routes.py`)
-A new router mounted in [gateway/app.py](../../services/gateway/app.py),
-modeled on [demo_routes.py](../../services/gateway/demo_routes.py):
+### Gateway control endpoints (`services/app/gateway/finance_routes.py`)
+A new router mounted in [gateway/app.py](../../services/app/gateway/app.py),
+modeled on [demo_routes.py](../../services/app/gateway/demo_routes.py):
 - `POST /finance/{source}/install` — seed install + accounts/entities, flip
   `ingestion.kafka_path_enabled`, emit the onboarding trigger (starts backfill).
 - `POST /finance/{source}/backfill` — (re)trigger backfill (manual_replay).
@@ -242,7 +242,7 @@ concurrent live traffic), and a live **status** table that polls
   (seed → backfill → assert observations → webhook → assert), template
   [scripts/sandbox_jira.py].
 - Unit tests: handler / fetcher / reconciler / client per source (template
-  `services/ingestion/handlers/tests/test_jira.py`).
+  `services/ingest/ingestion/handlers/tests/test_jira.py`).
 - Integration tests: raw → normalized → observation per source (use the
   `fresh_db` fixture — the `company_os` role is superuser and bypasses RLS).
 
@@ -253,7 +253,7 @@ concurrent live traffic), and a live **status** table that polls
 - **Source-CHECK carry-forward** — newest migration must list every prior source.
 - **Mutable dedup** — version `external_id` (status / SyncToken) or changes
   silently dedup away.
-- **Partitions** — `services.observations.partitions.ensure_partitions` before
+- **Partitions** — `services.domain.observations.partitions.ensure_partitions` before
   historical backfill (dev DB ships ~4 forward months → old rows fail
   `partition_missing`).
 - **`KAFKA_PATH_ENABLED` per-tenant flag** — data-plane writes are invisible in

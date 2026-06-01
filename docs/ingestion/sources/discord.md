@@ -28,7 +28,7 @@ Slash commands hit `gateway /webhooks/discord`. Discord requires a **synchronous
 response body** (`CHANNEL_MESSAGE_WITH_SOURCE`) that the async `202` cutover
 contract cannot satisfy, so interactions are **not** in
 `_CUTOVER_ENABLED_PROVIDERS` and run inline `ingest()` →
-[handlers/discord.py](../../../services/ingestion/handlers/discord.py) →
+[handlers/discord.py](../../../services/ingest/ingestion/handlers/discord.py) →
 `discord:interaction`. `content.text` is the primary string option verbatim
 (`/fyralis ask "What's our churn rate?"` → `"What's our churn rate?"`). The
 per-interaction `token` is stripped from metadata before persistence — it is the
@@ -37,12 +37,12 @@ follow-up REST credential.
 PING (type=1) handshake precedes any install and uses the `WEBHOOK_SECRET_DISCORD`
 env-var fallback; otherwise the per-installation public key in `encrypted_secrets`
 verifies Ed25519 signatures
-([signatures/discord.py](../../../services/webhooks/signatures/discord.py)).
+([signatures/discord.py](../../../services/app/webhooks/signatures/discord.py)).
 
 ### 2. Gateway messages (IN-12) — full pipeline
 
 `discord_gateway_worker`
-([services/integrations/discord/gateway/](../../../services/integrations/discord/gateway/))
+([services/ingest/integrations/discord/gateway/](../../../services/ingest/integrations/discord/gateway/))
 holds a persistent `wss://gateway.discord.gg` connection (IDENTIFY, heartbeat,
 RESUME), dispatches every `MESSAGE_CREATE`, builds a `RawEnvelope`
 (`ingress_kind="gateway"`) with the canonical producer → full pipeline →
@@ -64,11 +64,11 @@ index.
 
 ## Auth & uninstall
 
-OAuth ([discord/oauth.py](../../../services/integrations/discord/oauth.py)): bot
+OAuth ([discord/oauth.py](../../../services/ingest/integrations/discord/oauth.py)): bot
 token + mirrored application public key per installation; token exchange via HTTP
 Basic with `(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET)`; registers the `/fyralis`
 slash command. **No uninstall webhook** — the outbound REST client
-([client.py](../../../services/integrations/discord/client.py)) is the single
+([client.py](../../../services/ingest/integrations/discord/client.py)) is the single
 chokepoint; on 401 (or 403 code 50001) it calls `_disable_and_zeroize_discord`
 (idempotent under concurrent races).
 

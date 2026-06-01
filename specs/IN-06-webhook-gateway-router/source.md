@@ -1,9 +1,9 @@
 **Files relevant**
 
-- new: services/webhooks/router.py
-- new: services/webhooks/signatures/{slack,discord,github,linear,stripe}.py
-- services/gateway/main.py (mount the new router)
-- existing services/ingestion/handlers/slack.py (reuse verifier)
+- new: services/app/webhooks/router.py
+- new: services/app/webhooks/signatures/{slack,discord,github,linear,stripe}.py
+- services/app/gateway/main.py (mount the new router)
+- existing services/ingest/ingestion/handlers/slack.py (reuse verifier)
 
 **Why it is needed**
 Real webhook sources don't send Bearer tokens — they sign requests with HMAC (Slack, GitHub, Linear, Stripe), ed25519 (Discord), or arrive via SNS (SES). The current `/ingest/{channel}` endpoint REQUIRES Bearer auth and is structurally incapable of accepting real webhooks. Cannot ship until this is fixed.

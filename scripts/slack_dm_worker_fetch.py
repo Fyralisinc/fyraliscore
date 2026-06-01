@@ -77,11 +77,11 @@ async def main() -> int:
     per = int(os.environ.get("SLACK_DM_DEMO_PER", "6"))
     team_id = _team_for(tenant_id)
 
-    from services.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.ingestion.workflows.runtime import make_workflow_pool
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
 
     # ---- 1. Seed identity + flag + partitions -----------------------
-    from services.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
+    from services.ingest.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
     await pool.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2) "
         "ON CONFLICT (id) DO NOTHING",
@@ -116,11 +116,11 @@ async def main() -> int:
         uuid4(), tenant_id, team_id, user_id,
         "im:history,mpim:history,im:read,mpim:read,users:read",
     )
-    from services.observations.partitions import ensure_partitions
+    from services.domain.observations.partitions import ensure_partitions
     await ensure_partitions(pool, months_ahead=2)
 
     # ---- 2. Fixture registry + spammer subprocess -------------------
-    from services.synthetic.fixtures import make_slack_dm_workspace
+    from services.ingest.synthetic.fixtures import make_slack_dm_workspace
     base_ts = time.time() - 120.0  # now-anchored → inside the partition window
     fixture = make_slack_dm_workspace(
         team_id=team_id, user_id=user_id, messages_per_dm=per, base_ts=base_ts,
@@ -141,7 +141,7 @@ async def main() -> int:
         "COMPANY_OS_ENV": "dev",
     }
     spammer = subprocess.Popen(
-        [sys.executable, "-m", "services.synthetic.spammer.server"],
+        [sys.executable, "-m", "services.ingest.synthetic.spammer.server"],
         env=spammer_env,
     )
 
@@ -159,10 +159,10 @@ async def main() -> int:
             "enabled FROM provider_installations WHERE id = $1",
             bot_id,
         )
-        from services.ingestion.fetchers._clients import build_slack_client
+        from services.ingest.ingestion.fetchers._clients import build_slack_client
         bot_client = await build_slack_client(install, pool=pool)
-        from services.ingestion.planners.context import PlannerContext
-        from services.ingestion.planners.slack import plan_shards_slack
+        from services.ingest.ingestion.planners.context import PlannerContext
+        from services.ingest.ingestion.planners.slack import plan_shards_slack
         async with pool.acquire() as conn:
             ctx = PlannerContext(
                 tenant_id=tenant_id, install=install, conn=conn,
@@ -176,13 +176,13 @@ async def main() -> int:
             )
 
         # ---- 4. REAL fetcher loop → raw-tier(S3) → Kafka producer ---
-        from services.ingestion.fetchers.slack import fetch_page_slack
-        from services.ingestion.kafka.producer import (
+        from services.ingest.ingestion.fetchers.slack import fetch_page_slack
+        from services.ingest.ingestion.kafka.producer import (
             IdempotentProducer,
             ProducerConfig,
         )
-        from services.ingestion.raw_tier.s3 import S3Client
-        from services.ingestion.workflows.shard_fetch import (
+        from services.ingest.ingestion.raw_tier.s3 import S3Client
+        from services.ingest.ingestion.workflows.shard_fetch import (
             DEFAULT_S3_BUCKET,
             _write_record_and_build_message,
         )

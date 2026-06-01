@@ -10,7 +10,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.types import ModelRow
-from services.models.repo import ModelsRepo
+from services.domain.models.repo import ModelsRepo
 
 
 async def wait_for_think_to_drain(

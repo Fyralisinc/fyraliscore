@@ -326,7 +326,7 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
     assert payload["pattern_candidate_id"] == str(cand_ids[0])
 
     # Now simulate Think T4 pattern_review: call promote_pattern_candidate.
-    from services.models.repo import ModelsRepo
+    from services.domain.models.repo import ModelsRepo
     repo = ModelsRepo(pool=None)
     pattern_id = await promote_pattern_candidate(
         tx_conn, cand_ids[0],

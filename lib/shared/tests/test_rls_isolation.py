@@ -28,15 +28,14 @@ pytestmark = pytest.mark.integration
 
 
 @pytest_asyncio.fixture
-async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        pytest.skip("DATABASE_URL not set")
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
-    try:
-        yield pool
-    finally:
-        await pool.close()
+async def db_pool(rls_app_pool: asyncpg.Pool) -> asyncpg.Pool:
+    # RLS isolation can only be proven by a role that does NOT bypass RLS;
+    # a superuser/BYPASSRLS connection sees through every policy and would
+    # make `test_with_tenant_set_sees_only_own_rows` silently wrong. Delegate
+    # to the shared non-super pool (root conftest::rls_app_pool) so these
+    # tests run with policies actually enforced — in dev (superuser) and CI
+    # alike. Test bodies are unchanged.
+    return rls_app_pool
 
 
 async def _seed_actor(conn: asyncpg.Connection, tenant: UUID, name: str) -> UUID:

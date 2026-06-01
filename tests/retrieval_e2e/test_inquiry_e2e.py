@@ -12,17 +12,17 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.execution.contracts import SignalEnvelope
-from services.execution.inquiry import (
+from services.platform.execution.contracts import SignalEnvelope
+from services.platform.execution.inquiry import (
     InquiryConfig,
     InquiryResult,
     run_inquiry_retrieval,
 )
-from services.execution.routing import decide_route
-from services.models.repo import pgvector_pool_init
-from services.retrieval.assembler import AccessContext, assemble_context
-from services.retrieval.primary import TriggerContext
-from services.think.prompt import build_prompt
+from services.platform.execution.routing import decide_route
+from services.domain.models.repo import pgvector_pool_init
+from services.reasoning.retrieval.assembler import AccessContext, assemble_context
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.prompt import build_prompt
 from tests.synthesis_harness import _fixtures as F
 
 

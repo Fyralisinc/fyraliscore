@@ -37,13 +37,13 @@ _PROD: dict[str, str] = {
     "discord_api": "https://discord.com/api/v10",
     "discord_gateway_bot": "https://discord.com/api/v10/gateway/bot",
     # IN-14 Notion: single host; the /v1 prefix lives on each request path
-    # in services/integrations/notion/client.py.
+    # in services/ingest/integrations/notion/client.py.
     "notion_api": "https://api.notion.com",
     # IN-15 Google Calendar: the v3 REST base. Uses the same DWD service
-    # account as Gmail (auth lives in services/integrations/gmail/dwd.py).
+    # account as Gmail (auth lives in services/ingest/integrations/gmail/dwd.py).
     "google_calendar_api": "https://www.googleapis.com/calendar/v3",
     # IN-16 Google Drive: the v3 REST base. Uses the same DWD service account
-    # as Gmail/Calendar (auth lives in services/integrations/gmail/dwd.py).
+    # as Gmail/Calendar (auth lives in services/ingest/integrations/gmail/dwd.py).
     "google_drive_api": "https://www.googleapis.com/drive/v3",
     # IN-17 Jira: NOTE — Jira Cloud has NO single global host; each tenant's
     # site is its own `https://<site>.atlassian.net`, carried per-install on

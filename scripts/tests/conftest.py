@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
-from services.models.repo import ModelsRepo, pgvector_pool_init
+from services.domain.models.repo import ModelsRepo, pgvector_pool_init
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -112,7 +112,7 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
 
 
 # ---------------------------------------------------------------------
-# Embedding helpers (same shape as services/models/tests/conftest.py)
+# Embedding helpers (same shape as services/domain/models/tests/conftest.py)
 # ---------------------------------------------------------------------
 
 

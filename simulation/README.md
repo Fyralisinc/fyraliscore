@@ -5,8 +5,8 @@ substrate by typing messages as different personas — either through
 a simulated Slack UI or YAML-authored scenarios — and watch Think
 turn them into Models, Acts, and Resources.
 
-Everything here feeds the existing `services/synthetic` bypass.
-Nothing in this directory modifies `services/synthetic/*` or the
+Everything here feeds the existing `services/ingest/synthetic` bypass.
+Nothing in this directory modifies `services/ingest/synthetic/*` or the
 ingestion path.
 
 ## Prerequisites
@@ -24,7 +24,7 @@ ingestion path.
 # 1. Author scenario replay — produces 38 signals for the Acme
 #    Tuesday demonstration. Each signal enqueues a Think trigger;
 #    Model / Act / Resource generation happens once the Think
-#    worker drains the queue (see services/think/worker.py).
+#    worker drains the queue (see services/reasoning/think/worker.py).
 COMPANY_OS_ENV=dev DATABASE_URL=... \
   python -m simulation.scenarios.replay acme_tuesday
 
@@ -110,7 +110,7 @@ every worker / server boot (idempotent ON CONFLICT).
 - `GET /simulation/channels` — the fixed channel list.
 - `GET /simulation/messages?channel=<handle>` — last 20 messages.
 - `POST /simulation/inject` — composes a `SyntheticSignal` and calls
-  `services.synthetic.core.inject()`.
+  `services.ingest.synthetic.core.inject()`.
 
 The UI in `slack_ui/`:
 
@@ -126,7 +126,7 @@ only requires the running FastAPI process.
 
 ## Channel workers
 
-Every worker is a thin CLI around `services.synthetic.core.inject()`:
+Every worker is a thin CLI around `services.ingest.synthetic.core.inject()`:
 
 ```bash
 # GitHub PR
@@ -238,6 +238,6 @@ COMPANY_OS_ENV=test pytest simulation/tests/ -v
 ```
 
 Integration testing of the full ingestion pipeline lives in the
-existing `services/ingestion/tests/` suite; the simulation harness
+existing `services/ingest/ingestion/tests/` suite; the simulation harness
 piggybacks on that infrastructure at runtime by calling
-`services.synthetic.core.inject()`.
+`services.ingest.synthetic.core.inject()`.

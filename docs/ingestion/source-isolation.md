@@ -76,7 +76,7 @@ ingestion.dlq.{source}
 Control-plane topics (`ingestion.tenant_traffic_signal`, progress) stay
 single — they are per-tenant signals, not per-source data.
 
-A single module — `services/ingestion/kafka/topics.py` — is the **one source
+A single module — `services/ingest/ingestion/kafka/topics.py` — is the **one source
 of truth** for topic naming. Producers, consumers, the provisioner, and the
 circuit-breaker lag probe all derive names from it. The canonical source list
 is `RawEnvelope`'s `SourceLiteral` so the two can never drift.
@@ -127,7 +127,7 @@ exhaust S3 connections.
 
 ### 5. Partition-count drift fix
 
-`services/webhooks/router.py::_kafka_partition_for_tenant` hardcodes
+`services/app/webhooks/router.py::_kafka_partition_for_tenant` hardcodes
 `num_partitions=32`, but topics are provisioned with `KAFKA_TOPIC_PARTITIONS`
 (default 12). The partition label it computes is therefore wrong. We read the
 real count from `KAFKA_TOPIC_PARTITIONS` so the metric matches the broker.
@@ -191,7 +191,7 @@ scale the all-sources singletons to 0.
 
 ## Known follow-ups (deliberately deferred)
 
-- **Circuit breaker per-source lag.** `services/ingestion/feature_flags/
+- **Circuit breaker per-source lag.** `services/ingest/ingestion/feature_flags/
   circuit_breaker.py` measures consumer lag on a single `raw_topic`. With
   per-source raw topics, a tenant can lag on one source's lane while healthy on
   another. The breaker should measure lag across every
