@@ -28,6 +28,7 @@ import orjson
 import pytest
 
 from lib.shared.ids import uuid7
+from services.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
 from services.ingestion.workflows.oauth_poller import (
     OAuthPoller,
     OAuthPollerConfig,
@@ -231,6 +232,57 @@ async def test_orchestrator_handles_run_created_signal_atomically(
         "SELECT status FROM onboarding_runs WHERE id = $1", run_id,
     )
     assert run_row["status"] == "running"
+
+
+async def test_orchestrator_enables_kafka_path_flag_on_run_created(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Every tenant onboarding defaults the tenant onto the full
+    Kafka pipeline: handling onboarding_run_created sets
+    `ingestion.kafka_path_enabled=TRUE` (no pre-existing row)."""
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    await _emit_run_created_signal(fresh_db, run_id=run_id, tenant_id=tid)
+
+    await _orch(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        "SELECT flag_value, set_by FROM tenant_flags "
+        "WHERE tenant_id = $1 AND flag_name = $2",
+        tid, KAFKA_PATH_ENABLED,
+    )
+    assert row is not None, "onboarding must create the kafka_path flag row"
+    assert row["flag_value"] is True
+    assert row["set_by"] == "auto:tenant_onboarding"
+
+
+async def test_orchestrator_does_not_override_existing_kafka_path_flag(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Idempotent default: a pre-existing flag row (e.g. an operator
+    or the circuit breaker set it FALSE) is NOT clobbered by
+    onboarding — ON CONFLICT DO NOTHING."""
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    # Pre-seed FALSE, as the circuit breaker would on a lag trip-off.
+    await fresh_db.execute(
+        "INSERT INTO tenant_flags (tenant_id, flag_name, flag_value, set_by) "
+        "VALUES ($1, $2, FALSE, 'auto:circuit_breaker')",
+        tid, KAFKA_PATH_ENABLED,
+    )
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    await _emit_run_created_signal(fresh_db, run_id=run_id, tenant_id=tid)
+
+    await _orch(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        "SELECT flag_value, set_by FROM tenant_flags "
+        "WHERE tenant_id = $1 AND flag_name = $2",
+        tid, KAFKA_PATH_ENABLED,
+    )
+    assert row["flag_value"] is False, "onboarding must not override a FALSE flag"
+    assert row["set_by"] == "auto:circuit_breaker"
 
 
 # =====================================================================
