@@ -214,9 +214,13 @@ async def test_shard_fetch_s3_blob_contains_record_and_metadata(
 
 
 # =====================================================================
-# 4. S3 failure marks the shard failed (A19), distinguishable error.
+# 4. S3 failure is a TRANSIENT infra fault → shard stays in_progress
+#    (orphan-scan retries), NOT terminal 'failed'. Terminal-failing on a
+#    raw-tier write hiccup silently drops the shard's history with no
+#    auto-recovery; the prod-hardening fix makes it recoverable, matching
+#    the flush-/publish-failure contract.
 # =====================================================================
-async def test_shard_fetch_s3_failure_marks_shard_failed(
+async def test_shard_fetch_s3_failure_leaves_shard_in_progress(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     s3 = FakeS3Client()
@@ -235,12 +239,11 @@ async def test_shard_fetch_s3_failure_marks_shard_failed(
         "SELECT state, last_error FROM onboarding_shards WHERE id = $1",
         shard_id,
     )
-    assert row["state"] == "failed"
-    assert "S3 raw-tier write failed" in (row["last_error"] or ""), (
-        f"S3 failure should be tagged distinctly for operators; got "
-        f"{row['last_error']!r}"
-    )
-    # No envelope published — we failed before the N1 publish.
+    # Recoverable: shard left in_progress for the orphan-scan to resume, NOT
+    # terminal-failed. No terminal last_error is stamped (mirrors the flush-
+    # failure path; observability is via the shard_fetch.s3_write_failure log).
+    assert row["state"] == "in_progress"
+    # No envelope published — we returned before the N1 publish.
     assert len(producer.published) == 0
 
 
