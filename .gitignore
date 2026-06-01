@@ -1,8 +1,12 @@
 # ---- Secrets / env ----
-# Never commit any .env variant. Only .env.example is tracked.
+# Never commit any .env variant. Only the *.example templates (which
+# hold placeholders, no real secrets) are tracked.
 .env
 .env.*
 !.env.example
+!.env.production.example
+!.env.sandbox.example
+.secrets/
 
 # ---- Python ----
 __pycache__/
@@ -46,6 +50,8 @@ docker-compose.override.yml
 /tmp/
 .scheduled_tasks.lock
 .claude/scheduled_tasks.lock
+# Ephemeral agent worktrees — must never be tracked (they are local checkouts)
+.claude/worktrees/
 
 # ---- Simulation run artifacts ----
 truss_run/

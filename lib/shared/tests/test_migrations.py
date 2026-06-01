@@ -128,3 +128,60 @@ async def test_apply_migrations_dir_warn_continues(conn, tmp_path):
     assert await conn.fetchval(
         "SELECT to_regclass('public.migrations_t3_marker') IS NOT NULL"
     )
+
+
+# ---------------------------------------------------------------------
+# Non-transactional migrations (ingestion LLD §1.6).
+# `CREATE INDEX CONCURRENTLY` cannot run inside an explicit BEGIN/COMMIT.
+# The runner detects either the keyword or the
+# `-- migration:no-transaction` directive and skips the txn wrapper.
+# Pure-unit detection tests live in test_migrations_unit.py; this file
+# carries the end-to-end behaviour against a real Postgres.
+# ---------------------------------------------------------------------
+
+async def test_concurrently_index_runs_outside_transaction(conn):
+    """CREATE INDEX CONCURRENTLY would fail with SQLSTATE 25001 if
+    `apply_migration` wrapped it in a transaction. This test proves
+    the keyword-detection path bypasses the wrapper end-to-end.
+
+    Skip note: requires Postgres; uses a transient table.
+    """
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS migrations_no_txn_marker "
+        "(id INT PRIMARY KEY, name TEXT)"
+    )
+    try:
+        await apply_migration(
+            conn,
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+            "migrations_no_txn_marker_name_idx "
+            "ON migrations_no_txn_marker (name);",
+            name="0049_test.sql",
+        )
+        idx_exists = await conn.fetchval(
+            "SELECT to_regclass('public.migrations_no_txn_marker_name_idx') "
+            "IS NOT NULL"
+        )
+        assert idx_exists is True
+    finally:
+        await conn.execute(
+            "DROP TABLE IF EXISTS migrations_no_txn_marker CASCADE"
+        )
+
+
+async def test_no_transaction_directive_path(conn):
+    """Files carrying an explicit `-- migration:no-transaction`
+    directive must also bypass the txn wrapper, even without the
+    CONCURRENTLY keyword. This is the manual escape hatch.
+    """
+    sql = (
+        "-- migration:no-transaction\n"
+        "CREATE TABLE IF NOT EXISTS migrations_t3_marker (id INT PRIMARY KEY);"
+    )
+    try:
+        await apply_migration(conn, sql, name="directive_test.sql")
+        assert await conn.fetchval(
+            "SELECT to_regclass('public.migrations_t3_marker') IS NOT NULL"
+        )
+    finally:
+        await conn.execute("DROP TABLE IF EXISTS migrations_t3_marker CASCADE")

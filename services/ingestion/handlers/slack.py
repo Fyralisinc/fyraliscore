@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import re
 import time
@@ -32,7 +31,6 @@ from lib.shared.errors import CompanyOSError, ValidationError
 
 from services.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
-    HandlerError,
     ObservationDraft,
     register,
 )
@@ -175,21 +173,57 @@ async def handle_slack_message(
         )
 
     event = _extract_event(payload)
-    text = event.get("text")
+    subtype = event.get("subtype")
+
+    # DM (`message.im`) and group-DM (`message.mpim`) events arrive on the
+    # SAME `slack:message` channel as public/private channel messages — they
+    # carry a `channel_type` of "im"/"mpim" and a D…/G… channel id, but are
+    # otherwise identical and flow through this handler unchanged. The two
+    # mutation subtypes need special handling:
+    #
+    #   * message_deleted — carries no content; reject cleanly (deletion
+    #     tracking is out of scope for this layer).
+    #   * message_changed — the real content lives in the nested `message`
+    #     object. Dedup here is insert-only (UNIQUE … DO NOTHING), so reusing
+    #     the ORIGINAL ts would silently drop the edited text; instead we key
+    #     the edit on its own edit timestamp (a distinct, captured edit signal
+    #     for the Memory Fabric) and link back to the original via
+    #     content.original_ts.
+    original_ts: str | None = None
+    if subtype == "message_deleted":
+        raise ValidationError(
+            "slack message_deleted has no content to ingest",
+            channel="slack:message",
+            subtype=subtype,
+        )
+    if subtype == "message_changed" and isinstance(event.get("message"), dict):
+        inner = event["message"]
+        text = inner.get("text")
+        original_ts = inner.get("ts")
+        user_id = inner.get("user") or inner.get("user_id")
+        ts = (
+            inner.get("edited_ts")
+            or (inner.get("edited") or {}).get("ts")
+            or event.get("event_ts")
+            or event.get("ts")
+            or original_ts
+        )
+    else:
+        text = event.get("text")
+        ts = event.get("ts") or event.get("event_ts")
+        user_id = event.get("user") or event.get("user_id")
+
     if not isinstance(text, str):
-        # Slack system events (channel_join, message_deleted, etc) may
-        # omit text; reject with 400 so the sender knows it was
-        # unprocessable. Wave 2-B can add handlers for the subtypes
-        # that matter.
+        # Remaining system events (channel_join, bot adds, etc.) carry no
+        # message text; reject with 400 so the sender knows it was
+        # unprocessable.
         raise ValidationError(
             "slack event missing 'text' field (handler supports message events only)",
             channel="slack:message",
             event_type=event.get("type"),
-            subtype=event.get("subtype"),
+            subtype=subtype,
         )
-    ts = event.get("ts") or event.get("event_ts")
     channel_id = event.get("channel") or event.get("channel_id")
-    user_id = event.get("user") or event.get("user_id")
 
     if not ts or not isinstance(ts, str):
         raise ValidationError(
@@ -208,12 +242,16 @@ async def handle_slack_message(
 
     content = {
         "channel": channel_id,
+        "channel_type": event.get("channel_type"),
         "ts": ts,
         "user": user_id,
         "text": text,
         "team": event.get("team") or payload.get("team_id"),
         "event_type": event.get("type"),
+        "subtype": subtype,
     }
+    if original_ts is not None:
+        content["original_ts"] = original_ts
 
     return ObservationDraft(
         source_channel="slack:message",

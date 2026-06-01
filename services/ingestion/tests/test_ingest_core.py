@@ -394,26 +394,13 @@ async def test_notify_fires_post_commit(
 async def test_think_trigger_enqueued_on_new_observation(
     gateway_pool, tenant_id, _DeterministicEmbedder
 ):
-    entity_id = uuid7()
-    alias_repo = EntityAliasRepo(gateway_pool)
-    await alias_repo.insert_alias(
-        phrase="payments",
-        resolved_entity_ref={"type": "commitment", "id": str(entity_id)},
-        source="manual",
-        confidence=0.95,
-        tenant_id=tenant_id,
-    )
     r = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        text="payments update",
-        embedder=_DeterministicEmbedder(),
-        alias_repo=alias_repo,
+        gateway_pool, tenant_id, embedder=_DeterministicEmbedder()
     )
     assert r.trigger_queue_id is not None
     row = await gateway_pool.fetchrow(
         """
-        SELECT tenant_id, trigger_kind, trigger_subkind, observation_id, payload
+        SELECT tenant_id, trigger_kind, trigger_subkind, observation_id
         FROM think_trigger_queue WHERE id = $1
         """,
         r.trigger_queue_id,
@@ -423,61 +410,6 @@ async def test_think_trigger_enqueued_on_new_observation(
     assert row["trigger_kind"] == "T1"
     assert row["trigger_subkind"] == "event_arrival"
     assert row["observation_id"] == r.observation.id
-    assert row["payload"]["source_channel"] == "slack:message"
-    assert row["payload"]["observation_kind"] == "signal"
-    assert row["payload"]["signal_type"] == "slack:message/message"
-    assert row["payload"]["trust_tier"] == "attested_agent"
-    assert {"type": "commitment", "id": str(entity_id)} in (
-        row["payload"].get("seed_entity_ids") or []
-    )
-
-
-@pytest.mark.asyncio
-async def test_ingest_records_shadow_routing_decision(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    customer_id = uuid7()
-    alias_repo = EntityAliasRepo(gateway_pool)
-    await alias_repo.insert_alias(
-        phrase="Acme",
-        resolved_entity_ref={"type": "customer", "id": str(customer_id)},
-        source="manual",
-        confidence=0.95,
-        tenant_id=tenant_id,
-    )
-    r = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        text=(
-            "Acme cannot launch without SSO, and Sales promised "
-            "go-live this month."
-        ),
-        embedder=_DeterministicEmbedder(),
-        alias_repo=alias_repo,
-    )
-
-    row = await gateway_pool.fetchrow(
-        """
-        SELECT signal_ref_type, signal_ref_id, route, decision_status,
-               score, score_breakdown, estimated_cost, risk_level,
-               sensitivity, reason, enqueued_trigger_id
-        FROM signal_routing_decisions
-        WHERE tenant_id = $1 AND signal_ref_id = $2
-        """,
-        tenant_id,
-        r.observation.id,
-    )
-
-    assert row is not None
-    assert row["signal_ref_type"] == "observation"
-    assert row["route"] == "DEEP_INQUIRY_PATH"
-    assert row["decision_status"] == "shadow"
-    assert row["score"] > 0.45
-    assert row["score_breakdown"]["risk_language"] > 0
-    assert row["estimated_cost"]["class"] == "deep_inquiry"
-    assert row["risk_level"] in {"medium", "high"}
-    assert row["sensitivity"] == "normal"
-    assert row["enqueued_trigger_id"] == r.trigger_queue_id
 
 
 # =========================================================================

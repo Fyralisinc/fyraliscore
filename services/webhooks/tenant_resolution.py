@@ -1,4 +1,17 @@
-"""services/webhooks/tenant_resolution.py — provider-specific tenant lookup.
+"""services/webhooks/tenant_resolution.py — DEPRECATED env-var resolver.
+
+⚠️  IN-08 (this PR) replaced this module with `app.state.tenant_resolver`
+    (the IN-07 DB-backed `services.webhooks.tenant_resolver.TenantResolver`).
+    The webhook router no longer imports anything from this file.
+    This file is retained as a no-op shim for one staging-soak cycle
+    and is scheduled for deletion per
+    `specs/IN-08-slack-production-integration/tasks.md` T049.
+
+    The DB-backed resolver reads `provider_installations` rows
+    (migration 0039); the OAuth install flow (IN-08 US3) creates them.
+
+----------------------------------------------------------------------
+Historical docstring follows:
 
 Verified webhooks MUST resolve to a tenant before ingestion, because
 the existing ingestion pipeline writes `tenant_id` on every row and

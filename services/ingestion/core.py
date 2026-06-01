@@ -63,13 +63,6 @@ from services.ingestion.handlers import (
 )
 from services.observations.events import emit_pending_notifications, notify_scope
 from services.observations.repo import ObservationRepository
-from services.execution import (
-    SignalEnvelope,
-    decide_route,
-    record_routing_decision,
-    routing_decision_status_from_env,
-    should_record_routing_decisions,
-)
 
 
 MAX_PAYLOAD_BYTES = 1 * 1024 * 1024  # 1 MB per BUILD-PLAN tests
@@ -137,6 +130,7 @@ async def ingest(
     embedder: OllamaClient | None = None,
     request_headers: dict[str, str] | None = None,
     enqueue_trigger: bool = True,
+    embedding_producer: Any | None = None,
 ) -> IngestResult:
     """Run the UniformIngestPath for `channel` + `raw_payload`.
 
@@ -150,6 +144,14 @@ async def ingest(
 
     Idempotent: two calls with the same (source_channel, external_id)
     return the same observation row, `deduped=True` on the second call.
+
+    M3.2: when `embedding_producer` is provided AND the inline
+    embedding step left the row at `embedding_pending=TRUE`, publishes
+    an envelope to `ingestion.embedding` so the M3.2 embedding worker
+    can retry the Ollama call asynchronously. The publish is
+    best-effort and CANNOT fail the ingest — if Kafka is down, the
+    M3.3 backlog drainer (which scans Postgres directly for
+    `embedding_pending=TRUE`) will eventually pick up the row.
     """
     if not isinstance(raw_payload, dict):
         raise ValidationError("raw_payload must be a JSON object")
@@ -184,6 +186,76 @@ async def ingest(
             f"handler returned source_channel={draft.source_channel!r} "
             f"but was registered for {channel!r}"
         )
+
+    # Steps 2-7 are shared with the M5.2 writer's full-mode path,
+    # which consumes NormalizedEnvelope (handler already ran in
+    # the normalizer) and would re-handle the payload otherwise.
+    return await ingest_from_draft(
+        channel=channel,
+        draft=draft,
+        pool=pool,
+        tenant_id=tenant_id,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+        enqueue_trigger=enqueue_trigger,
+        embedding_producer=embedding_producer,
+    )
+
+
+async def ingest_from_draft(
+    *,
+    channel: str,
+    draft: ObservationDraft,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    actor_repo: ActorRepo | None = None,
+    alias_repo: EntityAliasRepo | None = None,
+    embedder: OllamaClient | None = None,
+    enqueue_trigger: bool = True,
+    embedding_producer: Any | None = None,
+) -> IngestResult:
+    """Steps 2-7 of the UniformIngestPath, given an already-built draft.
+
+    Public entry for the M5.2 writer full-mode path: the normalizer
+    has already run the handler step in M2.3 and emitted a
+    `NormalizedEnvelope` carrying the draft fields. The writer
+    reconstructs an `ObservationDraft` from that envelope and calls
+    this function, avoiding a second handler dispatch + S3 raw fetch.
+
+    Contract:
+      - `draft.source_channel` MUST equal `channel`. Mismatch raises
+        `ValidationError` — same defensive check as in `ingest()`.
+      - Returns an `IngestResult` with the same shape `ingest()` does.
+      - Per-call transaction (M5 Finding 4: per-envelope ingest()
+        calls; no batched-transaction refactor). One asyncpg
+        connection acquired, one transaction committed.
+
+    All steps 2-7 logic lives here so `ingest()` and the writer
+    share the same observation-creation path — divergence here
+    would be an N1 cutover-safety failure (the writer's full-mode
+    output must be set-equal to the inline path's output for the
+    same input).
+    """
+    if draft.source_channel != channel:
+        raise ValidationError(
+            f"draft.source_channel={draft.source_channel!r} does not match "
+            f"channel={channel!r}"
+        )
+
+    # ---- step 1.5: GitHub Intelligence Layer inline enrichment -------
+    # For github webhook signals, augment draft.content["intelligence"]
+    # IN PLACE (state transition + code blast radius + causal "why") before
+    # persistence, so the SAME observation row carries the reasoning. Bounded,
+    # flag-gated, and fully swallowed: on timeout/error/disabled the raw draft
+    # is persisted unchanged (the raw-on-failure guarantee).
+    if channel == "github:webhook":
+        try:
+            from services.github_intel.inline import maybe_enrich_github_draft
+
+            await maybe_enrich_github_draft(draft, pool=pool, tenant_id=tenant_id)
+        except Exception:  # noqa: BLE001 — enrichment must never break ingest
+            pass
 
     # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
@@ -315,39 +387,8 @@ async def ingest(
                             trigger_queue_id=None,
                         )
                 row = await repo.insert(obs_create, conn=conn)
-                signal_type = _signal_type_for_prompt(draft, content)
-                routing_decision = None
-                if should_record_routing_decisions():
-                    envelope = SignalEnvelope.from_observation(
-                        row,
-                        signal_type=signal_type,
-                        trigger_type="T1_EVENT",
-                    )
-                    routing_decision = decide_route(envelope)
-                route_status = routing_decision_status_from_env()
-                effective_enqueue_trigger = enqueue_trigger
-                trigger_kind = "T1"
-                trigger_subkind = "event_arrival"
-                if routing_decision is not None and route_status == "enforced":
-                    if routing_decision.route in {
-                        "IGNORE_OR_ARCHIVE",
-                        "HUMAN_VALIDATION_PATH",
-                    }:
-                        effective_enqueue_trigger = False
-                    elif routing_decision.route == "BACKGROUND_PATH":
-                        trigger_kind = "T3" if row.kind == "anomaly_flagged" else "T4"
-                        trigger_subkind = (
-                            "anomaly_detected"
-                            if trigger_kind == "T3"
-                            else "background_inquiry"
-                        )
-                    elif (
-                        routing_decision.route == "DETERMINISTIC_UPDATE"
-                        and row.kind == "state_change"
-                    ):
-                        trigger_subkind = "state_change"
                 # ---- step 7: enqueue T1 trigger -----------------------
-                if effective_enqueue_trigger:
+                if enqueue_trigger:
                     trigger_queue_id = uuid7()
                     await conn.execute(
                         """
@@ -355,7 +396,7 @@ async def ingest(
                             id, tenant_id, trigger_kind, trigger_subkind,
                             observation_id, model_id, payload
                         ) VALUES (
-                            $1, $2, $5, $6, $3, NULL, $4::jsonb
+                            $1, $2, 'T1', 'event_arrival', $3, NULL, $4::jsonb
                         )
                         """,
                         trigger_queue_id,
@@ -365,36 +406,45 @@ async def ingest(
                             {
                                 "source_channel": draft.source_channel,
                                 "kind": row.kind,
-                                "observation_kind": row.kind,
-                                "signal_type": signal_type,
                                 "trust_tier": row.trust_tier,
                                 "seed_occurred_at": row.occurred_at.isoformat(),
                                 "seed_natural_text": (row.content_text or "")[:2000],
-                                "seed_entity_ids": row.entities_mentioned,
                                 "scope_actors": (
                                     [str(row.actor_id)] if row.actor_id else []
                                 ),
                             },
                             default=str,
                         ),
-                        trigger_kind,
-                        trigger_subkind,
                     )
-                if routing_decision is not None:
-                    decision_status = (
-                        "skipped"
-                        if route_status == "enforced"
-                        and not effective_enqueue_trigger
-                        else route_status
-                    )
-                    decision = routing_decision.with_status(
-                        decision_status,
-                        enqueued_trigger_id=trigger_queue_id,
-                    )
-                    await record_routing_decision(conn, decision)
         # Transaction committed — flush NOTIFY.
         if scope.events:
             await emit_pending_notifications(pool, scope.events)
+
+    # M3.2: publish embedding-needed signal if inline embedding
+    # didn't land. The publish is post-commit (the observation is
+    # durable) and best-effort (failure is logged but never raised
+    # — backlog drainer is the safety net for Kafka outages).
+    #
+    # Source-family extraction: source_channel is granular
+    # ("slack:message", "github:pr", "internal:state_change"); the
+    # embedding envelope's source enum is the four-source family
+    # (LLD §1). Non-source-family channels (e.g. internal:*) skip
+    # the publish — they have no embedding worker contract.
+    if (
+        embedding_producer is not None
+        and row.embedding_pending
+    ):
+        from services.ingestion.embedding.publish import (
+            publish_embedding_request,
+        )
+        family = draft.source_channel.split(":", 1)[0]
+        if family in ("slack", "github", "discord", "gmail", "notion", "google_calendar", "jira", "mercury", "quickbooks"):
+            await publish_embedding_request(
+                producer=embedding_producer,
+                tenant_id=tenant_id,
+                source=family,
+                observation_id=row.id,
+            )
 
     return IngestResult(observation=row, deduped=False, trigger_queue_id=trigger_queue_id)
 
@@ -432,39 +482,6 @@ def _looks_like_entity(phrase: str) -> bool:
     return any(c.isupper() for c in phrase)
 
 
-def _signal_type_for_prompt(
-    draft: ObservationDraft,
-    content: dict[str, Any],
-) -> str:
-    """Return a compact type label for downstream prompt profiling.
-
-    Handlers use channel-specific content keys (`event_type`, `action`,
-    sometimes only an observation `kind`). The Think prompt should not need
-    to know every webhook shape, so ingestion normalizes those hints once.
-    """
-    event_type = _stringish(content.get("event_type")) or _stringish(
-        content.get("type")
-    )
-    action = _stringish(content.get("action"))
-
-    if event_type and action:
-        return f"{draft.source_channel}/{event_type}.{action}"
-    if event_type:
-        return f"{draft.source_channel}/{event_type}"
-    if action:
-        return f"{draft.source_channel}/{action}"
-    return f"{draft.source_channel}/{draft.kind}"
-
-
-def _stringish(value: Any) -> str | None:
-    if isinstance(value, str):
-        value = value.strip()
-        return value or None
-    if isinstance(value, (int, float)):
-        return str(value)
-    return None
-
-
 class _PrecomputedEmbedder:
     """Embedder shim that returns a pre-computed embedding to
     `ObservationRepository.insert` so the repo doesn't call Ollama a
@@ -489,6 +506,7 @@ class _PrecomputedEmbedder:
 __all__ = [
     "candidate_phrases",
     "ingest",
+    "ingest_from_draft",
     "IngestResult",
     "MAX_PAYLOAD_BYTES",
     "PayloadTooLarge",

@@ -51,7 +51,19 @@ async def _app_and_env(
 ):
     secret = "e2e-slack-secret"
     monkeypatch.setenv("WEBHOOK_SECRET_SLACK", secret)
-    monkeypatch.setenv("WEBHOOK_TENANT_SLACK_T0001E2E", str(_tenant))
+
+    # IN-08: tenant resolution is DB-backed. Seed a provider_installations
+    # row mapping team_id "T0001E2E" → `_tenant`. The env-var fallback
+    # (autouse fixture in conftest) keeps the env-var-based signing
+    # secret reachable; the resolver path is now the DB.
+    from lib.shared.ids import uuid7
+    await fresh_db.execute(
+        "INSERT INTO provider_installations "
+        "(id, tenant_id, provider, installation_id, secret_ref, enabled) "
+        "VALUES ($1, $2, 'slack', 'T0001E2E', NULL, TRUE)",
+        uuid7(),
+        _tenant,
+    )
 
     app = build_app(
         pool=fresh_db,

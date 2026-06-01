@@ -37,7 +37,15 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -170,7 +178,35 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 # Paths that do not require authentication (e.g. health checks, the
 # session-minting endpoint itself uses a separate actor lookup).
-_PUBLIC_PATHS = frozenset({"/healthz", "/auth/session"})
+_PUBLIC_PATHS = frozenset({
+    "/healthz",
+    "/auth/session",
+    # IN-08: the OAuth callback is public (state-token-authed inside
+    # the handler). The /install route stays Bearer-required, so it is
+    # NOT in this allowlist. We deliberately do NOT add "/integrations/"
+    # as a prefix entry — single-route, not blanket public.
+    "/integrations/slack/callback",
+    # IN-09: same posture for Discord. /install stays Bearer-required.
+    # /installed and /install-error are the redirect targets the OAuth
+    # callback issues. The browser follows the 302 without a Bearer,
+    # so these MUST be on the allowlist or the browser sees 401
+    # missing_bearer after a successful install.
+    "/integrations/discord/callback",
+    "/integrations/discord/installed",
+    "/integrations/discord/install-error",
+    "/integrations/slack/installed",
+    "/integrations/slack/install-error",
+    # IN-13: GitHub App callback + redirect targets. /install stays
+    # Bearer-required like Slack/Discord.
+    "/integrations/github/callback",
+    "/integrations/github/installed",
+    "/integrations/github/install-error",
+    # IN-14: Notion OAuth callback + redirect targets. /install stays
+    # Bearer-required.
+    "/integrations/notion/callback",
+    "/integrations/notion/installed",
+    "/integrations/notion/install-error",
+})
 
 # Path prefixes that bypass the gateway's bearer-session middleware.
 # Week-4 integration: the CEO-view sub-routers carry their own token
@@ -189,7 +225,17 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # /sessions/start endpoint mints the auth token for everything else.
     "/v1/demo/companies",
     "/v1/demo/sessions/start",
+    # IN-06: webhook ingress. Authentication is the per-provider
+    # cryptographic signature check inside services.webhooks.router —
+    # NOT a Bearer token. The Bearer middleware MUST skip this prefix
+    # or every webhook becomes a 401 with `missing_bearer`.
     "/webhooks/",
+    # Finance testing panel (Mercury + QuickBooks). Dev/testing tool scoped by
+    # X-Tenant-Id header (no bearer), same posture as /debug. Env-gated at mount.
+    "/finance/",
+    # Slack DM testing panel (per-user OAuth DM ingestion). Same posture as
+    # /finance — X-Tenant-Id header, no bearer, env-gated at mount.
+    "/slack/",
 )
 
 
@@ -284,6 +330,85 @@ def _unauth(reason: str) -> Response:
 
 
 # ---------------------------------------------------------------------
+# Ingest body guard — IN-01
+# ---------------------------------------------------------------------
+
+
+class IngestSizeError(Exception):
+    """Raised by `ingest_body_bytes` when a request body is rejected
+    before (or during a bounded read of) ingest. The paired handler
+    `ingest_size_error_handler` renders `payload` verbatim so callers see
+    a flat `{"error": "...", ...}` body, matching pre-IN-01 shape rather
+    than FastAPI's `{"detail": {...}}` wrapping.
+    """
+
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        super().__init__(payload.get("error", "ingest_size_error"))
+        self.status_code = status_code
+        self.payload = payload
+
+
+async def ingest_size_error_handler(
+    request: Request, exc: IngestSizeError
+) -> JSONResponse:
+    return JSONResponse(exc.payload, status_code=exc.status_code)
+
+
+async def ingest_body_bytes(request: Request) -> bytes:
+    """FastAPI dependency for POST /ingest/* — enforces payload limits
+    before the body hits memory and returns the validated bytes.
+
+    Order matters:
+      1. Reject `Transfer-Encoding: chunked` (no streaming-ingest support
+         in Wave 2; a chunked sender bypasses Content-Length entirely).
+      2. Reject when `Content-Length` exceeds `MAX_PAYLOAD_BYTES` — this
+         is the OOM-amplification fix: no body byte is read.
+      3. Stream-read with a byte counter that trips at the same limit;
+         defense in depth when `Content-Length` is absent or lies.
+    """
+    te = request.headers.get("transfer-encoding", "").lower()
+    if "chunked" in te:
+        raise IngestSizeError(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            {
+                "error": "payload_too_large",
+                "reason": "chunked_unsupported",
+            },
+        )
+    cl_raw = request.headers.get("content-length")
+    if cl_raw is not None:
+        try:
+            cl = int(cl_raw)
+        except ValueError:
+            raise IngestSizeError(
+                status.HTTP_400_BAD_REQUEST,
+                {"error": "invalid_content_length"},
+            )
+        if cl < 0 or cl > MAX_PAYLOAD_BYTES:
+            raise IngestSizeError(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                {
+                    "error": "payload_too_large",
+                    "max_bytes": MAX_PAYLOAD_BYTES,
+                },
+            )
+    buf = bytearray()
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if len(buf) > MAX_PAYLOAD_BYTES:
+            raise IngestSizeError(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                {
+                    "error": "payload_too_large",
+                    "max_bytes": MAX_PAYLOAD_BYTES,
+                },
+            )
+    return bytes(buf)
+
+
+# ---------------------------------------------------------------------
 # Middleware — rate limiting
 # ---------------------------------------------------------------------
 
@@ -327,6 +452,168 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------
+
+
+def _wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
+    """Wire IN-08 dependencies onto `app_.state`.
+
+    Idempotent — checks for existing attributes so repeated calls
+    (test path + lifespan path) don't double-construct. Both the
+    secret store and the tenant resolver are required by the webhook
+    router cutover in IN-08, so they're wired together here.
+
+    Also pins `app_.state.pool` (some legacy code reads it from
+    `app_.state.deps.pool` only; the new secret-resolution path reads
+    it directly off `app_.state` for simpler call sites) and asserts
+    the prod-safety invariants exactly once at startup.
+
+    Defers imports to function scope to avoid pulling lib.shared.secrets
+    and services.webhooks.tenant_resolver into the module-load graph
+    when tests don't need them.
+    """
+    import time
+
+    from lib.shared.secrets import build_secret_store
+    from services.webhooks.secrets import assert_prod_safety_invariants
+    from services.webhooks.tenant_resolver import (
+        InstallationCache,
+        TenantResolverDeps,
+        build_tenant_resolver,
+        default_metrics,
+    )
+
+    # IN-08 SC-002: refuse to start if prod has the env-var fallback on.
+    assert_prod_safety_invariants()
+
+    # Pin pool on app.state for the new code paths.
+    if getattr(app_.state, "pool", None) is None:
+        app_.state.pool = pool
+
+    if getattr(app_.state, "secret_store", None) is None:
+        app_.state.secret_store = build_secret_store(pool)
+
+    if getattr(app_.state, "tenant_resolver", None) is None:
+        app_.state.tenant_resolver = build_tenant_resolver(
+            TenantResolverDeps(
+                pool=pool,
+                cache=InstallationCache(),
+                clock=time.monotonic,
+                metrics=default_metrics(),
+            )
+        )
+
+    # M5.3 cutover: the webhook router reads `ingestion.kafka_path_enabled`
+    # off `app.state.tenant_flags` to decide pipeline-vs-inline per tenant.
+    # Without this the cutover branch can never activate and every provider
+    # stays on inline ingest(). Per-process reader with a 30s TTL cache.
+    if getattr(app_.state, "tenant_flags", None) is None:
+        from services.ingestion.feature_flags import TenantFlags
+        app_.state.tenant_flags = TenantFlags(pool)
+
+    # IN-13: GitHub App outbound client (single instance per pod;
+    # owns the installation-access-token cache) and replay LRU
+    # (in-process; FR-014 — defense-in-depth, not correctness gate).
+    if getattr(app_.state, "github_client", None) is None:
+        from services.integrations.github.client import GithubClient
+        app_.state.github_client = GithubClient(
+            pool=pool,
+            tenant_resolver=app_.state.tenant_resolver,
+        )
+    if getattr(app_.state, "github_replay_cache", None) is None:
+        from services.integrations.github.replay_cache import (
+            make_replay_cache,
+        )
+        app_.state.github_replay_cache = make_replay_cache()
+
+
+async def _wire_ingestion_data_plane(app_: FastAPI) -> None:
+    """Wire the ingestion data plane onto ``app.state`` for ALL sources.
+
+    Webhook / Pub/Sub ingress must traverse the real data plane:
+    ``shadow_write`` → Kafka ``ingestion.raw`` → normalizer →
+    observation_writer (instead of the inline ``ingest()`` against the
+    gateway DB). This builds the single Kafka producer + raw-tier S3
+    client every ingress path hands to ``shadow_write_raw``.
+
+    CANONICAL NAMES: stored under ``app.state.kafka_producer`` /
+    ``app.state.s3_raw_client`` — the names the slack/github M5.3 cutover
+    branch (``services/webhooks/router.py::_attempt_kafka_path``) and the
+    gmail Pub/Sub endpoint (``services/webhooks/gmail_pubsub.py``) read.
+    Wiring them activates the full pipeline for those providers once their
+    tenant's ``ingestion.kafka_path_enabled`` flag is TRUE; until then the
+    cutover branch is a no-op and ingress stays inline (graceful
+    degradation, never a drop).
+
+    Notion has no inline handler, so it reads the SAME producer + S3
+    client via the ``app.state.notion_data_plane`` alias (kept for the
+    IN-14 handler's call sites) — one producer/connection per process,
+    shared.
+
+    Guarded: when ``KAFKA_BOOTSTRAP_SERVERS`` is unset (unit tests,
+    minimal deployments) this is a no-op; the cutover branch then sees
+    missing deps and every provider stays inline. A producer/S3 startup
+    failure is logged and swallowed so it never blocks gateway startup.
+    """
+    if getattr(app_.state, "kafka_producer", None) is not None:
+        return
+    brokers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+    if not brokers:
+        return
+    try:
+        from types import SimpleNamespace
+
+        from services.ingestion.kafka.producer import (
+            IdempotentProducer,
+            ProducerConfig,
+        )
+        from services.ingestion.raw_tier.s3 import S3Client
+
+        producer = IdempotentProducer(
+            ProducerConfig(
+                bootstrap_servers=brokers,
+                client_id="gateway-ingress",
+            )
+        )
+        await producer.start()
+        s3_client = S3Client(
+            os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
+            endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        )
+        await s3_client.connect()
+        # Canonical names — slack/github cutover + gmail Pub/Sub read these.
+        app_.state.kafka_producer = producer
+        app_.state.s3_raw_client = s3_client
+        # IN-14 alias — the Notion webhook handler reads the same instances.
+        app_.state.notion_data_plane = SimpleNamespace(
+            producer=producer, s3_client=s3_client,
+        )
+        log.info("ingestion_data_plane_wired", brokers=brokers)
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        log.error(
+            "ingestion_data_plane_wiring_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
+async def _close_ingestion_data_plane(app_: FastAPI) -> None:
+    """Tear down the data plane wired by ``_wire_ingestion_data_plane``.
+
+    The canonical names and the Notion alias point at the SAME producer +
+    S3 client; stop/close each exactly once.
+    """
+    producer = getattr(app_.state, "kafka_producer", None)
+    s3_client = getattr(app_.state, "s3_raw_client", None)
+    if producer is not None:
+        try:
+            await producer.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    if s3_client is not None:
+        try:
+            await s3_client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def build_app(
@@ -383,6 +670,48 @@ def build_app(
                 or os.environ.get("SLACK_SIGNING_SECRET")
             ),
         )
+        # IN-08: wire the envelope-encrypted secret store and the
+        # DB-backed TenantResolver. The webhook router and the new
+        # integrations router both read these from `request.app.state`.
+        _wire_in08_state(app_, pool)
+
+        # IN-08 T031: start the oauth_install_states sweep task. Runs
+        # every 5 min in the gateway process, deletes rows older than
+        # 1h (whether expired or consumed). Bounded by LIMIT 1000 so
+        # a sudden backlog can't lock the table.
+        import asyncio as _asyncio
+
+        async def _sweep_oauth_states() -> None:
+            while True:
+                try:
+                    await _asyncio.sleep(300)  # 5 min
+                    deleted = await pool.execute(
+                        """
+                        DELETE FROM oauth_install_states
+                         WHERE id IN (
+                            SELECT id FROM oauth_install_states
+                             WHERE expires_at < now() - INTERVAL '1 hour'
+                                OR (consumed_at IS NOT NULL
+                                    AND consumed_at < now() - INTERVAL '1 hour')
+                             LIMIT 1000
+                         )
+                        """,
+                    )
+                    log.info(
+                        "oauth_install_states_sweep",
+                        deleted_summary=deleted,
+                    )
+                except _asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "oauth_install_states_sweep_error",
+                        error_type=type(exc).__name__,
+                    )
+                    # Continue looping; transient DB hiccups should
+                    # not kill the sweep task.
+
+        app_.state.oauth_sweep_task = _asyncio.create_task(_sweep_oauth_states())
         # Wave 4-D: realtime wiring. Only configure if not already done
         # (tests path pre-wires before lifespan). Lazy import to avoid
         # a services.gateway ↔ services.realtime circular.
@@ -411,9 +740,24 @@ def build_app(
                     error=str(_ceo_exc),
                     error_type=type(_ceo_exc).__name__,
                 )
+        # Wire the ingestion data plane (Kafka producer + S3 raw client)
+        # under the canonical names so EVERY source's webhook / Pub/Sub
+        # ingress can traverse the full pipeline instead of inline
+        # ingest(); Notion reads the same instances via its alias.
+        # Guarded + swallow-on-failure (see helper docstring).
+        await _wire_ingestion_data_plane(app_)
         try:
             yield
         finally:
+            await _close_ingestion_data_plane(app_)
+            # IN-08: cancel the oauth_install_states sweep task.
+            sweep_task = getattr(app_.state, "oauth_sweep_task", None)
+            if sweep_task is not None:
+                sweep_task.cancel()
+                try:
+                    await sweep_task
+                except (BaseException,):  # noqa: BLE001
+                    pass
             # Stop the dispatcher we started here (not the test-owned one).
             rt = getattr(app_.state, "realtime", None)
             if rt is not None:
@@ -473,6 +817,9 @@ def build_app(
             rate_limiter=rate_limiter,
             slack_signing_secret=slack_signing_secret,
         )
+        # IN-08: same wiring as the lifespan path, for tests that
+        # pre-build the app synchronously and skip lifespan startup.
+        _wire_in08_state(app, pool)
 
     # Middleware order: add last → first to run.
     # Each middleware resolves deps lazily from request.app.state so
@@ -480,6 +827,8 @@ def build_app(
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(RequestContextMiddleware)
+
+    app.add_exception_handler(IngestSizeError, ingest_size_error_handler)
 
     _register_routes(app)
 
@@ -541,6 +890,41 @@ def build_app(
     from services.gateway.today_routes import register_today_routes
 
     register_today_routes(app)
+
+# IN-08: integrations router (Slack OAuth install + callback).
+    # Mounted at /integrations/{provider}/*. The /install route is
+    # Bearer-authed (standard middleware); only /callback is in the
+    # public-paths allowlist (exact match, no prefix exposure).
+    from services.integrations.router import build_integrations_router
+
+    app.include_router(build_integrations_router())
+
+    # Finance testing control plane (Mercury + QuickBooks): install / backfill /
+    # live-emit / status for the UI panel. On by default (the testing
+    # deliverable); set FINANCE_PANEL_ENABLED=0 to disable in real prod.
+    if os.environ.get("FINANCE_PANEL_ENABLED", "1") != "0":
+        try:
+            from services.gateway.finance_router import build_finance_router
+            app.include_router(build_finance_router())
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            log.error("finance_router_mount_failed", error=str(exc))
+
+    # Slack DM testing control plane (per-user OAuth human↔human DM ingestion):
+    # install / backfill / live-emit / status. On by default (the testing
+    # deliverable); set SLACK_DM_PANEL_ENABLED=0 to disable in real prod.
+    if os.environ.get("SLACK_DM_PANEL_ENABLED", "1") != "0":
+        try:
+            from services.gateway.slack_router import build_slack_router
+            app.include_router(build_slack_router())
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            log.error("slack_router_mount_failed", error=str(exc))
+
+    # GitHub Intelligence Layer — read-only query surface (/github-intel/*).
+    # Bearer-authed (standard middleware) + per-tenant repo allowlist in the
+    # router; no public-path exposure.
+    from services.github_intel.api import build_github_intel_router
+
+    app.include_router(build_github_intel_router())
     return app
 
 
@@ -688,21 +1072,18 @@ def _register_routes(app: FastAPI) -> None:
         )
 
     @app.post("/ingest/{channel:path}")
-    async def post_ingest(channel: str, request: Request) -> JSONResponse:
+    async def post_ingest(
+        channel: str,
+        request: Request,
+        raw: bytes = Depends(ingest_body_bytes),
+    ) -> JSONResponse:
         deps = _deps(request)
         auth: AuthContext | None = getattr(request.state, "auth", None)
         if auth is None:
             return _unauth("missing_bearer")
-        # Enforce payload size (Starlette doesn't enforce a default
-        # body limit; we check after reading).
-        raw = await request.body()
-        if len(raw) > MAX_PAYLOAD_BYTES:
-            return JSONResponse(
-                {"error": "payload_too_large", "max_bytes": MAX_PAYLOAD_BYTES},
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            )
         # Slack signature check — only for slack:message (the one
-        # signature-verified channel in Wave 2-A).
+        # signature-verified channel in Wave 2-A). Uses the same bytes
+        # the dependency assembled so the HMAC sees the wire payload.
         if channel == "slack:message":
             secret = deps.slack_signing_secret
             ts = request.headers.get("X-Slack-Request-Timestamp", "")
@@ -718,9 +1099,10 @@ def _register_routes(app: FastAPI) -> None:
                 )
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             return JSONResponse(
-                {"error": "invalid_json"}, status_code=400
+                {"error": "invalid_json", "detail": e.msg},
+                status_code=400,
             )
         try:
             result: IngestResult = await ingest(
@@ -2071,6 +2453,35 @@ def _register_routes(app: FastAPI) -> None:
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 
+    # ---------------- /v1/history (History page aggregator) -------
+    # Returns events / predictions / arcs / calibration / layer_counts
+    # for the period requested. services.history.aggregator owns the
+    # substrate→UI mapping; this handler is just the HTTP shell.
+    @app.get("/v1/history")
+    async def history_endpoint(request: Request) -> JSONResponse:
+        from services.history import build_history
+
+        auth: AuthContext | None = getattr(request.state, "auth", None)
+        if auth is None:  # pragma: no cover — middleware enforces
+            return _unauth("missing_bearer")
+
+        period = request.query_params.get("period") or "90d"
+        if period not in ("7d", "30d", "90d", "365d", "all"):
+            return JSONResponse(
+                {"error": "invalid_period",
+                 "reason": "expected one of 7d/30d/90d/365d/all"},
+                status_code=400,
+            )
+
+        deps = _deps(request)
+        async with deps.pool.acquire() as conn:
+            payload = await build_history(
+                tenant_id=auth.tenant_id,
+                period=period,
+                conn=conn,
+            )
+        return JSONResponse(payload.to_dict(), status_code=200)
+
     @app.post("/v1/today/brand")
     async def today_brand_endpoint(request: Request) -> JSONResponse:
         """Persist a per-tenant brand-name override (the user clicks the
@@ -2489,11 +2900,28 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     # gateway pool and a lazily-constructed embedder; the standalone
     # `simulation.server:app` continues to work via its own app factory.
     #
-    # Default ON in dev/test, OFF in prod. Set `GATEWAY_MOUNT_SIM=0` to
-    # force off regardless of environment.
-    env_name = os.environ.get("COMPANY_OS_ENV", "dev").lower()
-    _mount_sim_default = "0" if env_name == "prod" else "1"
-    if os.environ.get("GATEWAY_MOUNT_SIM", _mount_sim_default) == "1":
+    # Default ON in dev/test, OFF in prod. In production the sim /
+    # authoring endpoints are NEVER mounted, regardless of
+    # GATEWAY_MOUNT_SIM, because `/simulation/inject` is an
+    # unauthenticated, signature-free, caller-chooses-tenant
+    # substrate-injection surface (it lives under the public path
+    # allowlist). A stray GATEWAY_MOUNT_SIM=1 in a prod compose must not
+    # be able to re-open it.
+    from lib.shared.env import env_name as _env_name_fn, is_prod as _is_prod
+    env_name = _env_name_fn()
+    _prod = _is_prod()
+    _sim_requested = (
+        os.environ.get("GATEWAY_MOUNT_SIM", "0" if _prod else "1") == "1"
+    )
+    if _prod and _sim_requested:
+        log.error(
+            "sim_mount_refused_in_prod",
+            reason=(
+                "GATEWAY_MOUNT_SIM=1 ignored in production; "
+                "/simulation/* is an unauthenticated injection surface"
+            ),
+        )
+    if _sim_requested and not _prod:
         try:
             from simulation.server import SimDeps, build_sim_router
             from simulation.workers._common import (
@@ -2542,6 +2970,23 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
                 log.warning("sim_static_mount_failed", error=str(exc))
         except Exception as exc:  # noqa: BLE001
             log.warning("sim_mount_failed", error=str(exc))
+
+    # ---- 4.5 GMAIL — admin connect + Pub/Sub push webhook ----------
+    # Wired only when DWD credentials are configured. Skipping prevents
+    # noisy boot errors in dev when Gmail isn't yet provisioned.
+    if (
+        os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON_FILE")
+        or os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON")
+    ):
+        try:
+            from services.integrations.gmail.oauth import router as _gmail_oauth_router
+            from services.webhooks.gmail_pubsub import router as _gmail_pubsub_router
+
+            app_.include_router(_gmail_oauth_router)
+            app_.include_router(_gmail_pubsub_router)
+            log.info("gmail_routers_mounted")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("gmail_mount_failed", error=str(exc))
 
     # ---- 5. DEBUG — inspector router -------------------------------
     # Read-only endpoints for /debug UI: signals, think runs, models,

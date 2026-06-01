@@ -1,0 +1,107 @@
+"""services/ingestion/planners/discord.py — Discord backfill (M6.6).
+
+Per A18 + A18.6 + LLD §3.4 (5% sparse sampling). One Shard per
+sampled channel within each guild. Sampling is deterministic
+per (tenant, sampling_version) so re-runs produce the same set.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import random
+
+from services.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingestion.planners.context import PlannerContext
+
+
+log = logging.getLogger(__name__)
+
+
+SHARD_KIND_CHANNEL_WINDOW = "discord_channel_window"
+SAMPLING_VERSION = "v1"  # bump if changing the algorithm
+# Fraction of a guild's text channels to backfill. Defaults to the
+# LLD §3.4 production value (0.05 = 5% sparse sampling); override via
+# DISCORD_BACKFILL_SAMPLING_RATE — e.g. 1.0 for full reconciliation
+# against a source mock. NB: changing the rate changes WHICH channels
+# are sampled (random.sample is not nested across k), so bump
+# SAMPLING_VERSION if you need stable subsets across differing rates;
+# the full-coverage case (1.0) is order-independent and unaffected.
+SAMPLING_RATE = float(os.environ.get("DISCORD_BACKFILL_SAMPLING_RATE", "0.05"))
+
+
+def _stable_seed(tenant_id: str) -> int:
+    """Process-independent seed from (tenant_id, SAMPLING_VERSION).
+
+    Python's builtin `hash()` is salted per process (PYTHONHASHSEED), so
+    seeding the RNG with it gave a DIFFERENT sampled set after every
+    restart — breaking the documented "same set across runs" guarantee.
+    A SHA-256 digest is stable across processes and machines.
+    """
+    digest = hashlib.sha256(
+        f"{tenant_id}:{SAMPLING_VERSION}".encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _sampled_channels(
+    tenant_id: str, channels: list[dict],
+) -> list[dict]:
+    """Deterministic per-guild 5% sample.
+
+    Same tenant + same channel universe → same sampled set across runs
+    and across process restarts. Channels are sorted by id first so the
+    sample is independent of the order the API returned them in.
+    """
+    if not channels:
+        return []
+    ordered = sorted(channels, key=lambda c: str(c.get("id") or ""))
+    rng = random.Random(_stable_seed(tenant_id))
+    k = max(1, int(len(ordered) * SAMPLING_RATE))
+    return rng.sample(ordered, k=min(k, len(ordered)))
+
+
+async def plan_shards_discord(ctx: PlannerContext) -> list[Shard]:
+    """One Shard per sampled channel across all guilds."""
+    if ctx.source_client is None:
+        raise RuntimeError(
+            "Discord planner: source_client=None. The PlannerContext "
+            "factory must supply a DiscordClient."
+        )
+    guilds = await ctx.source_client.list_guilds()
+    install_id = str(ctx.install["installation_id"])
+    tenant_str = str(ctx.tenant_id)
+    shards: list[Shard] = []
+    for guild in guilds:
+        guild_id = guild.get("id")
+        if not guild_id:
+            continue
+        channels = await ctx.source_client.list_guild_channels(guild_id)
+        # Filter to text channels only (Discord type 0 = GUILD_TEXT).
+        text_channels = [c for c in channels if c.get("type") == 0]
+        sampled = _sampled_channels(tenant_str, text_channels)
+        for ch in sampled:
+            shards.append(Shard(
+                shard_kind=SHARD_KIND_CHANNEL_WINDOW,
+                shard_identifier={
+                    "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
+                    "guild_id": guild_id,
+                    "channel_id": ch.get("id"),
+                    "channel_name": ch.get("name"),
+                    "is_sampled": True,
+                    "sampling_version": SAMPLING_VERSION,
+                    "installation_id": install_id,
+                },
+                recency_score=1.0,
+            ))
+    return shards
+
+
+PLANNER_DISPATCH["discord"] = plan_shards_discord
+
+
+__all__ = [
+    "SAMPLING_RATE", "SAMPLING_VERSION",
+    "SHARD_KIND_CHANNEL_WINDOW",
+    "plan_shards_discord",
+]
