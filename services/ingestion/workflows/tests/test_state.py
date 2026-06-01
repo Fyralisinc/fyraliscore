@@ -21,6 +21,7 @@ import pytest
 from services.ingestion.workflows.state import (
     CursorAdvanceFlushFailure,
     CursorAdvanceMissingState,
+    CursorAdvancePublishFailure,
     KafkaMessage,
     WorkflowState,
     advance_cursor_atomic_with_kafka_publish,
@@ -199,6 +200,65 @@ async def test_advance_cursor_atomic_publishes_before_persists(
     # the flush is what fails.)
     assert len(producer.published) == 2
     assert producer.flush_calls == [2.0]
+
+
+class _RaisingProducer:
+    """Producer whose `produce()` raises at ENQUEUE time — simulates an
+    unprovisioned topic (`_UNKNOWN_TOPIC`), broker-down, or full local
+    queue. `flush` is never reached."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.flush_calls: list[float] = []
+
+    async def produce(self, topic: str, value: bytes, **_kw: Any) -> None:
+        raise self._exc
+
+    async def flush(self, timeout_seconds: float = 10.0) -> int:  # pragma: no cover
+        self.flush_calls.append(timeout_seconds)
+        return 0
+
+
+async def test_advance_cursor_publish_enqueue_failure_is_recoverable(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A produce()-enqueue failure (e.g. unprovisioned topic) MUST surface as
+    the RECOVERABLE CursorAdvancePublishFailure (not a raw KafkaException that
+    escapes to shard_fetch's terminal boundary), and MUST NOT advance the
+    state row. This guards the fix for the silent per-shard history loss seen
+    when `ingestion.raw.slack` was missing.
+    """
+    tid = await _seed_tenant(fresh_db)
+    initial = WorkflowState(
+        workflow_kind="fetch_shard",
+        workflow_id="shard-pub-1",
+        tenant_id=tid,
+        state_data={"cursor": "page-0", "pages_seen": 0},
+        last_advanced_at=_NOW,
+        paused_at=None,
+    )
+    await persist_state(fresh_db, initial)
+
+    producer = _RaisingProducer(RuntimeError("KafkaError{_UNKNOWN_TOPIC}"))
+    msgs = [KafkaMessage(topic="ingestion.raw.slack", value=b'{"p":1}',
+                         key=str(tid).encode("utf-8"))]
+
+    with pytest.raises(CursorAdvancePublishFailure):
+        await advance_cursor_atomic_with_kafka_publish(
+            fresh_db, producer,
+            workflow_kind="fetch_shard",
+            workflow_id="shard-pub-1",
+            new_state_data={"cursor": "page-1", "pages_seen": 1},
+            kafka_messages=msgs,
+            flush_timeout_seconds=2.0,
+        )
+
+    # Flush never ran; state row unchanged (publish-then-advance invariant).
+    assert producer.flush_calls == []
+    reloaded = await load_state(fresh_db, "fetch_shard", "shard-pub-1")
+    assert reloaded is not None
+    assert reloaded.state_data == {"cursor": "page-0", "pages_seen": 0}
+    assert reloaded.last_advanced_at == _NOW
 
 
 # =====================================================================
