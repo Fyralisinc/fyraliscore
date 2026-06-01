@@ -152,6 +152,46 @@ async def build_slack_client(
     return client
 
 
+async def build_slack_user_client(
+    *,
+    tenant_id: Any,
+    team_id: str,
+    user_id: str,
+    base_url: str | None = None,
+    pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Per-USER Slack read-client (xoxp user token) for DM backfill.
+
+    Unlike the bot client (keyed off a `provider_installations` row), the DM
+    grain is per consenting user (`slack_dm_installations`), so this builder
+    takes the identity tuple directly rather than an install Record. The user
+    token is resolved from the secret store by label
+    `slack_user_token:{team_id}:{user_id}` (or preset in spammer mode).
+
+    SPAMMER MODE: preset `_user_token = spam-slack-user::<team>::<user>` so the
+    spammer routes `conversations.list(types=im,mpim)` to that user's DM
+    fixtures — no real xoxp grant or secret material required.
+    """
+    from services.integrations.slack.client import SlackUserClient
+
+    spammer = _spammer_mode()
+    client = SlackUserClient(
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=tenant_id,
+        # The user grain has no provider_installations row id; carry the
+        # tenant uuid as the (unused-by-_call) installation_row_id slot.
+        installation_row_id=tenant_id,
+        team_id=team_id,
+        user_id=user_id,
+        base_url=base_url,
+        http_client=await _get_http(),
+    )
+    if spammer:
+        client._user_token = f"spam-slack-user::{team_id}::{user_id}"
+    return client
+
+
 async def build_discord_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
@@ -307,6 +347,22 @@ async def open_slack_client(install: asyncpg.Record) -> Opener:
     return await build_slack_client(install), _noop
 
 
+async def open_slack_user_client(
+    *, tenant_id: Any, team_id: str, user_id: str, base_url: str | None = None,
+) -> Opener:
+    """Per-user DM read-client opener (fetcher/reconciler seam). Identity comes
+    from the `slack_dm_window` shard_identifier (team_id + consenting user_id)
+    rather than an install Record. The X3 mock harness monkeypatches the
+    per-module `_open_slack_user_client` seam."""
+    return (
+        await build_slack_user_client(
+            tenant_id=tenant_id, team_id=team_id,
+            user_id=user_id, base_url=base_url,
+        ),
+        _noop,
+    )
+
+
 async def open_discord_client(install: asyncpg.Record) -> Opener:
     return await build_discord_client(install), _noop
 
@@ -328,10 +384,12 @@ async def open_quickbooks_client(install: asyncpg.Record) -> Opener:
 
 
 __all__ = [
-    "build_github_client", "build_slack_client", "build_discord_client",
+    "build_github_client", "build_slack_client", "build_slack_user_client",
+    "build_discord_client",
     "build_notion_client", "build_jira_client",
     "build_mercury_client", "build_quickbooks_client",
-    "open_github_client", "open_slack_client", "open_discord_client",
+    "open_github_client", "open_slack_client", "open_slack_user_client",
+    "open_discord_client",
     "open_notion_client", "open_jira_client",
     "open_mercury_client", "open_quickbooks_client",
 ]

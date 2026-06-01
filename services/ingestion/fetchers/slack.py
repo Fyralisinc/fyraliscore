@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_CHANNEL_WINDOW = "slack_channel_window"
+SHARD_KIND_DM_WINDOW = "slack_dm_window"
 
 
 class SlackCursor(BaseModel):
@@ -48,6 +49,21 @@ async def _open_slack_client(install: asyncpg.Record):  # noqa: ANN202
     # local spammer). X3 mock harness monkeypatches this symbol.
     from services.ingestion.fetchers._clients import open_slack_client
     return await open_slack_client(install)
+
+
+async def _open_slack_user_client(  # noqa: ANN202
+    install: asyncpg.Record, shard_identifier: dict[str, Any],
+):
+    # Per-USER DM client (xoxp token). Identity comes from the
+    # slack_dm_window shard_identifier (team + consenting user); the tenant is
+    # the shard's install tenant. X3 mock harness monkeypatches this symbol.
+    from services.ingestion.fetchers._clients import open_slack_user_client
+    return await open_slack_user_client(
+        tenant_id=install["tenant_id"],
+        team_id=shard_identifier["team_id"],
+        user_id=shard_identifier["consenting_user_id"],
+        base_url=shard_identifier.get("base_url"),
+    )
 
 
 def _decode_cursor(c: dict[str, Any] | None) -> SlackCursor:
@@ -68,7 +84,19 @@ async def fetch_page_slack(
     channel_id = shard_identifier["channel_id"]
     cur = _decode_cursor(cursor)
 
-    client, close = await _open_slack_client(install)
+    # DM shards (`slack_dm_window`) read under the consenting user's xoxp token
+    # and carry a `channel_type` (im/mpim) the bot-channel path lacks —
+    # conversations.history messages don't self-describe their surface, so the
+    # fetcher INJECTS it onto each event (parity with the live webhook + the
+    # inline backfill, which both stamp content.channel_type). Channel shards
+    # keep their existing behaviour (no channel_type; the handler stamps None).
+    is_dm = shard_identifier.get("shard_kind") == SHARD_KIND_DM_WINDOW
+    if is_dm:
+        client, close = await _open_slack_user_client(install, shard_identifier)
+        channel_type = shard_identifier.get("channel_type")
+    else:
+        client, close = await _open_slack_client(install)
+        channel_type = None
     try:
         from services.integrations.slack.client import SlackApiError
         try:
@@ -101,10 +129,16 @@ async def fetch_page_slack(
         # message. `install_id` is dropped — the webhook body has no
         # such field and the handler doesn't read it; tenant is known
         # from the shard.
+        def _event(m: dict[str, Any]) -> dict[str, Any]:
+            ev = {**m, "channel": channel_id}
+            if channel_type is not None:
+                ev["channel_type"] = channel_type
+            return ev
+
         records = [{
             "type": "event_callback",
             "team_id": shard_identifier.get("team_id"),
-            "event": {**m, "channel": channel_id},
+            "event": _event(m),
         } for m in messages]
 
         # Track oldest/newest seen ts across the entire shard.
@@ -135,4 +169,9 @@ async def fetch_page_slack(
 FETCHER_DISPATCH["slack"] = fetch_page_slack
 
 
-__all__ = ["SHARD_KIND_CHANNEL_WINDOW", "SlackCursor", "fetch_page_slack"]
+__all__ = [
+    "SHARD_KIND_CHANNEL_WINDOW",
+    "SHARD_KIND_DM_WINDOW",
+    "SlackCursor",
+    "fetch_page_slack",
+]

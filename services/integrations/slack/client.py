@@ -70,6 +70,18 @@ class SlackClient:
         self._bot_token: str | None = None  # lazy
         self._client: httpx.AsyncClient | None = http_client
 
+    async def _resolve_token(self) -> str:
+        """Return the bearer token `_call` authenticates with.
+
+        Overridable seam: the base client authenticates as the workspace
+        BOT (`slack_bot_token:{team}`); `SlackUserClient` overrides this to
+        resolve a per-USER token (`slack_user_token:{team}:{user}`) so DM
+        reads run under the consenting user's grant. Keeping `_call`
+        token-agnostic means the rate-limit / retry / pagination machinery
+        is shared verbatim between the bot and user paths.
+        """
+        return await self._resolve_bot_token()
+
     async def _resolve_bot_token(self) -> str:
         if self._bot_token is not None:
             return self._bot_token
@@ -122,7 +134,7 @@ class SlackClient:
         transient-error backoff. Returns the parsed JSON on `ok=true`;
         raises `SlackApiError` on `ok=false` or budget exhaustion.
         """
-        token = await self._resolve_bot_token()
+        token = await self._resolve_token()
         url = f"{self._api_base}/{endpoint}"
         client = self._httpx()
         headers = {"Authorization": f"Bearer {token}"}
@@ -304,6 +316,110 @@ class SlackClient:
         return messages, next_cursor
 
 
+class SlackUserClient(SlackClient):
+    """Per-USER Slack Web API client (xoxp user token) for DM ingestion.
+
+    Human↔human direct messages and group DMs can NEVER be read by a bot
+    token — only by a USER token granted by a consenting participant. This
+    client authenticates as that user (resolving `slack_user_token:{team}:
+    {user}` from the secret store) and enumerates the user's own im/mpim
+    conversations.
+
+    Reuses `SlackClient._call` (rate-limit + 429/transport retry) and
+    `conversations_history` verbatim; overrides only (a) token resolution
+    (`_resolve_token`) and (b) `conversations_list`, which here requests
+    `types=im,mpim` and maps Slack's conversation objects to the planner's
+    `{id, channel_type, user, name, team_id}` shape (the BOT client's
+    `conversations_list` requests public channels — a different surface, so
+    it is overridden rather than parameterised to keep each path's intent
+    explicit).
+
+    Per-user grain: one instance per (tenant, team_id, user_id). The
+    `user_id` is the CONSENTING user whose token we hold; for an `im` the
+    counterpart is carried on each conversation's `user` field.
+    """
+
+    def __init__(self, *, user_id: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._user_id = user_id
+        self._user_token: str | None = None  # lazy; preset in spammer mode
+
+    async def _resolve_token(self) -> str:
+        if self._user_token is not None:
+            return self._user_token
+        row = await self._pool.fetchrow(
+            """
+            SELECT id::text AS id
+              FROM encrypted_secrets
+             WHERE tenant_id = $1
+               AND label = $2
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            self._tenant_id,
+            f"slack_user_token:{self._team_id}:{self._user_id}",
+        )
+        if row is None:
+            raise SlackApiError(
+                "user token not found for DM install",
+                endpoint=None,
+                tenant=str(self._tenant_id),
+                team_id=self._team_id,
+                user_id=self._user_id,
+            )
+        plaintext = await self._secret_store.get(
+            row["id"], tenant_id=self._tenant_id,
+        )
+        self._user_token = (
+            plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray))
+            else str(plaintext)
+        )
+        return self._user_token
+
+    async def conversations_list(  # type: ignore[override]
+        self, *, types: str = "im,mpim",
+    ) -> list[dict[str, Any]]:
+        """Enumerate the consenting user's DM + group-DM conversations
+        (planner shard source for `slack_dm_window`).
+
+        Cursor-paginated to completion. Each entry carries `id`,
+        `channel_type` ("im"/"mpim", derived from Slack's `is_im`/`is_mpim`
+        flags), the `user` counterpart (im only), `name`, and `team_id`.
+        """
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"types": types, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._call(
+                "conversations.list", method="GET", params=params,
+            )
+            for c in data.get("channels") or []:
+                if not isinstance(c, dict):
+                    continue
+                ctype = (
+                    "im" if c.get("is_im")
+                    else "mpim" if c.get("is_mpim")
+                    # Mock/spammer convenience: an explicit channel_type.
+                    else c.get("channel_type")
+                )
+                out.append({
+                    "id": c.get("id"),
+                    "channel_type": ctype,
+                    "user": c.get("user"),  # im counterpart; None for mpim
+                    "name": c.get("name"),
+                    "team_id": c.get("context_team_id") or self._team_id,
+                })
+            cursor = (
+                (data.get("response_metadata") or {}).get("next_cursor")
+                or None
+            )
+            if not cursor:
+                break
+        return out
+
+
 def _parse_retry_after(value: str | None) -> float | None:
     """Slack uses integer-seconds `Retry-After`. Be liberal: tolerate
     a stray decimal. Returns None for unparseable values."""
@@ -315,4 +431,4 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
 
 
-__all__ = ["SlackClient", "SlackApiError"]
+__all__ = ["SlackClient", "SlackUserClient", "SlackApiError"]

@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_CHANNEL_WINDOW = "slack_channel_window"
+SHARD_KIND_DM_WINDOW = "slack_dm_window"
 RESHARE_RECENCY_SCORE = 1.5
 
 
@@ -49,6 +50,21 @@ async def _open_slack_client(install: asyncpg.Record):  # noqa: ANN202
     return await open_slack_client(install)
 
 
+async def _open_slack_user_client(  # noqa: ANN202
+    install: asyncpg.Record, ident: dict[str, Any],
+):
+    # Per-USER DM gap-probe client (xoxp token). A bot token can't read DMs,
+    # so DM shards reconcile under the consenting user's token. X3 mock
+    # harness monkeypatches this symbol.
+    from services.ingestion.fetchers._clients import open_slack_user_client
+    return await open_slack_user_client(
+        tenant_id=install["tenant_id"],
+        team_id=ident["team_id"],
+        user_id=ident["consenting_user_id"],
+        base_url=ident.get("base_url"),
+    )
+
+
 def _decode_id(raw: Any) -> dict[str, Any]:
     if raw is None:
         return {}
@@ -66,12 +82,15 @@ async def _load_cursor(pool: Any, shard_id: Any) -> dict[str, Any] | None:
 
 
 async def _check_one_shard(
-    *, pool: Any, client: Any, shard: asyncpg.Record,
+    *, pool: Any, bot_client: Any, install: asyncpg.Record,
+    shard: asyncpg.Record,
 ) -> ResharedShard | None:
     ident = _decode_id(shard["shard_identifier"])
     channel_id = ident.get("channel_id")
     if not channel_id:
         return None
+    shard_kind = ident.get("shard_kind") or SHARD_KIND_CHANNEL_WINDOW
+    is_dm = shard_kind == SHARD_KIND_DM_WINDOW
 
     cursor = await _load_cursor(pool, shard["id"])
     if cursor is None:
@@ -80,33 +99,60 @@ async def _check_one_shard(
     if newest_seen is None:
         return None
 
+    # DM shards gap-probe under the consenting user's xoxp token (a bot token
+    # can't read DMs); channel shards reuse the shared bot client.
+    close = None
     try:
-        # Slack's conversations.history with `oldest=newest_seen_ts`
-        # returns only messages newer than that timestamp.
-        messages, _ = await client.conversations_history(
-            channel=channel_id, oldest=newest_seen, limit=1,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "reconcilers.slack.history_failed",
-            extra={"channel_id": channel_id, "error": str(exc)[:200]},
-        )
-        return None
+        if is_dm:
+            client, close = await _open_slack_user_client(install, ident)
+        else:
+            client = bot_client
+        try:
+            # Slack's conversations.history with `oldest=newest_seen_ts`
+            # returns only messages newer than that timestamp.
+            messages, _ = await client.conversations_history(
+                channel=channel_id, oldest=newest_seen, limit=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "reconcilers.slack.history_failed",
+                extra={
+                    "channel_id": channel_id, "shard_kind": shard_kind,
+                    "error": str(exc)[:200],
+                },
+            )
+            return None
+    finally:
+        if close is not None:
+            await close()
     if not messages:
         return None
 
-    gap_id = {
-        "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
-        "channel_id": channel_id,
-        "channel_name": ident.get("channel_name"),
-        "team_id": ident.get("team_id"),
-        "installation_id": ident.get("installation_id"),
-        "parent_shard_id": str(shard["id"]),
-        "gap_baseline_ts": newest_seen,
-    }
+    if is_dm:
+        gap_id: dict[str, Any] = {
+            "shard_kind": SHARD_KIND_DM_WINDOW,
+            "channel_id": channel_id,
+            "channel_type": ident.get("channel_type"),
+            "consenting_user_id": ident.get("consenting_user_id"),
+            "counterpart_user_id": ident.get("counterpart_user_id"),
+            "team_id": ident.get("team_id"),
+            "installation_id": ident.get("installation_id"),
+            "parent_shard_id": str(shard["id"]),
+            "gap_baseline_ts": newest_seen,
+        }
+    else:
+        gap_id = {
+            "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
+            "channel_id": channel_id,
+            "channel_name": ident.get("channel_name"),
+            "team_id": ident.get("team_id"),
+            "installation_id": ident.get("installation_id"),
+            "parent_shard_id": str(shard["id"]),
+            "gap_baseline_ts": newest_seen,
+        }
     return ResharedShard(
         shard=Shard(
-            shard_kind=SHARD_KIND_CHANNEL_WINDOW,
+            shard_kind=shard_kind,
             shard_identifier=gap_id,
             recency_score=RESHARE_RECENCY_SCORE,
         ),
@@ -134,12 +180,12 @@ async def reconcile_slack(
     if install is None:
         return ReconciliationDecision(has_gaps=False)
 
-    client, close = await _open_slack_client(install)
+    bot_client, close = await _open_slack_client(install)
     try:
         new_shards: list[ResharedShard] = []
         for s in active:
             r = await _check_one_shard(
-                pool=pool, client=client, shard=s,
+                pool=pool, bot_client=bot_client, install=install, shard=s,
             )
             if r is not None:
                 new_shards.append(r)
@@ -160,6 +206,7 @@ RECONCILER_DISPATCH["slack"] = reconcile_slack
 __all__ = [
     "RESHARE_RECENCY_SCORE",
     "SHARD_KIND_CHANNEL_WINDOW",
+    "SHARD_KIND_DM_WINDOW",
     "reconcile_slack",
     "set_pool_provider",
 ]

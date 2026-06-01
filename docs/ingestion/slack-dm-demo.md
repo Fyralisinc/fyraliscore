@@ -100,11 +100,50 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --no-de
 docker compose -f docker-compose.yml -f docker-compose.sandbox.yml run --rm migrate
 ```
 
+## Worker-fetch backfill (the production Kafka path)
+
+The console above drives the pipeline with inline `ingest()`. The **production
+worker-fetch backfill** does the same work through the genuine planner →
+fetcher → raw-tier(S3) → Kafka → normalizer → observation_writer chain, in
+**spammer mode**, landing **identical observations** (same `slack:message`
+channel, same `external_id="{channel}:{ts}"`, same `content.channel_type`):
+
+```bash
+scripts/slack_dm_worker_demo.sh            # default user U_ALICE, 6 msgs/DM
+```
+
+What it exercises:
+
+| Stage | Code |
+|---|---|
+| **plan** | `plan_shards_slack` emits one `slack_channel_window` per bot channel **+** one `slack_dm_window` per im/mpim conversation **per consenting user** (`slack_dm_installations`), enumerated via `SlackUserClient.conversations_list(types=im,mpim)` under that user's xoxp token. |
+| **fetch** | `fetch_page_slack` branches on `slack_dm_window`: opens the per-user client (`_open_slack_user_client`), reads `conversations.history`, and injects `channel` + `channel_type` so each record matches the live webhook + inline twin. |
+| **produce** | Each record → raw tier (S3, content-addressed) → `RawEnvelope` pointer on `ingestion.raw.slack` (the real shard_fetch producer functions). |
+| **consume** | The running `normalizer` → `ingestion.normalized.slack` → `observation_writer` → `observations` (gated by the tenant's `ingestion.kafka_path_enabled` flag). |
+
+The synthetic **spammer** (`services/synthetic/spammer/server.py`) serves the
+Slack reads: a per-user token `spam-slack-user::<team>::<user>` requesting
+`types=im,mpim` returns that consenting user's DM conversations; a **bot token
+gets none** (the real Slack ceiling). DM fixtures come from
+`make_slack_dm_workspace` — its DM channel ids use the same blake2b scheme as
+the inline console, so a worker-backfilled DM and its inline twin dedup to one
+observation.
+
+The demo uses a dedicated tenant (`00000000-0000-0000-0000-0000000000d3`). It
+rebuilds the app image, provisions the per-source Kafka lanes, recreates the
+two consumer workers, then runs a one-shot producer
+(`scripts/slack_dm_worker_fetch.py`). Re-run `scripts/sandbox_up.sh` to restore
+the workers to baseline. View it the same way in pgAdmin — filter on that
+tenant_id. Expected: 18 `im` + 4 `mpim` + 2 `channel` = 24 observations.
+
+> The driver calls the real planner + fetcher + shard_fetch producer functions
+> directly (rather than via the `source_onboarding`/`shard_fetch` service tick
+> loops) so the run is self-contained and observable; in production those
+> services invoke this identical code off an `onboarding_triggers` row.
+
 ## Production note
 
-This console drives the pipeline with **mock** xoxp tokens + synthetic data (no
-real Slack calls). The production worker-fetch backfill (planner enumerates
-`conversations.list(types=im,mpim)` per consenting user token → fetcher →
-Kafka workers) is the next increment; the synthetic spammer already serves
-Slack reads (`services/synthetic/spammer/server.py`) to exercise it in
-spammer mode.
+The inline console drives the pipeline with **mock** xoxp tokens + synthetic
+data (no real Slack calls); the worker-fetch demo above adds the genuine
+backfill worker chain in spammer mode. In production, per-user xoxp tokens
+(consent flow) replace the mock tokens and the source clients hit real Slack.

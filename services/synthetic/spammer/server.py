@@ -37,7 +37,10 @@ Identity model (how the spammer routes a request to the right tenant):
     key on the `{owner}/{repo}` path (globally unique across tenants).
   - slack: per-channel endpoints key on the `channel` param (globally
     unique). `conversations.list` filters by `spam-slack::<team>` when the
-    bearer encodes it, else returns every seeded channel.
+    bearer encodes it, else returns every seeded channel. A per-USER token
+    `spam-slack-user::<team>::<user>` requesting `types=im,mpim` returns that
+    consenting user's DM / group-DM conversations (xoxp DM ingestion); their
+    history is served by the same `conversations.history` (channel-keyed).
   - discord: ONE app-level bot is in every guild, so `/users/@me/guilds`
     returns all seeded guilds; channels/messages key on the path id.
 """
@@ -139,6 +142,9 @@ class _SlackStore:
         self._channels_by_team: dict[str, list[dict[str, Any]]] = {}
         self._messages: dict[str, list[dict[str, Any]]] = {}
         self._all_channels: list[dict[str, Any]] = []
+        # Per-user DM/group-DM conversations (xoxp grain): (team, user) ->
+        # Slack-shaped conversation summaries (id + is_im/is_mpim + user).
+        self._dms_by_user: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for fx in fixtures:
             team = fx.get("team_id", "T_TEST")
             for c in fx.get("channels", []):
@@ -147,11 +153,43 @@ class _SlackStore:
                 self._channels_by_team.setdefault(team, []).append(entry)
                 self._all_channels.append(entry)
                 self._messages[c["id"]] = list(c.get("messages", []))
+            # DM conversations are keyed by the CONSENTING user's token; their
+            # message history is served by `conversations.history` (channel id
+            # is globally unique, same as bot channels).
+            for du in fx.get("dm_users", []):
+                user = du.get("user_id")
+                summaries: list[dict[str, Any]] = []
+                for conv in du.get("conversations", []):
+                    ctype = conv.get("channel_type")
+                    summary = {
+                        "id": conv["id"],
+                        "is_im": ctype == "im" or bool(conv.get("is_im")),
+                        "is_mpim": ctype == "mpim" or bool(conv.get("is_mpim")),
+                        "channel_type": ctype,
+                    }
+                    if conv.get("user"):
+                        summary["user"] = conv["user"]  # im counterpart
+                    if conv.get("name"):
+                        summary["name"] = conv["name"]
+                    summaries.append(summary)
+                    self._messages[conv["id"]] = list(conv.get("messages", []))
+                if user:
+                    self._dms_by_user[(team, user)] = summaries
 
     def channels(self, team: str | None) -> list[dict[str, Any]]:
         if team and team in self._channels_by_team:
             return self._channels_by_team[team]
         return self._all_channels
+
+    def dm_conversations(
+        self, team: str, user: str, type_set: set[str],
+    ) -> list[dict[str, Any]]:
+        convs = self._dms_by_user.get((team, user), [])
+        return [
+            c for c in convs
+            if ("im" in type_set and c.get("is_im"))
+            or ("mpim" in type_set and c.get("is_mpim"))
+        ]
 
     def messages(self, channel_id: str) -> list[dict[str, Any]]:
         return self._messages.get(channel_id, [])
@@ -475,6 +513,19 @@ def _slack_router() -> APIRouter:
     ) -> dict:
         store: _SlackStore = request.app.state.slack
         token = _bearer(authorization) or ""
+        type_set = {t.strip() for t in types.split(",") if t.strip()}
+        # USER token (DM enumeration): `spam-slack-user::<team>::<user>` scopes
+        # to that consenting user's im/mpim conversations.
+        if token.startswith("spam-slack-user::") and (
+            type_set & {"im", "mpim"}
+        ):
+            rest = token[len("spam-slack-user::"):]
+            team, _, user = rest.partition("::")
+            return {
+                "ok": True,
+                "channels": store.dm_conversations(team, user, type_set),
+            }
+        # BOT token (public/private channel enumeration).
         team = (
             token[len("spam-slack::"):]
             if token.startswith("spam-slack::") else None
