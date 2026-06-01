@@ -33,7 +33,6 @@ from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest
 from services.ingest.ingestion.feature_flags import (
-    KAFKA_PATH_ENABLED,
     SHADOW_WRITE_ENABLED,
 )
 from services.ingest.ingestion.shadow_write import shadow_write_raw
@@ -143,18 +142,19 @@ async def handle_message_create(message: dict[str, Any], deps: DispatchDeps) -> 
         return
     tenant_id: UUID = outcome.tenant_id
 
-    # ---- Cutover branch (parallel to the M5.3 webhook-router cutover) ----
-    # Read `ingestion.kafka_path_enabled` for the resolved tenant.
-    # default=False — pre-cutover tenants stay on the inline path; this
-    # default is the load-bearing N1 invariant (missing flag rows MUST
-    # NOT activate cutover for tenants never explicitly enabled).
+    # ---- Cutover branch (parallel to the webhook-router cutover) ----
+    # Inverted default (kafka-first): the tenant is on the full pipeline
+    # UNLESS an operator / circuit-breaker explicitly set
+    # `ingestion.kafka_path_enabled=FALSE` (the kill-switch). The default
+    # lives in ONE place — `kafka_path_enabled()` — shared with the
+    # observation writer so ingress and the writer can never drift.
     #
     # The Gateway MESSAGE_CREATE frame — unlike a Discord webhook
     # interaction (M5.4 deferral) — has no synchronous response-shape
     # requirement, so the publish-and-return cutover shape applies here
     # exactly as it does for slack/github in services/app/webhooks/router.py.
-    # When TRUE: publish the frame to `ingestion.raw` and return; the
-    # writer pool produces the observation via M5.2's full-mode path.
+    # When enabled: publish the frame to `ingestion.raw` and return; the
+    # writer pool produces the observation via the full-mode path.
     #
     # `flag_enabled` is also consulted below to skip the M2 shadow write
     # after a fallback-to-inline (retrying the same publish would almost
@@ -165,9 +165,7 @@ async def handle_message_create(message: dict[str, Any], deps: DispatchDeps) -> 
         and deps.kafka_producer is not None
         and deps.s3_raw_client is not None
     ):
-        flag_enabled = await deps.tenant_flags.get_bool(
-            tenant_id, KAFKA_PATH_ENABLED, default=False,
-        )
+        flag_enabled = await deps.tenant_flags.kafka_path_enabled(tenant_id)
 
     if flag_enabled:
         cutover_ok = await _attempt_gateway_cutover(

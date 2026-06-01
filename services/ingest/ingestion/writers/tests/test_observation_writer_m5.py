@@ -196,6 +196,18 @@ async def _enable_kafka_path(pool: asyncpg.Pool, tenant_id: UUID) -> None:
     )
 
 
+async def _disable_kafka_path(pool: asyncpg.Pool, tenant_id: UUID) -> None:
+    """Flip `ingestion.kafka_path_enabled=FALSE` for `tenant_id` — the
+    kill-switch. Under the inverted default a missing row is full-mode, so a
+    test that wants the shadow-only path must set this explicitly.
+    """
+    flags = TenantFlags(pool)
+    await flags.set_bool(
+        tenant_id, KAFKA_PATH_ENABLED, False,
+        set_by="operator:test", note="m5.2 test kill-switch",
+    )
+
+
 # =====================================================================
 # 1. LOAD-BEARING — writer full mode produces identical observations
 #    to the inline path for the same input.
@@ -383,10 +395,14 @@ async def test_writer_observations_match_inline_for_same_input(
 async def test_writer_full_mode_skipped_when_flag_disabled(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """Tenant with no row in `tenant_flags` (default FALSE per LLD §11)
-    must NOT have an observation inserted. The shadow log MUST
-    receive the envelope (matches M2.4 behaviour)."""
-    tenant_pre_cutover = await _seed_tenant(fresh_db, "tenant-pre-cutover")
+    """Tenant with `ingestion.kafka_path_enabled=FALSE` (the explicit
+    kill-switch) must NOT have an observation inserted by the writer. The
+    shadow log MUST receive the envelope (matches M2.4 behaviour).
+
+    Under the inverted default a missing flag row is full-mode, so the
+    kill-switch is seeded explicitly here."""
+    tenant_pre_cutover = await _seed_tenant(fresh_db, "tenant-killswitch")
+    await _disable_kafka_path(fresh_db, tenant_pre_cutover)
     env = _build_envelope(tenant_pre_cutover)
 
     capture = _CaptureProducer()

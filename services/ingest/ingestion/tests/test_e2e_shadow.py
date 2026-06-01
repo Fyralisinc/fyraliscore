@@ -183,6 +183,15 @@ async def test_e2e_shadow_100_webhooks_zero_divergence(
             "INSERT INTO tenants (id, name) VALUES ($1, $2)",
             tenant_id, f"e2e-test-{tenant_id.hex[:8]}",
         )
+        # Inverted cutover default: a tenant with no flag row is full-mode, so
+        # the writer would PERSIST rather than shadow-log. Seed the kill-switch
+        # FALSE so the writer stays shadow-only — this zero-divergence soak
+        # compares the inline observations against the writer's SHADOW events.
+        await fresh_db.execute(
+            "INSERT INTO tenant_flags (tenant_id, flag_name, flag_value, set_by) "
+            "VALUES ($1, 'ingestion.kafka_path_enabled', FALSE, 'e2e-shadow-test')",
+            tenant_id,
+        )
 
         # ---- 3. Drive 100 webhooks through BOTH paths ---------------
         payloads = [_payload(i) for i in range(100)]

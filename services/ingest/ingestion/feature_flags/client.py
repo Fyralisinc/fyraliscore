@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +34,22 @@ log = logging.getLogger(__name__)
 # Public flag names — keep as constants so callers grep-find them.
 SHADOW_WRITE_ENABLED = "ingestion.shadow_write_enabled"
 KAFKA_PATH_ENABLED = "ingestion.kafka_path_enabled"  # M5 surface
+
+
+# Inverted cutover default (was opt-in, now a kill-switch). A tenant with no
+# explicit `ingestion.kafka_path_enabled` row is treated as kafka-first:
+# ingress publishes to the full pipeline and the observation writer persists.
+# An EXPLICIT FALSE — set by an operator or `auto:circuit_breaker` — forces that
+# tenant back onto the inline path. Read this through
+# `TenantFlags.kafka_path_enabled()` (never hand-pass `default=`) so the ingress
+# readers and the writer can never drift: ingress publishing while the writer
+# shadow-logs would silently drop observations. Globally overridable via
+# INGESTION_KAFKA_PATH_DEFAULT=false to revert the whole fleet to
+# inline-default without a redeploy (an explicit per-tenant flag still wins).
+KAFKA_PATH_ENABLED_DEFAULT: bool = (
+    os.environ.get("INGESTION_KAFKA_PATH_DEFAULT", "true").strip().lower()
+    not in ("0", "false", "no", "off")
+)
 
 
 @dataclass(frozen=True)
@@ -159,6 +176,22 @@ class TenantFlags:
             self._cache._store(key, value)
             return value
 
+    async def kafka_path_enabled(self, tenant_id: UUID) -> bool:
+        """Whether the Kafka full pipeline is active for `tenant_id`.
+
+        Single source of truth for the inverted cutover default
+        (`KAFKA_PATH_ENABLED_DEFAULT`). Missing row → kafka-first; an
+        explicit FALSE (operator / circuit breaker) is the kill-switch
+        that forces the tenant back to inline. EVERY ingress reader AND
+        the observation writer call this — never
+        `get_bool(..., KAFKA_PATH_ENABLED)` directly — so the two ends
+        cannot drift (a split default would let ingress publish while the
+        writer shadow-logs, silently dropping observations).
+        """
+        return await self.get_bool(
+            tenant_id, KAFKA_PATH_ENABLED, default=KAFKA_PATH_ENABLED_DEFAULT,
+        )
+
     async def set_bool(
         self,
         tenant_id: UUID,
@@ -196,6 +229,7 @@ class TenantFlags:
 
 __all__ = [
     "KAFKA_PATH_ENABLED",
+    "KAFKA_PATH_ENABLED_DEFAULT",
     "SHADOW_WRITE_ENABLED",
     "FlagCache",
     "TenantFlags",

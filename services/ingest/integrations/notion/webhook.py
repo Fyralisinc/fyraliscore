@@ -55,7 +55,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import NotionApiError
-from services.ingest.ingestion.shadow_write import shadow_write_raw
+from services.ingest.ingestion.shadow_write import (
+    CUTOVER_FLUSH_TIMEOUT_SEC,
+    shadow_write_raw,
+)
 from services.ingest.integrations.notion.client import short_workspace_hash
 
 
@@ -258,8 +261,12 @@ async def _shadow_write_page(
         # (returns before broker-ack), so flush here to DURABLY deliver
         # before we 200 Notion — otherwise the event could be lost in the
         # local queue on a gateway restart (backfill/poll would reconcile,
-        # but we avoid the gap). Bounded; remaining>0 ⇒ delivery in doubt.
-        remaining = await ndp.producer.flush(timeout_seconds=10.0)
+        # but we avoid the gap). Bounded by CUTOVER_FLUSH_TIMEOUT_SEC so a slow
+        # broker doesn't block the synchronous webhook; remaining>0 ⇒ delivery
+        # in doubt (librdkafka keeps delivering in the background regardless).
+        remaining = await ndp.producer.flush(
+            timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC,
+        )
         if remaining:
             log.warning(
                 "notion_webhook_kafka_flush_incomplete",

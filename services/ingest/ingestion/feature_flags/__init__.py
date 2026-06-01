@@ -9,6 +9,7 @@ write-side helper that flips flags when the breaker fires.
 """
 from services.ingest.ingestion.feature_flags.client import (  # noqa: F401
     KAFKA_PATH_ENABLED,
+    KAFKA_PATH_ENABLED_DEFAULT,
     SHADOW_WRITE_ENABLED,
     FlagCache,
     TenantFlags,
@@ -16,6 +17,7 @@ from services.ingest.ingestion.feature_flags.client import (  # noqa: F401
 
 __all__ = [
     "KAFKA_PATH_ENABLED",
+    "KAFKA_PATH_ENABLED_DEFAULT",
     "SHADOW_WRITE_ENABLED",
     "FlagCache",
     "TenantFlags",

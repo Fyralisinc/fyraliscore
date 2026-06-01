@@ -71,6 +71,10 @@ def _shadow_mocks():
 
     flags = MagicMock()
     flags.get_bool = AsyncMock(side_effect=_get_bool)
+    # Kill-switch off → inline path runs (the M2 shadow behaviour). Separate
+    # from get_bool so a per-test get_bool override (shadow-disabled test)
+    # doesn't disturb the cutover decision.
+    flags.kafka_path_enabled = AsyncMock(return_value=False)
 
     shadow_write_module.reset_metrics()
     return s3, kafka, flags

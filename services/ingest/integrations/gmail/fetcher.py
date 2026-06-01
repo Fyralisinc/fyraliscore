@@ -118,28 +118,28 @@ async def drain_mailbox_history(
 
     Live-via-Kafka cutover (parallel to the slack/github webhook-router
     cutover + the discord gateway cutover): when the shadow deps
-    (`s3_raw_client` + `kafka_producer` + `tenant_flags`) are wired AND
-    `ingestion.kafka_path_enabled=TRUE` for the tenant, each fetched
-    message resource is published to `ingestion.raw` (ingress_kind="poll")
-    instead of ingested inline. The writer pool then produces the
-    observation via M5.2's full-mode path. default=False keeps unflagged
-    tenants on the inline path (the N1 invariant). On a per-message publish
-    failure, that message falls back to inline dispatch (never dropped).
+    (`s3_raw_client` + `kafka_producer` + `tenant_flags`) are wired, each
+    fetched message resource is published to `ingestion.raw`
+    (ingress_kind="poll") instead of ingested inline, and the writer pool
+    produces the observation via the full-mode path. Inverted default
+    (kafka-first): cutover is on UNLESS an operator / circuit-breaker
+    explicitly set `ingestion.kafka_path_enabled=FALSE` for the tenant (the
+    kill-switch) — resolved through the shared `kafka_path_enabled()` helper.
+    On a per-message publish failure, that message falls back to inline
+    dispatch (never dropped).
     """
     if read_path not in ("push", "poll"):
         raise ValueError(f"read_path must be 'push' or 'poll', got {read_path!r}")
 
     # Resolve cutover mode once per drain (the flag read is cached).
+    # Inverted default: kafka-first unless explicitly killed for the tenant.
     cutover_enabled = False
     if (
         s3_raw_client is not None
         and kafka_producer is not None
         and tenant_flags is not None
     ):
-        from services.ingest.ingestion.feature_flags import KAFKA_PATH_ENABLED
-        cutover_enabled = await tenant_flags.get_bool(
-            tenant_id, KAFKA_PATH_ENABLED, default=False,
-        )
+        cutover_enabled = await tenant_flags.kafka_path_enabled(tenant_id)
 
     # --- step 1: load watch row + install scope (single tenant txn).
     async with pool.acquire() as conn:

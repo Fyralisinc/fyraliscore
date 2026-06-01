@@ -53,7 +53,11 @@ def _flags(*, kafka_path: bool, shadow: bool = True) -> MagicMock:
             return shadow
         return default
 
+    async def _kafka_path_enabled(tenant_id):  # noqa: ANN001
+        return kafka_path
+
     flags.get_bool = AsyncMock(side_effect=_get_bool)
+    flags.kafka_path_enabled = AsyncMock(side_effect=_kafka_path_enabled)
     return flags
 
 

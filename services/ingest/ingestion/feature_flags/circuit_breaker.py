@@ -43,10 +43,12 @@ BREAKER STATE, not auto-recovery of the FLAG: the flag flip is
 operator-controlled, but breaker bookkeeping does not require a
 second manual step.
 
-Tenants whose flag is already FALSE (pre-cutover or operator-disabled)
-are skipped entirely in step 4 above — the breaker has nothing to
-flip for them, and re-flipping FALSE-on-FALSE would clobber the
-`set_by` audit trail.
+Tenants whose flag is already FALSE (operator-disabled, or tripped by
+this breaker on a prior incident) are skipped entirely in step 4 above —
+the breaker has nothing to flip for them, and re-flipping FALSE-on-FALSE
+would clobber the `set_by` audit trail. (Under the inverted default,
+there is no longer a "pre-cutover" population: a tenant with no flag row
+is kafka-first and so a breach candidate.)
 
 === Service shape — matches M3.3's embedding backlog drainer ===
 
@@ -503,9 +505,10 @@ async def _process_tick(
         #       bookkeeping (counter=0, tripped=FALSE) so the next sustained
         #       breach can trip again — without this, a forgotten state-row
         #       cleanup leaves the breaker permanently blind to the tenant.
-        flag_value = await tenant_flags.get_bool(
-            tenant_id, KAFKA_PATH_ENABLED, default=True,
-        )
+        # Reads the shared inverted default: a tenant with no row is
+        # kafka-first (a breach candidate); only an explicit FALSE — which
+        # THIS breaker or an operator set — takes it out of the running.
+        flag_value = await tenant_flags.kafka_path_enabled(tenant_id)
         entry = state.get(tenant_id)
 
         if flag_value is False:
@@ -517,8 +520,8 @@ async def _process_tick(
                 entry.last_tick_at = now
                 await _persist_state(pool, config.instance_name, entry)
             else:
-                # Non-cutover tenant (pre-cutover or operator-disabled).
-                # Nothing to flip; do not create a state row.
+                # Killed tenant (operator-disabled). Nothing to flip; do
+                # not create a state row.
                 _bump("breaker.skipped_flag_disabled")
             continue
 

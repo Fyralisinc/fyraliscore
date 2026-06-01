@@ -29,6 +29,8 @@ import pytest
 from lib.shared.ids import uuid7
 from services.ingest.ingestion import shadow_write as shadow_write_module
 from services.ingest.ingestion.feature_flags import (
+    KAFKA_PATH_ENABLED,
+    KAFKA_PATH_ENABLED_DEFAULT,
     SHADOW_WRITE_ENABLED,
     FlagCache,
     TenantFlags,
@@ -61,6 +63,13 @@ class _StubFlags:
 
     async def get_bool(self, tenant_id: UUID, flag_name: str, *, default: bool) -> bool:
         return self.force.get(tenant_id, {}).get(flag_name, default)
+
+    async def kafka_path_enabled(self, tenant_id: UUID) -> bool:
+        # Mirror the real TenantFlags helper: inverted default, overridable
+        # per-tenant via `force`.
+        return await self.get_bool(
+            tenant_id, KAFKA_PATH_ENABLED, default=KAFKA_PATH_ENABLED_DEFAULT,
+        )
 
 
 def _stub_ingest_result(observation_id: UUID | None = None) -> Any:
@@ -134,7 +143,14 @@ def _shadow_app(
     kafka.flush = AsyncMock(return_value=0)
     app.state.kafka_producer = kafka
 
-    app.state.tenant_flags = _StubFlags()
+    # These tests exercise the M2 inline + shadow-write path. Under the
+    # inverted cutover default a slack tenant with no flag row would take the
+    # Kafka cutover branch (202, inline skipped) — so explicitly seed the
+    # kill-switch FALSE to keep the tenant on inline, which is what the shadow
+    # mechanism rides on.
+    flags = _StubFlags()
+    flags.force[_TENANT] = {KAFKA_PATH_ENABLED: False}
+    app.state.tenant_flags = flags
 
     # Reset shadow_write counters so per-test asserts are isolated.
     shadow_write_module.reset_metrics()
@@ -267,7 +283,9 @@ async def test_shadow_path_kafka_failure_does_not_break_inline(
 
 async def test_shadow_path_disabled_by_flag(_shadow_app, _stub_ingest):
     flags: _StubFlags = _shadow_app.state.tenant_flags
-    flags.force[_TENANT] = {"ingestion.shadow_write_enabled": False}
+    # Keep the fixture's KAFKA_PATH_ENABLED=False kill-switch (inline path);
+    # additionally disable the shadow write. Mutate, don't replace, the dict.
+    flags.force[_TENANT][SHADOW_WRITE_ENABLED] = False
 
     body = _slack_body()
     r = await _post_slack(_shadow_app, body)
@@ -341,12 +359,16 @@ async def test_flag_cache_picks_up_change_within_ttl(_patch_secrets, _stub_inges
     kafka.flush = AsyncMock(return_value=0)
     app.state.kafka_producer = kafka
 
-    # REAL TenantFlags + controllable pool. fetchrow returns whatever
-    # `pool_state["row"]` says at call time, so the test mutates the
-    # state between requests.
-    pool_state: dict[str, Any] = {"row": None}  # no row → default True
+    # REAL TenantFlags + controllable pool. SHADOW_WRITE_ENABLED follows
+    # `pool_state["row"]` (mutated between requests); KAFKA_PATH_ENABLED is
+    # pinned FALSE (kill-switch) so the tenant stays on the inline + shadow
+    # path this test exercises — under the inverted default a missing row
+    # would otherwise take the cutover branch.
+    pool_state: dict[str, Any] = {"row": None}  # SHADOW: no row → default True
     flag_pool = AsyncMock()
-    async def _fetchrow(_sql, _tenant_id, _flag_name):
+    async def _fetchrow(_sql, _tenant_id, flag_name):
+        if flag_name == KAFKA_PATH_ENABLED:
+            return {"flag_value": False}  # kill-switch → inline path
         return pool_state["row"]
     flag_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
 

@@ -32,7 +32,7 @@ from uuid import UUID
 import orjson
 
 from services.ingest.ingestion.kafka.topics import topic_for
-from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
+from services.ingest.ingestion.raw_tier.envelope import RawEnvelope, SourceLiteral
 from services.ingest.ingestion.raw_tier.s3 import (
     S3Client,
     build_raw_s3_key,
@@ -48,6 +48,20 @@ log = logging.getLogger(__name__)
 _DEFAULT_BUCKET = os.environ.get("S3_RAW_BUCKET", "fyralis-raw")
 _DEFAULT_ENV = os.environ.get("INGESTION_ENV", "dev")
 _RAW_TOPIC = "ingestion.raw"
+
+
+# Synchronous-ingress flush bound. A webhook/gateway request path flushes the
+# produced raw envelope before returning so the event is DURABLY on the broker;
+# cap the flush low so a slow / unreachable broker trips the inline-ingest()
+# fallback quickly instead of stacking a long Kafka wait in front of EVERY
+# fallback (which would blow the synchronous request's latency budget). The
+# always-on workers flush at shutdown with the producer's longer default — this
+# bound is for the request path only. The fallback is safe: S3 PutIfAbsent +
+# observation-layer dedup make a late-delivered duplicate harmless. Tunable via
+# INGESTION_CUTOVER_FLUSH_TIMEOUT_SEC.
+CUTOVER_FLUSH_TIMEOUT_SEC = float(
+    os.environ.get("INGESTION_CUTOVER_FLUSH_TIMEOUT_SEC", "2.0")
+)
 
 
 IngressKind = Literal["webhook", "gateway", "pubsub", "backfill", "poll"]
@@ -85,7 +99,11 @@ def _bump(key: str, by: int = 1) -> None:
 async def shadow_write_raw(
     *,
     tenant_id: UUID,
-    source: Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "jira", "mercury", "quickbooks"],
+    # Canonical source set — typed as the envelope's `SourceLiteral` so this
+    # signature can never drift from the registry (a hand-copied list here
+    # previously omitted `google_drive`). Adding a source to `SourceLiteral`
+    # is the single point of change.
+    source: SourceLiteral,
     ingress_kind: IngressKind,
     raw_body: bytes,
     s3_client: S3Client,
@@ -184,6 +202,7 @@ async def shadow_write_raw(
 
 
 __all__ = [
+    "CUTOVER_FLUSH_TIMEOUT_SEC",
     "get_metrics",
     "reset_metrics",
     "shadow_write_raw",

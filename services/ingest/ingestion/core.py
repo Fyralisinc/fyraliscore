@@ -61,6 +61,7 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
     get_handler,
 )
+from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 from services.domain.observations.events import emit_pending_notifications, notify_scope
 from services.domain.observations.partitions import ensure_partition_for_occurred_at
 from services.domain.observations.repo import ObservationRepository
@@ -460,9 +461,11 @@ async def ingest_from_draft(
     #
     # Source-family extraction: source_channel is granular
     # ("slack:message", "github:pr", "internal:state_change"); the
-    # embedding envelope's source enum is the four-source family
-    # (LLD §1). Non-source-family channels (e.g. internal:*) skip
-    # the publish — they have no embedding worker contract.
+    # embedding envelope's source enum is the canonical source family
+    # (`INGESTION_SOURCES`, derived from RawEnvelope.SourceLiteral so it can
+    # never drift — a hand-listed tuple here previously omitted google_drive).
+    # Non-source-family channels (e.g. internal:*) skip the publish — they
+    # have no embedding worker contract.
     if (
         embedding_producer is not None
         and row.embedding_pending
@@ -471,7 +474,7 @@ async def ingest_from_draft(
             publish_embedding_request,
         )
         family = draft.source_channel.split(":", 1)[0]
-        if family in ("slack", "github", "discord", "gmail", "notion", "google_calendar", "jira", "mercury", "quickbooks"):
+        if family in INGESTION_SOURCES:
             await publish_embedding_request(
                 producer=embedding_producer,
                 tenant_id=tenant_id,

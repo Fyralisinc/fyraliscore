@@ -41,6 +41,7 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion import shadow_write as shadow_write_module
 from services.ingest.ingestion.feature_flags import (
     KAFKA_PATH_ENABLED,
+    KAFKA_PATH_ENABLED_DEFAULT,
     SHADOW_WRITE_ENABLED,
     FlagCache,
     TenantFlags,
@@ -86,6 +87,13 @@ class _StubFlags:
         self, tenant_id: UUID, flag_name: str, *, default: bool,
     ) -> bool:
         return self.force.get(tenant_id, {}).get(flag_name, default)
+
+    async def kafka_path_enabled(self, tenant_id: UUID) -> bool:
+        # Mirror the real TenantFlags helper: inverted default, overridable
+        # per-tenant via `force`.
+        return await self.get_bool(
+            tenant_id, KAFKA_PATH_ENABLED, default=KAFKA_PATH_ENABLED_DEFAULT,
+        )
 
 
 def _stub_ingest_result(observation_id: UUID | None = None) -> Any:
@@ -194,12 +202,17 @@ async def _post_slack(app, body: bytes) -> httpx.Response:
 async def test_router_flag_false_runs_inline_and_shadow(
     _cutover_app, _stub_ingest,
 ):
+    # Inverted default: an absent flag now means cutover, so the kill-switch
+    # must be set explicitly to exercise the inline + M2 shadow path.
+    flags: _StubFlags = _cutover_app.state.tenant_flags
+    flags.force[_TENANT] = {KAFKA_PATH_ENABLED: False}
+
     body = _slack_body()
     r = await _post_slack(_cutover_app, body)
 
     assert r.status_code in (200, 201), r.text
     assert _stub_ingest.await_count == 1, (
-        "flag=FALSE: inline ingest() must run (M2 behaviour)"
+        "flag=FALSE (kill-switch): inline ingest() must run (M2 behaviour)"
     )
     # M2 shadow path ran too (default SHADOW_WRITE_ENABLED=True).
     assert _cutover_app.state.s3_raw_client.put_if_absent.await_count == 1
@@ -336,13 +349,16 @@ async def test_flag_cache_ttl_governs_cutover_window(
 ):
     """The 30s TTL cache bounds the cutover-propagation latency.
 
-    Sequence with explicit time control (no `asyncio.sleep`):
-      [t=0]  pool returns no flag row → cache(False) → inline path.
-      [t=1]  flip pool to flag=TRUE.
-      [t=2]  cached False still active → inline path again (proves
+    Under the inverted default the meaningful propagation is an operator
+    CLEARING the kill-switch (an explicit FALSE row) — the cache delays the
+    re-enable by up to one TTL. Sequence with explicit time control (no
+    `asyncio.sleep`):
+      [t=0]  pool returns flag=FALSE (kill-switch) → cache(False) → inline.
+      [t=1]  clear the kill-switch (pool now returns no row → default True).
+      [t=2]  cached False still active → inline path again (proves the
              cache is actually caching).
-      [t=35] past TTL → cache invalidates → pool re-read → flag=TRUE →
-             cutover fires; response is 202.
+      [t=35] past TTL → cache invalidates → pool re-read → no row →
+             inverted default TRUE → cutover fires; response is 202.
 
     Time is controlled by patching `time.monotonic` in the
     `feature_flags.client` module so `_CacheEntry.expires_at`
@@ -381,7 +397,9 @@ async def test_flag_cache_ttl_governs_cutover_window(
     kafka.flush = AsyncMock(return_value=0)
     app.state.kafka_producer = kafka
 
-    pool_state: dict[str, Any] = {"row": None}  # default → False
+    # Start with an explicit kill-switch row (FALSE); clearing it later
+    # returns the tenant to the inverted default (no row → cutover).
+    pool_state: dict[str, Any] = {"row": {"flag_value": False}}
 
     async def _fetchrow(_sql, _tenant_id, _flag_name):
         return pool_state["row"]
@@ -394,7 +412,7 @@ async def test_flag_cache_ttl_governs_cutover_window(
 
     body = _slack_body()
 
-    # ---- [t=0] First request: pool returns None → flag=False ----
+    # ---- [t=0] First request: pool returns FALSE (kill-switch) → inline ----
     clock["now"] = 0.0
     r1 = await _post_slack(app, body)
     assert r1.status_code in (200, 201), r1.text
@@ -402,8 +420,8 @@ async def test_flag_cache_ttl_governs_cutover_window(
     # Cutover-success metric: still 0.
     assert metrics.get_kafka_path_count("slack", "success") == 0
 
-    # ---- [t=1] Flip pool to True; clock still within TTL ----
-    pool_state["row"] = {"flag_value": True}
+    # ---- [t=1] Clear the kill-switch (no row → default True); within TTL ----
+    pool_state["row"] = None
     clock["now"] = 1.0
     r2 = await _post_slack(app, body)
     assert r2.status_code in (200, 201), (
@@ -413,13 +431,13 @@ async def test_flag_cache_ttl_governs_cutover_window(
     )
     assert _stub_ingest.await_count == 2
 
-    # ---- [t=35] Past TTL — cache invalidates; re-read sees TRUE ----
+    # ---- [t=35] Past TTL — cache invalidates; re-read sees no row → True ----
     clock["now"] = 35.0
     r3 = await _post_slack(app, body)
     assert r3.status_code == 202, (
-        f"step3: past TTL, cache re-reads and sees flag=True → cutover "
-        f"path. Got {r3.status_code}: {r3.text}. If 200/201, the TTL "
-        f"boundary isn't expiring."
+        f"step3: past TTL, cache re-reads and sees no row → inverted "
+        f"default True → cutover path. Got {r3.status_code}: {r3.text}. "
+        f"If 200/201, the TTL boundary isn't expiring."
     )
     # Inline NOT called a third time.
     assert _stub_ingest.await_count == 2
@@ -545,6 +563,11 @@ async def test_double_ingestion_safe_during_cutover(
     # Real TenantFlags + real DB pool so the flag-flip propagates.
     flags = TenantFlags(fresh_db)
     app.state.tenant_flags = flags
+    # Inverted default: seed the kill-switch FALSE so Request A takes the
+    # inline path (a missing row would now route to cutover).
+    await flags.set_bool(
+        tenant_id, KAFKA_PATH_ENABLED, False, set_by="operator:test-precutover",
+    )
 
     s3 = MagicMock()
     s3.put_if_absent = AsyncMock(return_value=None)
@@ -558,7 +581,7 @@ async def test_double_ingestion_safe_during_cutover(
     message_ts = f"{time.time():.6f}"
     body = _slack_body(message_ts=message_ts, text="N1 cutover safety test")
 
-    # ---- Request A: flag=FALSE (no row) → inline writes obs #1 ----
+    # ---- Request A: flag=FALSE (kill-switch) → inline writes obs #1 ----
     rA = await _post_slack(app, body)
     assert rA.status_code in (200, 201), rA.text
 

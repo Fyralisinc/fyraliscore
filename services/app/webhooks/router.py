@@ -48,7 +48,6 @@ from services.ingest.ingestion.core import (
     ingest,
 )
 from services.ingest.ingestion.feature_flags import (
-    KAFKA_PATH_ENABLED,
     SHADOW_WRITE_ENABLED,
 )
 from services.ingest.ingestion.feature_flags.traffic_signal import (
@@ -56,7 +55,10 @@ from services.ingest.ingestion.feature_flags.traffic_signal import (
 )
 from services.ingest.ingestion.handlers import HandlerNotFound
 from services.ingest.ingestion.raw_tier.s3 import compute_content_hash
-from services.ingest.ingestion.shadow_write import shadow_write_raw
+from services.ingest.ingestion.shadow_write import (
+    CUTOVER_FLUSH_TIMEOUT_SEC,
+    shadow_write_raw,
+)
 from services.ingest.integrations.notion import webhook as notion_webhook
 from services.app.webhooks import metrics
 from services.app.webhooks.signatures import VERIFIERS
@@ -222,11 +224,15 @@ async def _attempt_kafka_path(
         # the local buffer indefinitely and never land on `ingestion.raw`.
         # Flush so we only return the 202 once the event is DURABLY on the
         # broker (the correct webhook semantic: don't ack the provider and
-        # then lose the event). On incomplete flush, return False so the
-        # caller falls back to inline ingest() — idempotent via S3
-        # PutIfAbsent + observation-layer dedup, so a late-delivered
-        # duplicate is harmless. Mirrors the Notion handler's flush.
-        remaining = await kafka_producer.flush(timeout_seconds=10.0)
+        # then lose the event). Bounded by CUTOVER_FLUSH_TIMEOUT_SEC so a slow
+        # broker trips the inline fallback quickly rather than stacking a long
+        # wait on the synchronous request. On incomplete flush, return False so
+        # the caller falls back to inline ingest() — idempotent via S3
+        # PutIfAbsent + observation-layer dedup, so a late-delivered duplicate
+        # is harmless. Mirrors the Notion handler's flush.
+        remaining = await kafka_producer.flush(
+            timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC,
+        )
         if remaining:
             log.warning(
                 "router.kafka_path_flush_incomplete",
@@ -903,12 +909,12 @@ def build_webhooks_router() -> APIRouter:
                         {"handled": "filtered_repo"}, status_code=200,
                     )
 
-        # ---- M5.3 cutover branch ---------------------------------
-        # Read `ingestion.kafka_path_enabled` for the resolved tenant.
-        # default=False per LLD §11 — pre-cutover tenants stay on the
-        # inline path. This default is the load-bearing N1 invariant:
-        # missing flag rows MUST NOT activate cutover for tenants who
-        # were never explicitly enabled.
+        # ---- Kafka-first cutover branch --------------------------
+        # Inverted default (kafka-first): the resolved tenant is on the full
+        # pipeline UNLESS an operator / circuit-breaker explicitly set
+        # `ingestion.kafka_path_enabled=FALSE` (the kill-switch). The default
+        # lives in ONE place — `TenantFlags.kafka_path_enabled()` — shared with
+        # the observation writer so ingress and the writer can never drift.
         #
         # `flag_enabled` is also consulted below to skip the M2
         # shadow-write-after-inline when the cutover path failed
@@ -920,8 +926,8 @@ def build_webhooks_router() -> APIRouter:
                 request.app.state, "tenant_flags", None,
             )
             if tenant_flags is not None:
-                flag_enabled = await tenant_flags.get_bool(
-                    tenant_id_uuid, KAFKA_PATH_ENABLED, default=False,
+                flag_enabled = await tenant_flags.kafka_path_enabled(
+                    tenant_id_uuid,
                 )
 
         if flag_enabled and cutover_source is not None:

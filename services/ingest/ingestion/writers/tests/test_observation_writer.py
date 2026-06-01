@@ -2,7 +2,9 @@
 
 These tests cover the writer's M2 shadow-log behaviour, which is
 PRESERVED for tenants whose `ingestion.kafka_path_enabled` is FALSE
-(default; pre-cutover tenants). The M5.2 full-mode tests live in
+(now an explicit operator / circuit-breaker kill-switch — the default is
+kafka-first). They drive `_record_shadow_event` directly, so they are
+independent of the flag default. The M5.2 full-mode tests live in
 `test_observation_writer_m5.py`.
 
 Covers:

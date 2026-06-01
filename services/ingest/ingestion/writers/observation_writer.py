@@ -11,8 +11,14 @@ History:
     the writer calls `services.ingest.ingestion.core.ingest_from_draft(...)`
     to write the observation (the normalizer already ran the handler,
     so the draft fields embedded in the envelope are used directly).
-    When FALSE (default; pre-cutover tenants), the writer preserves
-    M2's shadow-log no-op behavior.
+    When FALSE, the writer preserves M2's shadow-log no-op behavior.
+  - Gate inversion: the default is now kafka-first. The writer reads
+    `tenant_flags.kafka_path_enabled()` (shared single-source default,
+    `KAFKA_PATH_ENABLED_DEFAULT=True`), so a tenant with NO flag row is
+    full-mode. Shadow-only now requires an EXPLICIT FALSE (operator /
+    circuit-breaker kill-switch). The ingress readers use the same helper,
+    so a publishing ingress can never pair with a shadow-logging writer
+    (that split would silently drop observations).
 
 ============================================================
 PATH A — the writer is now Path A for full-mode tenants
@@ -25,10 +31,10 @@ INTENTIONALLY LIFTED in M5.2. The writer now:
     inside `ingest_from_draft`.
   - Reads `tenant_flags` per envelope.
 
-The M2 e2e shadow test (`test_e2e_shadow.py`) continues to pass
-because its tenants have no row in `tenant_flags` for
-`ingestion.kafka_path_enabled` → reader returns the default
-`False` → shadow log path runs unchanged.
+The M2 e2e shadow test (`test_e2e_shadow.py`) exercises the shadow-log
+path by seeding `ingestion.kafka_path_enabled=FALSE` for its tenants
+(under the inverted default a missing row would instead take the
+full-mode write path).
 
 ============================================================
 PER-ENVELOPE TRANSACTION CONTRACT (M5 Finding 4)
@@ -74,7 +80,6 @@ from services.ingest.ingestion.core import (
 )
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.feature_flags.client import (
-    KAFKA_PATH_ENABLED,
     TenantFlags,
 )
 from services.ingest.ingestion.handlers import (
@@ -496,10 +501,15 @@ async def _handle_message(
     # ---- Flag-branched write ----
     should_full_mode = False
     if config.tenant_flags is not None and config.pool is not None:
-        # LLD §11: default missing → False (pre-cutover tenants stay
-        # on the inline path; writer remains shadow-only for them).
-        should_full_mode = await config.tenant_flags.get_bool(
-            env.tenant_id, KAFKA_PATH_ENABLED, default=False,
+        # Inverted default (kafka-first): a tenant with no flag row is
+        # full-mode — the writer persists the observation. Only an explicit
+        # FALSE (operator / circuit-breaker kill-switch) keeps the writer in
+        # shadow-only mode for that tenant. MUST read through
+        # `kafka_path_enabled()` — the same single-source default the ingress
+        # readers use — so the two ends never drift (ingress publishing while
+        # the writer shadow-logs would silently drop observations).
+        should_full_mode = await config.tenant_flags.kafka_path_enabled(
+            env.tenant_id,
         )
 
     if not should_full_mode:
