@@ -32,18 +32,9 @@ from services.sage.affordances.types import RetrievalAffordanceProfile
 from services.sage.inquiry_traces import OutcomeEventsRepo
 from services.sage.outcome_evaluator import OutcomeEvaluator
 from services.sage.topology_optimizer import TopologyOptimizer
-
-
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
-
+from tests.unit.sage._seed import seed_model as _shared_seed_model
 
 pytestmark = pytest.mark.integration
-
-
-from tests.unit.sage._seed import seed_model as _shared_seed_model
 
 
 async def _seed_model(pool: asyncpg.Pool, *, tenant_id: UUID) -> UUID:

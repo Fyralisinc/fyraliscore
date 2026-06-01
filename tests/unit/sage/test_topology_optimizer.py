@@ -46,13 +46,7 @@ from services.sage.topology_optimizer import (
     TopologyOptimizer,
     optimize_topology,
 )
-
-
-# Re-use gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
+from tests.unit.sage._seed import seed_model as _shared_seed_model
 
 
 pytestmark = pytest.mark.integration
@@ -61,10 +55,6 @@ pytestmark = pytest.mark.integration
 # =====================================================================
 # Helpers
 # =====================================================================
-
-
-from tests.unit.sage._seed import seed_model as _shared_seed_model
-
 
 async def _seed_inquiry_session(
     pool: asyncpg.Pool,

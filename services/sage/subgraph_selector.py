@@ -24,7 +24,7 @@ This keeps the selector trivially unit-testable and lets Wave 2's
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
 

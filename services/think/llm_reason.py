@@ -15,10 +15,8 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from typing import TYPE_CHECKING
 
-import asyncpg
 import structlog
 
 from lib.llm.provider import (
@@ -107,7 +105,8 @@ async def llm_reason(
                 base_backoff_s = policy.delay_for(attempt + 1)
                 # Jitter ±25% to avoid thundering herd when many
                 # concurrent triggers hit a provider rate-limit at once.
-                backoff_s = base_backoff_s * random.uniform(0.75, 1.25)
+                jittered = base_backoff_s * random.uniform(0.75, 1.25)
+                backoff_s = max(base_backoff_s, jittered)
                 _log.warning(
                     "think.llm_retryable_failure",
                     attempt=attempt,

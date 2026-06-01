@@ -21,9 +21,7 @@ Pattern cribbed from `tests/unit/sage/test_inquiry_traces_repo.py`.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -53,13 +51,6 @@ from services.sage.inquiry_traces import (
     emission_enabled,
     reset_trace_context,
     set_trace_context,
-)
-
-
-# Re-use the gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
 )
 
 
@@ -383,6 +374,49 @@ async def test_emit_swallows_repo_failure_without_crashing(
         gateway_pool, tenant_id=tenant_id,
     ).list_for_session(session_id)
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_conn_backed_emit_sql_failure_does_not_abort_outer_transaction(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    """A real SQL failure during best-effort emission must roll back to
+    a savepoint, not poison the caller's transaction."""
+    session_id = await _seed_inquiry_session(
+        gateway_pool, tenant_id=tenant_id,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        async with conn.transaction():
+            ctx = TraceContext(
+                tenant_id=tenant_id,
+                inquiry_session_id=session_id,
+                conn=conn,
+            )
+            token = set_trace_context(ctx)
+            try:
+                await emit_retrieval_plan(
+                    question_id="Q1",
+                    plan_revision=0,
+                    intents=[{"primitive": "DEPENDENCY"}],
+                )
+                # Same (session, question_id, revision) violates the
+                # retrieval_plans UNIQUE constraint. emit_retrieval_plan
+                # must swallow it and leave this transaction usable.
+                await emit_retrieval_plan(
+                    question_id="Q1",
+                    plan_revision=0,
+                    intents=[{"primitive": "DEPENDENCY"}],
+                )
+                assert await conn.fetchval("SELECT 1") == 1
+            finally:
+                reset_trace_context(token)
+
+    plans = await RetrievalPlansRepo(
+        gateway_pool, tenant_id=tenant_id,
+    ).list_for_session(session_id)
+    assert len(plans) == 1
 
 
 # ---------------------------------------------------------------------

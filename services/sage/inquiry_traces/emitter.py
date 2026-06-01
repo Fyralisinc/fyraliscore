@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 from uuid import UUID
 
 import asyncpg
@@ -49,6 +49,8 @@ from services.sage.inquiry_traces.types import (
 
 
 _log = structlog.get_logger(__name__)
+
+_T = TypeVar("_T")
 
 
 # ---------------------------------------------------------------------
@@ -117,6 +119,25 @@ def emission_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", ""}
 
 
+async def _run_isolated_if_conn(
+    ctx: TraceContext,
+    call: Callable[[], Awaitable[_T]],
+) -> _T:
+    """Run a trace write behind a savepoint when reusing caller SQL state.
+
+    Best-effort emission only works if a failed trace INSERT cannot
+    poison the surrounding Think/inquiry transaction. asyncpg nests
+    `Connection.transaction()` as a savepoint when a transaction is
+    already active, which is exactly the isolation boundary we need.
+    Pool-backed calls own their connection for one statement and do not
+    need an extra wrapper.
+    """
+    if ctx.conn is None:
+        return await call()
+    async with ctx.conn.transaction():
+        return await call()
+
+
 # ---------------------------------------------------------------------
 # Emission primitives
 # ---------------------------------------------------------------------
@@ -151,11 +172,14 @@ async def emit_event(
         return
     repo = OutcomeEventsRepo(ctx.pool, tenant_id=ctx.tenant_id)
     try:
-        await repo.append(
-            ctx.inquiry_session_id,
-            event_type,
-            payload or {},
-            conn=ctx.conn,
+        await _run_isolated_if_conn(
+            ctx,
+            lambda: repo.append(
+                ctx.inquiry_session_id,
+                event_type,
+                payload or {},
+                conn=ctx.conn,
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
         _log.warning(
@@ -212,18 +236,21 @@ async def emit_retrieval_plan(
         return
     repo = RetrievalPlansRepo(ctx.pool, tenant_id=ctx.tenant_id)
     try:
-        await repo.insert(
-            RetrievalPlanRow(
-                inquiry_session_id=ctx.inquiry_session_id,
-                question_id=question_id,
-                plan_revision=int(plan_revision),
-                intents=list(intents or []),
-                paths=list(paths or []),
-                budgets=dict(budgets or {}),
-                success_conditions=list(success_conditions or []),
-                notes=dict(notes or {}),
+        await _run_isolated_if_conn(
+            ctx,
+            lambda: repo.insert(
+                RetrievalPlanRow(
+                    inquiry_session_id=ctx.inquiry_session_id,
+                    question_id=question_id,
+                    plan_revision=int(plan_revision),
+                    intents=list(intents or []),
+                    paths=list(paths or []),
+                    budgets=dict(budgets or {}),
+                    success_conditions=list(success_conditions or []),
+                    notes=dict(notes or {}),
+                ),
+                conn=ctx.conn,
             ),
-            conn=ctx.conn,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
         _log.warning(
@@ -270,20 +297,23 @@ async def emit_omitted_evidence(
         return
     repo = OmittedEvidenceRepo(ctx.pool, tenant_id=ctx.tenant_id)
     try:
-        await repo.insert(
-            OmittedEvidenceRow(
-                inquiry_session_id=ctx.inquiry_session_id,
-                question_id=question_id,
-                source_type=source_type,
-                source_ref=source_ref,
-                source_ref_id=source_ref_id,
-                retrieval_paths=list(retrieval_paths or []),
-                omission_reason=omission_reason,
-                reason_detail=reason_detail,
-                score=float(score),
-                metadata=dict(metadata or {}),
+        await _run_isolated_if_conn(
+            ctx,
+            lambda: repo.insert(
+                OmittedEvidenceRow(
+                    inquiry_session_id=ctx.inquiry_session_id,
+                    question_id=question_id,
+                    source_type=source_type,
+                    source_ref=source_ref,
+                    source_ref_id=source_ref_id,
+                    retrieval_paths=list(retrieval_paths or []),
+                    omission_reason=omission_reason,
+                    reason_detail=reason_detail,
+                    score=float(score),
+                    metadata=dict(metadata or {}),
+                ),
+                conn=ctx.conn,
             ),
-            conn=ctx.conn,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
         _log.warning(

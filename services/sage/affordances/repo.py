@@ -45,7 +45,7 @@ otherwise the repo acquires from its pool.
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 from uuid import UUID
 
 import asyncpg
@@ -351,6 +351,99 @@ class AffordanceProfilesRepo:
             )
         return [_hydrate(r) for r in rows]
 
+    async def search_by_primitive_context(
+        self,
+        primitive: str,
+        *,
+        entities: list[str],
+        limit: int = 50,
+        min_utility: float = 0.0,
+        fallback_limit: int | None = None,
+        conn: asyncpg.Connection | None = None,
+    ) -> list[RetrievalAffordanceProfile]:
+        """Return primitive matches, preferring activation-signature overlap.
+
+        Large tenants can accumulate many high-utility affordances for a
+        primitive. A plain utility sort can crowd out the right Model
+        when the signal mentions a specific customer/system. This query
+        first retrieves profiles whose JSONB activation_signatures contain
+        at least one current entity, then fills any remaining budget with
+        global utility-ranked profiles.
+        """
+        clean_entities = []
+        for entity in entities:
+            text = str(entity).strip()
+            if text and text not in clean_entities:
+                clean_entities.append(text)
+        if not clean_entities:
+            return await self.search_by_primitive(
+                primitive,
+                limit=limit,
+                min_utility=min_utility,
+                conn=conn,
+            )
+
+        fallback = (
+            max(0, int(fallback_limit))
+            if fallback_limit is not None
+            else max(0, int(limit // 3))
+        )
+        entity_clauses: list[str] = []
+        params: list[Any] = [
+            self.tenant_id,
+            primitive,
+            float(min_utility),
+            int(limit),
+            int(fallback),
+        ]
+        for entity in clean_entities[:12]:
+            params.append(_jsonb({"entities": [entity]}))
+            entity_clauses.append(
+                f"activation_signatures @> ${len(params)}::jsonb"
+            )
+        entity_sql = " OR ".join(entity_clauses)
+        sql = f"""
+            WITH contextual AS (
+                SELECT {_SELECT_COLS_SQL}, 1 AS context_rank
+                  FROM retrieval_affordance_profiles
+                 WHERE tenant_id = $1
+                   AND answers_question_primitives @> ARRAY[$2]::text[]
+                   AND utility_score >= $3
+                   AND ({entity_sql})
+              ORDER BY utility_score DESC, last_updated_at DESC
+                 LIMIT $4
+            ),
+            fallback AS (
+                SELECT {_SELECT_COLS_SQL}, 0 AS context_rank
+                  FROM retrieval_affordance_profiles
+                 WHERE tenant_id = $1
+                   AND answers_question_primitives @> ARRAY[$2]::text[]
+                   AND utility_score >= $3
+              ORDER BY utility_score DESC, last_updated_at DESC
+                 LIMIT $5
+            ),
+            combined AS (
+                SELECT * FROM contextual
+                UNION ALL
+                SELECT * FROM fallback
+            )
+            SELECT DISTINCT ON (model_id) {_SELECT_COLS_SQL}
+              FROM combined
+          ORDER BY model_id, context_rank DESC, utility_score DESC
+        """
+        ctx = await self._acquire(conn)
+        async with ctx as c:
+            rows = await c.fetch(sql, *params)
+        profiles = [_hydrate(r) for r in rows]
+        profiles.sort(
+            key=lambda p: (
+                -_profile_entity_overlap(p.activation_signatures, clean_entities),
+                -float(p.utility_score or 0.0),
+                str(p.model_id),
+            )
+        )
+        return profiles[: int(limit)]
+
     async def search_by_hypothesis_type(
         self,
         htype: str,
@@ -403,6 +496,17 @@ class _NullCtx:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         return None
+
+
+def _profile_entity_overlap(
+    activation_signatures: dict[str, Any],
+    entities: list[str],
+) -> int:
+    raw = activation_signatures.get("entities")
+    if not isinstance(raw, list) or not entities:
+        return 0
+    profile_entities = {str(item).casefold() for item in raw if item is not None}
+    return sum(1 for entity in entities if entity.casefold() in profile_entities)
 
 
 __all__ = [

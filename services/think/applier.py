@@ -632,6 +632,17 @@ async def _emit_valid_diff_outcome_events(
     ctx = current_trace_context()
     if ctx is None:
         return
+    ctx_meta = dict(getattr(ctx, "metadata", {}) or {})
+    primitives = [
+        str(p) for p in (ctx_meta.get("question_primitives") or [])
+        if p is not None
+    ]
+    default_primitive = primitives[0] if primitives else None
+    entities = [
+        str(e) for e in (ctx_meta.get("entities") or [])
+        if e is not None and str(e)
+    ]
+    signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
 
     # Collect every model_id the diff touched. Include applied (insert
     # results) + update/archive targets + edge endpoints + the
@@ -657,7 +668,19 @@ async def _emit_valid_diff_outcome_events(
         try:
             await emit_event(
                 "node_used_in_valid_diff",
-                {"model_id": str(mid)},
+                {
+                    "model_id": str(mid),
+                    "signal_type": signal_type,
+                    "entities": entities,
+                    "question_primitive": default_primitive,
+                    "signature": {
+                        k: v for k, v in {
+                            "signal_type": signal_type,
+                            "entities": entities,
+                            "question_primitive": default_primitive,
+                        }.items() if v
+                    },
+                },
                 ctx=ctx,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
@@ -710,6 +733,16 @@ async def _emit_valid_diff_outcome_events(
                     "source_model_id": src,
                     "target_model_id": tgt,
                     "edge_kind": kind,
+                    "signal_type": signal_type,
+                    "entities": entities,
+                    "question_primitive": default_primitive,
+                    "signature": {
+                        k: v for k, v in {
+                            "signal_type": signal_type,
+                            "entities": entities,
+                            "question_primitive": default_primitive,
+                        }.items() if v
+                    },
                 },
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
@@ -2326,7 +2359,7 @@ async def _apply_act_op(
         if "cached_health" in ent:
             set_clauses.append(f"cached_health = ${i}")
             params.append(ent["cached_health"])
-            set_clauses.append(f"cached_health_computed_at = now()")
+            set_clauses.append("cached_health_computed_at = now()")
             i += 1
         if "target_date" in ent:
             set_clauses.append(f"target_date = ${i}")

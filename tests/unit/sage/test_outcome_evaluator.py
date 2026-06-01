@@ -30,13 +30,7 @@ from services.sage.outcome_evaluator import (
     InquiryOutcomeSummary,
     OutcomeEvaluator,
 )
-
-
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
-
+from services.sage.inquiry_traces.repo import OutcomeEventsRepo
 
 pytestmark = pytest.mark.integration
 
@@ -281,8 +275,19 @@ async def test_emits_node_used_in_valid_diff_for_each_diff_model_id(
         edge_kind="supports",
     )
     session_id = await _seed_session(
-        gateway_pool, tenant_id=tenant_id,
-        context_packet={}, think_run_id=run_id,
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet={
+            "source_metadata": {"trigger_kind": "T1"},
+            "resolved_entities": [
+                {"type": "customer", "id": "Acme"},
+                {"type": "system", "id": "SSO"},
+            ],
+            "question_path": [
+                {"question_id": "Q_DEPENDENCY", "primitive": "DEPENDENCY"}
+            ],
+        },
+        think_run_id=run_id,
     )
 
     evaluator = OutcomeEvaluator(pool=gateway_pool, tenant_id=tenant_id)
@@ -291,6 +296,17 @@ async def test_emits_node_used_in_valid_diff_for_each_diff_model_id(
     assert summary.events_by_type.get("node_used_in_valid_diff") == 2
     assert summary.events_by_type.get("path_used_in_valid_diff") == 1
     assert set(summary.useful_node_ids) == {model_a, model_b}
+    events = await OutcomeEventsRepo(
+        gateway_pool, tenant_id=tenant_id,
+    ).list_for_session(session_id)
+    path_event = next(
+        ev for ev in events if ev.event_type == "path_used_in_valid_diff"
+    )
+    assert path_event.payload["signature"] == {
+        "signal_type": "T1",
+        "entities": ["Acme", "SSO"],
+        "question_primitive": "DEPENDENCY",
+    }
 
 
 @pytest.mark.asyncio

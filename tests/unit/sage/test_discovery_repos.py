@@ -26,16 +26,8 @@ from services.sage.discovery.shortcuts_repo import (
     DiscoveryShortcutsRepo,
 )
 from services.sage.discovery.types import (
-    DiscoveryShortcut,
     NegativeMemory,
     Signature,
-)
-
-
-# Re-use gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
 )
 
 

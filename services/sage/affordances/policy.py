@@ -29,7 +29,7 @@ so callers don't have to hydrate first.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 from uuid import UUID
 
 from services.sage.affordances.types import RetrievalAffordanceProfile

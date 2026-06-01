@@ -17,7 +17,6 @@ tests will simply skip the DB acquire and run anyway.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import random
 from datetime import datetime, timedelta, timezone
@@ -40,13 +39,6 @@ from services.sage.model_predictions.types import (
     ExpectedObservation,
     ModelPrediction,
     ModelPredictionError,
-)
-
-
-# Re-use gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
 )
 
 

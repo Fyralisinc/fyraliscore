@@ -51,7 +51,7 @@ Design notes
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -198,6 +198,49 @@ def _walk_strings(value: Any) -> list[str]:
     return out
 
 
+def _signature_context_from_packet(
+    packet: dict[str, Any],
+    session: asyncpg.Record,
+) -> dict[str, Any]:
+    source_metadata = _coerce_obj(packet.get("source_metadata"))
+    signal_type = (
+        source_metadata.get("trigger_kind")
+        or source_metadata.get("route")
+        or session.get("route")
+    )
+    entities: list[str] = []
+    for raw in _coerce_list(packet.get("resolved_entities")):
+        if isinstance(raw, dict):
+            value = raw.get("id") or raw.get("name") or raw.get("type")
+        else:
+            value = raw
+        text = str(value).strip() if value is not None else ""
+        if text and text not in entities:
+            entities.append(text)
+    primitives: list[str] = []
+    for raw_q in _coerce_list(packet.get("question_path")):
+        q = raw_q if isinstance(raw_q, dict) else {}
+        primitive = q.get("primitive")
+        if primitive is not None:
+            p = str(primitive).strip().upper()
+            if p and p not in primitives:
+                primitives.append(p)
+    primitive = primitives[0] if primitives else None
+    signature = {
+        k: v for k, v in {
+            "signal_type": signal_type,
+            "entities": entities[:12],
+            "question_primitive": primitive,
+        }.items() if v
+    }
+    return {
+        "signal_type": signal_type,
+        "entities": entities[:12],
+        "question_primitive": primitive,
+        "signature": signature,
+    }
+
+
 def _collect_model_ids_from_ops(ops_applied: dict[str, Any]) -> list[UUID]:
     """Pull every Model id referenced anywhere in the applied diff.
 
@@ -315,6 +358,7 @@ class OutcomeEvaluator:
             )
 
         packet = _coerce_obj(session["context_packet"])
+        signature_context = _signature_context_from_packet(packet, session)
         packet_strings = set(_walk_strings(packet))
         packet_tokens_raw = (
             _coerce_obj(packet.get("budget")).get("estimated_tokens_used")
@@ -452,6 +496,12 @@ class OutcomeEvaluator:
         diff_model_ids: list[UUID] = []
         if think_run is not None and diff_is_valid:
             diff_model_ids = _collect_model_ids_from_ops(ops_applied)
+            attribution_rows = await self._load_reader_decision_attributions(
+                conn, inquiry_session_id, diff_model_ids,
+            )
+            attributions_by_model: dict[UUID, list[asyncpg.Record]] = {}
+            for row in attribution_rows:
+                attributions_by_model.setdefault(row["model_id"], []).append(row)
             for mid in diff_model_ids:
                 used_node_ids.append(mid)
                 key = ("node_used_in_valid_diff", str(mid))
@@ -459,14 +509,73 @@ class OutcomeEvaluator:
                     await self._events_repo.append(
                         inquiry_session_id,
                         "node_used_in_valid_diff",
-                        {
-                            "model_id": str(mid),
-                            "think_run_id": str(think_run["id"]),
-                        },
-                        conn=conn,
-                    )
+                            {
+                                "model_id": str(mid),
+                                "think_run_id": str(think_run["id"]),
+                                **signature_context,
+                            },
+                            conn=conn,
+                        )
                     existing_keys.add(key)
                     events_emitted += 1
+                for attribution in attributions_by_model.get(mid, []):
+                    attr_id = attribution["id"]
+                    credit_score = _reader_decision_credit_score(attribution)
+                    decision_key = (
+                        "reader_decision_used_in_valid_diff",
+                        str(attr_id),
+                    )
+                    if decision_key not in existing_keys:
+                        payload = {
+                            **signature_context,
+                            "attribution_id": str(attr_id),
+                            "model_id": str(mid),
+                            "think_run_id": str(think_run["id"]),
+                            "question_id": attribution["question_id"],
+                            "question_primitive": attribution["question_primitive"],
+                            "signal_type": attribution["signal_type"],
+                            "entities": _coerce_list(attribution["entities"]),
+                            "selected": bool(attribution["selected"]),
+                            "selection_rank": attribution["selection_rank"],
+                            "activation_score": float(
+                                attribution["activation_score"] or 0.0
+                            ),
+                            "activation_reasons": _coerce_list(
+                                attribution["activation_reasons"]
+                            ),
+                            "source_breakdown": _coerce_obj(
+                                attribution["source_breakdown"]
+                            ),
+                            "retrieval_actions": _coerce_list(
+                                attribution["retrieval_actions"]
+                            ),
+                            "projected_evidence_refs": _coerce_list(
+                                attribution["projected_evidence_refs"]
+                            ),
+                            "evidence_in_packet_count": int(
+                                attribution["evidence_in_packet_count"] or 0
+                            ),
+                            "expected_value": float(
+                                attribution["expected_value"] or 0.0
+                            ),
+                            "expected_cost": float(
+                                attribution["expected_cost"] or 0.0
+                            ),
+                            "credit_score": credit_score,
+                        }
+                        await self._events_repo.append(
+                            inquiry_session_id,
+                            "reader_decision_used_in_valid_diff",
+                            payload,
+                            conn=conn,
+                        )
+                        await self._credit_reader_decision_attribution(
+                            conn,
+                            attribution_id=attr_id,
+                            credit_score=credit_score,
+                        )
+                        existing_keys.add(decision_key)
+                        events_emitted += 1
 
             if len(diff_model_ids) >= 2:
                 edges = await self._load_edges_between(conn, diff_model_ids)
@@ -488,6 +597,7 @@ class OutcomeEvaluator:
                             {
                                 **sig,
                                 "think_run_id": str(think_run["id"]),
+                                **signature_context,
                             },
                             conn=conn,
                         )
@@ -674,6 +784,61 @@ class OutcomeEvaluator:
             session_id,
         )
 
+    async def _load_reader_decision_attributions(
+        self,
+        conn: asyncpg.Connection,
+        session_id: UUID,
+        model_ids: list[UUID],
+    ) -> list[asyncpg.Record]:
+        if not model_ids:
+            return []
+        table_name = await conn.fetchval(
+            "SELECT to_regclass('public.sage_reader_decision_attributions')"
+        )
+        if table_name is None:
+            return []
+        return list(await conn.fetch(
+            """
+            SELECT id, tenant_id, inquiry_session_id,
+                   question_id, question_primitive, question,
+                   question_score, expected_value, expected_cost,
+                   signal_type, entities, model_id,
+                   selected, selection_rank, activation_score,
+                   activation_reasons, source_breakdown, retrieval_actions,
+                   projected_evidence_refs, evidence_in_packet_count
+            FROM sage_reader_decision_attributions
+            WHERE tenant_id = $1
+              AND inquiry_session_id = $2
+              AND model_id = ANY($3::uuid[])
+            ORDER BY selected DESC, activation_score DESC, created_at ASC
+            """,
+            self.tenant_id,
+            session_id,
+            model_ids,
+        ))
+
+    async def _credit_reader_decision_attribution(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        attribution_id: UUID,
+        credit_score: float,
+    ) -> None:
+        await conn.execute(
+            """
+            UPDATE sage_reader_decision_attributions
+               SET writer_used = TRUE,
+                   writer_credit_score = GREATEST(writer_credit_score, $3),
+                   credited_at = COALESCE(credited_at, now()),
+                   updated_at = now()
+             WHERE tenant_id = $1
+               AND id = $2
+            """,
+            self.tenant_id,
+            attribution_id,
+            float(credit_score),
+        )
+
     async def _load_omitted_evidence(
         self, conn: asyncpg.Connection, session_id: UUID,
     ) -> list[asyncpg.Record]:
@@ -804,6 +969,10 @@ def _build_existing_keys(events: list[asyncpg.Record]) -> set[tuple[str, str]]:
             kind = payload.get("edge_kind")
             if src and tgt and kind:
                 keys.add((etype, f"{src}|{tgt}|{kind}"))
+        elif etype == "reader_decision_used_in_valid_diff":
+            attr_id = payload.get("attribution_id")
+            if attr_id:
+                keys.add((etype, str(attr_id)))
         elif etype in (
             "validation_failed_due_to_missing_evidence",
             "validation_failed_due_to_bad_reference",
@@ -812,6 +981,23 @@ def _build_existing_keys(events: list[asyncpg.Record]) -> set[tuple[str, str]]:
             if run_id:
                 keys.add((etype, str(run_id)))
     return keys
+
+
+def _reader_decision_credit_score(row: asyncpg.Record) -> float:
+    activation = float(row["activation_score"] or 0.0)
+    expected_value = float(row["expected_value"] or 0.0)
+    expected_cost = float(row["expected_cost"] or 0.0)
+    selected_bonus = 0.35 if bool(row["selected"]) else 0.0
+    packet_bonus = min(0.25, 0.06 * int(row["evidence_in_packet_count"] or 0))
+    credit = (
+        0.35
+        + 0.35 * activation
+        + 0.30 * expected_value
+        + selected_bonus
+        + packet_bonus
+        - 0.20 * expected_cost
+    )
+    return _clamp(credit, 0.05, 2.0)
 
 
 __all__ = [

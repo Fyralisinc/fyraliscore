@@ -29,16 +29,6 @@ from services.sage.inquiry_traces import (
 )
 
 
-# Re-use the gateway integration fixtures (per-test pool + fresh DB).
-# pytest discovers conftest.py walking up from the test file, so we
-# pull in the gateway conftest fixtures explicitly via the integration
-# conftest re-export pattern.
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
-
-
 pytestmark = pytest.mark.integration
 
 

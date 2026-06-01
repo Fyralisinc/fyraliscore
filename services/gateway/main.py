@@ -37,7 +37,7 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -52,7 +52,6 @@ from services.gateway.auth import (
     validate_token,
 )
 from services.gateway.db_bootstrap import (
-    _register_codecs,
     close_gateway_pool,
     create_gateway_pool,
 )
@@ -64,7 +63,7 @@ from services.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
-from services.ingestion.handlers import CHANNEL_TRUST_MAP, HandlerNotFound
+from services.ingestion.handlers import HandlerNotFound
 from services.ingestion.handlers.slack import (
     SlackSignatureError,
     verify_slack_signature,
@@ -615,6 +614,21 @@ def _deps(request_or_app) -> GatewayDeps:  # type: ignore[no-untyped-def]
     return deps
 
 
+def _internal_jsonable(value: Any) -> Any:
+    if isinstance(value, UUID):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(k): _internal_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_internal_jsonable(v) for v in value]
+    return value
+
+
 # ---------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------
@@ -624,6 +638,159 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/internal/synthesis-reader/read")
+    async def internal_synthesis_reader_read(request: Request) -> JSONResponse:
+        deps = _deps(request)
+        body = await request.json()
+        try:
+            tenant_id = UUID(str(body["tenant_id"]))
+        except Exception:
+            return JSONResponse({"error": "tenant_id required as UUID"}, status_code=400)
+        signal_id = body.get("signal_id")
+        observation_id = None
+        if signal_id:
+            try:
+                observation_id = UUID(str(signal_id))
+            except Exception:
+                observation_id = None
+        question = str(body.get("question") or "")
+        if not question.strip():
+            return JSONResponse({"error": "question required"}, status_code=400)
+        primitive = str(body.get("question_primitive") or "DEPENDENCY").upper()
+        async with deps.pool.acquire() as conn:
+            seed_text = ""
+            if observation_id is not None:
+                seed_text = await conn.fetchval(
+                    """
+                    SELECT content_text
+                    FROM observations
+                    WHERE tenant_id = $1 AND id = $2
+                    """,
+                    tenant_id,
+                    observation_id,
+                ) or ""
+            from services.retrieval.primary import TriggerContext
+            from services.sage.reader import SynthesisReader
+            result = await SynthesisReader(pool=deps.pool).read(
+                conn=conn,
+                tenant_id=tenant_id,
+                trigger=TriggerContext(
+                    kind="T1",
+                    tenant_id=tenant_id,
+                    observation_id=observation_id,
+                    seed_natural_text=seed_text or question,
+                    seed_entity_ids=body.get("known_entities") or [],
+                ),
+                question_id=str(body.get("question_id") or "Q_API"),
+                question=question,
+                question_primitive=primitive,
+                hypotheses=tuple(body.get("hypotheses") or ()),
+            )
+        return JSONResponse({
+            "activated_nodes": [
+                {
+                    "model_id": str(t.model_id),
+                    "activation_score": t.activation_score,
+                    "activation_reasons": list(t.activation_reasons),
+                    "selected": t.selected,
+                    "selection_rank": t.selection_rank,
+                    "source_breakdown": t.source_breakdown,
+                }
+                for t in result.activations
+            ],
+            "selected_subgraph": {
+                "selected_nodes": [str(mid) for mid in result.selection.selected_nodes],
+                "selected_edges": [str(eid) for eid in result.selection.selected_edges],
+                "bridge_nodes": [str(mid) for mid in result.selection.bridge_nodes],
+                "excluded": [
+                    {
+                        "model_id": str(e.model_id),
+                        "reason": e.reason,
+                        "summarized": e.summarized,
+                    }
+                    for e in result.selection.excluded
+                ],
+                "coverage_metrics": result.selection.coverage_metrics,
+            },
+            "projected_evidence": list(result.projected_evidence),
+            "omission_candidates": [
+                {"evidence_id": eid, "reason": reason}
+                for eid, reason in result.omitted_projection
+            ],
+            "debug": result.debug,
+        })
+
+    @app.post("/internal/topology-optimizer/optimize")
+    async def internal_topology_optimizer_optimize(request: Request) -> JSONResponse:
+        deps = _deps(request)
+        body = await request.json()
+        try:
+            tenant_id = UUID(str(body["tenant_id"]))
+            session_id = UUID(str(body["inquiry_session_id"]))
+        except Exception:
+            return JSONResponse(
+                {"error": "tenant_id and inquiry_session_id required as UUID"},
+                status_code=400,
+            )
+        from services.sage.topology_optimizer import optimize_topology
+        report = await optimize_topology(
+            pool=deps.pool,
+            tenant_id=tenant_id,
+            inquiry_session_id=session_id,
+            trigger_event=str(body.get("trigger_event") or "scheduled"),
+        )
+        return JSONResponse({
+            "discovery_updates_applied": {
+                "affordance_reinforces": report.affordance_reinforces,
+                "affordance_decays": report.affordance_decays,
+                "shortcut_creates_or_bumps": report.shortcut_creates_or_bumps,
+                "shortcut_decays": report.shortcut_decays,
+                "negative_memory_inserts": report.negative_memory_inserts,
+                "region_refreshes": report.region_refreshes,
+            },
+            "canonical_update_candidates": {
+                "merge": list(report.canonical_merge_candidates),
+                "split": list(report.canonical_split_candidates),
+                "promote": list(report.canonical_promote_candidates),
+                "demote": list(report.canonical_demote_candidates),
+            },
+            "metrics": report.metrics,
+        })
+
+    @app.post("/internal/evidence-projector/project")
+    async def internal_evidence_projector_project(request: Request) -> JSONResponse:
+        deps = _deps(request)
+        body = await request.json()
+        try:
+            tenant_id = UUID(str(body["tenant_id"]))
+            node_ids = [UUID(str(v)) for v in body.get("node_ids", [])]
+        except Exception:
+            return JSONResponse(
+                {"error": "tenant_id and node_ids required"},
+                status_code=400,
+            )
+        from dataclasses import asdict
+        from services.sage.evidence_projection import EvidenceProjector
+        result = await EvidenceProjector().project(
+            pool=deps.pool,
+            tenant_id=tenant_id,
+            selected_model_ids=node_ids,
+            question_primitive=str(
+                body.get("question_primitive") or "DEPENDENCY"
+            ).upper(),
+        )
+        return JSONResponse({
+            "projected_evidence": [
+                _internal_jsonable(asdict(candidate))
+                for candidate in result.projected
+            ],
+            "omitted": [
+                {"evidence_id": str(eid), "reason": reason}
+                for eid, reason in result.omitted
+            ],
+            "coverage": result.coverage,
+        })
 
     @app.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:
@@ -733,7 +900,7 @@ def _register_routes(app: FastAPI) -> None:
                 embedder=deps.embedder,
                 request_headers=dict(request.headers),
             )
-        except HandlerNotFound as e:
+        except HandlerNotFound:
             return JSONResponse(
                 {"error": "handler_not_found", "channel": channel},
                 status_code=404,
@@ -2420,7 +2587,6 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     stream_manager = ViewCeoStreamManager(token_map=token_map)
 
     # Tie stream → scheduler so cache writes publish to WS clients.
-    from dataclasses import dataclass as _dc
     scheduler.set_stream_publisher(
         type("_SP", (), {"publish": staticmethod(stream_manager.publish)})()
     )

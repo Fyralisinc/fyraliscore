@@ -26,13 +26,6 @@ from services.sage.region_summaries.types import (
 )
 
 
-# Re-use gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
-
-
 pytestmark = pytest.mark.integration
 
 

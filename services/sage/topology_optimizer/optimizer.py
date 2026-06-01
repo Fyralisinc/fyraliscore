@@ -59,6 +59,7 @@ from services.sage.region_summaries.refresh import (
     should_refresh,
 )
 from services.sage.region_summaries.repo import RegionSummariesRepo
+from services.sage.structural_features.job import recompute_features_for_tenant
 from services.sage.structural_features.repo import StructuralFeaturesRepo
 from services.sage.topology_optimizer.types import OptimizationRunReport
 
@@ -418,6 +419,19 @@ class TopologyOptimizer:
             conn=conn,
         )
 
+        # 4b. Structural feature refresh (utility layer). This keeps
+        # bridge/hub scores and edge-overlap features current enough for
+        # the next reader pass without mutating canonical graph truth.
+        structural_counts = await self._refresh_structural_features(conn=conn)
+
+        # 4c. Question-policy credit assignment. This is the bridge
+        # from writer success back to reader decision quality.
+        question_policy_updates = await self._update_question_policy_stats(
+            inquiry_session_id=inquiry_session_id,
+            events=events,
+            conn=conn,
+        )
+
         # 5. Canonical topology candidates — NEVER applied here.
         merge = tuple(self._propose_merges(
             useful_paths=useful_path_events,
@@ -448,6 +462,13 @@ class TopologyOptimizer:
             "trigger_recognized": float(
                 1.0 if trigger_event in _TRIGGER_TO_REFRESH_REASON else 0.0
             ),
+            "structural_models_written": float(
+                structural_counts.get("models_written", 0)
+            ),
+            "structural_edges_written": float(
+                structural_counts.get("edges_written", 0)
+            ),
+            "question_policy_updates": float(question_policy_updates),
         }
 
         return OptimizationRunReport(
@@ -458,6 +479,7 @@ class TopologyOptimizer:
             shortcut_decays=shortcut_failures,
             negative_memory_inserts=negmem_inserts,
             region_refreshes=region_refreshes,
+            question_policy_updates=question_policy_updates,
             canonical_merge_candidates=merge,
             canonical_split_candidates=split,
             canonical_promote_candidates=promote,
@@ -518,6 +540,130 @@ class TopologyOptimizer:
             if row is not None:
                 decays += 1
         return reinforces, decays
+
+    async def _update_question_policy_stats(
+        self,
+        *,
+        inquiry_session_id: UUID,
+        events: list[OutcomeEventRow],
+        conn: asyncpg.Connection | None,
+    ) -> int:
+        credit_events = [
+            e for e in events
+            if e.event_type == "reader_decision_used_in_valid_diff"
+        ]
+        if not credit_events:
+            return 0
+        if conn is None and self._pool is None:
+            return 0
+
+        async def _do(c: asyncpg.Connection) -> int:
+            stats_table = await c.fetchval(
+                "SELECT to_regclass('public.sage_question_policy_stats')"
+            )
+            attr_table = await c.fetchval(
+                "SELECT to_regclass('public.sage_reader_decision_attributions')"
+            )
+            if stats_table is None or attr_table is None:
+                return 0
+
+            attempt_rows = await c.fetch(
+                """
+                SELECT signal_type, question_primitive,
+                       COUNT(DISTINCT question_id) AS attempts,
+                       COALESCE(SUM(expected_cost), 0.0) AS total_cost
+                FROM (
+                    SELECT DISTINCT ON (question_id, signal_type, question_primitive)
+                           question_id, signal_type, question_primitive,
+                           expected_cost
+                    FROM sage_reader_decision_attributions
+                    WHERE tenant_id = $1
+                      AND inquiry_session_id = $2
+                    ORDER BY question_id, signal_type, question_primitive,
+                             activation_score DESC
+                ) AS per_question
+                GROUP BY signal_type, question_primitive
+                """,
+                self._tenant_id,
+                inquiry_session_id,
+            )
+            success_by_key: dict[tuple[str, str], dict[str, float]] = {}
+            for ev in credit_events:
+                signal_type = str(ev.payload.get("signal_type") or "unknown")
+                primitive = str(
+                    ev.payload.get("question_primitive") or "UNKNOWN"
+                ).upper()
+                key = (signal_type, primitive)
+                bucket = success_by_key.setdefault(
+                    key, {"successes": 0.0, "credit": 0.0}
+                )
+                bucket["successes"] += 1.0
+                try:
+                    bucket["credit"] += float(ev.payload.get("credit_score") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+
+            updates = 0
+            for row in attempt_rows:
+                signal_type = str(row["signal_type"] or "unknown")
+                primitive = str(row["question_primitive"] or "UNKNOWN").upper()
+                key = (signal_type, primitive)
+                success = success_by_key.get(key, {})
+                successes = int(success.get("successes", 0.0))
+                credit = float(success.get("credit", 0.0))
+                attempts = int(row["attempts"] or 0)
+                total_cost = float(row["total_cost"] or 0.0)
+                await c.execute(
+                    """
+                    INSERT INTO sage_question_policy_stats (
+                      id, tenant_id, signal_type, question_primitive,
+                      attempts, successes, total_credit, total_cost,
+                      utility_score, last_credit_at, updated_at
+                    ) VALUES (
+                      $1, $2, $3, $4,
+                      $5, $6, $7, $8,
+                      (($7::double precision - $8::double precision)
+                        / GREATEST($5::integer, 1)),
+                      CASE WHEN $6 > 0 THEN now() ELSE NULL END,
+                      now()
+                    )
+                    ON CONFLICT (tenant_id, signal_type, question_primitive)
+                    DO UPDATE SET
+                      attempts = sage_question_policy_stats.attempts + EXCLUDED.attempts,
+                      successes = sage_question_policy_stats.successes + EXCLUDED.successes,
+                      total_credit = sage_question_policy_stats.total_credit
+                        + EXCLUDED.total_credit,
+                      total_cost = sage_question_policy_stats.total_cost
+                        + EXCLUDED.total_cost,
+                      utility_score = (
+                        (sage_question_policy_stats.total_credit + EXCLUDED.total_credit)
+                        - (sage_question_policy_stats.total_cost + EXCLUDED.total_cost)
+                      ) / GREATEST(
+                        sage_question_policy_stats.attempts + EXCLUDED.attempts,
+                        1
+                      ),
+                      last_credit_at = COALESCE(
+                        EXCLUDED.last_credit_at,
+                        sage_question_policy_stats.last_credit_at
+                      ),
+                      updated_at = now()
+                    """,
+                    uuid7(),
+                    self._tenant_id,
+                    signal_type,
+                    primitive,
+                    attempts,
+                    successes,
+                    credit,
+                    total_cost,
+                )
+                updates += 1
+            return updates
+
+        if conn is not None:
+            return await _do(conn)
+        async with self._pool.acquire() as owned:
+            return await _do(owned)
 
     # ------------------------------------------------------------------
     # Step 2 — shortcut upserts / failures
@@ -693,7 +839,35 @@ class TopologyOptimizer:
         return inserted
 
     # ------------------------------------------------------------------
-    # Step 4 — region summary refreshes
+    # Step 4 — utility topology refreshes
+    # ------------------------------------------------------------------
+
+    async def _refresh_structural_features(
+        self,
+        *,
+        conn: asyncpg.Connection | None,
+    ) -> dict[str, int]:
+        if conn is not None:
+            try:
+                return await recompute_features_for_tenant(
+                    self._tenant_id, conn, pool=None,
+                )
+            except Exception:  # pragma: no cover
+                _log.exception("structural_features.recompute failed")
+                return {"models_written": 0, "edges_written": 0}
+        if self._pool is None:
+            return {"models_written": 0, "edges_written": 0}
+        async with self._pool.acquire() as owned:
+            try:
+                return await recompute_features_for_tenant(
+                    self._tenant_id, owned, pool=None,
+                )
+            except Exception:  # pragma: no cover
+                _log.exception("structural_features.recompute failed")
+                return {"models_written": 0, "edges_written": 0}
+
+    # ------------------------------------------------------------------
+    # Step 4b — region summary refreshes
     # ------------------------------------------------------------------
 
     async def _refresh_regions(

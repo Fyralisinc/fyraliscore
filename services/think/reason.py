@@ -19,7 +19,7 @@ import asyncio
 import os
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -33,8 +33,6 @@ from lib.llm.provider import (
 )
 from lib.shared.errors import (
     CompanyOSError,
-    InvariantViolation,
-    TrustTierError,
     ValidationError,
 )
 from lib.shared.ids import uuid7
@@ -53,14 +51,12 @@ from services.retrieval.assembler import (
     assemble_context,
 )
 from services.retrieval.primary import (
-    RetrievalResult,
     TriggerContext,
 )
 from services.execution.inquiry import InquiryResult, retrieve_for_execution
 from services.sage.inquiry_traces.emitter import (
     TraceContext as _SageTraceContext,
     emission_enabled as _sage_emission_enabled,
-    reset_trace_context as _sage_reset_trace_context,
     set_trace_context as _sage_set_trace_context,
 )
 from services.retrieval.config import CONFIG as RETRIEVAL_CONFIG
@@ -71,7 +67,6 @@ from services.retrieval.second_pass import (
 )
 
 from .anomaly_integration import (
-    Anomaly,
     check_anomalies,
     publish_anomalies,
 )
@@ -79,8 +74,7 @@ from .applier import AlreadyAppliedError, apply_diff
 from .cascade import CascadeEvent, CascadeResult, cascade
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
-from .diff_schema import RawDiff, ValidatedDiff
-from .llm_reason import ReasoningFailure, llm_reason
+from .llm_reason import llm_reason
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -100,7 +94,6 @@ from .region_locks import (
 )
 from .validator import (
     OutOfRegionError,
-    ValidationFailure,
     validate,
 )
 
@@ -584,7 +577,6 @@ async def _run_once(
     )
 
     # --- 1. Retrieval ---------------------------------------------
-    t0 = time.monotonic()
     active_retrieval = await retrieve_for_execution(
         trigger,
         conn,
@@ -842,6 +834,18 @@ async def _run_once(
     # CompanyOSError, or unexpected exception). Subsequent Think runs on
     # the same asyncio task install a fresh context here on entry.
     if inquiry_result is not None and _sage_emission_enabled():
+        sage_reader_notes = (inquiry_result.notes or {}).get("sage_reader")
+        sage_signatures = (
+            sage_reader_notes.get("signatures", [])
+            if isinstance(sage_reader_notes, dict) else []
+        )
+        sage_question_primitives = []
+        if isinstance(sage_reader_notes, dict):
+            for qnote in (sage_reader_notes.get("questions") or {}).values():
+                if isinstance(qnote, dict) and qnote.get("question_primitive"):
+                    primitive = str(qnote["question_primitive"])
+                    if primitive not in sage_question_primitives:
+                        sage_question_primitives.append(primitive)
         _sage_set_trace_context(
             _SageTraceContext(
                 tenant_id=trigger.tenant_id,
@@ -849,6 +853,14 @@ async def _run_once(
                 conn=conn,
                 metadata={
                     "trigger_kind": trigger_kind_full,
+                    "signal_type": trigger.kind,
+                    "entities": [
+                        str(e.get("id") or e.get("name") or e.get("type"))
+                        for e in trigger.seed_entity_ids
+                        if isinstance(e, dict)
+                    ][:12],
+                    "question_primitives": sage_question_primitives[:8],
+                    "sage_signatures": sage_signatures[:8],
                     "run_id": str(record.id),
                 },
             )

@@ -43,7 +43,7 @@ something concrete to run. This satisfies the acceptance criterion
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:

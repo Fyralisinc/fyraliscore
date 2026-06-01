@@ -44,6 +44,7 @@ class OptimizationRunReport:
     shortcut_decays: int
     negative_memory_inserts: int
     region_refreshes: int
+    question_policy_updates: int
     canonical_merge_candidates: tuple[dict, ...]
     canonical_split_candidates: tuple[dict, ...]
     canonical_promote_candidates: tuple[dict, ...]

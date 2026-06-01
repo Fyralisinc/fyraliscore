@@ -15,7 +15,7 @@ import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from uuid import UUID
 
 import asyncpg
@@ -62,6 +62,7 @@ RetrievalActionPath = Literal[
     "temporal",
     "pattern",
     "model_edge",
+    "sage_reader",
 ]
 
 
@@ -88,6 +89,7 @@ class InquiryConfig:
     llm_question_planning_enabled: bool = True
     llm_question_temperature: float = 0.1
     llm_question_max_tokens: int = 900
+    sage_reader_enabled: bool = True
     persist: bool = True
 
     @classmethod
@@ -148,6 +150,9 @@ class InquiryConfig:
             llm_question_max_tokens=int(
                 os.environ.get("INQUIRY_LLM_QUESTION_MAX_TOKENS", "900")
             ),
+            sage_reader_enabled=os.environ.get(
+                "SAGE_READER_ENABLED", "1"
+            ).strip().lower() not in {"0", "false", "no", "off", ""},
             persist=os.environ.get("INQUIRY_PERSIST", "1").strip().lower()
             not in {"0", "false", "no", "off"},
         )
@@ -156,8 +161,8 @@ class InquiryConfig:
 class LLMInquiryQuestionSpec(BaseModel):
     primitive: str = Field(
         description=(
-            "One of DEPENDENCY, COMMITMENT, COUNTEREVIDENCE, OWNERSHIP, "
-            "GOAL_IMPACT, RECURRENCE."
+            "One of DEPENDENCY, COMMITMENT, CONSTRAINT, COUNTEREVIDENCE, "
+            "OWNERSHIP, GOAL_IMPACT, RECURRENCE."
         )
     )
     question: str = Field(
@@ -211,6 +216,17 @@ class RetrievalAction:
     query: str | None = None
     filters: dict[str, Any] = field(default_factory=dict)
     budget: int = 25
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionPolicySignal:
+    signal_type: str
+    question_primitive: str
+    attempts: int
+    successes: int
+    utility_score: float
+    total_credit: float
+    total_cost: float
 
 
 @dataclass(slots=True)
@@ -379,6 +395,19 @@ async def run_inquiry_retrieval(
     retrieval_results = [baseline]
     unknowns: set[str] = set(_initial_unknowns(trigger, baseline))
     question_planning_notes: list[dict[str, Any]] = []
+    question_policy = await _load_question_policy_stats(
+        conn,
+        tenant_id=trigger.tenant_id,
+        signal_type=trigger.kind,
+    )
+    sage_reader_notes: dict[str, Any] = {
+        "enabled": bool(cfg.sage_reader_enabled),
+        "questions": {},
+        "signatures": [],
+        "selected_model_ids": [],
+        "projected_evidence_count": 0,
+        "activation_trace_count": 0,
+    }
     max_rounds = (
         0
         if mode == "fast" or route in {"FAST_PATH", "HUMAN_VALIDATION_PATH"}
@@ -400,6 +429,19 @@ async def run_inquiry_retrieval(
             config=cfg,
             round_index=round_index,
         )
+        candidate_questions = _apply_question_policy(
+            candidate_questions,
+            question_policy=question_policy,
+        )
+        if question_policy:
+            planning_note["policy_stats_applied"] = {
+                primitive: {
+                    "utility_score": round(signal.utility_score, 4),
+                    "attempts": signal.attempts,
+                    "successes": signal.successes,
+                }
+                for primitive, signal in sorted(question_policy.items())
+            }
         question_planning_notes.append(planning_note)
         selected = _select_questions(
             candidate_questions,
@@ -417,7 +459,13 @@ async def run_inquiry_retrieval(
 
         for question in selected:
             all_questions.append(question)
-            actions = _compile_retrieval_plan(question, trigger, cfg)
+            policy_signal = question_policy.get(question.primitive)
+            actions = _compile_retrieval_plan(
+                question,
+                trigger,
+                cfg,
+                policy_signal=policy_signal,
+            )
             all_actions.extend(actions)
             action_results: list[RetrievalResult] = []
             for action in actions:
@@ -433,6 +481,34 @@ async def run_inquiry_retrieval(
                     question_id=question.question_id,
                     hypotheses=hypotheses,
                     score_hint=max(0.0, question.score),
+                )
+            sage_result = await _execute_sage_reader_action(
+                question,
+                trigger,
+                conn,
+                cfg,
+                hypotheses=hypotheses,
+            )
+            if sage_result is not None:
+                sage_action = RetrievalAction(
+                    question.question_id,
+                    "sage_reader",
+                    "synthesis_reader",
+                    query=question.question,
+                    budget=cfg.result_model_limit,
+                )
+                all_actions.append(sage_action)
+                action_results.append(sage_result)
+                _add_result_to_reservoir(
+                    evidence_by_key,
+                    sage_result,
+                    path="sage_reader",
+                    question_id=question.question_id,
+                    hypotheses=hypotheses,
+                    score_hint=max(0.0, question.score),
+                )
+                _record_sage_reader_notes(
+                    sage_reader_notes, question, sage_result,
                 )
             if action_results:
                 merged_for_question = _merge_results(
@@ -473,7 +549,7 @@ async def run_inquiry_retrieval(
         mode=mode,
         signal_class=signal_class,
     )
-    evidence_cards = _rank_evidence(
+    ranked_evidence_cards = _rank_evidence(
         list(evidence_by_key.values()),
         limit=evidence_limit,
     )
@@ -481,7 +557,7 @@ async def run_inquiry_retrieval(
         verdict = _sufficiency_gate(
             route,
             hypotheses,
-            evidence_cards,
+            ranked_evidence_cards,
             answers,
             round_index=0,
             max_rounds=0,
@@ -491,10 +567,26 @@ async def run_inquiry_retrieval(
         verdict = SufficiencyVerdict(
             status=stop_status,
             reason=stop_reason,
-            evidence_count=len(evidence_cards),
+            evidence_count=len(ranked_evidence_cards),
             answered_questions=len(answers),
             remaining_unknowns=tuple(sorted(unknowns)[:10]),
         )
+    evidence_cards, evidence_minimization = _select_minimal_sufficient_evidence(
+        ranked_evidence_cards,
+        hypotheses=hypotheses,
+        questions=all_questions,
+        answers=answers,
+        route=route,
+        mode=mode,
+        evidence_limit=evidence_limit,
+    )
+    verdict = SufficiencyVerdict(
+        status=verdict.status,
+        reason=verdict.reason,
+        evidence_count=len(evidence_cards),
+        answered_questions=verdict.answered_questions,
+        remaining_unknowns=verdict.remaining_unknowns,
+    )
 
     combined = _merge_results(
         trigger,
@@ -534,9 +626,12 @@ async def run_inquiry_retrieval(
         "action_observation_budget_limit": cfg.action_observation_budget_limit,
         "llm_question_planning_enabled": cfg.llm_question_planning_enabled,
         "question_planning": question_planning_notes,
+        "sage_reader": sage_reader_notes,
         "evidence_count": len(evidence_cards),
         "evidence_before_rank": evidence_before_rank,
+        "evidence_after_rank": len(ranked_evidence_cards),
         "evidence_limit": evidence_limit,
+        "evidence_minimization": evidence_minimization,
         "sufficiency": _jsonable(asdict(verdict)),
         "context_packet": packet,
     }
@@ -684,6 +779,8 @@ def _initial_unknowns(trigger: TriggerContext, baseline: RetrievalResult) -> lis
         unknowns.append("whether the blocker is on the critical path")
     if _has_dependency_language(lower):
         unknowns.append("whether the dependency is binding")
+    if _has_constraint_language(lower):
+        unknowns.append("blocking constraint")
     if not baseline.acts.get("commitments"):
         unknowns.append("affected commitment")
     if not baseline.acts.get("goals"):
@@ -736,6 +833,21 @@ def _candidate_questions(
             expected_cost=0.18,
             retrieval_target="active_commitments",
             stop_condition="matching active commitment found or ruled out",
+            score=0.0,
+        ),
+        InquiryQuestion(
+            question_id="Q_CONSTRAINT",
+            question="What scarce resource, policy, or constraint is blocking progress?",
+            primitive="CONSTRAINT",
+            tests_hypotheses=hids[:2] or ("H1",),
+            expected_value=(
+                0.90
+                if _has_constraint_language(lower)
+                else (0.76 if _has_dependency_language(lower) else 0.40)
+            ),
+            expected_cost=0.24,
+            retrieval_target="constraints+resource_edges",
+            stop_condition="binding constraint identified or ruled out",
             score=0.0,
         ),
         InquiryQuestion(
@@ -806,6 +918,7 @@ def _candidate_questions(
 _ALLOWED_QUESTION_PRIMITIVES = {
     "DEPENDENCY",
     "COMMITMENT",
+    "CONSTRAINT",
     "COUNTEREVIDENCE",
     "OWNERSHIP",
     "GOAL_IMPACT",
@@ -815,6 +928,7 @@ _ALLOWED_QUESTION_PRIMITIVES = {
 _QUESTION_ID_BY_PRIMITIVE = {
     "DEPENDENCY": "Q_CRITICAL_PATH",
     "COMMITMENT": "Q_ACTIVE_COMMITMENT",
+    "CONSTRAINT": "Q_CONSTRAINT",
     "COUNTEREVIDENCE": "Q_COUNTEREVIDENCE",
     "OWNERSHIP": "Q_OWNER",
     "GOAL_IMPACT": "Q_GOAL_IMPACT",
@@ -824,6 +938,7 @@ _QUESTION_ID_BY_PRIMITIVE = {
 _DEFAULT_TARGET_BY_PRIMITIVE = {
     "DEPENDENCY": "commitment_graph+recent_observations",
     "COMMITMENT": "active_commitments",
+    "CONSTRAINT": "constraints+resource_edges",
     "COUNTEREVIDENCE": "semantic_counterevidence+recent_observations",
     "OWNERSHIP": "commitment_owners+actor_scope",
     "GOAL_IMPACT": "goal_resource_bridge",
@@ -833,6 +948,7 @@ _DEFAULT_TARGET_BY_PRIMITIVE = {
 _DEFAULT_STOP_BY_PRIMITIVE = {
     "DEPENDENCY": "critical-path evidence or counterevidence found",
     "COMMITMENT": "matching active commitment found or ruled out",
+    "CONSTRAINT": "binding constraint identified or ruled out",
     "COUNTEREVIDENCE": "credible alternate explanation found or absent",
     "OWNERSHIP": "owner identified or human validation required",
     "GOAL_IMPACT": "goal/customer/resource impact identified",
@@ -1100,7 +1216,7 @@ def _merge_llm_and_safety_questions(
                 )
             continue
         force_high_value_safety = (
-            q.primitive in {"DEPENDENCY", "GOAL_IMPACT", "RECURRENCE"}
+            q.primitive in {"CONSTRAINT", "DEPENDENCY", "GOAL_IMPACT", "RECURRENCE"}
             and (q.expected_value >= 0.86 or q.score >= 0.75)
         )
         if (
@@ -1114,6 +1230,7 @@ def _merge_llm_and_safety_questions(
     for primitive in (
         "COUNTEREVIDENCE",
         "DEPENDENCY",
+        "CONSTRAINT",
         "COMMITMENT",
         "OWNERSHIP",
         "GOAL_IMPACT",
@@ -1134,6 +1251,104 @@ def _truncate_text(text: str, limit: int) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: max(0, limit - 3)].rstrip() + "..."
+
+
+async def _load_question_policy_stats(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    signal_type: str,
+) -> dict[str, QuestionPolicySignal]:
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_question_policy_stats')"
+    )
+    if table_name is None:
+        return {}
+    rows = await conn.fetch(
+        """
+        SELECT signal_type, question_primitive, attempts, successes,
+               utility_score, total_credit, total_cost
+        FROM sage_question_policy_stats
+        WHERE tenant_id = $1
+          AND signal_type = $2
+        """,
+        tenant_id,
+        signal_type,
+    )
+    out: dict[str, QuestionPolicySignal] = {}
+    for row in rows:
+        primitive = str(row["question_primitive"] or "").upper()
+        if not primitive:
+            continue
+        out[primitive] = QuestionPolicySignal(
+            signal_type=str(row["signal_type"] or signal_type),
+            question_primitive=primitive,
+            attempts=int(row["attempts"] or 0),
+            successes=int(row["successes"] or 0),
+            utility_score=float(row["utility_score"] or 0.0),
+            total_credit=float(row["total_credit"] or 0.0),
+            total_cost=float(row["total_cost"] or 0.0),
+        )
+    return out
+
+
+def _apply_question_policy(
+    candidates: list[InquiryQuestion],
+    *,
+    question_policy: dict[str, QuestionPolicySignal],
+) -> list[InquiryQuestion]:
+    if not question_policy:
+        return candidates
+    out: list[InquiryQuestion] = []
+    for question in candidates:
+        signal = question_policy.get(question.primitive)
+        if signal is None or signal.attempts <= 0:
+            out.append(question)
+            continue
+        policy_boost = _question_policy_score_boost(signal)
+        value = _clamp_float(
+            question.expected_value + policy_boost * 0.35,
+            0.0,
+            1.0,
+        )
+        cost = _clamp_float(
+            question.expected_cost - max(0.0, policy_boost) * 0.12
+            + max(0.0, -policy_boost) * 0.10,
+            0.02,
+            1.0,
+        )
+        score = round(value - cost + policy_boost, 4)
+        out.append(replace(
+            question,
+            expected_value=value,
+            expected_cost=cost,
+            score=score,
+        ))
+    return out
+
+
+def _question_policy_score_boost(signal: QuestionPolicySignal) -> float:
+    success_rate = signal.successes / max(signal.attempts, 1)
+    utility = float(signal.utility_score)
+    raw = 0.16 * utility + 0.20 * (success_rate - 0.35)
+    return _clamp_float(raw, -0.24, 0.34)
+
+
+def _question_policy_budget_multiplier(
+    signal: QuestionPolicySignal | None,
+) -> float:
+    if signal is None or signal.attempts <= 0:
+        return 1.0
+    success_rate = signal.successes / max(signal.attempts, 1)
+    raw = 1.0 + 0.22 * float(signal.utility_score) + 0.20 * (success_rate - 0.35)
+    return _clamp_float(raw, 0.60, 1.65)
+
+
+def _policy_budget(
+    value: int,
+    signal: QuestionPolicySignal | None,
+) -> int:
+    return max(1, int(round(float(value) * _question_policy_budget_multiplier(signal))))
 
 
 def _select_questions(
@@ -1157,8 +1372,20 @@ def _select_questions(
 
     by_id = {q.question_id: q for q in candidates}
     priority_ids: list[str] = []
-    if questions_per_round >= 2 and "COUNTEREVIDENCE" not in already_asked:
-        priority_ids.append("Q_COUNTEREVIDENCE")
+    constraint = by_id.get("Q_CONSTRAINT")
+    if (
+        constraint is not None
+        and constraint.expected_value >= 0.86
+        and "CONSTRAINT" not in already_asked
+    ):
+        priority_ids.append("Q_CONSTRAINT")
+    owner = by_id.get("Q_OWNER")
+    if (
+        owner is not None
+        and owner.expected_value >= 0.70
+        and "OWNERSHIP" not in already_asked
+    ):
+        priority_ids.append("Q_OWNER")
     recurrence = by_id.get("Q_RECURRENCE")
     if (
         recurrence is not None
@@ -1180,6 +1407,14 @@ def _select_questions(
         and "GOAL_IMPACT" not in already_asked
     ):
         priority_ids.append("Q_GOAL_IMPACT")
+    counter = by_id.get("Q_COUNTEREVIDENCE")
+    if (
+        questions_per_round >= 2
+        and counter is not None
+        and counter.expected_value >= 0.82
+        and "COUNTEREVIDENCE" not in already_asked
+    ):
+        priority_ids.append("Q_COUNTEREVIDENCE")
 
     for question_id in priority_ids:
         question = by_id.get(question_id)
@@ -1204,11 +1439,14 @@ def _compile_retrieval_plan(
     question: InquiryQuestion,
     trigger: TriggerContext,
     cfg: InquiryConfig,
+    *,
+    policy_signal: QuestionPolicySignal | None = None,
 ) -> list[RetrievalAction]:
     q = question.question
     seed_text = _trigger_text(trigger)
     semantic_query = f"{q} {seed_text}".strip()
     common = {"seed_entities": list(trigger.seed_entity_ids)}
+    semantic_budget = _policy_budget(cfg.semantic_budget, policy_signal)
     if question.primitive == "DEPENDENCY":
         return [
             RetrievalAction(question.question_id, "structural", "commitment_graph", filters=common),
@@ -1217,7 +1455,7 @@ def _compile_retrieval_plan(
                 "model_edge",
                 "dependency_model_edges",
                 filters=common,
-                budget=60,
+                budget=_policy_budget(60, policy_signal),
             ),
             RetrievalAction(
                 question.question_id,
@@ -1225,14 +1463,14 @@ def _compile_retrieval_plan(
                 "recent_observations",
                 query=semantic_query,
                 filters={"window_days": cfg.temporal_window_days},
-                budget=40,
+                budget=_policy_budget(40, policy_signal),
             ),
             RetrievalAction(
                 question.question_id,
                 "semantic",
                 "dependency_evidence",
                 query=semantic_query,
-                budget=cfg.semantic_budget,
+                budget=semantic_budget,
             ),
         ]
     if question.primitive == "COMMITMENT":
@@ -1243,7 +1481,7 @@ def _compile_retrieval_plan(
                 "semantic",
                 "commitment_evidence",
                 query=f"active commitment promised outcome {seed_text}",
-                budget=cfg.semantic_budget,
+                budget=semantic_budget,
             ),
         ]
     if question.primitive == "COUNTEREVIDENCE":
@@ -1253,7 +1491,7 @@ def _compile_retrieval_plan(
                 "semantic",
                 "counterevidence",
                 query=f"alternate explanation counterevidence not blocked not caused {seed_text}",
-                budget=cfg.semantic_budget,
+                budget=semantic_budget,
             ),
             RetrievalAction(
                 question.question_id,
@@ -1261,7 +1499,41 @@ def _compile_retrieval_plan(
                 "recent_counterevidence",
                 query=semantic_query,
                 filters={"window_days": cfg.temporal_window_days},
-                budget=30,
+                budget=_policy_budget(30, policy_signal),
+            ),
+        ]
+    if question.primitive == "CONSTRAINT":
+        return [
+            RetrievalAction(
+                question.question_id,
+                "structural",
+                "goal_resource_bridge",
+                filters=common,
+            ),
+            RetrievalAction(
+                question.question_id,
+                "model_edge",
+                "constraint_resource_edges",
+                filters=common,
+                budget=_policy_budget(60, policy_signal),
+            ),
+            RetrievalAction(
+                question.question_id,
+                "temporal",
+                "recent_constraint_observations",
+                query=semantic_query,
+                filters={"window_days": cfg.temporal_window_days},
+                budget=_policy_budget(30, policy_signal),
+            ),
+            RetrievalAction(
+                question.question_id,
+                "semantic",
+                "constraint_evidence",
+                query=(
+                    "constraint scarce resource capacity quota policy blocker "
+                    f"{seed_text}"
+                ),
+                budget=semantic_budget,
             ),
         ]
     if question.primitive == "OWNERSHIP":
@@ -1272,19 +1544,31 @@ def _compile_retrieval_plan(
                 "semantic",
                 "owner_evidence",
                 query=f"owner responsible assigned owns dependency {seed_text}",
-                budget=cfg.semantic_budget,
+                budget=semantic_budget,
             ),
         ]
     if question.primitive == "RECURRENCE":
         return [
-            RetrievalAction(question.question_id, "pattern", "pattern_models", query=semantic_query, budget=80),
-            RetrievalAction(question.question_id, "model_edge", "related_model_edges", filters=common, budget=80),
+            RetrievalAction(
+                question.question_id,
+                "pattern",
+                "pattern_models",
+                query=semantic_query,
+                budget=_policy_budget(80, policy_signal),
+            ),
+            RetrievalAction(
+                question.question_id,
+                "model_edge",
+                "related_model_edges",
+                filters=common,
+                budget=_policy_budget(80, policy_signal),
+            ),
             RetrievalAction(
                 question.question_id,
                 "semantic",
                 "recurrence_evidence",
                 query=f"recurring pattern repeated similar issue {seed_text}",
-                budget=cfg.semantic_budget,
+                budget=semantic_budget,
             ),
         ]
     return [
@@ -1294,14 +1578,14 @@ def _compile_retrieval_plan(
             "model_edge",
             "goal_resource_edges",
             filters=common,
-            budget=60,
+            budget=_policy_budget(60, policy_signal),
         ),
         RetrievalAction(
             question.question_id,
             "semantic",
             "goal_customer_resource_evidence",
             query=f"goal customer resource impact {seed_text}",
-            budget=cfg.semantic_budget,
+            budget=semantic_budget,
         ),
     ]
 
@@ -1404,6 +1688,110 @@ async def _execute_action(
     except (RetrievalPathwayError, ValidationError):
         return None
     return None
+
+
+async def _execute_sage_reader_action(
+    question: InquiryQuestion,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: InquiryConfig,
+    *,
+    hypotheses: tuple[Hypothesis, ...],
+) -> RetrievalResult | None:
+    if not cfg.sage_reader_enabled:
+        return None
+    try:
+        from services.sage.reader import ReaderBudget, SynthesisReader
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        reader = SynthesisReader(
+            budget=ReaderBudget(
+                max_nodes=max(8, int(cfg.result_model_limit)),
+                max_edges=max(16, int(cfg.result_model_limit) * 2),
+                max_evidence_items=max(10, int(cfg.evidence_reservoir_limit)),
+                lexical_candidates=max(10, int(cfg.candidate_model_limit // 3)),
+                shortcut_candidates=12,
+                affordance_candidates=max(10, int(cfg.candidate_model_limit // 4)),
+                propagation_neighbors=max(24, int(cfg.candidate_model_limit // 2)),
+            )
+        )
+        read = await reader.read(
+            conn=conn,
+            tenant_id=trigger.tenant_id,
+            trigger=trigger,
+            question_id=question.question_id,
+            question=question.question,
+            question_primitive=question.primitive,
+            hypotheses=hypotheses,
+        )
+    except (asyncpg.PostgresError, ValidationError):
+        raise
+    except Exception:
+        import structlog
+        structlog.get_logger(__name__).warning(
+            "sage_reader.failed",
+            question_id=question.question_id,
+            exc_info=True,
+        )
+        return None
+
+    return RetrievalResult(
+        trigger=trigger,
+        observations=list(read.observations),
+        models=list(read.models),
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        pathway_results=[read.pathway_result],
+        notes={
+            "action": _jsonable(asdict(RetrievalAction(
+                question.question_id,
+                "sage_reader",
+                "synthesis_reader",
+                query=question.question,
+                budget=cfg.result_model_limit,
+            ))),
+            "pathways_run": ["sage_reader"],
+            "sage_reader": {
+                "question_id": question.question_id,
+                "question_primitive": read.question_primitive,
+                "signature": read.signature,
+                "selected_model_ids": [str(m.id) for m in read.models],
+                "projected_evidence_count": len(read.projected_evidence),
+                "activation_trace_count": len(read.activations),
+                "debug": read.debug,
+                "activations": [
+                    _jsonable(asdict(trace))
+                    for trace in read.activations
+                ],
+            },
+        },
+        model_scores=dict(read.model_scores),
+    )
+
+
+def _record_sage_reader_notes(
+    notes: dict[str, Any],
+    question: InquiryQuestion,
+    result: RetrievalResult,
+) -> None:
+    read_note = (result.notes or {}).get("sage_reader")
+    if not isinstance(read_note, dict):
+        return
+    qid = question.question_id
+    notes.setdefault("questions", {})[qid] = read_note
+    signature = read_note.get("signature")
+    if isinstance(signature, dict) and signature not in notes["signatures"]:
+        notes["signatures"].append(signature)
+    for mid in read_note.get("selected_model_ids", []) or []:
+        if mid not in notes["selected_model_ids"]:
+            notes["selected_model_ids"].append(mid)
+    notes["projected_evidence_count"] = int(
+        notes.get("projected_evidence_count") or 0
+    ) + int(read_note.get("projected_evidence_count") or 0)
+    notes["activation_trace_count"] = int(
+        notes.get("activation_trace_count") or 0
+    ) + int(read_note.get("activation_trace_count") or 0)
 
 
 def _cap_pathway_models(result: PathwayResult, limit: int) -> None:
@@ -2012,7 +2400,6 @@ def _apply_relevance_diversity(
                 best_utility = utility
                 best_idx = idx
 
-        best_pair = remaining[best_idx]
         if (
             len(out) >= floor
             and len(out) >= 8
@@ -2158,7 +2545,14 @@ def _has_broad_signal_language(lower: str) -> bool:
     broad_terms = bool(
         re.search(
             r"\b(all|portfolio|company-wide|team-wide|board|exec|"
-            r"every|customers|renewals|pipeline|fleet|global)\b",
+            r"customers|renewals|pipeline|fleet|global)\b",
+            scrubbed,
+        )
+    )
+    every_scope = bool(
+        re.search(
+            r"\bevery\s+(?:customer|account|renewal|team|segment|"
+            r"pipeline|portfolio|region|department|business)\b",
             scrubbed,
         )
     )
@@ -2170,7 +2564,7 @@ def _has_broad_signal_language(lower: str) -> bool:
             scrubbed,
         )
     )
-    return broad_terms or broad_across
+    return broad_terms or every_scope or broad_across
 
 
 def _scrub_negated_signal_language(lower: str) -> str:
@@ -2567,6 +2961,329 @@ def _rank_evidence(cards: list[EvidenceCard], *, limit: int) -> list[EvidenceCar
     )[:limit]
 
 
+def _select_minimal_sufficient_evidence(
+    cards: list[EvidenceCard],
+    *,
+    hypotheses: tuple[Hypothesis, ...],
+    questions: list[InquiryQuestion],
+    answers: list[QuestionAnswer],
+    route: SignalRoute,
+    mode: Literal["deep", "fast"],
+    evidence_limit: int,
+) -> tuple[list[EvidenceCard], dict[str, Any]]:
+    """Compress ranked evidence to the smallest writer-useful packet.
+
+    The reservoir is intentionally broad; this stage optimizes the
+    writer-facing packet for marginal utility. It protects evidence that
+    answers selected questions, preserves falsification/action anchors,
+    then fills remaining space only with non-redundant high-value cards.
+    """
+    if not cards:
+        return [], {
+            "enabled": True,
+            "input_count": 0,
+            "selected_count": 0,
+            "target_count": 0,
+            "dropped_count": 0,
+            "drop_ratio": 0.0,
+            "protected_count": 0,
+            "coverage": {},
+        }
+
+    by_id = {str(card.evidence_id): card for card in cards}
+    selected: list[EvidenceCard] = []
+    selected_ids: set[str] = set()
+    protected_ids: set[str] = set()
+    protected_reasons: dict[str, set[str]] = {}
+
+    def add(card: EvidenceCard | None, reason: str, *, protected: bool) -> bool:
+        if card is None:
+            return False
+        cid = str(card.evidence_id)
+        if cid in selected_ids:
+            if protected:
+                protected_ids.add(cid)
+                protected_reasons.setdefault(cid, set()).add(reason)
+            return False
+        if len(selected) >= max(1, int(evidence_limit)):
+            return False
+        selected.append(card)
+        selected_ids.add(cid)
+        if protected:
+            protected_ids.add(cid)
+            protected_reasons.setdefault(cid, set()).add(reason)
+        return True
+
+    target = _minimal_evidence_target(
+        cards,
+        questions=questions,
+        answers=answers,
+        route=route,
+        mode=mode,
+        evidence_limit=evidence_limit,
+    )
+    hard_cap = max(target, _protected_answer_ref_count(answers))
+    hard_cap = min(max(1, int(evidence_limit)), max(hard_cap, target))
+
+    for answer in answers:
+        support_cards = [
+            by_id[eid]
+            for eid in answer.supporting_evidence
+            if eid in by_id
+        ]
+        counter_cards = [
+            by_id[eid]
+            for eid in answer.counterevidence
+            if eid in by_id
+        ]
+        for card in sorted(support_cards, key=_evidence_sort_key)[:2]:
+            add(card, f"answer_support:{answer.question_id}", protected=True)
+        for card in sorted(counter_cards, key=_evidence_sort_key)[:2]:
+            add(card, f"answer_counter:{answer.question_id}", protected=True)
+
+    for question in questions:
+        q_cards = [
+            card
+            for card in cards
+            if question.question_id in card.retrieved_for_questions
+        ]
+        if q_cards:
+            add(
+                sorted(q_cards, key=_evidence_sort_key)[0],
+                f"question_coverage:{question.question_id}",
+                protected=True,
+            )
+
+    for hyp in hypotheses:
+        support = [
+            card
+            for card in cards
+            if hyp.id in card.supports_hypotheses
+        ]
+        if support:
+            add(
+                sorted(support, key=_evidence_sort_key)[0],
+                f"hypothesis_support:{hyp.id}",
+                protected=True,
+            )
+
+    counters = [
+        card for card in cards
+        if card.weakens_hypotheses or card.contradicts_hypotheses
+    ]
+    for card in sorted(counters, key=_evidence_sort_key)[:2]:
+        add(card, "falsification_guard", protected=True)
+
+    for source_type in ("commitment", "goal", "decision", "resource"):
+        typed = [card for card in cards if card.source_type == source_type]
+        if typed:
+            add(
+                sorted(typed, key=_evidence_sort_key)[0],
+                f"action_anchor:{source_type}",
+                protected=True,
+            )
+
+    if len(selected) > hard_cap:
+        selected.sort(key=lambda card: (
+            str(card.evidence_id) not in protected_ids,
+            *_evidence_sort_key(card),
+        ))
+        selected = selected[:hard_cap]
+        selected_ids = {str(card.evidence_id) for card in selected}
+
+    while len(selected) < target:
+        best: EvidenceCard | None = None
+        best_score = float("-inf")
+        for card in cards:
+            cid = str(card.evidence_id)
+            if cid in selected_ids:
+                continue
+            marginal = _marginal_evidence_value(card, selected)
+            if marginal > best_score:
+                best = card
+                best_score = marginal
+        if best is None:
+            break
+        if len(selected) >= _minimal_floor(questions, answers) and best_score <= 0.0:
+            break
+        add(best, "marginal_value", protected=False)
+
+    selected.sort(key=_evidence_sort_key)
+    selected_ids = {str(card.evidence_id) for card in selected}
+    coverage = {
+        "questions": _coverage_share(
+            [q.question_id for q in questions],
+            lambda qid: any(qid in c.retrieved_for_questions for c in selected),
+        ),
+        "supported_answers": _coverage_share(
+            [
+                a.question_id for a in answers
+                if a.answer_status in {"supported", "partially_supported"}
+            ],
+            lambda qid: any(qid in c.retrieved_for_questions for c in selected),
+        ),
+        "hypotheses": _coverage_share(
+            [h.id for h in hypotheses],
+            lambda hid: any(
+                hid in c.supports_hypotheses
+                or hid in c.weakens_hypotheses
+                or hid in c.contradicts_hypotheses
+                for c in selected
+            ),
+        ),
+        "has_counterevidence": any(
+            c.weakens_hypotheses or c.contradicts_hypotheses for c in selected
+        ),
+        "has_action_anchor": any(
+            c.source_type in {"commitment", "goal", "decision", "resource"}
+            for c in selected
+        ),
+    }
+    return selected, {
+        "enabled": True,
+        "input_count": len(cards),
+        "selected_count": len(selected),
+        "target_count": target,
+        "dropped_count": max(0, len(cards) - len(selected)),
+        "drop_ratio": round(
+            (len(cards) - len(selected)) / max(1, len(cards)),
+            4,
+        ),
+        "protected_count": len(protected_ids & selected_ids),
+        "protected_reasons": {
+            eid: sorted(reasons)
+            for eid, reasons in protected_reasons.items()
+            if eid in selected_ids
+        },
+        "coverage": coverage,
+    }
+
+
+def _minimal_evidence_target(
+    cards: list[EvidenceCard],
+    *,
+    questions: list[InquiryQuestion],
+    answers: list[QuestionAnswer],
+    route: SignalRoute,
+    mode: Literal["deep", "fast"],
+    evidence_limit: int,
+) -> int:
+    supported = sum(
+        1 for answer in answers
+        if answer.answer_status in {"supported", "partially_supported"}
+    )
+    question_count = len(questions)
+    counter_bonus = 2 if any(
+        c.weakens_hypotheses or c.contradicts_hypotheses for c in cards
+    ) else 0
+    action_bonus = 2 if any(
+        c.source_type in {"commitment", "goal", "decision", "resource"}
+        for c in cards
+    ) else 0
+    base = 8 if mode == "fast" or route == "FAST_PATH" else 12
+    target = base + question_count * 2 + supported + counter_bonus + action_bonus
+    if route == "BACKGROUND_PATH":
+        target = min(target, 16)
+    if mode == "fast" or route == "FAST_PATH":
+        target = min(target, 14)
+    else:
+        target = min(target, 28)
+    return min(max(1, int(evidence_limit)), max(1, target), len(cards))
+
+
+def _protected_answer_ref_count(answers: list[QuestionAnswer]) -> int:
+    refs: set[str] = set()
+    for answer in answers:
+        refs.update(answer.supporting_evidence[:2])
+        refs.update(answer.counterevidence[:2])
+    return len(refs)
+
+
+def _minimal_floor(
+    questions: list[InquiryQuestion],
+    answers: list[QuestionAnswer],
+) -> int:
+    supported = sum(
+        1 for answer in answers
+        if answer.answer_status in {"supported", "partially_supported"}
+    )
+    return max(4, min(12, len(questions) + supported + 2))
+
+
+def _evidence_sort_key(card: EvidenceCard) -> tuple[float, float, str]:
+    return (
+        -_evidence_value(card),
+        -_timestamp_sort_value(card.timestamp),
+        str(card.evidence_id),
+    )
+
+
+def _marginal_evidence_value(
+    card: EvidenceCard,
+    selected: list[EvidenceCard],
+) -> float:
+    value = _evidence_value(card)
+    if _is_low_value_model_noise(card):
+        value -= 0.32
+    if card.source_type == "observation":
+        value += 0.08
+    if "sage_reader" in card.retrieval_paths:
+        value += 0.06
+    if card.supports_hypotheses or card.weakens_hypotheses or card.contradicts_hypotheses:
+        value += 0.12
+    value -= _redundancy_penalty(card, selected)
+    return value
+
+
+def _redundancy_penalty(
+    card: EvidenceCard,
+    selected: list[EvidenceCard],
+) -> float:
+    if not selected:
+        return 0.0
+    penalty = 0.0
+    card_tokens = _material_tokens(card.summary.casefold())
+    card_links = (
+        frozenset(card.supports_hypotheses),
+        frozenset(card.weakens_hypotheses),
+        frozenset(card.contradicts_hypotheses),
+    )
+    for kept in selected:
+        if card.source_ref == kept.source_ref:
+            penalty += 1.0
+            continue
+        if card.source_type == kept.source_type and card_links == (
+            frozenset(kept.supports_hypotheses),
+            frozenset(kept.weakens_hypotheses),
+            frozenset(kept.contradicts_hypotheses),
+        ):
+            penalty += 0.10
+        kept_tokens = _material_tokens(kept.summary.casefold())
+        if card_tokens and kept_tokens:
+            overlap = len(card_tokens & kept_tokens) / max(
+                1,
+                min(len(card_tokens), len(kept_tokens)),
+            )
+            if overlap >= 0.82:
+                penalty += 0.45
+            elif overlap >= 0.58:
+                penalty += 0.16
+    return min(1.25, penalty)
+
+
+def _coverage_share(
+    items: list[str],
+    predicate: Callable[[str], bool],
+) -> float:
+    if not items:
+        return 1.0
+    unique = list(dict.fromkeys(items))
+    return round(
+        sum(1 for item in unique if predicate(item)) / max(1, len(unique)),
+        4,
+    )
+
+
 def _evidence_value(card: EvidenceCard) -> float:
     usefulness = card.score
     usefulness += 0.35 if card.supports_hypotheses else 0.0
@@ -2797,6 +3514,7 @@ async def _persist_inquiry(
         json.dumps(result.context_packet, default=str),
         json.dumps(result.notes, default=str),
     )
+    await _persist_sage_reader_activation_traces(conn, result, trigger)
     if result.questions:
         actions_by_question: dict[str, list[dict[str, Any]]] = {}
         for action in result.retrieval_actions:
@@ -2878,6 +3596,225 @@ async def _persist_inquiry(
         ],
     )
     await _emit_phase1_traces(conn, result, trigger)
+
+
+async def _persist_sage_reader_activation_traces(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_reader_activations')"
+    )
+    if table_name is None:
+        return
+    try:
+        from services.sage.reader import activation_trace_insert_params
+    except Exception:  # noqa: BLE001
+        return
+    sage_notes = (result.notes or {}).get("sage_reader")
+    if not isinstance(sage_notes, dict):
+        return
+    questions = sage_notes.get("questions")
+    if not isinstance(questions, dict):
+        return
+    params: list[tuple[Any, ...]] = []
+    for qnote in questions.values():
+        if not isinstance(qnote, dict):
+            continue
+        for raw_trace in qnote.get("activations", []) or []:
+            if not isinstance(raw_trace, dict):
+                continue
+            try:
+                from services.sage.reader import ReaderActivationTrace
+                trace = ReaderActivationTrace(
+                    question_id=str(raw_trace["question_id"]),
+                    model_id=UUID(str(raw_trace["model_id"])),
+                    activation_score=float(raw_trace["activation_score"]),
+                    activation_reasons=tuple(
+                        str(r) for r in raw_trace.get("activation_reasons", [])
+                    ),
+                    selected=bool(raw_trace.get("selected", False)),
+                    selection_rank=(
+                        int(raw_trace["selection_rank"])
+                        if raw_trace.get("selection_rank") is not None else None
+                    ),
+                    source_breakdown=dict(raw_trace.get("source_breakdown") or {}),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            params.append(
+                activation_trace_insert_params(
+                    tenant_id=trigger.tenant_id,
+                    inquiry_session_id=result.session_id,
+                    trace=trace,
+                )
+            )
+    if not params:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO sage_reader_activations (
+          id, tenant_id, inquiry_session_id, question_id, model_id,
+          activation_score, activation_reasons, selected, selection_rank,
+          source_breakdown
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7::jsonb, $8, $9,
+          $10::jsonb
+        )
+        ON CONFLICT (inquiry_session_id, question_id, model_id)
+        DO UPDATE SET
+          activation_score = EXCLUDED.activation_score,
+          activation_reasons = EXCLUDED.activation_reasons,
+          selected = EXCLUDED.selected,
+          selection_rank = EXCLUDED.selection_rank,
+          source_breakdown = EXCLUDED.source_breakdown
+        """,
+        params,
+    )
+    await _persist_sage_reader_decision_attributions(conn, result, trigger)
+
+
+async def _persist_sage_reader_decision_attributions(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_reader_decision_attributions')"
+    )
+    if table_name is None:
+        return
+    sage_notes = (result.notes or {}).get("sage_reader")
+    if not isinstance(sage_notes, dict):
+        return
+    questions = sage_notes.get("questions")
+    if not isinstance(questions, dict):
+        return
+
+    question_by_id = {q.question_id: q for q in result.questions}
+    actions_by_question: dict[str, list[dict[str, Any]]] = {}
+    for action in result.retrieval_actions:
+        actions_by_question.setdefault(action.question_id, []).append(
+            _jsonable(asdict(action))
+        )
+    evidence_by_question = _packet_evidence_refs_by_question(result.evidence_cards)
+    entities = _jsonable(trigger.seed_entity_ids)
+    params: list[tuple[Any, ...]] = []
+
+    for qid, qnote in questions.items():
+        if not isinstance(qnote, dict):
+            continue
+        question = question_by_id.get(str(qid))
+        if question is None:
+            continue
+        evidence_refs = evidence_by_question.get(str(qid), [])
+        for raw_trace in qnote.get("activations", []) or []:
+            if not isinstance(raw_trace, dict):
+                continue
+            try:
+                model_id = UUID(str(raw_trace["model_id"]))
+                activation_score = float(raw_trace["activation_score"])
+                activation_reasons = [
+                    str(r) for r in raw_trace.get("activation_reasons", [])
+                ]
+                selected = bool(raw_trace.get("selected", False))
+                selection_rank = (
+                    int(raw_trace["selection_rank"])
+                    if raw_trace.get("selection_rank") is not None else None
+                )
+                source_breakdown = dict(raw_trace.get("source_breakdown") or {})
+            except (KeyError, TypeError, ValueError):
+                continue
+            model_evidence_refs = [
+                ref for ref in evidence_refs
+                if ref.get("source_ref_id") == str(model_id)
+                or ref.get("source_type") == "observation"
+            ]
+            params.append(
+                (
+                    uuid7(),
+                    trigger.tenant_id,
+                    result.session_id,
+                    question.question_id,
+                    question.primitive,
+                    question.question,
+                    float(question.score),
+                    float(question.expected_value),
+                    float(question.expected_cost),
+                    trigger.kind,
+                    json.dumps(entities, default=str),
+                    model_id,
+                    selected,
+                    selection_rank,
+                    activation_score,
+                    json.dumps(activation_reasons, default=str),
+                    json.dumps(source_breakdown, default=str),
+                    json.dumps(actions_by_question.get(question.question_id, [])),
+                    json.dumps(model_evidence_refs, default=str),
+                    len(model_evidence_refs),
+                )
+            )
+    if not params:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO sage_reader_decision_attributions (
+          id, tenant_id, inquiry_session_id,
+          question_id, question_primitive, question,
+          question_score, expected_value, expected_cost,
+          signal_type, entities, model_id,
+          selected, selection_rank, activation_score,
+          activation_reasons, source_breakdown, retrieval_actions,
+          projected_evidence_refs, evidence_in_packet_count
+        ) VALUES (
+          $1, $2, $3,
+          $4, $5, $6,
+          $7, $8, $9,
+          $10, $11::jsonb, $12,
+          $13, $14, $15,
+          $16::jsonb, $17::jsonb, $18::jsonb,
+          $19::jsonb, $20
+        )
+        ON CONFLICT (inquiry_session_id, question_id, model_id)
+        DO UPDATE SET
+          question_primitive = EXCLUDED.question_primitive,
+          question = EXCLUDED.question,
+          question_score = EXCLUDED.question_score,
+          expected_value = EXCLUDED.expected_value,
+          expected_cost = EXCLUDED.expected_cost,
+          signal_type = EXCLUDED.signal_type,
+          entities = EXCLUDED.entities,
+          selected = EXCLUDED.selected,
+          selection_rank = EXCLUDED.selection_rank,
+          activation_score = EXCLUDED.activation_score,
+          activation_reasons = EXCLUDED.activation_reasons,
+          source_breakdown = EXCLUDED.source_breakdown,
+          retrieval_actions = EXCLUDED.retrieval_actions,
+          projected_evidence_refs = EXCLUDED.projected_evidence_refs,
+          evidence_in_packet_count = EXCLUDED.evidence_in_packet_count,
+          updated_at = now()
+        """,
+        params,
+    )
+
+
+def _packet_evidence_refs_by_question(
+    evidence_cards: tuple[EvidenceCard, ...],
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for card in evidence_cards:
+        ref = {
+            "evidence_id": str(card.evidence_id),
+            "source_type": card.source_type,
+            "source_ref": card.source_ref,
+            "source_ref_id": str(card.source_ref_id) if card.source_ref_id else None,
+            "score": float(card.score),
+        }
+        for question_id in card.retrieved_for_questions:
+            out.setdefault(str(question_id), []).append(ref)
+    return out
 
 
 async def _emit_phase1_traces(
@@ -3330,6 +4267,17 @@ def _has_dependency_language(lower: str) -> bool:
     )
 
 
+def _has_constraint_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(constraint|constrained|capacity|quota|scarce|limited|"
+            r"bottleneck|blocked by|shortage|policy exception|approval|"
+            r"resourc(?:e|ing)|sandbox|license|budget|rate limit)\b",
+            lower,
+        )
+    )
+
+
 def _has_revenue_impact_language(lower: str) -> bool:
     return bool(
         re.search(
@@ -3363,7 +4311,7 @@ def _has_act_affecting_language(lower: str) -> bool:
 def _mentions_recurrence(lower: str) -> bool:
     return bool(
         re.search(
-            r"\b(repeated|recurring|again|several|multiple|pattern|systemic|"
+            r"\b(recur(?:s|red|ring)?|repeated|again|several|multiple|pattern|systemic|"
             r"another|also|same issue|broader)\b",
             lower,
         )

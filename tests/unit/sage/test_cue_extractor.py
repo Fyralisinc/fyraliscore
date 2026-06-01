@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from services.sage.cue_extractor import CueExtractor, StructuredCues
 

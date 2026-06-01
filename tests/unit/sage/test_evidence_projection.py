@@ -12,7 +12,7 @@ pure-unit selection that runs without a database.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 import asyncpg
@@ -23,13 +23,6 @@ from services.sage.evidence_projection import (
     TOKEN_ESTIMATE,
     EvidenceProjector,
     ProjectionBudget,
-)
-
-
-# Re-use the gateway integration fixtures (per-test pool + fresh DB).
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
 )
 
 

@@ -24,11 +24,9 @@ tenant_id fixtures. Drives the real services/sage modules, not stubs.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from uuid import UUID
 
 import asyncpg
@@ -54,11 +52,7 @@ from services.sage.inquiry_traces import (
 from services.sage.outcome_evaluator import OutcomeEvaluator
 from services.sage.topology_optimizer import TopologyOptimizer
 
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-)
-from tests.unit.sage._seed import seed_model, seed_observation
+from tests.unit.sage._seed import seed_model
 
 
 pytestmark = pytest.mark.integration

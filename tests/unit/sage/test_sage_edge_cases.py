@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -31,8 +31,6 @@ from services.sage.affordances.repo import AffordanceProfilesRepo
 from services.sage.affordances.types import RetrievalAffordanceProfile
 from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
 from services.sage.discovery.shortcuts_repo import (
-    FAILURE_DECAY_FACTOR,
-    SUCCESS_UTILITY_BUMP,
     DiscoveryShortcutsRepo,
 )
 from services.sage.discovery.types import NegativeMemory, Signature
@@ -42,28 +40,20 @@ from services.sage.evidence_projection import (
 )
 from services.sage.inquiry_traces.repo import OutcomeEventsRepo
 from services.sage.model_predictions.repo import (
-    ModelPredictionErrorsRepo,
     ModelPredictionsRepo,
 )
 from services.sage.model_predictions.types import (
     ExpectedObservation,
     ModelPrediction,
-    ModelPredictionError,
 )
 from services.sage.region_summaries.repo import RegionSummariesRepo
 from services.sage.region_summaries.types import RegionSufficientState
 from services.sage.structural_features.repo import StructuralFeaturesRepo
 from services.sage.structural_features.types import (
-    EdgeStructuralFeatures,
     ModelStructuralFeatures,
 )
 from services.sage.topology_optimizer import TopologyOptimizer
 
-from services.gateway.tests.conftest import (  # noqa: F401
-    gateway_pool,
-    tenant_id,
-    tenant_id_b,
-)
 from tests.unit.sage._seed import seed_model, seed_observation
 
 
@@ -573,7 +563,7 @@ async def test_negative_memory_sweep_drops_expired_only(
     fresh ones intact."""
     repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
     now = datetime.now(timezone.utc)
-    expired = await repo.insert(NegativeMemory(
+    await repo.insert(NegativeMemory(
         id=uuid7(), tenant_id=tenant_id,
         memory_type="noisy_path",
         signature={"signal_type": "stale"},
