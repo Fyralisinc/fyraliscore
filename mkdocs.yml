@@ -58,13 +58,17 @@ markdown_extensions:
 plugins:
   - search
 
-# The pre-existing docs/ trees were written as GitHub-relative docs and link
-# directly to source files (.py/.sql), which MkDocs cannot resolve. They are
-# kept on disk but excluded from the built site so `--strict` stays clean.
-# TODO(human): decide whether to port these in (convert their source links).
+# Build hook: rewrites the legacy ingestion/github-intelligence trees' source-file
+# links (../../services/*.py, etc.) into GitHub blob URLs at build time so they
+# build under --strict, without modifying the markdown on disk. See docs_hooks.py.
+hooks:
+  - docs_hooks.py
+
+# A few pre-existing docs/ trees are point-in-time artifacts (test reports, a v1
+# prompt log, an HTML mockup, a long backlog). They're kept on disk but excluded
+# from the built site. The ingestion/ and github-intelligence/ deep-dives ARE
+# built (their source links are rewritten by the hook above).
 exclude_docs: |
-  github-intelligence/
-  ingestion/
   history/
   testing/
   mockups/
@@ -88,3 +92,26 @@ nav:
   - Decisions (ADRs):
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
+  - Subsystem deep-dives:
+      - About these docs: deep-dives.md
+      - Ingestion:
+          - Overview: ingestion/README.md
+          - Canonical architecture: ingestion/architecture.md
+          - Source isolation: ingestion/source-isolation.md
+          - Finance sources: ingestion/finance-sources.md
+          - Finance API map: ingestion/finance-api-map.md
+          - Slack DM (test env): ingestion/slack-dm-demo.md
+          - Sources:
+              - Slack: ingestion/sources/slack.md
+              - GitHub: ingestion/sources/github.md
+              - Discord: ingestion/sources/discord.md
+              - Gmail: ingestion/sources/gmail.md
+              - Notion: ingestion/sources/notion.md
+              - Google Calendar: ingestion/sources/google-calendar.md
+              - Google Drive: ingestion/sources/google-drive.md
+              - Jira: ingestion/sources/jira.md
+      - GitHub Intelligence:
+          - Spec & plan: github-intelligence/plan.md
+          - Implementation status: github-intelligence/IMPLEMENTATION.md
+          - Read API: github-intelligence/API.md
+          - Browser UI: github-intelligence/UI.md
