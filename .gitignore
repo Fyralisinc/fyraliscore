@@ -49,6 +49,8 @@ docker-compose.override.yml
 /tmp/
 .scheduled_tasks.lock
 .claude/scheduled_tasks.lock
+# Ephemeral agent worktrees — must never be tracked (they are local checkouts)
+.claude/worktrees/
 
 # ---- Simulation run artifacts ----
 truss_run/
