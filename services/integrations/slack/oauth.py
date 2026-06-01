@@ -59,12 +59,20 @@ log = structlog.get_logger("integrations.slack.oauth")
 # Configuration
 # ---------------------------------------------------------------------
 
-# Slack scopes per FR-013. Bot-token scopes only (user scopes can be
-# added later under IN-10).
-_SLACK_SCOPES = (
+# Slack scopes per FR-013, split by token type.
+#
+# BOT scopes (`scope` param) — workspace-level channel read surface. A bot
+# token can NEVER read human↔human DMs, so im/mpim scopes are NOT requested
+# here (least privilege): they belong on the user token below.
+_SLACK_BOT_SCOPES = (
     "channels:read,channels:history,groups:read,groups:history,"
-    "im:history,mpim:history,users:read,team:read"
+    "users:read,team:read"
 )
+# USER scopes (`user_scope` param) — granted per consenting user. The ONLY way
+# to read that user's direct messages + group DMs. Slack returns the resulting
+# xoxp token in the callback's `authed_user.access_token`; absent these, no
+# user token is ever issued and DM ingestion has no credential.
+_SLACK_USER_SCOPES = "im:read,im:history,mpim:read,mpim:history"
 
 _SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 _SLACK_OAUTH_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
@@ -314,7 +322,10 @@ async def install_handler(request: Request) -> RedirectResponse:
     qs = urlencode(
         {
             "client_id": client_id,
-            "scope": _SLACK_SCOPES,
+            "scope": _SLACK_BOT_SCOPES,
+            # Request per-user DM scopes too; the consenting user's xoxp token
+            # comes back in `authed_user.access_token` and is what reads DMs.
+            "user_scope": _SLACK_USER_SCOPES,
             "redirect_uri": redirect_uri,
             "state": state_token,
         }
@@ -356,16 +367,22 @@ async def _persist_secrets(
     tenant_id: UUID,
     team_id: str,
     slack_response: dict[str, Any],
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str, str | None, str | None, str | None]:
     """Store bot token + (optional) user token + per-tenant signing
     secret in the secret store. Returns `(signing_ref, bot_ref,
-    user_ref_or_None)`.
+    user_ref_or_None, authed_user_id_or_None, granted_user_scopes_or_None)`.
 
     `secret_ref` on `provider_installations` MUST point at the
     signing-secret ref — that's what `services/webhooks/secrets.py
     ::_load_from_db` resolves when verifying inbound HMAC signatures.
     The bot/user token refs are addressable via `label` queries
     within the tenant for outbound calls.
+
+    The user token (xoxp) is stored under the PER-USER label
+    `slack_user_token:{team_id}:{user_id}` — the exact label
+    `SlackUserClient._resolve_token` reads for DM backfill. The authed user
+    id + granted scopes are returned so the caller can register the
+    consenting user in `slack_dm_installations`.
     """
     bot_token = slack_response.get("access_token") or ""
     if not bot_token:
@@ -381,13 +398,25 @@ async def _persist_secrets(
 
     user_ref: str | None = None
     authed_user = slack_response.get("authed_user") or {}
-    user_token = authed_user.get("access_token") if isinstance(authed_user, dict) else None
-    if isinstance(user_token, str) and user_token:
+    if not isinstance(authed_user, dict):
+        authed_user = {}
+    user_id = authed_user.get("id")
+    user_token = authed_user.get("access_token")
+    granted_user_scopes = authed_user.get("scope")
+    # A user token is only useful if we also know WHICH user granted it — the
+    # per-user label + the slack_dm_installations grain are both keyed on it.
+    if (
+        isinstance(user_token, str) and user_token
+        and isinstance(user_id, str) and user_id
+    ):
         user_ref = await secret_store.put(
             user_token,
-            label=f"slack_user_token:{team_id}",
+            label=f"slack_user_token:{team_id}:{user_id}",
             tenant_id=tenant_id,
         )
+    else:
+        user_id = None
+        granted_user_scopes = None
 
     # Per-app signing secret — stored once per tenant. We don't try to
     # dedupe; a re-install rewrites the row but the secret store's
@@ -404,7 +433,38 @@ async def _persist_secrets(
         tenant_id=tenant_id,
     )
 
-    return signing_ref, bot_ref, user_ref
+    return signing_ref, bot_ref, user_ref, user_id, granted_user_scopes
+
+
+async def _upsert_dm_installation(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    team_id: str,
+    user_id: str,
+    user_token_secret_ref: str,
+    granted_user_scopes: str | None,
+) -> None:
+    """Register the consenting user in `slack_dm_installations` (migration
+    0065) so the planner shards a DM window per user and the fetcher resolves
+    their xoxp token. Idempotent on `(tenant_id, team_id, user_id)`; a
+    re-install repoints the token ref and re-enables the row. `base_url` is
+    NULL in production (real Slack); the endpoint resolver's default applies.
+    """
+    await conn.execute(
+        """
+        INSERT INTO slack_dm_installations
+            (id, tenant_id, team_id, user_id, base_url,
+             user_token_secret_ref, granted_user_scopes)
+        VALUES ($1, $2, $3, $4, NULL, $5, $6)
+        ON CONFLICT (tenant_id, team_id, user_id) DO UPDATE
+            SET user_token_secret_ref = EXCLUDED.user_token_secret_ref,
+                granted_user_scopes    = EXCLUDED.granted_user_scopes,
+                disabled_at            = NULL
+        """,
+        uuid7(), tenant_id, team_id, user_id,
+        user_token_secret_ref, granted_user_scopes,
+    )
 
 
 async def _upsert_installation(
@@ -610,7 +670,9 @@ async def callback_handler(request: Request) -> Any:
 
     # 5. Persist tokens.
     try:
-        signing_ref, bot_ref, _user_ref = await _persist_secrets(
+        (
+            signing_ref, bot_ref, user_ref, authed_user_id, granted_user_scopes,
+        ) = await _persist_secrets(
             secret_store, tenant_id, team_id, slack_response,
         )
     except SecretStoreError as exc:
@@ -642,6 +704,17 @@ async def callback_handler(request: Request) -> Any:
                     trigger_kind=("install" if was_inserted else "reinstall"),
                     payload={"team_id": team_id},
                 )
+                # Register the consenting user for DM ingestion, if a user
+                # token was granted (same transaction as the install).
+                if user_ref is not None and authed_user_id is not None:
+                    await _upsert_dm_installation(
+                        conn,
+                        tenant_id=tenant_id,
+                        team_id=team_id,
+                        user_id=authed_user_id,
+                        user_token_secret_ref=user_ref,
+                        granted_user_scopes=granted_user_scopes,
+                    )
     except InstallationCollisionError:
         log.info("slack_install_failure", reason="installation_collision")
         await _write_audit(
@@ -652,10 +725,12 @@ async def callback_handler(request: Request) -> Any:
 
     # 7. Re-install cleanup: if this was an UPDATE not an INSERT,
     # any orphan token rows for this team should be cleaned up. The
-    # bot-token rotation is implicit in `bot_ref` being a fresh row;
-    # older bot-token rows for this team are deleted best-effort.
+    # bot-/user-token rotation is implicit in the fresh refs; older rows
+    # for this team are deleted best-effort, preserving what we just wrote.
     if not was_inserted:
-        await _cleanup_prior_secrets(pool, secret_store, tenant_id, team_id, bot_ref)
+        await _cleanup_prior_secrets(
+            pool, secret_store, tenant_id, team_id, {bot_ref, user_ref},
+        )
 
     # 8. Audit success.
     scopes_str = slack_response.get("scope", "")
@@ -685,12 +760,15 @@ async def _cleanup_prior_secrets(
     secret_store: Any,
     tenant_id: UUID,
     team_id: str,
-    keep_ref: str,
+    keep_refs: set[str],
 ) -> None:
     """Best-effort delete of any `encrypted_secrets` rows whose labels
-    point at this team's bot or user token but are NOT the freshly-
-    issued bot ref. Tolerant of `SecretStore.delete` raising — the
-    main install path still succeeds."""
+    point at this team's bot or user token(s) but are NOT among the
+    freshly-issued refs in `keep_refs`. Covers the legacy per-team user
+    label AND the per-user `slack_user_token:{team}:{user}` labels (LIKE),
+    so reinstall doesn't leak orphaned xoxp tokens. Tolerant of
+    `SecretStore.delete` raising — the main install path still succeeds."""
+    keep = {r for r in keep_refs if r}
     try:
         rows = await pool.fetch(
             """
@@ -700,13 +778,15 @@ async def _cleanup_prior_secrets(
                AND (
                    label = $2
                 OR label = $3
+                OR label LIKE $4
                )
-               AND id::text <> $4
+               AND id::text <> ALL($5::text[])
             """,
             tenant_id,
             f"slack_bot_token:{team_id}",
             f"slack_user_token:{team_id}",
-            keep_ref,
+            f"slack_user_token:{team_id}:%",
+            list(keep),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning(

@@ -240,6 +240,104 @@ async def test_callback_success_fresh_install(fresh_db: asyncpg.Pool) -> None:
     assert slack_metrics.get_install_outcome_count("success") == 1
 
 
+async def test_callback_registers_dm_user_token_and_install(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A granted user token (xoxp) is stored under the PER-USER label
+    `slack_user_token:{team}:{user}` that `SlackUserClient` resolves, AND the
+    consenting user is registered in `slack_dm_installations` — this is what
+    wires production DM ingestion. Regression for the gap where the callback
+    requested no `user_scope`, stored the token under the team-only label, and
+    never created the DM-install row.
+    """
+    tenant = await _seed_tenant(fresh_db)
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    state = await slack_oauth.issue_state_token(tenant, fresh_db)
+    app = _make_app(fresh_db, secret_store)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.get(
+            "/integrations/slack/callback",
+            params={"code": "valid-code", "state": state},
+            follow_redirects=False,
+        )
+    assert r.status_code == 302
+
+    # xoxp token stored under the per-user label (authed_user.id = U_INSTALLER).
+    user_secret = await fresh_db.fetchrow(
+        "SELECT id::text AS id FROM encrypted_secrets "
+        "WHERE tenant_id = $1 AND label = $2",
+        tenant, "slack_user_token:T_TEST_WS:U_INSTALLER",
+    )
+    assert user_secret is not None
+
+    # Consenting user registered for DM ingestion, pointing at that secret,
+    # enabled (disabled_at IS NULL).
+    dm = await fresh_db.fetchrow(
+        "SELECT user_token_secret_ref, granted_user_scopes, disabled_at "
+        "FROM slack_dm_installations "
+        "WHERE tenant_id = $1 AND team_id = $2 AND user_id = $3",
+        tenant, "T_TEST_WS", "U_INSTALLER",
+    )
+    assert dm is not None
+    assert dm["user_token_secret_ref"] == user_secret["id"]
+    assert dm["disabled_at"] is None
+
+
+async def test_callback_no_user_token_no_dm_install(
+    fresh_db: asyncpg.Pool,
+    _mock_slack_oauth_endpoint: object,
+) -> None:
+    """When Slack returns no user token (user declined the `user_scope`
+    grant), the install still succeeds but NO `slack_dm_installations` row and
+    NO per-user token secret are created. Guards the
+    `if user_ref is not None and authed_user_id is not None` branch.
+    """
+    tenant = await _seed_tenant(fresh_db)
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    state = await slack_oauth.issue_state_token(tenant, fresh_db)
+
+    # Override the autouse mock: bot token only, empty authed_user.
+    _mock_slack_oauth_endpoint.post("/api/oauth.v2.access").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "access_token": "xoxb-test-bot-token",
+                "scope": "channels:history,users:read,team:read",
+                "app_id": "A_TEST_APP",
+                "team": {"id": "T_TEST_WS", "name": "TestWS"},
+                "authed_user": {},
+            },
+        )
+    )
+
+    app = _make_app(fresh_db, secret_store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.get(
+            "/integrations/slack/callback",
+            params={"code": "valid-code", "state": state},
+            follow_redirects=False,
+        )
+
+    # Install succeeded …
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/integrations/slack/installed?team=")
+    # … but no DM grain was created.
+    dm_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM slack_dm_installations WHERE tenant_id = $1", tenant,
+    )
+    assert dm_count == 0
+    user_secret_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM encrypted_secrets "
+        "WHERE tenant_id = $1 AND label LIKE 'slack_user_token:%'",
+        tenant,
+    )
+    assert user_secret_count == 0
+
+
 async def test_callback_slack_oauth_error(
     fresh_db: asyncpg.Pool, _mock_slack_oauth_endpoint: object,
 ) -> None:

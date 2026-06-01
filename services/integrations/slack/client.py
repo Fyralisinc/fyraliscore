@@ -11,6 +11,7 @@ Becomes the substrate for Slack-outbound Acts in a follow-up (IN-10).
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 from uuid import UUID
 
@@ -26,7 +27,24 @@ log = structlog.get_logger("integrations.slack.client")
 
 _SLACK_API_BASE = "https://slack.com/api"
 _DEFAULT_MAX_ATTEMPTS = 3
-_DEFAULT_WALL_BUDGET_S = 30.0
+
+
+def _default_wall_budget_s() -> float:
+    """Wall-clock retry budget for one Slack call.
+
+    Explicit override: `SLACK_RETRY_WALL_BUDGET_S` (seconds). Otherwise it is
+    derived from `SLACK_API_TIER` — a Tier-1 (non-Marketplace, post-2025-05-29)
+    429 carries a ~60s `Retry-After`, so the budget MUST exceed one such wait
+    or the 429 handler gives up before it can retry. Tier 2–4 Retry-Afters are
+    small, so 30s is ample.
+    """
+    raw = os.environ.get("SLACK_RETRY_WALL_BUDGET_S", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return 75.0 if os.environ.get("SLACK_API_TIER", "3").strip() == "1" else 30.0
 
 
 class SlackApiError(CompanyOSError):
@@ -54,7 +72,7 @@ class SlackClient:
         installation_row_id: UUID,
         team_id: str,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
-        wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
+        wall_budget_s: float | None = None,
         base_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -66,7 +84,10 @@ class SlackClient:
         self._installation_row_id = installation_row_id
         self._team_id = team_id
         self._max_attempts = max_attempts
-        self._wall_budget_s = wall_budget_s
+        # Tier-aware default (env) unless an explicit budget is passed.
+        self._wall_budget_s = (
+            wall_budget_s if wall_budget_s is not None else _default_wall_budget_s()
+        )
         self._bot_token: str | None = None  # lazy
         self._client: httpx.AsyncClient | None = http_client
 
