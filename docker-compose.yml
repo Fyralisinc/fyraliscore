@@ -295,6 +295,25 @@ services:
     command: python -m services.ingest.ingestion.recovery.embedding_backlog
     healthcheck: *consumer-healthcheck
 
+  # Cutover circuit breaker: a SINGLE long-running observer that measures
+  # consumer lag on every per-source raw lane (ingestion.raw.<source> vs.
+  # group normalizer.<source>) and, on sustained breach, flips a tenant's
+  # ingestion.kafka_path_enabled flag to FALSE — pulling that tenant back
+  # to the inline path. Auto-recovery is operator-driven (see the module
+  # docstring + scripts/reenable_kafka_path.py). NOT per-source: the flag is
+  # per-tenant, so one instance trips each tenant on its worst lane.
+  # Exposes /healthz + /metrics on INGESTION_HEALTH_PORT (9300, from app-env);
+  # /healthz goes 503 if the tick loop wedges, so a hung breaker is restarted.
+  circuit_breaker:
+    <<: *worker
+    container_name: company_os_circuit_breaker
+    command: python -m services.ingest.ingestion.feature_flags
+    healthcheck: *consumer-healthcheck
+    # Tuning knobs (defaults shown) — override in .env.production:
+    #   BREAKER_TICK_INTERVAL_SEC=60  BREAKER_THRESHOLD_SEC=60
+    #   BREAKER_WINDOW_TICKS=5        BREAKER_NORMALIZER_GROUP_BASE=normalizer
+    # INGESTION_ALERT_WEBHOOK_URL (if set) receives trip alerts.
+
   # ---- live source workers -----------------------------------------
   discord_gateway_worker:
     <<: *worker

@@ -191,14 +191,29 @@ scale the all-sources singletons to 0.
 
 ## Known follow-ups (deliberately deferred)
 
-- **Circuit breaker per-source lag.** `services/ingest/ingestion/feature_flags/
-  circuit_breaker.py` measures consumer lag on a single `raw_topic`. With
-  per-source raw topics, a tenant can lag on one source's lane while healthy on
-  another. The breaker should measure lag across every
-  `topics_for_stage("raw")` lane (per-source consumer groups) and trip on the
-  worst-case lane. Left at the legacy `raw_topic` it fails SAFE (never
-  false-trips) but is inert. It's a cutover-era safety net, separate from
-  steady-state isolation — deferred, not forgotten.
+- **Circuit breaker per-source lag.** ✅ RESOLVED. `services/ingest/ingestion/
+  feature_flags/circuit_breaker.py` now measures consumer lag on every
+  `ingestion.raw.<source>` lane against its per-source normalizer group
+  (`normalizer.<source>`, derived from `topics.consumer_group`) and trips a
+  tenant on its **worst lane** — one lagging source lane is enough to pull the
+  whole tenant back to inline (the `kafka_path_enabled` flag is per-tenant, not
+  per-source). It runs as the `circuit_breaker` singleton in
+  `docker-compose.yml`. The traffic-signal record already carries `source`, so
+  the active-tenant sampler maps each tenant to the exact `(source, partition)`
+  lanes it is on.
+    - *Health:* exposes `/healthz` + `/metrics` on `INGESTION_HEALTH_PORT`
+      (9300); a wedged tick loop goes 503 and is restarted. A per-lane probe
+      failure is isolated (no-lag for that lane that tick) so one bad lane can't
+      blind the others.
+    - *Recovery:* operator-driven (no auto-recovery). After the lane drains,
+      `python scripts/reenable_kafka_path.py <tenant> --operator <you>` flips the
+      tenant back (`--list` shows every tripped tenant); the breaker auto-resets
+      its bookkeeping on the next tick.
+    - *Live verification:* `scripts/smoke_circuit_breaker_lag.py` exercises the
+      real Kafka readers (and a full unmocked `_process_tick` → flag flip)
+      against a live broker — the path unit tests mock. Run it after changing the
+      lag/active-tenant readers. (It caught a latent `confluent_kafka` import
+      break that mocked tests cannot.)
 - **Per-source topic auto-provisioning on source addition.** Adding a source to
   `SourceLiteral` makes its four topics appear in the registry automatically,
   but the provisioner must be re-run on deploy to create them (auto-create is

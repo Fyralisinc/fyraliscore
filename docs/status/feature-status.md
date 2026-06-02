@@ -3,7 +3,8 @@
 Per-feature status from the audit: what the code was clearly built to do
 (`expected`), what actually runs today (`status`), and the `gap`. Organized by
 theme (see the [overview](index.md)). Severity reflects impact if the gap is
-unintended. **131 findings total: 21 high, 46 medium, 64 low** — the high/medium
+unintended. **131 findings total: 21 high (1 resolved — cutover circuit
+breaker), 46 medium, 64 low** — the high/medium
 are below; low findings are summarized at the end.
 
 ## 🔴 Background worker fabric (Wave-4) — built, not deployed
@@ -50,7 +51,7 @@ See [Ingest](../architecture/ingest.md).
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
 | Kafka full-pipeline persistence | `observation_writer` writes observations from the normalized lane | Only writes when tenant `KAFKA_PATH_ENABLED=TRUE` (default off) → full pipeline is shadow/no-op until per-tenant cutover; inline ingest is the live path | medium |
-| Cutover circuit breaker | Long-running breaker trips `kafka_path_enabled=FALSE` on sustained lag | Built + tested, **no launcher** in any compose; also self-documented inert (default `ingestion.raw` topic is dead post per-source split) | high |
+| Cutover circuit breaker | Long-running breaker trips `kafka_path_enabled=FALSE` on sustained lag | ✅ **Wired + source-aware** (`fix/cutover-breaker-source-aware`): runs as the `circuit_breaker` singleton in compose; measures lag across every `ingestion.raw.<source>` lane (group `normalizer.<source>`) and trips a tenant on its worst lane — the legacy single-`ingestion.raw` inertness is gone. Now has `/healthz`+`/metrics`, per-lane failure isolation, an operator re-enable tool (`scripts/reenable_kafka_path.py`), and a live-broker smoke test (`scripts/smoke_circuit_breaker_lag.py`) that verified the real readers + caught a latent `confluent_kafka` import crash | resolved |
 | `google_drive` async embedding | All production sources publish to `ingestion.embedding` on `embedding_pending` | `google_drive` **missing from the allowlist** (`core.py`) → its pending embeddings rely only on the DB-scan backlog drainer (latency, not correctness) | medium |
 | Onboarding progress events | Workflow services emit `onboarding.progress` (shard.fetched, source.complete, …) | Publisher + 7 event models built, but the sole producer (`feels_onboarded_monitor`) isn't in compose → most event kinds have **no producer call site** | medium |
 | `feels_onboarded_monitor` service | Runs as a long-running `WORKFLOW_SERVICE` | No own `__main__`, no compose service → never booted; `feels_onboarded` events never emitted | medium |
