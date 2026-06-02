@@ -75,7 +75,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
-    "mercury", "quickbooks",
+    "mercury", "quickbooks", "grafana",
 ]
 
 
@@ -343,6 +343,17 @@ def _extract_quickbooks(payload: Mapping[str, Any], headers: Mapping[str, str]) 
     return _str_or_none(payload.get("realmId"))
 
 
+def _extract_grafana(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-GRAFANA: a Grafana Alerting webhook body carries the instance root URL
+    # at top level as `externalURL` (populated from the instance's
+    # [server] root_url). The instance HOST is the installation_id the
+    # seed/onboarding step registers in provider_installations (provider='grafana',
+    # installation_id=<instance host>). This mirrors the Jira host-from-`self`
+    # approach. A single service-account token is org-scoped, so one instance host
+    # == one install in v1; multi-org would combine host + `orgId`.
+    return _host_from_self(payload.get("externalURL"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -363,6 +374,7 @@ PROVIDER_EXTRACTORS: dict[
     "jira": _extract_jira,
     "mercury": _extract_mercury,
     "quickbooks": _extract_quickbooks,
+    "grafana": _extract_grafana,
 }
 
 

@@ -297,6 +297,35 @@ async def build_mercury_client(
     return client
 
 
+async def build_grafana_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Grafana read-client. Service-account token (Bearer) is long-lived:
+    resolved once from the secret store via `install['secret_ref']` (or preset in
+    spammer mode). The instance base URL is per-install (`install['base_url']`);
+    in spammer mode it is overridden via the endpoint resolver so backfill points
+    at the local spammer's `/grafana` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.grafana.client import GrafanaClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = GrafanaClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-grafana" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /grafana; prod uses the
+        # per-install base_url (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("grafana_api") if spammer else None),
+    )
+    return client
+
+
 async def build_quickbooks_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
@@ -383,13 +412,17 @@ async def open_quickbooks_client(install: asyncpg.Record) -> Opener:
     return await build_quickbooks_client(install), _noop
 
 
+async def open_grafana_client(install: asyncpg.Record) -> Opener:
+    return await build_grafana_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_slack_user_client",
     "build_discord_client",
     "build_notion_client", "build_jira_client",
-    "build_mercury_client", "build_quickbooks_client",
+    "build_mercury_client", "build_quickbooks_client", "build_grafana_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
-    "open_mercury_client", "open_quickbooks_client",
+    "open_mercury_client", "open_quickbooks_client", "open_grafana_client",
 ]

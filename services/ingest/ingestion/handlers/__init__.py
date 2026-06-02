@@ -168,6 +168,7 @@ from services.ingest.ingestion.handlers import google_drive  # noqa: E402,F401
 from services.ingest.ingestion.handlers import jira  # noqa: E402,F401
 from services.ingest.ingestion.handlers import mercury  # noqa: E402,F401
 from services.ingest.ingestion.handlers import quickbooks  # noqa: E402,F401
+from services.ingest.ingestion.handlers import grafana  # noqa: E402,F401
 
 
 __all__ = [

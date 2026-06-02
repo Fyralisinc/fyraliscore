@@ -177,6 +177,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "jira":    _not_implemented_reconciler("jira",    "IN-17"),
     "mercury": _not_implemented_reconciler("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_reconciler("quickbooks", "IN-FIN"),
+    "grafana": _not_implemented_reconciler("grafana", "IN-GRAFANA"),
 }
 
 
@@ -200,3 +201,4 @@ from services.ingest.ingestion.reconcilers import google_drive as _google_drive 
 from services.ingest.ingestion.reconcilers import jira as _jira  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import quickbooks as _quickbooks  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import grafana as _grafana  # noqa: E402,F401

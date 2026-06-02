@@ -60,6 +60,13 @@ _PROD: dict[str, str] = {
     # the local spammer sub-path convention (`/quickbooks`) resolves uniformly;
     # build_quickbooks_client passes the per-install base_url in production.
     "quickbooks_api": "https://quickbooks.api.intuit.com",
+    # IN-GRAFANA: Grafana has NO single global host — each tenant's instance is
+    # its own `https://<instance>` (Cloud) or self-hosted URL, carried per-install
+    # on grafana_installations.base_url and used directly in production. This entry
+    # exists ONLY so the local spammer sub-path convention (`/grafana`) resolves
+    # uniformly; the prod default is intentionally empty (build_grafana_client
+    # passes the per-install base_url instead).
+    "grafana_api": "",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -77,6 +84,7 @@ _ENV: dict[str, str] = {
     "jira_api": "JIRA_API_BASE_URL",
     "mercury_api": "MERCURY_API_BASE_URL",
     "quickbooks_api": "QUICKBOOKS_API_BASE_URL",
+    "grafana_api": "GRAFANA_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -95,6 +103,7 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "jira_api": "/jira",
     "mercury_api": "/mercury",
     "quickbooks_api": "/quickbooks",
+    "grafana_api": "/grafana",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

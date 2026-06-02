@@ -21,6 +21,7 @@ from __future__ import annotations
 from services.app.webhooks.signatures import (
     discord,
     github,
+    grafana,
     jira,
     linear,
     mercury,
@@ -42,6 +43,7 @@ VERIFIERS: dict[str, Verifier] = {
     "jira": jira.verifier,
     "mercury": mercury.verifier,
     "quickbooks": quickbooks.verifier,
+    "grafana": grafana.verifier,
 }
 
 

@@ -134,6 +134,17 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("quickbooks", "backfill"): "quickbooks:object",
     ("quickbooks", "poll"): "quickbooks:object",
     ("quickbooks", "webhook"): "quickbooks:object",
+    # Grafana — annotations backfill/poll + alert webhook (IN-GRAFANA). Grafana
+    # is a TWO-channel source: the historical pull surface (GET /api/annotations,
+    # which includes Grafana's auto alert-state-change annotations) routes to
+    # `grafana:annotation`; the live push surface (Alerting webhook contact point
+    # delivering Alertmanager-superset alert groups) routes to `grafana:alert`.
+    # No external_id collision between the two — annotations key on the annotation
+    # id, alert groups key on groupKey+status — so they are independent streams
+    # (alert backfill via the Loki state-history timeline is a documented v2).
+    ("grafana", "backfill"): "grafana:annotation",
+    ("grafana", "poll"): "grafana:annotation",
+    ("grafana", "webhook"): "grafana:alert",
 }
 
 

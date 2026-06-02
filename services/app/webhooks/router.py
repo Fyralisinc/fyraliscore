@@ -86,6 +86,9 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     # Finance sources — HMAC-signed webhooks route onto the data plane.
     "mercury": "mercury",
     "quickbooks": "quickbooks",
+    # IN-GRAFANA: Grafana Alerting webhook (HMAC X-Grafana-Alerting-Signature)
+    # routes onto the data plane.
+    "grafana": "grafana",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -107,6 +110,8 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     # the full pipeline once the tenant's kafka_path_enabled flag is TRUE.
     "mercury": "mercury",
     "quickbooks": "quickbooks",
+    # IN-GRAFANA: Grafana Alerting webhooks fit the 202 cutover contract.
+    "grafana": "grafana",
 }
 
 
@@ -364,6 +369,9 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     # when kafka_path_enabled is TRUE).
     "mercury": "mercury:transaction",
     "quickbooks": "quickbooks:object",
+    # IN-GRAFANA: the webhook delivers alert groups -> the `grafana:alert`
+    # channel (inline-ingest fallback when kafka_path_enabled is off).
+    "grafana": "grafana:alert",
 }
 
 

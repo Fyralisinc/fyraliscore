@@ -153,6 +153,7 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "jira":    _not_implemented_fetcher("jira",    "IN-17"),
     "mercury": _not_implemented_fetcher("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_fetcher("quickbooks", "IN-FIN"),
+    "grafana": _not_implemented_fetcher("grafana", "IN-GRAFANA"),
 }
 
 
@@ -175,3 +176,4 @@ from services.ingest.ingestion.fetchers import google_drive as _google_drive  # 
 from services.ingest.ingestion.fetchers import jira as _jira  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import quickbooks as _quickbooks  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import grafana as _grafana  # noqa: E402,F401

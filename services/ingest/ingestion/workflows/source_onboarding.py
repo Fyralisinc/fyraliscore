@@ -198,7 +198,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana")
 
 
 # ---------------------------------------------------------------------
@@ -381,6 +381,21 @@ SELECT qi.id, qi.tenant_id, qi.realm_id, qi.base_url, qi.secret_ref,
  LIMIT 1
 """
 
+# IN-GRAFANA: Grafana annotations/alerts are ORG-WIDE — no per-resource child
+# table (unlike Jira's per-project / Mercury's per-account aggregation). The
+# planner emits exactly ONE shard from the install row, so the loader just
+# selects the install (no JSON aggregation). The service-account token lives in
+# encrypted_secrets behind secret_ref; base_url + org_id are needed by the client
+# and planner. `annotations_cursor_ms` is the warm-start high-water (None on
+# first sync -> full walk).
+_LOAD_GRAFANA_INSTALL_SQL = """
+SELECT gi.id, gi.tenant_id, gi.base_url, gi.org_id, gi.secret_ref,
+       gi.annotations_cursor_ms, gi.disabled_at
+  FROM grafana_installations gi
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -498,6 +513,8 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
     if source == "quickbooks":
         return await conn.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
+    if source == "grafana":
+        return await conn.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
