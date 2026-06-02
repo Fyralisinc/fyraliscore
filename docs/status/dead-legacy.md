@@ -39,7 +39,6 @@ the realistic "delete or wire up" candidates. Confirm intent before removing.
 | `services/ingest/integrations/gmail/uninstall.py` | `uninstall_install`/`stop_mailbox` | Zero refs; no uninstall route. |
 | `services/domain/falsifiers/__init__.py` | Re-export shim of `models.falsifier` | No importer; callers use `models.falsifier` directly. |
 | Second `@app.get('/v1/history')` in `gateway/main.py` | Duplicate route handler | Shadowed/unreachable — FastAPI keeps the first match. Copy-paste artifact. |
-| `…/writers/dlq_writer/__main__.py`, `…/writers/embedding_worker/__main__.py`, `…/feature_flags/__main__.py` | Package `python -m` shims | Compose targets the inner module, not the package `__main__`; never invoked. |
 
 ## Test-only — dormant runtime features
 

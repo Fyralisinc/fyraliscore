@@ -121,7 +121,7 @@ Kafka + a moto-S3 mock.
 | Discord gateway / Gmail watch / Gmail history | `scripts/run_discord_gateway_worker.py`, `run_gmail_watch_scheduler.py`, `run_gmail_history_poller.py`. |
 | Migrations | `scripts/docker-migrate.sh` (idempotent; tracks `schema_migrations`). |
 | Kafka topics | `scripts/provision_kafka_topics.py` (derived from `RawEnvelope.SourceLiteral`). |
-| Normalizer / writers | `python -m services.ingest.ingestion.normalizer.worker`, `…writers.observation_writer`, `…writers.embedding_worker`. |
+| Normalizer / writers | `python -m services.ingest.ingestion.normalizer.worker`, `…writers.observation_writer`, `…writers.dlq_writer.dlq_writer`, `…writers.embedding_worker.embedding_worker`. |
 
 ## How services communicate
 

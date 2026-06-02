@@ -109,9 +109,7 @@ See [Product](../architecture/product.md).
 Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
 
 - **Dead/duplicate code:** a duplicate `@app.get('/v1/history')` handler (the second
-  is shadowed/unreachable); orphaned `__main__.py` shims in `dlq_writer`/
-  `embedding_worker`/`feature_flags` (compose targets the inner module, not the
-  package); the `falsifiers/__init__.py` re-export shim has no importers.
+  is shadowed/unreachable); the `falsifiers/__init__.py` re-export shim has no importers.
 - **Stale relocation docstrings:** `today/freshness.py`, `today/stake.py`,
   `today/map.py` still claim to live under `greeting/`; their logic is computed
   inline in the aggregator (or, for the Map, "deliberately suppressed").
