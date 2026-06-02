@@ -130,7 +130,8 @@ registered in code). Each lives under `services/ingest/integrations/<source>/`
 |--------|------|------|
 | Uniform ingest | `services/ingest/ingestion/core.py` | `ingest()` / `ingest_from_draft()` — the shared normalize→persist→enqueue path. |
 | Handler registry | `services/ingest/ingestion/handlers/__init__.py` | `register`/`get_handler`, `CHANNEL_TRUST_MAP`, the `ObservationDraft` dataclass. |
-| Workflows CLI | `services/ingest/ingestion/workflows/__main__.py` | `python -m services.ingest.ingestion.workflows` (onboarding, oauth poll, shard fetch, reconcilers — `WORKFLOW_SERVICE` selects one). |
+| Workflow services | `services/ingest/ingestion/workflows/*.py` | One long-running asyncio service per file (`oauth_poller`, `tenant_onboarding`, `source_onboarding`, `shard_fetch`, `reconciler`, `periodic_reconciler`, `feels_onboarded_monitor`); compose launches each as `python -m …workflows.<module>`. The legacy `__main__.py` `WORKFLOW_SERVICE` selector still resolves them but no compose service uses it. |
+| Progress publisher | `services/ingest/ingestion/progress/{events,publisher}.py` | The `onboarding.progress` Kafka contract Bridge consumes — 7 Pydantic event models + `publish_progress_event(s)`. See [Onboarding progress events](#onboarding-progress-events). |
 | Normalizer | `services/ingest/ingestion/normalizer/worker.py` | Kafka Path B (no DB): raw → handler → `NormalizedEnvelope`. |
 | Observation writer | `services/ingest/ingestion/writers/observation_writer.py` | Kafka Path A: normalized → `ingest_from_draft` when full-mode. |
 | Cutover circuit breaker | `services/ingest/ingestion/feature_flags/circuit_breaker.py` | Singleton lag guardrail — per-source lag → auto-flips `kafka_path_enabled=FALSE` on sustained breach. `python -m services.ingest.ingestion.feature_flags`. |
@@ -173,6 +174,34 @@ the always-safe inline path before observations pile up.
   which the unit tests mock; `scripts/smoke_circuit_breaker_lag.py` exercises them
   — and a full unmocked `_process_tick` → flag flip — against a live broker. Run
   it after touching the lag/active-tenant readers.
+
+## Onboarding progress events
+
+The backfill workflow services emit a stream of `onboarding.progress` Kafka
+events (the LLD §6 Bridge contract — partitioned by `tenant_id` for per-tenant
+ordering). The 7 event models live in `progress/events.py`; every one now has a
+producer call site:
+
+| Event kind | Emitted by | When |
+|------------|-----------|------|
+| `tenant.onboarding.started` | `tenant_onboarding` | run goes `pending → running` (sources fanned out) |
+| `source.onboarding.started` | `source_onboarding` | a source's plan is produced (`planned_shard_count`) |
+| `shard.fetched` | `shard_fetch` | a shard reaches `done` (`observation_count` = records fetched) |
+| `source.onboarding.complete` | `reconciler` | the first clean reconciliation pass (`coverage_confidence`/`gaps_resolved` from the pass count + re-shared children) |
+| `source.onboarding.feels_onboarded` | `feels_onboarded_monitor` | a source's last-N-days are queryable |
+| `tenant.onboarding.complete` | `tenant_onboarding` | all sources roll up successfully |
+| `tenant.onboarding.behind_schedule` | `feels_onboarded_monitor` | ops-only; a run is past the threshold with no `feels_onboarded` |
+
+**Ordering / dedup.** Each lifecycle transition is claim-via-UPDATE guarded, so
+each orchestrator collects its events inside the per-signal transaction and
+publishes them **post-commit** via the shared `publish_progress_events` helper
+(a no-op when no producer is wired — the orchestrators take an *optional*
+`kafka_producer`, present only in their `_run_*` entrypoints). A publish that
+fails after the commit drops a progress (not load-bearing) event; the transition
+itself is durable and Bridge dedups on `(event_kind, tenant_id, source?,
+shard_id?)`. `feels_onboarded` and `behind_schedule` are single-fire per run via
+the `onboarding_runs.feels_onboarded_at` / `behind_schedule_emitted_at`
+(migration `0080`) claim slots.
 
 ## Dependencies
 

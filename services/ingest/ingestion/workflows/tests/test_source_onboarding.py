@@ -210,6 +210,33 @@ def _service(pool: asyncpg.Pool) -> SourceOnboarding:
     )
 
 
+class _CapturingProducer:
+    """Records produce() calls; flush() is a no-op."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, bytes, bytes | None]] = []
+
+    async def produce(
+        self, topic: str, value: bytes, *,
+        key: bytes | None = None, **_kw: Any,
+    ) -> None:
+        self.published.append((topic, value, key))
+
+    async def flush(self, timeout_seconds: float = 10.0) -> int:
+        return 0
+
+
+def _service_p(
+    pool: asyncpg.Pool, producer: _CapturingProducer,
+) -> SourceOnboarding:
+    return SourceOnboarding(
+        pool, kafka_producer=producer,
+        config=SourceOnboardingConfig(
+            tick_interval_seconds=0.01, max_signals_per_tick=20,
+        ),
+    )
+
+
 # Test planners — updated for M6.4 / A18.6 PlannerContext signature.
 from services.ingest.ingestion.planners.context import PlannerContext  # noqa: E402
 
@@ -862,3 +889,51 @@ def test_source_onboarding_passes_pattern_alignment_analyzer() -> None:
             f"rules:\n{formatted}\n\n"
             f"See docs/ingestion/pattern-alignment-rules.md."
         )
+
+
+# =====================================================================
+# 10. Progress event — `source.onboarding.started`.
+# =====================================================================
+
+async def test_source_onboarding_emits_source_started_progress_event(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful plan publishes exactly one `source.onboarding.started`
+    on onboarding.progress, carrying the planned shard count."""
+    from services.ingest.ingestion.progress.events import (
+        SourceOnboardingStarted,
+    )
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+
+    monkeypatch.setitem(
+        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+    )
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+    )
+    await _emit_source_requested(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+    )
+
+    producer = _CapturingProducer()
+    await _service_p(fresh_db, producer).run(max_ticks=1)
+
+    started = [
+        SourceOnboardingStarted.model_validate_json(val)
+        for topic, val, _ in producer.published
+        if topic == TOPIC_ONBOARDING_PROGRESS
+        and b"source.onboarding.started" in val
+    ]
+    assert len(started) == 1, (
+        f"Expected one source.onboarding.started; got {len(started)}. "
+        f"Publishes: {producer.published}"
+    )
+    ev = started[0]
+    assert ev.tenant_id == tid
+    assert ev.source == "slack"
+    assert ev.planned_shard_count == 3

@@ -46,8 +46,8 @@ from services.ingest.ingestion.kafka.producer import (
     ProducerConfig,
 )
 from services.ingest.ingestion.workflows.feels_onboarded_monitor import (
-    FeelsMonitorConfig,
     FeelsOnboardedMonitor,
+    build_config_from_env as build_feels_monitor_config,
 )
 from services.ingest.ingestion.workflows.oauth_poller import (
     OAuthPoller,
@@ -83,20 +83,6 @@ from services.ingest.ingestion.workflows.tenant_onboarding import (
 log = logging.getLogger(__name__)
 
 
-def _build_feels_monitor_config() -> FeelsMonitorConfig:
-    return FeelsMonitorConfig(
-        tick_interval_seconds=float(
-            os.environ.get("FEELS_MONITOR_TICK_SEC", "30.0"),
-        ),
-        recency_window_days=int(
-            os.environ.get("FEELS_MONITOR_RECENCY_DAYS", "7"),
-        ),
-        min_observations_for_feels_onboarded=int(
-            os.environ.get("FEELS_MONITOR_MIN_OBS", "1"),
-        ),
-    )
-
-
 async def _run_service(name: str) -> None:
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     producer = IdempotentProducer(ProducerConfig(
@@ -111,7 +97,7 @@ async def _run_service(name: str) -> None:
     if name == "feels_onboarded_monitor":
         service = FeelsOnboardedMonitor(
             pool, producer,
-            config=_build_feels_monitor_config(),
+            config=build_feels_monitor_config(),
         )
     elif name == "oauth_poller":
         service = OAuthPoller(

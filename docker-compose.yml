@@ -10,7 +10,7 @@
 #   live    : discord_gateway_worker, gmail_watch_scheduler,
 #             gmail_history_poller
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
-#             shard_fetch, reconciler
+#             shard_fetch, reconciler, feels_onboarded_monitor
 #   consume : normalizer, observation_writer, dlq_writer, embedding_worker
 #   app     : think_worker, post_commit_worker, ui, nginx, acme
 #
@@ -244,6 +244,17 @@ services:
     <<: *worker
     container_name: company_os_reconciler
     command: python -m services.ingest.ingestion.workflows.reconciler
+
+  # Emits the `onboarding.progress` Kafka events Bridge consumes (LLD §6).
+  # The lifecycle producers (started/complete/shard.fetched) live in the
+  # backfill services above; this poller owns the two run-level signals:
+  # `source.onboarding.feels_onboarded` (last 7 days queryable) and the
+  # ops-only `tenant.onboarding.behind_schedule`. Global (scans all
+  # tenants), so a single instance — do not scale to >1 replica.
+  feels_onboarded_monitor:
+    <<: *worker
+    container_name: company_os_feels_onboarded_monitor
+    command: python -m services.ingest.ingestion.workflows.feels_onboarded_monitor
 
   # Steady-state safety net: re-runs per-source gap detection for
   # already-reconciled runs on a schedule, re-sharing when a live event

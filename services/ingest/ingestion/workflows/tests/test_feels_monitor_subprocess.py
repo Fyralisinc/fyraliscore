@@ -71,15 +71,34 @@ async def _read_state_row(pool: asyncpg.Pool) -> asyncpg.Record | None:
     )
 
 
+# Both boot forms must SIGTERM-cleanly: the legacy `WORKFLOW_SERVICE`
+# selector (`python -m …workflows`) AND the per-module entrypoint
+# (`python -m …workflows.feels_onboarded_monitor`) that docker-compose
+# actually targets.
+_INVOCATIONS = [
+    pytest.param(
+        ["services.ingest.ingestion.workflows"], id="selector",
+    ),
+    pytest.param(
+        ["services.ingest.ingestion.workflows.feels_onboarded_monitor"],
+        id="per-module",
+    ),
+]
+
+
+@pytest.mark.parametrize("module_argv", _INVOCATIONS)
 async def test_feels_monitor_sigterm_subprocess(
-    fresh_db: asyncpg.Pool,
+    fresh_db: asyncpg.Pool, module_argv: list[str],
 ) -> None:
     """Spawn the monitor as a real subprocess, wait for the first
     `workflow_states` row write (proof of one completed tick),
     SIGTERM, and require a clean exit (rc=0) within 15 seconds.
 
+    Runs for BOTH entrypoints (parametrized): the legacy
+    `WORKFLOW_SERVICE` selector and the per-module entry compose uses.
+
     What this proves beyond the in-process Phase 1 stop_event test:
-      - `__main__.py` actually installs a SIGTERM handler that ties
+      - The entrypoint actually installs a SIGTERM handler that ties
         to the asyncio Event the loop awaits.
       - The state-persistence path survives across process exit
         (the row is durable in Postgres, not lost in process memory).
@@ -101,6 +120,7 @@ async def test_feels_monitor_sigterm_subprocess(
     env["KAFKA_BOOTSTRAP_SERVERS"] = os.environ.get(
         "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
     )
+    # Honoured by the selector entry; harmless for the per-module entry.
     env["WORKFLOW_SERVICE"] = "feels_onboarded_monitor"
     # Fast tick so the subprocess persists state within the
     # polling window.
@@ -109,7 +129,7 @@ async def test_feels_monitor_sigterm_subprocess(
     env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "services.ingest.ingestion.workflows"],
+        [sys.executable, "-m", *module_argv],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -160,8 +160,13 @@ async def test_shard_fetch_publishes_raw_envelope_shape(
     )
     await _service(fresh_db, producer, s3).run(max_ticks=1)
 
-    assert len(producer.published) == 2
-    for topic, value, key in producer.published:
+    # Exclude the shard.fetched progress event (onboarding.progress) so
+    # this stays an assertion about the raw-record publishes.
+    raw_published = [
+        m for m in producer.published if m[0] != "onboarding.progress"
+    ]
+    assert len(raw_published) == 2
+    for topic, value, key in raw_published:
         # Per-source raw topic (source-isolation): slack backfill lands
         # on its own lane, not the shared ingestion.raw.
         assert topic == "ingestion.raw.slack"
@@ -200,8 +205,11 @@ async def test_shard_fetch_s3_blob_contains_record_and_metadata(
     )
     await _service(fresh_db, producer, s3).run(max_ticks=1)
 
-    assert len(producer.published) == 1
-    _topic, value, _key = producer.published[0]
+    raw_published = [
+        m for m in producer.published if m[0] != "onboarding.progress"
+    ]
+    assert len(raw_published) == 1
+    _topic, value, _key = raw_published[0]
     env = RawEnvelope.model_validate(orjson.loads(value))
     blob = orjson.loads(s3.store[env.raw_s3_key])
 

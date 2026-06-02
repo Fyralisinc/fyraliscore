@@ -38,6 +38,7 @@ Three reasons:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from .events import ProgressEvent
@@ -81,7 +82,35 @@ async def publish_progress_event(
     )
 
 
+async def publish_progress_events(
+    kafka_producer: Any | None,  # services.ingest.ingestion.kafka.IdempotentProducer
+    events: Iterable[ProgressEvent],
+) -> None:
+    """Publish a batch of progress events, tolerating an unwired producer.
+
+    The orchestrators (TenantOnboarding / SourceOnboarding / Reconciler)
+    take an OPTIONAL Kafka producer: it's present in production (wired by
+    each `_run_*` CLI entrypoint) and absent in the many unit tests that
+    construct a service only to exercise its signal/DB behaviour. When
+    `kafka_producer is None` this is a no-op so those callers don't have
+    to stand up a fake producer just to ignore it.
+
+    Each event is enqueued via `publish_progress_event` (the per-tenant
+    keyed wrapper). Callers MUST invoke this AFTER their DB transaction
+    commits — the lifecycle transitions that produce these events are
+    claim-via-UPDATE guarded, so a post-commit publish gives the
+    at-least-once + Bridge-dedup contract the event models document. A
+    publish that fails after the commit drops a progress (not a
+    load-bearing) event; the transition itself is durable.
+    """
+    if kafka_producer is None:
+        return
+    for event in events:
+        await publish_progress_event(kafka_producer, event)
+
+
 __all__ = [
     "TOPIC_ONBOARDING_PROGRESS",
     "publish_progress_event",
+    "publish_progress_events",
 ]

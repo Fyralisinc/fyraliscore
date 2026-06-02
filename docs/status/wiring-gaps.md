@@ -53,7 +53,7 @@ See [Ingest](../architecture/ingest.md).
 |------|------------|-----------------|
 | `ingestion/idempotency/__init__.py` (stub) | Placeholder for `external_id` constructors (M5) | One-line docstring, no code, no importers. |
 | `ingestion/rate_limit/buckets.py` 🗑 | Per-(source,method) token-bucket specs (`BUCKET_DEFAULTS`) | Zero importers (even tests); `shard_fetch`'s `FetchPage` never calls a rate limiter. |
-| `ingestion/workflows/feels_onboarded_monitor.py` | Polls `onboarding_runs`, fires `feels_onboarded` progress event | Reachable only via the bare `python -m ...workflows` `WORKFLOW_SERVICE` selector, which no compose service/script invokes. |
+| ~~`ingestion/workflows/feels_onboarded_monitor.py`~~ | Polls `onboarding_runs`, fires `feels_onboarded` + `behind_schedule` progress events | **✅ Wired (2026-06-02).** Given a per-module `__main__` + a `feels_onboarded_monitor` compose service; the legacy `WORKFLOW_SERVICE` selector is kept for the subprocess test. See the [feature table](feature-status.md). |
 | `ingestion/writers/dlq_writer/__main__.py` | CLI entry `python -m …dlq_writer` | Compose runs `…dlq_writer.dlq_writer` (the inner module) directly; the package `__main__` is unused. |
 | `ingestion/writers/embedding_worker/__main__.py` | CLI entry `python -m …embedding_worker` | Compose runs `…embedding_worker.embedding_worker` directly; package `__main__` unused. |
 

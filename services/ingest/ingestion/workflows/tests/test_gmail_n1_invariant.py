@@ -27,7 +27,6 @@ from lib.shared.ids import uuid7
 from services.ingest.ingestion.fetchers import gmail as gmail_fetcher
 from services.ingest.ingestion.fetchers.gmail import SHARD_KIND_MAILBOX_WINDOW
 from services.ingest.ingestion.workflows.shard_fetch import (
-    RAW_TOPIC,
     SIGNAL_KIND_COMPLETED,
     SIGNAL_KIND_REQUESTED,
     SOURCE_ONBOARDING_INBOX_ID,
@@ -399,9 +398,16 @@ async def test_fetch_page_gmail_runs_to_completion_in_service(
     # the S3 blob the pointer addresses (M6.7 / A27.1).
     from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 
-    assert len(producer.published) == 3
-    for topic, value, key in producer.published:
-        assert topic == RAW_TOPIC
+    # Records publish to the per-source raw lane (source-isolation); the
+    # shard.fetched progress event lands separately on onboarding.progress
+    # and is excluded from this raw-record assertion.
+    from services.ingest.ingestion.kafka.topics import topic_for
+    raw_published = [
+        m for m in producer.published if m[0] != "onboarding.progress"
+    ]
+    assert len(raw_published) == 3
+    for topic, value, key in raw_published:
+        assert topic == topic_for("raw", "gmail")
         assert key == str(tid).encode("utf-8")
         env = RawEnvelope.model_validate(orjson.loads(value))
         assert env.source == "gmail"

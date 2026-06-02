@@ -239,6 +239,8 @@ import orjson
 
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.kafka.topics import topic_for
+from services.ingest.ingestion.progress.events import ProgressEvent, ShardFetched
+from services.ingest.ingestion.progress.publisher import publish_progress_events
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import (
     S3Client,
@@ -795,6 +797,14 @@ class ShardFetch(LongRunningService):
             else dict(ident_raw)
         )
 
+        # Wall-clock start for the `shard.fetched` progress event's
+        # `fetched_in_seconds` (this fetch pass; a resumed orphan restarts
+        # the clock). `records_fetched` is seeded from the N1 state so it
+        # survives a cross-replica handoff and reports the cumulative
+        # raw-record count for the shard, not just the resuming pass.
+        loop_started_at = dt.datetime.now(tz=dt.timezone.utc)
+        records_fetched = 0
+
         try:
             install = await _load_install(
                 self._pool, tenant_id=tenant_id, source=source,
@@ -824,6 +834,11 @@ class ShardFetch(LongRunningService):
                 async with self._pool.acquire() as conn:
                     async with conn.transaction():
                         await self._bootstrap_workflow_state(conn, shard_id)
+            else:
+                # Resume: carry forward the count from prior passes.
+                records_fetched = int(
+                    initial_state.state_data.get("records_fetched", 0)
+                )
 
             while True:
                 # Re-read N1 cursor each iteration. Robust against
@@ -839,6 +854,7 @@ class ShardFetch(LongRunningService):
 
                 fetcher = FETCHER_DISPATCH[source]
                 result = await fetcher(install, shard_identifier, cursor)
+                records_fetched += len(result.records)
 
                 # A27.1 — write each record's blob to S3 + build the
                 # RawEnvelope pointer BEFORE the N1 publish. S3 failures
@@ -880,6 +896,10 @@ class ShardFetch(LongRunningService):
                                     "pages_fetched", 0,
                                 ) if current_state else 0) + 1
                             ),
+                            # Cumulative raw-record count, persisted so a
+                            # resumed orphan reports the whole shard's count
+                            # in its `shard.fetched` event.
+                            "records_fetched": records_fetched,
                             "end_of_data": result.end_of_data,
                         },
                         kafka_messages=msgs,
@@ -918,9 +938,15 @@ class ShardFetch(LongRunningService):
             )
             return
 
-        # Clean end-of-data exit.
+        # Clean end-of-data exit. Pass the fetch metrics so the terminal
+        # transition can emit the `shard.fetched` progress event.
+        fetched_in_seconds = (
+            dt.datetime.now(tz=dt.timezone.utc) - loop_started_at
+        ).total_seconds()
         await self._terminate_shard(
             shard_id=shard_id, state="done", failure_reason=None,
+            observation_count=records_fetched,
+            fetched_in_seconds=fetched_in_seconds,
         )
 
     async def _terminate_shard(
@@ -928,6 +954,8 @@ class ShardFetch(LongRunningService):
         shard_id: UUID,
         state: str,  # 'done' or 'failed'
         failure_reason: str | None,
+        observation_count: int | None = None,
+        fetched_in_seconds: float | None = None,
     ) -> None:
         """Mark shard terminal + emit shard_fetch_completed.
 
@@ -937,7 +965,15 @@ class ShardFetch(LongRunningService):
         was_new=False and the transaction commits successfully —
         the SourceOnboarding consumer sees one completion regardless
         of replicas.
-        """
+
+        On the `state='done'` exit (and only then), also publishes the
+        user-facing `shard.fetched` progress event (LLD §6) AFTER the
+        transaction commits — the shard `done` transition is
+        claim-via-UPDATE guarded, so post-commit publish gives the
+        at-least-once + Bridge-dedup contract. The failure paths pass no
+        metrics and emit no progress event (no `shard.failed` in the
+        contract)."""
+        events: list[ProgressEvent] = []
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 if state == "done":
@@ -954,6 +990,15 @@ class ShardFetch(LongRunningService):
                     conn, shard=shard, status=state,
                     failure_reason=failure_reason,
                 )
+                if state == "done" and observation_count is not None:
+                    events.append(ShardFetched(
+                        tenant_id=shard["tenant_id"],
+                        source=shard["source"],
+                        shard_id=shard["id"],
+                        observation_count=observation_count,
+                        fetched_in_seconds=fetched_in_seconds or 0.0,
+                    ))
+        await publish_progress_events(self._kafka_producer, events)
 
     async def _emit_shard_completed(
         self, conn: asyncpg.Connection, *,

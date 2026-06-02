@@ -368,3 +368,104 @@ async def test_feels_monitor_persists_scan_diagnostics(
         f"emitted across two ticks; got "
         f"{state2.state_data['lifetime_events_emitted']}."
     )
+
+
+# =====================================================================
+# 6. behind_schedule — ops-only signal, fires once per run.
+# =====================================================================
+
+async def test_feels_monitor_emits_behind_schedule_once(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A run with no feels_onboarded that is past the behind_schedule
+    threshold emits exactly one `tenant.onboarding.behind_schedule` on
+    onboarding.progress — and only once across repeated ticks (the
+    behind_schedule_emitted_at claim-via-UPDATE guard, migration 0080)."""
+    from services.ingest.ingestion.progress.events import (
+        TenantOnboardingBehindSchedule,
+    )
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+
+    await _ensure_partition(fresh_db)
+    tid = await _seed_tenant(fresh_db)
+    await _seed_run(fresh_db, tenant_id=tid, sources=["slack"])
+
+    producer = _CapturingProducer()
+    monitor = FeelsOnboardedMonitor(
+        fresh_db, producer,
+        config=FeelsMonitorConfig(
+            tick_interval_seconds=0.01,
+            # No observations seeded → feels_onboarded never fires.
+            min_observations_for_feels_onboarded=1,
+            # Threshold 0 → a just-started run is immediately "behind".
+            behind_schedule_after_seconds=0.0,
+        ),
+    )
+    await monitor.run(max_ticks=1)
+
+    behind = [
+        TenantOnboardingBehindSchedule.model_validate_json(val)
+        for topic, val, _ in producer.published
+        if topic == TOPIC_ONBOARDING_PROGRESS
+        and b"behind_schedule" in val
+    ]
+    assert len(behind) == 1, (
+        f"Expected one behind_schedule; got {len(behind)}."
+    )
+    assert behind[0].tenant_id == tid
+    assert behind[0].sources_pending == ["slack"]
+
+    # Stamp recorded; second tick must NOT re-emit.
+    stamped = await fresh_db.fetchval(
+        "SELECT behind_schedule_emitted_at FROM onboarding_runs "
+        "WHERE tenant_id = $1", tid,
+    )
+    assert stamped is not None
+    await monitor.run(max_ticks=1)
+    total_behind = sum(
+        1 for _, val, _ in producer.published if b"behind_schedule" in val
+    )
+    assert total_behind == 1, (
+        f"behind_schedule fired {total_behind} times; the "
+        f"behind_schedule_emitted_at guard must keep it to one."
+    )
+
+
+# =====================================================================
+# 7. google_drive is in the (Source-derived) allowlist.
+# =====================================================================
+
+async def test_feels_monitor_supports_google_drive_source(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Regression: the source allowlist is derived from the `Source`
+    Literal, so `google_drive` (added to the event contract but missing
+    from the old hand-maintained tuple) now produces feels_onboarded."""
+    await _ensure_partition(fresh_db)
+    tid = await _seed_tenant(fresh_db)
+    rid = await _seed_run(fresh_db, tenant_id=tid, sources=["google_drive"])
+    for _ in range(2):
+        await _seed_observation(
+            fresh_db, tenant_id=tid, source_channel="google_drive:drive-1",
+        )
+
+    producer = _CapturingProducer()
+    monitor = FeelsOnboardedMonitor(
+        fresh_db, producer,
+        config=FeelsMonitorConfig(
+            tick_interval_seconds=0.01,
+            min_observations_for_feels_onboarded=1,
+        ),
+    )
+    await monitor.run(max_ticks=1)
+
+    event = SourceOnboardingFeelsOnboarded.model_validate_json(
+        producer.published[0][1]
+    )
+    assert event.source == "google_drive"
+    stamped = await fresh_db.fetchval(
+        "SELECT feels_onboarded_at FROM onboarding_runs WHERE id = $1", rid,
+    )
+    assert stamped is not None

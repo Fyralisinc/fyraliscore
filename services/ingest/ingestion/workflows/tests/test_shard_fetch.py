@@ -40,7 +40,6 @@ import pytest
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 from services.ingest.ingestion.workflows.shard_fetch import (
-    RAW_TOPIC,
     SIGNAL_KIND_COMPLETED,
     SIGNAL_KIND_REQUESTED,
     SOURCE_ONBOARDING_INBOX_ID,
@@ -262,10 +261,19 @@ async def test_shard_fetch_picks_up_request_and_calls_fetcher(
     )
     assert state == "done"
 
-    # (b) Kafka records: 5 records across 2 pages.
-    assert len(producer.published) == 5
-    for topic, _val, key in producer.published:
-        assert topic == RAW_TOPIC
+    # (b) Kafka records: 5 records across 2 pages, published to the
+    # per-source raw lane (source-isolation). The shard.fetched progress
+    # event lands separately on onboarding.progress and is excluded here.
+    from services.ingest.ingestion.kafka.topics import topic_for
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+    raw_published = [
+        m for m in producer.published if m[0] != TOPIC_ONBOARDING_PROGRESS
+    ]
+    assert len(raw_published) == 5
+    for topic, _val, key in raw_published:
+        assert topic == topic_for("raw", "slack")
         assert key == str(tid).encode("utf-8")
 
     # (c) workflow_states cursor reflects last advance.
@@ -748,3 +756,53 @@ def test_shard_fetch_passes_pattern_alignment_analyzer() -> None:
             f"{formatted}\n\n"
             f"See docs/ingestion/pattern-alignment-rules.md."
         )
+
+
+# =====================================================================
+# Progress event — `shard.fetched` on the done transition.
+# =====================================================================
+
+async def test_shard_fetch_emits_shard_fetched_progress_event(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shard that runs to done publishes exactly one `shard.fetched`
+    on onboarding.progress, carrying the per-shard observation count
+    (sum of fetched records) and the shard_id, keyed by tenant_id."""
+    from services.ingest.ingestion.progress.events import ShardFetched
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+
+    pages = [[{"id": 1}, {"id": 2}], [{"id": 3}, {"id": 4}, {"id": 5}]]
+    monkeypatch.setitem(
+        FETCHER_DISPATCH, "slack", _make_three_page_fetcher(pages),
+    )
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    shard_id = await _seed_shard(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+    )
+    await _emit_shard_requested(
+        fresh_db, shard_id=shard_id, run_id=run_id,
+        tenant_id=tid, source="slack",
+    )
+
+    producer = _CapturingProducer()
+    await _service(fresh_db, producer).run(max_ticks=1)
+
+    fetched = [
+        ShardFetched.model_validate_json(val)
+        for topic, val, _ in producer.published
+        if topic == TOPIC_ONBOARDING_PROGRESS
+        and b"shard.fetched" in val
+    ]
+    assert len(fetched) == 1, (
+        f"Expected exactly one shard.fetched; got {len(fetched)}."
+    )
+    ev = fetched[0]
+    assert ev.tenant_id == tid
+    assert ev.source == "slack"
+    assert ev.shard_id == shard_id
+    assert ev.observation_count == 5  # 2 + 3 records across the two pages
+    assert ev.fetched_in_seconds >= 0.0

@@ -155,6 +155,11 @@ import asyncpg
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingest.ingestion.planners.context import PlannerContext
+from services.ingest.ingestion.progress.events import (
+    ProgressEvent,
+    SourceOnboardingStarted,
+)
+from services.ingest.ingestion.progress.publisher import publish_progress_events
 from services.ingest.ingestion.workflows.runtime import LongRunningService
 from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
@@ -599,9 +604,13 @@ class SourceOnboarding(LongRunningService):
         self,
         pool: asyncpg.Pool,
         *,
+        kafka_producer: Any | None = None,
         config: SourceOnboardingConfig | None = None,
     ) -> None:
         self._pool = pool
+        # OPTIONAL progress-event producer (see TenantOnboarding); None in
+        # unit tests, wired by `_run_service` in production.
+        self._kafka_producer = kafka_producer
         self._config = config or SourceOnboardingConfig()
 
     @property
@@ -632,7 +641,13 @@ class SourceOnboarding(LongRunningService):
         Failure mode: signal claim succeeds but downstream write
         raises → transaction rolls back → signal claimable again on
         next tick (the A12 + A13 property + the M6.1 precedent).
+
+        `source.onboarding.started` is returned by `_handle_source_requested`
+        and published AFTER commit (claim-via-UPDATE ordering). The
+        terminal `source.onboarding.complete` is emitted by the Reconciler
+        on its clean pass, not here (M6.2b chain change).
         """
+        events: list[ProgressEvent] = []
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 signals = await claim_signals(
@@ -646,7 +661,7 @@ class SourceOnboarding(LongRunningService):
                     return False
                 sig = signals[0]
                 if sig.signal_kind == SIGNAL_KIND_REQUESTED:
-                    await self._handle_source_requested(conn, sig)
+                    events = await self._handle_source_requested(conn, sig)
                 elif sig.signal_kind == SIGNAL_KIND_SHARD_COMPLETED:
                     await self._handle_shard_completed(conn, sig)
                 else:
@@ -658,11 +673,12 @@ class SourceOnboarding(LongRunningService):
                             "workflow_kind": sig.workflow_kind,
                         },
                     )
+        await publish_progress_events(self._kafka_producer, events)
         return True
 
     async def _handle_source_requested(
         self, conn: asyncpg.Connection, sig: WorkflowSignal,
-    ) -> None:
+    ) -> list[ProgressEvent]:
         """Handle one `source_onboarding_requested` signal.
 
         Atomic transaction body — all of:
@@ -673,7 +689,13 @@ class SourceOnboarding(LongRunningService):
           - Call planner via dispatch.
           - INSERT shard rows + emit shard_fetch_requested per shard.
         commit together or roll back together.
-        """
+
+        Returns `[SourceOnboardingStarted]` once a plan is produced
+        (`planned_shard_count = len(shards)`, including the empty-plan
+        case which starts then immediately completes). Returns `[]` when
+        the source never starts: invalid source, missing run, idempotent
+        re-claim, missing install, or a planner failure (there is no
+        `source.onboarding` failed event in the contract)."""
         run_id = UUID(sig.signal_data["onboarding_run_id"])
         tenant_id = UUID(sig.signal_data["tenant_id"])
         source = sig.signal_data["source"]
@@ -683,7 +705,7 @@ class SourceOnboarding(LongRunningService):
                 "source_onboarding.invalid_source",
                 extra={"source": source, "signal_id": str(sig.id)},
             )
-            return
+            return []
 
         run = await _load_source_run(conn, run_id=run_id, source=source)
         if run is None:
@@ -694,11 +716,11 @@ class SourceOnboarding(LongRunningService):
                     "signal_id": str(sig.id),
                 },
             )
-            return
+            return []
         if run["status"] != "pending":
             # Idempotency: a re-claimed signal whose run already
             # advanced is a no-op success.
-            return
+            return []
 
         install = await _load_install(
             conn, tenant_id=tenant_id, source=source,
@@ -718,7 +740,7 @@ class SourceOnboarding(LongRunningService):
                 conn, run_id=run_id, source=source,
                 failure_reason=failure_reason,
             )
-            return
+            return []
 
         # Mark in-progress BEFORE planner call so planner failures
         # can transition to 'failed' cleanly (the WHERE clause on
@@ -750,7 +772,7 @@ class SourceOnboarding(LongRunningService):
                 conn, run_id=run_id, source=source,
                 failure_reason=failure_reason,
             )
-            return
+            return []
         except Exception as exc:  # noqa: BLE001
             # Any other planner exception (config error, transient API
             # failure, real bug): mark the run failed and continue
@@ -770,7 +792,16 @@ class SourceOnboarding(LongRunningService):
                 conn, run_id=run_id, source=source,
                 failure_reason=failure_reason,
             )
-            return
+            return []
+
+        # The source has started: a plan was produced. `started_event`
+        # carries the planned shard count (0 for the empty-plan case).
+        started_event = SourceOnboardingStarted(
+            tenant_id=tenant_id,
+            source=source,  # type: ignore[arg-type]  # validated ∈ VALID_SOURCES
+            started_at=dt.datetime.now(tz=dt.timezone.utc),
+            planned_shard_count=len(shards),
+        )
 
         if not shards:
             # Empty planner result: source has nothing to fetch.
@@ -788,7 +819,7 @@ class SourceOnboarding(LongRunningService):
                 conn, run_id=run_id, source=source,
                 tenant_id=tenant_id, pass_count=0,
             )
-            return
+            return [started_event]
 
         # Fan out: INSERT one shard row per planner output, emit one
         # shard_fetch_requested per shard. All in this transaction.
@@ -812,6 +843,8 @@ class SourceOnboarding(LongRunningService):
                     "source": source,
                 },
             )
+
+        return [started_event]
 
     async def _handle_shard_completed(
         self, conn: asyncpg.Connection, sig: WorkflowSignal,
@@ -991,9 +1024,21 @@ async def _run_service() -> None:
     import os
     import signal as sig_module
 
+    from services.ingest.ingestion.kafka.producer import (
+        IdempotentProducer,
+        ProducerConfig,
+    )
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
+    # Progress-event producer for `source.onboarding.started` (LLD §6).
+    producer = IdempotentProducer(ProducerConfig(
+        bootstrap_servers=os.environ.get(
+            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+        ),
+        client_id="workflow-source_onboarding",
+    ))
+    await producer.start()
     config = SourceOnboardingConfig(
         tick_interval_seconds=float(
             os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),
@@ -1005,7 +1050,7 @@ async def _run_service() -> None:
             "SOURCE_ONBOARDING_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = SourceOnboarding(pool, config=config)
+    service = SourceOnboarding(pool, kafka_producer=producer, config=config)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -1019,6 +1064,7 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.source_onboarding.shutting_down")
+        await producer.stop()
         await pool.close()
     log.info("workflow.source_onboarding.exited")
 

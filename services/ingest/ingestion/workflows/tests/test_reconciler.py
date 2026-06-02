@@ -147,6 +147,33 @@ def _service(pool: asyncpg.Pool) -> Reconciler:
     )
 
 
+class _CapturingProducer:
+    """Records produce() calls; flush() is a no-op."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, bytes, bytes | None]] = []
+
+    async def produce(
+        self, topic: str, value: bytes, *,
+        key: bytes | None = None, **_kw: Any,
+    ) -> None:
+        self.published.append((topic, value, key))
+
+    async def flush(self, timeout_seconds: float = 10.0) -> int:
+        return 0
+
+
+def _service_p(
+    pool: asyncpg.Pool, producer: _CapturingProducer,
+) -> Reconciler:
+    return Reconciler(
+        pool, kafka_producer=producer,
+        config=ReconcilerConfig(
+            tick_interval_seconds=0.01, max_signals_per_tick=20,
+        ),
+    )
+
+
 async def _clean_reconciler(
     shards: list[asyncpg.Record], run: asyncpg.Record,
 ) -> ReconciliationDecision:
@@ -666,3 +693,88 @@ def test_reconciler_passes_pattern_alignment_analyzer() -> None:
             f"{formatted}\n\n"
             f"See docs/ingestion/pattern-alignment-rules.md."
         )
+
+
+# =====================================================================
+# Progress event — `source.onboarding.complete` on the clean pass.
+# =====================================================================
+
+async def test_reconciler_emits_source_complete_progress_event(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first clean pass publishes exactly one
+    `source.onboarding.complete` on onboarding.progress; pass_count=0 +
+    no re-shared children → coverage_confidence='exact', gaps_resolved=0.
+    """
+    from services.ingest.ingestion.progress.events import (
+        SourceOnboardingComplete,
+    )
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+
+    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+
+    tid = await _seed_tenant(fresh_db)
+    run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
+    await _seed_shard(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+    )
+    await _emit_shards_completed(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+    )
+
+    producer = _CapturingProducer()
+    await _service_p(fresh_db, producer).run(max_ticks=1)
+
+    complete = [
+        SourceOnboardingComplete.model_validate_json(val)
+        for topic, val, _ in producer.published
+        if topic == TOPIC_ONBOARDING_PROGRESS
+        and b"source.onboarding.complete" in val
+    ]
+    assert len(complete) == 1, (
+        f"Expected one source.onboarding.complete; got {len(complete)}. "
+        f"Publishes: {producer.published}"
+    )
+    ev = complete[0]
+    assert ev.tenant_id == tid
+    assert ev.source == "slack"
+    assert ev.coverage_confidence == "exact"
+    assert ev.gaps_resolved == 0
+
+
+async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second source_shards_completed signal for an already-reconciled
+    run re-emits the Bridge SIGNAL but NOT a second `source.onboarding.complete`
+    progress event (the user-facing complete fires exactly once)."""
+    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+
+    tid = await _seed_tenant(fresh_db)
+    run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
+    await _seed_shard(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+    )
+    # First clean pass.
+    await _emit_shards_completed(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=0,
+    )
+    producer = _CapturingProducer()
+    await _service_p(fresh_db, producer).run(max_ticks=1)
+
+    # Replay (a later pass_count key so emit_signal doesn't dedup the inbox).
+    await _emit_shards_completed(
+        fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=1,
+    )
+    await _service_p(fresh_db, producer).run(max_ticks=1)
+
+    complete_count = sum(
+        1 for _, val, _ in producer.published
+        if b"source.onboarding.complete" in val
+    )
+    assert complete_count == 1, (
+        f"source.onboarding.complete fired {complete_count} times; the "
+        f"reconciled_at guard must keep it to exactly one."
+    )

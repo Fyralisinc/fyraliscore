@@ -132,6 +132,12 @@ import asyncpg
 import orjson
 
 from lib.shared.ids import uuid7
+from services.ingest.ingestion.progress.events import (
+    CoverageConfidence,
+    ProgressEvent,
+    SourceOnboardingComplete,
+)
+from services.ingest.ingestion.progress.publisher import publish_progress_events
 from services.ingest.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
     ReconciliationDecision,
@@ -187,9 +193,17 @@ DEFAULT_MAX_SIGNALS_PER_TICK = 50
 # ---------------------------------------------------------------------
 _LOAD_RUN_SQL = """
 SELECT onboarding_run_id, source, tenant_id, status,
-       reconciled_at, reconciliation_pass_count
+       reconciled_at, reconciliation_pass_count, started_at
   FROM source_onboarding_runs
  WHERE onboarding_run_id = $1 AND source = $2
+"""
+
+# Observations landed for this (tenant, source) — the `total_observations`
+# on `source.onboarding.complete`. `source_channel LIKE 'source:%'` is the
+# same matcher the feels_onboarded monitor uses (e.g. 'slack:T123').
+_COUNT_SOURCE_OBSERVATIONS_SQL = """
+SELECT count(*) FROM observations
+ WHERE tenant_id = $1 AND source_channel LIKE $2 || ':%'
 """
 
 # All shards for this (run, source) — Reconciler needs the full
@@ -290,6 +304,25 @@ async def _stamp_reconciled(
     conn: asyncpg.Connection, *, run_id: UUID, source: str,
 ) -> None:
     await conn.execute(_STAMP_RECONCILED_SQL, run_id, source)
+
+
+def _derive_coverage_confidence(pass_count: int) -> CoverageConfidence:
+    """Map the reconciliation outcome to a `coverage_confidence` value.
+
+    The pre-M6.3 reconcilers are exhaustive (not sampling): a clean pass
+    with zero re-shares means the backfill was complete first time
+    ('exact'); a clean pass after one-or-more gap re-shares means gaps
+    were found and filled ('gap_reshared'). The sampling-based values
+    ('sparse_sampled_*', 'partial') are reserved for future sampling
+    reconcilers and are not produced by the exhaustive default. This is
+    a direct reading of `reconciliation_pass_count`, not a guess."""
+    return "exact" if pass_count <= 0 else "gap_reshared"
+
+
+def _count_reshared_shards(shards: list[asyncpg.Record]) -> int:
+    """`gaps_resolved`: the number of gap-filling child shards created
+    across all re-share passes (those with a `parent_shard_id`)."""
+    return sum(1 for s in shards if s["parent_shard_id"] is not None)
 
 
 async def _mark_run_failed(
@@ -394,9 +427,13 @@ class Reconciler(LongRunningService):
         self,
         pool: asyncpg.Pool,
         *,
+        kafka_producer: Any | None = None,
         config: ReconcilerConfig | None = None,
     ) -> None:
         self._pool = pool
+        # OPTIONAL progress-event producer (see TenantOnboarding); None in
+        # unit tests, wired by `_run_service` in production.
+        self._kafka_producer = kafka_producer
         self._config = config or ReconcilerConfig()
 
     @property
@@ -420,7 +457,13 @@ class Reconciler(LongRunningService):
         Returns True iff a signal was processed. The claim, dispatch,
         and downstream emits are one transaction; failure rolls back
         and the next tick re-claims (A12 + A13 contract).
+
+        The terminal `source.onboarding.complete` progress event is
+        returned by the handler and published AFTER commit (the clean
+        pass is claim-via-UPDATE guarded on `reconciled_at IS NULL`, so
+        it fires exactly once even under signal replay).
         """
+        events: list[ProgressEvent] = []
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 signals = await claim_signals(
@@ -434,7 +477,9 @@ class Reconciler(LongRunningService):
                     return False
                 sig = signals[0]
                 if sig.signal_kind == SIGNAL_KIND_SHARDS_COMPLETED:
-                    await self._handle_source_shards_completed(conn, sig)
+                    events = await self._handle_source_shards_completed(
+                        conn, sig,
+                    )
                 else:
                     log.warning(
                         "reconciler.unknown_signal_kind",
@@ -443,11 +488,12 @@ class Reconciler(LongRunningService):
                             "signal_kind": sig.signal_kind,
                         },
                     )
+        await publish_progress_events(self._kafka_producer, events)
         return True
 
     async def _handle_source_shards_completed(
         self, conn: asyncpg.Connection, sig: WorkflowSignal,
-    ) -> None:
+    ) -> list[ProgressEvent]:
         """Process one `source_shards_completed` signal.
 
         Atomic transaction body:
@@ -459,7 +505,11 @@ class Reconciler(LongRunningService):
           - Re-share path: increment pass_count, transition status,
             mark originals resharded, INSERT new shards, emit
             shard_fetch_requested per new shard.
-        """
+
+        Returns `[SourceOnboardingComplete]` ONLY on the first clean pass
+        (the `reconciled_at IS NULL → now()` transition). The idempotent
+        re-emit, re-share, and failure paths return `[]` — the user-facing
+        complete event fires once, when the source is truly done."""
         run_id = UUID(sig.signal_data["onboarding_run_id"])
         source = sig.signal_data["source"]
 
@@ -472,17 +522,19 @@ class Reconciler(LongRunningService):
                     "signal_id": str(sig.id),
                 },
             )
-            return
+            return []
 
         if run["reconciled_at"] is not None:
             # Already reconciled clean. Re-emit source_onboarding_completed
             # idempotently to cover the consumer-side gap (the second
             # emit's was_new=False is fine — the first emit already
-            # landed and is at-most-once-across-pollers).
+            # landed and is at-most-once-across-pollers). No progress
+            # event: the `source.onboarding.complete` already fired on
+            # the first clean pass.
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source, failure_reason=None,
             )
-            return
+            return []
 
         shards = await _load_shards(conn, run_id=run_id, source=source)
 
@@ -522,7 +574,7 @@ class Reconciler(LongRunningService):
                 conn, run_id=run_id, source=source,
                 failure_reason=failure_reason,
             )
-            return
+            return []
         except Exception as exc:  # noqa: BLE001
             failure_reason = f"{type(exc).__name__}: {exc}"
             log.exception(
@@ -540,29 +592,58 @@ class Reconciler(LongRunningService):
                 conn, run_id=run_id, source=source,
                 failure_reason=failure_reason,
             )
-            return
+            return []
 
         if not decision.has_gaps:
-            await self._handle_clean_path(
-                conn, run_id=run_id, source=source,
-                tenant_id=run["tenant_id"],
+            return await self._handle_clean_path(
+                conn, run=run, shards=shards,
             )
-        else:
-            await self._handle_reshare_path(
-                conn, run_id=run_id, source=source,
-                tenant_id=run["tenant_id"], decision=decision,
-            )
+        await self._handle_reshare_path(
+            conn, run_id=run_id, source=source,
+            tenant_id=run["tenant_id"], decision=decision,
+        )
+        return []
 
     async def _handle_clean_path(
         self, conn: asyncpg.Connection, *,
-        run_id: UUID, source: str, tenant_id: UUID,
-    ) -> None:
-        """Reconciler decided no gaps. Stamp reconciled_at and emit
-        source_onboarding_completed to TenantOnboarding."""
+        run: asyncpg.Record, shards: list[asyncpg.Record],
+    ) -> list[ProgressEvent]:
+        """Reconciler decided no gaps. Stamp reconciled_at, emit the
+        source_onboarding_completed signal to TenantOnboarding, and
+        return the user-facing `source.onboarding.complete` event.
+
+        The completion metrics are gathered here on the in-transaction
+        connection; the event is published post-commit. `coverage_confidence`
+        + `gaps_resolved` are derived from the reconciliation outcome
+        (pass count + re-shared child shards)."""
+        run_id = run["onboarding_run_id"]
+        source = run["source"]
+        tenant_id = run["tenant_id"]
         await _stamp_reconciled(conn, run_id=run_id, source=source)
         await self._emit_source_completed(
             conn, run_id=run_id, source=source, failure_reason=None,
         )
+
+        pass_count = int(run["reconciliation_pass_count"] or 0)
+        started_at = run["started_at"]
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        total_seconds = (
+            (now - started_at).total_seconds()
+            if started_at is not None else 0.0
+        )
+        total_observations = int(
+            await conn.fetchval(
+                _COUNT_SOURCE_OBSERVATIONS_SQL, tenant_id, source,
+            ) or 0
+        )
+        return [SourceOnboardingComplete(
+            tenant_id=tenant_id,
+            source=source,  # type: ignore[arg-type]  # ∈ Source by construction
+            total_observations=total_observations,
+            total_seconds=total_seconds,
+            gaps_resolved=_count_reshared_shards(shards),
+            coverage_confidence=_derive_coverage_confidence(pass_count),
+        )]
 
     async def _handle_reshare_path(
         self, conn: asyncpg.Connection, *,
@@ -638,9 +719,21 @@ async def _run_service() -> None:
     import os
     import signal as sig_module
 
+    from services.ingest.ingestion.kafka.producer import (
+        IdempotentProducer,
+        ProducerConfig,
+    )
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
+    # Progress-event producer for `source.onboarding.complete` (LLD §6).
+    producer = IdempotentProducer(ProducerConfig(
+        bootstrap_servers=os.environ.get(
+            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+        ),
+        client_id="workflow-reconciler",
+    ))
+    await producer.start()
     # M6.3: per-source reconcilers may need pool access for auxiliary
     # reads (e.g., Gmail reads workflow_states for each shard's
     # final_history_id). Register the pool with each per-source module
@@ -684,7 +777,7 @@ async def _run_service() -> None:
             "RECONCILER_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = Reconciler(pool, config=config)
+    service = Reconciler(pool, kafka_producer=producer, config=config)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -698,6 +791,7 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.reconciler.shutting_down")
+        await producer.stop()
         await pool.close()
     log.info("workflow.reconciler.exited")
 

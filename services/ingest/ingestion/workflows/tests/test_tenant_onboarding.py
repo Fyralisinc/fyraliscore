@@ -171,6 +171,35 @@ def _orch(pool: asyncpg.Pool) -> TenantOnboardingOrchestrator:
     )
 
 
+class _CapturingProducer:
+    """Records produce() calls; flush() is a no-op (progress events use
+    claim-via-UPDATE post-commit publish, not the N1 flush barrier)."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, bytes, bytes | None]] = []
+
+    async def produce(
+        self, topic: str, value: bytes, *,
+        key: bytes | None = None, **_kw: Any,
+    ) -> None:
+        self.published.append((topic, value, key))
+
+    async def flush(self, timeout_seconds: float = 10.0) -> int:
+        return 0
+
+
+def _orch_p(
+    pool: asyncpg.Pool, producer: _CapturingProducer,
+) -> TenantOnboardingOrchestrator:
+    return TenantOnboardingOrchestrator(
+        pool,
+        kafka_producer=producer,
+        config=TenantOnboardingConfig(
+            tick_interval_seconds=0.01, max_signals_per_tick=20,
+        ),
+    )
+
+
 # =====================================================================
 # 1. LOAD-BEARING — atomic new-run handling.
 # =====================================================================
@@ -728,3 +757,91 @@ async def test_orchestrator_idempotent_across_partial_completion(
         BRIDGE_INBOX_KIND, SIGNAL_KIND_TENANT_COMPLETED, str(run_id),
     )
     assert tenant_completed == 1
+
+
+# =====================================================================
+# 8. Progress events — `tenant.onboarding.started` / `…complete`.
+# =====================================================================
+
+async def test_orchestrator_emits_tenant_started_progress_event(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """The pending→running transition publishes exactly one
+    `tenant.onboarding.started` to onboarding.progress, keyed by
+    tenant_id, listing the applicable sources."""
+    from services.ingest.ingestion.progress.events import (
+        TenantOnboardingStarted,
+    )
+    from services.ingest.ingestion.progress.publisher import (
+        TOPIC_ONBOARDING_PROGRESS,
+    )
+
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
+    run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
+    await _emit_run_created_signal(fresh_db, run_id=run_id, tenant_id=tid)
+
+    producer = _CapturingProducer()
+    await _orch_p(fresh_db, producer).run(max_ticks=1)
+
+    started_msgs = [
+        (val, key) for topic, val, key in producer.published
+        if topic == TOPIC_ONBOARDING_PROGRESS
+        and b"tenant.onboarding.started" in val
+    ]
+    assert len(started_msgs) == 1, (
+        f"Expected exactly one tenant.onboarding.started; got "
+        f"{len(started_msgs)}. All publishes: {producer.published}"
+    )
+    val, key = started_msgs[0]
+    ev = TenantOnboardingStarted.model_validate_json(val)
+    assert ev.tenant_id == tid
+    assert set(ev.sources) == {"slack", "github"}
+    assert ev.eta_minutes > 0
+    # Keyed by tenant_id for per-tenant ordering (LLD §6).
+    assert key == tid.bytes
+
+
+async def test_orchestrator_emits_tenant_complete_progress_event(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """All-sources-success roll-up publishes exactly one
+    `tenant.onboarding.complete` alongside the Bridge signal."""
+    from services.ingest.ingestion.progress.events import (
+        TenantOnboardingComplete,
+    )
+
+    tid = await _seed_tenant(fresh_db)
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tid, status="running",
+    )
+    for source in ("slack", "github"):
+        await fresh_db.execute(
+            """
+            INSERT INTO source_onboarding_runs
+                (onboarding_run_id, source, tenant_id, status, started_at)
+            VALUES ($1, $2, $3, 'in_progress', now())
+            """,
+            run_id, source, tid,
+        )
+    for source in ("slack", "github"):
+        await _emit_source_completed_signal(
+            fresh_db, run_id=run_id, source=source,
+        )
+
+    producer = _CapturingProducer()
+    await _orch_p(fresh_db, producer).run(max_ticks=1)
+
+    complete = [
+        TenantOnboardingComplete.model_validate_json(v)
+        for _, v, _ in producer.published
+        if b"tenant.onboarding.complete" in v
+    ]
+    assert len(complete) == 1, (
+        f"Expected exactly one tenant.onboarding.complete; got "
+        f"{len(complete)}. Publishes: {producer.published}"
+    )
+    ev = complete[0]
+    assert ev.tenant_id == tid
+    assert set(ev.sources) == {"slack", "github"}
