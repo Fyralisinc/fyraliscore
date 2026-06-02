@@ -4,8 +4,10 @@ Per-feature status from the audit: what the code was clearly built to do
 (`expected`), what actually runs today (`status`), and the `gap`. Organized by
 theme (see the [overview](index.md)). Severity reflects impact if the gap is
 unintended. **131 findings total: 21 high (1 resolved — cutover circuit
-breaker), 46 medium, 64 low** — the high/medium
-are below; low findings are summarized at the end.
+breaker), 46 medium (2 resolved — Kafka full-pipeline persistence + `google_drive`
+async embedding), 64 low** — the high/medium are below; low findings are
+summarized at the end. _Resolutions 2026-06-02; see
+[ADR-0001](../adr/0001-kafka-first-ingestion-default.md)._
 
 ## 🔴 Background worker fabric (Wave-4) — built, not deployed
 
@@ -50,9 +52,9 @@ See [Ingest](../architecture/ingest.md).
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Kafka full-pipeline persistence | `observation_writer` writes observations from the normalized lane | Only writes when tenant `KAFKA_PATH_ENABLED=TRUE` (default off) → full pipeline is shadow/no-op until per-tenant cutover; inline ingest is the live path | medium |
-| Cutover circuit breaker | Long-running breaker trips `kafka_path_enabled=FALSE` on sustained lag | ✅ **Wired + source-aware** (`fix/cutover-breaker-source-aware`): runs as the `circuit_breaker` singleton in compose; measures lag across every `ingestion.raw.<source>` lane (group `normalizer.<source>`) and trips a tenant on its worst lane — the legacy single-`ingestion.raw` inertness is gone. Now has `/healthz`+`/metrics`, per-lane failure isolation, an operator re-enable tool (`scripts/reenable_kafka_path.py`), and a live-broker smoke test (`scripts/smoke_circuit_breaker_lag.py`) that verified the real readers + caught a latent `confluent_kafka` import crash | resolved |
-| `google_drive` async embedding | All production sources publish to `ingestion.embedding` on `embedding_pending` | `google_drive` **missing from the allowlist** (`core.py`) → its pending embeddings rely only on the DB-scan backlog drainer (latency, not correctness) | medium |
+| Kafka full-pipeline persistence | `observation_writer` writes observations from the normalized lane | **✅ Resolved (2026-06-02).** Default inverted to kafka-first: a tenant with no flag row takes the full pipeline and the writer persists from the normalized lane by default. `KAFKA_PATH_ENABLED=FALSE` is now an operator / circuit-breaker **kill-switch** (inline fallback), read through one shared helper so ingress + writer can't drift. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md). | ✅ resolved |
+| Cutover circuit breaker | Long-running breaker trips `kafka_path_enabled=FALSE` on sustained lag | ✅ **Wired + source-aware** (`fix/cutover-breaker-source-aware`): runs as the `circuit_breaker` singleton in compose; measures lag across every `ingestion.raw.<source>` lane (group `normalizer.<source>`) and trips a tenant on its worst lane — the legacy single-`ingestion.raw` inertness is gone. Now has `/healthz`+`/metrics`, per-lane failure isolation, an operator re-enable tool (`scripts/reenable_kafka_path.py`), and a live-broker smoke test (`scripts/smoke_circuit_breaker_lag.py`) that verified the real readers + caught a latent `confluent_kafka` import crash | ✅ resolved |
+| `google_drive` async embedding | All production sources publish to `ingestion.embedding` on `embedding_pending` | **✅ Resolved (2026-06-02).** `core.py` now derives the embedding allowlist from `INGESTION_SOURCES` (= `RawEnvelope.SourceLiteral`), which includes `google_drive`, so it publishes to `ingestion.embedding.google_drive` on `embedding_pending` like every other source. `shadow_write_raw`'s `source` type was aligned to the same literal to kill the drift class. | ✅ resolved |
 | Onboarding progress events | Workflow services emit `onboarding.progress` (shard.fetched, source.complete, …) | Publisher + 7 event models built, but the sole producer (`feels_onboarded_monitor`) isn't in compose → most event kinds have **no producer call site** | medium |
 | `feels_onboarded_monitor` service | Runs as a long-running `WORKFLOW_SERVICE` | No own `__main__`, no compose service → never booted; `feels_onboarded` events never emitted | medium |
 | Per-(source,method) API rate limiter | `shard_fetch`/`FetchPage` acquires tokens before each upstream call | `RateLimiter` wired only into the embedding backlog (Ollama); `FetchPage` never calls `.acquire()`; `BUCKET_DEFAULTS` has zero non-test importers | medium |

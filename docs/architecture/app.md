@@ -33,9 +33,10 @@ HTTP entrypoint. It owns:
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
-  secret store), then either calls ingest **inline** or, when the tenant has the
-  Kafka path enabled, publishes to the `ingestion.raw` lane (202) with graceful
-  fallback to inline on any failure.
+  secret store), then publishes to the `ingestion.raw` lane (202) by default,
+  with graceful fallback to **inline** `ingest()` on any failure. A tenant is
+  kafka-first unless explicitly killed (`kafka_path_enabled=FALSE`); see
+  [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
 - **Realtime dispatch** (`services/app/realtime/`): a single per-process
   `Dispatcher` holds a dedicated asyncpg `LISTEN` on `observations_new` and fans
   events out to subscribed WebSocket clients over `WS /stream`, with per-client

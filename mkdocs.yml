@@ -97,6 +97,7 @@ nav:
   - Decisions (ADRs):
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
+      - 0001 · Kafka-first ingestion default: adr/0001-kafka-first-ingestion-default.md
   - Subsystem deep-dives:
       - About these docs: deep-dives.md
       - Ingestion:

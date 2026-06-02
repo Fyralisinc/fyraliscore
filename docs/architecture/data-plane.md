@@ -135,13 +135,17 @@ Kafka + a moto-S3 mock.
 
 ## Design rationale
 
+Ingestion has **both** a synchronous inline path (gateway → `ingest()`) and the
+Kafka pipeline because the pipeline is the default (async ack, durability buffer,
+backfill, replay) while inline is the fallback when the broker/S3 is unreachable
+or unwired, plus the dev/test/demo and synchronous-result path. The Kafka path is
+**kafka-first by default**; the `kafka_path_enabled` flag is a per-tenant
+kill-switch. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
+
 > **TODO(human):** Capture the *why* behind:
 >
 > - Whether `docker-compose.yml` is dogfood, staging, or production — and why
 >   single-broker Kafka (`replication_factor=1`) is acceptable there.
-> - Why ingestion has **both** a synchronous inline path (gateway → `ingest()`)
->   **and** a Kafka pipeline; what decides which a tenant uses (the
->   `kafka_path_enabled` cutover).
 > - Why recovery/safety-net workers exist (`embedding_backlog`,
 >   `periodic_reconciler`) — the exact failure modes they cover.
 > - The `THINK_MAX_CONCURRENCY_PER_TENANT` cap and the model-row deadlock it guards.

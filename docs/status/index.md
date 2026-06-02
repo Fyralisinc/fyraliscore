@@ -69,13 +69,16 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    queue is enqueued and drained by the deployed `post_commit_worker`, but all four
    dispatchers (anomaly publish, prediction scheduling, realtime broadcast, metric
    invalidation) are `_default_*` no-op loggers ("left for a later integration PR").
-5. **The Kafka full-pipeline is flag-gated/shadow; inline ingest is what runs.**
-   `observation_writer` only persists when a tenant's `kafka_path_enabled=TRUE`
-   (default off). _(Update: the auto-cutover circuit breaker — flagged here as built
-   but undeployed and watching a now-dead default topic — is now wired as the
-   `circuit_breaker` compose singleton and made source-aware: it measures every
-   `ingestion.raw.<source>` lane and trips a tenant on its worst lane. See
-   [Cutover circuit breaker](../architecture/ingest.md#cutover-circuit-breaker).)_
+5. **The Kafka full-pipeline is now the default; inline ingest is the fallback.**
+   _(Updated 2026-06-02 — see [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).)_
+   `observation_writer` persists from the normalized lane for every tenant without
+   an explicit `kafka_path_enabled=FALSE` kill-switch; ingress returns `202` and
+   falls back to inline only when the publish fails. The auto-cutover circuit
+   breaker — flagged in the original audit as built-but-undeployed and watching a
+   now-dead default topic — is now wired as the `circuit_breaker` compose singleton
+   and made source-aware: it measures every `ingestion.raw.<source>` lane and trips
+   a tenant on its worst lane. See
+   [Cutover circuit breaker](../architecture/ingest.md#cutover-circuit-breaker).
 6. **Several "v2/spec" surfaces are fixture- or mock-backed.** `spec_routes.py`
    serves in-code seed payloads (not substrate); the Query/Ask layer defaults to a
    `MockRenderingAdapter` + in-process cache unless `QUERY_RENDERING_BASE_URL` /

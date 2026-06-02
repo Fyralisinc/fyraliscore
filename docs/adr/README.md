@@ -27,11 +27,9 @@ way it is, not just *what* it is.
 
 ## Index
 
-_No ADRs have been recorded yet._ Add the first one and list it here:
-
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
-| —   | —     | —      | —    |
+| [0001](0001-kafka-first-ingestion-default.md) | Kafka full pipeline is the default ingestion path; inline ingest is the fallback | Accepted | 2026-06-02 |
 
 ## Related: existing decision records
 

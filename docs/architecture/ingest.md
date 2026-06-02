@@ -22,7 +22,11 @@ downstream reasoning. There are **two convergent paths**:
 
 Both converge on `core.ingest_from_draft()`, so the written observation is
 identical regardless of route. The `observation_writer` branches per tenant on
-the `ingestion.kafka_path_enabled` flag.
+the `ingestion.kafka_path_enabled` flag, which is **kafka-first by default** — a
+tenant with no flag row takes the full pipeline; an explicit `FALSE` (operator or
+circuit-breaker **kill-switch**) forces it back to inline. Ingress and the writer
+read this through one helper (`TenantFlags.kafka_path_enabled()`) so they cannot
+drift. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
 
 **The 7-step ingest** (`core.py`): (1) handler extracts an `ObservationDraft`
 [+ step 1.5 inline GitHub enrichment for `github:webhook`]; (2) pre-assign a
@@ -43,10 +47,14 @@ registered channels span Slack, internal, GitHub, Linear, Stripe, Discord,
 Gmail/email, Notion, Google Calendar/Drive, calendar sync, Jira, Mercury, and
 QuickBooks.
 
-**Shadow / raw-tier path** (`shadow_write_raw`): hashes the raw body, `PutIfAbsent`
+**Raw-tier publish** (`shadow_write_raw`): hashes the raw body, `PutIfAbsent`
 to S3 (`s3://fyralis-raw`), builds a `RawEnvelope`, and publishes to
-`ingestion.raw.{source}`. Best-effort — it never fails the inline 200. Per-source
-topic lanes prevent head-of-line blocking across sources.
+`ingestion.raw.{source}`. This same mechanism serves two roles: for a kafka-first
+tenant it is the **primary write** (ingress returns `202`, skips inline); for a
+killed tenant it is the best-effort **post-inline audit** that never fails the
+inline `200`. The request-path flush is bounded by `CUTOVER_FLUSH_TIMEOUT_SEC`
+(default 2.0s) so a slow broker trips the inline fallback fast. Per-source topic
+lanes prevent head-of-line blocking across sources.
 
 **Intelligence enrichment** — `code_intel` maintains a commit-SHA-versioned
 per-repo code graph + code-RAG embeddings ("blast radius"); `github_intel`
@@ -89,12 +97,12 @@ graph TD
     IFD -->|"ActorRepo · EntityAliasRepo · Ollama"| IFD
     IFD --> OREPO --> OBS
     IFD -->|"step 7"| TTQ
-    GWR -. "best-effort" .-> SW
+    GWR -. "cutover (202) / audit" .-> SW
     SW --> S3
     SW --> KRAW --> NORM
     NORM -->|"fetch body"| S3
     NORM --> KNORM --> OW
-    OW -->|"if kafka_path_enabled"| IFD
+    OW -->|"default; unless killed"| IFD
 ```
 
 ## Integration sources
@@ -178,13 +186,19 @@ NOTIFY + partition self-heal), `services.domain.actors` / `entity_aliases`,
 
 ## Design rationale
 
+The Kafka full pipeline is the **default** ingestion path and inline ingest is the
+fallback + kill-switch. Inline was historically primary only as a migration
+de-risking step (the "zero-divergence soak" validated the async lane against the
+synchronous source of truth); with that complete, the default is now kafka-first
+and `ingestion.kafka_path_enabled` is a per-tenant kill-switch — so there is no
+longer a per-tenant *enable* ramp. The *automated* FALSE direction (sustained lag
+→ revert a tenant to inline) and the operator recovery path are the
+[Cutover circuit breaker](#cutover-circuit-breaker) above. Full context,
+alternatives, and rollout in
+[ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
+
 > **TODO(human):** Capture the *why* for:
 >
-> - Why inline ingest was historically primary while the Kafka pipeline is now the
->   documented primary path. The *automated* FALSE direction (lag → revert) and the
->   operator recovery path are now covered under
->   [Cutover circuit breaker](#cutover-circuit-breaker); still open: the criteria/ramp
->   for *enabling* the Kafka path per tenant in the first place.
 > - The full trust-tier ordering/semantics (the *mapping* is in code; the rationale
 >   for `authoritative` vs `attested_agent` vs `inferential` vs `unvetted` is not).
 > - The intended meaning of the `feels_onboarded` state and its thresholds.
