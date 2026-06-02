@@ -903,6 +903,20 @@ def build_app(
 
     app.include_router(build_integrations_router())
 
+    # Jira — production install surface (/integrations/jira/connect/*).
+    # Bearer-authed admin connect wizard: verify the API token, enumerate
+    # projects, store credentials encrypted, then finalize_install + register
+    # the webhook edge. Unlike the finance panel below, this is a genuine prod
+    # flow (tenant from Bearer auth, real credentials), so it mounts
+    # unconditionally. Isolated try so a mount error can't block startup.
+    try:
+        from services.ingest.integrations.jira.oauth import router as _jira_router
+
+        app.include_router(_jira_router)
+        log.info("jira_router_mounted")
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        log.error("jira_router_mount_failed", error=str(exc))
+
     # Finance testing control plane (Mercury + QuickBooks): install / backfill /
     # live-emit / status for the UI panel. On by default (the testing
     # deliverable); set FINANCE_PANEL_ENABLED=0 to disable in real prod.
