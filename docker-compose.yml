@@ -8,7 +8,8 @@
 #   one-shot: migrate, kafka-init (topics), minio-init (bucket)
 #   ingress : gateway (webhooks + Pub/Sub push + OAuth callbacks)
 #   live    : discord_gateway_worker, gmail_watch_scheduler,
-#             gmail_history_poller
+#             gmail_history_poller, google_calendar_live_poller,
+#             google_drive_live_poller
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
 #   consume : normalizer, observation_writer, dlq_writer, embedding_worker
@@ -340,6 +341,16 @@ services:
     <<: *worker
     container_name: company_os_gmail_history_poller
     command: python scripts/run_gmail_history_poller.py
+
+  google_calendar_live_poller:
+    <<: *worker
+    container_name: company_os_google_calendar_live_poller
+    command: python scripts/run_google_calendar_live_poller.py
+
+  google_drive_live_poller:
+    <<: *worker
+    container_name: company_os_google_drive_live_poller
+    command: python scripts/run_google_drive_live_poller.py
 
   # ---- think / post-commit application workers ---------------------
   think_worker:
