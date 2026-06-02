@@ -35,7 +35,9 @@ drift. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
 over 1–3-gram phrases (misses → `content._unresolved_phrases` for the
 [entity_resolver worker](workers.md)); (5) Ollama embedding (768-d; failure →
 `embedding_pending=True`); (6) `ObservationRepository.insert` in a transaction
-(dedup on `(source_channel, external_id, occurred_at)`); (7) enqueue a
+(dedup on `(source_channel, external_id, occurred_at)`, where each source's
+composed `external_id` comes from the central `idempotency` constructors —
+see the module table); (7) enqueue a
 `T1`/`event_arrival` row into `think_trigger_queue` unless deduped. Post-commit
 `observations_new` NOTIFY is flushed after commit; missing monthly partitions
 self-heal and retry once.
@@ -130,6 +132,7 @@ registered in code). Each lives under `services/ingest/integrations/<source>/`
 |--------|------|------|
 | Uniform ingest | `services/ingest/ingestion/core.py` | `ingest()` / `ingest_from_draft()` — the shared normalize→persist→enqueue path. |
 | Handler registry | `services/ingest/ingestion/handlers/__init__.py` | `register`/`get_handler`, `CHANNEL_TRUST_MAP`, the `ObservationDraft` dataclass. |
+| `external_id` constructors | `services/ingest/ingestion/idempotency/__init__.py` | The single home for every **composed** dedup key (M5 / LLD §6) — the 18 namespaced + IN-15-versioned `external_id` formats (slack, gmail, discord, notion, github-push, grafana, gcal, gdrive, jira, mercury, qbo). Each handler imports `idempotency` and calls them, so a source's key can't drift across its webhook/backfill/poll paths (the `test_backfill_external_id_parity` invariant becomes structural). Adopted-verbatim keys (Stripe `evt_…`, GitHub `node_id`, `Message-ID`, Linear ids) are assigned inline by their handler — there's nothing to compose, so they're intentionally not here. |
 | Workflow services | `services/ingest/ingestion/workflows/*.py` | One long-running asyncio service per file (`oauth_poller`, `tenant_onboarding`, `source_onboarding`, `shard_fetch`, `reconciler`, `periodic_reconciler`, `feels_onboarded_monitor`); compose launches each as `python -m …workflows.<module>`. The legacy `__main__.py` `WORKFLOW_SERVICE` selector still resolves them but no compose service uses it. |
 | Progress publisher | `services/ingest/ingestion/progress/{events,publisher}.py` | The `onboarding.progress` Kafka contract Bridge consumes — 7 Pydantic event models + `publish_progress_event(s)`. See [Onboarding progress events](#onboarding-progress-events). |
 | Normalizer | `services/ingest/ingestion/normalizer/worker.py` | Kafka Path B (no DB): raw → handler → `NormalizedEnvelope`. |

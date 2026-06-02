@@ -22,6 +22,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -161,7 +162,7 @@ def _shape_page(obj: dict[str, Any]) -> ObservationDraft:
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
         source_actor_ref=_actor_ref(obj, "last_edited_by"),
-        external_id=f"notion:page:{page_id}",
+        external_id=idempotency.notion_object("page", page_id),
         entities_hint=entities,
         raw_payload=obj,
     )
@@ -195,7 +196,7 @@ def _shape_block(obj: dict[str, Any]) -> ObservationDraft:
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind="signal",
         source_actor_ref=_actor_ref(obj, "last_edited_by"),
-        external_id=f"notion:block:{block_id}",
+        external_id=idempotency.notion_object("block", block_id),
         entities_hint=_mentions(inner.get("rich_text")),
         raw_payload=obj,
     )
@@ -232,7 +233,7 @@ def _shape_comment(obj: dict[str, Any]) -> ObservationDraft:
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind="signal",
         source_actor_ref=_actor_ref(obj, "created_by"),
-        external_id=f"notion:comment:{comment_id}",
+        external_id=idempotency.notion_object("comment", comment_id),
         entities_hint=entities,
         raw_payload=obj,
     )

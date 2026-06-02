@@ -42,6 +42,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -161,7 +162,9 @@ async def handle_google_calendar_event(
     # cancellation / reschedule is a distinct observation while identical
     # re-fetches and RSVP-only churn dedup.
     start_key = start_dt.isoformat() if start_dt else "none"
-    external_id = f"gcal:{calendar_id}:{event_id}:{status}:{start_key}"
+    external_id = idempotency.google_calendar_event(
+        calendar_id, event_id, status, start_key,
+    )
 
     attendees = payload.get("attendees")
     attendee_emails: list[str] = []

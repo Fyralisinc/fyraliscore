@@ -29,6 +29,7 @@ from typing import Any
 
 from lib.shared.errors import CompanyOSError, ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -238,7 +239,7 @@ async def handle_slack_message(
     entities, _ = extract_entities_from_text(text)
 
     source_actor_ref = f"slack:{user_id}" if user_id else None
-    external_id = f"{channel_id}:{ts}"
+    external_id = idempotency.slack_message(channel_id, ts)
 
     content = {
         "channel": channel_id,

@@ -34,6 +34,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     HandlerError,
@@ -292,7 +293,7 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
         trust_tier="authoritative",
         kind="signal",
         source_actor_ref=f"github:{author}" if author != "unknown" else None,
-        external_id=f"{repo_full}@{after}" if repo_full and after else None,
+        external_id=idempotency.github_push(repo_full, after),
         entities_hint=entities_hint,
         raw_payload=payload,
     )

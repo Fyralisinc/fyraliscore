@@ -33,6 +33,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -131,7 +132,7 @@ def _issue_draft(issue: dict[str, Any], site: str) -> ObservationDraft:
 
     updated = fields.get("updated") or fields.get("created")
     occurred = _parse_iso(updated) or _utcnow()
-    external_id = f"jira:{site}:issue:{issue_id}:{updated or 'none'}"
+    external_id = idempotency.jira_issue(site, issue_id, updated)
 
     summary = fields.get("summary") or "(no summary)"
     status = ((fields.get("status") or {}).get("name")) if isinstance(fields.get("status"), dict) else None
@@ -211,7 +212,7 @@ def _transition_draft(
 
     changed_fields = [str(i.get("field")) for i in items if i.get("field")]
     is_state_change = any(f in _STATE_CHANGE_FIELDS for f in changed_fields)
-    external_id = f"jira:{site}:transition:{issue_id}:{history_id}"
+    external_id = idempotency.jira_transition(site, issue_id, history_id)
 
     # Human-legible synthesis — lead with the status transition when present.
     phrases: list[str] = []
@@ -265,7 +266,7 @@ def _comment_draft(
     author_ref, author_hint = _account_ref(comment.get("author") or comment.get("updateAuthor"))
     key = issue_key or issue_id
     body_text = _adf_to_text(comment.get("body"))
-    external_id = f"jira:{site}:comment:{comment_id}:{updated or 'none'}"
+    external_id = idempotency.jira_comment(site, comment_id, updated)
 
     who = (author_hint or {}).get("display_name") or author_ref or "someone"
     content_text = f"[{key}] {who} commented: {_truncate(body_text)}"

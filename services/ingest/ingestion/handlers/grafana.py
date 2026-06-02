@@ -31,6 +31,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -114,7 +115,7 @@ def _annotation_draft(ann: dict[str, Any], instance: str) -> ObservationDraft:
 
     time_ms = ann.get("time")
     occurred = _from_ms(time_ms) or _utcnow()
-    external_id = f"grafana:{instance}:annotation:{ann_id}:{time_ms if time_ms else 'none'}"
+    external_id = idempotency.grafana_annotation(instance, ann_id, time_ms)
 
     text = ann.get("text") if isinstance(ann.get("text"), str) else ""
     tags = [t for t in (ann.get("tags") or []) if isinstance(t, str)]
@@ -252,7 +253,7 @@ async def handle_grafana_alert(
     occurred = _representative_ts(alerts, status)
     rep_ts_iso = occurred.isoformat()
     group_hash = _short_hash(group_key or repr(sorted(common_labels.items())))
-    external_id = f"grafana:{instance}:alert:{group_hash}:{status}:{rep_ts_iso}"
+    external_id = idempotency.grafana_alert(instance, group_hash, status, rep_ts_iso)
 
     # Human-legible synthesis.
     names = [n for n in (_alert_name(a) for a in alerts) if n]

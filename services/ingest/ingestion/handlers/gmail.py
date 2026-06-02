@@ -38,6 +38,7 @@ import structlog
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import ObservationDraft, register
 
 # Note: the following modules are DB-touching and used ONLY by
@@ -242,7 +243,7 @@ async def handle_gmail(
         content=content,
         # external_id is namespaced by install so the same message_id
         # observed by two tenants stays distinct.
-        external_id=f"gmail:{gmail_installation_id}:{message_id}",
+        external_id=idempotency.gmail_message(gmail_installation_id, message_id),
         occurred_at=_internal_date_to_dt(message_resource.get("internalDate")),
         source_actor_ref=f"email:{from_email}" if from_email else None,
         entities_hint=entities,

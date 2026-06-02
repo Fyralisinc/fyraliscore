@@ -50,6 +50,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -176,12 +177,10 @@ def _build_file_draft(payload: dict[str, Any]) -> ObservationDraft:
         owner_email if isinstance(owner_email, str) else None
     )
 
-    # Version discriminator (see module docstring).
-    if removed and version is None:
-        ct = change_time if isinstance(change_time, str) and change_time else "now"
-        external_id = f"gdrive:{file_id}:removed:{ct}"
-    else:
-        external_id = f"gdrive:{file_id}:{version if version is not None else 'v0'}"
+    # Version discriminator (see module docstring + idempotency.google_drive_file).
+    external_id = idempotency.google_drive_file(
+        file_id, version=version, removed=removed, change_time=change_time,
+    )
 
     # Sharing recipients (explicit permissions, excluding owners).
     permissions = payload.get("permissions")
@@ -321,7 +320,7 @@ def _build_comment_draft(payload: dict[str, Any]) -> ObservationDraft:
 
     kind = "state_change" if resolved else "signal"
     mod_key = modified if isinstance(modified, str) and modified else "none"
-    external_id = f"gdrive-comment:{file_id}:{comment_id}:{mod_key}"
+    external_id = idempotency.google_drive_comment(file_id, comment_id, mod_key)
 
     verb = "resolved a comment on" if resolved else "commented on"
     content_text = f"{author} {verb} '{file_name}'"
@@ -396,7 +395,7 @@ def _build_revision_draft(payload: dict[str, Any]) -> ObservationDraft:
     editor_email, editor_name = _user_ref(payload.get("lastModifyingUser"))
     editor = editor_email or editor_name or "someone"
 
-    external_id = f"gdrive-revision:{file_id}:{revision_id}"
+    external_id = idempotency.google_drive_revision(file_id, revision_id)
     content_text = f"{editor} saved a revision of '{file_name}'"
     if isinstance(modified, str) and modified:
         content_text += f" at {modified}"

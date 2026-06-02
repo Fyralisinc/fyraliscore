@@ -35,6 +35,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -175,7 +176,7 @@ def _transaction_draft(txn: dict[str, Any], account_id: str) -> ObservationDraft
         or _parse_iso(txn.get("createdAt"))
         or _utcnow()
     )
-    external_id = f"mercury:{account_id}:txn:{txn_id}:{status}"
+    external_id = idempotency.mercury_transaction(account_id, txn_id, status)
 
     is_state_change = status in _STATE_CHANGE_STATUSES
 
@@ -235,7 +236,7 @@ def _account_snapshot_draft(
         )
     occurred = _parse_iso(as_of) or _utcnow()
     as_of_date = (as_of or occurred.isoformat())[:10]
-    external_id = f"mercury:{account_id}:balance:{as_of_date}"
+    external_id = idempotency.mercury_balance(account_id, as_of_date)
 
     name = account.get("name") or account.get("nickname") or account_id
     available = account.get("availableBalance")

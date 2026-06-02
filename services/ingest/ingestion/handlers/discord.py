@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lib.shared.errors import ValidationError
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -149,7 +150,7 @@ async def handle_discord_webhook(
         kind="signal",
         source_actor_ref=_source_actor_ref(payload),
         external_id=(
-            f"discord:{interaction_id}"
+            idempotency.discord_event(interaction_id)
             if isinstance(interaction_id, str)
             else None
         ),
@@ -266,7 +267,7 @@ async def handle_discord_message(
         trust_tier=CHANNEL_TRUST_MAP[_CHANNEL_MESSAGE],  # type: ignore[arg-type]
         kind="signal",
         source_actor_ref=_message_actor_ref(payload),
-        external_id=f"discord:{message_id}",
+        external_id=idempotency.discord_event(message_id),
         entities_hint=_message_entities_hint(payload),
         raw_payload=payload,
     )

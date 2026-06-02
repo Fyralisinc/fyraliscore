@@ -32,6 +32,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -278,7 +279,9 @@ def _entity_draft(
             "quickbooks entity missing realm_id/Id", channel=_CHANNEL,
         )
     sync_token = str(entity.get("SyncToken") or "0")
-    external_id = f"qbo:{realm_id}:{entity_kind}:{entity_id}:{sync_token}"
+    external_id = idempotency.quickbooks_entity(
+        realm_id, entity_kind, entity_id, sync_token,
+    )
 
     updated = _last_updated(entity)
     occurred = _parse_iso(updated) or _utcnow()
@@ -361,7 +364,9 @@ def _thin_change_draft(
     # The webhook lacks a SyncToken; version by LastUpdatedTime to keep each
     # change event distinct (the poll re-fetch carries the authoritative body).
     ver = last_updated or _utcnow().isoformat()
-    external_id = f"qbo:{realm_id}:{entity_kind}:{entity_id}:chg:{ver}"
+    external_id = idempotency.quickbooks_change(
+        realm_id, entity_kind, entity_id, ver,
+    )
     occurred = _parse_iso(last_updated) or _utcnow()
     op = operation or "Update"
     content_text = f"{entity_kind.replace('_', ' ').title()} #{entity_id} {op.lower()} (live)"
