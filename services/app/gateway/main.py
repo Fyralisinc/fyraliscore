@@ -3006,6 +3006,21 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("gmail_mount_failed", error=str(exc))
 
+        # ---- 4.6 GOOGLE CALENDAR — admin connect wizard -----------
+        # Calendar reuses Gmail's DWD service account, so it mounts under
+        # the same credential gate. It is poll-only (no Pub/Sub webhook),
+        # so only the connect/preflight + connect/finalize router exists.
+        # Isolated try so a Calendar import error can't unmount Gmail.
+        try:
+            from services.ingest.integrations.google_calendar.oauth import (
+                router as _gcal_oauth_router,
+            )
+
+            app_.include_router(_gcal_oauth_router)
+            log.info("google_calendar_router_mounted")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("google_calendar_mount_failed", error=str(exc))
+
     # ---- 5. DEBUG — inspector router -------------------------------
     # Read-only endpoints for /debug UI: signals, think runs, models,
     # acts, renders, cache. Gated by COMPANY_OS_ENV so prod doesn't

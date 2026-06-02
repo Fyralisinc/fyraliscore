@@ -3,8 +3,8 @@
 Per-feature status from the audit: what the code was clearly built to do
 (`expected`), what actually runs today (`status`), and the `gap`. Organized by
 theme (see the [overview](index.md)). Severity reflects impact if the gap is
-unintended. **131 findings total: 21 high (1 resolved — cutover circuit
-breaker), 46 medium (6 resolved — Kafka full-pipeline persistence,
+unintended. **131 findings total: 21 high (2 resolved — cutover circuit
+breaker, Google Calendar install), 46 medium (6 resolved — Kafka full-pipeline persistence,
 `google_drive` async embedding, onboarding progress events, the
 `feels_onboarded_monitor` service, the per-(source,method) API rate limiter,
 and webhook verification metrics), 64 low** — the high/medium are below; low
@@ -69,7 +69,7 @@ discord, gmail, notion, google_calendar, google_drive, jira, mercury, quickbooks
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Google Calendar install | Gateway connect endpoint (like Gmail OAuth) emitting onboarding trigger | `onboarding.connect/finalize` reachable only via `scripts/sandbox_google_calendar.py` → **no gateway router**, install is sandbox-only | high |
+| Google Calendar install | Gateway connect endpoint (like Gmail OAuth) emitting onboarding trigger | **✅ Resolved (2026-06-02).** New `google_calendar/oauth.py` exposes `POST /integrations/google_calendar/connect/{preflight,finalize}` — a DWD connect wizard mirroring `gmail/oauth.py`. `preflight` enumerates the domain via the shared `DirectoryClient` (or returns the client_id + scopes to grant when the DWD grant is missing); `finalize` resolves the inclusion_spec and calls the existing `connect()`/`finalize_install()` to write the install + per-calendar rows + the `onboarding_triggers` row (source='google_calendar') in one transaction. Mounted in the gateway under the same `GMAIL_SERVICE_ACCOUNT_JSON*` DWD gate (Calendar reuses Gmail's service account); poll-only, so no Pub/Sub provisioning. Install is no longer sandbox-only. | ✅ resolved |
 | Google Drive install | Gateway connect endpoint | Same — **no gateway router**, sandbox-only | high |
 | Jira install | A runtime caller that finalizes install + writes `onboarding_triggers` | `finalize_install` invoked only by sandbox scripts/tests → **no production install surface** (unlike Mercury/QBO via `finance_router`) | high |
 | Mercury/QuickBooks install | Production credential-collection install flow | Reachable only through the dev `finance_router` panel (synthetic data, tenant-from-header) → **no genuine prod install flow** | medium |
