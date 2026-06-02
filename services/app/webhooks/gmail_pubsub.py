@@ -125,22 +125,22 @@ async def _maybe_shadow_write_pubsub(
 router = APIRouter(prefix="/webhooks/gmail", tags=["webhooks", "gmail"])
 
 
-def _expected_audience() -> str:
-    aud = os.environ.get("GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE") or os.environ.get(
+def _expected_audience() -> str | None:
+    return os.environ.get("GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE") or os.environ.get(
         "GMAIL_PUBSUB_PUSH_ENDPOINT"
     )
-    if not aud:
-        raise RuntimeError(
-            "GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE / GMAIL_PUBSUB_PUSH_ENDPOINT not set",
-        )
-    return aud
 
 
-def _expected_email() -> str:
-    email = os.environ.get("GMAIL_PUBSUB_PUSH_OIDC_SA")
-    if not email:
-        raise RuntimeError("GMAIL_PUBSUB_PUSH_OIDC_SA not set")
-    return email
+def _expected_email() -> str | None:
+    return os.environ.get("GMAIL_PUBSUB_PUSH_OIDC_SA")
+
+
+def is_pubsub_configured() -> bool:
+    """The push ingress can only VERIFY a notification when the OIDC audience
+    + push-SA env are set. The route is always mounted (so Google's pushes hit
+    a real endpoint instead of a silent 404), but it reports `not_configured`
+    rather than verifying garbage when the env is absent."""
+    return bool(_expected_audience() and _expected_email())
 
 
 @router.post("/pubsub")
@@ -148,6 +148,27 @@ async def gmail_pubsub_push(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
+    audience = _expected_audience()
+    email = _expected_email()
+    if not audience or not email:
+        # Explicit, observable signal — never a silent skip or a 500 crash.
+        # 503 so an unconfigured deployment is distinguishable from a bad token
+        # (401) and Pub/Sub treats it as retryable until the env is set.
+        log.warning(
+            "gmail.pubsub.not_configured",
+            missing=[
+                k for k, v in (
+                    ("GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE", audience),
+                    ("GMAIL_PUBSUB_PUSH_OIDC_SA", email),
+                ) if not v
+            ],
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_configured",
+                     "reason": "gmail_pubsub_oidc_env_missing"},
+        )
+
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     token = authorization[len("bearer "):].strip()
@@ -155,8 +176,8 @@ async def gmail_pubsub_push(
     try:
         await verify_pubsub_oidc_token(
             token=token,
-            expected_audience=_expected_audience(),
-            expected_email=_expected_email(),
+            expected_audience=audience,
+            expected_email=email,
         )
     except GoogleOidcError as exc:
         log.warning("gmail.pubsub.oidc_invalid", error=str(exc)[:200])
@@ -249,4 +270,4 @@ async def gmail_pubsub_push(
     return JSONResponse(content=result)
 
 
-__all__ = ["router"]
+__all__ = ["is_pubsub_configured", "router"]

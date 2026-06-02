@@ -3019,19 +3019,39 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("sim_mount_failed", error=str(exc))
 
-    # ---- 4.5 GMAIL — admin connect + Pub/Sub push webhook ----------
-    # Wired only when DWD credentials are configured. Skipping prevents
-    # noisy boot errors in dev when Gmail isn't yet provisioned.
+    # ---- 4.4 GMAIL Pub/Sub push ingress (always mounted) ----------
+    # The webhook ingress mounts UNCONDITIONALLY so Google's pushes always
+    # hit a real endpoint (never a silent 404). When the OIDC env isn't set
+    # the route returns an explicit 503 `not_configured` rather than 500 —
+    # the readiness is observable, not silently skipped. Decoupled from the
+    # DWD-credential gate below (which the connect wizards genuinely need).
+    try:
+        from services.app.webhooks.gmail_pubsub import (
+            is_pubsub_configured,
+            router as _gmail_pubsub_router,
+        )
+
+        app_.include_router(_gmail_pubsub_router)
+        if is_pubsub_configured():
+            log.info("gmail_pubsub_ingress_mounted", configured=True)
+        else:
+            # Explicit signal — the ingress exists but can't verify until the
+            # OIDC env (GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE + _SA) is set.
+            log.warning("gmail_pubsub_ingress_mounted_unconfigured", configured=False)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("gmail_pubsub_mount_failed", error=str(exc))
+
+    # ---- 4.5 GMAIL — admin connect wizard --------------------------
+    # The DWD connect wizard genuinely needs the service-account JSON, so it
+    # stays gated. When absent we log explicitly (no silent skip).
     if (
         os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON_FILE")
         or os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON")
     ):
         try:
             from services.ingest.integrations.gmail.oauth import router as _gmail_oauth_router
-            from services.app.webhooks.gmail_pubsub import router as _gmail_pubsub_router
 
             app_.include_router(_gmail_oauth_router)
-            app_.include_router(_gmail_pubsub_router)
             log.info("gmail_routers_mounted")
         except Exception as exc:  # noqa: BLE001
             log.warning("gmail_mount_failed", error=str(exc))
