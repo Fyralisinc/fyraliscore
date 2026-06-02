@@ -3021,6 +3021,19 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("google_calendar_mount_failed", error=str(exc))
 
+        # ---- 4.7 GOOGLE DRIVE — admin connect wizard --------------
+        # Same posture as Calendar: reuses Gmail's DWD service account and is
+        # poll-only (changes-API delta, no push channel). Isolated try.
+        try:
+            from services.ingest.integrations.google_drive.oauth import (
+                router as _gdrive_oauth_router,
+            )
+
+            app_.include_router(_gdrive_oauth_router)
+            log.info("google_drive_router_mounted")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("google_drive_mount_failed", error=str(exc))
+
     # ---- 5. DEBUG — inspector router -------------------------------
     # Read-only endpoints for /debug UI: signals, think runs, models,
     # acts, renders, cache. Gated by COMPANY_OS_ENV so prod doesn't
