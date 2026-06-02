@@ -191,14 +191,16 @@ scale the all-sources singletons to 0.
 
 ## Known follow-ups (deliberately deferred)
 
-- **Circuit breaker per-source lag.** `services/ingest/ingestion/feature_flags/
-  circuit_breaker.py` measures consumer lag on a single `raw_topic`. With
-  per-source raw topics, a tenant can lag on one source's lane while healthy on
-  another. The breaker should measure lag across every
-  `topics_for_stage("raw")` lane (per-source consumer groups) and trip on the
-  worst-case lane. Left at the legacy `raw_topic` it fails SAFE (never
-  false-trips) but is inert. It's a cutover-era safety net, separate from
-  steady-state isolation — deferred, not forgotten.
+- **Circuit breaker per-source lag.** ✅ RESOLVED. `services/ingest/ingestion/
+  feature_flags/circuit_breaker.py` now measures consumer lag on every
+  `ingestion.raw.<source>` lane against its per-source normalizer group
+  (`normalizer.<source>`, derived from `topics.consumer_group`) and trips a
+  tenant on its **worst lane** — one lagging source lane is enough to pull the
+  whole tenant back to inline (the `kafka_path_enabled` flag is per-tenant, not
+  per-source). It runs as the `circuit_breaker` singleton in
+  `docker-compose.yml`. The traffic-signal record already carries `source`, so
+  the active-tenant sampler maps each tenant to the exact `(source, partition)`
+  lanes it is on.
 - **Per-source topic auto-provisioning on source addition.** Adding a source to
   `SourceLiteral` makes its four topics appear in the registry automatically,
   but the provisioner must be re-run on deploy to create them (auto-create is

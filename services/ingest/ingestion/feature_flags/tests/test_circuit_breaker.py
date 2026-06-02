@@ -72,15 +72,34 @@ async def _seed_tenant(pool: asyncpg.Pool, name: str | None = None) -> UUID:
     return tid
 
 
-def _make_lag_fn(lag_per_partition: dict[int, float]):
-    async def _f(**_kwargs: Any) -> dict[int, float]:
-        return dict(lag_per_partition)
+def _make_lag_fn(lag_per_partition: dict[int, float], source: str = "slack"):
+    """Wrap a single-lane ``{partition: lag}`` map as the per-source reader the
+    breaker now expects: ``{source: {partition: lag}}``. Defaulting to one
+    source keeps the single-lane state-machine tests focused; the multi-source
+    worst-case behaviour has its own test (`_make_lag_fn_multi`)."""
+    async def _f(**_kwargs: Any) -> dict[str, dict[int, float]]:
+        return {source: dict(lag_per_partition)}
     return _f
 
 
-def _make_active_fn(active: dict[UUID, int]):
-    async def _f(**_kwargs: Any) -> dict[UUID, int]:
-        return dict(active)
+def _make_lag_fn_multi(lag_by_source: dict[str, dict[int, float]]):
+    """Explicit per-source lag reader: ``{source: {partition: lag}}``."""
+    async def _f(**_kwargs: Any) -> dict[str, dict[int, float]]:
+        return {s: dict(parts) for s, parts in lag_by_source.items()}
+    return _f
+
+
+def _make_active_fn(active: dict[UUID, int], source: str = "slack"):
+    """Wrap ``{tenant: partition}`` as ``{tenant: {source: partition}}``."""
+    async def _f(**_kwargs: Any) -> dict[UUID, dict[str, int]]:
+        return {tid: {source: part} for tid, part in active.items()}
+    return _f
+
+
+def _make_active_fn_multi(active: dict[UUID, dict[str, int]]):
+    """Explicit per-source active map: ``{tenant: {source: partition}}``."""
+    async def _f(**_kwargs: Any) -> dict[UUID, dict[str, int]]:
+        return {tid: dict(lanes) for tid, lanes in active.items()}
     return _f
 
 
@@ -112,8 +131,7 @@ def _config(**overrides: Any) -> BreakerConfig:
         "tick_interval_sec": 0.01,    # tests don't sleep
         "breach_threshold_sec": 60,
         "breach_window_ticks": 5,
-        "raw_topic": "ingestion.raw",
-        "consumer_group": "ingestion-normalizer",
+        "normalizer_group_base": "normalizer",
         "signal_topic": "ingestion.tenant_traffic_signal",
         "signal_lookback_sec": 90,
         "kafka_bootstrap": "irrelevant-for-test",
@@ -575,8 +593,8 @@ async def test_breaker_state_survives_restart(fresh_db: asyncpg.Pool) -> None:
     tenant_id = await _seed_tenant(fresh_db, "subproc-test")
     instance_name = f"subproc-{tenant_id.hex[:8]}"
 
-    fake_lag = json.dumps({"0": 120.0})
-    fake_active = json.dumps({str(tenant_id): 0})
+    fake_lag = json.dumps({"slack": {"0": 120.0}})
+    fake_active = json.dumps({str(tenant_id): {"slack": 0}})
 
     env = os.environ.copy()
     env["DATABASE_URL"] = os.environ["DATABASE_URL"]
@@ -683,3 +701,66 @@ async def test_breaker_state_survives_restart(fresh_db: asyncpg.Pool) -> None:
         tenant_id, KAFKA_PATH_ENABLED,
     )
     assert row["set_by"] == "auto:circuit_breaker"
+
+
+# =====================================================================
+# 10. Worst-case across source lanes: a tenant lagging on ONE source
+#     lane trips even while healthy on another (source isolation).
+#     This is the behaviour the source-isolation follow-up added —
+#     before it, a single legacy `ingestion.raw` topic was measured and
+#     the breaker was inert post per-source split.
+# =====================================================================
+
+async def test_breaker_trips_on_worst_source_lane(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A tenant active on two source lanes — `github` healthy (5s) but
+    `slack` breached (120s) — trips on the worst lane. The alert records
+    the breached source, and a tenant healthy on ALL its lanes never trips.
+    """
+    tenant_worst = await _seed_tenant(fresh_db, "tenant-worst-lane")
+    tenant_healthy = await _seed_tenant(fresh_db, "tenant-all-healthy")
+    flags = TenantFlags(fresh_db)
+    alerts, alert_fn = _make_alert_recorder()
+    config = _config()
+    state: dict[UUID, _TenantBreachState] = {}
+
+    # slack lane partition 0 is breached; github lane partition 0 healthy.
+    lag_fn = _make_lag_fn_multi({
+        "slack": {0: 120.0},
+        "github": {0: 5.0},
+    })
+    active_fn = _make_active_fn_multi({
+        # active on BOTH lanes — the worst (slack) governs the decision.
+        tenant_worst: {"slack": 0, "github": 0},
+        # active only on the healthy github lane.
+        tenant_healthy: {"github": 0},
+    })
+
+    for _ in range(5):
+        await _process_tick(
+            config=config, pool=fresh_db, tenant_flags=flags,
+            state=state, measure_lag_fn=lag_fn,
+            active_tenants_fn=active_fn, alert_fn=alert_fn,
+        )
+
+    # Worst-lane tenant tripped; the all-healthy tenant did not.
+    assert await _read_flag(fresh_db, tenant_worst) is False, (
+        "Tenant lagging on its slack lane did not trip — worst-case "
+        "across source lanes is not being computed."
+    )
+    assert await _read_flag(fresh_db, tenant_healthy) is None, (
+        "Tenant healthy on all its active lanes was tripped — false trip."
+    )
+
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_worst].tripped is True
+    assert loaded[tenant_healthy].consecutive_breach_ticks == 0
+    assert loaded[tenant_healthy].tripped is False
+
+    # Exactly one alert, naming the breached lane + its lag.
+    assert len(alerts) == 1
+    assert alerts[0][0] == tenant_worst
+    assert alerts[0][1]["source"] == "slack"
+    assert alerts[0][1]["lag_seconds"] == 120.0
+    assert alerts[0][1]["active_lanes"] == 2

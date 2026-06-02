@@ -8,10 +8,16 @@ Per ingestion LLD §11.2 (cutover circuit breaker workflow) +
 
 Long-running asyncio service. Every `tick_interval_sec` (default 60s):
 
-  1. Measure consumer-group lag on `ingestion.raw` per partition.
+  1. Measure consumer-group lag on EVERY per-source raw lane
+     (`ingestion.raw.<source>`) against its per-source normalizer group
+     (`normalizer.<source>`) — the data plane is source-isolated, so a
+     tenant can lag on one source's lane while healthy on another.
   2. Sample active tenants from `ingestion.tenant_traffic_signal`
-     (the 1% deterministic-hash signal topic; LLD §11.3).
-  3. For each active tenant, check whether its partition's lag
+     (the 1% deterministic-hash signal topic; LLD §11.3). Each signal
+     carries the tenant's `(source, raw_partition)` so the breaker knows
+     which lanes a tenant is actually on.
+  3. For each active tenant, take its WORST lane — the maximum lag across
+     every (source, partition) it is active on — and check whether that
      exceeds `breach_threshold_sec` (default 60s).
   4. Update per-tenant breach-window counter:
        — In active set AND breached → counter += 1
@@ -149,24 +155,24 @@ class BreakerConfig:
     tick_interval_sec: float = 60.0
     breach_threshold_sec: int = 60   # lag > this = breach for the tick
     breach_window_ticks: int = 5     # 5 consecutive breaches = trip
-    # The raw-topic + consumer-group + signal-topic names line up
-    # with the LLD §5.2 + §11.3 wire contract; do not change without
-    # the LLD changing in lockstep.
+    # SOURCE-ISOLATED LAG MEASUREMENT (resolves the source-isolation
+    # follow-up in docs/ingestion/source-isolation.md). The raw stage is
+    # split into per-source topics `ingestion.raw.<source>`, each consumed
+    # by a per-source normalizer group `<normalizer_group_base>.<source>`
+    # (see services.ingest.ingestion.kafka.topics). The breaker derives the
+    # full topic+group set from that module, measures lag on every lane, and
+    # trips a tenant on its WORST lane — so a single lagging source lane is
+    # enough to pull the tenant back to inline, while a tenant healthy on all
+    # its active lanes is never false-tripped.
     #
-    # SOURCE-ISOLATION FOLLOW-UP (docs/ingestion/source-isolation.md
-    # "Known follow-ups"): the raw stage is now split into per-source
-    # topics (ingestion.raw.<source>), so a single `raw_topic` no longer
-    # captures a tenant's lag — a tenant can be lagging on one source's
-    # lane while healthy on another. Adapting the breaker means measuring
-    # lag across every per-source raw topic (see
-    # services.ingest.ingestion.kafka.topics.topics_for_stage("raw")) and per-
-    # source consumer groups, then tripping on the worst-case lane.
-    # Until that lands, a `raw_topic` left at the legacy name measures a
-    # topic that no longer receives traffic — the breaker fails SAFE
-    # (never false-trips) but is inert. Deferred deliberately: the breaker
-    # is a cutover-era safety net, separate from steady-state isolation.
-    raw_topic: str = "ingestion.raw"
-    consumer_group: str = "ingestion-normalizer"
+    # `normalizer_group_base` is the normalizer worker's bare consumer-group
+    # id (WorkerConfig.consumer_group, "normalizer"); the per-source groups
+    # are built via topics.consumer_group(base, source). Keep it in lockstep
+    # with the normalizer.
+    #
+    # The signal topic is CONTROL-plane (per-tenant, not per-source) and so
+    # stays a single topic; its records carry the source in the payload.
+    normalizer_group_base: str = "normalizer"
     signal_topic: str = "ingestion.tenant_traffic_signal"
     signal_lookback_sec: int = 90    # read this much recent signal data
     kafka_bootstrap: str = "localhost:9092"
@@ -257,42 +263,78 @@ async def make_breaker_pool(
 # Default Kafka measurement functions — production wiring.
 # Tests inject mocks instead of calling these.
 # ---------------------------------------------------------------------
-LagPerPartitionFn = Callable[..., Awaitable[dict[int, float]]]
-ActiveTenantsFn = Callable[..., Awaitable[dict[UUID, int]]]
+# lag map is keyed source -> {partition: lag_seconds}; active map is keyed
+# tenant -> {source: raw_partition} (a tenant can be active on >1 source lane).
+LagPerSourceFn = Callable[..., Awaitable[dict[str, dict[int, float]]]]
+ActiveTenantsFn = Callable[..., Awaitable[dict[UUID, dict[str, int]]]]
 AlertFn = Callable[[UUID, dict[str, Any]], Awaitable[None]]
 
 
 async def _measure_kafka_lag_default(
     *,
     bootstrap: str,
-    topic: str,
-    consumer_group: str,
-) -> dict[int, float]:
-    """M-Load: real Kafka lag reader via confluent_kafka.AdminClient.
+    normalizer_group_base: str,
+) -> dict[str, dict[int, float]]:
+    """M-Load: real per-source Kafka lag reader via confluent_kafka.
 
-    Returns `{partition: lag_seconds}`. Lag-in-seconds is computed by
-    correlating the consumer group's committed offset to its
-    broker-side message timestamp:
-      1. AdminClient.list_consumer_group_offsets → committed per partition.
-      2. For each partition: get_watermark_offsets → (low, high).
-         lag_messages = high - committed.
-      3. To convert to seconds, consume one message AT the committed
-         offset and read its CreateTime; lag_seconds = now - createtime.
-         (Skipped if committed == high; partition is caught up; 0s.)
+    Returns ``{source: {partition: lag_seconds}}`` — one inner map per
+    ``ingestion.raw.<source>`` lane, measured against the normalizer's
+    per-source consumer group ``<normalizer_group_base>.<source>``. A source
+    with no committed offsets yet (no traffic) maps to ``{}``.
 
-    Step 3 is expensive but operators want time, not messages. Tests
-    rebind this function with a mock for unit work; production wires
-    a real bootstrap.
+    The topic+group pairs are derived from
+    `services.ingest.ingestion.kafka.topics`, so the breaker can never drift
+    from the data plane's actual lane set: add a source to the envelope
+    literal and a new lane is measured automatically. A single AdminClient +
+    probe Consumer are reused across all lanes. Tests rebind this with a mock.
     """
     # Lazy import — confluent_kafka is a heavy dep; not all callers need it.
-    from confluent_kafka.admin import AdminClient, ConsumerGroupTopicPartitions, TopicPartition
-    from confluent_kafka import Consumer, KafkaError
+    from confluent_kafka.admin import AdminClient
+    from confluent_kafka import Consumer
+
+    from services.ingest.ingestion.kafka.topics import (
+        INGESTION_SOURCES,
+        consumer_group as _consumer_group,
+        topic_for,
+    )
 
     admin = AdminClient({"bootstrap.servers": bootstrap})
+    probe = Consumer({
+        "bootstrap.servers": bootstrap,
+        "group.id": f"{normalizer_group_base}-lagprobe",
+        "enable.auto.commit": False,
+    })
+    try:
+        out: dict[str, dict[int, float]] = {}
+        for source in INGESTION_SOURCES:
+            topic = topic_for("raw", source)
+            group = _consumer_group(normalizer_group_base, source)
+            out[source] = _measure_topic_lag_seconds(admin, probe, topic, group)
+        return out
+    finally:
+        probe.close()
+
+
+def _measure_topic_lag_seconds(
+    admin: Any, consumer: Any, topic: str, group: str,
+) -> dict[int, float]:
+    """Lag-in-seconds for one (topic, consumer-group), returned as
+    ``{partition: lag_seconds}`` (empty if the group has no committed offsets
+    on the topic). Synchronous confluent calls; correlates committed offset
+    to broker-side message timestamp:
+      1. AdminClient.list_consumer_group_offsets → committed per partition.
+      2. get_watermark_offsets → (low, high); lag_messages = high - committed.
+      3. Consume one message AT the committed offset, read its CreateTime;
+         lag_seconds = now - createtime. (0s if committed == high.)
+    """
+    from confluent_kafka.admin import ConsumerGroupTopicPartitions
+    from confluent_kafka import TopicPartition
+    import time as _time
+
     # 1. Committed offsets for this group on this topic.
-    cgtp = ConsumerGroupTopicPartitions(consumer_group, topic_partitions=None)
+    cgtp = ConsumerGroupTopicPartitions(group, topic_partitions=None)
     fut = admin.list_consumer_group_offsets([cgtp])
-    result = fut[consumer_group].result(timeout=10.0)
+    result = fut[group].result(timeout=10.0)
     committed_by_partition: dict[int, int] = {}
     for tp in result.topic_partitions:
         if tp.topic == topic and tp.offset >= 0:
@@ -300,39 +342,30 @@ async def _measure_kafka_lag_default(
     if not committed_by_partition:
         return {}
 
-    # 2. Watermark (high) offsets per partition.
-    consumer = Consumer({
-        "bootstrap.servers": bootstrap,
-        "group.id": f"{consumer_group}-lagprobe",
-        "enable.auto.commit": False,
-    })
-    try:
-        out: dict[int, float] = {}
-        import time as _time
-        for partition, committed in committed_by_partition.items():
-            low, high = consumer.get_watermark_offsets(
-                TopicPartition(topic, partition), timeout=5.0,
-            )
-            if committed >= high:
-                out[partition] = 0.0
-                continue
-            # 3. Read one message at `committed` to get its timestamp.
-            consumer.assign([TopicPartition(topic, partition, committed)])
-            msg = consumer.poll(timeout=5.0)
-            if msg is None or msg.error():
-                # Couldn't read; conservative — report 0 to avoid spurious
-                # alerts. Operator runbook (m-load-runbook.md) explains.
-                out[partition] = 0.0
-                continue
-            ts_kind, ts_ms = msg.timestamp()
-            if ts_ms <= 0:
-                out[partition] = 0.0
-                continue
-            now_ms = int(_time.time() * 1000)
-            out[partition] = max(0.0, (now_ms - ts_ms) / 1000.0)
-        return out
-    finally:
-        consumer.close()
+    # 2 + 3. Watermark (high) offsets + message-timestamp probe per partition.
+    out: dict[int, float] = {}
+    for partition, committed in committed_by_partition.items():
+        low, high = consumer.get_watermark_offsets(
+            TopicPartition(topic, partition), timeout=5.0,
+        )
+        if committed >= high:
+            out[partition] = 0.0
+            continue
+        # Read one message at `committed` to get its timestamp.
+        consumer.assign([TopicPartition(topic, partition, committed)])
+        msg = consumer.poll(timeout=5.0)
+        if msg is None or msg.error():
+            # Couldn't read; conservative — report 0 to avoid spurious
+            # alerts. Operator runbook (m-load-runbook.md) explains.
+            out[partition] = 0.0
+            continue
+        ts_kind, ts_ms = msg.timestamp()
+        if ts_ms <= 0:
+            out[partition] = 0.0
+            continue
+        now_ms = int(_time.time() * 1000)
+        out[partition] = max(0.0, (now_ms - ts_ms) / 1000.0)
+    return out
 
 
 async def _sample_active_tenants_default(
@@ -340,14 +373,15 @@ async def _sample_active_tenants_default(
     bootstrap: str,
     signal_topic: str,
     lookback_sec: int,
-) -> dict[UUID, int]:
+) -> dict[UUID, dict[str, int]]:
     """M-Load: real Kafka consumer reading the traffic-signal topic.
 
     Reads back `lookback_sec` of `ingestion.tenant_traffic_signal`,
-    returns `{tenant_id: partition}` mapping for tenants that emitted
-    signals in the window. M5.3's `traffic_signal.py` produces these
-    signals with `key=tenant_id_bytes` and a JSON value containing
-    `raw_partition`.
+    returns `{tenant_id: {source: raw_partition}}` for tenants that emitted
+    signals in the window — capturing every source lane a tenant was active
+    on, so the breaker can take the worst-case lag across them.
+    `traffic_signal.py` produces these signals with `key=tenant_id_bytes`
+    and a JSON value carrying `source` + `raw_partition`.
     """
     from confluent_kafka import Consumer, TopicPartition
     import json
@@ -381,7 +415,7 @@ async def _sample_active_tenants_default(
             return {}
         consumer.assign(assignments)
 
-        out: dict[UUID, int] = {}
+        out: dict[UUID, dict[str, int]] = {}
         deadline = _time.monotonic() + 5.0  # 5s read budget
         while _time.monotonic() < deadline:
             msg = consumer.poll(timeout=0.5)
@@ -395,9 +429,16 @@ async def _sample_active_tenants_default(
             try:
                 payload = json.loads(msg.value())
                 tenant_id_raw = payload.get("tenant_id")
+                source = payload.get("source")
                 raw_partition = int(payload.get("raw_partition", 0))
                 tid = UUID(tenant_id_raw)
-                out[tid] = raw_partition
+                if not isinstance(source, str) or not source:
+                    # Pre-source-split signal (or malformed) — can't map it to
+                    # a lane, so skip rather than guess.
+                    continue
+                # Last writer wins for a (tenant, source); the breaker only
+                # needs which partition the lane is on, not every sample.
+                out.setdefault(tid, {})[source] = raw_partition
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
         return out
@@ -445,13 +486,13 @@ async def _process_tick(
     pool: asyncpg.Pool,
     tenant_flags: TenantFlags,
     state: dict[UUID, _TenantBreachState],
-    measure_lag_fn: LagPerPartitionFn,
+    measure_lag_fn: LagPerSourceFn,
     active_tenants_fn: ActiveTenantsFn,
     alert_fn: AlertFn,
     now: dt.datetime | None = None,
 ) -> None:
-    """One tick: measure lag → sample active tenants → update state →
-    flip flags + alert on sustained breach. Mutates `state` in place
+    """One tick: measure per-source lag → sample active tenants → update
+    state → flip flags + alert on sustained breach. Mutates `state` in place
     AND persists every modified row to Postgres before returning.
 
     Extracted from `run_circuit_breaker` so unit tests can drive
@@ -460,12 +501,11 @@ async def _process_tick(
     now = now or dt.datetime.now(tz=dt.timezone.utc)
     _bump("breaker.ticks")
 
-    # Step 1: measure lag per partition.
+    # Step 1: measure lag per (source, partition) across every raw lane.
     try:
-        lag_per_partition = await measure_lag_fn(
+        lag_per_source = await measure_lag_fn(
             bootstrap=config.kafka_bootstrap,
-            topic=config.raw_topic,
-            consumer_group=config.consumer_group,
+            normalizer_group_base=config.normalizer_group_base,
         )
     except Exception as exc:  # noqa: BLE001
         _bump("breaker.lag_measurement_failures")
@@ -493,7 +533,7 @@ async def _process_tick(
     _bump("breaker.active_tenants_sampled", float(len(active)))
 
     # Step 3 + 4: update per-tenant breach state.
-    for tenant_id, partition in active.items():
+    for tenant_id, source_partitions in active.items():
         # Read the current cutover flag. Drives two behaviours:
         #   (1) Filtering: tenants whose flag is already FALSE are not
         #       candidates for breach detection — there's nothing to
@@ -553,8 +593,20 @@ async def _process_tick(
             )
             state[tenant_id] = entry
 
-        partition_lag = lag_per_partition.get(partition, 0.0)
-        breached = partition_lag > config.breach_threshold_sec
+        # Worst-case lane: take the maximum lag across every (source,
+        # partition) this tenant is active on. One lagging lane is enough to
+        # breach — the tenant's flag is a single per-tenant switch, so the
+        # breaker pulls the whole tenant back to inline on its worst lane.
+        worst_lag = 0.0
+        worst_source: str | None = None
+        worst_partition: int | None = None
+        for src, part in source_partitions.items():
+            lane_lag = lag_per_source.get(src, {}).get(part, 0.0)
+            if worst_source is None or lane_lag > worst_lag:
+                worst_lag = lane_lag
+                worst_source = src
+                worst_partition = part
+        breached = worst_lag > config.breach_threshold_sec
 
         if breached:
             entry.consecutive_breach_ticks += 1
@@ -587,8 +639,10 @@ async def _process_tick(
                     set_by="auto:circuit_breaker",
                     note=(
                         f"lag>{config.breach_threshold_sec}s for "
-                        f"{config.breach_window_ticks} consecutive ticks "
-                        f"on partition {partition}"
+                        f"{config.breach_window_ticks} consecutive ticks on "
+                        f"worst lane source={worst_source} "
+                        f"partition={worst_partition} "
+                        f"({len(source_partitions)} active lane(s))"
                     ),
                 )
             except Exception:  # noqa: BLE001
@@ -605,10 +659,12 @@ async def _process_tick(
             _bump("breaker.trips")
             try:
                 await alert_fn(tenant_id, {
-                    "partition": partition,
-                    "lag_seconds": partition_lag,
+                    "source": worst_source,
+                    "partition": worst_partition,
+                    "lag_seconds": worst_lag,
                     "threshold_seconds": config.breach_threshold_sec,
                     "window_ticks": config.breach_window_ticks,
+                    "active_lanes": len(source_partitions),
                     "tripped_at": now.isoformat(),
                 })
             except Exception:  # noqa: BLE001
@@ -629,7 +685,7 @@ async def run_circuit_breaker(
     pool: asyncpg.Pool,
     *,
     tenant_flags: TenantFlags,
-    measure_lag_fn: LagPerPartitionFn = _measure_kafka_lag_default,
+    measure_lag_fn: LagPerSourceFn = _measure_kafka_lag_default,
     active_tenants_fn: ActiveTenantsFn = _sample_active_tenants_default,
     alert_fn: AlertFn = _default_alert,
     stop_event: asyncio.Event | None = None,
@@ -695,6 +751,9 @@ def main() -> None:
         breach_window_ticks=int(
             os.environ.get("BREAKER_WINDOW_TICKS", "5")
         ),
+        normalizer_group_base=os.environ.get(
+            "BREAKER_NORMALIZER_GROUP_BASE", "normalizer"
+        ),
         kafka_bootstrap=os.environ.get(
             "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"
         ),
@@ -708,21 +767,27 @@ def main() -> None:
     fake_active_env = os.environ.get("M5_BREAKER_FAKE_ACTIVE_TENANTS")
 
     if fake_lag_env is not None:
-        # Format: '{"0": 120.5, "1": 30.0}'
-        fake_lag = {int(k): float(v) for k, v in json.loads(fake_lag_env).items()}
+        # Format: '{"slack": {"0": 120.5, "1": 30.0}}'  (source -> partition -> lag)
+        fake_lag = {
+            src: {int(p): float(lag) for p, lag in parts.items()}
+            for src, parts in json.loads(fake_lag_env).items()
+        }
 
-        async def _fake_lag(**_kwargs: Any) -> dict[int, float]:
-            return dict(fake_lag)
-        measure_lag_fn: LagPerPartitionFn = _fake_lag
+        async def _fake_lag(**_kwargs: Any) -> dict[str, dict[int, float]]:
+            return {src: dict(parts) for src, parts in fake_lag.items()}
+        measure_lag_fn: LagPerSourceFn = _fake_lag
     else:
         measure_lag_fn = _measure_kafka_lag_default
 
     if fake_active_env is not None:
-        # Format: '{"<uuid>": 0, "<uuid>": 1}'
-        fake_active = {UUID(k): int(v) for k, v in json.loads(fake_active_env).items()}
+        # Format: '{"<uuid>": {"slack": 0, "github": 1}}'  (tenant -> source -> partition)
+        fake_active = {
+            UUID(k): {src: int(p) for src, p in lanes.items()}
+            for k, lanes in json.loads(fake_active_env).items()
+        }
 
-        async def _fake_active(**_kwargs: Any) -> dict[UUID, int]:
-            return dict(fake_active)
+        async def _fake_active(**_kwargs: Any) -> dict[UUID, dict[str, int]]:
+            return {tid: dict(lanes) for tid, lanes in fake_active.items()}
         active_tenants_fn: ActiveTenantsFn = _fake_active
     else:
         active_tenants_fn = _sample_active_tenants_default
