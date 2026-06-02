@@ -917,6 +917,22 @@ def build_app(
     except Exception as exc:  # noqa: BLE001 — never block startup
         log.error("jira_router_mount_failed", error=str(exc))
 
+    # Mercury + QuickBooks — production install surfaces
+    # (/integrations/{mercury,quickbooks}/connect/*). Bearer-authed credential
+    # wizards that verify the real token/realm, store it encrypted, then
+    # finalize_install + register the webhook edge. These are genuine prod
+    # surfaces (distinct from the synthetic /finance dev panel below) and so
+    # mount unconditionally. Isolated try so a mount error can't block startup.
+    try:
+        from services.ingest.integrations.mercury.oauth import router as _mercury_router
+        from services.ingest.integrations.quickbooks.oauth import router as _qbo_router
+
+        app.include_router(_mercury_router)
+        app.include_router(_qbo_router)
+        log.info("finance_install_routers_mounted")
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        log.error("finance_install_routers_mount_failed", error=str(exc))
+
     # Finance testing control plane (Mercury + QuickBooks): install / backfill /
     # live-emit / status for the UI panel. On by default (the testing
     # deliverable); set FINANCE_PANEL_ENABLED=0 to disable in real prod.
