@@ -180,6 +180,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 # session-minting endpoint itself uses a separate actor lookup).
 _PUBLIC_PATHS = frozenset({
     "/healthz",
+    # Prometheus scrape path for the webhook verification/resolver
+    # counters (FR-011). Scrapers carry no Bearer token, and the data is
+    # bounded-enum counters with no tenant/installation labels (FR-015).
+    "/metrics",
     "/auth/session",
     # IN-08: the OAuth callback is public (state-token-authed inside
     # the handler). The /install route stays Bearer-required, so it is
@@ -1008,6 +1012,20 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        """Prometheus scrape endpoint for the webhook verification +
+        tenant-resolver counters (FR-011 / FR-018). Hand-rolled text
+        exposition — no prometheus_client dep. Public (allowlisted in
+        `_PUBLIC_PATHS`) because scrapers don't carry a Bearer token and
+        the counters are non-sensitive bounded enums."""
+        from services.app.webhooks import metrics as webhook_metrics
+
+        return Response(
+            content=webhook_metrics.render_prometheus(),
+            media_type="text/plain; version=0.0.4",
+        )
 
     @app.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:

@@ -154,21 +154,29 @@ def get_resolver_cache_count(provider: str, result: str) -> int:
         return _resolver_cache.get((provider, result), 0)
 
 
+def _p95_nearest_rank(samples: list[float]) -> float | None:
+    """p95 by the nearest-rank method: sort, pick the ⌈0.95 * N⌉-th item.
+
+    Pure (takes its own copy of the data) so callers can invoke it
+    OUTSIDE `_lock` — important because `_lock` is a non-reentrant
+    `threading.Lock` and `render_prometheus` already holds a snapshot.
+    """
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    n = len(ordered)
+    # Nearest-rank for p95: index = ceil(0.95 * N) - 1, clamped.
+    idx = max(0, min(n - 1, -(-95 * n // 100) - 1))
+    return ordered[idx]
+
+
 def resolver_duration_p95(provider: str) -> float | None:
     """Return p95 of stored samples for this provider, or None if no
     samples exist.
-
-    Uses the nearest-rank method: sort, pick the ⌈0.95 * N⌉-th item.
     """
     with _lock:
         samples = list(_resolver_samples.get(provider, ()))
-    if not samples:
-        return None
-    samples.sort()
-    # Nearest-rank for p95: index = ceil(0.95 * N) - 1, clamped.
-    n = len(samples)
-    idx = max(0, min(n - 1, -(-95 * n // 100) - 1))
-    return samples[idx]
+    return _p95_nearest_rank(samples)
 
 
 def snapshot_resolver() -> dict[str, dict[tuple[str, str], int]]:
@@ -181,6 +189,113 @@ def snapshot_resolver() -> dict[str, dict[tuple[str, str], int]]:
             "outcomes": dict(_resolver_outcomes),
             "cache": dict(_resolver_cache),
         }
+
+
+# ---------------------------------------------------------------------
+# Prometheus text exposition (FR-011 scrape path).
+#
+# The in-process counters above were recorded but never exported, so ops
+# dashboards had no scrape path. This renderer emits every counter family
+# in Prometheus text format (version 0.0.4) for the gateway's GET /metrics
+# route to serve. Hand-rolled text — NO prometheus_client dependency —
+# mirroring services/ingest/ingestion/observability.py, so the
+# constitution's "don't add a Prometheus client until there's a second
+# caller" principle (X) still holds.
+#
+# Cardinality note: every label here is a bounded enum (provider × a small
+# reason/outcome/result set). installation_id / tenant_id are NEVER labels
+# (FR-015). The counters are per-process; a single-process gateway is the
+# deployment assumption (multiprocess aggregation is a future concern).
+# ---------------------------------------------------------------------
+
+def _escape_label_value(value: str) -> str:
+    """Escape a Prometheus label value: backslash, double-quote, newline."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+    )
+
+
+def _counter_lines(
+    name: str,
+    help_text: str,
+    label_names: tuple[str, ...],
+    data: Mapping[tuple[str, str], int],
+) -> list[str]:
+    out = [f"# HELP {name} {help_text}", f"# TYPE {name} counter"]
+    for key, value in sorted(data.items()):
+        labels = ",".join(
+            f'{ln}="{_escape_label_value(lv)}"'
+            for ln, lv in zip(label_names, key)
+        )
+        out.append(f"{name}{{{labels}}} {value}")
+    return out
+
+
+def render_prometheus() -> str:
+    """Render all webhook counters as Prometheus text exposition (0.0.4).
+
+    Families:
+      - webhook_verification_failures_total{provider,reason}   (FR-011)
+      - webhook_resolver_outcomes_total{provider,outcome}      (FR-018)
+      - webhook_resolver_cache_total{provider,result}          (FR-018)
+      - webhook_router_kafka_path_total{provider,outcome}      (M5.3)
+      - webhook_resolver_duration_p95_seconds{provider} (gauge) (FR-018)
+
+    Takes one consistent snapshot under `_lock`, then formats outside it.
+    """
+    with _lock:
+        failures = dict(_counters)
+        resolver_outcomes = dict(_resolver_outcomes)
+        resolver_cache = dict(_resolver_cache)
+        kafka_path = dict(_kafka_path_outcomes)
+        samples_by_provider = {
+            p: list(s) for p, s in _resolver_samples.items()
+        }
+
+    lines: list[str] = []
+    lines += _counter_lines(
+        "webhook_verification_failures_total",
+        "Webhook signature/verification failures by provider and reason (FR-011).",
+        ("provider", "reason"),
+        failures,
+    )
+    lines += _counter_lines(
+        "webhook_resolver_outcomes_total",
+        "Tenant-resolver outcomes by provider (FR-018).",
+        ("provider", "outcome"),
+        resolver_outcomes,
+    )
+    lines += _counter_lines(
+        "webhook_resolver_cache_total",
+        "Tenant-resolver cache results by provider (FR-018).",
+        ("provider", "result"),
+        resolver_cache,
+    )
+    lines += _counter_lines(
+        "webhook_router_kafka_path_total",
+        "M5.3 cutover-path outcomes by provider (success|fallback).",
+        ("provider", "outcome"),
+        kafka_path,
+    )
+
+    lines.append(
+        "# HELP webhook_resolver_duration_p95_seconds "
+        "Tenant-resolver p95 duration over a rolling sample window (FR-018)."
+    )
+    lines.append("# TYPE webhook_resolver_duration_p95_seconds gauge")
+    for provider in sorted(samples_by_provider):
+        p95 = _p95_nearest_rank(samples_by_provider[provider])
+        if p95 is None:
+            continue
+        lines.append(
+            f"webhook_resolver_duration_p95_seconds"
+            f'{{provider="{_escape_label_value(provider)}"}} {p95}'
+        )
+
+    return "\n".join(lines) + "\n"
 
 
 __all__ = [
@@ -197,4 +312,5 @@ __all__ = [
     "snapshot_resolver",
     "record_kafka_path_outcome",
     "get_kafka_path_count",
+    "render_prometheus",
 ]

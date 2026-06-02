@@ -139,6 +139,7 @@ registered in code). Each lives under `services/ingest/integrations/<source>/`
 | GitHub intel | `services/ingest/github_intel/worker.py`, `api.py` | Per-repo FSM + enrichment worker; read-only `/github-intel/*` router. |
 | Integrations OAuth | `services/ingest/integrations/router.py` | `/integrations/{provider}/{install,callback}` (Slack/Discord/GitHub/Notion). |
 | Synthetic | `services/ingest/synthetic/core.py` | Blessed direct-injection bypass routed through `core.ingest()` (tags `content.synthetic=true`). |
+| FetchPage rate limiter | `services/ingest/ingestion/rate_limit/{client,buckets,gate}.py` | LLD §13 Lua token bucket + the `FetchRateLimiter` gate `shard_fetch`'s fetch loop calls **before each page fetch** — one token per upstream call from `rate:<tenant>:<source>:<method>`. Budgets live in `BUCKET_DEFAULTS` (slack/github/gmail/discord via `PRIMARY_FETCH_METHOD`); unbudgeted sources pass through. Enabled by `REDIS_URL`; `SHARD_FETCH_RATE_LIMIT=0` opts out. |
 
 ## Cutover circuit breaker
 

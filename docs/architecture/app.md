@@ -18,9 +18,9 @@ HTTP entrypoint. It owns:
   `Authorization: Bearer <token>` against `actor_sessions`, populates
   `request.state.auth`, and on demo/public routes injects `X-Tenant-Id`) →
   `RateLimitMiddleware` (per-`(tenant, actor)` token bucket; `/ingest/*` gets a
-  higher tier). A fixed set of public path prefixes (`/healthz`, `/auth/session`,
-  `/view/ceo/*`, `/rendering/*`, `/webhooks/*`, `/integrations/*/callback`,
-  `/v1/demo/*`, `/debug/*`, …) bypass auth.
+  higher tier). A fixed set of public path prefixes (`/healthz`, `/metrics`,
+  `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/webhooks/*`,
+  `/integrations/*/callback`, `/v1/demo/*`, `/debug/*`, …) bypass auth.
 - **Route registration + mounted routers**: the core ingest/auth/substrate
   routes plus mounted routers for demo, decision-deltas, forecasts, model/trace,
   history, webhooks, OAuth integrations, GitHub-intel, and (dev/test only)
@@ -102,6 +102,7 @@ graph TD
 | Tenant resolver | `services/app/webhooks/tenant_resolver.py` | `(provider, installation)` → tenant via `provider_installations` (cached). |
 | Secret store | `services/app/webhooks/secrets.py` | IN-08 envelope-encrypted `secret_ref`, dev env-var fallback. |
 | Gmail Pub/Sub | `services/app/webhooks/gmail_pubsub.py` | Gmail push-notification ingress (separate from the HTTP webhook router). |
+| Webhook metrics | `services/app/webhooks/metrics.py` | In-process `{provider,reason}` verification + resolver counters; `render_prometheus()` exposes every family at the gateway's public `GET /metrics` (text 0.0.4, no `prometheus_client` dependency). |
 
 ## Entry points
 
@@ -109,6 +110,7 @@ graph TD
 - `WS /stream` — realtime subscription endpoint.
 - `POST /ingest/{channel}` — uniform signal ingestion (→ `ingestion.core.ingest()`).
 - `POST /webhooks/{provider}/*` — provider webhook ingress.
+- `GET /metrics` — Prometheus scrape of webhook verification + tenant-resolver counters (public; no Bearer).
 - `GET/POST /view/ceo/*`, `/v1/demo/*`, etc. — product surfaces (see [Product](product.md)).
 
 ## Dependencies

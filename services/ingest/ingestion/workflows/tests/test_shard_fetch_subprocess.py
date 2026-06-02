@@ -208,6 +208,10 @@ async def test_shard_fetch_sigterm_subprocess(
     env["SHARD_FETCH_LEASE_SEC"] = "30.0"
     env["SHARD_FETCH_INSTANCE"] = instance
     env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
+    # This test exercises cursor/resume semantics, not rate limiting.
+    # Disable the FetchPage gate so an ambient REDIS_URL can't couple the
+    # spawned subprocess to Redis availability.
+    env["SHARD_FETCH_RATE_LIMIT"] = "0"
 
     proc = subprocess.Popen(
         [sys.executable, "-m",
@@ -366,6 +370,8 @@ async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
         env["SHARD_FETCH_FLUSH_SEC"] = "2.0"
         env["SHARD_FETCH_INSTANCE"] = instance
         env["WORKFLOWS_LOG_LEVEL"] = "INFO"
+        # Resume/cursor test — keep it independent of the FetchPage gate.
+        env["SHARD_FETCH_RATE_LIMIT"] = "0"
         # Make the test fetcher importable + install it before
         # ShardFetch reads FETCHER_DISPATCH. We use the
         # PYTHONSTARTUP-style mechanism: -X importtime won't do it;

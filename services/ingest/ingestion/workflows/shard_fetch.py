@@ -241,6 +241,10 @@ from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.kafka.topics import topic_for
 from services.ingest.ingestion.progress.events import ProgressEvent, ShardFetched
 from services.ingest.ingestion.progress.publisher import publish_progress_events
+from services.ingest.ingestion.rate_limit import (
+    FetchRateLimiter,
+    RateLimitWaitExceeded,
+)
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import (
     S3Client,
@@ -291,6 +295,9 @@ DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 10  # smaller batch — each runs a fetch loop
 DEFAULT_LEASE_TIMEOUT_SECONDS = 30.0
 DEFAULT_FLUSH_TIMEOUT_SECONDS = 5.0
+# Bound on how long one rate-limited page fetch may wait for a token
+# before exiting the loop (shard stays in_progress; orphan-scan resumes).
+DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS = 30.0
 
 # How long the diagnostic instance string is allowed to be on
 # workflow_states.workflow_id. Per the substrate model, this is the
@@ -448,6 +455,9 @@ class ShardFetchConfig:
     instance_name: str = DEFAULT_DIAGNOSTIC_INSTANCE
     # Raw-tier env prefix for S3 keys (A27.1). Mirrors INGESTION_ENV.
     ingestion_env: str = DEFAULT_INGESTION_ENV
+    # Bound on a single page fetch's rate-limit wait (LLD §13 FetchPage
+    # gate). Past this, the loop exits transiently for orphan-scan retry.
+    rate_limit_max_wait_seconds: float = DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS
 
 
 # ---------------------------------------------------------------------
@@ -617,6 +627,7 @@ class ShardFetch(LongRunningService):
         *,
         config: ShardFetchConfig | None = None,
         s3_client: S3Client | None = None,
+        rate_limiter: FetchRateLimiter | None = None,
     ) -> None:
         self._pool = pool
         self._kafka_producer = kafka_producer
@@ -626,6 +637,11 @@ class ShardFetch(LongRunningService):
         # raises a clear error if it's missing so a misconfigured
         # subprocess fails loudly rather than silently dropping records.
         self._s3_client = s3_client
+        # FetchPage rate-limit gate (LLD §13). Optional: when None (no
+        # REDIS_URL / tests) the fetch loop runs unthrottled, preserving
+        # prior behaviour. When set, one token is consumed per page fetch
+        # from the (source, method) bucket before the upstream call.
+        self._rate_limiter = rate_limiter
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -852,6 +868,16 @@ class ShardFetch(LongRunningService):
                     if current_state else None
                 )
 
+                # FetchPage rate-limit gate (LLD §13): acquire one token
+                # for the (source, method) bucket BEFORE the upstream page
+                # call. Pass-through for sources with no published budget.
+                # A bounded wait that's exceeded raises RateLimitWaitExceeded,
+                # caught below as a transient loop exit.
+                if self._rate_limiter is not None:
+                    await self._rate_limiter.acquire(
+                        source=source, tenant_id=tenant_id,
+                    )
+
                 fetcher = FETCHER_DISPATCH[source]
                 result = await fetcher(install, shard_identifier, cursor)
                 records_fetched += len(result.records)
@@ -919,6 +945,23 @@ class ShardFetch(LongRunningService):
 
                 if result.end_of_data:
                     break
+
+        except RateLimitWaitExceeded as exc:
+            # Transient: the (source, method) bucket stayed empty past the
+            # bounded wait. Exit without terminating — the shard stays
+            # in_progress and the orphan scan resumes it once the bucket
+            # refills (or the operator lifts the pause). Same recovery
+            # shape as a CursorAdvanceFlushFailure.
+            log.warning(
+                "shard_fetch.rate_limited_exit_loop",
+                extra={
+                    "shard_id": str(shard_id),
+                    "source": source,
+                    "bucket_key": exc.bucket_key,
+                    "waited_seconds": exc.waited_seconds,
+                },
+            )
+            return
 
         except NotImplementedError as exc:
             await self._terminate_shard(
@@ -1074,16 +1117,24 @@ class ShardFetch(LongRunningService):
 #   SHARD_FETCH_LEASE_SEC     — orphan lease timeout (default 30.0).
 #   SHARD_FETCH_FLUSH_SEC     — Kafka flush timeout (default 5.0).
 #   SHARD_FETCH_INSTANCE      — instance name for diagnostics.
+#   REDIS_URL                 — Redis for the FetchPage rate-limit gate
+#                               (LLD §13). Unset → gate disabled.
+#   SHARD_FETCH_RATE_LIMIT    — "0" disables the gate even with REDIS_URL.
+#   SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC — per-page rate-limit wait bound
+#                               (default 30.0).
 #   WORKFLOWS_LOG_LEVEL       — log level (default INFO).
 async def _run_service() -> None:
     import asyncio
     import os
     import signal as sig_module
 
+    from redis.asyncio import Redis as AsyncRedis
+
     from services.ingest.ingestion.kafka.producer import (
         IdempotentProducer,
         ProducerConfig,
     )
+    from services.ingest.ingestion.rate_limit import RateLimiter
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
@@ -1122,8 +1173,32 @@ async def _run_service() -> None:
             "SHARD_FETCH_INSTANCE", DEFAULT_DIAGNOSTIC_INSTANCE,
         ),
         ingestion_env=os.environ.get("INGESTION_ENV", DEFAULT_INGESTION_ENV),
+        rate_limit_max_wait_seconds=float(
+            os.environ.get(
+                "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
+                str(DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS),
+            ),
+        ),
     )
-    service = ShardFetch(pool, producer, config=config, s3_client=s3_client)
+
+    # FetchPage rate-limit gate (LLD §13). Enabled when REDIS_URL is set
+    # (it is, in compose's app-env) unless SHARD_FETCH_RATE_LIMIT=0
+    # explicitly disables it. When off, the fetch loop runs unthrottled.
+    redis = None
+    rate_limiter = None
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url and os.environ.get("SHARD_FETCH_RATE_LIMIT", "1") != "0":
+        redis = AsyncRedis.from_url(redis_url, decode_responses=False)
+        rate_limiter = FetchRateLimiter(
+            RateLimiter(redis),
+            max_wait_seconds=config.rate_limit_max_wait_seconds,
+        )
+        log.info("workflow.shard_fetch.rate_limit_enabled")
+
+    service = ShardFetch(
+        pool, producer, config=config, s3_client=s3_client,
+        rate_limiter=rate_limiter,
+    )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -1139,6 +1214,8 @@ async def _run_service() -> None:
         log.info("workflow.shard_fetch.shutting_down")
         await producer.stop()
         await s3_client.close()
+        if redis is not None:
+            await redis.aclose()
         await pool.close()
     log.info("workflow.shard_fetch.exited")
 
