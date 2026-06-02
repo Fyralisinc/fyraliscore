@@ -125,9 +125,46 @@ registered in code). Each lives under `services/ingest/integrations/<source>/`
 | Workflows CLI | `services/ingest/ingestion/workflows/__main__.py` | `python -m services.ingest.ingestion.workflows` (onboarding, oauth poll, shard fetch, reconcilers — `WORKFLOW_SERVICE` selects one). |
 | Normalizer | `services/ingest/ingestion/normalizer/worker.py` | Kafka Path B (no DB): raw → handler → `NormalizedEnvelope`. |
 | Observation writer | `services/ingest/ingestion/writers/observation_writer.py` | Kafka Path A: normalized → `ingest_from_draft` when full-mode. |
+| Cutover circuit breaker | `services/ingest/ingestion/feature_flags/circuit_breaker.py` | Singleton lag guardrail — per-source lag → auto-flips `kafka_path_enabled=FALSE` on sustained breach. `python -m services.ingest.ingestion.feature_flags`. |
+| Re-enable tool | `scripts/reenable_kafka_path.py` | Operator: list tripped tenants + flip one back onto the Kafka path. |
 | GitHub intel | `services/ingest/github_intel/worker.py`, `api.py` | Per-repo FSM + enrichment worker; read-only `/github-intel/*` router. |
 | Integrations OAuth | `services/ingest/integrations/router.py` | `/integrations/{provider}/{install,callback}` (Slack/Discord/GitHub/Notion). |
 | Synthetic | `services/ingest/synthetic/core.py` | Blessed direct-injection bypass routed through `core.ingest()` (tags `content.synthetic=true`). |
+
+## Cutover circuit breaker
+
+The Kafka full pipeline is the primary path (`kafka_path_enabled` defaults ON; a
+missing flag row = kafka-first). The **cutover circuit breaker**
+(`feature_flags/circuit_breaker.py`, run as the `circuit_breaker` compose
+singleton) is its safety net: it watches consumer lag and pulls a tenant back to
+the always-safe inline path before observations pile up.
+
+- **What it measures.** Every tick (`BREAKER_TICK_INTERVAL_SEC`, default 60s) it
+  reads committed-offset lag-in-seconds on **every** per-source raw lane
+  (`ingestion.raw.<source>` vs. group `normalizer.<source>`, both derived from
+  `kafka/topics.py`) and samples active tenants from the 1% traffic-signal topic
+  (which carries `source` + `raw_partition`). Each tenant is judged on its
+  **worst lane**.
+- **When it trips.** Lag > `BREAKER_THRESHOLD_SEC` (60s) for
+  `BREAKER_WINDOW_TICKS` (5) consecutive ticks — ~5 min sustained — flips that
+  tenant's `kafka_path_enabled` to FALSE (`set_by=auto:circuit_breaker`), records
+  `circuit_breaker_state`, and alerts (`INGESTION_ALERT_WEBHOOK_URL` if set, else
+  a log). Ingress + writer observe the flip within the 30s flag-cache TTL. The
+  flag is per-tenant, so a single lagging lane reverts the tenant's whole path.
+- **Recovery is operator-driven** — no auto-recovery, to avoid flapping during an
+  incident. After confirming the lane drained, re-enable with
+  `scripts/reenable_kafka_path.py <tenant> --operator <you>` (or `--list` to see
+  every tripped tenant). The breaker auto-resets its own bookkeeping on the next
+  tick once it sees the flag back at TRUE.
+- **Health + resilience.** Exposes `/healthz` + `/metrics` on
+  `INGESTION_HEALTH_PORT` (9300) — a wedged tick loop goes 503 and is restarted. A
+  per-lane probe failure is isolated (treated as no-lag for that lane that tick)
+  so one bad lane can't blind the others. It detects *slow* consumption, not a
+  normalizer that never committed (no offsets → reads as caught-up).
+- **Verifying the live Kafka path.** The reader functions talk to a real broker,
+  which the unit tests mock; `scripts/smoke_circuit_breaker_lag.py` exercises them
+  — and a full unmocked `_process_tick` → flag flip — against a live broker. Run
+  it after touching the lag/active-tenant readers.
 
 ## Dependencies
 
@@ -144,8 +181,10 @@ NOTIFY + partition self-heal), `services.domain.actors` / `entity_aliases`,
 > **TODO(human):** Capture the *why* for:
 >
 > - Why inline ingest was historically primary while the Kafka pipeline is now the
->   documented primary path — and the runbook/criteria for flipping
->   `ingestion.kafka_path_enabled` per tenant.
+>   documented primary path. The *automated* FALSE direction (lag → revert) and the
+>   operator recovery path are now covered under
+>   [Cutover circuit breaker](#cutover-circuit-breaker); still open: the criteria/ramp
+>   for *enabling* the Kafka path per tenant in the first place.
 > - The full trust-tier ordering/semantics (the *mapping* is in code; the rationale
 >   for `authoritative` vs `attested_agent` vs `inferential` vs `unvetted` is not).
 > - The intended meaning of the `feels_onboarded` state and its thresholds.
