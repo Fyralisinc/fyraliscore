@@ -24,6 +24,7 @@ class _FakeHttp:
         self.requests.append({
             "method": method, "url": url, "user_email": user_email,
             "scopes": tuple(scopes), "params": params or {},
+            "json_body": json_body,
         })
         return self._responses.pop(0)
 
@@ -87,3 +88,33 @@ async def test_resolve_scope():
     assert resolve_scope("calendar.readonly") == CALENDAR_READONLY_SCOPE
     with pytest.raises(ValueError):
         resolve_scope("calendar.write")
+
+
+async def test_watch_events_request_shape():
+    client, http = _client([{"id": "ch1", "resourceId": "res1", "expiration": "123"}])
+    body = await client.watch_events(
+        calendar_id="alice@acme.com", user_email="alice@acme.com",
+        channel_id="ch1", address="https://app.test/webhooks/google_calendar/push",
+        token="secret-tok", ttl_seconds=604800,
+    )
+    assert body["resourceId"] == "res1"
+    req = http.requests[0]
+    assert req["method"] == "POST"
+    assert req["url"] == "https://cal.test/v3/calendars/alice@acme.com/events/watch"
+    jb = req["json_body"]
+    assert jb["id"] == "ch1"
+    assert jb["type"] == "web_hook"
+    assert jb["address"] == "https://app.test/webhooks/google_calendar/push"
+    assert jb["token"] == "secret-tok"
+    assert jb["params"]["ttl"] == "604800"
+
+
+async def test_stop_channel_request_shape():
+    client, http = _client([{}])
+    await client.stop_channel(
+        user_email="alice@acme.com", channel_id="ch1", resource_id="res1",
+    )
+    req = http.requests[0]
+    assert req["method"] == "POST"
+    assert req["url"] == "https://cal.test/v3/channels/stop"
+    assert req["json_body"] == {"id": "ch1", "resourceId": "res1"}

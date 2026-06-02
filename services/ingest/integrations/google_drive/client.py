@@ -355,6 +355,59 @@ class GoogleDriveClient:
         changes = body.get("changes")
         return isinstance(changes, list) and len(changes) > 0
 
+    async def watch_changes(
+        self,
+        *,
+        user_email: str,
+        page_token: str,
+        channel_id: str,
+        address: str,
+        token: str,
+        drive_id: str | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """`POST /changes/watch?pageToken=…` — open a push channel on the
+        changes feed. Drive pushes a content-less ping to the `web_hook`
+        `address` carrying `X-Goog-*` headers; the receiver verifies
+        `X-Goog-Channel-Token == token` and drains the delta from the same
+        `pageToken`. Returns the raw channel resource
+        (`{id, resourceId, resourceUri, expiration}`)."""
+        params: dict[str, Any] = {
+            "pageToken": page_token,
+            "supportsAllDrives": "true",
+            "includeRemoved": "true",
+        }
+        if drive_id and drive_id != MY_DRIVE_SENTINEL:
+            params["driveId"] = drive_id
+        body: dict[str, Any] = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": address,
+            "token": token,
+        }
+        if ttl_seconds:
+            body["params"] = {"ttl": str(ttl_seconds)}
+        return await self._http.request(
+            "POST",
+            f"{self._base}/changes/watch",
+            user_email=user_email,
+            scopes=(self._scope,),
+            params=params,
+            json_body=body,
+        )
+
+    async def stop_channel(
+        self, *, user_email: str, channel_id: str, resource_id: str,
+    ) -> None:
+        """`POST /channels/stop` — tear down a push channel (idempotent)."""
+        await self._http.request(
+            "POST",
+            f"{self._base}/channels/stop",
+            user_email=user_email,
+            scopes=(self._scope,),
+            json_body={"id": channel_id, "resourceId": resource_id},
+        )
+
 
 __all__ = [
     "DRIVE_READONLY_SCOPE",

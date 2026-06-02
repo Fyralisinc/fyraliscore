@@ -27,6 +27,7 @@ class _FakeHttp:
         self.requests.append({
             "method": method, "url": url, "user_email": user_email,
             "scopes": tuple(scopes), "params": params or {},
+            "json_body": json_body,
         })
         return self._responses.pop(0)
 
@@ -186,3 +187,45 @@ async def test_list_revisions_shape():
     body = await client.list_revisions(user_email="a@x.com", file_id="f1")
     assert body["revisions"][0]["id"] == "r1"
     assert http.requests[0]["url"].endswith("/files/f1/revisions")
+
+
+async def test_watch_changes_request_shape():
+    client, http = _client([{"id": "ch1", "resourceId": "res1", "expiration": "123"}])
+    body = await client.watch_changes(
+        user_email="alice@acme.com", page_token="tok-0", channel_id="ch1",
+        address="https://app.test/webhooks/google_drive/push", token="secret-tok",
+        drive_id="0ABC", ttl_seconds=604800,
+    )
+    assert body["resourceId"] == "res1"
+    req = http.requests[0]
+    assert req["method"] == "POST"
+    assert req["url"] == "https://drive.test/v3/changes/watch"
+    assert req["params"]["pageToken"] == "tok-0"
+    assert req["params"]["supportsAllDrives"] == "true"
+    assert req["params"]["driveId"] == "0ABC"
+    jb = req["json_body"]
+    assert jb["id"] == "ch1" and jb["type"] == "web_hook"
+    assert jb["address"] == "https://app.test/webhooks/google_drive/push"
+    assert jb["token"] == "secret-tok"
+
+
+async def test_watch_changes_my_drive_omits_drive_id():
+    client, http = _client([{"id": "ch2", "resourceId": "res2"}])
+    await client.watch_changes(
+        user_email="alice@acme.com", page_token="tok-0", channel_id="ch2",
+        address="https://app.test/webhooks/google_drive/push", token="t",
+        drive_id="my-drive",
+    )
+    # The My-Drive sentinel must not leak into the request as a driveId.
+    assert "driveId" not in http.requests[0]["params"]
+
+
+async def test_stop_channel_request_shape():
+    client, http = _client([{}])
+    await client.stop_channel(
+        user_email="alice@acme.com", channel_id="ch1", resource_id="res1",
+    )
+    req = http.requests[0]
+    assert req["method"] == "POST"
+    assert req["url"] == "https://drive.test/v3/channels/stop"
+    assert req["json_body"] == {"id": "ch1", "resourceId": "res1"}

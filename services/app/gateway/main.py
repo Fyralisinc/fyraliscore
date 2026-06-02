@@ -3041,6 +3041,20 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("gmail_pubsub_mount_failed", error=str(exc))
 
+    # ---- 4.4b GOOGLE Calendar/Drive push ingress (always mounted) --
+    # The native web_hook push endpoints (events.watch / changes.watch land
+    # here). Always mounted so Google's pings hit a real endpoint; the channel
+    # token is verified per-request in the handler. The watch_scheduler only
+    # registers channels when GOOGLE_PUSH_WEBHOOK_BASE is set — otherwise the
+    # live poller is the liveness path and these routes simply idle.
+    try:
+        from services.app.webhooks.google_push import router as _google_push_router
+
+        app_.include_router(_google_push_router)
+        log.info("google_push_ingress_mounted")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("google_push_mount_failed", error=str(exc))
+
     # ---- 4.5 GMAIL — admin connect wizard --------------------------
     # The DWD connect wizard genuinely needs the service-account JSON, so it
     # stays gated. When absent we log explicitly (no silent skip).
@@ -3058,9 +3072,10 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
 
         # ---- 4.6 GOOGLE CALENDAR — admin connect wizard -----------
         # Calendar reuses Gmail's DWD service account, so it mounts under
-        # the same credential gate. It is poll-only (no Pub/Sub webhook),
-        # so only the connect/preflight + connect/finalize router exists.
-        # Isolated try so a Calendar import error can't unmount Gmail.
+        # the same credential gate. (Live ingestion runs via the
+        # google_calendar_live_poller + events.watch push channel; the push
+        # ingress is mounted unconditionally above.) Isolated try so a
+        # Calendar import error can't unmount Gmail.
         try:
             from services.ingest.integrations.google_calendar.oauth import (
                 router as _gcal_oauth_router,
@@ -3072,8 +3087,9 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
             log.warning("google_calendar_mount_failed", error=str(exc))
 
         # ---- 4.7 GOOGLE DRIVE — admin connect wizard --------------
-        # Same posture as Calendar: reuses Gmail's DWD service account and is
-        # poll-only (changes-API delta, no push channel). Isolated try.
+        # Same posture as Calendar: reuses Gmail's DWD service account. Live
+        # ingestion runs via the google_drive_live_poller + changes.watch push
+        # channel (ingress mounted unconditionally above). Isolated try.
         try:
             from services.ingest.integrations.google_drive.oauth import (
                 router as _gdrive_oauth_router,

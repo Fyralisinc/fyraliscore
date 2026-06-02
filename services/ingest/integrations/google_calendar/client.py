@@ -151,6 +151,53 @@ class GoogleCalendarClient:
         items = body.get("items")
         return isinstance(items, list) and len(items) > 0
 
+    async def watch_events(
+        self,
+        *,
+        calendar_id: str,
+        user_email: str,
+        channel_id: str,
+        address: str,
+        token: str,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """`POST /calendars/{calendarId}/events/watch` — open a push channel.
+
+        Calendar pushes directly to a `web_hook` `address` (no Pub/Sub). The
+        notification is a content-less ping carrying `X-Goog-*` headers; the
+        receiver verifies `X-Goog-Channel-Token == token` and drains the delta
+        via `syncToken`. Returns the raw channel resource
+        (`{id, resourceId, resourceUri, expiration}`)."""
+        from urllib.parse import quote
+
+        body: dict[str, Any] = {
+            "id": channel_id,
+            "type": "web_hook",
+            "address": address,
+            "token": token,
+        }
+        if ttl_seconds:
+            body["params"] = {"ttl": str(ttl_seconds)}
+        return await self._http.request(
+            "POST",
+            f"{self._base}/calendars/{quote(calendar_id, safe='@')}/events/watch",
+            user_email=user_email,
+            scopes=(self._scope,),
+            json_body=body,
+        )
+
+    async def stop_channel(
+        self, *, user_email: str, channel_id: str, resource_id: str,
+    ) -> None:
+        """`POST /channels/stop` — tear down a push channel (idempotent)."""
+        await self._http.request(
+            "POST",
+            f"{self._base}/channels/stop",
+            user_email=user_email,
+            scopes=(self._scope,),
+            json_body={"id": channel_id, "resourceId": resource_id},
+        )
+
 
 __all__ = [
     "CALENDAR_READONLY_SCOPE",
