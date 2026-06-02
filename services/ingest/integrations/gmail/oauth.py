@@ -59,6 +59,8 @@ from services.ingest.integrations.gmail.directory import enumerate_domain, resol
 from services.ingest.integrations.gmail.dwd import DwdError, get_minter
 from services.ingest.integrations.gmail.optout import fetch_optout_emails
 from services.ingest.integrations.gmail.pubsub import PubsubAdmin
+from services.ingest.integrations.gmail.status_api import get_gmail_status
+from services.ingest.integrations.gmail.uninstall import stop_mailbox, uninstall_install
 from services.ingest.integrations.gmail.watch import activate_watch, upsert_pending_watch
 
 
@@ -237,6 +239,80 @@ async def connect_finalize(request: Request) -> JSONResponse:
         "scope": scope_alias,
         "provisioning": "started",
     })
+
+
+@router.get("/status")
+async def gmail_status(request: Request) -> JSONResponse:
+    """Read-only status snapshot for the tenant's Gmail install: watch
+    counts by state, last push/poll timestamps, errored mailboxes, recent
+    audit. Mirrors the finance (`/{source}/status`) + slack (`/{user}/status`)
+    status endpoints. Returns `{"connected": false}` when there is no
+    active install."""
+    tenant_id = _tenant_from_request(request)
+    snapshot = await get_gmail_status(tenant_id=tenant_id)
+    return JSONResponse(content=snapshot)
+
+
+@router.post("/uninstall")
+async def gmail_uninstall(request: Request) -> JSONResponse:
+    """Full teardown of a Gmail install: stop every mailbox watch, tear
+    down the tenant's Pub/Sub topic + subscription, and disable the
+    install row (with an audit entry). Idempotent — re-running once the
+    install is disabled is a no-op. RLS scopes the teardown to the
+    caller's tenant, so an install_id from another tenant is invisible
+    (silent no-op)."""
+    tenant_id = _tenant_from_request(request)
+    body = await request.json()
+    install_id = _require_installation_id(body)
+    actor_email = (body.get("actor_email") or "").strip() or None
+    await uninstall_install(
+        tenant_id=tenant_id,
+        gmail_installation_id=install_id,
+        actor_email=actor_email,
+    )
+    return JSONResponse(content={
+        "ok": True,
+        "gmail_installation_id": str(install_id),
+        "status": "uninstalled",
+    })
+
+
+@router.post("/mailbox/stop")
+async def gmail_stop_mailbox(request: Request) -> JSONResponse:
+    """Per-mailbox stop — pause one mailbox's watch without disabling the
+    install (manual reconciliation from the admin console). Idempotent."""
+    tenant_id = _tenant_from_request(request)
+    body = await request.json()
+    install_id = _require_installation_id(body)
+    email_address = (body.get("email_address") or "").strip().lower()
+    if not email_address or "@" not in email_address:
+        raise HTTPException(status_code=400, detail="email_address is required")
+    actor_email = (body.get("actor_email") or "").strip() or None
+    await stop_mailbox(
+        tenant_id=tenant_id,
+        gmail_installation_id=install_id,
+        email_address=email_address,
+        actor_email=actor_email,
+    )
+    return JSONResponse(content={
+        "ok": True,
+        "email_address": email_address,
+        "status": "stopped",
+    })
+
+
+def _require_installation_id(body: dict[str, Any]) -> UUID:
+    """Parse + validate `gmail_installation_id` from a request body. The
+    id is explicit (not resolved from the tenant) so a destructive
+    teardown names exactly what it targets — the caller gets the id from
+    `GET /integrations/gmail/status`."""
+    raw_id = (body.get("gmail_installation_id") or "").strip()
+    if not raw_id:
+        raise HTTPException(status_code=400, detail="gmail_installation_id is required")
+    try:
+        return UUID(raw_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="gmail_installation_id must be a UUID")
 
 
 async def _provision_install(

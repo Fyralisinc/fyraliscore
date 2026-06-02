@@ -113,8 +113,7 @@ Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
 - **Stale relocation docstrings:** `today/freshness.py`, `today/stake.py`,
   `today/map.py` still claim to live under `greeting/`; their logic is computed
   inline in the aggregator (or, for the Map, "deliberately suppressed").
-- **Orphaned helpers:** `gmail/status_api.py` + `gmail/uninstall.py` (no route),
-  `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
+- **Orphaned helpers:** `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
 - **Schema/migration tidy-ups:** orphan tables from `0021` (`anomaly_thresholds`,
   `dedup_keys_seen`); `topo_dirty_queue` unused; tables for undeployed workers
   (`entity_review_queue`, `signal_memory_fabric`, `orphan_log`).

@@ -61,9 +61,9 @@ See [Ingest](../architecture/ingest.md).
 
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
-| `integrations/gmail/status_api.py` 🗑 | `get_gmail_status`: watch/audit snapshot for a tenant | Zero refs repo-wide; no router mounts `GET /integrations/gmail/status`. |
-| `integrations/gmail/uninstall.py` 🗑 | `uninstall_install`/`stop_mailbox`: teardown | Zero callers; no uninstall route mounted (the `__init__` docstring is aspirational). |
-| `integrations/jira/onboarding.py` | Jira install: upsert installs + `onboarding_trigger` | `finalize_install`/`register_webhook_installation` invoked only by `scripts/sandbox_jira*.py` + tests; no gateway router/workflow (unlike Mercury/QBO). |
+| ~~`integrations/gmail/status_api.py`~~ | `get_gmail_status`: watch/audit snapshot for a tenant | **✅ Wired (2026-06-02).** `gmail/oauth.py` now mounts `GET /integrations/gmail/status` → `get_gmail_status`, on the already-mounted Gmail connect router (Bearer-authed, tenant from `request.state.auth`). Mirrors the finance (`/{source}/status`) + slack (`/{user}/status`) status endpoints. |
+| ~~`integrations/gmail/uninstall.py`~~ | `uninstall_install`/`stop_mailbox`: teardown | **✅ Wired (2026-06-02).** `gmail/oauth.py` now mounts `POST /integrations/gmail/uninstall` → `uninstall_install` (full teardown: stop watches + Pub/Sub teardown + disable install + audit) and `POST /integrations/gmail/mailbox/stop` → `stop_mailbox` (per-mailbox pause). Both idempotent; RLS scopes them to the caller's tenant. |
+| ~~`integrations/jira/onboarding.py`~~ | Jira install: upsert installs + `onboarding_trigger` | **✅ Wired (2026-06-02).** This row was stale: `jira/oauth.py` already calls `finalize_install` + `register_webhook_installation` from a real gateway router (`/integrations/jira/connect/{preflight,finalize}`, mounted in `gateway/main.py` as the "Jira production install surface"), exactly like Mercury/QBO. See the [feature table](feature-status.md). |
 
 ## Reasoning
 
