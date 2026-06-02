@@ -106,6 +106,11 @@ from services.ingest.ingestion.feature_flags.client import (
     KAFKA_PATH_ENABLED,
     TenantFlags,
 )
+from services.ingest.ingestion.observability import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
 
 
 log = logging.getLogger(__name__)
@@ -309,7 +314,27 @@ async def _measure_kafka_lag_default(
         for source in INGESTION_SOURCES:
             topic = topic_for("raw", source)
             group = _consumer_group(normalizer_group_base, source)
-            out[source] = _measure_topic_lag_seconds(admin, probe, topic, group)
+            try:
+                out[source] = _measure_topic_lag_seconds(admin, probe, topic, group)
+            except Exception as exc:  # noqa: BLE001
+                # Isolate per-lane failures: one source's probe erroring must
+                # not blind the breaker to the other nine lanes (with ten
+                # lanes per tick that blast radius is real). Consistent with
+                # the per-partition "can't read → 0, don't false-trip" rule,
+                # an unmeasurable lane is treated as no-evidence-of-lag this
+                # tick rather than aborting the whole measurement.
+                _bump("breaker.lag_measurement_failures")
+                log.warning(
+                    "circuit_breaker.lane_lag_measurement_failed",
+                    extra={
+                        "source": source,
+                        "topic": topic,
+                        "group": group,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:200],
+                    },
+                )
+                out[source] = {}
         return out
     finally:
         probe.close()
@@ -327,8 +352,7 @@ def _measure_topic_lag_seconds(
       3. Consume one message AT the committed offset, read its CreateTime;
          lag_seconds = now - createtime. (0s if committed == high.)
     """
-    from confluent_kafka.admin import ConsumerGroupTopicPartitions
-    from confluent_kafka import TopicPartition
+    from confluent_kafka import ConsumerGroupTopicPartitions, TopicPartition
     import time as _time
 
     # 1. Committed offsets for this group on this topic.
@@ -690,6 +714,7 @@ async def run_circuit_breaker(
     alert_fn: AlertFn = _default_alert,
     stop_event: asyncio.Event | None = None,
     max_ticks: int | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> dict[str, int]:
     """Main loop. Returns when `stop_event` is set OR `max_ticks` reached.
 
@@ -697,6 +722,11 @@ async def run_circuit_breaker(
     start; each tick reads + updates the in-memory dict and persists
     changed rows. A SIGTERM mid-tick will let the current tick
     finish (per-tenant persist is atomic) before exiting.
+
+    `heartbeat`, if supplied, is touched at the start of each tick so the
+    /healthz surface can tell a wedged loop (Kafka probe hung → no touch →
+    stale → 503) from a merely idle one (the ticker keeps touching during
+    the inter-tick sleep).
     """
     stop_event = stop_event or asyncio.Event()
     state = await _load_state(pool, config.instance_name)
@@ -706,6 +736,8 @@ async def run_circuit_breaker(
         if max_ticks is not None and ticks >= max_ticks:
             break
         ticks += 1
+        if heartbeat is not None:
+            heartbeat.touch()
 
         await _process_tick(
             config=config,
@@ -801,16 +833,31 @@ def main() -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop_event.set)
 
+        # Health surface: /healthz (200 while ticking, 503 if wedged) +
+        # /metrics (the breaker.* counters). Enabled when INGESTION_HEALTH_PORT
+        # is set (compose sets 9300); a no-op otherwise, so tests/local runs
+        # are unaffected. The ticker touches the heartbeat during the
+        # inter-tick sleep so an idle breaker stays healthy.
+        heartbeat = Heartbeat()
+        health_server = start_health_server(
+            get_metrics=get_metrics, heartbeat=heartbeat,
+        )
         try:
-            await run_circuit_breaker(
-                config=config,
-                pool=pool,
-                tenant_flags=tenant_flags,
-                measure_lag_fn=measure_lag_fn,
-                active_tenants_fn=active_tenants_fn,
-                stop_event=stop_event,
+            await asyncio.gather(
+                run_circuit_breaker(
+                    config=config,
+                    pool=pool,
+                    tenant_flags=tenant_flags,
+                    measure_lag_fn=measure_lag_fn,
+                    active_tenants_fn=active_tenants_fn,
+                    stop_event=stop_event,
+                    heartbeat=heartbeat,
+                ),
+                run_heartbeat_ticker(heartbeat, stop_event),
             )
         finally:
+            if health_server is not None:
+                health_server.shutdown()
             await pool.close()
 
     asyncio.run(_run())
