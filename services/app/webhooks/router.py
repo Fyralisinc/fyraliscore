@@ -636,7 +636,7 @@ def build_webhooks_router() -> APIRouter:
     so tests can construct the gateway app and exercise the router
     without further wiring. Notably, `app.state.tenant_resolver` is
     the IN-07 DB-backed resolver wired by IN-08 (see
-    `services/app/gateway/main.py::_wire_in08_state`).
+    `services/app/gateway/state_wiring.py::wire_in08_state`).
     """
     router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -696,7 +696,7 @@ def build_webhooks_router() -> APIRouter:
         if tenant_resolver is None:
             # Gateway misconfiguration — fail loud rather than silently
             # falling back to the legacy env-var resolver. The
-            # `_wire_in08_state` lifespan hook is the single chokepoint
+            # `wire_in08_state` lifespan hook is the single chokepoint
             # that populates this attribute.
             log.error("webhook_router_tenant_resolver_missing", provider=provider)
             return JSONResponse(

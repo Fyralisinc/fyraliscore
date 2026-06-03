@@ -283,8 +283,8 @@ The HTTP/WS edge. It terminates every external request, authenticates and rate-l
 
 - ASGI app: `uvicorn services.app.gateway:app` — the module-level `app` is built by `build_app()` in `services/app/gateway/main.py`. Every dependency (pool, repos, embedder, rate limiter) is injectable so tests construct the app synchronously; production wires them in the `_lifespan` handler.
 - Port **8000** (Docker `gateway` service `expose: "8000"`; sandbox publishes `8000:8000`).
-- `build_app()` mounts a large set of routers: core ingest/auth/substrate routes, demo, decision-deltas, forecasts, model-trace, history, spec/model-page/today routes, webhooks, OAuth integrations, Jira/Mercury/QuickBooks install surfaces, GitHub-intel, and (env-gated) finance + Slack-DM debug panels.
-- `_lifespan` owns: creating the asyncpg pool (`db_bootstrap.create_gateway_pool`, JSON/vector codecs), constructing `GatewayDeps`, IN-08 wiring (`_wire_in08_state`: secret store + `TenantResolver` + `TenantFlags` + GitHub client/replay cache), starting the realtime dispatcher, a 5-min `oauth_install_states` sweep task, CEO-view router wiring, and — when `KAFKA_BOOTSTRAP_SERVERS` is set — the ingestion data-plane producer + S3 raw client (`_wire_ingestion_data_plane`).
+- `build_app()` delegates route mounting to `services/app/gateway/route_mounts.py`: core/auth/ingest, substrate, contest, dashboard, Sage internal, recommendations, Today core/artifacts, Structure, Map, demo, decision-deltas, forecasts, model-trace, history, spec/model-page/today routes, webhooks, OAuth integrations, Jira/Mercury/QuickBooks install surfaces, GitHub-intel, and env-gated finance + Slack-DM debug panels.
+- `_lifespan` owns: creating the asyncpg pool (`db_bootstrap.create_gateway_pool`, JSON/vector codecs), constructing `GatewayDeps`, integration state wiring (`state_wiring.py`: secret store + `TenantResolver` + `TenantFlags` + GitHub client/replay cache), starting the realtime dispatcher, a 5-min `oauth_install_states` sweep task, CEO-view wiring (`ceo_view_wiring.py`), and when `KAFKA_BOOTSTRAP_SERVERS` is set the ingestion data-plane producer + S3 raw client (`state_wiring.py`).
 
 ### Middleware chain
 
@@ -378,7 +378,10 @@ graph TD
 
 | Module | Path | Role |
 |--------|------|------|
-| App factory | `services/app/gateway/main.py` | `build_app()`, middleware, routes, lifespan, data-plane wiring |
+| App factory | `services/app/gateway/main.py` | `build_app()`, lifespan, middleware registration, exception handlers, route mounting call |
+| Gateway middleware | `services/app/gateway/middleware.py` | request context, bearer auth, public path allowlist, rate limiting |
+| Route mounting | `services/app/gateway/route_mounts.py` | ordered gateway/product/ingest router mounting |
+| Gateway wiring | `services/app/gateway/state_wiring.py` / `ceo_view_wiring.py` | integration state, data-plane clients, CEO-view/product wiring |
 | Bearer auth | `services/app/gateway/auth.py` | uuid7 token → SHA-256 → `actor_sessions` |
 | Rate limiter | `services/app/gateway/rate_limit.py` | in-process token bucket, 2 tiers |
 | Webhook router | `services/app/webhooks/router.py` | verify → resolve → cutover/inline |
@@ -945,7 +948,7 @@ graph LR
 ```
 
 - **Standard auth (`Bearer`)** — `Authorization: Bearer <token>` is hashed and looked up in `actor_sessions` by `services/app/gateway/auth.py:validate_token`; success populates `request.state.auth` with `tenant_id` / `actor_id`. Tokens are minted by `POST /auth/session` (gated by `X-Bootstrap-Secret` matching `AUTH_BOOTSTRAP_SECRET`) or by `POST /v1/demo/sessions/start`. (No `DEV_BEARER_TOKEN` constant exists in code; local dev mints a real session token.)
-- **Public bypass** — `_PUBLIC_PATHS` / `_PUBLIC_PATH_PREFIXES` in `main.py` let a fixed set through with no bearer: `/healthz`, `/metrics`, `/auth/session`, all `/view/ceo/*`, `/rendering/*`, `/webhooks/*`, the OAuth `*/callback`/`*/installed`/`*/install-error` redirects, `/v1/demo/companies`, `/v1/demo/sessions/start`, and the dev panels `/debug/*`, `/finance/*`, `/slack/*`, `/simulation*`.
+- **Public bypass** — `_PUBLIC_PATHS` / `_PUBLIC_PATH_PREFIXES` in `services/app/gateway/middleware.py` let a fixed set through with no bearer: `/healthz`, `/metrics`, `/auth/session`, all `/view/ceo/*`, `/rendering/*`, `/webhooks/*`, the OAuth `*/callback`/`*/installed`/`*/install-error` redirects, `/v1/demo/companies`, `/v1/demo/sessions/start`, and the dev panels `/debug/*`, `/finance/*`, `/slack/*`, `/simulation*`.
 - **Webhook auth** is the per-provider HMAC/JWT signature (`services/app/webhooks/signatures.py`), not a bearer.
 - **CEO-view auth** (`/view/ceo/*`) uses a separate `VIEW_CEO_TOKEN` resolved by the stream manager (`services/product/greeting/api.py:_auth`), falling back to a default tenant in single-tenant dogfood mode.
 - **Dev-panel auth** (`/finance`, `/slack`, `/debug`) is scoped by an `X-Tenant-Id` header, no bearer; env-gated at mount.
@@ -967,7 +970,7 @@ In the tables below, **Auth** = `Bearer` (session required), `Public` (allowlist
 |---|---|---|---|
 | POST | `/auth/session` | Mint a session token for `(actor_id, tenant_id)`; returns `token`/`expires_at`/`session_id`. | `X-Bootstrap-Secret` |
 
-### Ingest & substrate (`services/app/gateway/main.py`)
+### Ingest & substrate (`services/app/gateway/{core,substrate,contest,dashboard}_router.py`)
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
@@ -1007,7 +1010,7 @@ In the tables below, **Auth** = `Bearer` (session required), `Public` (allowlist
 | GET | `/today/deltas/{delta_id}` · `/today/deltas/{delta_id}/evidence` | Delta detail + supporting evidence. | Bearer |
 | POST | `/today/deltas/{delta_id}/apply` · `/delegate` · `/correction` | Act on a Today delta. | Bearer |
 
-### Recommendations (`main.py`)
+### Recommendations (`services/app/gateway/recommendations_router.py`)
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
@@ -1036,7 +1039,7 @@ In the tables below, **Auth** = `Bearer` (session required), `Public` (allowlist
 
 | Method | Path | Purpose | Auth | Source |
 |---|---|---|---|---|
-| GET | `/v1/history` | Ledger-event history list. | Bearer | `main.py` |
+| GET | `/v1/history` | Ledger-event history list. | Bearer | `services/product/history/router.py` |
 | GET | `/v1/history/summary` | History rollup over a day range. | Bearer | `services/product/history/router.py` |
 | GET | `/v1/spec/ledger_events` (+ `/`) | Spec-shaped ledger event feed. | Bearer | `spec_routes.py` |
 
@@ -1123,7 +1126,7 @@ Providers handled by the unified router (the `VERIFIERS` registry in `services/a
 
 ### Mounting summary
 
-Most routers are conditionally mounted in `build_app()` (`services/app/gateway/main.py`): always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, github-intel, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, simulation, debug, gmail/gcal/gdrive OAuth + push). The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
+Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, github-intel, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, simulation, debug, gmail/gcal/gdrive OAuth + push). The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
 
 ---
 
@@ -1375,8 +1378,8 @@ After `./scripts/dogfood_up.sh`, open <http://localhost:5173> (the Vite UI). The
 | `/ledger` | Ledger | Decisions / commitments / goals history (`/history` redirects here) |
 | `/debug/*` | Developer console | Sub-pages: `signals`, `think-runs`, `models`, `acts`, `renders`, `cache` |
 
-- **Slack simulator** is served by the gateway at <http://localhost:8000/simulation/slack_ui/>. It is mounted only when `GATEWAY_MOUNT_SIM=1`, which is the **default in dev** (`"0" if prod else "1"` in `services/app/gateway/main.py`) and forced off (`0`) in `docker-compose.yml`'s `gateway` service.
-- **Demo tenancy** lives under `/v1/demo/*` (`services/product/demo/router.py`). The picker endpoints `GET /v1/demo/companies` and `POST /v1/demo/sessions/start` are public (in the gateway's `_PUBLIC_PATHS`); `start` mints the session token used for everything else (reset/end/inject).
+- **Slack simulator** is served by the gateway at <http://localhost:8000/simulation/slack_ui/>. It is mounted only when `GATEWAY_MOUNT_SIM=1`, which is the **default in dev** (`"0" if prod else "1"` in `services/app/gateway/ceo_view_wiring.py`) and forced off (`0`) in `docker-compose.yml`'s `gateway` service.
+- **Demo tenancy** lives under `/v1/demo/*` (`services/product/demo/router.py`). The picker endpoints `GET /v1/demo/companies` and `POST /v1/demo/sessions/start` are public (in the gateway middleware's public path config); `start` mints the session token used for everything else (reset/end/inject).
 - **Auth in dev:** the UI sends `Authorization: Bearer <token>` (`ui/src/api/auth.ts`) and the gateway validates **every** token against `actor_sessions` via `BearerAuthMiddleware` — there is no static-token shortcut. Dev tokens are minted by `POST /auth/session` or the demo session-start flow; the `DEV_BEARER_TOKEN` in `.env.example`/`README.md` is documented but unwired in current code. Public paths (`/healthz`, `/metrics`, `/webhooks/`, `/v1/demo/companies`, `/v1/demo/sessions/start`, `/debug/`, `/finance/`, `/slack/`, `/stream*`) skip the bearer check.
 
 ### Operating the stack

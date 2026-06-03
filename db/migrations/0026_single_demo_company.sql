@@ -4,7 +4,7 @@
 -- The demo product has converged on a single example tenant (pelago,
 -- seeded by 0028). The legacy truss/northwind/meridian configs seeded
 -- by 0023 are retired: their snapshots are no longer maintained and the
--- gateway only re-seeds pelago (services/gateway/main.py:_ensure_demo_seed).
+-- gateway only re-seeds pelago (services/app/gateway/demo_seed.py:ensure_demo_seed).
 --
 -- Mirrors the (separately-authored) main-branch 0029 cleanup. Idempotent:
 -- a re-run finds nothing. Sessions/tenants pointing at a legacy config

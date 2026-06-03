@@ -17,7 +17,7 @@ Run as standalone (owns its own pool + lifespan):
       uvicorn simulation.server:app --port 8765
 
 Run mounted inside the gateway (shares the gateway's pool):
-    See `services/app/gateway/main.py::_configure_ceo_view`, which calls
+    See `services/app/gateway/ceo_view_wiring.py::configure_ceo_view`, which calls
     `build_sim_router(...)` with the gateway's deps and includes the
     returned APIRouter. `GATEWAY_MOUNT_SIM=1` (default on in dev/test)
     opts in.
@@ -142,7 +142,7 @@ def build_sim_router(deps: SimDeps) -> APIRouter:
 
     Used by both:
     - the standalone app factory below (owns a fresh pool + lifespan)
-    - the gateway's `_configure_ceo_view` (shares the gateway pool)
+    - the gateway's `configure_ceo_view` wiring (shares the gateway pool)
     """
     router = APIRouter()
 

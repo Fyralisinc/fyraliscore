@@ -36,7 +36,6 @@ the realistic "delete or wire up" candidates. Confirm intent before removing.
 |-------------|------------|------|
 | `services/product/today/map.py` | `build_map` Map payload | Zero importers repo-wide; aggregator sets `map_data=None` ("deliberately suppressed"). |
 | `services/domain/falsifiers/__init__.py` | Re-export shim of `models.falsifier` | No importer; callers use `models.falsifier` directly. |
-| Second `@app.get('/v1/history')` in `gateway/main.py` | Duplicate route handler | Shadowed/unreachable — FastAPI keeps the first match. Copy-paste artifact. |
 
 ## Test-only — dormant runtime features
 
