@@ -17,5 +17,5 @@ demo tenant from a production tenant. The pieces split as:
   * `sse`          — Server-Sent Events stream for the action list.
   * `router`       — FastAPI APIRouter mounting every demo endpoint.
 
-Mounted by services/app/gateway/main.py during `_register_routes`.
+Mounted by services/app/gateway/route_mounts.py.
 """

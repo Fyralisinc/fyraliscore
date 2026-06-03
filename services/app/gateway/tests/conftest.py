@@ -334,7 +334,6 @@ async def app_deps(
         alias_repo=alias_repo,
         embedder=embedder,  # type: ignore[arg-type]
         rate_limiter=rate_limiter,
-        slack_signing_secret=SLACK_TEST_SECRET,
     )
 
 
@@ -347,7 +346,6 @@ async def client(app_deps) -> AsyncGenerator[httpx.AsyncClient, None]:
         alias_repo=app_deps.alias_repo,
         embedder=app_deps.embedder,
         rate_limiter=app_deps.rate_limiter,
-        slack_signing_secret=app_deps.slack_signing_secret,
         configure_logging=False,
     )
     transport = httpx.ASGITransport(app=app)

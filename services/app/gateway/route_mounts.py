@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 
-import asyncpg
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
@@ -37,14 +36,9 @@ def register_gateway_routes(app: FastAPI) -> None:
     register_map_routes(app)
 
 
-def mount_gateway_routes(app: FastAPI, *, pool: asyncpg.Pool | None) -> None:
+def mount_gateway_routes(app: FastAPI) -> None:
     """Mount all route families whose construction does not await lifespan."""
     register_gateway_routes(app)
-
-    if pool is not None:
-        from services.app.realtime.main import configure_realtime
-
-        configure_realtime(app, pool=pool, start=False)
 
     from services.product.demo.router import demo_router as demo_router
 

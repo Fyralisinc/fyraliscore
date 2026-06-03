@@ -23,6 +23,7 @@ log = get_logger("gateway")
 # session-minting endpoint itself uses a separate actor lookup).
 _PUBLIC_PATHS = frozenset({
     "/healthz",
+    "/readyz",
     # Prometheus scrape path for the webhook verification/resolver
     # counters (FR-011). Scrapers carry no Bearer token, and the data is
     # bounded-enum counters with no tenant/installation labels (FR-015).

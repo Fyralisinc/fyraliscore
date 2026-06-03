@@ -1,19 +1,32 @@
 """Gateway startup wiring for integration state and ingestion data plane."""
 from __future__ import annotations
 
-import os
+import asyncio
+from dataclasses import dataclass
 
 import asyncpg
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
+from services.app.gateway.settings import GatewaySettings
 
 
 log = get_logger("gateway")
 
 
-def wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
-    """Wire integration secret, tenant, feature-flag, and GitHub state."""
+@dataclass(frozen=True, slots=True)
+class IngestionDataPlaneWiring:
+    """Result of wiring Kafka/S3 data-plane clients."""
+
+    wired: bool
+    owned: bool
+
+    def __bool__(self) -> bool:
+        return self.wired
+
+
+def wire_integration_runtime_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
+    """Wire shared integration/webhook runtime state."""
     import time
 
     from lib.shared.secrets import build_secret_store
@@ -48,28 +61,27 @@ def wire_in08_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
 
         app_.state.tenant_flags = TenantFlags(pool)
 
-    if getattr(app_.state, "github_client", None) is None:
-        from services.ingest.integrations.github.client import GithubClient
-
-        app_.state.github_client = GithubClient(
-            pool=pool,
-            tenant_resolver=app_.state.tenant_resolver,
-        )
-    if getattr(app_.state, "github_replay_cache", None) is None:
-        from services.ingest.integrations.github.replay_cache import (
-            make_replay_cache,
-        )
-
-        app_.state.github_replay_cache = make_replay_cache()
-
-
-async def wire_ingestion_data_plane(app_: FastAPI) -> None:
+async def wire_ingestion_data_plane(
+    app_: FastAPI,
+    *,
+    settings: GatewaySettings,
+) -> IngestionDataPlaneWiring:
     """Wire Kafka/S3 ingestion data-plane clients onto ``app.state``."""
-    if getattr(app_.state, "kafka_producer", None) is not None:
-        return
-    brokers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+    if (
+        getattr(app_.state, "kafka_producer", None) is not None
+        and getattr(app_.state, "s3_raw_client", None) is not None
+    ):
+        return IngestionDataPlaneWiring(wired=True, owned=False)
+    brokers = settings.kafka_bootstrap_servers
     if not brokers:
-        return
+        if settings.require_ingestion_data_plane:
+            raise RuntimeError(
+                "KAFKA_BOOTSTRAP_SERVERS is required when "
+                "GATEWAY_REQUIRE_INGESTION_DATA_PLANE=1"
+            )
+        return IngestionDataPlaneWiring(wired=False, owned=False)
+    producer = None
+    s3_client = None
     try:
         from types import SimpleNamespace
 
@@ -85,37 +97,92 @@ async def wire_ingestion_data_plane(app_: FastAPI) -> None:
                 client_id="gateway-ingress",
             )
         )
-        await producer.start()
-        s3_client = S3Client(
-            os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
-            endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        await asyncio.wait_for(
+            producer.start(),
+            timeout=settings.ingestion_data_plane_startup_timeout_s,
         )
-        await s3_client.connect()
         app_.state.kafka_producer = producer
+        s3_client = S3Client(
+            settings.s3_raw_bucket,
+            endpoint_url=settings.s3_endpoint_url,
+        )
+        await asyncio.wait_for(
+            s3_client.connect(),
+            timeout=settings.ingestion_data_plane_startup_timeout_s,
+        )
         app_.state.s3_raw_client = s3_client
         app_.state.notion_data_plane = SimpleNamespace(
             producer=producer, s3_client=s3_client,
         )
         log.info("ingestion_data_plane_wired", brokers=brokers)
-    except Exception as exc:  # noqa: BLE001 - never block startup
+        return IngestionDataPlaneWiring(wired=True, owned=True)
+    except Exception as exc:  # noqa: BLE001 - optional unless required=True
         log.error(
             "ingestion_data_plane_wiring_failed",
             error_type=type(exc).__name__,
             error=str(exc),
         )
+        await _close_partial_data_plane(
+            app_,
+            producer=producer,
+            s3_client=s3_client,
+        )
+        if settings.require_ingestion_data_plane:
+            raise
+        return IngestionDataPlaneWiring(wired=False, owned=False)
 
 
 async def close_ingestion_data_plane(app_: FastAPI) -> None:
     """Tear down clients wired by ``wire_ingestion_data_plane``."""
     producer = getattr(app_.state, "kafka_producer", None)
     s3_client = getattr(app_.state, "s3_raw_client", None)
+    await _close_partial_data_plane(
+        app_,
+        producer=producer,
+        s3_client=s3_client,
+    )
+
+
+async def _close_partial_data_plane(
+    app_: FastAPI,
+    *,
+    producer: object | None,
+    s3_client: object | None,
+) -> None:
+    """Close any data-plane clients that were created before a failure."""
     if producer is not None:
         try:
             await producer.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "ingestion_data_plane_producer_stop_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
     if s3_client is not None:
         try:
             await s3_client.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "ingestion_data_plane_s3_close_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+    if getattr(app_.state, "kafka_producer", None) is producer:
+        app_.state.kafka_producer = None
+    if getattr(app_.state, "s3_raw_client", None) is s3_client:
+        app_.state.s3_raw_client = None
+    notion_data_plane = getattr(app_.state, "notion_data_plane", None)
+    if notion_data_plane is not None and (
+        getattr(notion_data_plane, "producer", None) is producer
+        or getattr(notion_data_plane, "s3_client", None) is s3_client
+    ):
+        app_.state.notion_data_plane = None
+
+
+__all__ = [
+    "IngestionDataPlaneWiring",
+    "wire_integration_runtime_state",
+    "wire_ingestion_data_plane",
+    "close_ingestion_data_plane",
+]

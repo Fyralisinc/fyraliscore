@@ -100,6 +100,8 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
 
 ## The detail pages
 
+- **[Codebase category map](codebase-category-map.md)** — current folder/file
+  purpose map, runtime links, and cleanup order generated on 2026-06-03.
 - **[Feature status](feature-status.md)** — expected-vs-actual for every feature
   with a gap, by theme and severity (21 high, 46 medium, 64 low).
 - **[Wiring gaps](wiring-gaps.md)** — the 39 not-wired files + the stub, grouped by

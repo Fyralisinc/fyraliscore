@@ -26,14 +26,34 @@ class GatewayDeps:
         alias_repo: EntityAliasRepo,
         embedder: OllamaClient | None,
         rate_limiter: RateLimiter,
-        slack_signing_secret: str | None,
     ) -> None:
         self.pool = pool
         self.actor_repo = actor_repo
         self.alias_repo = alias_repo
         self.embedder = embedder
         self.rate_limiter = rate_limiter
-        self.slack_signing_secret = slack_signing_secret
+
+
+def attach_gateway_deps(
+    request_or_app: Any,
+    *,
+    pool: asyncpg.Pool,
+    actor_repo: ActorRepo,
+    alias_repo: EntityAliasRepo,
+    embedder: OllamaClient | None,
+    rate_limiter: RateLimiter,
+) -> GatewayDeps:
+    """Attach the gateway dependency bundle to ``app.state`` and return it."""
+    app = getattr(request_or_app, "app", request_or_app)
+    deps = GatewayDeps(
+        pool=pool,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+        rate_limiter=rate_limiter,
+    )
+    app.state.deps = deps
+    return deps
 
 
 def get_gateway_deps(request_or_app: Any) -> GatewayDeps:

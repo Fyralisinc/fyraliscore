@@ -2,7 +2,7 @@
 
 BUILD-PLAN §3 Prompt 2.A (minimum viable Phase 1):
     "slack.py:
-      - Signature verification against SLACK_SIGNING_SECRET.
+      - Signature verification against the Slack app signing secret.
       - Payload → ObservationDraft with content_text = message text,
         source_actor_ref = user id (format 'slack:U...'),
         external_id = '{channel}:{ts}' for dedup,

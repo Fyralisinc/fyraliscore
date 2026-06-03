@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -19,10 +18,6 @@ from services.ingest.ingestion.core import (
     ingest,
 )
 from services.ingest.ingestion.handlers import HandlerNotFound
-from services.ingest.ingestion.handlers.slack import (
-    SlackSignatureError,
-    verify_slack_signature,
-)
 
 
 class IngestSizeError(Exception):
@@ -91,6 +86,11 @@ def build_core_router() -> APIRouter:
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    @router.get("/readyz")
+    async def readyz(request: Request) -> JSONResponse:
+        payload, status_code = await _readiness_payload(request)
+        return JSONResponse(payload, status_code=status_code)
+
     @router.get("/metrics")
     async def metrics() -> Response:
         from services.app.webhooks import metrics as webhook_metrics
@@ -103,7 +103,7 @@ def build_core_router() -> APIRouter:
     @router.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:
         deps = _deps(request)
-        bootstrap = os.environ.get("AUTH_BOOTSTRAP_SECRET")
+        bootstrap = _settings(request).auth_bootstrap_secret
         hdr = request.headers.get("X-Bootstrap-Secret", "")
         if bootstrap and hdr != bootstrap:
             return JSONResponse(
@@ -164,17 +164,6 @@ def build_core_router() -> APIRouter:
         if auth is None:
             return _unauth("missing_bearer")
 
-        if channel == "slack:message":
-            secret = deps.slack_signing_secret
-            ts = request.headers.get("X-Slack-Request-Timestamp", "")
-            sig = request.headers.get("X-Slack-Signature", "")
-            try:
-                verify_slack_signature(raw, ts, sig, secret or "")
-            except SlackSignatureError as e:
-                return JSONResponse(
-                    {"error": "slack_signature", "reason": e.message},
-                    status_code=status.HTTP_403_FORBIDDEN,
-                )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as e:
@@ -235,6 +224,129 @@ def _deps(request: Request) -> Any:
     if deps is None:
         raise RuntimeError("Gateway deps not initialised (call lifespan startup)")
     return deps
+
+
+def _settings(request: Request) -> Any:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    if settings is None:
+        raise RuntimeError(
+            "Gateway settings not initialised (construct via build_app)"
+        )
+    return settings
+
+
+async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
+    app_state = request.app.state
+    startup_status = getattr(app_state, "startup_status", None)
+    if startup_status is None:
+        payload: dict[str, Any] = {
+            "ready": False,
+            "failed": False,
+            "phase": "not_started",
+            "components": {},
+        }
+    else:
+        payload = startup_status.as_dict()
+
+    components = dict(payload.get("components", {}))
+    ready = bool(payload.get("ready")) and not bool(payload.get("failed"))
+    failed = bool(payload.get("failed"))
+
+    def set_component(
+        name: str,
+        component_status: str,
+        *,
+        required: bool,
+        detail: str | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        nonlocal ready, failed
+        component: dict[str, Any] = {
+            "status": component_status,
+            "required": required,
+        }
+        if detail:
+            component["detail"] = detail
+        if error_type:
+            component["error_type"] = error_type
+        components[name] = component
+        if required and component_status != "ok":
+            ready = False
+            failed = True
+
+    deps = getattr(app_state, "deps", None)
+    if deps is None:
+        set_component(
+            "db",
+            "failed",
+            required=True,
+            detail="gateway_deps_missing",
+        )
+    else:
+        try:
+            await deps.pool.fetchval("SELECT 1")
+            set_component("db", "ok", required=True)
+        except Exception as exc:  # noqa: BLE001
+            set_component(
+                "db",
+                "failed",
+                required=True,
+                detail=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+    for name in ("secret_store", "tenant_resolver"):
+        if getattr(app_state, name, None) is None:
+            set_component(name, "failed", required=True, detail="missing")
+        else:
+            set_component(name, "ok", required=True)
+
+    settings = getattr(app_state, "gateway_settings", None)
+    require_realtime = bool(getattr(settings, "require_realtime", False))
+    realtime = getattr(app_state, "realtime", None)
+    dispatcher = getattr(realtime, "dispatcher", None) if realtime else None
+    if dispatcher is None and require_realtime:
+        set_component("realtime", "failed", required=True, detail="missing")
+    elif dispatcher is None:
+        set_component(
+            "realtime",
+            "degraded",
+            required=False,
+            detail="not_running",
+        )
+    else:
+        set_component("realtime", "ok", required=require_realtime)
+
+    require_data_plane = bool(
+        getattr(settings, "require_ingestion_data_plane", False)
+    )
+    producer = getattr(app_state, "kafka_producer", None)
+    s3_client = getattr(app_state, "s3_raw_client", None)
+    if producer is not None and s3_client is not None:
+        set_component(
+            "ingestion_data_plane",
+            "ok",
+            required=require_data_plane,
+        )
+    elif require_data_plane:
+        set_component(
+            "ingestion_data_plane",
+            "failed",
+            required=True,
+            detail="required_clients_missing",
+        )
+    else:
+        set_component(
+            "ingestion_data_plane",
+            "disabled",
+            required=False,
+            detail="not_configured",
+        )
+
+    payload["ready"] = ready
+    payload["failed"] = failed
+    payload["components"] = components
+    return payload, status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 def _unauth(reason: str) -> JSONResponse:

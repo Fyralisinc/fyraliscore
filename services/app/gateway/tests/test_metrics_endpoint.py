@@ -1,6 +1,6 @@
 """The gateway's GET /metrics Prometheus scrape endpoint (FR-011).
 
-Exercises the real route registered by `_register_routes`, delegating to
+Exercises the real route registered by `register_gateway_routes`, delegating to
 `services.app.webhooks.metrics.render_prometheus`. This is the scrape path
 ops dashboards previously lacked.
 """
@@ -10,14 +10,15 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from services.app.gateway.main import _PUBLIC_PATHS, _register_routes
+from services.app.gateway.middleware import _PUBLIC_PATHS
+from services.app.gateway.route_mounts import register_gateway_routes
 from services.app.webhooks import metrics
 
 
 @pytest.fixture
 def client():
     app = FastAPI()
-    _register_routes(app)
+    register_gateway_routes(app)
     metrics.reset()
     try:
         yield TestClient(app)

@@ -1011,8 +1011,8 @@ def _auth_or_none(request: Request):
 
 
 def _deps(request: Request):
-    from services.app.gateway.main import _deps as _gw_deps
-    return _gw_deps(request)
+    from services.app.gateway.deps import get_gateway_deps
+    return get_gateway_deps(request)
 
 
 def _unauth() -> JSONResponse:

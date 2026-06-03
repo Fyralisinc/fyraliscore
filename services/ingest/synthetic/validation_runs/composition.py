@@ -204,7 +204,6 @@ async def build_live_drivers(
         alias_repo=EntityAliasRepo(pool),
         embedder=None,
         rate_limiter=RateLimiter(),
-        slack_signing_secret=secrets.slack,
         configure_logging=False,
     )
     # Live-via-Kafka cutover deps on the shared app's state — the
