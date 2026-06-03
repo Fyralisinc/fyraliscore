@@ -46,7 +46,6 @@ from services.ingest.synthetic.validation_runs.composition import (
 from services.ingest.synthetic.validation_runs.cleanup import reset_state
 from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 from services.ingest.synthetic.validation_runs.preflight import (
-    PreflightFailure,
     run_preflight,
 )
 from services.ingest.synthetic.validation_runs.reports import (

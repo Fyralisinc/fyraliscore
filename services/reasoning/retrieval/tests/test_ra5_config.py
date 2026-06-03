@@ -15,8 +15,6 @@ Verification (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-5):
 from __future__ import annotations
 
 import json
-import os
-import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -27,7 +25,6 @@ from lib.shared.types import ModelCreate
 
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.config import (
-    CONFIG,
     RetrievalConfig,
     reload_config,
 )

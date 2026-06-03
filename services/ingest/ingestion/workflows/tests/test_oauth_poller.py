@@ -28,8 +28,6 @@ from services.ingest.ingestion.workflows.oauth_poller import (
     OAuthPollerConfig,
     SIGNAL_KIND_RUN_CREATED,
     WORKFLOW_KIND,
-    _create_onboarding_run,
-    _mark_trigger_consumed,
 )
 from services.ingest.ingestion.workflows.signals import emit_signal
 
@@ -463,7 +461,6 @@ def test_oauth_poller_passes_pattern_alignment_analyzer() -> None:
     violates one of the five rules — investigate the violation
     rather than relaxing the rule (per
     pattern-alignment-rules.md)."""
-    import pathlib
 
     from services.ingest.ingestion.workflows.tests.test_pattern_alignment import (
         WORKFLOWS_DIR,

@@ -5,13 +5,10 @@ ScriptedProvider-backed RenderingService. Every endpoint tested.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from uuid import UUID
 
-import pytest
 from fastapi.testclient import TestClient
 
-from services.product.rendering.api import create_app, get_service
+from services.product.rendering.api import create_app
 from services.product.rendering.core import RenderingService
 from services.product.rendering.tests.fixtures import (
     acme_card_focus_decision,

@@ -25,11 +25,9 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
-import orjson
 import pytest
 
 from lib.shared.ids import uuid7

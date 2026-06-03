@@ -16,18 +16,15 @@ Covers Wave 3-B Outstanding #1 + #10 + #11:
 """
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone, timedelta
-from uuid import UUID, uuid4
+from datetime import datetime, timezone
+from uuid import UUID
 
 import asyncpg
 import pytest
 
-from lib.llm.provider import LLMConfig
 from lib.shared.ids import uuid7
 
-from services.reasoning.retrieval.assembler import AccessContext
 from services.reasoning.retrieval.primary import TriggerContext
 import services.reasoning.think.reason as reason_mod
 from services.reasoning.think.reason import ThinkRunOutcome, think

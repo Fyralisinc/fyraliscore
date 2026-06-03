@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from services.product.today.freshness import truth_freshness_seconds
 

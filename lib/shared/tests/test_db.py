@@ -5,9 +5,6 @@ use the real DATABASE_URL pool provided by the root conftest.
 """
 from __future__ import annotations
 
-import asyncio
-import os
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg

@@ -27,7 +27,7 @@ import asyncpg
 import orjson
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.workflows.shard_fetch import (
     RAW_TOPIC,

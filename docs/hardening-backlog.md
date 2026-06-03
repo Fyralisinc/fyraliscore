@@ -219,31 +219,30 @@ Unit: simulate concurrency with `asyncio.gather(*[apply_diff(...) for _ in range
 
 ---
 
-### P1-0: Ruff unused-import / fixture-shadowing baseline blocks stricter lint
+### P1-0: Ruff unused-import / fixture-shadowing baseline blocked stricter lint
 
-**Priority:** P1 · **Effort:** M
+**Priority:** P1 · **Effort:** M · **Status:** Resolved 2026-06-03
 
 **Problem**
 
 The repo previously advertised `ruff check --select E9,F63,F7,F82,F821,F811,F401 .`
-in CI, but the current codebase has a large pre-existing `F401`/`F811`
-baseline, mostly unused imports, pytest fixture-name collisions, and generated
-or demo code. As of the 2026-06-03 trunk cleanup, the enforced CI lint baseline
-is limited to correctness checks (`E9,F63,F7,F82,F821`) so PRs can be evaluated
-by a green gate instead of a permanently red one.
+in CI, but the codebase had a large pre-existing `F401`/`F811` baseline,
+mostly unused imports, pytest fixture-name collisions, and generated or demo
+code. During the 2026-06-03 cleanup this baseline was removed or made explicit
+with narrow file-level ignores where pytest fixture shadowing is intentional.
 
 **Impact**
 
-Maintainability: unused imports and fixture shadowing stay noisy enough that
-future real lint findings can hide in the baseline. CI is truthful again, but
-it is not yet strict enough to catch drift in import hygiene.
+Maintainability: unused imports and fixture shadowing were noisy enough that
+future real lint findings could hide in the baseline.
 
-**Proposed Change**
+**Resolution**
 
-- Split generated/demo code into explicit ruff exclude or per-file-ignore rules.
-- Fix real unused imports in application and library code.
-- Add targeted per-file ignores for pytest fixtures where `F811` is intentional.
-- Re-enable `F401,F811` in CI once the baseline is clean.
+- Removed stale imports with ruff's fixer.
+- Deleted a duplicated `/v1/history` gateway handler caught by `F811`.
+- Added narrow file-level `F811` ignores for pytest modules that intentionally
+  import fixtures and use the same names as fixture parameters.
+- Restored CI to enforce `E9,F63,F7,F82,F821,F811,F401`.
 
 **Acceptance Criteria**
 

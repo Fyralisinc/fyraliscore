@@ -31,7 +31,6 @@ from services.reasoning.retrieval.assembler import (
 from services.reasoning.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
-    TriggerKind,
 )
 
 

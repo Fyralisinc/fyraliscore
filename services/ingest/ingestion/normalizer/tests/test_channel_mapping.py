@@ -7,7 +7,6 @@ would silently route those envelopes to the unsupported path.
 """
 from __future__ import annotations
 
-import pytest
 
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 

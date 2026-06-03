@@ -15,8 +15,6 @@ Coverage:
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import asyncpg
@@ -28,7 +26,6 @@ import pytest
 from services.app.gateway.tests.test_map_routes import (  # type: ignore
     _seed_model,
     _seed_edge,
-    _ensure_tenant,
     _auth,
 )
 

@@ -45,10 +45,6 @@ catches that asymmetry. Per the M2.4 review.
 """
 from __future__ import annotations
 
-import asyncio
-import datetime as dt
-from typing import Any
-from uuid import UUID
 
 import asyncpg
 import orjson

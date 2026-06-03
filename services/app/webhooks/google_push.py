@@ -20,7 +20,6 @@ acked without work.
 """
 from __future__ import annotations
 
-from typing import Any
 
 import asyncpg
 import structlog

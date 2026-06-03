@@ -21,7 +21,7 @@ from lib.shared.types import GoalAltitude, GoalRow, GoalState
 
 from services.domain.acts import invariants as inv
 from services.domain.acts.retry import with_deadlock_retry
-from services.domain.acts.state_machines import can_transition, is_terminal
+from services.domain.acts.state_machines import can_transition
 
 
 async def _emit_state_change(

@@ -7,7 +7,6 @@ channels, 413 on oversized payload, 400 on malformed JSON.
 from __future__ import annotations
 
 import json
-import time
 
 import httpx
 import pytest

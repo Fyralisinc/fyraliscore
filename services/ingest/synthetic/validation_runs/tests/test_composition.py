@@ -9,7 +9,6 @@ to the seeded installs, and that twin-identity capture + drain work.
 from __future__ import annotations
 
 import uuid
-from uuid import UUID
 
 import asyncpg
 import pytest

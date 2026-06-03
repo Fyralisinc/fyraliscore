@@ -24,13 +24,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import pathlib
 import struct
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -47,7 +45,6 @@ from services.app.gateway.auth import create_session
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.app.gateway.main import GatewayDeps, build_app
 from services.app.gateway.rate_limit import RateLimiter
-from services.ingest.ingestion.handlers.slack import verify_slack_signature
 from tests.db_baseline import (
     install_test_tenant_auto_register,
     seed_test_baseline,

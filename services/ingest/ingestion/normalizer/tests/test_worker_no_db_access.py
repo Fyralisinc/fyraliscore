@@ -22,7 +22,6 @@ longer Path B and the M2 architecture invariant is broken.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import subprocess
 import sys
 import textwrap

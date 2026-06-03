@@ -130,8 +130,6 @@ async def test_export_text_binary_returns_none():
 def _make_pdf(text: str) -> bytes:
     """A real one-page PDF carrying `text`, built with reportlab if available,
     else a hand-rolled minimal PDF that pypdf can extract."""
-    import io
-    from pypdf import PdfWriter
     # pypdf can't author text content; write a minimal PDF with a text stream.
     # Hand-roll a tiny valid PDF with one Tj operator.
     content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()

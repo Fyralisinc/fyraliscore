@@ -17,7 +17,7 @@ import asyncpg
 
 from lib.shared.ids import uuid7
 from services.reasoning.think.applier import apply_diff
-from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.diff_schema import ValidatedDiff
 from services.reasoning.think.region_locks import region_lock_key
 
 from .. import _fixtures as F

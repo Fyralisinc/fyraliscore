@@ -51,7 +51,6 @@ from services.reasoning.retrieval.assembler import (
     assemble_context,
 )
 from services.reasoning.retrieval.primary import (
-    RetrievalResult,
     TriggerContext,
 )
 from services.platform.execution.inquiry import InquiryResult, retrieve_for_execution

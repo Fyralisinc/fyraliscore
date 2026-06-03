@@ -5,7 +5,6 @@ No DB required.
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 from cryptography.hazmat.primitives import serialization

@@ -14,9 +14,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
-import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7

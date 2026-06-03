@@ -24,7 +24,6 @@ from lib.shared.types import ModelRow
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
 from services.reasoning.relationships.candidates import (
     TOPOLOGY_EMITTABLE_EDGE_KINDS,
-    ModelSignal,
     RelationshipCandidate,
     make_edge_candidate,
     make_situation_candidate,

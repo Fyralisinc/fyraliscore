@@ -6,7 +6,6 @@ lock, cascade, anomalies) live in test_end_to_end.py.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,7 +17,7 @@ from services.reasoning.think.applier import (
     AlreadyAppliedError, apply_diff, hash_diff,
 )
 from services.reasoning.think.diff_schema import (
-    ActOp, ClaimOp, EdgeOp, ResourceOp, ValidatedDiff,
+    ActOp, ClaimOp, EdgeOp, ValidatedDiff,
 )
 from services.reasoning.think.text_embedding import deterministic_text_embedding
 

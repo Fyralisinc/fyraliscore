@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
 from typing import Any
 from uuid import UUID

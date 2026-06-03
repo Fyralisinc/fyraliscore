@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from services.ingest.ingestion.kafka.shutdown import (
     install_shutdown_event,

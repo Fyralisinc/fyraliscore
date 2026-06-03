@@ -1,0 +1,241 @@
+/*
+ * Fyralis — Today page styles. Translated from FYRALIS_TODAY_SPEC.md.
+ * The CSS variables on :root are the source of truth; tailwind.config.js
+ * mirrors them for utility-class consumers. Component files reference
+ * class names 1:1 with the spec so the spec stays the ground truth.
+ */
+
+:root {
+  /* ─── BACKGROUNDS ─── warm-leaning near-white so the warm paper
+       surfaces (cards, Map) read as a continuation of the page,
+       not as documents floating on a cool desk. */
+  --base:        #F6F3EB;
+  --base-recess: #EDE9DE;
+  --base-deep:   #E0DACB;
+
+  /* ─── SURFACES ─── pure white cards */
+  --surface:      #FFFFFF;
+  --surface-soft: #F9FAFB;
+
+  /* ─── PAPER ─── warm card surfaces (UX-5 polish) */
+  --paper:        #FCFBF8;   /* card body warm off-white */
+  --paper-deep:   #F7F5EF;   /* card hover & quote backgrounds */
+  --paper-cream:  #FAF6EC;   /* acceptance / quote callouts */
+  --paper-edge:   #E9E5DA;   /* warm hairlines */
+  --warm-ink:     #1B1B22;   /* body text — slightly warm black */
+  --warm-ink-2:   #3F4047;   /* secondary body */
+  --warm-ink-3:   #6E6F78;   /* tertiary / labels */
+
+  /* ─── INK ─── deep cool-leaning near-black */
+  --ink:    #0A0A0F;
+  --ink-2:  #2C2D33;
+  --ink-3:  #5A5C66;
+  --ink-4:  #8B8D96;
+  --ink-5:  #C5C7D0;
+
+  /* ─── RULES ─── cool-leaning */
+  --rule:       #C5C7D0;
+  --rule-soft:  #E1E3E9;
+  --rule-faint: #ECEEF2;
+
+  /* ─── SIGNATURE — deep teal / petrol ─── */
+  --accent:        #0F766E;
+  --accent-hover:  #115E59;
+  --accent-deep:   #134E4A;
+  --accent-soft:   #99F6E4;
+  --accent-faint:  #CCFBF1;
+
+  /* ─── SEVERITY ─── cool-shifted, modern-premium ─── */
+  --critical:        #991B1B;
+  --critical-bg:     #FEE2E2;
+  --critical-bg-2:   #FCA5A5;
+  --critical-text:   #7F1D1D;
+
+  --strategic:        #5B21B6;
+  --strategic-bg:     #EDE9FE;
+  --strategic-bg-2:   #C4B5FD;
+  --strategic-text:   #4C1D95;
+
+  --high:        #854D0E;
+  --high-bg:     #FEF7E0;
+  --high-bg-2:   #FBE197;
+  --high-text:   #713F12;
+
+  --med:        #334155;
+  --med-bg:     #E2E8F0;
+  --med-bg-2:   #CBD5E1;
+  --med-text:   #1E293B;
+
+  --green:    var(--accent);
+  --green-bg: var(--accent-faint);
+
+  /* ─── SHADOWS ─── multi-layer, light from upper-left */
+  --shadow-card:
+    0 0 0 1px rgba(15, 23, 42, 0.04),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 2px 4px rgba(15, 23, 42, 0.02);
+
+  --shadow-card-hover:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 4px 8px rgba(15, 23, 42, 0.04),
+    0 12px 24px rgba(15, 23, 42, 0.06);
+
+  --shadow-card-focus:
+    0 0 0 1px rgba(15, 118, 110, 0.5),
+    0 0 0 4px rgba(15, 118, 110, 0.08),
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 4px 8px rgba(15, 23, 42, 0.05),
+    0 16px 32px rgba(15, 23, 42, 0.08);
+
+  --shadow-overlay:
+    0 4px 8px rgba(15, 23, 42, 0.08),
+    0 24px 64px rgba(15, 23, 42, 0.18);
+
+  --shadow-button-press:
+    inset 0 1px 2px rgba(15, 23, 42, 0.12);
+
+  /* ─── TYPE ─── */
+  --serif: 'Newsreader', Georgia, serif;
+  --sans:  'Inter', system-ui, -apple-system, sans-serif;
+  --mono:  'JetBrains Mono', ui-monospace, monospace;
+
+  /* ─── MOTION ─── */
+  --t-quick:   0.16s;
+  --t-fast:    0.22s;
+  --t-base:    0.34s;
+  --t-slow:    0.5s;
+  --t-cascade: 0.6s;
+
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out:   cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-organic:  cubic-bezier(0.4, 0, 0.6, 1);
+
+  /* ─── LAYOUT ─── */
+  --sidebar-w:       240px;
+  --content-max:     940px;
+  --content-padding: 30px 36px 80px;
+
+  --radius-sm:  4px;
+  --radius-md:  6px;
+  --radius-lg:  8px;
+  --radius-xl:  10px;
+  --radius-2xl: 14px;
+
+  /* ─── NOCTURNE GROVE PALETTE ─── brand v2 tokens used by the
+       new shell, primitives, and rebuilt Today/Model/Forecasts/
+       Ledger pages. Legacy tokens above remain to keep existing
+       components rendering until they are migrated. */
+  --color-midnight-fir:   #071713;
+  --color-forest-shadow:  #132623;
+  --color-moon-paper:     #F7F2EA;
+  --color-porcelain-mist: #FFFCF6;
+  --color-moss-cipher:    #3E6A57;
+  --color-living-moss:    #4F8A6A;
+  --color-soft-lichen:    #AAB79B;
+  --color-antique-gold:   #C9A35A;
+  --color-burnt-coral:    #C96A56;
+  --color-deep-garnet:    #7F2F29;
+  --color-deep-lapis:     #315A7A;
+  --color-veiled-iris:    #6D678B;
+  --color-root-ink:       #18201C;
+  --color-weathered-sage: #768177;
+  --color-stone-veil:     #DDD7CB;
+
+  /* Semantic aliases. */
+  --bg-canvas:        var(--color-moon-paper);
+  --bg-elevated:      var(--color-porcelain-mist);
+  --bg-sidebar:       var(--color-midnight-fir);
+  --bg-sidebar-deep:  var(--color-forest-shadow);
+  --text-primary:     var(--color-root-ink);
+  --text-muted:       var(--color-weathered-sage);
+  --text-on-dark:     var(--color-porcelain-mist);
+  --border-default:   var(--color-stone-veil);
+  --accent-trust:     var(--color-moss-cipher);
+  --accent-alive:     var(--color-living-moss);
+  --accent-authority: var(--color-antique-gold);
+  --accent-review:    var(--color-burnt-coral);
+  --accent-critical:  var(--color-deep-garnet);
+  --accent-evidence:  var(--color-deep-lapis);
+  --accent-forecast:  var(--color-veiled-iris);
+
+  /* Spacing scale (Fyralis v2). */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  28px;
+  --space-8:  32px;
+  --space-9:  36px;
+  --space-10: 40px;
+  --space-11: 44px;
+  --space-12: 48px;
+
+  /* Radii. */
+  --radius-card:  16px;
+  --radius-pill:  999px;
+  --radius-panel: 24px;
+  --radius-nav:   12px;
+
+  /* Typography families (v2). */
+  --font-serif-v2: 'Source Serif Pro', 'Newsreader', Georgia, serif;
+  --font-sans-v2:  'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ─── Typography helpers for Fyralis v2 ─── */
+.font-serif { font-family: var(--font-serif-v2); }
+.font-sans  { font-family: var(--font-sans-v2); }
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 15px;
+}
+
+html,
+body,
+#root {
+  background: #ECF0F4;
+  color: var(--warm-ink, #1B1B22);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100%;
+}
+
+/* Subtle blue-slate page — picks up the teal accent's cool undertone
+   without shouting. Reads as "morning sky" or premium-magazine spread.
+   Soft highlight at the top center, faint teal pool from upper-left
+   to suggest ambient signature color without tinting any region. */
+body {
+  background:
+    radial-gradient(ellipse 80% 40% at 50% -10%, rgba(255, 255, 255, 0.65) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 50% at 8% -5%, rgba(15, 118, 110, 0.05) 0%, transparent 60%),
+    linear-gradient(180deg, #EDF1F5 0%, #E2E8EE 100%);
+  background-attachment: fixed;
+  position: relative;
+}
+body > * { position: relative; z-index: 1; }
+
+button {
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+input, textarea {
+  font: inherit;
+}
+
+a { color: inherit; text-decoration: none; }
+

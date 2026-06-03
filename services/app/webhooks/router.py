@@ -30,7 +30,6 @@ Request flow:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -543,7 +542,6 @@ async def _handle_github_lifecycle(
 
     try:
         from services.ingest.integrations.github.lifecycle import dispatch
-        from lib.shared.errors import ValidationError as _ValidationError
         body = await dispatch(
             event_type=event_type,
             payload=payload,

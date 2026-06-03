@@ -13,7 +13,6 @@ Pure unit tests — no DB, no Kafka (mocks at the s3/kafka boundary).
 """
 from __future__ import annotations
 
-import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID

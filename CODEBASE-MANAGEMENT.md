@@ -23,15 +23,19 @@ reasoning behind each call. It is the companion to
   identical to baseline (3,209 tests collected, 11 pre-existing errors, ruff
   unchanged).
 - **Boundaries are now enforced**, not just documented: import-linter contracts
-  in CI, stale flat-service import tests, per-layer READMEs, and
-  `CONTRIBUTING.md`.
+  in CI, stale flat-service import tests, HTTP route-contract checks, per-layer
+  READMEs, and `CONTRIBUTING.md`.
 - **Honesty over theatre:** only invariants that are *empirically true today* are
   enforced. Real coupling that exists (e.g. `domain.models.repo → product`) is
   documented as tracked debt, not hidden behind a contract the code already
   breaks.
-- **Deliberately deferred:** the 4,409-line gateway `build_app()` split (not
-  runtime-verifiable in this environment — see §8) and risky schema/lock changes.
-  Each comes with a concrete plan instead of a blind edit.
+- **Gateway and UI cleanup are now underway:** Sage's internal control plane was
+  extracted from `services/app/gateway/main.py`, the duplicate `/v1/history`
+  handler was removed, and the 11k-line `ui/src/index.css` was split into
+  ordered `ui/src/styles/app/*` slices.
+- **Lint is truthful again:** CI enforces the full conservative ruff baseline
+  (`E9,F63,F7,F82,F821,F811,F401`) after stale imports were removed and
+  intentional pytest fixture shadowing was made explicit.
 
 ---
 
@@ -67,13 +71,13 @@ The codebase was **not disordered** — it was *illegible at scale*. Concretely:
 | Clean lower layer | `lib/` had **no hard layer violations** — only a few guarded lazy imports. |
 | **`services/` was a flat grab-bag** | 37 packages with no sub-structure, mixing 261-file subsystems (`ingestion`) and 119-file (`integrations`) with 2-file helpers (`judgment`). Nothing signalled which packages were domain vs. app vs. reasoning vs. product. Resolved by the layered tree; post-merge Sage now lives under `services/reasoning/sage`. |
 | Cross-package coupling is real | `ingestion ↔ integrations` are bidirectionally coupled; `think → retrieval → models` is a chain; all done via **absolute** imports (only 9 multi-dot relatives, all intra-package). |
-| God-file | `gateway/main.py` = **4,409 lines**. |
+| God-file | `gateway/main.py` was **4,409+ lines**. Sage internal routes are now extracted; recommendation, Today, and structure routes remain future extraction targets. |
 | Name collisions | `lib/topology` vs `services/topology`, `lib/integrations` vs `services/integrations`, top-level `demo/` (data-gen) vs `services/demo/` (runtime). |
 | Convention drift | Router files named `router.py` / `routes.py` / `api.py`; 4 services lacked co-located tests. |
 | Loose top-level docs | Stale `V1_PR_PROMPTS.md` + active backlog at the root; `.gitignore` listed `CLAUDE.md`/`V1_PR_PROMPTS.md` as "not published" while both were tracked. |
 | Branch drift | `cannonical` is **370 ahead / 0 behind** `main`; `production` is **46 behind** `main`; `integration/ingestion-hardening` 341 ahead / 48 behind. `main` is no longer the real integration point. |
 | Latent test coupling | 11 pre-existing `pytest --collect-only` errors from service tests importing `tests.db_baseline`. |
-| Schema numbering | Two duplicate migration prefixes (`0014_*`, `0043_*`) from a historical merge. |
+| Schema numbering | Historical duplicate migration prefixes (`0014_*`, `0043_*`) and Sage merge collisions were resolved; CI now rejects future duplicate prefixes. |
 | Dead/odd artifacts | `monitoring/` exists empty and root-owned (a container mount), unreferenced by any compose/CI. |
 
 ---

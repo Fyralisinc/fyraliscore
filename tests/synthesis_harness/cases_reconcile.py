@@ -16,17 +16,15 @@ think returns a non-error outcome).
 """
 from __future__ import annotations
 
-import json
 import os
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
 
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.applier import apply_diff
-from services.reasoning.think.diff_schema import ClaimOp, RawDiff, ValidatedDiff
+from services.reasoning.think.diff_schema import ValidatedDiff
 from services.reasoning.think.reason import think
 from lib.llm.provider import LLMConfig, build_provider
 from lib.shared.ids import uuid7

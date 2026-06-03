@@ -16,7 +16,6 @@ returns a `Resolved` outcome bound to `_TENANT` by default.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from uuid import UUID

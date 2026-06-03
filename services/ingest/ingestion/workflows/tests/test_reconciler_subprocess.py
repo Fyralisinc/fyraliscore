@@ -23,7 +23,7 @@ import signal
 import subprocess
 import sys
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import pytest

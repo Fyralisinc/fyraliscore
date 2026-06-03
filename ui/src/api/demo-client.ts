@@ -1,5 +1,7 @@
 // HTTP helpers for the demo simulator surface.
 
+import { API_ROUTES } from "./routes";
+
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
 
 // Backend's suggested-signal entries are flat: each tab's items have
@@ -89,7 +91,7 @@ async function authedRequest<T>(
 
 export function getSuggestedSignals(token: string): Promise<SuggestedSignals> {
   return authedRequest<SuggestedSignals>(
-    "/v1/demo/simulator/suggested",
+    API_ROUTES.demo.simulatorSuggested,
     token
   );
 }
@@ -100,7 +102,7 @@ export function injectSignal(
   payload: Record<string, unknown>
 ): Promise<InjectResponse> {
   return authedRequest<InjectResponse>(
-    "/v1/demo/simulator/inject",
+    API_ROUTES.demo.simulatorInject,
     token,
     {
       method: "POST",
@@ -114,7 +116,7 @@ export function getSession(
   sessionId: string
 ): Promise<SessionInfo> {
   return authedRequest<SessionInfo>(
-    `/v1/demo/sessions/${sessionId}`,
+    API_ROUTES.demo.session(sessionId),
     token
   );
 }
@@ -124,7 +126,7 @@ export function endSession(
   sessionId: string
 ): Promise<{ ended: true }> {
   return authedRequest<{ ended: true }>(
-    `/v1/demo/sessions/${sessionId}/end`,
+    API_ROUTES.demo.endSession(sessionId),
     token,
     { method: "POST" }
   );
@@ -135,7 +137,7 @@ export function resetSession(
   sessionId: string
 ): Promise<{ reset: true }> {
   return authedRequest<{ reset: true }>(
-    `/v1/demo/sessions/${sessionId}/reset`,
+    API_ROUTES.demo.resetSession(sessionId),
     token,
     { method: "POST" }
   );

@@ -27,7 +27,6 @@ from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.app.gateway.main import build_app
 from services.app.gateway.rate_limit import RateLimiter
-from services.ingest.synthetic.fault_profiles import RATE_LIMITED
 from services.ingest.synthetic.fixtures import make_github_repos
 from services.ingest.synthetic.live_generators.github_webhook import (
     GithubWebhookGenerator,

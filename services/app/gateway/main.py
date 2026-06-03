@@ -40,10 +40,8 @@ import structlog
 from fastapi import (
     Depends,
     FastAPI,
-    HTTPException,
     Request,
     Response,
-    WebSocket,
     status,
 )
 from fastapi.responses import JSONResponse
@@ -60,7 +58,6 @@ from services.app.gateway.auth import (
     validate_token,
 )
 from services.app.gateway.db_bootstrap import (
-    _register_codecs,
     close_gateway_pool,
     create_gateway_pool,
 )
@@ -72,7 +69,7 @@ from services.ingest.ingestion.core import (
     PayloadTooLarge,
     ingest,
 )
-from services.ingest.ingestion.handlers import CHANNEL_TRUST_MAP, HandlerNotFound
+from services.ingest.ingestion.handlers import HandlerNotFound
 from services.ingest.ingestion.handlers.slack import (
     SlackSignatureError,
     verify_slack_signature,
@@ -1033,21 +1030,6 @@ def _deps(request_or_app) -> GatewayDeps:  # type: ignore[no-untyped-def]
     return deps
 
 
-def _internal_jsonable(value: Any) -> Any:
-    if isinstance(value, UUID):
-        return str(value)
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except Exception:
-            pass
-    if isinstance(value, dict):
-        return {str(k): _internal_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_internal_jsonable(v) for v in value]
-    return value
-
-
 # ---------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------
@@ -1058,158 +1040,9 @@ def _register_routes(app: FastAPI) -> None:
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/internal/synthesis-reader/read")
-    async def internal_synthesis_reader_read(request: Request) -> JSONResponse:
-        deps = _deps(request)
-        body = await request.json()
-        try:
-            tenant_id = UUID(str(body["tenant_id"]))
-        except Exception:
-            return JSONResponse({"error": "tenant_id required as UUID"}, status_code=400)
-        signal_id = body.get("signal_id")
-        observation_id = None
-        if signal_id:
-            try:
-                observation_id = UUID(str(signal_id))
-            except Exception:
-                observation_id = None
-        question = str(body.get("question") or "")
-        if not question.strip():
-            return JSONResponse({"error": "question required"}, status_code=400)
-        primitive = str(body.get("question_primitive") or "DEPENDENCY").upper()
-        async with deps.pool.acquire() as conn:
-            seed_text = ""
-            if observation_id is not None:
-                seed_text = await conn.fetchval(
-                    """
-                    SELECT content_text
-                    FROM observations
-                    WHERE tenant_id = $1 AND id = $2
-                    """,
-                    tenant_id,
-                    observation_id,
-                ) or ""
-            from services.reasoning.retrieval.primary import TriggerContext
-            from services.reasoning.sage.reader import SynthesisReader
-            result = await SynthesisReader(pool=deps.pool).read(
-                conn=conn,
-                tenant_id=tenant_id,
-                trigger=TriggerContext(
-                    kind="T1",
-                    tenant_id=tenant_id,
-                    observation_id=observation_id,
-                    seed_natural_text=seed_text or question,
-                    seed_entity_ids=body.get("known_entities") or [],
-                ),
-                question_id=str(body.get("question_id") or "Q_API"),
-                question=question,
-                question_primitive=primitive,
-                hypotheses=tuple(body.get("hypotheses") or ()),
-            )
-        return JSONResponse({
-            "activated_nodes": [
-                {
-                    "model_id": str(t.model_id),
-                    "activation_score": t.activation_score,
-                    "activation_reasons": list(t.activation_reasons),
-                    "selected": t.selected,
-                    "selection_rank": t.selection_rank,
-                    "source_breakdown": t.source_breakdown,
-                }
-                for t in result.activations
-            ],
-            "selected_subgraph": {
-                "selected_nodes": [str(mid) for mid in result.selection.selected_nodes],
-                "selected_edges": [str(eid) for eid in result.selection.selected_edges],
-                "bridge_nodes": [str(mid) for mid in result.selection.bridge_nodes],
-                "excluded": [
-                    {
-                        "model_id": str(e.model_id),
-                        "reason": e.reason,
-                        "summarized": e.summarized,
-                    }
-                    for e in result.selection.excluded
-                ],
-                "coverage_metrics": result.selection.coverage_metrics,
-            },
-            "projected_evidence": list(result.projected_evidence),
-            "omission_candidates": [
-                {"evidence_id": eid, "reason": reason}
-                for eid, reason in result.omitted_projection
-            ],
-            "debug": result.debug,
-        })
+    from services.app.gateway.sage_internal_router import build_sage_internal_router
 
-    @app.post("/internal/topology-optimizer/optimize")
-    async def internal_topology_optimizer_optimize(request: Request) -> JSONResponse:
-        deps = _deps(request)
-        body = await request.json()
-        try:
-            tenant_id = UUID(str(body["tenant_id"]))
-            session_id = UUID(str(body["inquiry_session_id"]))
-        except Exception:
-            return JSONResponse(
-                {"error": "tenant_id and inquiry_session_id required as UUID"},
-                status_code=400,
-            )
-        from services.reasoning.sage.topology_optimizer import optimize_topology
-        report = await optimize_topology(
-            pool=deps.pool,
-            tenant_id=tenant_id,
-            inquiry_session_id=session_id,
-            trigger_event=str(body.get("trigger_event") or "scheduled"),
-        )
-        return JSONResponse({
-            "discovery_updates_applied": {
-                "affordance_reinforces": report.affordance_reinforces,
-                "affordance_decays": report.affordance_decays,
-                "shortcut_creates_or_bumps": report.shortcut_creates_or_bumps,
-                "shortcut_decays": report.shortcut_decays,
-                "negative_memory_inserts": report.negative_memory_inserts,
-                "region_refreshes": report.region_refreshes,
-            },
-            "canonical_update_candidates": {
-                "merge": list(report.canonical_merge_candidates),
-                "split": list(report.canonical_split_candidates),
-                "promote": list(report.canonical_promote_candidates),
-                "demote": list(report.canonical_demote_candidates),
-            },
-            "metrics": report.metrics,
-        })
-
-    @app.post("/internal/evidence-projector/project")
-    async def internal_evidence_projector_project(request: Request) -> JSONResponse:
-        deps = _deps(request)
-        body = await request.json()
-        try:
-            tenant_id = UUID(str(body["tenant_id"]))
-            node_ids = [UUID(str(v)) for v in body.get("node_ids", [])]
-        except Exception:
-            return JSONResponse(
-                {"error": "tenant_id and node_ids required"},
-                status_code=400,
-            )
-        from dataclasses import asdict
-        from services.reasoning.sage.evidence_projection import EvidenceProjector
-        result = await EvidenceProjector().project(
-            pool=deps.pool,
-            tenant_id=tenant_id,
-            selected_model_ids=node_ids,
-            question_primitive=str(
-                body.get("question_primitive") or "DEPENDENCY"
-            ).upper(),
-        )
-        return JSONResponse({
-            "projected_evidence": [
-                _internal_jsonable(asdict(candidate))
-                for candidate in result.projected
-            ],
-            "omitted": [
-                {"evidence_id": str(eid), "reason": reason}
-                for eid, reason in result.omitted
-            ],
-            "coverage": result.coverage,
-        })
+    app.include_router(build_sage_internal_router())
 
     @app.get("/metrics")
     async def metrics() -> Response:
@@ -2666,35 +2499,6 @@ def _register_routes(app: FastAPI) -> None:
                 period=period,
                 conn=conn,
                 types=types_list,
-            )
-        return JSONResponse(payload.to_dict(), status_code=200)
-
-    # ---------------- /v1/history (History page aggregator) -------
-    # Returns events / predictions / arcs / calibration / layer_counts
-    # for the period requested. services.product.history.aggregator owns the
-    # substrate→UI mapping; this handler is just the HTTP shell.
-    @app.get("/v1/history")
-    async def history_endpoint(request: Request) -> JSONResponse:
-        from services.product.history import build_history
-
-        auth: AuthContext | None = getattr(request.state, "auth", None)
-        if auth is None:  # pragma: no cover — middleware enforces
-            return _unauth("missing_bearer")
-
-        period = request.query_params.get("period") or "90d"
-        if period not in ("7d", "30d", "90d", "365d", "all"):
-            return JSONResponse(
-                {"error": "invalid_period",
-                 "reason": "expected one of 7d/30d/90d/365d/all"},
-                status_code=400,
-            )
-
-        deps = _deps(request)
-        async with deps.pool.acquire() as conn:
-            payload = await build_history(
-                tenant_id=auth.tenant_id,
-                period=period,
-                conn=conn,
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 

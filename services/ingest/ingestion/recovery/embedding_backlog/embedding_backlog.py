@@ -46,8 +46,7 @@ import datetime as dt
 import logging
 import os
 import signal
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 from uuid import UUID
 
 import asyncpg
@@ -55,7 +54,6 @@ from redis.asyncio import Redis as AsyncRedis
 
 from lib.embeddings.base import Embedder, EmbedderError
 from lib.embeddings.factory import make_embedder
-from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from services.ingest.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,

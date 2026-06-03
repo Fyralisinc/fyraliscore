@@ -15,7 +15,6 @@ import os
 from uuid import uuid4
 
 import mmh3
-import pytest
 
 from services.app.webhooks.router import _kafka_partition_for_tenant
 

@@ -6,6 +6,7 @@ the Fyralis Today aggregator.
   POST /v1/today/brand
   POST /v1/recommendations/{id}/triage
 """
+# ruff: noqa: F811
 from __future__ import annotations
 
 import asyncpg

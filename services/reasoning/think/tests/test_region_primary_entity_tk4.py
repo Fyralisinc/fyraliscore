@@ -25,7 +25,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 

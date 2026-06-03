@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.fetchers import discord as dc
 from services.ingest.ingestion.fetchers.discord import (
     DiscordCursor, SHARD_KIND_CHANNEL_WINDOW, fetch_page_discord,

@@ -49,8 +49,6 @@ import asyncpg
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import (
     CommitmentRow,
-    DecisionRow,
-    GoalRow,
     ModelRow,
     ObservationRow,
     ResourceRow,

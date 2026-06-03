@@ -20,7 +20,7 @@ Below → Memory Fabric accumulation.
 """
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Iterable
+from typing import Iterable
 from uuid import UUID
 
 import asyncpg

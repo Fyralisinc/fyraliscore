@@ -48,7 +48,6 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
 import orjson
 from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
@@ -57,7 +56,7 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 )
 
 from services.ingest.ingestion.dlq.publish import publish_dlq
-from services.ingest.ingestion.handlers import HandlerNotFound, get_handler
+from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingest.ingestion.kafka.topics import (
     consumer_group,

@@ -13,7 +13,6 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-import pytest_asyncio
 
 from lib.shared.ids import uuid7
 

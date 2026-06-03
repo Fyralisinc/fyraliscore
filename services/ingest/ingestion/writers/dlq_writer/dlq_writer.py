@@ -42,7 +42,6 @@ offset (so the batch is retried on next poll).
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import logging
 import os

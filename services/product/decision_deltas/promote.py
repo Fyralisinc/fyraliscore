@@ -23,7 +23,6 @@ via the existing handlers.dismiss_recommendation flow after promotion.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 

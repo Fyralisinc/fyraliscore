@@ -10,7 +10,6 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from tests.real_llm.infrastructure.assertion_helpers import (
     assert_at_least_one_model_matching,
     assert_any_cascade_chain_intact,
-    assert_cascade_chain_intact,
 )
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 from tests.real_llm.infrastructure.scenario_loader import (

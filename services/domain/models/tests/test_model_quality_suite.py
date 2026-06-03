@@ -18,7 +18,6 @@ import uuid
 from typing import Any
 
 import pytest
-import pytest_asyncio
 
 from lib.shared.ids import uuid7
 from services.domain.models.repo import ModelsRepo

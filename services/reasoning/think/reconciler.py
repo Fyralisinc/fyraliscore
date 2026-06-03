@@ -47,7 +47,6 @@ logged as `reconcile.error` and the original `claim_op` proceeds.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

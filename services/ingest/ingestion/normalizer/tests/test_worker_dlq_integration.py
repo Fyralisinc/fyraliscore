@@ -19,10 +19,7 @@ crashed → entire shadow pipeline stalled on a partition."
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import orjson
 import pytest

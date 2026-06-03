@@ -15,9 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
-import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
@@ -27,7 +26,6 @@ from services.domain.acts import goals as goals_svc
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.reason import think
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
-from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]

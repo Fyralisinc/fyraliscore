@@ -3,6 +3,7 @@
 // running against the Vite dev server (see vite.config.ts proxy).
 
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   AskRequest,
   AskResponse,
@@ -43,7 +44,7 @@ async function request<T>(
 }
 
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
-  return request<HomeResponse>("/view/ceo/home", undefined, signal);
+  return request<HomeResponse>(API_ROUTES.ceo.home, undefined, signal);
 }
 
 export function postAsk(
@@ -51,7 +52,7 @@ export function postAsk(
   signal?: AbortSignal
 ): Promise<AskResponse> {
   return request<AskResponse>(
-    "/view/ceo/ask",
+    API_ROUTES.ceo.ask,
     { method: "POST", body: JSON.stringify(body) },
     signal
   );
@@ -72,7 +73,7 @@ export function getCardConversation(
   signal?: AbortSignal
 ): Promise<CardConversation> {
   return request<CardConversation>(
-    `/v1/cards/${encodeURIComponent(cardId)}/conversation`,
+    API_ROUTES.cards.conversation(cardId),
     undefined,
     signal
   );
@@ -84,7 +85,7 @@ export function postCardProbe(
   signal?: AbortSignal
 ): Promise<ProbeResponse> {
   return request<ProbeResponse>(
-    `/v1/cards/${encodeURIComponent(cardId)}/probe`,
+    API_ROUTES.cards.probe(cardId),
     { method: "POST", body: JSON.stringify(body) },
     signal
   );
@@ -95,7 +96,7 @@ export function clearCardConversation(
   signal?: AbortSignal
 ): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(
-    `/v1/cards/${encodeURIComponent(cardId)}/conversation`,
+    API_ROUTES.cards.conversation(cardId),
     { method: "DELETE" },
     signal
   );
@@ -106,7 +107,7 @@ export function postTurnAction(
   signal?: AbortSignal
 ): Promise<TurnActionResponse> {
   return request<TurnActionResponse>(
-    "/view/ceo/turn-action",
+    API_ROUTES.ceo.turnAction,
     { method: "POST", body: JSON.stringify(body) },
     signal
   );

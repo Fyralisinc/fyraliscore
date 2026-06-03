@@ -32,7 +32,6 @@ import asyncpg
 
 from services.ingest.synthetic.backfill_harness.harness import BackfillHarness
 from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
-from services.ingest.synthetic.validation_runs import assertions as A
 from services.ingest.synthetic.validation_runs.cleanup import reset_state
 from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 from services.ingest.synthetic.validation_runs.preflight import run_preflight

@@ -29,7 +29,6 @@ keyed by `(workflow_kind="shard_fetch", workflow_id=str(shard_id))`.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 

@@ -18,7 +18,6 @@ import importlib.util
 import json
 import os
 import sys
-from uuid import UUID
 
 import asyncpg
 import pytest

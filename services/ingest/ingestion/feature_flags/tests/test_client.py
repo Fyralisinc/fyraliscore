@@ -10,7 +10,6 @@ import time
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-import pytest
 
 from services.ingest.ingestion.feature_flags import (
     SHADOW_WRITE_ENABLED,

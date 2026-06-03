@@ -21,7 +21,6 @@ boundary catch invalid values before they hit Postgres.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, get_args
 from uuid import UUID
 

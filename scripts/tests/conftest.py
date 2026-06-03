@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
-from services.domain.models.repo import ModelsRepo, pgvector_pool_init
+from services.domain.models.repo import pgvector_pool_init
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]

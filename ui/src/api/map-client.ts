@@ -3,6 +3,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   MapSnapshotResponse,
   ModelStoryResponse,
@@ -57,7 +58,7 @@ export function getMapSnapshot(
   if (opts.lens) params.set("lens", opts.lens);
   const qs = params.toString();
   return request<MapSnapshotResponse>(
-    `/map/snapshot${qs ? `?${qs}` : ""}`,
+    API_ROUTES.map.snapshot(qs ? `?${qs}` : ""),
     undefined,
     signal
   );
@@ -72,7 +73,7 @@ export function getTopologyEvents(
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   const qs = params.toString();
   return request<TopologyEventsResponse>(
-    `/map/topology_events${qs ? `?${qs}` : ""}`,
+    API_ROUTES.map.topologyEvents(qs ? `?${qs}` : ""),
     undefined,
     signal
   );
@@ -83,7 +84,7 @@ export function getModelStory(
   signal?: AbortSignal
 ): Promise<ModelStoryResponse> {
   return request<ModelStoryResponse>(
-    `/map/models/${encodeURIComponent(modelId)}`,
+    API_ROUTES.map.modelStory(modelId),
     undefined,
     signal
   );

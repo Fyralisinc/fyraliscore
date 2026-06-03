@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
-from uuid import UUID
 
 import asyncpg
 
 from services.reasoning.retrieval.primary import TriggerContext, primary_retrieve
 from services.reasoning.retrieval.second_pass import (
     SECOND_PASS_SPARSE_THRESHOLD,
-    second_pass_expand,
     should_run_second_pass,
 )
 

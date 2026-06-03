@@ -374,9 +374,6 @@ async def test_backlog_service_resumes_from_cursor(fresh_db: asyncpg.Pool):
     ~12-day re-do. Crash-resume is the entire point of cursor
     persistence.
     """
-    from services.ingest.ingestion.recovery.embedding_backlog import (
-        BACKLOG_BUCKET_KEY,
-    )
 
     await _ensure_partition(fresh_db)
     tid = await _seed_tenant(fresh_db)

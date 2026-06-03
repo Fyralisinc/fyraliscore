@@ -13,15 +13,13 @@ import signal
 import subprocess
 import sys
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
-import orjson
 import pytest
 
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.workflows.reconciler import (
-    SIGNAL_KIND_SHARDS_COMPLETED,
     SIGNAL_KIND_SOURCE_COMPLETED,
     TENANT_ONBOARDING_INBOX_ID,
     TENANT_ONBOARDING_INBOX_KIND,

@@ -4,6 +4,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   AddContextBody,
   ContestBody,
@@ -62,7 +63,7 @@ export function listDeltas(
   signal?: AbortSignal
 ): Promise<ListDeltasResponse> {
   return request<ListDeltasResponse>(
-    `/v1/decision_deltas/${buildQuery(params)}`,
+    API_ROUTES.decisionDeltas.list(buildQuery(params)),
     undefined,
     signal
   );
@@ -73,7 +74,7 @@ export function getDelta(
   signal?: AbortSignal
 ): Promise<DecisionDelta> {
   return request<DecisionDelta>(
-    `/v1/decision_deltas/${encodeURIComponent(id)}`,
+    API_ROUTES.decisionDeltas.detail(id),
     undefined,
     signal
   );
@@ -84,7 +85,7 @@ export function acceptDelta(
   signal?: AbortSignal
 ): Promise<MutationResponse> {
   return request<MutationResponse>(
-    `/v1/decision_deltas/${encodeURIComponent(id)}/accept`,
+    API_ROUTES.decisionDeltas.accept(id),
     { method: "POST", body: JSON.stringify({}) },
     signal
   );
@@ -96,7 +97,7 @@ export function delegateDelta(
   signal?: AbortSignal
 ): Promise<MutationResponse> {
   return request<MutationResponse>(
-    `/v1/decision_deltas/${encodeURIComponent(id)}/delegate`,
+    API_ROUTES.decisionDeltas.delegate(id),
     { method: "POST", body: JSON.stringify(body) },
     signal
   );
@@ -108,7 +109,7 @@ export function contestDelta(
   signal?: AbortSignal
 ): Promise<MutationResponse> {
   return request<MutationResponse>(
-    `/v1/decision_deltas/${encodeURIComponent(id)}/contest`,
+    API_ROUTES.decisionDeltas.contest(id),
     { method: "POST", body: JSON.stringify(body) },
     signal
   );
@@ -120,7 +121,7 @@ export function addContext(
   signal?: AbortSignal
 ): Promise<MutationResponse> {
   return request<MutationResponse>(
-    `/v1/decision_deltas/${encodeURIComponent(id)}/add_context`,
+    API_ROUTES.decisionDeltas.addContext(id),
     { method: "POST", body: JSON.stringify(body) },
     signal
   );

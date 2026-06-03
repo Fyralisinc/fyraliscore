@@ -8,6 +8,7 @@
 
 import { ApiError } from "@/api/client";
 import { getAuthHeader, handleAuthFailure } from "@/api/auth";
+import { API_ROUTES } from "@/api/routes";
 
 import type {
   CategoryFocus,
@@ -47,7 +48,7 @@ export function fetchOverview(
   signal?: AbortSignal,
 ): Promise<ModelOverview> {
   return request<ModelOverview>(
-    `/model/overview?mode=${encodeURIComponent(mode)}`,
+    API_ROUTES.modelPage.overview(mode),
     undefined,
     signal,
   );
@@ -59,7 +60,7 @@ export function fetchCategoryFocus(
   signal?: AbortSignal,
 ): Promise<CategoryFocus> {
   return request<CategoryFocus>(
-    `/model/categories/${encodeURIComponent(categoryId)}/focus?mode=${encodeURIComponent(mode)}`,
+    API_ROUTES.modelPage.categoryFocus(categoryId, mode),
     undefined,
     signal,
   );
@@ -70,7 +71,7 @@ export function fetchRelationshipFocus(
   signal?: AbortSignal,
 ): Promise<RelationshipFocus> {
   return request<RelationshipFocus>(
-    `/model/relationships/${encodeURIComponent(bundleId)}`,
+    API_ROUTES.modelPage.relationship(bundleId),
     undefined,
     signal,
   );
@@ -81,7 +82,7 @@ export function fetchItemDetail(
   signal?: AbortSignal,
 ): Promise<ItemDetail> {
   return request<ItemDetail>(
-    `/model/items/${encodeURIComponent(itemId)}`,
+    API_ROUTES.modelPage.item(itemId),
     undefined,
     signal,
   );
@@ -94,7 +95,7 @@ export function fetchItemTrace(
   signal?: AbortSignal,
 ): Promise<Trace> {
   return request<Trace>(
-    `/model/items/${encodeURIComponent(itemId)}/trace?direction=${direction}&depth=${depth}`,
+    API_ROUTES.modelPage.trace(itemId, direction, depth),
     undefined,
     signal,
   );

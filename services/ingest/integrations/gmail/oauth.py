@@ -36,7 +36,6 @@ import os
 from typing import Any
 from uuid import UUID
 
-import asyncpg
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse

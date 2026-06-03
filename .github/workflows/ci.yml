@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (ruff correctness)
+    name: Lint (ruff)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -27,11 +27,11 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.6.9
 
-      # Enforced baseline: parser/runtime-correctness checks only.
-      # F401/F811 currently have a large pre-existing baseline across pytest
-      # fixtures and generated/demo code; see docs/hardening-backlog.md.
+      # Conservative ruleset: catches syntax/runtime bugs, unused imports,
+      # and accidental fixture/import redefinitions without enforcing broad
+      # style churn across the repo.
       - name: Ruff check
-        run: ruff check --select E9,F63,F7,F82,F821 .
+        run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
 
   architecture:
     name: Architecture (import-linter)

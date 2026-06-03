@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -20,7 +20,6 @@ import pytest_asyncio
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import (
-    TenantContext,
     TenantContextError,
     bind_tenant,
     current_tenant,

@@ -4,6 +4,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   AccuracyResponse,
   CreateScenarioBody,
@@ -43,7 +44,7 @@ export function getForecastsPage(
   signal?: AbortSignal,
 ): Promise<ForecastsPagePayload> {
   return request<ForecastsPagePayload>(
-    `/v1/forecasts/page?horizon_days=${horizonDays}`,
+    API_ROUTES.forecasts.page(horizonDays),
     undefined,
     signal,
   );
@@ -54,7 +55,7 @@ export function getForecastDetail(
   signal?: AbortSignal,
 ): Promise<ForecastDetail> {
   return request<ForecastDetail>(
-    `/v1/forecasts/detail/${encodeURIComponent(id)}`,
+    API_ROUTES.forecasts.detail(id),
     undefined,
     signal,
   );
@@ -63,7 +64,11 @@ export function getForecastDetail(
 export function getPatterns(
   signal?: AbortSignal,
 ): Promise<PatternsResponse> {
-  return request<PatternsResponse>("/v1/forecasts/patterns", undefined, signal);
+  return request<PatternsResponse>(
+    API_ROUTES.forecasts.patterns,
+    undefined,
+    signal,
+  );
 }
 
 export function askForecasts(
@@ -71,7 +76,7 @@ export function askForecasts(
   signal?: AbortSignal,
 ): Promise<ForecastAskResponse> {
   return request<ForecastAskResponse>(
-    "/v1/forecasts/ask",
+    API_ROUTES.forecasts.ask,
     { method: "POST", body: JSON.stringify(body) },
     signal,
   );
@@ -82,7 +87,7 @@ export function getAccuracy(
   signal?: AbortSignal,
 ): Promise<AccuracyResponse> {
   return request<AccuracyResponse>(
-    `/v1/forecasts/accuracy?days=${rangeDays}`,
+    API_ROUTES.forecasts.accuracy(rangeDays),
     undefined,
     signal,
   );
@@ -93,7 +98,7 @@ export function createScenario(
   signal?: AbortSignal,
 ): Promise<PredictionRow> {
   return request<PredictionRow>(
-    "/v1/forecasts/",
+    API_ROUTES.forecasts.createScenario,
     { method: "POST", body: JSON.stringify(body) },
     signal,
   );

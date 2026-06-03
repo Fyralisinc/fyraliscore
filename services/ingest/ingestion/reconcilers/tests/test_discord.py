@@ -8,8 +8,6 @@ import pytest
 
 from services.ingest.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
-    ReconciliationDecision,
-    ResharedShard,
 )
 from services.ingest.ingestion.reconcilers import discord as dc_rec
 from services.ingest.ingestion.reconcilers.discord import (

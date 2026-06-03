@@ -9,7 +9,6 @@ brittle and offers little signal.
 """
 from __future__ import annotations
 
-import pytest
 
 from services.ingest.ingestion.kafka import IdempotentProducer, ProducerConfig
 

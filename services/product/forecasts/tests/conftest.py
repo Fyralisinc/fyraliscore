@@ -6,6 +6,7 @@ FastAPI app. The `tenants` row is inserted explicitly because
 migration 0037 enforces an immediate FK from `predictions.tenant_id`
 to `tenants.id`.
 """
+# ruff: noqa: F811
 from __future__ import annotations
 
 import json
@@ -14,7 +15,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
-import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
