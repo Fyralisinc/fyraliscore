@@ -1,6 +1,6 @@
 """simulation/reset.py — drop synthetic signals from a dev tenant.
 
-Mirrors the semantics of services/synthetic's purge intent (§6.1 of
+Mirrors the semantics of services/ingest/synthetic's purge intent (§6.1 of
 SYNTHETIC-BYPASS-PLAN): only removes observations tagged as
 synthetic. Scope:
 
@@ -41,8 +41,8 @@ from uuid import UUID
 import asyncpg
 
 # Env guard.
-import services.synthetic  # noqa: F401
-from services.gateway.db_bootstrap import _register_codecs
+import services.ingest.synthetic  # noqa: F401
+from services.app.gateway.db_bootstrap import _register_codecs
 from simulation.workers._common import _resolve_tenant_id
 
 

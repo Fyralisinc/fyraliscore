@@ -16,8 +16,8 @@ import asyncpg
 import pytest
 
 from lib.embeddings.ollama import OllamaClient
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 from tests.real_llm.infrastructure.scenario_loader import Scenario, inject_sequence
 

@@ -12,7 +12,7 @@ import signal
 import asyncpg
 import structlog
 
-from services.gateway.db_bootstrap import _register_codecs
+from services.app.gateway.db_bootstrap import _register_codecs
 from services.workers.topology_sweeper.worker import (
     DEFAULT_INTERVAL_S,
     DEFAULT_LIMIT_PER_TENANT,

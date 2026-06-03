@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from services.think.quality_promoter import (
+from services.reasoning.think.quality_promoter import (
     DEFAULT_CASE_DIR,
     evaluate_promoted_case,
     load_promoted_cases,

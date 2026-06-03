@@ -43,9 +43,9 @@ async def main() -> int:
 
     import asyncpg
     from lib.embeddings.ollama import OllamaClient, OllamaConfig
-    from services.actors.repo import ActorRepo
-    from services.entity_aliases.repo import EntityAliasRepo
-    from services.retrieval.primary import primary_retrieve, TriggerContext
+    from services.domain.actors.repo import ActorRepo
+    from services.domain.entity_aliases.repo import EntityAliasRepo
+    from services.reasoning.retrieval.primary import primary_retrieve, TriggerContext
     from tests.real_llm.conftest import _register_codecs
     from tests.real_llm.infrastructure.scenario_loader import (
         load_scenario,

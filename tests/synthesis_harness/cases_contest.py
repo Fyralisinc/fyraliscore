@@ -6,7 +6,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.contestability.service import (
+from services.reasoning.contestability.service import (
     ContestationInput,
     NoStandingError,
     OVERRIDE_FLOOR,
@@ -14,7 +14,7 @@ from services.contestability.service import (
     SECONDARY_SUBJECT_MULTIPLIER,
     contest_model,
 )
-from services.contestability.standing import actor_has_standing_on_model
+from services.reasoning.contestability.standing import actor_has_standing_on_model
 
 from . import _fixtures as F
 from ._runner import Case

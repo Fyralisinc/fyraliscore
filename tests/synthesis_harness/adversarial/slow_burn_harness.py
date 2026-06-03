@@ -23,8 +23,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -148,7 +148,7 @@ CASE_200_DISTINCT = Case(
 
 
 async def _run_random_walk(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.contestability.service import ContestationInput, contest_model
+    from services.reasoning.contestability.service import ContestationInput, contest_model
     rng = random.Random(0xC0FFEE)
     N = 100
     model_ids: list[UUID] = []
@@ -472,7 +472,7 @@ async def _setup_saturation(pool: asyncpg.Pool, _ctx: dict) -> dict:
 
 
 async def _run_saturation(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.think.cascade import CascadeEvent, cascade
+    from services.reasoning.think.cascade import CascadeEvent, cascade
     seed = CascadeEvent(
         id=uuid7(),
         kind="commitment_state_change",

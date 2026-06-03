@@ -706,7 +706,7 @@ async def test_deepseek_strict_parse_failure_falls_back_to_json_mode(
     monkeypatch,
 ):
     """Malformed strict tool args should not be the final failure mode."""
-    from services.think.diff_schema import RawDiff
+    from services.reasoning.think.diff_schema import RawDiff
 
     monkeypatch.setenv("LLM_CIRCUIT_BREAKER_DISABLED", "1")
 

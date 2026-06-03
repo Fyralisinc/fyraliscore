@@ -1,7 +1,7 @@
 """Shared worker bootstrap.
 
 Every simulation/workers/*.py CLI runs through `with_context()` to
-- import services.synthetic (triggers the production guard),
+- import services.ingest.synthetic (triggers the production guard),
 - open an asyncpg pool + an OllamaClient,
 - ensure the scenario actors + identity mappings exist,
 - print a human-readable summary of what was emitted.
@@ -35,15 +35,15 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-# The env guard fires as a side-effect of importing services.synthetic
+# The env guard fires as a side-effect of importing services.ingest.synthetic
 # — we import it eagerly so every worker fails at the top of the
 # module instead of mid-CLI.
-import services.synthetic  # noqa: F401
+import services.ingest.synthetic  # noqa: F401
 from lib.embeddings.ollama import OllamaClient
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
-from services.synthetic.core import SyntheticSignal, inject
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.synthetic.core import SyntheticSignal, inject
 
 from simulation.personas import Persona, get_persona, load_personas_cached
 

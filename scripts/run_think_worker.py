@@ -1,4 +1,4 @@
-"""Launcher for services.think.worker.ThinkWorker — one worker process.
+"""Launcher for services.reasoning.think.worker.ThinkWorker — one worker process.
 
 Bridges `ThinkWorker(pool).run()` to an asyncio-driven CLI. Kept minimal
 on purpose: the worker owns its own poll/dispatch loop and graceful
@@ -14,8 +14,8 @@ import asyncpg
 import structlog
 
 from lib.llm.provider import build_provider
-from services.gateway.db_bootstrap import _register_codecs
-from services.think.worker import ThinkWorker
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.reasoning.think.worker import ThinkWorker
 
 
 async def _main() -> None:

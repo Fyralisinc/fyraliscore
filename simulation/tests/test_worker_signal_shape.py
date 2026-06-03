@@ -18,7 +18,7 @@ import pytest
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 
 from simulation.personas import get_persona  # noqa: E402
-from services.synthetic.core import SyntheticSignal  # noqa: E402
+from services.ingest.synthetic.core import SyntheticSignal  # noqa: E402
 
 
 def _build_signal(**overrides) -> SyntheticSignal:

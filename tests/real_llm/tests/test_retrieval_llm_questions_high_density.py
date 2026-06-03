@@ -8,10 +8,10 @@ import pytest
 
 from lib.llm.provider import LLMProvider
 from lib.shared.types import ModelCreate
-from services.execution.inquiry import InquiryConfig, run_inquiry_retrieval
-from services.models.repo import ModelsRepo, pgvector_pool_init
-from services.retrieval.primary import TriggerContext
-from services.retrieval.tests._fixtures import build_fixture, make_embedding
+from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
+from services.domain.models.repo import ModelsRepo, pgvector_pool_init
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 
 

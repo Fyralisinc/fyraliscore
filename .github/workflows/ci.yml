@@ -33,6 +33,30 @@ jobs:
       - name: Ruff check
         run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
 
+  architecture:
+    name: Architecture (import-linter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # import-linter builds a static import graph (grimp) — it parses the
+      # source tree and only needs `lib`/`services` importable from the repo
+      # root, so the heavy runtime deps are not required here.
+      - name: Install import-linter
+        run: pip install "import-linter>=2.0"
+
+      # Enforces the layer-boundary contracts declared in pyproject.toml
+      # ([tool.importlinter]). Green today; a failure means a new import
+      # crossed a layer boundary it should not.
+      - name: Check layer boundaries
+        run: lint-imports
+
   tests:
     name: Tests (unit + integration)
     runs-on: ubuntu-latest

@@ -21,12 +21,12 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.cascade import (
+from services.reasoning.think.cascade import (
     CascadeEvent,
     MAX_CASCADE_DEPTH,
     cascade,
 )
-from services.think.observability import METRICS
+from services.reasoning.think.observability import METRICS
 
 from .. import _fixtures as F
 from .._runner import Case

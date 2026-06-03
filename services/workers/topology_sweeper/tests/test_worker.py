@@ -5,8 +5,8 @@ from uuid import UUID
 import pytest
 
 from lib.shared.ids import uuid7
-from services.relationships.repo import RelationshipCandidateMetrics
-from services.topology import TopologySweepReport
+from services.reasoning.relationships.repo import RelationshipCandidateMetrics
+from services.reasoning.topology import TopologySweepReport
 from services.workers.topology_sweeper.worker import run_once
 
 

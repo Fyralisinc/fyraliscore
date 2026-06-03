@@ -117,22 +117,22 @@ Postgres + Ollama, not when its unit tests pass alone.
 Two LLM concerns live in different services and SHOULD use different
 models:
 
-- **Think** (`services/think/`) — reasoning. Receives a
+- **Think** (`services/reasoning/think/`) — reasoning. Receives a
   `TriggerContext`, retrieves Models across pathways A/B/C/D/F, calls
   an LLM (default `claude-opus-4-7`), validates strict JSON
   (`strict_schema.py`, `validator.py`), applies diffs via
   `applier.py` under region locks, and emits audit events.
-- **Rendering** (`services/rendering/`) — prose. Receives a
+- **Rendering** (`services/product/rendering/`) — prose. Receives a
   `SubstrateSnapshot` or `CardInput`, calls a (cheaper) LLM, runs the
   output through `voice_rules.py`, and records cost to
   `view_render_costs`.
 
 The two MUST NOT be merged. A reasoning failure must not corrupt prose;
 a prose retry must not re-reason the substrate. Per-tenant model routing
-(`services/demo/model_routing.py`) overrides the global default — code
+(`services/product/demo/model_routing.py`) overrides the global default — code
 paths SHOULD read provider/model from config, not hardcode them.
 
-**Voice rules** (`services/rendering/voice_rules.py`) are enforced as
+**Voice rules** (`services/product/rendering/voice_rules.py`) are enforced as
 REJECT/FLAG violations: no exclamation marks, no marketing language,
 no emoji, sentences ≤35 words, cards must reference concrete data
 (names, numbers, dates), no hedge preamble. Adding or removing a rule
@@ -149,7 +149,7 @@ following invariants are enforced in code and SHOULD NOT be bypassed:
 - A Commitment transition to `doneverified` requires an authoritative
   resolving event. Mismatches raise `TrustTierError`.
 - A Model with `confidence > 0.7` requires an adequate falsifier per
-  `services/think/validator.is_adequate_falsifier`. Inadequate or
+  `services/reasoning/think/validator.is_adequate_falsifier`. Inadequate or
   malformed falsifiers raise `FalsifierInadequateError` /
   `MalformedFalsifierError` — distinct, observable failure modes.
 - Confidence is bounded `[0.05, 0.95]` by CHECK constraint; the
@@ -166,10 +166,10 @@ The substrate is replay-able. Code MUST preserve this:
 - **Queues use FOR UPDATE SKIP LOCKED** with `UNIQUE NULLS NOT DISTINCT`
   dedup keys (see `think_trigger_queue`, `topo_dirty_queue`,
   `model_reeval_queue`). A retry must not double-apply.
-- **Region locks** (`services/think/region_locks.py`) serialize
+- **Region locks** (`services/reasoning/think/region_locks.py`) serialize
   reasoning over overlapping scopes via `pg_advisory_xact_lock`.
   Bypassing region locks is prohibited.
-- **Audit chain** (`services/think/audit.py`, table `audit_events`)
+- **Audit chain** (`services/reasoning/think/audit.py`, table `audit_events`)
   records every Model state transition with `changed_fields` and
   re-assertion metadata. Mutations to Model rows that skip
   `emit_audit_event()` are bugs.
@@ -228,7 +228,7 @@ new complexity should do the same.
   a direct call works. The `Embedder` Protocol (§13.2) and the LLM
   provider abstraction earn their keep because we have ≥2 backends in
   production; copy that bar.
-- Read-only aggregators (`services/today/`, `services/history/`)
+- Read-only aggregators (`services/product/today/`, `services/product/history/`)
   intentionally have no DB tables of their own — they derive views
   from the foundations. New read surfaces SHOULD follow that pattern.
 
@@ -323,7 +323,7 @@ A PR MUST be rejected if any of the following are true:
   poll interval (`THINK_WORKER_POLL_INTERVAL_S=2` default).
 - Retrieval `top_n=80`, `decay_base=0.9` are tunable but stable. Per-
   pathway weights are pinned per trigger kind (see
-  `services/retrieval/primary.py`). Changes are spec-level.
+  `services/reasoning/retrieval/primary.py`). Changes are spec-level.
 - Demo sessions are budget-capped by `DEMO_BUDGET_USD_PER_SESSION`;
   exceeding the cap is a banner, not a 500.
 
@@ -364,7 +364,7 @@ The constitution's authority is the same as the schema's: it is the
 contract between contributors. Disagreement is resolved by amendment,
 not by exception in code. Where the constitution is silent, defer to
 the canonical documents it references (`CODEBASE-ARCHITECTURE.md`,
-`services/think/SUBSTRATE_SEMANTICS.md`, `lib/shared/edge_registry.py`,
+`services/reasoning/think/SUBSTRATE_SEMANTICS.md`, `lib/shared/edge_registry.py`,
 the migration headers).
 
 **Version**: 1.0.0 | **Ratified**: 2026-05-13 | **Last Amended**: 2026-05-13

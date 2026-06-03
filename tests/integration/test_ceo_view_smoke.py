@@ -37,7 +37,7 @@ DOGFOOD_TENANT = UUID("00000000-0000-7000-8000-000000000dd1")
 @pytest.fixture
 async def gateway_app():
     """Build the gateway app with lifespan so all Week-4 routers mount."""
-    from services.gateway.main import build_app
+    from services.app.gateway.main import build_app
 
     app = build_app()
     async with app.router.lifespan_context(app):

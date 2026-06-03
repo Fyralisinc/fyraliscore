@@ -5,12 +5,12 @@
       "issues": [],
       "metrics": {
         "case": "deep_blocker_context",
-        "elapsed_ms": 47,
+        "elapsed_ms": 49,
         "evidence_count": 6,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1422,
-        "packet_estimated_tokens": 314,
+        "packet_estimated_tokens": 347,
         "pathways_run": [
           "A",
           "B",
@@ -19,7 +19,7 @@
         ],
         "persisted_evidence_count": 6,
         "persisted_question_count": 3,
-        "prompt_chars": 13426,
+        "prompt_chars": 13471,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -36,7 +36,7 @@
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 6,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "routing_reason": "signal has enough entity, trust, risk, or commitment weight",
         "routing_score": 1.0,
@@ -50,7 +50,7 @@
       "issues": [],
       "metrics": {
         "case": "fast_query_bounded",
-        "elapsed_ms": 32,
+        "elapsed_ms": 30,
         "evidence_count": 6,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
@@ -79,7 +79,7 @@
       "issues": [],
       "metrics": {
         "case": "recurrence_question_quality",
-        "elapsed_ms": 54,
+        "elapsed_ms": 29,
         "evidence_count": 4,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
@@ -118,63 +118,67 @@
     },
     {
       "case": "ambiguous_owner_human_validation",
-      "issues": [],
+      "issues": [
+        "ownership question was not asked",
+        "ownership question did not produce an answer record",
+        "expected human_validation_required, got sufficient_for_reasoning"
+      ],
       "metrics": {
         "case": "ambiguous_owner_human_validation",
-        "elapsed_ms": 37,
+        "elapsed_ms": 46,
         "evidence_count": 4,
         "model_detail_full_rows": 1,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 671,
-        "packet_estimated_tokens": 224,
+        "packet_estimated_tokens": 241,
         "pathways_run": [
           "A",
           "B",
           "C",
           "G"
         ],
-        "prompt_chars": 11819,
+        "prompt_chars": 11873,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
-          "Q_OWNER"
+          "Q_GOAL_IMPACT"
         ],
         "question_primitives": [
           "COUNTEREVIDENCE",
           "DEPENDENCY",
-          "OWNERSHIP"
+          "GOAL_IMPACT"
         ],
         "question_rounds": {
           "Q_COUNTEREVIDENCE": 1,
           "Q_CRITICAL_PATH": 1,
-          "Q_OWNER": 1
+          "Q_GOAL_IMPACT": 1
         },
         "reservoir_evidence_count": 4,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 9,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
-        "sufficiency": "human_validation_required"
+        "sufficiency": "sufficient_for_reasoning"
       },
-      "passed": true
+      "passed": false
     },
     {
       "case": "stale_counterevidence_guard",
       "issues": [],
       "metrics": {
         "case": "stale_counterevidence_guard",
-        "elapsed_ms": 52,
+        "elapsed_ms": 46,
         "evidence_count": 5,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1129,
-        "packet_estimated_tokens": 318,
+        "packet_estimated_tokens": 354,
         "pathways_run": [
           "A",
           "B",
           "C",
           "G"
         ],
-        "prompt_chars": 12962,
+        "prompt_chars": 12965,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -191,7 +195,7 @@
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 5,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
         "sufficiency": "budget_exhausted"
@@ -203,7 +207,7 @@
       "issues": [],
       "metrics": {
         "case": "human_validation_bounded",
-        "elapsed_ms": 33,
+        "elapsed_ms": 20,
         "evidence_count": 6,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
@@ -232,20 +236,20 @@
       "issues": [],
       "metrics": {
         "case": "question_conditioned_semantic_embedding",
-        "elapsed_ms": 45,
+        "elapsed_ms": 43,
         "embedder_query_count": 3,
         "evidence_count": 7,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1477,
-        "packet_estimated_tokens": 365,
+        "packet_estimated_tokens": 412,
         "pathways_run": [
           "A",
           "B",
           "C",
           "G"
         ],
-        "prompt_chars": 13624,
+        "prompt_chars": 13669,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -262,7 +266,7 @@
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 7,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
         "sufficiency": "sufficient_for_reasoning"
@@ -274,19 +278,19 @@
       "issues": [],
       "metrics": {
         "case": "semantic_noise_distractor_guard",
-        "elapsed_ms": 50,
+        "elapsed_ms": 44,
         "evidence_count": 16,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1438,
-        "packet_estimated_tokens": 314,
+        "packet_estimated_tokens": 347,
         "pathways_run": [
           "A",
           "B",
           "C",
           "G"
         ],
-        "prompt_chars": 14463,
+        "prompt_chars": 14508,
         "question_ids": [
           "Q_COUNTEREVIDENCE",
           "Q_CRITICAL_PATH",
@@ -303,7 +307,7 @@
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 16,
-        "retrieval_action_count": 7,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
         "sufficiency": "sufficient_for_reasoning"
@@ -311,9 +315,9 @@
       "passed": true
     }
   ],
-  "generated_at": "2026-05-30T18:26:49.407429+00:00",
+  "generated_at": "2026-06-01T09:08:33.481898+00:00",
   "summary": {
-    "passed": 8,
+    "passed": 7,
     "total": 8
   }
 }

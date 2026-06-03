@@ -10,7 +10,7 @@ Covers the full recommendation lifecycle through the gateway HTTP API:
 
 The Think reasoning path itself is NOT exercised here (that requires
 a live LLM + replay of a fixture trigger, which is covered by
-services/think/tests/test_llm_reason.py and the real_llm/ suite). We
+services/reasoning/think/tests/test_llm_reason.py and the real_llm/ suite). We
 seed a recommendation Model directly to keep this test deterministic
 and fast — its purpose is to assert the surrounding plumbing (storage,
 ranker, act handler, dismiss handler, audit chain) is wired correctly.
@@ -24,9 +24,9 @@ import pytest
 from lib.shared.ids import uuid7
 
 # Reuse the gateway test fixtures via the recommendations conftest —
-# both modules pull from services/gateway/tests/conftest.py, so the
+# both modules pull from services/app/gateway/tests/conftest.py, so the
 # same client / pool / session machinery is available here.
-from services.recommendations.tests.conftest import (  # noqa: F401
+from services.product.recommendations.tests.conftest import (  # noqa: F401
     _DeterministicEmbedder,
     app_deps,
     client,

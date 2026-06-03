@@ -89,7 +89,7 @@ async def run_once(
     # calibration.apply_calibration, which now runs against the
     # calibration_offsets table this worker writes).
     if models_repo is None:
-        from services.models.repo import ModelsRepo
+        from services.domain.models.repo import ModelsRepo
         models_repo = ModelsRepo(pool)
 
     async with pool.acquire() as conn:

@@ -16,11 +16,47 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "httpx>=0.27",
+    "websockets>=15.0",          # IN-12: Discord Gateway WSS worker
     "structlog>=24.1",
     "python-dotenv>=1.0",
     "psycopg2-binary>=2.9",      # used only by scripts/check_schema_drift.py (sync)
     "anthropic>=0.34",
     "openai>=1.40",
+    "pynacl>=1.5",               # IN-06: Discord ed25519 webhook verification
+    "cryptography>=42.0",        # IN-08: Fernet envelope-encrypted secret store
+    "pyjwt[crypto]>=2.8",        # IN-13: GitHub App JWT (RS256) minting
+    "zstandard>=0.22",           # Gmail/general payload compression
+    "google-auth>=2.29",         # IN-Gmail: Google OAuth/OIDC verification
+    "redis>=5.0",                # M1.3: rate limiter (Lua EVALSHA on Redis); LLD §13
+    # --- Ingestion M1.4 (LLD §9 dependency adds) ---
+    "temporalio>=1.5",                          # Temporal Python SDK
+    "confluent-kafka>=2.3",                     # idempotent producer
+    "aiokafka>=0.10",                           # consumer
+    # M2.3: aiokafka's zstd / lz4 codecs require cramjam at runtime.
+    # The shadow-path producer (M2.1) writes zstd-compressed batches;
+    # the normalizer's aiokafka consumer must be able to decompress
+    # them. Without this dep the consumer raises
+    # UnsupportedCodecError on the first compressed batch.
+    "cramjam>=2.8",                             # aiokafka zstd/lz4 codec backend
+    "aioboto3>=12.0",                           # S3 / R2 client
+    # M2.2: pinned minor — canonical JSON via OPT_SORT_KEYS is the
+    # raw-body bytes for the Discord Gateway shadow path. content_hash
+    # dedup + N2 replay-from-raw both require byte-equal serialization
+    # across deployments. Patch updates are allowed; major/minor bumps
+    # require re-verifying the round-trip test in
+    # services/ingest/integrations/discord/gateway/tests/test_dispatch_shadow.py.
+    "orjson>=3.11,<3.12",                       # normalizer hot path + Gateway shadow canonical bytes
+    "opentelemetry-api>=1.20",                  # tracing
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-instrumentation-asyncpg>=0.40b0",
+    "opentelemetry-instrumentation-aiokafka>=0.40b0",
+    # M-Load: mmh3 for librdkafka-compatible murmur2 partition hashing
+    # used by services/app/webhooks/router.py::_kafka_partition_for_tenant.
+    # Pin minor; librdkafka's partitioner algorithm is stable across
+    # versions but bumping mmh3 should be re-verified against the
+    # actual landing partition (test_kafka_partition_lookup_matches_actual_landing_partition).
+    "mmh3>=4.1,<5.0",
+    "pypdf>=4.0",                               # IN-16: Google Drive PDF text extraction (pure-Python, no system deps)
 ]
 
 [project.optional-dependencies]
@@ -37,6 +73,25 @@ dev = [
     "umap-learn>=0.5",          # 2D projection for the CEO Map view (preserves local structure;
                                 # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
+    "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
+    "moto[s3,server]>=5.0",     # M1.4: in-process S3 mock for raw_tier tests.
+                                # M6.7 (A27.6): the [server] extra (pulls flask)
+                                # runs a real moto S3 HTTP endpoint for the
+                                # OAuth→completion subprocess tests, whose
+                                # shard_fetch subprocess writes raw bodies to S3.
+    # M2.3: real-broker Kafka tests (cooperative-sticky rebalance) require
+    # an actual Kafka cluster. `testcontainers[kafka]` spins one up per
+    # test; the test asserts `@pytest.mark.requires_docker` and skips
+    # cleanly when Docker isn't available.
+    "testcontainers[kafka]>=4.0",
+    "import-linter>=2.0",       # architecture: enforce layer import boundaries
+]
+# Internal documentation site (MkDocs). Build/serve locally with `mkdocs serve`;
+# not part of the runtime or test path. mkdocs-material pulls in mkdocs and
+# pymdown-extensions (used for the Mermaid superfences in mkdocs.yml), so no
+# separate mermaid plugin is required. See docs/ and CONTRIBUTING / CLAUDE.md.
+docs = [
+    "mkdocs-material>=9.5",     # Material theme; brings mkdocs + pymdown-extensions
 ]
 
 [tool.setuptools.packages.find]
@@ -47,7 +102,7 @@ namespaces = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "lib", "services"]
+testpaths = ["tests", "lib", "services", "scripts"]
 python_files = ["test_*.py", "*_test.py"]
 timeout = 30
 filterwarnings = [
@@ -79,4 +134,57 @@ markers = [
     "ollama: requires live Ollama (OLLAMA_URL)",
     "slow: slow test (> 1s)",
     "real_llm: real-LLM test (requires configured provider auth, runs only with RUN_REAL_LLM=1 or -m real_llm)",
+    "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
+    "requires_docker: requires a running Docker daemon and (typically) the M2 dev compose stack (docker-compose.dev.yml — Kafka, moto-s3). Skipped cleanly when Docker isn't available.",
 ]
+
+# ---------------------------------------------------------------------------
+# Architecture boundary enforcement (import-linter).
+#
+# Run:  lint-imports        (installed via the [dev] extra)
+#
+# These contracts encode ONLY invariants that are empirically true today, so
+# the check is green on a clean tree and a violation always means a real
+# regression — not an aspirational rule the codebase already breaks. The known
+# layer-up coupling that does exist (services.domain.models.repo -> reasoning/
+# product) is documented in CODEBASE-MANAGEMENT.md as tracked tech-debt rather
+# than enforced against, to keep this gate honest.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["lib", "services"]
+
+[[tool.importlinter.contracts]]
+name = "lib is independent of services (shared libraries never import app code)"
+type = "forbidden"
+source_modules = ["lib"]
+forbidden_modules = ["services"]
+# Documented exceptions. The first three are deliberate lazy (function-local)
+# imports in the LLM provider so reasoning schemas/circuit-breaker stay
+# decoupled at module-load time; the rest are test-only fixtures in lib/.
+ignore_imports = [
+    "lib.llm.provider -> services.reasoning.think.circuit_breaker",
+    "lib.llm.provider -> services.reasoning.think.diff_schema",
+    "lib.llm.provider -> services.reasoning.think.strict_schema",
+    "lib.llm.tests.test_provider -> services.reasoning.think.diff_schema",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.gmail.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.github.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.slack.client",
+    "lib.integrations.tests.test_endpoints -> services.ingest.integrations.discord.client",
+]
+
+[[tool.importlinter.contracts]]
+name = "reasoning core does not directly import the app, product, or ingest layers"
+type = "forbidden"
+source_modules = ["services.reasoning"]
+forbidden_modules = [
+    "services.app",
+    "services.product",
+    "services.ingest",
+]
+# Direct-only: this catches a reasoning module that *newly* reaches up into a
+# gateway/product/ingest helper (the common regression). A transitive path
+# already exists today (reasoning -> domain.models.repo -> product.*); that
+# upward edge in models.repo is documented as tracked debt in
+# CODEBASE-MANAGEMENT.md, so enforcing transitively here would be a red gate
+# for a pre-existing condition rather than a guard against new regressions.
+allow_indirect_imports = true

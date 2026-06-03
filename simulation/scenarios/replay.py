@@ -64,8 +64,8 @@ from uuid import UUID
 import yaml
 
 # Env guard fires at import.
-import services.synthetic  # noqa: F401
-from services.synthetic.core import SyntheticSignal, inject
+import services.ingest.synthetic  # noqa: F401
+from services.ingest.synthetic.core import SyntheticSignal, inject
 
 from simulation.personas import get_persona
 from simulation.workers._common import WorkerContext, with_context

@@ -21,7 +21,7 @@ The contract is:
 
 A non-empty symmetric difference on either side is "drift" — somebody
 mutated an array column without going through the chokepoint helper
-(`services.models.repo._set_model_relations`), or wrote an edge
+(`services.domain.models.repo._set_model_relations`), or wrote an edge
 without updating the corresponding array. Either way, dual-write
 discipline broke. The drift detector emits a metric per kind so the
 violation gets caught loudly during the dual-write phase.
@@ -64,7 +64,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.models.edges_repo import EdgesRepo
+from services.domain.models.edges_repo import EdgesRepo
 
 
 _log = logging.getLogger(__name__)

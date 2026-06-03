@@ -43,7 +43,7 @@ Cascade callback contract:
   (e.g., `cascade`-detected edges may be ignored to prevent
   infinite reverberation).
 
-Why callbacks live in this module (not in services/models/edges_repo.py):
+Why callbacks live in this module (not in services/domain/models/edges_repo.py):
   Avoids a circular import. EdgesRepo imports the registry to look
   up specs; the registry's callbacks need to enqueue
   model_reeval_queue rows but can do so via raw SQL on `conn`
@@ -52,8 +52,8 @@ Why callbacks live in this module (not in services/models/edges_repo.py):
 
 See:
   - db/migrations/0031_model_edges.sql
-  - services/models/edges_repo.py (the only writer)
-  - services/think/deterministic.py (consumer of the cause_kinds we
+  - services/domain/models/edges_repo.py (the only writer)
+  - services/reasoning/think/deterministic.py (consumer of the cause_kinds we
     enqueue)
 """
 from __future__ import annotations
@@ -136,7 +136,7 @@ class EdgeKindSpec:
 
 
 # Map archive_reason → cause_kind for the supports cascade. This is
-# the pre-S1 mapping at services/models/repo.py:_ARCHIVE_REASON_TO_CAUSE_KIND
+# the pre-S1 mapping at services/domain/models/repo.py:_ARCHIVE_REASON_TO_CAUSE_KIND
 # moved here so the supports cascade callback owns it. Behavior is
 # preserved exactly: the same five cause_kinds, the same default of
 # 'supporting_archived' for unrecognized reasons.

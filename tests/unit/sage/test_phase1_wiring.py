@@ -29,7 +29,7 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
-from services.execution.inquiry import (
+from services.platform.execution.inquiry import (
     EvidenceCard,
     Hypothesis,
     InquiryQuestion,
@@ -38,7 +38,7 @@ from services.execution.inquiry import (
     SufficiencyVerdict,
     _emit_phase1_traces,
 )
-from services.retrieval.primary import RetrievalResult, TriggerContext
+from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 from services.sage.inquiry_traces import (
     OmittedEvidenceRepo,
     OutcomeEventsRepo,
@@ -597,7 +597,7 @@ async def test_validation_drop_event_type_mapping():
     """The internal classifier should map bad-reference reasons to
     validation_failed_due_to_bad_reference and everything else to
     validation_failed_due_to_missing_evidence."""
-    from services.think.validator import _outcome_event_for_drop_reason
+    from services.reasoning.think.validator import _outcome_event_for_drop_reason
 
     assert _outcome_event_for_drop_reason("missing_model_reference") == (
         "validation_failed_due_to_bad_reference"
@@ -623,7 +623,7 @@ async def test_validator_emit_helper_writes_event_under_context(
     """The validator's `_emit_validation_drop_event` private helper is
     the call site that fires on every dropped op; assert it threads
     through the public emitter and writes the correct event type."""
-    from services.think.validator import _emit_validation_drop_event
+    from services.reasoning.think.validator import _emit_validation_drop_event
 
     session_id = await _seed_inquiry_session(
         gateway_pool, tenant_id=tenant_id,

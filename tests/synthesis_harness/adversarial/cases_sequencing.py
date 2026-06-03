@@ -24,8 +24,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -883,7 +883,7 @@ CASE_LONG_PAUSE = Case(
 
 
 async def _run_lifecycle(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.contestability.service import (
+    from services.reasoning.contestability.service import (
         ContestationInput,
         contest_model,
     )
@@ -1200,7 +1200,7 @@ async def _setup_chain(pool: asyncpg.Pool, _ctx: dict) -> dict:
 
 
 async def _run_chain(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.think.cascade import CascadeEvent, cascade
+    from services.reasoning.think.cascade import CascadeEvent, cascade
     seed = CascadeEvent(
         id=uuid7(),
         kind="commitment_state_change",

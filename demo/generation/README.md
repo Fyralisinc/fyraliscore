@@ -106,7 +106,7 @@ Already in `pyproject.toml`:
 Optional:
 
 - `zstandard` — only required when emitting `.sql.zst` snapshots
-  (`--compress`). The loader at `services/demo/snapshot.py` also reads
+  (`--compress`). The loader at `services/product/demo/snapshot.py` also reads
   zst if installed.
 
 ## Tests

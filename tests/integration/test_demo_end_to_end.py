@@ -6,7 +6,7 @@ recommendations described in the spec, inject a signal via the
 simulator, observe the SSE stream emit a `created` or `updated` event,
 and end the session cleanly.
 
-Lives outside services/demo/tests so the whole horizontal flow is
+Lives outside services/product/demo/tests so the whole horizontal flow is
 exercised end-to-end (gateway + demo + recommendation list + SSE).
 """
 from __future__ import annotations

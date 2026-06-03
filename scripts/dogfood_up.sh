@@ -3,9 +3,9 @@
 #
 # The real architecture is a single gateway app (not six separate services).
 # Processes started:
-#   - gateway         (uvicorn services.gateway.main:app on :8000)
-#   - think_worker    (services.think.worker.ThinkWorker)
-#   - post_commit_worker (services.think.post_commit.process_batch loop)
+#   - gateway         (uvicorn services.app.gateway.main:app on :8000)
+#   - think_worker    (services.reasoning.think.worker.ThinkWorker)
+#   - post_commit_worker (services.reasoning.think.post_commit.process_batch loop)
 #   - topology_sweeper (latent relationship-field refresh loop)
 #   - ui              (vite dev server on :5173)
 #
@@ -86,7 +86,7 @@ UVICORN=".venv/bin/uvicorn"
 echo "Starting gateway on :${GATEWAY_PORT}..."
 # uvicorn wants lowercase log-level; lowercase LOG_LEVEL before passing.
 UVICORN_LOG_LEVEL="$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')"
-"$UVICORN" services.gateway.main:app \
+"$UVICORN" services.app.gateway.main:app \
   --host 0.0.0.0 --port "${GATEWAY_PORT}" \
   --log-level "${UVICORN_LOG_LEVEL}" \
   > "$LOGDIR/gateway.log" 2>&1 &

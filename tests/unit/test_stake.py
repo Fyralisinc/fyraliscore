@@ -1,4 +1,4 @@
-"""Unit tests for services.today.stake.
+"""Unit tests for services.product.today.stake.
 
 Covers `parse_revenue_at_risk` (every suffix, commas, bare ints, junk)
 and `derive_stake` (rule order, fallbacks, malformed input).
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.today.stake import derive_stake, parse_revenue_at_risk
+from services.product.today.stake import derive_stake, parse_revenue_at_risk
 
 
 # ---------------------------------------------------------------------

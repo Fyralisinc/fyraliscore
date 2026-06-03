@@ -26,8 +26,8 @@ from uuid import UUID
 import asyncpg
 
 # Env guard.
-import services.synthetic  # noqa: F401
-from services.gateway.db_bootstrap import _register_codecs
+import services.ingest.synthetic  # noqa: F401
+from services.app.gateway.db_bootstrap import _register_codecs
 from simulation.workers._common import _resolve_tenant_id
 
 

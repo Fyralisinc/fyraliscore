@@ -16,9 +16,9 @@ from uuid import UUID
 
 import asyncpg
 
-from services.models.repo import pgvector_pool_init
-from services.think.quality_promoter import promote_quality_cases
-from services.think.quality_report import build_think_quality_cases
+from services.domain.models.repo import pgvector_pool_init
+from services.reasoning.think.quality_promoter import promote_quality_cases
+from services.reasoning.think.quality_report import build_think_quality_cases
 
 
 def _parser() -> argparse.ArgumentParser:

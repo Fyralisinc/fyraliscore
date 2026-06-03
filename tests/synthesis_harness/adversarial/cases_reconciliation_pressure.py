@@ -18,9 +18,9 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
-from services.think.reconciler import (
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.reconciler import (
     ReconcilerConfig,
     reconcile_claim_op,
 )

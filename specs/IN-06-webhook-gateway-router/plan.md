@@ -21,7 +21,7 @@ existing ingestion pipeline so Observations land with the correct
 downstream invariant.
 
 The Slack verifier in
-[services/ingestion/handlers/slack.py](../../services/ingestion/handlers/slack.py)
+[services/ingest/ingestion/handlers/slack.py](../../services/ingest/ingestion/handlers/slack.py)
 is reused as-is (cryptographic semantics are extracted, not rewritten);
 the path layout is the only Slack-side change. Four new verifiers
 (GitHub, Linear, Stripe, Discord) join under a common `Verifier`
@@ -104,7 +104,7 @@ services/
 │   ├── tenant_resolution.py        # Provider-specific tenant lookup (e.g. Slack team_id → tenant_id)
 │   ├── signatures/
 │   │   ├── __init__.py
-│   │   ├── slack.py                # Thin adapter — reuses services/ingestion/handlers/slack.verify_slack_signature
+│   │   ├── slack.py                # Thin adapter — reuses services/ingest/ingestion/handlers/slack.verify_slack_signature
 │   │   ├── github.py               # HMAC SHA-256 over body, X-Hub-Signature-256
 │   │   ├── linear.py               # HMAC SHA-256 over body, Linear-Signature
 │   │   ├── stripe.py               # HMAC SHA-256 over t={ts}.{body}, Stripe-Signature
@@ -123,7 +123,7 @@ services/
 │       └── test_e2e_ingest.py      # @integration — verify → observations row (real Postgres)
 │
 ├── ingestion/handlers/             # EXISTING — unchanged in semantics
-│   └── slack.py                    # verify_slack_signature reused via services/webhooks/signatures/slack.py
+│   └── slack.py                    # verify_slack_signature reused via services/app/webhooks/signatures/slack.py
 │
 └── gateway/
     └── main.py                     # MODIFIED — mount build_webhooks_router(); confirm Bearer middleware skips /webhooks/
@@ -133,12 +133,12 @@ pyproject.toml                      # MODIFIED — add pynacl >=1.5
 specs/IN-06-webhook-gateway-router/ # this directory
 ```
 
-**Structure Decision**: A new top-level service module `services/webhooks/`
-owns the entire webhook ingress, parallel to `services/ingestion/`. Two
-reasons drive this rather than placing it under `services/ingestion/`:
+**Structure Decision**: A new top-level service module `services/app/webhooks/`
+owns the entire webhook ingress, parallel to `services/ingest/ingestion/`. Two
+reasons drive this rather than placing it under `services/ingest/ingestion/`:
 
-1. **Different authentication contract.** `services/ingestion/` is
-   Bearer-protected and called via `/ingest/{channel}`. `services/webhooks/`
+1. **Different authentication contract.** `services/ingest/ingestion/` is
+   Bearer-protected and called via `/ingest/{channel}`. `services/app/webhooks/`
    is signature-protected at the transport layer. Keeping them as
    sibling modules makes the boundary obvious in the file tree.
 2. **Different lifetime.** The webhook router is expected to outlive
@@ -147,11 +147,11 @@ reasons drive this rather than placing it under `services/ingestion/`:
    for the five providers in a follow-up). Co-locating would force a
    later rename.
 
-Verifiers under `services/webhooks/signatures/` each export a single
+Verifiers under `services/app/webhooks/signatures/` each export a single
 function or class matching the `Verifier` Protocol from
-`services/webhooks/verifier.py`. The Slack module is a thin adapter
+`services/app/webhooks/verifier.py`. The Slack module is a thin adapter
 that delegates to the existing
-`services.ingestion.handlers.slack.verify_slack_signature` — the
+`services.ingest.ingestion.handlers.slack.verify_slack_signature` — the
 crypto semantics are NOT duplicated.
 
 ## Workflow Phases (executed by /speckit-plan)
@@ -250,12 +250,12 @@ covering:
 verifier (Twilio, Shopify, …) must satisfy. One page.
 
 **`quickstart.md`** — how to add a sixth provider:
-1. Register a new `<provider>.py` under `services/webhooks/signatures/`
+1. Register a new `<provider>.py` under `services/app/webhooks/signatures/`
    that satisfies the Verifier Protocol.
 2. Add a `CHANNEL_TRUST_MAP` entry.
 3. Add a tenant-resolver entry.
 4. Add a `dev:` secret in `.env.example`.
-5. Drop a vendor-sample payload into `services/webhooks/tests/samples/<provider>/`.
+5. Drop a vendor-sample payload into `services/app/webhooks/tests/samples/<provider>/`.
 
 ### Phase 2 — Tasks (output: `tasks.md`, produced by `/speckit-tasks` — NOT in this PR)
 
@@ -268,7 +268,7 @@ Aligned with Constitution Principle IV (real DB, not mocks):
 
 - **Unit tests per verifier** (`test_slack.py`, `test_github.py`,
   `test_linear.py`, `test_stripe.py`, `test_discord.py`) — vendor-
-  sample payloads recorded into `services/webhooks/tests/samples/`,
+  sample payloads recorded into `services/app/webhooks/tests/samples/`,
   signed with a known test secret. Each test file exercises: happy
   path, tampered body, tampered signature, missing header, malformed
   header, expired timestamp, secret-not-configured. No DB.
@@ -311,7 +311,7 @@ this feature. No `/ingest/{channel}` behavior changes.
 
 | Stage | Work | Gate |
 |-------|------|------|
-| A | Land `services/webhooks/` with all five verifiers + router + tests; mount in `services/gateway/main.py` | All Phase 1 tests pass; SC-001..SC-008 demonstrated locally |
+| A | Land `services/app/webhooks/` with all five verifiers + router + tests; mount in `services/app/gateway/main.py` | All Phase 1 tests pass; SC-001..SC-008 demonstrated locally |
 | B | Cut over the dogfood Slack app to `/webhooks/slack/events` | Real Slack workspace produces Observations through the new path for ≥7 days |
 | C | Per-provider rollouts for GitHub / Linear / Stripe / Discord as integrations land | One soak week per provider |
 | D | (Separate plan) Retire `/ingest/{channel}` for the five providers; keep it for internal callers (simulation harness) | Out of scope of IN-06 |

@@ -1,7 +1,7 @@
 """
 Shared fixtures for Wave 4-C calibration updater tests.
 
-Same hermetic pattern as services/models/tests/conftest.py:
+Same hermetic pattern as services/domain/models/tests/conftest.py:
   * per-test pool
   * per-test transaction that rolls back
   * tenant UUID isolation
@@ -32,8 +32,8 @@ def pytest_collection_modifyitems(config, items):
         if (
             "services/workers/calibration_updater/tests/" in path_str
             or "services/workers/precipitation/tests/" in path_str
-            or "services/contestability/tests/" in path_str
-            or "services/falsifiers/tests/" in path_str
+            or "services/reasoning/contestability/tests/" in path_str
+            or "services/domain/falsifiers/tests/" in path_str
         ):
             item.add_marker(pytest.mark.filterwarnings(_RESETTING_FILTER))
 

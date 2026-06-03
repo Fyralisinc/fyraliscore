@@ -19,10 +19,10 @@ import asyncpg
 
 from lib.llm.provider import LLMConfig, LLMError, LLMProvider
 from lib.shared.ids import uuid7
-from services.retrieval.primary import TriggerContext
-from services.think.applier import apply_diff
-from services.think.diff_schema import ClaimOp, ValidatedDiff
-from services.think.reason import think
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.reason import think
 
 from .. import _fixtures as F
 from .._runner import Case
@@ -392,7 +392,7 @@ CASE_ALL_MALFORMED = Case(
 
 
 async def _run_reconcile_degraded(pool: asyncpg.Pool, ctx: dict) -> dict:
-    from services.think.reconciler import reconcile_claim_op
+    from services.reasoning.think.reconciler import reconcile_claim_op
     op = H.make_state_insert_op(
         tenant_id=ctx["tenant"], born_from_event_id=ctx["obs"],
         natural="degraded probe",

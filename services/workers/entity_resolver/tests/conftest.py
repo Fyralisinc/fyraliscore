@@ -14,7 +14,7 @@ with the row count reading 0 even though a log line confirmed the
 write.
 
 Mitigation, per the pattern already established in
-`services/observations/tests/conftest.py`:
+`services/domain/observations/tests/conftest.py`:
 
   1. A `pytest_runtest_protocol` hook retries up to 4 times on
      transient errors / count-mismatch failures that look like a

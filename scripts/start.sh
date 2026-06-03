@@ -174,7 +174,7 @@ record_pid() { echo "$1" >> "$PIDFILE"; }
 UV_LOG_LEVEL="$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')"
 
 log "Starting gateway on :${GATEWAY_PORT}…"
-.venv/bin/uvicorn services.gateway.main:app \
+.venv/bin/uvicorn services.app.gateway.main:app \
   --host 0.0.0.0 --port "${GATEWAY_PORT}" \
   --log-level "${UV_LOG_LEVEL}" \
   > "$LOGDIR/gateway.log" 2>&1 &
@@ -194,6 +194,28 @@ log "Starting topology sweeper…"
 .venv/bin/python scripts/run_topology_sweeper.py \
   > "$LOGDIR/topology_sweeper.log" 2>&1 &
 record_pid $!
+
+log "Starting Discord gateway worker…"
+: > "$LOGDIR/discord_gateway_worker.log"
+.venv/bin/python scripts/run_discord_gateway_worker.py \
+  > "$LOGDIR/discord_gateway_worker.log" 2>&1 &
+record_pid $!
+
+# Gmail workers only start when GMAIL_SERVICE_ACCOUNT_JSON_FILE / _JSON is
+# configured. Skipping prevents noisy boot errors in dev where Gmail isn't wired.
+if [ -n "${GMAIL_SERVICE_ACCOUNT_JSON_FILE:-}" ] || [ -n "${GMAIL_SERVICE_ACCOUNT_JSON:-}" ]; then
+  log "Starting gmail watch scheduler…"
+  .venv/bin/python scripts/run_gmail_watch_scheduler.py \
+    > "$LOGDIR/gmail_watch_scheduler.log" 2>&1 &
+  record_pid $!
+
+  log "Starting gmail history poller…"
+  .venv/bin/python scripts/run_gmail_history_poller.py \
+    > "$LOGDIR/gmail_history_poller.log" 2>&1 &
+  record_pid $!
+else
+  log "Gmail workers skipped — set GMAIL_SERVICE_ACCOUNT_JSON_FILE to enable."
+fi
 
 log "Starting UI on :${UI_PORT}…"
 ( cd ui && npm run dev -- --host 127.0.0.1 --strictPort > "$LOGDIR/ui.log" 2>&1 ) &

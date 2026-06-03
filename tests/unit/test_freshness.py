@@ -1,4 +1,4 @@
-"""Unit tests for services.today.freshness.
+"""Unit tests for services.product.today.freshness.
 
 Covers `truth_freshness_seconds` against synthetic focus dicts:
   * Model state_changed_at,
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from services.today.freshness import truth_freshness_seconds
+from services.product.today.freshness import truth_freshness_seconds
 
 
 _NOW = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)

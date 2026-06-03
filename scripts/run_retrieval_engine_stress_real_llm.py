@@ -36,10 +36,10 @@ from dotenv import load_dotenv
 from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
 from lib.shared.types import ModelCreate
-from services.execution.inquiry import InquiryConfig, run_inquiry_retrieval
-from services.models.repo import ModelsRepo, pgvector_pool_init
-from services.retrieval.primary import TriggerContext
-from services.retrieval.tests._fixtures import build_fixture, make_embedding
+from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
+from services.domain.models.repo import ModelsRepo, pgvector_pool_init
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
 from scripts.run_1000_signal_model_layer_probe import _build_cached_provider
 
 

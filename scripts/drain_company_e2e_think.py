@@ -28,7 +28,7 @@ from scripts.run_1000_signal_model_layer_probe import (  # noqa: E402
     _build_cached_provider,
     _register_codecs,
 )
-from services.think.worker import ThinkWorker, WorkerConfig  # noqa: E402
+from services.reasoning.think.worker import ThinkWorker, WorkerConfig  # noqa: E402
 
 
 load_dotenv(REPO_ROOT / ".env", override=False)

@@ -3,7 +3,7 @@
 scripts/backfill_duplicate_models.py — one-shot cleanup of legacy
 paraphrased / duplicate Models for a single tenant.
 
-The Phase-3 reconciler (`services/think/reconciler.py`) only protects
+The Phase-3 reconciler (`services/reasoning/think/reconciler.py`) only protects
 FUTURE inserts. Tenants whose substrate predates the new per-kind rules
 already carry duplicate Atlas / HarborRail / Cobalt-style Models from
 earlier runs. This script scans the existing `models` table, clusters
@@ -21,9 +21,9 @@ cluster:
                           a human can decide (mirrors the production
                           reconciler's borderline branch).
 
-Per the spec we do NOT modify `services/think/reconciler.py`,
-`services/models/repo.py`, or `services/relationships/candidates.py` —
-all decision logic is imported from `services.think.reconciler` and
+Per the spec we do NOT modify `services/reasoning/think/reconciler.py`,
+`services/domain/models/repo.py`, or `services/reasoning/relationships/candidates.py` —
+all decision logic is imported from `services.reasoning.think.reconciler` and
 reused unchanged. The repo's `bulk_confidence_update` + `archive`
 methods do the auto_merge writes (so dependent re-evaluation cascades
 fire identically to the live path).
@@ -78,7 +78,7 @@ if str(REPO_ROOT) not in sys.path:
 
 # Reuse reconciler helpers + the candidate emitter. We do NOT redefine
 # any threshold or signal logic here.
-from services.think.reconciler import (  # noqa: E402
+from services.reasoning.think.reconciler import (  # noqa: E402
     KindRule,
     ReconcilerConfig,
     _compute_signal_breakdown,
@@ -86,17 +86,17 @@ from services.think.reconciler import (  # noqa: E402
     _kind_rule,
     _KIND_RULES,
 )
-from services.relationships.candidates import (  # noqa: E402
+from services.reasoning.relationships.candidates import (  # noqa: E402
     make_edge_candidate,
 )
-from services.relationships.repo import (  # noqa: E402
+from services.reasoning.relationships.repo import (  # noqa: E402
     RelationshipCandidatesRepo,
 )
-from services.judgment.scoring import (  # noqa: E402
+from services.reasoning.judgment.scoring import (  # noqa: E402
     JudgmentScores,
     clamp_score,
 )
-from services.models.repo import (  # noqa: E402
+from services.domain.models.repo import (  # noqa: E402
     ModelsRepo,
     _ensure_vector_codec,
 )

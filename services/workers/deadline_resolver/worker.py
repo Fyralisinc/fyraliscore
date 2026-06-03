@@ -5,7 +5,7 @@ the kind-specific falsifier evaluator, and enqueue a T2
 `prediction_overdue` trigger on `think_trigger_queue` for Think.
 
 The resolver DOES NOT write to `models`. Think's deterministic T2
-handler (`services/think/deterministic.py::_handle_t2_prediction`)
+handler (`services/reasoning/think/deterministic.py::_handle_t2_prediction`)
 owns:
   * confidence deltas on the prediction + its `contributing_models`
   * `resolved_at` / `resolution_outcome` update
@@ -17,7 +17,7 @@ Design notes
 ------------
 
 * Tenant iteration.  `ModelsRepo.get_predictions_due(tenant_id=...)`
-  requires a tenant (checked 2026-04-21 in services/models/repo.py
+  requires a tenant (checked 2026-04-21 in services/domain/models/repo.py
   lines 730-760). BUILD-PLAN §5 Prompt 4.A says "across all tenants,
   or loop per-tenant if the repo requires a tenant_id (check the API;
   document whichever)". We loop per-tenant: one lightweight
@@ -70,7 +70,7 @@ import structlog
 
 from lib.shared.db import transaction
 from lib.shared.ids import uuid7
-from services.models.repo import ModelsRepo
+from services.domain.models.repo import ModelsRepo
 from services.workers.deadline_resolver.evaluators import (
     EvaluationContext,
     evaluate_falsifier,

@@ -28,10 +28,10 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
-from services.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
-from services.models.repo import _hydrate_row as _hydrate_model_row
-from services.retrieval.primary import TriggerContext
-from services.retrieval.pathways import PathwayResult
+from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
+from services.domain.models.repo import _hydrate_row as _hydrate_model_row
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.pathways import PathwayResult
 from services.sage.affordances.repo import AffordanceProfilesRepo
 from services.sage.cue_extractor import CueExtractor, StructuredCues
 from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo

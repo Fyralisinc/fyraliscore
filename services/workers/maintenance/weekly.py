@@ -3,7 +3,7 @@
 Jobs:
 
 * Relationship maintenance — calls
-  ``services.retrieval.maintenance.background_relationship_maintenance``
+  ``services.reasoning.retrieval.maintenance.background_relationship_maintenance``
   per tenant.
 * Calibration updater — calls ``services.workers.calibration_updater.
   worker.run_once`` if the module is importable. When Wave 4-C hasn't
@@ -28,13 +28,13 @@ import asyncpg
 
 from lib.shared.db import get_pool
 from lib.shared.ids import uuid7
-from services.observations.partitions import (
+from services.domain.observations.partitions import (
     ensure_next_n_months as ensure_obs_months,
 )
-from services.resources.partitions import (
+from services.domain.resources.partitions import (
     ensure_next_n_months as ensure_rtx_months,
 )
-from services.retrieval.maintenance import (
+from services.reasoning.retrieval.maintenance import (
     background_relationship_maintenance,
 )
 

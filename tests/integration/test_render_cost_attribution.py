@@ -39,12 +39,12 @@ async def test_render_greeting_writes_nonzero_cost_row(fresh_db):
     """Single greeting render → `view_render_costs` row with non-zero
     tokens + cost. Exercises the non-concurrent path end-to-end through
     the DB write."""
-    from services.rendering.contracts import RenderGreetingRequest
-    from services.rendering.core import RenderingService
-    from services.rendering.tests.fixtures import (
+    from services.product.rendering.contracts import RenderGreetingRequest
+    from services.product.rendering.core import RenderingService
+    from services.product.rendering.tests.fixtures import (
         TENANT_ID, acme_tuesday_snapshot, founder_rachin,
     )
-    from services.rendering.tests.scripted import ScriptedProvider
+    from services.product.rendering.tests.scripted import ScriptedProvider
 
     greeting_html = (
         "Good morning. One thing is worth your attention before the day "
@@ -83,15 +83,15 @@ async def test_concurrent_renders_all_land_nonzero_cost_rows(fresh_db):
     single shared RenderingService / provider, then assert every
     `view_render_costs` row has non-zero tokens + cost.
     """
-    from services.rendering.contracts import (
+    from services.product.rendering.contracts import (
         RenderCardRequest, RenderCloseLineRequest, RenderGreetingRequest,
     )
-    from services.rendering.core import RenderingService
-    from services.rendering.tests.fixtures import (
+    from services.product.rendering.core import RenderingService
+    from services.product.rendering.tests.fixtures import (
         TENANT_ID, acme_card_focus_observation, acme_tuesday_snapshot,
         founder_rachin,
     )
-    from services.rendering.tests.scripted import ScriptedProvider
+    from services.product.rendering.tests.scripted import ScriptedProvider
 
     greeting_html = (
         "Good morning. One thing is worth your attention before the day "

@@ -90,7 +90,7 @@ class EvaluationContext:
 
 # ---------------------------------------------------------------------
 # Window parser — delegates to the canonical parser in
-# services.models.falsifier so adequacy and evaluation share grammar.
+# services.domain.models.falsifier so adequacy and evaluation share grammar.
 # Accepts both ISO-8601 (P7D, PT4H) and human-readable (7 days,
 # any 4-week period) shapes.
 #
@@ -98,7 +98,7 @@ class EvaluationContext:
 # run inside the deadline-resolver worker and `inconclusive` is the
 # right behavior on truly unparseable input *at evaluation time*: by
 # then any malformed value should already have been rejected at
-# Model insert time (services/think/validator.py + repo.insert),
+# Model insert time (services/reasoning/think/validator.py + repo.insert),
 # so the only way we reach here with garbage is a row that
 # pre-dates the validator change. Treating it as `inconclusive`
 # matches the spec's "fall back to LLM" policy.
@@ -110,9 +110,9 @@ def parse_window(spec: str | None) -> timedelta | None:
 
     Returns `None` for None, empty, or unparseable input. Validation-time
     rejection happens upstream — see
-    `services.models.falsifier.parse_within_window`.
+    `services.domain.models.falsifier.parse_within_window`.
     """
-    from services.models.falsifier import parse_within_window
+    from services.domain.models.falsifier import parse_within_window
     from lib.shared.errors import MalformedFalsifierError
     try:
         return parse_within_window(spec)

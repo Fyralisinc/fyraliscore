@@ -11,11 +11,11 @@ import asyncpg
 
 from lib.embeddings.ollama import OllamaClient
 from lib.llm.provider import LLMProvider
-from services.actors.repo import ActorRepo
-from services.bridge.dashboards import CustomerDetailDashboard, render_customer_detail
-from services.bridge.queries import RevenueAtRiskReport, revenue_at_risk
-from services.entity_aliases.repo import EntityAliasRepo
-from services.think.worker import ThinkWorker, WorkerConfig
+from services.domain.actors.repo import ActorRepo
+from services.domain.bridge.dashboards import CustomerDetailDashboard, render_customer_detail
+from services.domain.bridge.queries import RevenueAtRiskReport, revenue_at_risk
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
     ResolverLLMBudget,

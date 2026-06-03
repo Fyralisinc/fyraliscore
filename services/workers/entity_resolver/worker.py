@@ -58,7 +58,7 @@ from lib.llm.provider import (
     LLMTimeoutError,
 )
 from lib.shared.ids import uuid7
-from services.entity_aliases.repo import EntityAliasRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.context import (
     ResolverContext,
     build_context,

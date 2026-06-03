@@ -8,8 +8,8 @@ import pytest
 
 from lib.embeddings.ollama import OllamaClient
 from lib.llm.provider import LLMProvider
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
     ResolverLLMBudget,

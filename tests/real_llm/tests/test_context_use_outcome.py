@@ -13,10 +13,10 @@ import pytest
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
-from services.retrieval.assembler import ContextBundle
-from services.retrieval.primary import TriggerContext
-from services.think.context_use import summarize_context_use
-from services.think.llm_reason import llm_reason
+from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.context_use import summarize_context_use
+from services.reasoning.think.llm_reason import llm_reason
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 
 

@@ -22,10 +22,10 @@ import asyncpg
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
-from services.models.repo import ModelsRepo
-from services.observations.state_change import emit_state_change
-from services.think.applier import apply_diff
-from services.think.audit import (
+from services.domain.models.repo import ModelsRepo
+from services.domain.observations.state_change import emit_state_change
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.audit import (
     CAUSE_ARCHIVE,
     CAUSE_CONFIDENCE_UPDATE,
     CAUSE_CREATE,
@@ -35,7 +35,7 @@ from services.think.audit import (
     emit_reconciliation_merge_audit,
     get_audit_chain,
 )
-from services.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 
 from . import _fixtures as F
 from ._runner import Case

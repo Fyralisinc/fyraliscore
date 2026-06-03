@@ -1,0 +1,9 @@
+{
+  "id": "interaction_fixture_id",
+  "application_id": "APP_FIXTURE",
+  "type": 2,
+  "guild_id": "GUILD_FIXTURE",
+  "channel_id": "channel_fixture",
+  "token": "interaction_token_fixture",
+  "version": 1
+}

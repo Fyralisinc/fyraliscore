@@ -11,8 +11,8 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.execution.inquiry import InquiryConfig, run_inquiry_retrieval
-from services.retrieval.primary import TriggerContext
+from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
+from services.reasoning.retrieval.primary import TriggerContext
 from services.sage.affordances.repo import AffordanceProfilesRepo
 from services.sage.affordances.types import RetrievalAffordanceProfile
 from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo

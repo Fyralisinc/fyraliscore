@@ -213,7 +213,7 @@ async def promote_pattern_candidate(
     tendency_text = tendency.get("exemplars", [""])
     natural_tendency = tendency_text[0] if tendency_text else "pattern"
 
-    # Build the Pattern proposition per services.models.propositions.
+    # Build the Pattern proposition per services.domain.models.propositions.
     proposition = {
         "kind": "pattern",
         "signature": sig,
@@ -272,7 +272,7 @@ async def promote_pattern_candidate(
     # 'instance_of'). The legacy supporting_model_ids on the
     # constituent gets the pattern id appended (matches pre-S1
     # behavior).
-    from services.models.repo import _set_model_relations  # local to avoid circular import
+    from services.domain.models.repo import _set_model_relations  # local to avoid circular import
     for constituent_id in cand["constituent_model_ids"]:
         await _set_model_relations(
             conn,

@@ -44,11 +44,11 @@ from lib.llm.provider import (
 )
 from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
-from services.actors.repo import ActorRepo
-from services.entity_aliases.repo import EntityAliasRepo
-from services.gateway.db_bootstrap import _register_codecs
-from services.synthetic.core import SyntheticSignal, inject
-from services.think.post_commit import WorkerStats, process_batch
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.app.gateway.db_bootstrap import _register_codecs
+from services.ingest.synthetic.core import SyntheticSignal, inject
+from services.reasoning.think.post_commit import WorkerStats, process_batch
 from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 from tests.real_llm.infrastructure.response_cache import LLMResponseCache
 from tests.real_llm.infrastructure.scenario_loader import (

@@ -52,7 +52,7 @@ class ValidationError(CompanyOSError):
 class InvariantViolation(CompanyOSError):
     """
     A domain invariant (C1-C10, G1-G4, per spec §3) was violated.
-    Raised at INSERT/transition time by services/acts/invariants.py
+    Raised at INSERT/transition time by services/domain/acts/invariants.py
     and by the Think validator.
     """
     default_code = "invariant_violation"
@@ -191,6 +191,409 @@ class CalibrationMissingError(CompanyOSError):
         self.proposition_kind = proposition_kind
 
 
+# ---------------------------------------------------------------------
+# Webhook tenant resolution (services/app/webhooks/tenant_resolver.py)
+# ---------------------------------------------------------------------
+
+class InstallationConflictError(CompanyOSError):
+    """
+    Admin attempted to register a (provider, installation_id) pair
+    that already exists. Uniqueness is enforced by the UNIQUE
+    constraint on provider_installations; this is the structured
+    surface for the asyncpg.UniqueViolationError that bubbles up.
+    """
+    default_code = "installation_conflict"
+
+
+class InstallationNotFoundError(CompanyOSError):
+    """
+    Admin attempted to disable / re-enable / update-secret-ref an
+    installation row by id and the row did not exist. Distinct from
+    the resolver's UnknownInstallation outcome (which deliberately
+    does not leak existence).
+    """
+    default_code = "installation_not_found"
+
+
+# ---------------------------------------------------------------------
+# Secret store (lib/shared/secrets/)
+# ---------------------------------------------------------------------
+
+class SecretStoreError(CompanyOSError):
+    """
+    Backend-level failure in the envelope-encrypted secret store
+    (DB unavailable, Fernet KEK invalid, ciphertext decrypt failed).
+    Maps to HTTP 503 at API boundaries.
+    """
+    default_code = "secret_store_unavailable"
+
+
+class SecretNotFoundError(CompanyOSError):
+    """
+    A `secret_ref` lookup returned zero rows for the given tenant.
+    Distinct from SecretStoreError: the backend is healthy, the ref
+    simply does not exist for this tenant. Webhook signature paths
+    treat this as `unknown_installation` rather than 5xx so existence
+    of refs cannot be probed across tenant boundaries.
+    """
+    default_code = "secret_not_found"
+
+
+# ---------------------------------------------------------------------
+# OAuth install flow (services/ingest/integrations/slack/oauth.py)
+# ---------------------------------------------------------------------
+
+class StateTokenInvalidError(CompanyOSError):
+    """
+    The OAuth callback's state token failed verification. The `reason`
+    context field discriminates the failure mode: `state_invalid`
+    (HMAC mismatch, malformed payload, or unknown nonce),
+    `state_expired` (nonce known but past `expires_at`), or
+    `state_consumed` (nonce known and already consumed). The HTTP
+    status set by the handler is 400 for all three; the redirect's
+    `reason` query param exposes the specific code.
+    """
+    default_code = "state_token_invalid"
+
+    def __init__(self, reason: str, message: str, **context: Any) -> None:
+        super().__init__(message, reason=reason, **context)
+        self.reason = reason
+
+
+class InstallationCollisionError(CompanyOSError):
+    """
+    OAuth callback attempted to bind a Slack `team_id` to a tenant
+    that differs from the tenant already owning the
+    `provider_installations` row for `(slack, team_id)`. Slack
+    workspaces are not multi-tenant on the Fyralis side; the request
+    fails closed with HTTP 409 and the foreign tenant identity is
+    NEVER disclosed across the boundary (no log line carries either
+    `team_id` or the conflicting `tenant_id`).
+
+    Reused verbatim by IN-09 for Discord guild collisions.
+    """
+    default_code = "installation_collision"
+
+
+class DiscordOAuthError(CompanyOSError):
+    """
+    Discord OAuth install/callback failure surface (IN-09).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - discord_oauth_token_exchange_failed: POST /oauth2/token non-2xx
+      - discord_oauth_missing_guild: bot-scope response lacked guild.id
+      - discord_command_registration_failed: POST /applications/.../commands 4xx
+
+    `context` carries `{tenant_id, http_status?, discord_error_code?}`.
+    `guild_id` is intentionally elided from context per FR-005/SC-006.
+    """
+    default_code = "discord_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class DiscordApiError(CompanyOSError):
+    """
+    Outbound Discord REST call failure (IN-09).
+
+    Stable `code` values:
+      - discord_api_unauthorized: 401 (or 403 code=50001) — chokepoint already fired
+      - discord_api_rate_limited: retry budget exhausted (≤3 attempts / ≤30s wall)
+      - discord_secret_unavailable: bot token not in secret store (orphan installation)
+      - discord_api_error: other terminal 4xx/5xx
+
+    `context` carries `{tenant_id, http_status?, attempts?, total_wall_seconds?}`.
+    `guild_id` is intentionally elided from context per FR-005/SC-006.
+    """
+    default_code = "discord_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class GithubJWTError(CompanyOSError):
+    """
+    Failure to mint a GitHub App JWT (IN-13).
+
+    Stable `reason` values carried on `context`:
+      - no_app_id: GITHUB_APP_ID env var missing
+      - no_private_key: neither GITHUB_APP_PRIVATE_KEY nor
+        GITHUB_APP_PRIVATE_KEY_PATH is set
+      - conflicting_keys: both env vars set (operator misconfig)
+      - malformed_key: PEM parse failure
+      - io_error: GITHUB_APP_PRIVATE_KEY_PATH cannot be read
+    """
+    default_code = "github_jwt_error"
+
+    def __init__(self, reason: str, message: str, **context: Any) -> None:
+        super().__init__(message, reason=reason, **context)
+        self.reason = reason
+
+
+class GithubOAuthError(CompanyOSError):
+    """
+    GitHub App OAuth install/callback failure surface (IN-13).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - github_oauth_token_mint_failed: POST /app/installations/.../access_tokens non-2xx
+      - github_oauth_missing_installation_id: callback query lacked installation_id
+      - github_oauth_repository_fetch_failed: GET /installation/repositories returned non-2xx
+
+    `context` carries `{tenant_id, http_status?, github_error_code?}`.
+    `installation_id` is hashed via `installation_id_hash` per FR-016.
+    """
+    default_code = "github_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class GithubApiError(CompanyOSError):
+    """
+    Outbound GitHub REST call failure (IN-13).
+
+    Stable `code` values:
+      - github_api_unauthorized: 401 Bad credentials — chokepoint already fired
+      - github_api_not_found: 404 with apps-not-found doc_url — chokepoint already fired
+      - github_api_rate_limited: 429 with retry budget exhausted
+      - github_api_error: other terminal 4xx/5xx
+      - github_jwt_unavailable: App JWT could not be minted (delegated GithubJWTError)
+
+    `context` carries `{tenant_id, http_status?, attempts?, installation_id_hash?}`.
+    Raw `installation_id` is NEVER placed on context (FR-016 / SC-008).
+    """
+    default_code = "github_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class NotionOAuthError(CompanyOSError):
+    """
+    Notion OAuth install/callback failure surface (IN-14).
+
+    Stable `code` values consumed by the UI shell + audit log:
+      - notion_oauth_token_exchange_failed: POST /v1/oauth/token non-2xx
+      - notion_oauth_missing_workspace_id: token response lacked workspace_id
+      - notion_oauth_unconfigured: NOTION_CLIENT_ID / _SECRET / _REDIRECT_URI unset
+
+    `context` carries `{tenant_id, http_status?, notion_error?}`. The raw
+    workspace_id is hashed (`workspace_id_hash`) before it touches logs.
+    """
+    default_code = "notion_oauth_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class NotionApiError(CompanyOSError):
+    """
+    Outbound Notion REST call failure (IN-14).
+
+    Stable `code` values:
+      - notion_api_unauthorized: 401 — bot token revoked / integration removed
+      - notion_api_not_found: 404 — object no longer accessible
+      - notion_api_rate_limited: 429 with retry budget exhausted
+      - notion_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, notion_code?, retry_after?}`. No bot
+    token is ever placed on context.
+    """
+    default_code = "notion_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class JiraApiError(CompanyOSError):
+    """
+    Outbound Jira Cloud REST call failure (IN-17).
+
+    Stable `code` values:
+      - jira_api_unauthorized: 401/403 — API token rejected / no permission
+      - jira_api_not_found: 404 — project/issue no longer accessible
+      - jira_api_rate_limited: 429 with retry budget exhausted
+      - jira_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token
+    and the Basic-auth header are NEVER placed on context.
+    """
+    default_code = "jira_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class MercuryApiError(CompanyOSError):
+    """
+    Outbound Mercury banking REST call failure (finance source).
+
+    Stable `code` values:
+      - mercury_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - mercury_api_not_found: 404 — account/resource not visible to the token
+      - mercury_api_rate_limited: 429 with retry budget exhausted
+      - mercury_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "mercury_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class QuickBooksApiError(CompanyOSError):
+    """
+    Outbound QuickBooks Online REST call failure (finance source).
+
+    Stable `code` values:
+      - quickbooks_api_unauthorized: 401/403 — access token expired / no scope
+        (the caller may need to refresh via the rotating refresh token)
+      - quickbooks_api_not_found: 404 — entity/realm not visible
+      - quickbooks_api_rate_limited: 429 (10 req/s, 120/min batch per realm)
+      - quickbooks_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "quickbooks_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class GrafanaApiError(CompanyOSError):
+    """
+    Outbound Grafana HTTP API call failure (IN-GRAFANA).
+
+    Stable `code` values:
+      - grafana_api_unauthorized: 401/403 — service-account token rejected /
+        insufficient role (needs `annotations:read`)
+      - grafana_api_not_found: 404 — endpoint/org not visible to the token
+      - grafana_api_rate_limited: 429 with retry budget exhausted
+      - grafana_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The service-account
+    token and the Authorization header are NEVER placed on context.
+    """
+    default_code = "grafana_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -200,4 +603,21 @@ __all__ = [
     "FalsifierInadequateError",
     "MalformedFalsifierError",
     "CalibrationMissingError",
+    "InstallationConflictError",
+    "InstallationNotFoundError",
+    "SecretStoreError",
+    "SecretNotFoundError",
+    "StateTokenInvalidError",
+    "InstallationCollisionError",
+    "DiscordOAuthError",
+    "DiscordApiError",
+    "GithubJWTError",
+    "GithubOAuthError",
+    "GithubApiError",
+    "NotionOAuthError",
+    "NotionApiError",
+    "JiraApiError",
+    "MercuryApiError",
+    "GrafanaApiError",
+    "QuickBooksApiError",
 ]
