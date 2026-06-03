@@ -71,7 +71,7 @@ The codebase was **not disordered** — it was *illegible at scale*. Concretely:
 | Clean lower layer | `lib/` had **no hard layer violations** — only a few guarded lazy imports. |
 | **`services/` was a flat grab-bag** | 37 packages with no sub-structure, mixing 261-file subsystems (`ingestion`) and 119-file (`integrations`) with 2-file helpers (`judgment`). Nothing signalled which packages were domain vs. app vs. reasoning vs. product. Resolved by the layered tree; post-merge Sage now lives under `services/reasoning/sage`. |
 | Cross-package coupling is real | `ingestion ↔ integrations` are bidirectionally coupled; `think → retrieval → models` is a chain; all done via **absolute** imports (only 9 multi-dot relatives, all intra-package). |
-| God-file | `gateway/main.py` was **4,409+ lines** before the router cuts. Sage internal and recommendation routes are now extracted; Today, structure, and artifact drawer routes remain future extraction targets. |
+| God-file | `gateway/main.py` was **4,409+ lines** before the router cuts. Sage internal, recommendation, Today core, and artifact drawer routes are now extracted; Structure routes remain the next major extraction target. |
 | Name collisions | `lib/topology` vs `services/topology`, `lib/integrations` vs `services/integrations`, top-level `demo/` (data-gen) vs `services/demo/` (runtime). |
 | Convention drift | Router files named `router.py` / `routes.py` / `api.py`; 4 services lacked co-located tests. |
 | Loose top-level docs | Stale `V1_PR_PROMPTS.md` + active backlog at the root; `.gitignore` listed `CLAUDE.md`/`V1_PR_PROMPTS.md` as "not published" while both were tracked. |
@@ -294,13 +294,13 @@ rather than hidden or hacked:
    gateway is *run* against a DB to confirm identical routing. That runtime check
    is impossible in this environment, and the gateway serves the entire product,
    so a blind split was judged too risky. **Sequenced plan:**
-   - (a) Move pure helpers (`_iso`/`_ago`/`_trim`/`_clip`/`_fmt_quantity`) →
-     `gateway/_format.py`.
-   - (b) Move drawer/fetch builders → `gateway/_drawers.py`.
-   - (c) Continue extracting cohesive route groups (`/v1/structure/*`,
-     `/dashboard/*`, substrate list/read, and remaining Today/artifact surfaces)
-     into focused `APIRouter` modules that import from (a)/(b). Sage internal
-     and `/v1/recommendations/*` routes are already extracted.
+   - (a) Drawer helpers moved into `gateway/artifact_drawers.py`;
+     `/v1/today`, `/v1/today/brand`, and `/v1/artifacts/*` moved into
+     `gateway/today_core_router.py`.
+   - (b) Continue extracting cohesive route groups (`/v1/structure/*`,
+     `/dashboard/*`, and substrate list/read) into focused `APIRouter` modules.
+     Sage internal, `/v1/recommendations/*`, and Today/artifact routes are
+     already extracted.
    - (d) `main.py` shrinks to lifespan/middleware/`include_router` wiring.
    - (e) Verify: `import` + `collect-only` *and* boot the gateway against a DB,
      diffing the `/openapi.json` route set before/after.
