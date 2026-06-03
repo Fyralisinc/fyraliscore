@@ -109,10 +109,7 @@ See [Product](../architecture/product.md).
 Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
 
 - **Dead/duplicate code:** a duplicate `@app.get('/v1/history')` handler (the second
-  is shadowed/unreachable); the `falsifiers/__init__.py` re-export shim has no importers.
-- **Stale relocation docstrings:** `today/freshness.py`, `today/stake.py`,
-  `today/map.py` still claim to live under `greeting/`; their logic is computed
-  inline in the aggregator (or, for the Map, "deliberately suppressed").
+  is shadowed/unreachable).
 - **Orphaned helpers:** `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
 - **Schema/migration tidy-ups:** orphan tables from `0021` (`anomaly_thresholds`,
   `dedup_keys_seen`); `topo_dirty_queue` unused; tables for undeployed workers

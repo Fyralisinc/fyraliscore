@@ -1707,9 +1707,7 @@ async def build_today(
         }
 
     # Map deliberately suppressed — page committed to the Command Center
-    # direction (digest tiles + cards + right-rail signals feed). The
-    # map.py module + types are retained so we can revive the index view
-    # later if needed.
+    # direction (digest tiles + cards + right-rail signals feed).
     map_data = None
 
     recent_signals = await _build_recent_signals(

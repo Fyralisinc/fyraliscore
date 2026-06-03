@@ -1,6 +1,6 @@
 # Shared Libraries (`lib`)
 
-> Source: `lib/` (packages `shared`, `llm`, `embeddings`, `integrations`, `nexus`).
+> Source: `lib/` (packages `shared`, `llm`, `embeddings`, `integrations`).
 > Part of the [architecture overview](index.md).
 
 **One-line:** the dependency floor — shared building blocks (DB pool, IDs, errors,
@@ -35,8 +35,6 @@ contract): **`lib` must not import `services`.**
   768-d (matches `VECTOR(768)`).
 - **`integrations`** — `endpoints.py`, the single outbound base-URL resolver
   (per-source env var > synthetic spammer host > production default).
-- **`nexus`** — `client.py`, a Phase-0–3 attestation **stub** with no current
-  service importers.
 
 ## The enforced boundary
 
@@ -53,7 +51,6 @@ graph TD
       EMB["lib.embeddings"]
       SH["lib.shared (db/ids/errors/types/grammar/secrets)"]
       EP["lib.integrations.endpoints"]
-      NX["lib.nexus (stub, no importers)"]
     end
 
     SDK["Anthropic / OpenAI / DeepSeek / Codex"]
@@ -100,7 +97,6 @@ graph TD
 | Types & registries | `lib/shared/types.py` | `*Row` models + memory-grammar / edge / claim-role / trust registries. |
 | Secrets | `lib/shared/secrets/` | Fernet `SecretStore` over `encrypted_secrets`. |
 | Endpoints | `lib/integrations/endpoints.py` | Outbound base-URL resolver. |
-| Nexus | `lib/nexus/client.py` | Attestation **stub** (no importers). |
 
 ## Entry points
 
@@ -118,8 +114,6 @@ cryptography) + the three whitelisted lazy imports into `services.reasoning.thin
 
 > **TODO(human):** Capture the *why* behind:
 >
-> - The future of `lib.nexus` (a zero-importer stub pointing at an external "Nexus"
->   project) — planned Phase 4, descoped, or superseded?
 > - Whether the three `lib.llm.provider → services.reasoning.think` lazy imports are
 >   permanent or candidates for inversion (move the schemas down into `lib`).
 > - The intended default LLM provider (`LLMConfig.from_env` defaults to Anthropic,

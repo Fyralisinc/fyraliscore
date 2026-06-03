@@ -33,7 +33,6 @@ def pytest_collection_modifyitems(config, items):
             "services/workers/calibration_updater/tests/" in path_str
             or "services/workers/precipitation/tests/" in path_str
             or "services/reasoning/contestability/tests/" in path_str
-            or "services/domain/falsifiers/tests/" in path_str
         ):
             item.add_marker(pytest.mark.filterwarnings(_RESETTING_FILTER))
 

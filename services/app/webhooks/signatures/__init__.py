@@ -9,8 +9,7 @@ Adding a sixth provider (Twilio, Shopify, …):
    `verifier: Verifier` module attribute.
 2. Add `<provider>: <module>.verifier` to the VERIFIERS map below.
 3. Add a per-provider id extractor in
-   `services/app/webhooks/tenant_resolver.py::PROVIDER_EXTRACTORS`
-   (IN-07 / IN-08; the legacy `tenant_resolution.py` is deprecated).
+   `services/app/webhooks/tenant_resolver.py::PROVIDER_EXTRACTORS`.
 4. Add a `CHANNEL_TRUST_MAP` entry in
    `services/ingest/ingestion/handlers/__init__.py` plus a handler module.
 

@@ -37,7 +37,7 @@ pie showData
 | `active-conditional` | 84 | In the flow, but behind a flag/env (e.g. `KAFKA_PATH_ENABLED`, demo-only, dev/test panels). |
 | `tooling` | 66 | Scripts, probes, benchmarks, the synthetic/sim harness (expected). |
 | `not-wired` | 39 | **Implemented but no runtime launcher/caller** — the core of this report. |
-| `test-only` | 34 | Referenced only by tests (incl. the `lib/nexus` stub). |
+| `test-only` | 34 | Referenced only by tests. |
 | `legacy-retired` | 2 | Superseded, compat-only (post-verify; raw count 5). |
 | `stub` | 1 | Empty placeholder (`ingestion/idempotency/__init__.py`). |
 
