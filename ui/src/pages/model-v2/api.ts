@@ -6,7 +6,7 @@
 // data — the Model page is supposed to feel substantial even before
 // production tenants have populated every category.
 
-import { ApiError } from "@/api/client";
+import { ApiError } from "@/api/errors";
 import { getAuthHeader, handleAuthFailure } from "@/api/auth";
 
 import type {

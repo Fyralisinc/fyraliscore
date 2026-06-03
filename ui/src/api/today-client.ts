@@ -3,7 +3,7 @@
 // (see vite.config.ts proxy). The mock-server.ts plugin serves these
 // against the fixture in src/api/today-mock.ts.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
   ArtifactDetail,

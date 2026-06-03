@@ -65,7 +65,7 @@ export type ProbeChip = {
 export type DiffPanel = {
   target_title: string;        // e.g. "Drive SSO requirements doc"
   target_kind: string;         // e.g. "commitment" | "goal" | "decision" | "resource"
-  target_id?: string;          // UUID for the artifact-drawer link
+  target_id?: string;          // UUID for legacy artifact deep links
   current_state?: string;      // e.g. "proposed"
   to_state?: string;           // e.g. "active" — null for archive/create/update
   operation: string;           // operation name from proposed_change
@@ -76,8 +76,7 @@ export type DiffPanel = {
   acceptance?: string;         // commitment acceptance criteria / decision summary / etc
 };
 
-// Artifact drawer payload — returned by GET /v1/artifacts/{type}/{id}
-// and rendered by <ArtifactDrawer/> when the user clicks a dotted link.
+// Artifact payload returned by GET /v1/artifacts/{type}/{id}.
 export type ArtifactKind =
   | "actor" | "commitment" | "goal" | "decision"
   | "resource" | "observation" | "model";

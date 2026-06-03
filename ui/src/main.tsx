@@ -23,7 +23,6 @@ import { Renders } from "./debug/pages/Renders";
 import { Cache } from "./debug/pages/Cache";
 
 import "./index.css";
-import "./styles/spec.css";
 import "./styles/forecasts.css";
 import "./pages/model-v2/styles.css";
 

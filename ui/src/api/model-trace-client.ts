@@ -2,7 +2,7 @@
 // map-client pattern: thin fetch wrapper, auth header, AbortSignal
 // threaded through.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
   AdjacencyResponse,

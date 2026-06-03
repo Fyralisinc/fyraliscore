@@ -393,22 +393,3 @@ function MonitorGlyph() {
     </svg>
   );
 }
-
-function CheckGlyph() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 14 14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="7" cy="7" r="5" />
-      <path d="M4.5 7.2l1.6 1.6L9.5 5.4" />
-    </svg>
-  );
-}

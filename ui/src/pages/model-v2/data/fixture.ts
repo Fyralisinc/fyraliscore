@@ -865,7 +865,7 @@ export function fixtureRelationshipFocus(
 ): RelationshipFocus | null {
   const parts = bundleIdStr.split("__");
   if (parts.length !== 3) return null;
-  const [src, verb, tgt] = parts as [CategoryId, string, CategoryId];
+  const [src, , tgt] = parts as [CategoryId, string, CategoryId];
   const all = [
     ...bundlesForMode("impact"),
     ...bundlesForMode("dependencies"),

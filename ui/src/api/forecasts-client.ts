@@ -2,7 +2,7 @@
 // Backend: services/forecasts/router.py. Endpoints are mounted under
 // /api when running through the Vite dev proxy.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
   AccuracyResponse,

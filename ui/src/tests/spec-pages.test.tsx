@@ -4,7 +4,6 @@ import { MemoryRouter } from "react-router-dom";
 
 import TodayBriefing from "@/pages/today-v2/Briefing";
 import { TODAY_PAGE_FIXTURE } from "@/api/today-page-mock";
-import ModelSpec from "@/pages/model/ModelSpec";
 import ForecastsPage from "@/pages/forecasts/ForecastsPage";
 import {
   ACCURACY_FIXTURE,
@@ -81,25 +80,6 @@ describe("Today (spec)", () => {
     await waitFor(() =>
       expect(screen.getAllByText(/Proposed change/i).length).toBeGreaterThan(0),
     );
-  });
-});
-
-describe("Model (spec)", () => {
-  it("renders Operating Thread rows with causal ribbons", () => {
-    render(wrap(<ModelSpec />));
-    expect(screen.getAllByText("Customer Reliability").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Engineering Capacity").length).toBeGreaterThan(0);
-    // Causal ribbon labels (default Company lens)
-    expect(screen.getAllByText(/Intent/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Promise/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Friction/i).length).toBeGreaterThan(0);
-  });
-
-  it("renders the 8-lens bar", () => {
-    render(wrap(<ModelSpec />));
-    for (const lens of ["Company", "Commitments", "Decisions", "Customers", "Teams", "Risks", "Owners", "Predictions"]) {
-      expect(screen.getByText(lens)).toBeTruthy();
-    }
   });
 });
 

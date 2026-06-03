@@ -5,7 +5,7 @@
 // matches the worked examples in the spec so the page reads correctly
 // even in fallback mode.
 
-import { ApiError } from "@/api/client";
+import { ApiError } from "@/api/errors";
 
 import {
   fetchCategoryFocus,

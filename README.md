@@ -309,7 +309,7 @@ it (`brew services stop postgresql`) or change the port in
 ├── pyproject.toml            # Python package + dev deps
 ├── conftest.py               # Pytest fixtures (DB pool, etc.)
 ├── db/migrations/            # SQL migrations, applied in filename order
-├── lib/                      # Shared libraries (db, llm, embeddings, nexus)
+├── lib/                      # Shared libraries (db, llm, embeddings)
 ├── services/                 # Domain services (gateway, think, query, …)
 ├── simulation/               # Slack-like simulator + personas
 ├── scripts/                  # CLI utilities and dogfood orchestration

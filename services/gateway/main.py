@@ -516,13 +516,6 @@ def build_app(
     app.include_router(history_router)
     app.include_router(build_webhooks_router())
 
-    # Spec-aligned product routes (Operating Threads, Decision Deltas
-    # spec view, Forecasts spec view, unified Ledger Events). The UI
-    # tries these endpoints first and falls back to in-browser fixtures
-    # when they 404 — so adding them here is purely additive.
-    from services.gateway.spec_routes import register_spec_routes
-
-    register_spec_routes(app)
 
     # Model page v2.
     # Adapter over the existing models / model_edges / model_trace

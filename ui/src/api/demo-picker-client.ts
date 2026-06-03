@@ -3,7 +3,7 @@
 // are public; the rest require the Authorization header populated by
 // `auth.ts` after a session has started.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader } from "./auth";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";

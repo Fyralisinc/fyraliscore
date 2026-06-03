@@ -8,7 +8,6 @@ import type {
   MapNode,
   MapSnapshotResponse,
   ModelStoryResponse,
-  TopologyEventEntry,
   TopologyEventsResponse,
 } from "./map-types";
 

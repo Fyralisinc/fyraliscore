@@ -2,7 +2,7 @@
 // Endpoints live under /api/today/* in dev (Vite proxy) and prod (nginx).
 // The mock-server intercept (USE_MOCK=1) is handled separately.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
   ApplyResult,

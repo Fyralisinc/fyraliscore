@@ -55,6 +55,19 @@ test-results/
 # ---- External tools / large local dirs ----
 lsob/
 corpora/
+.agents/
+skills-lock.json
+
+# ---- Benchmark datasets / generated caches ----
+benchmarks/.cache/
+benchmarks/datasets/tmp/
+benchmarks/datasets/raw/
+!benchmarks/datasets/raw/.gitkeep
+!benchmarks/datasets/raw/.gitignore
+!benchmarks/datasets/raw/README.md
+!benchmarks/datasets/raw/SCHEMA.md
+__MACOSX/
+._*
 
 # ---- Production secrets (server-only) ----
 .env.production

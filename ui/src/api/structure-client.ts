@@ -4,7 +4,7 @@
 // rendered into the relational view alongside the page's in-memory
 // sample graph.
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";

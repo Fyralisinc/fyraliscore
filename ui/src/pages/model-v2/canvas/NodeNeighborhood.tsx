@@ -125,7 +125,7 @@ export function NodeNeighborhood({
             width={CENTER_W}
             height={CENTER_H}
           >
-            <CentralNodeCard item={item} onOpen={onOpenFullDetail} />
+            <CentralNodeCard item={item} />
           </foreignObject>
           {layout.map((n) => {
             const side =
@@ -265,10 +265,8 @@ function verbColor(verb: string): string {
 
 function CentralNodeCard({
   item,
-  onOpen,
 }: {
   item: ItemDetail["item"];
-  onOpen?: () => void;
 }) {
   const relationshipLine = composeRelationshipLine(item);
   return (

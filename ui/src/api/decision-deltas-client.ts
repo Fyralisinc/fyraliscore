@@ -2,7 +2,7 @@
 // Backend: services/decision_deltas/router.py (mounted at /v1/decision_deltas).
 // Endpoints served by the Vite dev proxy (or mock-server.ts in USE_MOCK mode).
 
-import { ApiError } from "./client";
+import { ApiError } from "./errors";
 import { getAuthHeader, handleAuthFailure } from "./auth";
 import type {
   AddContextBody,
