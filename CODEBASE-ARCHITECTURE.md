@@ -161,7 +161,10 @@ Important public or auth-bypassed route families include `/healthz`, `/auth/sess
 |---|---|---|
 | `/ingest/{channel}` | gateway + ingestion | Uniform signal ingestion path. |
 | `/observations`, `/models`, `/commitments`, `/goals`, `/decisions`, `/resources` | gateway | Basic substrate list/read surfaces. |
-| `/dashboard/*`, `/v1/structure/*`, `/v1/recommendations/*`, `/v1/artifacts/*` | gateway | Product/data adapter endpoints. |
+| `/dashboard/*` | gateway main routes | Legacy product/data adapter endpoints. |
+| `/v1/structure/*` | gateway structure router | Structure overlays, recent graph payloads, and resource overlays. |
+| `/v1/recommendations/*` | gateway recommendations router | Recommendation list/action workflow. |
+| `/v1/artifacts/*`, `/v1/today` | gateway Today core router + artifact drawers | Legacy Today payload and drawer payload assembly. |
 | `/rendering/*` | rendering router | In-process rendering service mounted into gateway. |
 | `/view/ceo/home`, `/view/ceo/force-refresh` | greeting router | Cached CEO view. |
 | `/view/ceo/ask`, turn actions | query router | Ask/query orchestration through retrieval + rendering. |
