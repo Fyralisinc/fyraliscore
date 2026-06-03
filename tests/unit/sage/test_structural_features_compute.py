@@ -1,4 +1,4 @@
-"""Unit tests for services.sage.structural_features.compute.
+"""Unit tests for services.reasoning.sage.structural_features.compute.
 
 Pure compute layer — no Postgres. Each test builds a tiny synthetic
 Synthesis graph and verifies the topological invariants described in
@@ -16,12 +16,12 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from services.sage.structural_features.compute import (
+from services.reasoning.sage.structural_features.compute import (
     build_adjacency,
     compute_edge_features,
     compute_model_features,
 )
-from services.sage.structural_features.types import StructuralEdge
+from services.reasoning.sage.structural_features.types import StructuralEdge
 
 
 pytestmark = pytest.mark.asyncio

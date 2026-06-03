@@ -11,7 +11,7 @@ import rules enforced by `lint-imports`.
 ## Packages
 
 ```
-__pycache__ calibration contestability dynamics judgment relationships retrieval think topology
+calibration contestability dynamics judgment relationships retrieval sage think topology
 ```
 
 ## Import direction

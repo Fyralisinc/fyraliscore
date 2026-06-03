@@ -1,7 +1,8 @@
 # Reasoning — The Think Pipeline
 
-> Source: `services/reasoning/` (packages `think`, `retrieval`, `topology`,
-> `relationships`, `judgment`, `dynamics`, `contestability`, `calibration`).
+> Source: `services/reasoning/` (packages `think`, `retrieval`, `sage`,
+> `topology`, `relationships`, `judgment`, `dynamics`, `contestability`,
+> `calibration`).
 > Part of the [architecture overview](index.md).
 
 **One-line:** the cognitive runtime — it drains trigger queues, retrieves context,
@@ -45,7 +46,13 @@ applies a per-tenant `asyncio.Semaphore` concurrency cap, heartbeats the region
 lock, retries with backoff, and dead-letters after 5 attempts. Launched by
 `scripts/run_think_worker.py` (compose `think_worker`).
 
-### Topology, relationships, judgment
+### Sage, topology, relationships, judgment
+
+`sage/` is the query-conditioned synthesis loop: reader activation, structural
+features, inquiry traces, discovery shortcuts/negative memory, model residuals,
+and topology optimization. It lives in the reasoning layer because it changes
+how retrieval and synthesis inspect the model graph; it is not a separate
+top-level service namespace.
 
 `topology/field.py::LatentTopologyService` converts a new/changed Model into an
 `ImpactSignature` (flows/pressures/surfaces/stakes/time-shape), searches bounded

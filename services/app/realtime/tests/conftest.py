@@ -24,6 +24,7 @@ import asyncio
 import os
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -34,6 +35,10 @@ from fastapi import FastAPI
 from lib.shared.ids import uuid7
 from services.app.gateway.auth import create_session
 from services.app.realtime.main import configure_realtime
+
+
+if TYPE_CHECKING:
+    from services.app.realtime.dispatcher import Dispatcher
 
 
 pytestmark = pytest.mark.integration
@@ -191,7 +196,7 @@ async def valid_session_b(
 @pytest_asyncio.fixture
 async def dispatcher_app(
     realtime_pool: asyncpg.Pool,
-) -> AsyncGenerator[tuple[FastAPI, "services.app.realtime.dispatcher.Dispatcher"], None]:
+) -> AsyncGenerator[tuple[FastAPI, Dispatcher], None]:
     """Standalone FastAPI app with realtime mounted.
 
     Starts + stops the dispatcher around the yield.

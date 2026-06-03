@@ -1,11 +1,11 @@
 """tests/unit/sage/test_discovery_repos.py — Phase 10 discovery repos.
 
 Direct repo tests for `discovery_shortcuts` + `negative_memory` (migration
-0052). Lives under tests/unit but touches a real Postgres for the same
+0087). Lives under tests/unit but touches a real Postgres for the same
 reason as test_inquiry_traces_repo.py — these repos are thin wrappers
 over SQL and there is no business logic worth mocking. Uses the same
 `gateway_pool` fixture (per-test pool + TRUNCATE + auto-tenant-register
-trigger) re-exported via services/gateway/tests/conftest.py.
+trigger) re-exported via services/app/gateway/tests/conftest.py.
 
 `pytest.mark.integration` keeps them out of any "pure unit" selection
 that runs without a database.
@@ -19,13 +19,13 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
-from services.sage.discovery.shortcuts_repo import (
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.shortcuts_repo import (
     FAILURE_DECAY_FACTOR,
     SUCCESS_UTILITY_BUMP,
     DiscoveryShortcutsRepo,
 )
-from services.sage.discovery.types import (
+from services.reasoning.sage.discovery.types import (
     NegativeMemory,
     Signature,
 )

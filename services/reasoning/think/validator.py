@@ -108,11 +108,11 @@ async def _emit_validation_drop_event(
     """Append an outcome event for a dropped op. Pure best-effort.
 
     Imported inline so this module stays free of a hard dependency on
-    services.sage (matches the local-import pattern used elsewhere for
+    services.reasoning.sage (matches the local-import pattern used elsewhere for
     optional surfaces).
     """
     try:
-        from services.sage.inquiry_traces.emitter import emit_event
+        from services.reasoning.sage.inquiry_traces.emitter import emit_event
     except Exception:  # noqa: BLE001
         return
     event_type = _outcome_event_for_drop_reason(reason)

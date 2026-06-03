@@ -39,7 +39,7 @@ from services.platform.execution.inquiry import (
     _emit_phase1_traces,
 )
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
-from services.sage.inquiry_traces import (
+from services.reasoning.sage.inquiry_traces import (
     OmittedEvidenceRepo,
     OutcomeEventsRepo,
     RetrievalPlansRepo,

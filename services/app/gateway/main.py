@@ -1090,7 +1090,7 @@ def _register_routes(app: FastAPI) -> None:
                     observation_id,
                 ) or ""
             from services.reasoning.retrieval.primary import TriggerContext
-            from services.sage.reader import SynthesisReader
+            from services.reasoning.sage.reader import SynthesisReader
             result = await SynthesisReader(pool=deps.pool).read(
                 conn=conn,
                 tenant_id=tenant_id,
@@ -1152,7 +1152,7 @@ def _register_routes(app: FastAPI) -> None:
                 {"error": "tenant_id and inquiry_session_id required as UUID"},
                 status_code=400,
             )
-        from services.sage.topology_optimizer import optimize_topology
+        from services.reasoning.sage.topology_optimizer import optimize_topology
         report = await optimize_topology(
             pool=deps.pool,
             tenant_id=tenant_id,
@@ -1190,7 +1190,7 @@ def _register_routes(app: FastAPI) -> None:
                 status_code=400,
             )
         from dataclasses import asdict
-        from services.sage.evidence_projection import EvidenceProjector
+        from services.reasoning.sage.evidence_projection import EvidenceProjector
         result = await EvidenceProjector().project(
             pool=deps.pool,
             tenant_id=tenant_id,

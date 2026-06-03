@@ -1,6 +1,6 @@
 """tests/unit/sage/test_outcome_evaluator.py — Phase 13 Outcome Evaluator.
 
-Direct tests for `services.sage.outcome_evaluator.OutcomeEvaluator`.
+Direct tests for `services.reasoning.sage.outcome_evaluator.OutcomeEvaluator`.
 The evaluator only writes to `inquiry_outcome_events`; everything else
 is read-only. Tests seed real rows in `inquiry_sessions`,
 `inquiry_evidence_items`, `think_runs`, `applied_triggers`, and
@@ -26,11 +26,11 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.outcome_evaluator import (
+from services.reasoning.sage.outcome_evaluator import (
     InquiryOutcomeSummary,
     OutcomeEvaluator,
 )
-from services.sage.inquiry_traces.repo import OutcomeEventsRepo
+from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
 
 pytestmark = pytest.mark.integration
 

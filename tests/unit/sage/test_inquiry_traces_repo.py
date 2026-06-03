@@ -1,13 +1,13 @@
 """tests/unit/sage/test_inquiry_traces_repo.py — Phase 1 trace repos.
 
 Direct repo tests for the three gap-filler tables introduced in
-migration 0049 (retrieval_plans, omitted_evidence, inquiry_outcome_events).
+migration 0084 (retrieval_plans, omitted_evidence, inquiry_outcome_events).
 
 Despite living under tests/unit, these tests touch a real Postgres
 because the repos are thin wrappers over SQL — there is no business
 logic worth mocking. They use the same `gateway_pool` fixture as
-services/decision_deltas/tests (per-test fresh DB via TRUNCATE),
-re-exported through services/gateway/tests/conftest.py. The
+services/product/decision_deltas/tests (per-test fresh DB via TRUNCATE),
+re-exported through services/app/gateway/tests/conftest.py. The
 `pytest.mark.integration` marker keeps them out of any "pure unit"
 selection that runs without a database.
 """
@@ -20,7 +20,7 @@ import pytest
 
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
-from services.sage.inquiry_traces import (
+from services.reasoning.sage.inquiry_traces import (
     OmittedEvidenceRepo,
     OmittedEvidenceRow,
     OutcomeEventsRepo,

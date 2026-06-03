@@ -20,7 +20,7 @@ Three coverage gaps closed by this file:
      SAGE off in production via env without code changes.
 
 All tests are `@pytest.mark.integration` and use the gateway_pool +
-tenant_id fixtures. Drives the real services/sage modules, not stubs.
+tenant_id fixtures. Drives the real services/reasoning/sage modules, not stubs.
 """
 from __future__ import annotations
 
@@ -33,11 +33,11 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
-from services.sage.discovery.types import Signature
-from services.sage.inquiry_traces import (
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
+from services.reasoning.sage.discovery.types import Signature
+from services.reasoning.sage.inquiry_traces import (
     OmittedEvidenceRepo,
     OutcomeEventsRepo,
     RetrievalPlansRepo,
@@ -49,8 +49,8 @@ from services.sage.inquiry_traces import (
     reset_trace_context,
     set_trace_context,
 )
-from services.sage.outcome_evaluator import OutcomeEvaluator
-from services.sage.topology_optimizer import TopologyOptimizer
+from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
+from services.reasoning.sage.topology_optimizer import TopologyOptimizer
 
 from tests.unit.sage._seed import seed_model
 

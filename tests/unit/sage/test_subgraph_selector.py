@@ -1,4 +1,4 @@
-"""Unit tests for services.sage.subgraph_selector (Phase 7 v1).
+"""Unit tests for services.reasoning.sage.subgraph_selector (Phase 7 v1).
 
 Pure Python — no DB, no LLM. Constructs ``ActivatedNode`` /
 ``CandidateEdge`` fixtures inline so this file does not depend on
@@ -10,8 +10,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from services.sage.structural_features.types import ModelStructuralFeatures
-from services.sage.subgraph_selector import (
+from services.reasoning.sage.structural_features.types import ModelStructuralFeatures
+from services.reasoning.sage.subgraph_selector import (
     EXCLUSION_REASONS,
     ActivatedNode,
     CandidateEdge,

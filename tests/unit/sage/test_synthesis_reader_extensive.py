@@ -13,11 +13,11 @@ import pytest
 from lib.shared.ids import uuid7
 from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
 from services.reasoning.retrieval.primary import TriggerContext
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
-from services.sage.discovery.types import NegativeMemory
-from services.sage.reader import ReaderBudget, SynthesisReader
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.types import NegativeMemory
+from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
 from tests.unit.sage._seed import (
     ZERO_EMBEDDING,
     seed_model,

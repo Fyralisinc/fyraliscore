@@ -92,6 +92,9 @@ pytest -m "not slow and not real_llm"                # fast tests (needs Postgre
 
 ## 7. Branching
 
-`main` is the integration branch; feature work branches off it. See
-CODEBASE-MANAGEMENT.md §"Branch & release strategy" for the current branch
-landscape and the recommended convergence plan.
+`main` is the single integration trunk. Feature and cleanup work branches off
+`main` and returns by PR with CI. `production` and `demo-deploy` are release
+branches cut from `main`, not alternate development trunks. `cannonical` is
+retired as an integration line; do not target new work there.
+
+See ADR-0002 and CODEBASE-MANAGEMENT.md §"Branch & release strategy".

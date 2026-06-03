@@ -58,24 +58,29 @@ Reliability + Security: arbitrary, attacker-controlled signals injected directly
 
 ---
 
-### P0-2: Duplicated migration prefix `0014_*` produces non-deterministic schema
+### P0-2: Duplicated migration prefixes produced non-deterministic schema
 
-**Priority:** P0 · **Effort:** S
+**Priority:** P0 · **Effort:** S · **Status:** Resolved 2026-06-03
 
 **Problem**
 
-`db/migrations/0014_access_control.sql` and `db/migrations/0014_customer_commitments_superset.sql` share the `0014_` prefix. `scripts/docker-migrate.sh` iterates over filenames; ordering depends on `ls` sort. Different environments may apply them in different orders. `check_schema_drift.py` is permissive enough that the divergence is invisible.
+Historical migration files shared the `0014_*` and `0043_*` prefixes. The
+`main`/`cannonical` consolidation also introduced Sage migrations numbered
+`0049_*`-`0057_*`, colliding with ingestion migrations already using those
+prefixes. `scripts/docker-migrate.sh` correctly rejected the duplicate prefix
+set, so a fresh compose migration run could not start.
 
 **Impact**
 
 Correctness: cross-environment schema divergence; downstream queries depending on column order/indexes can silently miss rows. Hard to reproduce bugs in prod.
 
-**Proposed Change**
+**Resolution**
 
-- Rename `0014_customer_commitments_superset.sql` → `0025_customer_commitments_superset.sql`
-- Update `check_schema_drift.py`'s expected order
-- Add a `lib/shared/db.py` boot assertion that scans `db/migrations/*.sql` and fails on duplicate prefixes
-- Run `check_schema_drift.py` in CI before deploy and fail on drift
+- Renamed `0014_customer_commitments_superset.sql` → `0025_customer_commitments_superset.sql`.
+- Renamed `0043_single_demo_company.sql` → `0026_single_demo_company.sql`.
+- Renamed the Sage migration series to `0084_*`-`0092_*`.
+- Restored hard-fail duplicate-prefix behavior in `lib.shared.migrations`.
+- Added a CI migration filename check.
 
 **Acceptance Criteria**
 
@@ -214,6 +219,45 @@ Unit: simulate concurrency with `asyncio.gather(*[apply_diff(...) for _ in range
 
 ---
 
+### P1-0: Ruff unused-import / fixture-shadowing baseline blocks stricter lint
+
+**Priority:** P1 · **Effort:** M
+
+**Problem**
+
+The repo previously advertised `ruff check --select E9,F63,F7,F82,F821,F811,F401 .`
+in CI, but the current codebase has a large pre-existing `F401`/`F811`
+baseline, mostly unused imports, pytest fixture-name collisions, and generated
+or demo code. As of the 2026-06-03 trunk cleanup, the enforced CI lint baseline
+is limited to correctness checks (`E9,F63,F7,F82,F821`) so PRs can be evaluated
+by a green gate instead of a permanently red one.
+
+**Impact**
+
+Maintainability: unused imports and fixture shadowing stay noisy enough that
+future real lint findings can hide in the baseline. CI is truthful again, but
+it is not yet strict enough to catch drift in import hygiene.
+
+**Proposed Change**
+
+- Split generated/demo code into explicit ruff exclude or per-file-ignore rules.
+- Fix real unused imports in application and library code.
+- Add targeted per-file ignores for pytest fixtures where `F811` is intentional.
+- Re-enable `F401,F811` in CI once the baseline is clean.
+
+**Acceptance Criteria**
+
+- `ruff check --select E9,F63,F7,F82,F821,F811,F401 .` passes locally and in CI.
+- Intentional pytest fixture redefinitions have narrow per-file ignores.
+- Generated/demo artifacts are excluded by policy rather than by accident.
+
+**Test Plan**
+
+- Run the full ruff command above.
+- Run the focused backend test suite to catch fixture import regressions.
+
+---
+
 ### P1-1: `GATEWAY_MOUNT_SIM=1` enabled in production docker-compose
 
 **Priority:** P1 · **Effort:** S
@@ -276,7 +320,7 @@ Integration: spawn worker → simulate hang via `await asyncio.sleep(600)` → s
 
 **Problem**
 
-`db/migrations/0014_customer_commitments_superset.sql:50`: `NUMERIC` (no precision) defaults to integer-only on inserts via Python `Decimal('123.45')`. Other money columns explicitly use `NUMERIC(10,6)` (`0018_view_render_costs.sql`).
+`db/migrations/0025_customer_commitments_superset.sql:50`: `NUMERIC` (no precision) defaults to integer-only on inserts via Python `Decimal('123.45')`. Other money columns explicitly use `NUMERIC(10,6)` (`0018_view_render_costs.sql`).
 
 **Impact**
 

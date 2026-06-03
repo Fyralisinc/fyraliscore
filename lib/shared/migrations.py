@@ -106,12 +106,8 @@ def _assert_unique_prefixes(files: Iterable[pathlib.Path]) -> None:
         else:
             seen[prefix] = path.name
     if dupes:
-        # Main ships intentional dual-prefixed migrations (0014, 0043) that
-        # predate this check; the merged branch tolerates them. Warn rather
-        # than hard-fail so the (deterministic, lexical) apply order proceeds.
-        logger.warning(
-            "duplicate migration prefixes detected (tolerated): %s",
-            "; ".join(dupes),
+        raise RuntimeError(
+            "duplicate migration prefixes detected: " + "; ".join(dupes)
         )
 
 

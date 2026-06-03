@@ -1701,7 +1701,7 @@ async def _execute_sage_reader_action(
     if not cfg.sage_reader_enabled:
         return None
     try:
-        from services.sage.reader import ReaderBudget, SynthesisReader
+        from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
     except Exception:  # noqa: BLE001
         return None
     try:
@@ -3609,7 +3609,7 @@ async def _persist_sage_reader_activation_traces(
     if table_name is None:
         return
     try:
-        from services.sage.reader import activation_trace_insert_params
+        from services.reasoning.sage.reader import activation_trace_insert_params
     except Exception:  # noqa: BLE001
         return
     sage_notes = (result.notes or {}).get("sage_reader")
@@ -3626,7 +3626,7 @@ async def _persist_sage_reader_activation_traces(
             if not isinstance(raw_trace, dict):
                 continue
             try:
-                from services.sage.reader import ReaderActivationTrace
+                from services.reasoning.sage.reader import ReaderActivationTrace
                 trace = ReaderActivationTrace(
                     question_id=str(raw_trace["question_id"]),
                     model_id=UUID(str(raw_trace["model_id"])),
@@ -3832,10 +3832,10 @@ async def _emit_phase1_traces(
     a test DB) should NOT bring the existing pipeline down.
     """
     # Local import keeps the inquiry runtime free of an import-cycle
-    # risk against services.sage and lets the trace surface stay
-    # optional in environments that haven't installed migration 0049.
+    # risk against services.reasoning.sage and lets the trace surface stay
+    # optional in environments that haven't installed migration 0084.
     try:
-        from services.sage.inquiry_traces.emitter import (
+        from services.reasoning.sage.inquiry_traces.emitter import (
             TraceContext,
             emission_enabled,
             emit_event,
@@ -3858,7 +3858,7 @@ async def _emit_phase1_traces(
 
     # Confirm the Phase 1 tables exist before any write attempts. The
     # repo path already swallows errors, but skipping early avoids
-    # adding noise to every legacy / pre-0049 deployment's logs.
+    # adding noise to every legacy / pre-0084 deployment's logs.
     plans_table = await conn.fetchval(
         "SELECT to_regclass('public.retrieval_plans')"
     )

@@ -14,7 +14,7 @@ The repository is intentionally a monolith at the source level: the FastAPI gate
 |---|---|---|
 | [services/app](services/app) | gateway, webhooks, realtime | HTTP/WS entrypoints and request dispatch. |
 | [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering, demo | CEO-facing surfaces composed from substrate + reasoning. |
-| [services/reasoning](services/reasoning) | think, retrieval, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, topology, scoring. |
+| [services/reasoning](services/reasoning) | think, retrieval, sage, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, adaptive synthesis, topology, scoring. |
 | [services/ingest](services/ingest) | ingestion, integrations, synthetic, code_intel, github_intel | Signal intake, third-party integrations, synthetic signals. |
 | [services/domain](services/domain) | models, acts, resources, observations, actors, entity_aliases, bridge, falsifiers | The core persisted substrate. |
 | [services/platform](services/platform) | access_control, execution | Cross-cutting infrastructure (authz, execution routing). |

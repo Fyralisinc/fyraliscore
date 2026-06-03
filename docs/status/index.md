@@ -92,14 +92,11 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    install router at all** (sandbox-script-only). Gmail mounts its Pub/Sub ingress
    only if `GMAIL_SERVICE_ACCOUNT_JSON` is set (silent skip otherwise).
 
-!!! danger "Deploy blocker on this branch — duplicate migration prefixes"
-    `db/migrations/` has duplicate numeric prefixes (**`0014_*` ×2, `0043_*` ×2**).
-    `scripts/docker-migrate.sh` runs a dup-prefix check and `exit 1`s on a match, so
-    the compose `migrate` one-shot **fails**; every service `depends_on:
-    migrate:service_completed_successfully`, so the **whole stack never starts** via
-    docker-compose. (The README's manual `psql` loop doesn't run this check, and the
-    project memory notes the check was *softened on `origin/cannonical`* — but this
-    working tree hard-fails.) **Verified.**
+!!! success "Duplicate migration prefixes resolved"
+    Resolved 2026-06-03. Historical `0014_*` / `0043_*` collisions were
+    renumbered, and the post-merge Sage migrations moved to `0084_*`-`0092_*`.
+    The shell migration runner, Python migration helper, and CI now reject any
+    future duplicate numeric prefix.
 
 ## The detail pages
 

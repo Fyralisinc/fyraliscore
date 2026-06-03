@@ -1,6 +1,6 @@
 """tests/unit/sage/test_evidence_projection.py — Phase 8 evidence projection.
 
-Integration tests for `services.sage.evidence_projection.EvidenceProjector`.
+Integration tests for `services.reasoning.sage.evidence_projection.EvidenceProjector`.
 
 Despite living under tests/unit, these tests touch a real Postgres
 because the projector reads `models` + `observations` rows directly.
@@ -19,7 +19,7 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.evidence_projection import (
+from services.reasoning.sage.evidence_projection import (
     TOKEN_ESTIMATE,
     EvidenceProjector,
     ProjectionBudget,

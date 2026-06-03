@@ -27,32 +27,32 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
-from services.sage.discovery.shortcuts_repo import (
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.shortcuts_repo import (
     DiscoveryShortcutsRepo,
 )
-from services.sage.discovery.types import NegativeMemory, Signature
-from services.sage.evidence_projection import (
+from services.reasoning.sage.discovery.types import NegativeMemory, Signature
+from services.reasoning.sage.evidence_projection import (
     EvidenceProjector,
     ProjectionBudget,
 )
-from services.sage.inquiry_traces.repo import OutcomeEventsRepo
-from services.sage.model_predictions.repo import (
+from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
+from services.reasoning.sage.model_predictions.repo import (
     ModelPredictionsRepo,
 )
-from services.sage.model_predictions.types import (
+from services.reasoning.sage.model_predictions.types import (
     ExpectedObservation,
     ModelPrediction,
 )
-from services.sage.region_summaries.repo import RegionSummariesRepo
-from services.sage.region_summaries.types import RegionSufficientState
-from services.sage.structural_features.repo import StructuralFeaturesRepo
-from services.sage.structural_features.types import (
+from services.reasoning.sage.region_summaries.repo import RegionSummariesRepo
+from services.reasoning.sage.region_summaries.types import RegionSufficientState
+from services.reasoning.sage.structural_features.repo import StructuralFeaturesRepo
+from services.reasoning.sage.structural_features.types import (
     ModelStructuralFeatures,
 )
-from services.sage.topology_optimizer import TopologyOptimizer
+from services.reasoning.sage.topology_optimizer import TopologyOptimizer
 
 from tests.unit.sage._seed import seed_model, seed_observation
 

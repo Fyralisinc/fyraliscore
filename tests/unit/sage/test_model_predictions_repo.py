@@ -1,14 +1,14 @@
 """tests/unit/sage/test_model_predictions_repo.py — Phase 12 prediction repos.
 
-Two repos backed by migration 0054:
+Two repos backed by migration 0089:
   * ModelPredictionsRepo       — `model_predictions`
   * ModelPredictionErrorsRepo  — `model_prediction_errors`
 
-Plus the pure residual helpers in services/sage/model_predictions/residual.py
+Plus the pure residual helpers in services/reasoning/sage/model_predictions/residual.py
 (no DB; covered by the bottom half of this file).
 
 The repo tests are marked `pytest.mark.integration` and use the
-gateway_pool fixture re-exported via services/gateway/tests/conftest.py.
+gateway_pool fixture re-exported via services/app/gateway/tests/conftest.py.
 The residual-helper tests are pure and would run without a DB, but we
 group them in the same file so the Phase 12 surface is covered in one
 place. The module-level `integration` mark applies to both; the pure
@@ -26,16 +26,16 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.model_predictions.repo import (
+from services.reasoning.sage.model_predictions.repo import (
     ModelPredictionErrorsRepo,
     ModelPredictionsRepo,
 )
-from services.sage.model_predictions.residual import (
+from services.reasoning.sage.model_predictions.residual import (
     detect_prediction_error,
     score_residual_impact,
     score_residual_severity,
 )
-from services.sage.model_predictions.types import (
+from services.reasoning.sage.model_predictions.types import (
     ExpectedObservation,
     ModelPrediction,
     ModelPredictionError,

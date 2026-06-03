@@ -23,7 +23,8 @@ reasoning behind each call. It is the companion to
   identical to baseline (3,209 tests collected, 11 pre-existing errors, ruff
   unchanged).
 - **Boundaries are now enforced**, not just documented: import-linter contracts
-  in CI, a `CODEOWNERS` map, per-layer READMEs, and `CONTRIBUTING.md`.
+  in CI, stale flat-service import tests, per-layer READMEs, and
+  `CONTRIBUTING.md`.
 - **Honesty over theatre:** only invariants that are *empirically true today* are
   enforced. Real coupling that exists (e.g. `domain.models.repo → product`) is
   documented as tracked debt, not hidden behind a contract the code already
@@ -64,7 +65,7 @@ The codebase was **not disordered** — it was *illegible at scale*. Concretely:
 |---|---|
 | Good git hygiene | No tracked build/cache cruft; no committed secrets; comprehensive `.gitignore`; `lsob/` (258 files) correctly gitignored as an external tool. |
 | Clean lower layer | `lib/` had **no hard layer violations** — only a few guarded lazy imports. |
-| **`services/` was a flat grab-bag** | 37 packages with no sub-structure, mixing 261-file subsystems (`ingestion`) and 119-file (`integrations`) with 2-file helpers (`judgment`). Nothing signalled which packages were domain vs. app vs. reasoning vs. product. |
+| **`services/` was a flat grab-bag** | 37 packages with no sub-structure, mixing 261-file subsystems (`ingestion`) and 119-file (`integrations`) with 2-file helpers (`judgment`). Nothing signalled which packages were domain vs. app vs. reasoning vs. product. Resolved by the layered tree; post-merge Sage now lives under `services/reasoning/sage`. |
 | Cross-package coupling is real | `ingestion ↔ integrations` are bidirectionally coupled; `think → retrieval → models` is a chain; all done via **absolute** imports (only 9 multi-dot relatives, all intra-package). |
 | God-file | `gateway/main.py` = **4,409 lines**. |
 | Name collisions | `lib/topology` vs `services/topology`, `lib/integrations` vs `services/integrations`, top-level `demo/` (data-gen) vs `services/demo/` (runtime). |
@@ -257,8 +258,9 @@ Legibility decays without guardrails. Added:
      3 lazy provider imports + 5 test-only fixtures).
   2. `reasoning` never *directly* imports `app`/`product`/`ingest` (no new upward
      edges into the reasoning core).
-- **`CODEOWNERS`** — ownership mapped to the layers (placeholder team slugs,
-  clearly flagged to replace before requiring owner review).
+- **`CODEOWNERS`** — intentionally comment-only until real GitHub users/teams
+  exist. Placeholder owners were removed because fake handles are worse than no
+  enforcement.
 - **Per-layer `README.md`** — role, package list, and import rule for each layer.
 - **`CONTRIBUTING.md`** — structure, import discipline, naming conventions
   (standardize new routers on `router.py`), migration rules, how to extend, and
@@ -297,11 +299,11 @@ rather than hidden or hacked:
    - (d) `main.py` shrinks to lifespan/middleware/`include_router` wiring.
    - (e) Verify: `import` + `collect-only` *and* boot the gateway against a DB,
      diffing the `/openapi.json` route set before/after.
-3. **Migration prefix collisions (`0014_*`, `0043_*`).** Both files in each pair
-   apply (files run in lexicographic order; no ledger), so this is a legibility
-   smell, not data loss. **Not renumbered** because renaming applied migrations
-   is correctness-sensitive and orthogonal to organization. CONTRIBUTING.md
-   forbids new collisions.
+3. **Migration prefix collisions.** Resolved on 2026-06-03: the historical
+   `0014_*` / `0043_*` duplicates were renumbered, and the post-merge Sage
+   migrations were moved behind the ingestion high-water mark (`0084`-`0092`).
+   Duplicate prefixes are again a hard failure in both the migration helper and
+   CI.
 4. **`uv.lock` is stale.** Adding one dev dep produced a 2,667-line `uv lock`
    delta, proving the lock didn't reflect `pyproject.toml` before this change.
    Left untouched (CI installs via `pip install -e .[dev]`, so it's not on the
@@ -317,20 +319,21 @@ rather than hidden or hacked:
 
 ## 9. Branch & release strategy
 
-The branch landscape is the biggest *process* risk (bigger than any file layout):
-`main` has drifted from being the integration point (`cannonical` is 370 ahead of
-it; `production` is 46 behind it). Recommended convergence (process, not done
-here because it needs owner coordination and is not a code-organization edit):
+Resolved on 2026-06-03: `cannonical` was merged into `main`, together with the
+newer Sage work that had landed on `main`. Per
+[ADR-0002](docs/adr/0002-main-is-the-single-integration-trunk.md), `main` is now
+the single integration trunk.
 
-1. Land this `refactor/codebase-layered-reorg` branch into `cannonical` (it is
-   the live working line).
-2. **Re-establish `main` as the single integration trunk**: merge `cannonical`
-   into `main`, then cut `production`/`demo-deploy` *from* `main` so they stop
-   diverging.
-3. Adopt short-lived feature branches off `main` (already implied by
-   `.github/workflows/enforce-main-source.yml`).
-4. Treat `integration/ingestion-hardening` and `security/cat1-hardening` as
-   merge-or-close: fold forward or delete to stop long-lived drift.
+Operating rules:
+
+1. Branch feature and cleanup work from `main`.
+2. Return work to `main` through PR + CI.
+3. Treat `production` and `demo-deploy` as release/deployment branches cut from
+   `main`, not independent development trunks.
+4. Treat old long-lived branches (`cannonical`, `integration/*`, `security/*`)
+   as merge-or-close. Each needs an owner and disposition.
+5. Direct pushes to `main` are emergency-only; branch protection should require
+   PRs and checks without routine administrator bypass.
 
 ---
 
@@ -340,7 +343,7 @@ here because it needs owner coordination and is not a code-organization edit):
 |---|---|
 | Split into multiple repos | Coupling + shared schema/tests/deploy make it net-negative today (§3). |
 | Split the gateway god-file | Not runtime-verifiable here; too critical to refactor blind. Plan provided (§8.2). |
-| Renumber migrations | Correctness-sensitive, orthogonal to organization (§8.3). |
+| Renumber migrations | Done in the 2026-06-03 trunk cleanup once `main` and `cannonical` were consolidated. |
 | Regenerate `uv.lock` | Would bury a 2,667-line unrelated churn in a structural PR (§8.4). |
 | Rename `lib/` subpackages | Already clean; pure churn. |
 | Mass-rename routers to `router.py` | Convention set for *new* code; churning working files adds risk for cosmetics. |

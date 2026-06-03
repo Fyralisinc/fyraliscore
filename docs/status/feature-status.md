@@ -122,6 +122,6 @@ These are itemized in [Wiring gaps](wiring-gaps.md) and
 [Legacy & test-only](dead-legacy.md).
 
 > **TODO(human):** Confirm which of the high-severity gaps are blocking vs.
-> intentionally staged, and whether the duplicate-migration-prefix
-> [deploy blocker](index.md) needs the dup-check softened on this branch (as on
-> `origin/cannonical`) or the migrations renumbered.
+> intentionally staged. The duplicate-migration-prefix deploy blocker was
+> resolved on 2026-06-03 by renumbering the colliding files and restoring
+> hard-fail checks.
