@@ -440,7 +440,6 @@ async def _build_snapshot(
         cap = _LENS_CAP if lens == b else _OVERVIEW_CAP[b]
         capped.extend(items[:cap])
     nodes = capped
-    visible_ids = {n.id for n in nodes}
 
     # 5c) Synthesize the band-to-band hierarchy (spec §4.2 + §4.4).
     #     Pelago-style tenants ship no model_edges; without explicit

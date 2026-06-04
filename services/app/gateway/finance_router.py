@@ -392,7 +392,7 @@ def build_finance_router() -> APIRouter:
         secret_value = f"fin-{source}-{uuid4().hex}"
         secret_ref: str | None = None
         try:
-            deps = _deps(req)
+            _deps(req)
             store = getattr(req.app.state, "secret_store", None)
             if store is not None:
                 secret_ref = await store.put(

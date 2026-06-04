@@ -404,7 +404,7 @@ async def test_cascade_decision_revisited_flags_commitments(
                 metadata={},
                 observation_id=oid,
             )
-            result = await cascade(seed, conn)
+            await cascade(seed, conn)
         # Commitment got a flag_for_review observation, NOT a state change.
         flag_rows = await conn.fetch(
             """
@@ -467,7 +467,7 @@ async def test_cascade_cause_id_chain_traversable(
                 metadata={"new_state": "blocked"},
                 observation_id=oid,
             )
-            result = await cascade(seed, conn)
+            await cascade(seed, conn)
         # Look up the goal_health_recomputed observation and verify its
         # cause_id pointer equals the seed observation's id.
         row = await conn.fetchrow(
@@ -509,7 +509,7 @@ async def test_cascade_visited_set_deduplicates(
                 created_by_event_id=oid,
                 tenant_id=tenant, conn=conn,
             )
-            c = await commitments_svc.create(
+            await commitments_svc.create(
                 title="ship", owner_id=aid,
                 contributes_to_goal_ids=[g.id],
                 constrained_by_decision_ids=[d.id],

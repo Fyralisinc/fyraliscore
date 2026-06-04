@@ -255,7 +255,6 @@ async def test_worker_accepts_trigger_below_max_depth(
         config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
     )
     dispatched: list = []
-    original = worker._dispatch_trigger
 
     async def fake_dispatch(row):
         dispatched.append(row["id"])

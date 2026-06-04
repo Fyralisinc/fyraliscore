@@ -152,7 +152,6 @@ async def test_trigger_driven_invalidation(greeting_db):
 async def test_staleness_warning_logged(greeting_db, caplog):
     """When a cache key is older than its threshold at refresh time,
     we emit a WARN log."""
-    cache = ViewCeoCacheRepo(greeting_db)
     # Pre-seed an old greeting (>30 min). We can't backdate cached_at
     # without raw SQL.
     import json as _json

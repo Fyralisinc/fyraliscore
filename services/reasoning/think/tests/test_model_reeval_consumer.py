@@ -292,10 +292,10 @@ async def test_for_update_skip_locked_allows_concurrent_workers(
     via FOR UPDATE SKIP LOCKED (proved by asyncpg lock + count)."""
     c1 = await _seed_model(fresh_db, tenant)
     c2 = await _seed_model(fresh_db, tenant)
-    r1 = await _enqueue_reeval_row(
+    await _enqueue_reeval_row(
         fresh_db, tenant, cause_model_id=c1,
     )
-    r2 = await _enqueue_reeval_row(
+    await _enqueue_reeval_row(
         fresh_db, tenant, cause_model_id=c2,
     )
 

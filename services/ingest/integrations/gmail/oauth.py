@@ -164,8 +164,6 @@ async def connect_finalize(request: Request) -> JSONResponse:
     if not isinstance(inclusion_spec, dict):
         raise HTTPException(status_code=400, detail="inclusion_spec must be an object")
 
-    scope_long = SCOPE_ALIAS[scope_alias]
-
     minter = get_minter()
 
     async with tenant_transaction(tenant_id) as tctx:

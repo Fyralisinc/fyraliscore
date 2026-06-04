@@ -34,8 +34,6 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate, ObservationCreate
 
 from services.domain.models.repo import ModelsRepo
-from services.domain.observations.repo import ObservationRepository
-
 
 # ---------------------------------------------------------------------
 # Deterministic embedding helper — copied from Models conftest so the
@@ -297,9 +295,7 @@ async def build_fixture(
     a pool constructor arg — we still pass `conn=conn` per call so the
     work happens on the test's connection.
     """
-    rng = random.Random(rng_seed)
     fs = FixtureSet(tenant_id=tenant_id)
-    obs_repo = ObservationRepository(pool=pool, embedder=None)
     mod_repo = ModelsRepo(
         pool=pool,
         embedder=None,

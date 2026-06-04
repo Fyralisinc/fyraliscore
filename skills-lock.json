@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "dead-code-detector": {
+      "source": "curiouslearner/devkit",
+      "sourceType": "github",
+      "skillPath": "skills/dead-code-detector/SKILL.md",
+      "computedHash": "ddd2468f98f1be52542c587206c621207a60a2dc53c6c141906caa59dbebb375"
+    },
+    "improve-codebase-architecture": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "computedHash": "ef32aea0a8fab9b365ff9e08a95f8d353e20ca21ea46ec2e73587c86dd341351"
+    },
+    "review-maintainability": {
+      "source": "doodledood/codex-workflow",
+      "sourceType": "github",
+      "skillPath": "skills/review-maintainability/SKILL.md",
+      "computedHash": "01969870a082308388a916b6419fce7cdac53d168025da75a3bb04db3c1b3ece"
+    },
+    "verification-before-completion": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/verification-before-completion/SKILL.md",
+      "computedHash": "9b446f0c7fe1cfb560b1d34439523b1a76d5f177290007b2c053a1c749a4a8ba"
+    },
+    "wiring": {
+      "source": "parcadei/continuous-claude-v3",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/wiring/SKILL.md",
+      "computedHash": "d01ad9ddae4d17d1a77ce2ffdea1bb23e62cfd36f36e3da97dad95c64d3f2f08"
+    }
+  }
+}

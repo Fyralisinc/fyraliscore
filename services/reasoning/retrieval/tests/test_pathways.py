@@ -146,7 +146,7 @@ async def test_pathway_a_skips_one_legacy_bad_commitment_without_losing_models(
 async def test_pathway_b_precomputed_vector_finds_clustered_models(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Embed a phrase close to the "alice ships reliably" topic Models
     # have (topic index 0 in the builder, models at indices 20,24,28,...).
     qvec = make_embedding("alice ships reliably")
@@ -192,7 +192,7 @@ async def test_pathway_b_real_ollama_semantic_cluster(
     tx_conn, fresh_db, tenant
 ):
     """One integration test uses real Ollama per the prompt."""
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     cfg = OllamaConfig.from_env()
     async with OllamaClient(cfg) as client:
         try:
@@ -216,7 +216,7 @@ async def test_pathway_b_real_ollama_semantic_cluster(
 async def test_pathway_c_returns_observations_in_window(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Fixture builds obs at base_time 2026-04-01 12:00 + i*10min.
     # Obs 50 is at 2026-04-01 20:20.
     seed = datetime(2026, 4, 1, 20, 0, 0, tzinfo=timezone.utc)
@@ -261,7 +261,7 @@ async def test_pathway_c_invalid_window_raises(tx_conn, tenant):
 async def test_pathway_d_returns_patterns_and_instances(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Shared signature from the fixture.
     result = await pathway_d_pattern(
         {"regex": "^hotfix"}, tenant, tx_conn,
@@ -276,7 +276,7 @@ async def test_pathway_d_returns_patterns_and_instances(
 async def test_pathway_d_no_signature_returns_all_patterns(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     result = await pathway_d_pattern(None, tenant, tx_conn, limit=50)
     # Should surface at least the 10 pattern Models.
     pattern_models = [

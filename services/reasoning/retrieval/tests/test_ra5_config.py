@@ -108,7 +108,7 @@ def test_ra5_config_reload_updates_singleton(monkeypatch):
 async def test_ra5_semantic_k_change_alters_retrieval_results(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     vec = make_embedding("alice ships reliably")
     base_trigger_kwargs = dict(
         kind="T1",

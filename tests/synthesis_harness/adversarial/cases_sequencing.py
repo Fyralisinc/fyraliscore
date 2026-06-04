@@ -968,7 +968,7 @@ CASE_LIFECYCLE = Case(
 async def _run_archived_not_candidate(pool: asyncpg.Pool, ctx: dict) -> dict:
     async with pool.acquire() as conn:
         async with conn.transaction():
-            existing = await F.make_model(
+            await F.make_model(
                 conn, ctx["tenant"],
                 natural="Existing archived Model",
                 scope_actors=[ctx["actor"]],

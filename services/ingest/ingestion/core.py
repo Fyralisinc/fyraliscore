@@ -390,7 +390,6 @@ async def ingest_from_draft(
         embedding, embedding_pending
     ))
     trigger_queue_id: UUID | None = None
-    existing_by_extid: ObservationRow | None = None
 
     with notify_scope() as scope:
         async with pool.acquire() as conn:

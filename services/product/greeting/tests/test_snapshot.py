@@ -47,12 +47,12 @@ async def test_empty_tenant_produces_valid_snapshot(greeting_db):
 
 async def test_greeting_snapshot_picks_up_seeds(greeting_db):
     # Seed enough substrate to exercise every field.
-    actor = await seed_actor(greeting_db)
+    await seed_actor(greeting_db)
     model_id = await seed_model(
         greeting_db, natural="Acme renewal structurally unsafe", confidence=0.84
     )
     goal_id = await seed_goal(greeting_db)
-    commit_id = await seed_commitment(
+    await seed_commitment(
         greeting_db,
         title="ship billing refactor",
         state="blocked",

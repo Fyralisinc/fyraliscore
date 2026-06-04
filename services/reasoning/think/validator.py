@@ -587,9 +587,6 @@ async def validate(
     neutralized_op_count = 0
 
     # --- claim_ops -------------------------------------------------
-    context_model_ids = {
-        getattr(m, "id", None) for m in getattr(retrieval_result, "models", [])
-    }
     for op in diff.claim_ops:
         try:
             v_op = await _validate_claim_op(

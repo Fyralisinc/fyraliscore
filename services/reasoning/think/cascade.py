@@ -223,7 +223,6 @@ async def cascade(
         event, depth = queue.pop(0)
         if depth >= max_depth:
             bound_violated = True
-            vio_id = uuid7()
             await emit_state_change(
                 conn,
                 kind="cascade_bound_violation",

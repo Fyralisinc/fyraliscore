@@ -396,7 +396,7 @@ async def test_github_webhook_default_kwarg_preserves_existing_behavior(
     """No node_id/occurred_at_iso kwargs → auto-minted node_id; the
     observation's external_id is that node_id. Backward-compat guard."""
     iid = "999DEF"
-    tenant_id = await _seed_github_install(fresh_db, iid)
+    await _seed_github_install(fresh_db, iid)
     app = _build_app(fresh_db)
     async with GithubWebhookGenerator(
         app=app, mock_client=_mock(iid), signing_secret=_SECRET,
@@ -423,7 +423,7 @@ async def test_github_webhook_injected_identity_propagates_to_observation(
     from datetime import datetime, timezone
 
     iid = "999INJ"
-    tenant_id = await _seed_github_install(fresh_db, iid)
+    await _seed_github_install(fresh_db, iid)
     app = _build_app(fresh_db)
     injected_node = "I_kwDOtwin0001"
     injected_ts = "2026-02-02T03:04:05Z"

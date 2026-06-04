@@ -446,10 +446,10 @@ async def test_snapshot_crosses_neighborhood_flag(
     # crossing the boundary.
     m1 = await _seed_model(gateway_pool, tenant_id, natural="m1")
     m2 = await _seed_model(gateway_pool, tenant_id, natural="m2")
-    n1 = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[m1], named_signature="N1",
     )
-    n2 = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[m2], named_signature="N2",
     )
     await _seed_edge(
@@ -541,7 +541,7 @@ async def test_model_story_includes_supporting_edges_with_signatures(
     token, _ = valid_session
     target = await _seed_model(gateway_pool, tenant_id, natural="target")
     supporter = await _seed_model(gateway_pool, tenant_id, natural="supporter")
-    nbh = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[supporter],
         named_signature="engineering velocity",
     )

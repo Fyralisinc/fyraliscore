@@ -205,7 +205,7 @@ async def dispatcher_app(
 
     app = FastAPI()
     disp = Dispatcher(realtime_pool)
-    deps = configure_realtime(app, pool=realtime_pool, dispatcher=disp, start=False)
+    configure_realtime(app, pool=realtime_pool, dispatcher=disp, start=False)
     await disp.start()
     try:
         yield app, disp

@@ -231,8 +231,6 @@ async def build_live_drivers(
 
     # ---- Per-source mock clients ----
     gmail_targets = [t for t in targets if t.source == "gmail"]
-    slack_targets = [t for t in targets if t.source == "slack"]
-    github_targets = [t for t in targets if t.source == "github"]
     discord_targets = [t for t in targets if t.source == "discord"]
 
     mailboxes = {

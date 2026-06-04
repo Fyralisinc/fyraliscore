@@ -85,6 +85,7 @@ from services.reasoning.think.reconciler import (  # noqa: E402
     _find_candidates,
     _kind_rule,
     _KIND_RULES,
+    _semantic_rule_key,
 )
 from services.reasoning.relationships.candidates import (  # noqa: E402
     make_edge_candidate,
@@ -127,6 +128,44 @@ _BACKFILL_OPERATOR_BASIS = "paraphrase_suspect_backfill"
 _DEFAULT_KINDS: tuple[str, ...] = tuple(_KIND_RULES.keys())
 
 _KNEIGHBOURS = 5
+
+
+def _kind_filter_clause(kinds: Sequence[str], params: list[Any]) -> str:
+    """Match both legacy semantic kinds and four-stance storage fields.
+
+    Wave-0 collapsed `models.proposition_kind` into four stances while
+    preserving older semantic buckets in `claim_role`, proposition.kind,
+    or proposition.legacy_kind. Backfill callers still pass legacy terms
+    such as `state`, `concern`, and `recommendation`, so the SQL filter
+    must cover both eras.
+    """
+    terms = sorted({str(k).strip() for k in kinds if str(k).strip()})
+    params.append(terms)
+    idx = len(params)
+    return (
+        "("
+        f"proposition_kind = ANY(${idx}::text[]) OR "
+        f"claim_role = ANY(${idx}::text[]) OR "
+        f"proposition->>'kind' = ANY(${idx}::text[]) OR "
+        f"proposition->>'legacy_kind' = ANY(${idx}::text[])"
+        ")"
+    )
+
+
+def _semantic_kind(row: dict[str, Any]) -> str:
+    prop = row.get("proposition")
+    if isinstance(prop, dict):
+        rule_key = _semantic_rule_key(prop)
+        if isinstance(rule_key, str) and rule_key:
+            return rule_key
+        kind = prop.get("legacy_kind") or prop.get("kind")
+        if isinstance(kind, str) and kind:
+            return kind
+    for key in ("claim_role", "proposition_kind"):
+        value = row.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
 
 
 # ---------------------------------------------------------------------
@@ -218,48 +257,48 @@ async def _iter_active_models(
     last_created: datetime | None = None
     last_id: UUID | None = None
     while True:
+        params: list[Any] = [tenant_id]
+        kind_clause = _kind_filter_clause(kinds, params)
         if last_created is None:
+            params.append(chunk_size)
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, embedding, scope_actors, scope_entities,
                        confidence, proposition_kind, "natural", created_at,
                        supporting_event_ids, signal_readings,
                        confirmed_count, supporting_model_ids,
-                       falsifier, proposition, activation,
+                       falsifier, proposition, activation, claim_role,
                        born_from_event_id
                 FROM models
                 WHERE tenant_id = $1
                   AND status = 'active'
-                  AND proposition_kind = ANY($2::text[])
+                  AND {kind_clause}
                 ORDER BY created_at ASC, id ASC
-                LIMIT $3
+                LIMIT ${len(params)}
                 """,
-                tenant_id,
-                list(kinds),
-                chunk_size,
+                *params,
             )
         else:
+            params.extend([last_created, last_id, chunk_size])
+            last_created_idx = len(params) - 2
+            last_id_idx = len(params) - 1
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, embedding, scope_actors, scope_entities,
                        confidence, proposition_kind, "natural", created_at,
                        supporting_event_ids, signal_readings,
                        confirmed_count, supporting_model_ids,
-                       falsifier, proposition, activation,
+                       falsifier, proposition, activation, claim_role,
                        born_from_event_id
                 FROM models
                 WHERE tenant_id = $1
                   AND status = 'active'
-                  AND proposition_kind = ANY($2::text[])
-                  AND (created_at, id) > ($3, $4)
+                  AND {kind_clause}
+                  AND (created_at, id) > (${last_created_idx}, ${last_id_idx})
                 ORDER BY created_at ASC, id ASC
-                LIMIT $5
+                LIMIT ${len(params)}
                 """,
-                tenant_id,
-                list(kinds),
-                last_created,
-                last_id,
-                chunk_size,
+                *params,
             )
         if not rows:
             break
@@ -471,8 +510,8 @@ async def _discover_clusters(
 
     for mid in created_at_order:
         row = models_by_id[mid]
-        kind = row["proposition_kind"]
-        kind_rule = _kind_rule(kind)
+        semantic_kind = _semantic_kind(row)
+        kind_rule = _kind_rule(semantic_kind)
         # Reuse the production candidate search. It restricts to the
         # tenant + active + same kind + recency window + scope-overlap.
         # We pass our row's embedding as the seed vector; the result
@@ -493,7 +532,8 @@ async def _discover_clusters(
                     str(a) for a in (row.get("scope_actors") or [])
                 ],
                 candidate_scope_entities=list(row.get("scope_entities") or []),
-                proposition_kind=kind,
+                proposition_kind=row.get("proposition_kind"),
+                claim_role=row.get("claim_role"),
                 # The legacy substrate is older than the live window;
                 # raise the recency cap so backfill actually sees the
                 # historical duplicates.
@@ -510,9 +550,12 @@ async def _discover_clusters(
             continue
 
         for nb_raw in neighbours:
-            nb = _normalize_row(nb_raw)
-            nb_id: UUID = nb["id"]
+            raw_nb = _normalize_row(nb_raw)
+            nb_id: UUID = raw_nb["id"]
             if nb_id == mid:
+                continue
+            nb = models_by_id.get(nb_id)
+            if nb is None:
                 continue
             # Only score each unordered pair once. The earlier-created
             # row is the "existing" side per the reconciler's framing.
@@ -540,7 +583,7 @@ async def _discover_clusters(
                     pd.decision,
                     pd.cosine,
                     pd.signal_breakdown,
-                    kind,
+                    semantic_kind,
                 )
 
     # Materialise auto_merge clusters from the union-find.
@@ -555,7 +598,7 @@ async def _discover_clusters(
         if len(members) < 2:
             continue
         members = sorted(members, key=lambda m: str(m))
-        kind = models_by_id[members[0]]["proposition_kind"]
+        kind = _semantic_kind(models_by_id[members[0]])
         cluster = Cluster(
             members=members,
             kind=kind,

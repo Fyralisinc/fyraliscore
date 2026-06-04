@@ -121,7 +121,7 @@ async def test_second_pass_reconsolidates_new_models_only(
     )
     by_id = {r["id"]: r["activation"] for r in before}
 
-    expanded = await second_pass_expand(
+    await second_pass_expand(
         first, ["dependency_context"], tx_conn,
     )
     after = await tx_conn.fetch(

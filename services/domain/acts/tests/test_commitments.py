@@ -576,7 +576,7 @@ async def test_large_graph_cycle_check_fast(acts_db, event_id, actor_id):
     (BUILD-PLAN spec: < 500ms; we give a 2s budget to absorb CI noise.)"""
     import time
 
-    g = await goals.create(
+    await goals.create(
         title="g",
         created_by_event_id=event_id,
         tenant_id=TENANT_A,
@@ -653,9 +653,9 @@ async def test_validate_invariants_catches_c3(
 
 async def test_tenant_isolation_commitments(acts_db, event_id):
     ev_b = await make_observation(acts_db, tenant_id=TENANT_B)
-    actor_b = await make_actor(acts_db, tenant_id=TENANT_B)
+    await make_actor(acts_db, tenant_id=TENANT_B)
 
-    g_a = await goals.create(
+    await goals.create(
         title="A",
         created_by_event_id=event_id,
         tenant_id=TENANT_A,

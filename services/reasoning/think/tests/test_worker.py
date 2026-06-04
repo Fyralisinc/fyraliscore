@@ -359,9 +359,8 @@ async def test_per_tenant_concurrency_cap(fresh_db, tenant, tenant_cleanup):
     never exceeded 4."""
     obs = await _seed_signal_observation(fresh_db, tenant)
     # 8 trigger rows.
-    trig_ids = [
-        await _enqueue_trigger_row(fresh_db, tenant, obs) for _ in range(8)
-    ]
+    for _ in range(8):
+        await _enqueue_trigger_row(fresh_db, tenant, obs)
 
     worker = ThinkWorker(
         fresh_db,

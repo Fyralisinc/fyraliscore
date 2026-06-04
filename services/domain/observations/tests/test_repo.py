@@ -264,7 +264,7 @@ async def test_search_filters_out_pending_embeddings(
 # =====================================================================
 
 async def test_partition_creator_is_idempotent(fresh_db: asyncpg.Pool):
-    first = await partitions.ensure_partitions(fresh_db, months_ahead=3)
+    await partitions.ensure_partitions(fresh_db, months_ahead=3)
     second = await partitions.ensure_partitions(fresh_db, months_ahead=3)
     # First call may create zero (already done by migration) or some;
     # second call must create zero.

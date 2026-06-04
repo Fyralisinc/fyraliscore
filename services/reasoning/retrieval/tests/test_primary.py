@@ -70,7 +70,6 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
-    retrieved_ids = {m.id for m in result.models}
     for m in result.models:
         prev = before_map.get(m.id)
         assert prev is not None
@@ -109,7 +108,7 @@ async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
 
 
 async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
-    fs = await _build(tx_conn, fresh_db, tenant)
+    await _build(tx_conn, fresh_db, tenant)
     trigger = TriggerContext(
         kind="T4",
         tenant_id=tenant,
@@ -335,7 +334,7 @@ async def test_large_seed_completes_under_2s(tx_conn, fresh_db, tenant):
         precomputed_seed_vector=vec,
     )
     t0 = time.time()
-    r = await primary_retrieve(trigger, tx_conn)
+    await primary_retrieve(trigger, tx_conn)
     dt = time.time() - t0
     assert dt < 4.0, f"retrieval took {dt:.2f}s > 4s"
 
@@ -344,12 +343,12 @@ async def test_pathway_b_benchmark_under_400ms(tx_conn, fresh_db, tenant):
     """Pathway B (HNSW) should complete < 200ms with HNSW. Prompt
     allows 2x slack; we check 400ms."""
     import time
-    fs = await _build(tx_conn, fresh_db, tenant)
+    await _build(tx_conn, fresh_db, tenant)
     from services.reasoning.retrieval.pathways import pathway_b_semantic
     vec = make_embedding("alice ships reliably")
     # Warm up + measure a second call.
     _ = await pathway_b_semantic("alice", tenant, tx_conn, k=20, precomputed_vector=vec)
     t0 = time.time()
-    r = await pathway_b_semantic("alice", tenant, tx_conn, k=20, precomputed_vector=vec)
+    await pathway_b_semantic("alice", tenant, tx_conn, k=20, precomputed_vector=vec)
     dt = time.time() - t0
     assert dt < 1.0, f"pathway B took {dt:.3f}s"

@@ -313,7 +313,7 @@ async def test_borderline_pair_emits_same_issue_candidate(
         # Larger jitter → lower cosine; aim well below 0.78 so the
         # default concern threshold puts us in same_issue land.
         partner = near_embedding(base, jitter=0.45)
-        mid_a = await insert_model(
+        await insert_model(
             conn, tenant,
             born_event_id=obs,
             proposition=_concern_prop("vendor reliability"),
@@ -322,7 +322,7 @@ async def test_borderline_pair_emits_same_issue_candidate(
             confidence=0.5,
             activation=0.5,
         )
-        mid_b = await insert_model(
+        await insert_model(
             conn, tenant,
             born_event_id=obs,
             proposition=_concern_prop("supplier reliability"),

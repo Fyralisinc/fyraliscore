@@ -177,7 +177,6 @@ async def test_fu1_mmr_assembler_path_is_exercised_end_to_end(
 
     # Every MMR-selected model must have been in the off-path candidate
     # pool (i.e. access-control didn't see MMR and let more through).
-    off_ids = {m.id for m in bundle_off.models}
     # bundle_off is count-capped at _BUDGET_MODELS=40. The MMR path
     # could have selected additional models that the count-cap left
     # out but still visible. Compare against the full visible pool via

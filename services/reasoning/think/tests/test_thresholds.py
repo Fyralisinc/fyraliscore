@@ -112,8 +112,6 @@ def test_all_modulators_combined():
 
 def test_threshold_clipped_low():
     # Impossible via normal modulators, but exercise the clip.
-    from services.reasoning.think import thresholds as th
-    val = th._MIN - 0.01
     # Use the clip directly by patching via compute_threshold
     op = ActOp(
         op="create_goal", confidence_basis=None,

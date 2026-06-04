@@ -182,7 +182,6 @@ async def _setup_path_c(pool: asyncpg.Pool, _ctx: dict) -> dict:
         async with conn.transaction():
             tenant = await F.make_tenant(conn)
             actor = await F.make_actor(conn, tenant)
-            now = F.isoplus(0)
             # In-window model (recently retrieved → within 1 day window)
             in_win = await F.make_model(
                 conn, tenant,
