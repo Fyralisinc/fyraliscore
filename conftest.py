@@ -57,7 +57,15 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
     # failures roll back cleanly instead of poisoning the
     # connection. See lib/shared/migrations.py.
     from lib.shared.migrations import apply_migrations_dir
-    await apply_migrations_dir(conn, MIGRATIONS_DIR)
+    # on_error="warn": the test DB is long-lived and the Python runner has no
+    # schema_migrations ledger (unlike the production scripts/docker-migrate.sh),
+    # so it re-applies every file each run. An intermediate constraint-widening
+    # migration (e.g. 0059, which re-adds a narrower source CHECK that later
+    # migrations widen again) fails when re-applied against a DB already holding
+    # rows from a later source. Warn-and-continue lets the subsequent migrations
+    # re-establish the correct final schema; production applies each file exactly
+    # once and is unaffected. See lib/shared/migrations.py docstring.
+    await apply_migrations_dir(conn, MIGRATIONS_DIR, on_error="warn")
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
