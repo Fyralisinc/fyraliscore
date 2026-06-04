@@ -18,6 +18,7 @@ from services.ingest.ingestion.core import (
     ingest,
 )
 from services.ingest.ingestion.handlers import HandlerNotFound
+from services.app.gateway.state_wiring import probe_integration_runtime_state
 
 
 class IngestSizeError(Exception):
@@ -295,13 +296,32 @@ async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
                 error_type=type(exc).__name__,
             )
 
-    for name in ("secret_store", "tenant_resolver"):
+    settings = getattr(app_state, "gateway_settings", None)
+
+    for name in ("secret_store", "tenant_resolver", "tenant_flags"):
         if getattr(app_state, name, None) is None:
             set_component(name, "failed", required=True, detail="missing")
         else:
             set_component(name, "ok", required=True)
 
-    settings = getattr(app_state, "gateway_settings", None)
+    probe_timeout_s = float(
+        getattr(settings, "integration_runtime_probe_timeout_s", 5.0)
+    )
+    for result in await probe_integration_runtime_state(
+        app_state,
+        timeout_s=probe_timeout_s,
+    ):
+        if result.ok:
+            set_component(result.component, "ok", required=True)
+        else:
+            set_component(
+                result.component,
+                "failed",
+                required=True,
+                detail=result.detail,
+                error_type=result.error_type,
+            )
+
     require_realtime = bool(getattr(settings, "require_realtime", False))
     realtime = getattr(app_state, "realtime", None)
     dispatcher = getattr(realtime, "dispatcher", None) if realtime else None
@@ -316,6 +336,32 @@ async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
         )
     else:
         set_component("realtime", "ok", required=require_realtime)
+
+    require_github = bool(
+        getattr(settings, "require_github_integration", False)
+    )
+    github_client = getattr(app_state, "github_client", None)
+    github_replay_cache = getattr(app_state, "github_replay_cache", None)
+    if github_client is not None and github_replay_cache is not None:
+        set_component(
+            "github_gateway_state",
+            "ok",
+            required=require_github,
+        )
+    elif require_github:
+        set_component(
+            "github_gateway_state",
+            "failed",
+            required=True,
+            detail="missing",
+        )
+    else:
+        set_component(
+            "github_gateway_state",
+            "degraded",
+            required=False,
+            detail="not_wired",
+        )
 
     require_data_plane = bool(
         getattr(settings, "require_ingestion_data_plane", False)

@@ -1,11 +1,10 @@
 """Gateway route mounting orchestration."""
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
+from services.app.gateway.settings import GatewaySettings
 
 
 log = get_logger("gateway")
@@ -36,8 +35,16 @@ def register_gateway_routes(app: FastAPI) -> None:
     register_map_routes(app)
 
 
-def mount_gateway_routes(app: FastAPI) -> None:
+def mount_gateway_routes(
+    app: FastAPI,
+    *,
+    settings: GatewaySettings | None = None,
+) -> None:
     """Mount all route families whose construction does not await lifespan."""
+    settings = settings or getattr(app.state, "gateway_settings", None)
+    if settings is None:
+        settings = GatewaySettings.from_env()
+
     register_gateway_routes(app)
 
     from services.product.demo.router import demo_router as demo_router
@@ -87,7 +94,7 @@ def mount_gateway_routes(app: FastAPI) -> None:
     except Exception as exc:  # noqa: BLE001 - never block startup
         log.error("finance_install_routers_mount_failed", error=str(exc))
 
-    if os.environ.get("FINANCE_PANEL_ENABLED", "1") != "0":
+    if settings.finance_panel_enabled:
         try:
             from services.app.gateway.finance_router import build_finance_router
 
@@ -95,7 +102,7 @@ def mount_gateway_routes(app: FastAPI) -> None:
         except Exception as exc:  # noqa: BLE001 - never block startup
             log.error("finance_router_mount_failed", error=str(exc))
 
-    if os.environ.get("SLACK_DM_PANEL_ENABLED", "1") != "0":
+    if settings.slack_dm_panel_enabled:
         try:
             from services.app.gateway.slack_router import build_slack_router
 

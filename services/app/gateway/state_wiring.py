@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 from fastapi import FastAPI
@@ -12,6 +13,59 @@ from services.app.gateway.settings import GatewaySettings
 
 
 log = get_logger("gateway")
+
+
+_PROVIDER_INSTALLATIONS_PROBE = "SELECT 1 FROM provider_installations LIMIT 1"
+_TENANT_FLAGS_PROBE = "SELECT 1 FROM tenant_flags LIMIT 1"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationRuntimeState:
+    """Structured shared runtime for integration and webhook paths."""
+
+    pool: asyncpg.Pool
+    secret_store: object
+    tenant_resolver: object
+    tenant_flags: object
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationRuntimeWiring:
+    """Result of wiring shared integration runtime state."""
+
+    runtime: IntegrationRuntimeState
+    pool_alias_created: bool
+    secret_store_created: bool
+    tenant_resolver_created: bool
+    tenant_flags_created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationRuntimeProbeResult:
+    """Readiness probe result for one integration runtime dependency."""
+
+    component: str
+    ok: bool
+    detail: str | None = None
+    error_type: str | None = None
+
+
+class IntegrationRuntimeWiringError(RuntimeError):
+    """Raised when one integration runtime subcomponent cannot be wired."""
+
+    def __init__(self, component: str, original: BaseException) -> None:
+        super().__init__(str(original))
+        self.component = component
+        self.original = original
+
+
+class IntegrationRuntimeValidationError(RuntimeError):
+    """Raised when a required integration runtime validation probe fails."""
+
+    def __init__(self, result: IntegrationRuntimeProbeResult) -> None:
+        super().__init__(result.detail or result.component)
+        self.result = result
+        self.component = result.component
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,12 +79,42 @@ class IngestionDataPlaneWiring:
         return self.wired
 
 
-def wire_integration_runtime_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
-    """Wire shared integration/webhook runtime state."""
+def assert_integration_runtime_safety() -> None:
+    """Fail startup when shared integration security invariants are unsafe."""
+    from services.app.webhooks.secrets import assert_prod_safety_invariants
+
+    assert_prod_safety_invariants()
+
+
+def wire_pool_alias(app_: FastAPI, pool: asyncpg.Pool) -> bool:
+    """Attach the compatibility pool alias, refusing mismatched aliases."""
+    existing_pool = getattr(app_.state, "pool", None)
+    if existing_pool is None:
+        app_.state.pool = pool
+        return True
+    if existing_pool is not pool:
+        raise RuntimeError(
+            "app.state.pool is already wired to a different pool"
+        )
+    return False
+
+
+def wire_secret_store(app_: FastAPI, pool: asyncpg.Pool) -> tuple[object, bool]:
+    """Attach or reuse the shared encrypted secret store."""
+    from lib.shared.secrets import build_secret_store
+
+    existing = getattr(app_.state, "secret_store", None)
+    if existing is not None:
+        return existing, False
+    secret_store = build_secret_store(pool)
+    app_.state.secret_store = secret_store
+    return secret_store, True
+
+
+def wire_tenant_resolver(app_: FastAPI, pool: asyncpg.Pool) -> tuple[object, bool]:
+    """Attach or reuse the DB-backed provider-installation resolver."""
     import time
 
-    from lib.shared.secrets import build_secret_store
-    from services.app.webhooks.secrets import assert_prod_safety_invariants
     from services.app.webhooks.tenant_resolver import (
         InstallationCache,
         TenantResolverDeps,
@@ -38,28 +122,217 @@ def wire_integration_runtime_state(app_: FastAPI, pool: asyncpg.Pool) -> None:
         default_metrics,
     )
 
-    assert_prod_safety_invariants()
+    existing = getattr(app_.state, "tenant_resolver", None)
+    if existing is not None:
+        return existing, False
+    tenant_resolver = build_tenant_resolver(
+        TenantResolverDeps(
+            pool=pool,
+            cache=InstallationCache(),
+            clock=time.monotonic,
+            metrics=default_metrics(),
+        )
+    )
+    app_.state.tenant_resolver = tenant_resolver
+    return tenant_resolver, True
 
-    if getattr(app_.state, "pool", None) is None:
-        app_.state.pool = pool
 
-    if getattr(app_.state, "secret_store", None) is None:
-        app_.state.secret_store = build_secret_store(pool)
+def wire_tenant_flags(app_: FastAPI, pool: asyncpg.Pool) -> tuple[object, bool]:
+    """Attach or reuse the tenant-scoped ingestion feature-flag reader."""
+    from services.ingest.ingestion.feature_flags import TenantFlags
 
-    if getattr(app_.state, "tenant_resolver", None) is None:
-        app_.state.tenant_resolver = build_tenant_resolver(
-            TenantResolverDeps(
-                pool=pool,
-                cache=InstallationCache(),
-                clock=time.monotonic,
-                metrics=default_metrics(),
+    existing = getattr(app_.state, "tenant_flags", None)
+    if existing is not None:
+        return existing, False
+    tenant_flags = TenantFlags(pool)
+    app_.state.tenant_flags = tenant_flags
+    return tenant_flags, True
+
+
+def attach_integration_runtime_state(
+    app_: FastAPI,
+    runtime: IntegrationRuntimeState,
+) -> None:
+    """Attach the structured runtime and ensure legacy aliases are aligned."""
+    existing_runtime = getattr(app_.state, "integration_runtime", None)
+    if existing_runtime is not None and existing_runtime is not runtime:
+        if getattr(existing_runtime, "pool", None) is not runtime.pool:
+            raise RuntimeError(
+                "app.state.integration_runtime is wired to a different pool"
             )
+        for name in ("secret_store", "tenant_resolver", "tenant_flags"):
+            if getattr(existing_runtime, name, None) is not getattr(runtime, name):
+                raise RuntimeError(
+                    "app.state.integration_runtime has drifted "
+                    f"from {name}"
+                )
+
+    for name, value in (
+        ("pool", runtime.pool),
+        ("secret_store", runtime.secret_store),
+        ("tenant_resolver", runtime.tenant_resolver),
+        ("tenant_flags", runtime.tenant_flags),
+    ):
+        existing = getattr(app_.state, name, None)
+        if existing is not None and existing is not value:
+            raise RuntimeError(
+                f"app.state.{name} is already wired to a different object"
+            )
+        setattr(app_.state, name, value)
+    app_.state.integration_runtime = runtime
+
+
+def wire_integration_runtime_state(
+    app_: FastAPI,
+    pool: asyncpg.Pool,
+) -> IntegrationRuntimeWiring:
+    """Wire shared integration/webhook runtime state."""
+    existing_runtime = getattr(app_.state, "integration_runtime", None)
+    if existing_runtime is not None:
+        runtime = existing_runtime
+        try:
+            if getattr(runtime, "pool", None) is not pool:
+                raise RuntimeError(
+                    "app.state.integration_runtime is wired to a different pool"
+                )
+            attach_integration_runtime_state(app_, runtime)
+        except Exception as exc:  # noqa: BLE001
+            raise IntegrationRuntimeWiringError(
+                "integration_state.runtime",
+                exc,
+            ) from exc
+        return IntegrationRuntimeWiring(
+            runtime=runtime,
+            pool_alias_created=False,
+            secret_store_created=False,
+            tenant_resolver_created=False,
+            tenant_flags_created=False,
         )
 
-    if getattr(app_.state, "tenant_flags", None) is None:
-        from services.ingest.ingestion.feature_flags import TenantFlags
+    try:
+        assert_integration_runtime_safety()
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.safety",
+            exc,
+        ) from exc
+    try:
+        pool_alias_created = wire_pool_alias(app_, pool)
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.pool",
+            exc,
+        ) from exc
+    try:
+        secret_store, secret_store_created = wire_secret_store(app_, pool)
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.secret_store",
+            exc,
+        ) from exc
+    try:
+        tenant_resolver, tenant_resolver_created = wire_tenant_resolver(
+            app_, pool,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.tenant_resolver",
+            exc,
+        ) from exc
+    try:
+        tenant_flags, tenant_flags_created = wire_tenant_flags(app_, pool)
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.tenant_flags",
+            exc,
+        ) from exc
 
-        app_.state.tenant_flags = TenantFlags(pool)
+    runtime = IntegrationRuntimeState(
+        pool=pool,
+        secret_store=secret_store,
+        tenant_resolver=tenant_resolver,
+        tenant_flags=tenant_flags,
+    )
+    try:
+        attach_integration_runtime_state(app_, runtime)
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.runtime",
+            exc,
+        ) from exc
+    return IntegrationRuntimeWiring(
+        runtime=runtime,
+        pool_alias_created=pool_alias_created,
+        secret_store_created=secret_store_created,
+        tenant_resolver_created=tenant_resolver_created,
+        tenant_flags_created=tenant_flags_created,
+    )
+
+
+async def probe_integration_runtime_state(
+    app_state: Any,
+    *,
+    timeout_s: float,
+) -> tuple[IntegrationRuntimeProbeResult, ...]:
+    """Probe required DB objects used by integration runtime state."""
+    runtime = getattr(app_state, "integration_runtime", None)
+    pool = getattr(runtime, "pool", None) if runtime is not None else None
+    if pool is None:
+        pool = getattr(app_state, "pool", None)
+    if pool is None:
+        return (
+            IntegrationRuntimeProbeResult(
+                component="integration_state.runtime",
+                ok=False,
+                detail="pool_missing",
+            ),
+        )
+
+    async def _probe(component: str, sql: str) -> IntegrationRuntimeProbeResult:
+        try:
+            await asyncio.wait_for(pool.fetchval(sql), timeout=timeout_s)
+        except TimeoutError as exc:
+            return IntegrationRuntimeProbeResult(
+                component=component,
+                ok=False,
+                detail=f"probe exceeded {timeout_s:g}s",
+                error_type=type(exc).__name__,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return IntegrationRuntimeProbeResult(
+                component=component,
+                ok=False,
+                detail=str(exc),
+                error_type=type(exc).__name__,
+            )
+        return IntegrationRuntimeProbeResult(component=component, ok=True)
+
+    return (
+        await _probe(
+            "integration_state.schema.provider_installations",
+            _PROVIDER_INSTALLATIONS_PROBE,
+        ),
+        await _probe(
+            "integration_state.schema.tenant_flags",
+            _TENANT_FLAGS_PROBE,
+        ),
+    )
+
+
+async def validate_integration_runtime_state(
+    app_state: Any,
+    *,
+    timeout_s: float,
+) -> tuple[IntegrationRuntimeProbeResult, ...]:
+    """Validate integration runtime dependencies, raising on first failure."""
+    results = await probe_integration_runtime_state(
+        app_state,
+        timeout_s=timeout_s,
+    )
+    for result in results:
+        if not result.ok:
+            raise IntegrationRuntimeValidationError(result)
+    return results
 
 async def wire_ingestion_data_plane(
     app_: FastAPI,
@@ -181,8 +454,21 @@ async def _close_partial_data_plane(
 
 
 __all__ = [
+    "IntegrationRuntimeProbeResult",
+    "IntegrationRuntimeState",
+    "IntegrationRuntimeValidationError",
+    "IntegrationRuntimeWiring",
+    "IntegrationRuntimeWiringError",
     "IngestionDataPlaneWiring",
+    "attach_integration_runtime_state",
     "wire_integration_runtime_state",
+    "assert_integration_runtime_safety",
+    "probe_integration_runtime_state",
+    "validate_integration_runtime_state",
+    "wire_pool_alias",
+    "wire_secret_store",
+    "wire_tenant_flags",
+    "wire_tenant_resolver",
     "wire_ingestion_data_plane",
     "close_ingestion_data_plane",
 ]

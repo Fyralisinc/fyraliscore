@@ -20,12 +20,24 @@ class FakePool:
 
     async def fetchval(self, query: str, *args: Any) -> int:
         self.fetchval_calls += 1
-        if query != "SELECT 1":
+        expected = {
+            "SELECT 1",
+            "SELECT 1 FROM provider_installations LIMIT 1",
+            "SELECT 1 FROM tenant_flags LIMIT 1",
+        }
+        if query not in expected:
             raise AssertionError(f"unexpected query: {query}")
         return 1
 
     async def close(self) -> None:
         self.closed = True
+
+
+class MissingTenantFlagsPool(FakePool):
+    async def fetchval(self, query: str, *args: Any) -> int:
+        if query == "SELECT 1 FROM tenant_flags LIMIT 1":
+            raise RuntimeError("tenant_flags table missing")
+        return await super().fetchval(query, *args)
 
 
 class FakeDispatcher:
@@ -51,6 +63,7 @@ class FakeEmbedder:
 def _settings(
     *,
     require_realtime: bool = False,
+    require_github_integration: bool = False,
     require_ingestion_data_plane: bool = False,
     **overrides: Any,
 ) -> GatewaySettings:
@@ -60,6 +73,7 @@ def _settings(
         "auth_bootstrap_secret": None,
         "ceo_view_enabled": False,
         "require_realtime": require_realtime,
+        "require_github_integration": require_github_integration,
         "require_ingestion_data_plane": require_ingestion_data_plane,
         "oauth_sweep_interval_s": 60.0,
     }
@@ -87,10 +101,28 @@ def _patch_lightweight_startup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
     async def ensure_demo_seed(pool: Any) -> None:
         return None
 
-    def wire_integration_runtime_state(app: Any, pool: Any) -> None:
+    def wire_integration_runtime_state(app: Any, pool: Any) -> Any:
         app.state.pool = pool
-        app.state.secret_store = object()
-        app.state.tenant_resolver = object()
+        secret_store = object()
+        tenant_resolver = object()
+        tenant_flags = object()
+        app.state.secret_store = secret_store
+        app.state.tenant_resolver = tenant_resolver
+        app.state.tenant_flags = tenant_flags
+        runtime = SimpleNamespace(
+            pool=pool,
+            secret_store=secret_store,
+            tenant_resolver=tenant_resolver,
+            tenant_flags=tenant_flags,
+        )
+        app.state.integration_runtime = runtime
+        return SimpleNamespace(
+            runtime=runtime,
+            pool_alias_created=True,
+            secret_store_created=True,
+            tenant_resolver_created=True,
+            tenant_flags_created=True,
+        )
 
     def wire_github_gateway_state(
         app: Any,
@@ -440,6 +472,52 @@ async def test_db_pool_startup_timeout_marks_failed(
     assert app.state.startup_status.phase == "failed"
 
 
+def test_integration_runtime_rejects_pool_alias_drift() -> None:
+    from services.app.gateway.state_wiring import (
+        IntegrationRuntimeWiringError,
+        wire_integration_runtime_state,
+    )
+
+    app = FastAPI()
+    app.state.pool = FakePool()
+
+    with pytest.raises(IntegrationRuntimeWiringError) as exc_info:
+        wire_integration_runtime_state(app, FakePool())  # type: ignore[arg-type]
+
+    assert exc_info.value.component == "integration_state.pool"
+
+
+@pytest.mark.asyncio
+async def test_integration_runtime_schema_failure_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.app.gateway.main as main_module
+    from services.app.gateway.state_wiring import IntegrationRuntimeValidationError
+
+    _patch_lightweight_startup(monkeypatch)
+    pool = MissingTenantFlagsPool()
+
+    app = main_module.build_app(
+        pool=pool,
+        actor_repo=object(),
+        alias_repo=object(),
+        rate_limiter=RateLimiter(),
+        settings=_settings(),
+        configure_logging=False,
+    )
+
+    with pytest.raises(IntegrationRuntimeValidationError):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert app.state.startup_status.failed is True
+    component = app.state.startup_status.components[
+        "integration_state.schema.tenant_flags"
+    ]
+    assert component.status == "failed"
+    assert component.required is True
+
+
 @pytest.mark.asyncio
 async def test_optional_realtime_startup_failure_degrades_gateway(
     monkeypatch: pytest.MonkeyPatch,
@@ -551,6 +629,110 @@ async def test_required_realtime_startup_failure_fails_gateway(
 
 
 @pytest.mark.asyncio
+async def test_optional_github_wiring_failure_degrades_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.app.gateway.main as main_module
+
+    _patch_lightweight_startup(monkeypatch)
+    pool = FakePool()
+
+    def wire_github_gateway_state(
+        app: Any,
+        *,
+        pool: Any,
+        tenant_resolver: Any,
+    ) -> Any:
+        raise RuntimeError("github unavailable")
+
+    monkeypatch.setattr(
+        main_module,
+        "wire_github_gateway_state",
+        wire_github_gateway_state,
+    )
+
+    app = main_module.build_app(
+        pool=pool,
+        actor_repo=object(),
+        alias_repo=object(),
+        rate_limiter=RateLimiter(),
+        settings=_settings(require_github_integration=False),
+        configure_logging=False,
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.startup_status.ready is True
+        assert app.state.startup_status.failed is False
+        github_status = app.state.startup_status.components[
+            "github_gateway_state"
+        ]
+        assert github_status.status == "degraded"
+        assert github_status.required is False
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/readyz")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is True
+    assert payload["components"]["github_gateway_state"]["status"] == "degraded"
+    assert payload["components"]["github_gateway_state"]["required"] is False
+
+
+@pytest.mark.asyncio
+async def test_required_github_wiring_failure_fails_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.app.gateway.main as main_module
+
+    _patch_lightweight_startup(monkeypatch)
+    pool = FakePool()
+
+    async def create_gateway_pool() -> FakePool:
+        return pool
+
+    def wire_github_gateway_state(
+        app: Any,
+        *,
+        pool: Any,
+        tenant_resolver: Any,
+    ) -> Any:
+        raise RuntimeError("github unavailable")
+
+    monkeypatch.setattr(main_module, "create_gateway_pool", create_gateway_pool)
+    monkeypatch.setattr(main_module, "ActorRepo", lambda pool: object())
+    monkeypatch.setattr(main_module, "EntityAliasRepo", lambda pool: object())
+    monkeypatch.setattr(
+        main_module,
+        "wire_github_gateway_state",
+        wire_github_gateway_state,
+    )
+
+    app = main_module.build_app(
+        settings=_settings(require_github_integration=True),
+        configure_logging=False,
+    )
+
+    with pytest.raises(RuntimeError, match="github unavailable"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert app.state.startup_status.failed is True
+    assert (
+        app.state.startup_status.components["github_gateway_state"].status
+        == "failed"
+    )
+    assert (
+        app.state.startup_status.components["github_gateway_state"].required
+        is True
+    )
+
+
+@pytest.mark.asyncio
 async def test_readyz_reports_started_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -581,8 +763,21 @@ async def test_readyz_reports_started_gateway(
     assert payload["components"]["db"]["status"] == "ok"
     assert payload["components"]["secret_store"]["status"] == "ok"
     assert payload["components"]["tenant_resolver"]["status"] == "ok"
+    assert payload["components"]["tenant_flags"]["status"] == "ok"
+    assert (
+        payload["components"]["integration_state.schema.provider_installations"][
+            "status"
+        ]
+        == "ok"
+    )
+    assert (
+        payload["components"]["integration_state.schema.tenant_flags"]["status"]
+        == "ok"
+    )
     assert payload["components"]["realtime"]["status"] == "ok"
     assert payload["components"]["realtime"]["required"] is False
+    assert payload["components"]["github_gateway_state"]["status"] == "ok"
+    assert payload["components"]["github_gateway_state"]["required"] is False
     assert payload["components"]["ingestion_data_plane"]["status"] == "disabled"
 
 

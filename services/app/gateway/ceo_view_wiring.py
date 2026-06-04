@@ -7,6 +7,7 @@ import asyncpg
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
+from services.app.gateway.settings import GatewaySettings
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 
@@ -14,9 +15,18 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 log = get_logger("gateway")
 
 
-async def configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
+async def configure_ceo_view(
+    app_: FastAPI,
+    *,
+    pool: asyncpg.Pool,
+    settings: GatewaySettings | None = None,
+) -> None:
     """Wire rendering, greeting, query, simulation, ingress, and debug routers."""
     from uuid import UUID as _UUID
+
+    settings = settings or getattr(app_.state, "gateway_settings", None)
+    if settings is None:
+        settings = GatewaySettings.from_env()
 
     # Rendering router.
     from services.product.rendering.api import (
@@ -52,16 +62,16 @@ async def configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
         config=SchedulerConfig(),
     )
 
-    default_tenant = os.environ.get("DEFAULT_TENANT_ID")
-    ceo_token = os.environ.get("VIEW_CEO_TOKEN", "ceo-dogfood-token")
+    default_tenant = settings.default_tenant_id
+    ceo_token = settings.view_ceo_token
     token_map = StaticTenantTokenMap.from_env()
     if default_tenant:
         tid = _UUID(default_tenant)
         founder = FounderContext(
             tenant_id=tid,
             role="ceo",
-            display_name=os.environ.get("VIEW_CEO_DISPLAY_NAME", "Rachin"),
-            timezone_name=os.environ.get("VIEW_CEO_TIMEZONE", "Asia/Kathmandu"),
+            display_name=settings.view_ceo_display_name,
+            timezone_name=settings.view_ceo_timezone,
             observed_rhythms={},
         )
         scheduler.register_tenant(tid, founder)
@@ -73,7 +83,7 @@ async def configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
         type("_SP", (), {"publish": staticmethod(stream_manager.publish)})()
     )
 
-    if os.environ.get("GATEWAY_START_GRT_SCHEDULER", "1") != "0":
+    if settings.start_grt_scheduler:
         await scheduler.start()
 
     app_.include_router(
@@ -131,7 +141,7 @@ async def configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     env_name = _env_name_fn()
     prod = _is_prod()
     sim_requested = (
-        os.environ.get("GATEWAY_MOUNT_SIM", "0" if prod else "1") == "1"
+        settings.mount_sim if settings.mount_sim is not None else not prod
     )
     if prod and sim_requested:
         log.error(
