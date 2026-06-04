@@ -36,21 +36,29 @@ class _FakeRecord:
 
 class _FakeClient:
     def __init__(self, *, head_changes=False, head_etag="W/new",
-                 list_page=None):
+                 list_page=None, head_raises=False):
         self.head_changes = head_changes
         self.head_etag = head_etag
         self.list_page = list_page or []
+        self.head_raises = head_raises
         self.head_calls = 0
         self.list_calls = 0
+        self.list_directions: list[str] = []
 
     async def head_repo_events(self, *, owner, repo, event_type, etag):
         self.head_calls += 1
+        if self.head_raises:
+            from lib.shared.errors import GithubApiError
+            raise GithubApiError("transient head probe error",
+                                 code="github_api_error")
         return self.head_changes, self.head_etag
 
     async def list_repo_events(
         self, *, owner, repo, event_type, page, per_page, etag,
+        direction="asc",
     ):
         self.list_calls += 1
+        self.list_directions.append(direction)
         return self.list_page, self.head_etag, None
 
 
@@ -180,6 +188,54 @@ async def test_changes_but_no_newer_records_still_clean(monkeypatch):
     _wire_pool(monkeypatch, pool)
     decision = await reconcile_github([shard], _run())
     assert decision.has_gaps is False
+
+
+async def test_confirm_probe_reads_newest_via_desc(monkeypatch):
+    """REGRESSION (P1): the gap-confirm probe must page direction=desc so it
+    inspects the NEWEST records. The old asc probe read page-1 oldest records
+    (always <= last_seen) and dismissed every gap whose new items sort beyond
+    page 1 — i.e. essentially all of them. Assert desc is used AND the gap is
+    detected."""
+    sid = uuid4()
+    shard = _shard(shard_id=sid, last_seen="2025-01-01T00:00:00Z")
+    pool = _FakePool(install=_install())
+    # Newest record (what a desc page 1 surfaces) is newer than baseline.
+    fake = _FakeClient(
+        head_changes=True,
+        list_page=[{"id": 99, "updated_at": "2026-06-02T00:00:00Z"}],
+    )
+    _stub_state(monkeypatch, {
+        str(sid): {"etag": "W/old", "last_seen_updated_at": "2025-01-01T00:00:00Z"},
+    })
+    _stub_client(monkeypatch, fake)
+    _wire_pool(monkeypatch, pool)
+    decision = await reconcile_github([shard], _run())
+    assert decision.has_gaps is True
+    assert fake.list_directions == ["desc"], (
+        "gap-confirm must page direction=desc (newest-first), not asc"
+    )
+
+
+async def test_head_probe_failure_falls_through_to_confirm(monkeypatch):
+    """REGRESSION (P2): a transient head-probe error must NOT be treated as
+    'clean' (silent gap loss). It falls through to the authoritative desc
+    confirm, which still detects the gap."""
+    sid = uuid4()
+    shard = _shard(shard_id=sid, last_seen="2025-01-01T00:00:00Z")
+    pool = _FakePool(install=_install())
+    fake = _FakeClient(
+        head_raises=True,
+        list_page=[{"id": 99, "updated_at": "2026-06-02T00:00:00Z"}],
+    )
+    _stub_state(monkeypatch, {
+        str(sid): {"etag": "W/old", "last_seen_updated_at": "2025-01-01T00:00:00Z"},
+    })
+    _stub_client(monkeypatch, fake)
+    _wire_pool(monkeypatch, pool)
+    decision = await reconcile_github([shard], _run())
+    assert decision.has_gaps is True       # gap detected despite head failure
+    assert fake.list_calls == 1            # confirm ran (no silent return)
+    assert fake.list_directions == ["desc"]
 
 
 async def test_resharded_failed_shards_excluded(monkeypatch):
