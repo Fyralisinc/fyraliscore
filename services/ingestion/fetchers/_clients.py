@@ -40,6 +40,11 @@ _POOL_LOCK = asyncio.Lock()
 _SECRET_STORE: Any = None
 _HTTP: httpx.AsyncClient | None = None
 _HTTP_LOCK = asyncio.Lock()
+# Process-wide GithubClient memo, keyed by installation_id. Reused across
+# fetches so the client's installation-token cache survives (no per-fetch
+# re-mint). See build_github_client.
+_GITHUB_CLIENTS: dict[str, Any] = {}
+_GITHUB_CLIENTS_LOCK = asyncio.Lock()
 
 
 def _spammer_mode() -> bool:
@@ -107,16 +112,13 @@ async def _get_secret_store() -> Any:
 # Client builders (used by both the fetcher/reconciler openers and the
 # source_onboarding planner factory).
 # ---------------------------------------------------------------------
-async def build_github_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
-) -> Any:
+async def _new_github_client(inst: str, *, pool: asyncpg.Pool | None) -> Any:
     from services.integrations.github.client import (
         CachedInstallationToken,
         GithubClient,
     )
 
     spammer = _spammer_mode()
-    inst = str(install["installation_id"])
     client = GithubClient(
         pool=await _effective_pool(pool, spammer=spammer),
         backfill_installation_id=inst,
@@ -130,6 +132,41 @@ async def build_github_client(
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
     return client
+
+
+async def build_github_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Build (or reuse) a GithubClient for an installation.
+
+    The fetcher/reconciler openers call this once PER fetch. `GithubClient`
+    owns the in-process installation-token cache, so building a fresh client
+    each call threw that cache away and re-minted an App installation token
+    (`POST /app/installations/{id}/access_tokens`) before nearly every REST
+    call — wasteful round-trips and a secondary-rate-limit risk that scales
+    with PR/commit count via the pr_reviews fan-out. We memoize one client per
+    installation_id process-wide (the httpx pool is already shared via
+    `_get_http`), so the token is minted once and reused until near expiry.
+
+    Revocation is unaffected: the gateway's singleton client still fires the
+    chokepoint on 401/404 and disables the install row (bounded by the ~1h
+    installation-token TTL). The planner factory passes an explicit `pool`
+    and gets a fresh (non-memoized) client to preserve its semantics.
+    """
+    inst = str(install["installation_id"])
+    if pool is not None:
+        return await _new_github_client(inst, pool=pool)
+
+    cached = _GITHUB_CLIENTS.get(inst)
+    if cached is not None:
+        return cached
+    async with _GITHUB_CLIENTS_LOCK:
+        cached = _GITHUB_CLIENTS.get(inst)
+        if cached is not None:
+            return cached
+        client = await _new_github_client(inst, pool=None)
+        _GITHUB_CLIENTS[inst] = client
+        return client
 
 
 async def build_slack_client(
