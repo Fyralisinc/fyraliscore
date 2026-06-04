@@ -33,6 +33,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 from services.app.gateway.auth import create_session
 from services.app.realtime.main import configure_realtime
 
@@ -111,11 +112,12 @@ async def realtime_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         pytest.skip("DATABASE_URL not set")
     await _wait_idle(dsn)
     pool = await asyncpg.create_pool(dsn, min_size=2, max_size=20)
-    async with pool.acquire() as conn:
-        await _run_migrations(conn)
-        await _truncate_all(conn)
     try:
-        yield pool
+        async with pool.acquire() as conn:
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await _truncate_all(conn)
+                yield pool
     finally:
         try:
             pool.terminate()

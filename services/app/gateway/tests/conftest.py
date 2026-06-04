@@ -39,6 +39,7 @@ import pytest_asyncio
 
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.app.gateway.auth import create_session
@@ -201,11 +202,12 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     )
     try:
         async with pool.acquire() as conn:
-            await _run_migrations(conn)
-            await install_test_tenant_auto_register(conn)
-            await _truncate_all(conn)
-            await seed_test_baseline(conn)
-        yield pool
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await install_test_tenant_auto_register(conn)
+                await _truncate_all(conn)
+                await seed_test_baseline(conn)
+                yield pool
     finally:
         # Force-terminate to release all server-side locks immediately.
         try:

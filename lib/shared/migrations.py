@@ -41,11 +41,12 @@ doesn't leave a half-built artifact.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Iterable
+from contextlib import asynccontextmanager
+from datetime import date
 import logging
 import pathlib
 import re
-from collections.abc import Iterable
-from datetime import date
 
 import asyncpg
 
@@ -83,6 +84,29 @@ _NO_TXN_DIRECTIVE_RE = re.compile(
 
 
 _PREFIX_RE = re.compile(r"^(\d+)_")
+
+# Shared schema/bootstrap advisory lock. Test suites and local tools may
+# apply migrations or run full-schema TRUNCATEs against the same dev DB in
+# parallel; serialize those global mutations to avoid migration/TRUNCATE
+# deadlocks while leaving ordinary tenant-isolated test work concurrent.
+SCHEMA_BOOTSTRAP_ADVISORY_LOCK_ID = 819_771_700_513_431_337
+
+
+@asynccontextmanager
+async def schema_bootstrap_lock(
+    conn: asyncpg.Connection,
+) -> AsyncGenerator[None, None]:
+    await conn.execute(
+        "SELECT pg_advisory_lock($1::bigint)",
+        SCHEMA_BOOTSTRAP_ADVISORY_LOCK_ID,
+    )
+    try:
+        yield
+    finally:
+        await conn.execute(
+            "SELECT pg_advisory_unlock($1::bigint)",
+            SCHEMA_BOOTSTRAP_ADVISORY_LOCK_ID,
+        )
 
 
 def _assert_unique_prefixes(files: Iterable[pathlib.Path]) -> None:
@@ -186,29 +210,30 @@ async def apply_migrations_dir(
         raise RuntimeError(f"no migrations found in {migrations_dir}")
     _assert_unique_prefixes(files)
 
-    applied: list[str] = []
-    for path in files:
-        try:
-            await apply_migration(conn, path.read_text(), name=path.name)
-            applied.append(path.name)
-        except MigrationError as e:
-            if on_error == "stop":
-                raise
-            # Note: stdlib logging reserves `filename` and `module` on
-            # LogRecord, so we use prefixed keys to avoid the
-            # "Attempt to overwrite 'filename'" KeyError.
-            logger.warning(
-                "migration_skipped: %s — %s",
-                e.filename, str(e.cause),
-                extra={
-                    "migration_filename": e.filename,
-                    "migration_cause": str(e.cause),
-                },
-            )
+    async with schema_bootstrap_lock(conn):
+        applied: list[str] = []
+        for path in files:
+            try:
+                await apply_migration(conn, path.read_text(), name=path.name)
+                applied.append(path.name)
+            except MigrationError as e:
+                if on_error == "stop":
+                    raise
+                # Note: stdlib logging reserves `filename` and `module` on
+                # LogRecord, so we use prefixed keys to avoid the
+                # "Attempt to overwrite 'filename'" KeyError.
+                logger.warning(
+                    "migration_skipped: %s — %s",
+                    e.filename, str(e.cause),
+                    extra={
+                        "migration_filename": e.filename,
+                        "migration_cause": str(e.cause),
+                    },
+                )
 
-    # Fresh test/dev DBs only get current-month + 3 partitions from the
-    # foundation migration; widen the window so historical inserts work.
-    await ensure_test_partition_window(conn)
+        # Fresh test/dev DBs only get current-month + 3 partitions from the
+        # foundation migration; widen the window so historical inserts work.
+        await ensure_test_partition_window(conn)
     return applied
 
 
@@ -284,5 +309,6 @@ __all__ = [
     "apply_migration",
     "apply_migrations_dir",
     "ensure_test_partition_window",
+    "schema_bootstrap_lock",
     "_assert_unique_prefixes",
 ]

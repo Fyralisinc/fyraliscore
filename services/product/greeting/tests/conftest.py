@@ -26,6 +26,7 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -65,26 +66,28 @@ async def greeting_db() -> AsyncGenerator[asyncpg.Pool, None]:
         max_size=4,
         init=_install_json_codec,
     )
-    async with pool.acquire() as conn:
-        from lib.shared.migrations import apply_migrations_dir
-        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
-        rows = await conn.fetch(
-            """
-            SELECT c.relname FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public'
-              AND c.relkind IN ('r', 'p')
-              AND c.relispartition = FALSE
-            """
-        )
-        tables = [r["relname"] for r in rows]
-        if tables:
-            table_list = ", ".join(f'"{t}"' for t in tables)
-            await conn.execute(
-                f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"
-            )
     try:
-        yield pool
+        async with pool.acquire() as conn:
+            from lib.shared.migrations import apply_migrations_dir
+
+            async with schema_bootstrap_lock(conn):
+                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+                rows = await conn.fetch(
+                    """
+                    SELECT c.relname FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public'
+                      AND c.relkind IN ('r', 'p')
+                      AND c.relispartition = FALSE
+                    """
+                )
+                tables = [r["relname"] for r in rows]
+                if tables:
+                    table_list = ", ".join(f'"{t}"' for t in tables)
+                    await conn.execute(
+                        f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"
+                    )
+                yield pool
     finally:
         try:
             await asyncio.wait_for(pool.close(), timeout=1.0)

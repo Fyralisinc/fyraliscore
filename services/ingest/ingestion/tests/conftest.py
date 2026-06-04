@@ -24,6 +24,7 @@ import pytest_asyncio
 
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 from services.app.gateway.db_bootstrap import _register_codecs
 
 
@@ -162,9 +163,10 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     )
     try:
         async with pool.acquire() as conn:
-            await _run_migrations(conn)
-            await _truncate_all(conn)
-        yield pool
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await _truncate_all(conn)
+                yield pool
     finally:
         # Terminate first so any in-flight connections are force-closed
         # on the server side before we return. `close()` would wait for

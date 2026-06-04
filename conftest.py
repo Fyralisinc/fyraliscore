@@ -25,6 +25,8 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 
+from lib.shared.migrations import schema_bootstrap_lock
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
@@ -73,23 +75,24 @@ RLS_TEST_PW = "rls_test_pw"
 async def _provision_rls_app_role(super_dsn: str) -> str:
     conn = await asyncpg.connect(super_dsn)
     try:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM pg_roles WHERE rolname = $1", RLS_TEST_ROLE
-        )
-        if not exists:
-            await conn.execute(
-                f'CREATE ROLE "{RLS_TEST_ROLE}" LOGIN PASSWORD '
-                f"'{RLS_TEST_PW}' NOSUPERUSER NOBYPASSRLS"
+        async with schema_bootstrap_lock(conn):
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_roles WHERE rolname = $1", RLS_TEST_ROLE
             )
-        await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{RLS_TEST_ROLE}"')
-        await conn.execute(
-            "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
-            f'ON ALL TABLES IN SCHEMA public TO "{RLS_TEST_ROLE}"'
-        )
-        await conn.execute(
-            "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
-            f'TO "{RLS_TEST_ROLE}"'
-        )
+            if not exists:
+                await conn.execute(
+                    f'CREATE ROLE "{RLS_TEST_ROLE}" LOGIN PASSWORD '
+                    f"'{RLS_TEST_PW}' NOSUPERUSER NOBYPASSRLS"
+                )
+            await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{RLS_TEST_ROLE}"')
+            await conn.execute(
+                "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
+                f'ON ALL TABLES IN SCHEMA public TO "{RLS_TEST_ROLE}"'
+            )
+            await conn.execute(
+                "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
+                f'TO "{RLS_TEST_ROLE}"'
+            )
     finally:
         await conn.close()
     host_tail = super_dsn.split("@", 1)[1]  # host:port/db[?params]
@@ -330,8 +333,9 @@ async def db_pool(request) -> AsyncGenerator[asyncpg.Pool, None]:
     dsn = _requires_db(request)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
     async with pool.acquire() as conn:
-        await _run_migrations(conn)
-        await _install_test_tenant_auto_register(conn)
+        async with schema_bootstrap_lock(conn):
+            await _run_migrations(conn)
+            await _install_test_tenant_auto_register(conn)
     try:
         yield pool
     finally:
@@ -346,12 +350,13 @@ async def fresh_db(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Pool, None]:
     state between tests through the database.
     """
     async with db_pool.acquire() as conn:
-        tables = await _tables_to_truncate(conn)
-        if tables:
-            table_list = ", ".join(f'"{t}"' for t in tables)
-            await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
-        await _seed_test_baseline(conn)
-    yield db_pool
+        async with schema_bootstrap_lock(conn):
+            tables = await _tables_to_truncate(conn)
+            if tables:
+                table_list = ", ".join(f'"{t}"' for t in tables)
+                await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
+            await _seed_test_baseline(conn)
+            yield db_pool
 
 
 # ---------------------------------------------------------------------
