@@ -628,11 +628,19 @@ def build_webhooks_router() -> APIRouter:
     """
     router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
+    # Register BOTH the bare `/webhooks/{provider}` and the
+    # `/webhooks/{provider}/{subpath}` forms on the same handler. GitHub (and
+    # other senders) do NOT follow 3xx on webhook delivery — they treat a
+    # redirect as a failed delivery — so we must NOT rely on Starlette's
+    # trailing-slash 307 (`/webhooks/github` → `/webhooks/github/`). Both
+    # forms now route directly to verification (no redirect). subpath="" for
+    # the bare form.
+    @router.post("/{provider}")
     @router.post("/{provider}/{subpath:path}")
     async def receive(
         provider: str,
-        subpath: str,
         request: Request,
+        subpath: str = "",
     ) -> JSONResponse:
         verifier = VERIFIERS.get(provider)
         if verifier is None:
