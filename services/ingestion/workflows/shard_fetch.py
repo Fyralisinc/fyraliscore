@@ -805,16 +805,22 @@ class ShardFetch(LongRunningService):
                 self._pool, tenant_id=tenant_id, source=source,
             )
             if install is None:
-                reason = (
-                    f"No active install for tenant {tenant_id} source "
-                    f"{source!r} at shard-fetch time. Install may have "
-                    f"been disabled mid-flight (A14 race)."
+                # Install disabled mid-flight — suspended/revoked via the
+                # lifecycle webhook, or an A14 race. This is RECOVERABLE:
+                # park the shard (leave it in_progress) so the orphan-scan
+                # resumes it once the install is re-enabled (unsuspend),
+                # rather than terminal-failing it (which needs a manual
+                # requeue). A genuinely-deleted install leaves the shard
+                # parked until an operator cleans up the onboarding run —
+                # the retry is one cheap query per lease interval.
+                log.warning(
+                    "shard_fetch.install_unavailable_park",
+                    extra={
+                        "shard_id": str(shard_id), "source": source,
+                        "tenant_id": str(tenant_id),
+                    },
                 )
-                await self._terminate_shard(
-                    shard_id=shard_id, state="failed",
-                    failure_reason=reason,
-                )
-                return
+                return  # stay in_progress; orphan-scan retries on re-enable
 
             # Ensure the N1 home exists before the first advance.
             # Two paths reach this point: (1) signal-driven start
@@ -929,6 +935,20 @@ class ShardFetch(LongRunningService):
             return
 
         except Exception as exc:  # noqa: BLE001 — terminal recovery boundary
+            if getattr(exc, "recoverable", False):
+                # Transient upstream fault (rate limit, 5xx). Park the shard —
+                # leave it in_progress so the orphan-scan retries — rather than
+                # terminal-failing on a recoverable error (which would need a
+                # manual requeue). Same posture as the S3/Kafka transient
+                # handling above.
+                log.warning(
+                    "shard_fetch.recoverable_fetch_error_park",
+                    extra={
+                        "shard_id": str(shard_id), "source": source,
+                        "error": f"{type(exc).__name__}: {exc}"[:200],
+                    },
+                )
+                return  # stay in_progress; orphan-scan retries
             log.exception(
                 "shard_fetch.unexpected_exception",
                 extra={"shard_id": str(shard_id)},

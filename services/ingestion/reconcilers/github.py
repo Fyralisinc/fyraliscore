@@ -117,34 +117,39 @@ async def _check_one_shard_for_gap(
     stored_etag = cursor.get("etag")
     last_seen = cursor.get("last_seen_updated_at")
 
-    # Etag fast-path: if the response 304s, no gap.
+    # Etag fast-path (OPTIMIZATION only): a 304 means nothing changed →
+    # clean. Any other outcome (changed, OR the probe errored) falls through
+    # to the authoritative desc confirm below — a transient head probe error
+    # must NOT be treated as "clean", or a real gap is silently dropped.
     try:
-        has_changes, current_etag = await client.head_repo_events(
+        has_changes, _current_etag = await client.head_repo_events(
             owner=owner, repo=repo, event_type=event_type,
             etag=stored_etag,
         )
-    except Exception as exc:  # noqa: BLE001 — best-effort gap check
+    except Exception as exc:  # noqa: BLE001 — head is best-effort; fall through
+        # Surface the real exception (the bare event name was opaque) and do
+        # NOT short-circuit to "clean" — let the confirm decide.
         log.warning(
-            "reconcilers.github.head_failed",
-            extra={"shard_id": str(shard["id"]),
-                   "error": str(exc)[:200]},
+            "reconcilers.github.head_failed shard=%s error=%s",
+            str(shard["id"]), f"{type(exc).__name__}: {exc}"[:200],
         )
-        return None
+        has_changes = True
     if not has_changes:
-        return None  # clean
+        return None  # ETag matched (304) → genuinely unchanged
 
-    # Cursor-based: check the first page; if newest record's
-    # updated_at > last_seen, gap exists.
+    # Confirm against the NEWEST records: page direction=desc so page 1 holds
+    # the most-recently-updated items. (The previous asc probe read the OLDEST
+    # records, whose updated_at is always <= last_seen, so it dismissed every
+    # gap whose new items sort beyond page 1 — i.e. essentially all of them.)
     try:
         page, _new_etag, _next = await client.list_repo_events(
             owner=owner, repo=repo, event_type=event_type,
-            page=1, per_page=10, etag=None,
+            page=1, per_page=10, etag=None, direction="desc",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — genuinely can't confirm this pass
         log.warning(
-            "reconcilers.github.list_failed",
-            extra={"shard_id": str(shard["id"]),
-                   "error": str(exc)[:200]},
+            "reconcilers.github.list_failed shard=%s error=%s",
+            str(shard["id"]), f"{type(exc).__name__}: {exc}"[:200],
         )
         return None
     if not page:
