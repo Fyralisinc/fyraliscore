@@ -54,7 +54,7 @@ from services.reasoning.sage.structural_features.types import (
 )
 from services.reasoning.sage.topology_optimizer import TopologyOptimizer
 
-from tests.unit.sage._seed import seed_model, seed_observation
+from ._seed import seed_model, seed_observation
 
 
 pytestmark = pytest.mark.integration

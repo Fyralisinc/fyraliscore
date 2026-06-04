@@ -66,6 +66,7 @@ dev = [
     "pytest-timeout>=2.3",
     "hypothesis>=6.100",
     "respx>=0.21",              # httpx mocking for unit tests
+    "httpx2>=2.3",              # Starlette TestClient backend in newer FastAPI/Starlette
     "freezegun>=1.5",
     "hdbscan>=0.8.40",          # Wave 4-C precipitation clustering
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
@@ -102,6 +103,7 @@ namespaces = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 testpaths = ["tests", "lib", "services", "scripts"]
 python_files = ["test_*.py", "*_test.py"]
 timeout = 30
@@ -126,6 +128,7 @@ filterwarnings = [
 ]
 addopts = [
     "-ra",
+    "--import-mode=importlib",
     "--strict-markers",
     "--strict-config",
 ]

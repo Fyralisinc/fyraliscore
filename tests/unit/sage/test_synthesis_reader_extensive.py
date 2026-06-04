@@ -18,7 +18,7 @@ from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
 from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
 from services.reasoning.sage.discovery.types import NegativeMemory
 from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
-from tests.unit.sage._seed import (
+from ._seed import (
     ZERO_EMBEDDING,
     seed_model,
     seed_observation,

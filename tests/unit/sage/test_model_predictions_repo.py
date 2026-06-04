@@ -63,7 +63,7 @@ def _content_embedding(text: str, dim: int = 768) -> list[float]:
 
 async def _seed_observation(pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
     """Thin wrapper around the shared observation seeder."""
-    from tests.unit.sage._seed import seed_observation as _shared_seed_observation
+    from ._seed import seed_observation as _shared_seed_observation
     return await _shared_seed_observation(
         pool, tenant_id=tenant_id, content_text="seed obs",
     )
@@ -81,7 +81,7 @@ async def _seed_model(
     The shared helper handles pgvector binding + confidence_at_assertion
     so this file only owns the per-test parameter shape.
     """
-    from tests.unit.sage._seed import seed_model as _shared_seed_model
+    from ._seed import seed_model as _shared_seed_model
     obs_id = await _seed_observation(pool, tenant_id)
     return await _shared_seed_model(
         pool,

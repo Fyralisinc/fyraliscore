@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import time
@@ -23,13 +24,21 @@ from services.domain.models.repo import pgvector_pool_init
 from services.reasoning.retrieval.assembler import AccessContext, assemble_context
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.prompt import build_prompt
-from tests.synthesis_harness import _fixtures as F
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 _REPORT: list[dict[str, Any]] = []
 _REPORT_PATH = Path(__file__).with_name("_last_run.json")
+_FIXTURES_PATH = Path(__file__).resolve().parents[1] / "synthesis_harness" / "_fixtures.py"
+_FIXTURES_SPEC = importlib.util.spec_from_file_location(
+    "fyralis_synthesis_harness_fixtures",
+    _FIXTURES_PATH,
+)
+if _FIXTURES_SPEC is None or _FIXTURES_SPEC.loader is None:
+    raise ImportError(f"cannot load synthesis harness fixtures from {_FIXTURES_PATH}")
+F = importlib.util.module_from_spec(_FIXTURES_SPEC)
+_FIXTURES_SPEC.loader.exec_module(F)
 
 
 class _QuestionAwareEmbedder:

@@ -46,7 +46,7 @@ from services.app.gateway.auth import create_session
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.app.gateway.main import GatewayDeps, build_app
 from services.app.gateway.rate_limit import RateLimiter
-from tests.db_baseline import (
+from lib.shared.testing.db_baseline import (
     install_test_tenant_auto_register,
     seed_test_baseline,
 )

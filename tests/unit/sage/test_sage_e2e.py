@@ -52,7 +52,7 @@ from services.reasoning.sage.inquiry_traces import (
 from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
 from services.reasoning.sage.topology_optimizer import TopologyOptimizer
 
-from tests.unit.sage._seed import seed_model
+from ._seed import seed_model
 
 
 pytestmark = pytest.mark.integration

@@ -46,7 +46,7 @@ from services.reasoning.sage.topology_optimizer import (
     TopologyOptimizer,
     optimize_topology,
 )
-from tests.unit.sage._seed import seed_model as _shared_seed_model
+from ._seed import seed_model as _shared_seed_model
 
 
 pytestmark = pytest.mark.integration
