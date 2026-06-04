@@ -17,7 +17,10 @@ from uuid import UUID
 
 import asyncpg
 
-from services.reasoning.sage.topology_optimizer.optimizer import TopologyOptimizer
+from services.reasoning.sage.topology_optimizer.cadence import (
+    OptimizationCadenceRequest,
+    run_optimization_pass,
+)
 from services.reasoning.sage.topology_optimizer.types import OptimizationRunReport
 
 
@@ -35,10 +38,14 @@ async def optimize_topology(
     only when the caller passes `conn`; otherwise repo default
     construction needs the pool for its acquire path.
     """
-    optimizer = TopologyOptimizer(pool=pool, tenant_id=tenant_id)
-    return await optimizer.optimize(
-        inquiry_session_id=inquiry_session_id,
-        trigger_event=trigger_event,
+    return await run_optimization_pass(
+        pool=pool,
+        request=OptimizationCadenceRequest(
+            tenant_id=tenant_id,
+            inquiry_session_id=inquiry_session_id,
+            trigger_event=trigger_event,
+            source="api",
+        ),
         conn=conn,
     )
 

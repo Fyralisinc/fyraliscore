@@ -98,13 +98,19 @@ def build_sage_internal_router() -> APIRouter:
                 {"error": "tenant_id and inquiry_session_id required as UUID"},
                 status_code=400,
             )
-        from services.reasoning.sage.topology_optimizer import optimize_topology
+        from services.reasoning.sage.topology_optimizer.cadence import (
+            OptimizationCadenceRequest,
+            run_optimization_pass,
+        )
 
-        report = await optimize_topology(
+        report = await run_optimization_pass(
             pool=pool,
-            tenant_id=tenant_id,
-            inquiry_session_id=session_id,
-            trigger_event=str(body.get("trigger_event") or "scheduled"),
+            request=OptimizationCadenceRequest(
+                tenant_id=tenant_id,
+                inquiry_session_id=session_id,
+                trigger_event=str(body.get("trigger_event") or ""),
+                source="sage_internal_route",
+            ),
         )
         return JSONResponse({
             "discovery_updates_applied": {

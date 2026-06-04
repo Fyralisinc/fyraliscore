@@ -10,8 +10,10 @@ Re-exports the rule-based topology update surface (doc §5.6 + §16):
     pass: counts of utility-layer writes performed plus four buckets
     of canonical merge/split/promote/demote *candidate* dicts that
     must travel through validation before changing canonical truth.
-  * `optimize_topology` — thin functional wrapper that constructs a
-    default-wired optimizer and runs one pass.
+  * `OptimizationCadenceRequest` / `run_optimization_pass` — adapter
+    layer for routes, scheduled jobs, and tests that need one
+    default-wired optimization pass.
+  * `optimize_topology` — backwards-compatible functional wrapper.
   * `enqueue_for_validation` — current no-op stub for the canonical-
     op gate; will be wired to the validation queue in a later phase.
 
@@ -21,6 +23,12 @@ and ops can read / monkey-patch them when reasoning about behavior.
 """
 
 from services.reasoning.sage.topology_optimizer.api import optimize_topology
+from services.reasoning.sage.topology_optimizer.cadence import (
+    OptimizationCadenceRequest,
+    SCHEDULED_TRIGGER,
+    normalize_trigger_event,
+    run_optimization_pass,
+)
 from services.reasoning.sage.topology_optimizer.optimizer import (
     DECAY_FACTOR,
     NEGATIVE_MEMORY_TTL,
@@ -35,10 +43,14 @@ from services.reasoning.sage.topology_optimizer.types import OptimizationRunRepo
 __all__ = [
     "DECAY_FACTOR",
     "NEGATIVE_MEMORY_TTL",
+    "OptimizationCadenceRequest",
     "OptimizationRunReport",
     "REINFORCE_DELTA",
+    "SCHEDULED_TRIGGER",
     "SHORTCUT_POSITIVE_DELTA",
     "TopologyOptimizer",
     "enqueue_for_validation",
+    "normalize_trigger_event",
     "optimize_topology",
+    "run_optimization_pass",
 ]
