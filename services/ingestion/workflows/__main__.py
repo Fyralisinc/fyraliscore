@@ -63,8 +63,11 @@ from services.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
 )
+from services.ingestion.raw_tier.s3 import S3Client
 from services.ingestion.workflows.shard_fetch import (
     DEFAULT_DIAGNOSTIC_INSTANCE as SHARD_FETCH_INSTANCE_DEFAULT,
+    DEFAULT_INGESTION_ENV,
+    DEFAULT_S3_BUCKET,
     ShardFetch,
     ShardFetchConfig,
 )
@@ -108,6 +111,9 @@ async def _run_service(name: str) -> None:
     await producer.start()
 
     service: LongRunningService
+    # Only shard_fetch needs the raw-tier S3 client (A27.1); it is built
+    # and connected in that branch and torn down in the finally below.
+    s3_client: S3Client | None = None
     if name == "feels_onboarded_monitor":
         service = FeelsOnboardedMonitor(
             pool, producer,
@@ -162,6 +168,18 @@ async def _run_service(name: str) -> None:
             ),
         )
     elif name == "shard_fetch":
+        # shard_fetch is the only worker that publishes to the raw S3 tier
+        # (A27.1). Build + connect the S3 client here so the generic
+        # `WORKFLOW_SERVICE=shard_fetch` launch is fully equivalent to the
+        # dedicated `python -m …workflows.shard_fetch` entrypoint — without
+        # it, ShardFetch(s3_client=None) raises on the first page with
+        # records. Keep this in sync with shard_fetch._run_service.
+        s3_client = S3Client(
+            os.environ.get("S3_RAW_BUCKET", DEFAULT_S3_BUCKET),
+            endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+            region_name=os.environ.get("S3_REGION_NAME", "auto"),
+        )
+        await s3_client.connect()
         service = ShardFetch(
             pool, producer,
             config=ShardFetchConfig(
@@ -181,7 +199,11 @@ async def _run_service(name: str) -> None:
                     "SHARD_FETCH_INSTANCE",
                     SHARD_FETCH_INSTANCE_DEFAULT,
                 ),
+                ingestion_env=os.environ.get(
+                    "INGESTION_ENV", DEFAULT_INGESTION_ENV,
+                ),
             ),
+            s3_client=s3_client,
         )
     elif name == "reconciler":
         # M6.3: per-source reconcilers may need pool access for
@@ -241,6 +263,8 @@ async def _run_service(name: str) -> None:
     finally:
         log.info("workflow.service.shutting_down", extra={"service": name})
         await producer.stop()
+        if s3_client is not None:
+            await s3_client.close()
         await pool.close()
     log.info("workflow.service.exited", extra={"service": name})
 
