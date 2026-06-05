@@ -74,6 +74,7 @@ from .applier import AlreadyAppliedError, apply_diff
 from .cascade import CascadeEvent, CascadeResult, cascade
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
+from .hooks import augment_context
 from .llm_reason import llm_reason
 from .observability import (
     METRICS,
@@ -897,104 +898,18 @@ async def _run_once(
     access = access_context or AccessContext(tenant_id=trigger.tenant_id)
     bundle = await assemble_context(first, access, conn)
 
-    import structlog as _diag_log
-    _diag_log.get_logger("think.diag").warning(
-        "augmentation.entry",
-        run_id=str(record.id),
-        bundle_commitments=len(bundle.acts_summary.get("commitments", [])),
-    )
-
-    # Demo augmentation: the retrieval pathways only surface commitments
-    # connected to retrieved Models — and Pathway A frequently fails
-    # entirely due to strict CommitmentRow state validation when the
-    # snapshot includes states outside the canonical literal (e.g.
-    # 'at_risk'). For the demo we want the LLM to see the full active
-    # ledger regardless, so we pull active commitments directly and
-    # attach lightweight stubs that expose only the fields the prompt
-    # renderer reads (id, state, owner_id, due_date, title). Bypassing
-    # CommitmentRow validation keeps the augmentation tolerant of
-    # snapshot drift.
+    # Overlay context augmentation. Core's default is strict retrieval only;
+    # an installed overlay (e.g. the demo's full active-ledger augmentation)
+    # may extend the bundle and the region allow-list here via
+    # services.reasoning.think.hooks. No-op when nothing is registered.
+    # Errors keep the existing poisoned-transaction handling.
     try:
-        from types import SimpleNamespace
-
-        existing_ids = {
-            getattr(c, "id", None)
-            for c in bundle.acts_summary.get("commitments", [])
-        }
-        rows = await conn.fetch(
-            """
-            SELECT id, tenant_id, title, state, owner_id, due_date,
-                   last_state_change_at, created_at
-            FROM commitments
-            WHERE tenant_id = $1
-              AND terminal_at IS NULL
-              AND state != 'closed'
-            ORDER BY last_state_change_at DESC NULLS LAST,
-                     created_at DESC
-            LIMIT 25
-            """,
-            trigger.tenant_id,
+        allowed_region = await augment_context(
+            conn=conn,
+            trigger=trigger,
+            bundle=bundle,
+            allowed_region=allowed_region,
         )
-        for r in rows:
-            if r["id"] in existing_ids:
-                continue
-            stub = SimpleNamespace(
-                id=r["id"],
-                tenant_id=r["tenant_id"],
-                title=r["title"],
-                state=r["state"],
-                owner_id=r["owner_id"],
-                due_date=r["due_date"],
-                last_state_change_at=r["last_state_change_at"],
-                created_at=r["created_at"],
-            )
-            bundle.acts_summary.setdefault(
-                "commitments", []
-            ).append(stub)
-            existing_ids.add(r["id"])
-            # Extend the region allow-list so the validator does not
-            # reject act_ops the LLM emits against the augmented
-            # commitments. Without this every transition_commitment on
-            # a freshly-augmented entity raises out_of_region and the
-            # worker exhausts its retry budget.
-            allowed_region = sorted(
-                set(allowed_region) | {("commitment", str(r["id"]))}
-            )
-
-        existing_decision_ids = {
-            getattr(d, "id", None)
-            for d in bundle.acts_summary.get("decisions", [])
-        }
-        decision_rows = await conn.fetch(
-            """
-            SELECT id, tenant_id, title, state, created_at,
-                   last_state_change_at
-            FROM decisions
-            WHERE tenant_id = $1
-              AND archived_at IS NULL
-              AND state != 'archived'
-            ORDER BY last_state_change_at DESC NULLS LAST,
-                     created_at DESC
-            LIMIT 25
-            """,
-            trigger.tenant_id,
-        )
-        for r in decision_rows:
-            if r["id"] in existing_decision_ids:
-                continue
-            stub = SimpleNamespace(
-                id=r["id"],
-                tenant_id=r["tenant_id"],
-                title=r["title"],
-                state=r["state"],
-                created_at=r["created_at"],
-                last_state_change_at=r["last_state_change_at"],
-            )
-            bundle.acts_summary.setdefault("decisions", []).append(stub)
-            existing_decision_ids.add(r["id"])
-            allowed_region = sorted(
-                set(allowed_region) | {("decision", str(r["id"]))}
-            )
     except Exception as _aug_err:  # noqa: BLE001
         _raise_if_postgres_error(_aug_err)
         await debug_capture(

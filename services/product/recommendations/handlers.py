@@ -313,13 +313,14 @@ async def act_on_recommendation(
         metadata=archive_metadata,
     )
 
-    # Demo SSE: tell any open action-list streams the card should
-    # disappear. Cheap fan-out — no-op when no subscribers are
-    # connected (which is the production case).
-    from services.product.demo.sse import publish_recommendation_event
+    # Announce the recommendation was acted upon so any open action-list
+    # streams drop the card. Cheap fan-out via the process-local event bus —
+    # no-op when nothing is subscribed (the production case).
+    from lib.shared.events import publish as publish_event
 
     target_actor = rec.get("target_actor_id") or actor_id
-    await publish_recommendation_event(
+    await publish_event(
+        "recommendation.event",
         tenant_id=tenant_id,
         actor_id=target_actor,
         event="archived",
@@ -385,10 +386,11 @@ async def dismiss_recommendation(
         },
     )
 
-    from services.product.demo.sse import publish_recommendation_event
+    from lib.shared.events import publish as publish_event
 
     target_actor = rec.get("target_actor_id") or actor_id
-    await publish_recommendation_event(
+    await publish_event(
+        "recommendation.event",
         tenant_id=tenant_id,
         actor_id=target_actor,
         event="archived",
@@ -854,9 +856,10 @@ async def _dismiss_hypothesis(
         metadata=metadata,
     )
     try:
-        from services.product.demo.sse import publish_recommendation_event
+        from lib.shared.events import publish as publish_event
         target_actor = hypothesis.get("target_actor_id") or actor_id
-        await publish_recommendation_event(
+        await publish_event(
+            "recommendation.event",
             tenant_id=tenant_id,
             actor_id=target_actor,
             event="archived",

@@ -156,6 +156,18 @@ markers = [
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = ["lib", "services"]
+# Required so the "no overlay imports" contract below can name external modules
+# (fyralis_demo / demo / simulation live in the demo overlay repo, not here).
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "core never imports the demo / simulation overlays"
+type = "forbidden"
+# Core is a pure runtime. The demo overlay (the fyralis-demo repo) plugs in via
+# entry-point seams (gateway extensions, the event bus, reasoning augmentors) —
+# core must never import it back. Catches a re-introduced overlay dependency.
+source_modules = ["lib", "services"]
+forbidden_modules = ["fyralis_demo", "demo", "simulation"]
 
 [[tool.importlinter.contracts]]
 name = "lib is independent of services (shared libraries never import app code)"

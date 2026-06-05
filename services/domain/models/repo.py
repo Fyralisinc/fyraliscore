@@ -1530,14 +1530,14 @@ class ModelsRepo:
             detect_re_assert=False,  # creates have no prior to re-assert
         )
 
-        # Demo SSE: notify any open action-list streams for this actor
-        # that a new recommendation has landed. No-op outside demo
-        # mode (publish is a fan-out to in-process subscribers; if no
-        # one is listening, nothing happens).
+        # Announce that a recommendation landed. Subscribers (e.g. the demo
+        # overlay's SSE fan-out to open action-list streams) pick this up via
+        # the process-local event bus. No-op when nothing is subscribed.
         if hydrated.claim_role == "recommendation" and hydrated.target_actor_id:
-            from services.product.demo.sse import publish_recommendation_event
+            from lib.shared.events import publish as publish_event
 
-            await publish_recommendation_event(
+            await publish_event(
+                "recommendation.event",
                 tenant_id=hydrated.tenant_id,
                 actor_id=hydrated.target_actor_id,
                 event="created",

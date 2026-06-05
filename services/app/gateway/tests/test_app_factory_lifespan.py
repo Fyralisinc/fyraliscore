@@ -98,7 +98,7 @@ def _patch_lightweight_startup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         "closed_github_clients": [],
     }
 
-    async def ensure_demo_seed(pool: Any) -> None:
+    async def run_extension_startup_hooks(app: Any, pool: Any) -> None:
         return None
 
     def wire_integration_runtime_state(app: Any, pool: Any) -> Any:
@@ -184,7 +184,9 @@ def _patch_lightweight_startup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         calls["dispatchers"].append(dispatcher)
         return realtime
 
-    monkeypatch.setattr(main_module, "ensure_demo_seed", ensure_demo_seed)
+    monkeypatch.setattr(
+        main_module, "run_extension_startup_hooks", run_extension_startup_hooks
+    )
     monkeypatch.setattr(
         main_module,
         "wire_integration_runtime_state",

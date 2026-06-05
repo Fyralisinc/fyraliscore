@@ -66,14 +66,8 @@ _PUBLIC_PATHS = frozenset({
 _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/view/ceo/",
     "/rendering/",
-    "/simulation/",
-    "/simulation-ui/",
     "/debug/",
     "/api/debug/",
-    # Demo picker page calls these from an unauthenticated browser; the
-    # /sessions/start endpoint mints the auth token for everything else.
-    "/v1/demo/companies",
-    "/v1/demo/sessions/start",
     # IN-06: webhook ingress. Authentication is the per-provider
     # cryptographic signature check inside services.app.webhooks.router -
     # NOT a Bearer token. The Bearer middleware MUST skip this prefix
@@ -86,6 +80,16 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # /finance - X-Tenant-Id header, no bearer, env-gated at mount.
     "/slack/",
 )
+# Overlay packages (e.g. the demo: /v1/demo/companies, /v1/demo/sessions/start;
+# the simulation panel: /simulation/) contribute their own public prefixes via
+# the gateway extension seam — core no longer hardcodes them.
+
+
+def _public_path_prefixes() -> tuple[str, ...]:
+    """Core public prefixes plus any contributed by installed extensions."""
+    from services.app.gateway.extensions import extension_public_path_prefixes
+
+    return _PUBLIC_PATH_PREFIXES + extension_public_path_prefixes()
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -154,7 +158,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         if (
             request.url.path in _PUBLIC_PATHS
             or request.url.path.startswith("/stream")
-            or any(request.url.path.startswith(p) for p in _PUBLIC_PATH_PREFIXES)
+            or any(request.url.path.startswith(p) for p in _public_path_prefixes())
         ):
             # Public paths skip auth, BUT if the caller passes a demo
             # bearer token we still resolve it and inject X-Tenant-Id
@@ -232,7 +236,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if (
             request.url.path in _PUBLIC_PATHS
             or request.url.path.startswith("/stream")
-            or any(request.url.path.startswith(p) for p in _PUBLIC_PATH_PREFIXES)
+            or any(request.url.path.startswith(p) for p in _public_path_prefixes())
         ):
             return await call_next(request)
         auth: AuthContext | None = getattr(request.state, "auth", None)

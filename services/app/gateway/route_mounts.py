@@ -47,9 +47,11 @@ def mount_gateway_routes(
 
     register_gateway_routes(app)
 
-    from services.product.demo.router import demo_router as demo_router
+    # Overlay packages (e.g. the demo) contribute their routers here via the
+    # gateway extension seam — core imports nothing overlay-specific.
+    from services.app.gateway.extensions import mount_extension_routers
 
-    app.include_router(demo_router)
+    mount_extension_routers(app)
 
     from services.app.gateway.model_page_routes import register_model_page_routes
     from services.app.gateway.spec_routes import register_spec_routes

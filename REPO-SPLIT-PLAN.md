@@ -26,6 +26,56 @@ These three choices drive the whole plan:
 
 ---
 
+## 0a. Execution status (as of this session)
+
+**Backend split: DONE and verified.** The core repo is now demo-free at the
+runtime layer and the demo overlay lives in a separate repo at
+`../fyraliscore-demo`.
+
+Done:
+- Phase 0 hygiene: untracked the two `_last_run.json` artifacts (+gitignored);
+  dropped empty `lib/nexus`, `lib/topology`, and the source-less `bench/`.
+- Built core extension seams (additive, no overlay imports):
+  `services/app/gateway/extensions.py` (gateway extension registry),
+  `lib/shared/events.py` (event bus), `services/reasoning/think/hooks.py`
+  (reasoning augmentor registry) — all discovered lazily via entry points.
+- Rewired all 7 core→demo edges to the seams; removed the unconditional
+  reasoning "demo augmentation" (and its always-on warning) from `reason.py`.
+- Moved to `../fyraliscore-demo`: `services/product/demo/` → `fyralis_demo/`,
+  `demo_seed.py` → `fyralis_demo/seed.py`, root `demo/`, `simulation/`,
+  `mocks/`, `test_demo_end_to_end.py`, `seed_dogfood_tenant.py`. Added overlay
+  glue (`gateway.py`, `events.py`, `reasoning.py`, `sim_mount.py`) + entry
+  points + `pyproject.toml`/`README`/`.gitignore`; git-initialized (91 files).
+- Added import-linter contract "core never imports the demo/simulation
+  overlays" (`include_external_packages=true`).
+
+Verified:
+- Core imports cleanly with the overlay **not** installed; `lint-imports`
+  green (3/3 contracts KEPT, incl. the new one).
+- With the overlay editable-installed, core discovers it via entry points:
+  1 gateway extension (router + 2 startup hooks), 4 public prefixes, the
+  reasoning augmentor, and the `recommendation.event` subscriber. 7 `/v1/demo/*`
+  routes mount through the seam.
+- 689 changed-area core tests collect with no import errors;
+  `test_app_factory_lifespan.py` passes 15/15.
+
+Remaining (see §13 / below — not yet done):
+- **UI split** — `ui/` is untouched and still contains the demo shell
+  (`AutoDemoSession`, `*-mock.ts`, `mock-server.ts`). Moving it needs a
+  non-demo core entry shell first; deferred so core UI keeps building.
+- **Test-fixture demo seeding** still in core (`conftest._seed_demo_configs`,
+  `lib/shared/testing/db_baseline.seed_demo_configs`). Runtime is clean; moving
+  these out needs core test fixtures exposed as a pytest plugin so the demo repo
+  can consume them — and a DB run to verify nothing core relies on the rows.
+- **Demo compose + core compose trim** (remove `ui`/demo bits from core's
+  `docker-compose.yml`; add `docker-compose.demo.yml`).
+- **Demo `pyproject.toml`** core dependency URL is a placeholder
+  (`REPLACE_ORG`); pin the real core git remote/tag.
+- **Full core test suite** run against a live Postgres (only collection +
+  DB-free tests were exercised here).
+
+---
+
 ## 1. Target end state
 
 Three repos, strict one-way dependency (arrows = "depends on"):
@@ -122,11 +172,11 @@ Legend: **CORE** = fyraliscore-core · **DEMO** = fyraliscore-demo ·
 | `db/migrations/` | CORE | demo **table DDL** stays (low-risk); demo **seed rows** move (§5) |
 | `db/seed/predictions_seed.sql` | CORE | not demo-specific |
 | `demo/` (generator) + `demo/snapshots/` | **DEMO** | clean leaf; 3.5M of snapshots |
-| `simulation/` | CORE (dev tool) | dogfood signal authoring; mount via seam #8. *Alt: DEMO — see §13 Q2* |
+| `simulation/` | **DEMO** | dogfood signal authoring; gateway mount (seam #8) moves to demo via the registry |
 | `mocks/starscape.html` | **DEMO** | design artifact (or a design folder) |
 | `ui/` (pages, real API clients) | CORE | product frontend |
 | `ui/src/shell/AutoDemoSession.tsx`, `ui/mock-server.ts`, `ui/src/api/*-mock.ts` | **DEMO** | demo shell + mock layer (§6) |
-| `bench/` | BENCH | **source is gone** (only `.pyc`); see §12 |
+| `bench/` | DROP (rewrite later) | only `.pyc` survives; not recovered — rebuilt in the bench repo (§12) |
 | `tests/` | split | core-logic tests → CORE; `tests/integration/test_demo_end_to_end.py` → DEMO (§7) |
 | `conftest.py` | CORE (SEAM) | strip demo seeding into a demo conftest (§5, §7) |
 | `contracts/http-routes.json` | CORE | API route contract |
@@ -442,14 +492,12 @@ The third repo (`fyraliscore-bench`) is **out of scope for now** but the plan
 reserves the same shape: it depends on core via the git pin and adds
 benchmark/profiling harnesses + scenarios.
 
-**Important finding:** the existing `bench/` tree has **no recoverable source**
-in this repo — `git ls-files bench/` returns 0 `.py` files, there is no `.py` in
-the working tree, and no git history touches `bench/*.py`. Only compiled `.pyc`
-remain under `bench/__pycache__/` (referencing modules like `cli`, `runner`,
-`stats`, `store`, `report`, `dimensions/*`, `profiling/*`). Before standing up
-the benchmark repo, the source must be **recovered** (from another branch/clone,
-a teammate's checkout, or last resort decompiled from the `.pyc`) or
-**rewritten**. Flagging now so it isn't discovered late.
+**Decision: bench will be rewritten from scratch.** The existing `bench/` tree
+has no recoverable source — `git ls-files bench/` returns 0 `.py` files, nothing
+in the working tree, and no git history touches `bench/*.py`; only compiled
+`.pyc` remain under `bench/__pycache__/`. We are **not** recovering it. The stray
+`bench/` dir (bytecode only) is therefore **dropped** from core during the split,
+and the benchmark harness is rebuilt later in its own repo.
 
 ---
 
@@ -463,10 +511,10 @@ a teammate's checkout, or last resort decompiled from the `.pyc`) or
   is the highest-risk item because it touches the reasoning hot path. Default
   recommendation: (a), and treat the always-on `warning` as a bug to remove
   either way.
-- **Q2 — `simulation/` home.** Classified here as **core dev tooling** (it
-  injects via core's synthetic path and is the dogfood authoring harness). It is
-  defensible to move it to the demo repo instead since it's storytelling-
-  adjacent. Pick one; it changes which repo owns ~280K + the gateway sim mount.
+- **Q2 — `simulation/` home. RESOLVED → DEMO.** The whole `simulation/` tree
+  (~280K) and its gateway mount (seam #8) move to the demo repo. It still
+  imports core's `services.ingest.synthetic` injection path — which stays in
+  core as test/dev infra — but the authoring harness itself is demo-owned.
 - **Q3 — UI distribution.** Submodule vs internal npm package vs "demo shell
   composes core app." Submodule is simplest for co-developed repos; a package is
   cleaner long-term. Needs a call before §6 mechanics are finalized.
@@ -487,6 +535,7 @@ a teammate's checkout, or last resort decompiled from the `.pyc`) or
 services/product/demo/**                      (18 files incl. tests)
 services/app/gateway/demo_seed.py
 demo/**                                        (generator + snapshots, 4.0M)
+simulation/**                                  (dogfood authoring harness, ~280K)
 mocks/starscape.html
 ui/src/shell/AutoDemoSession.tsx
 ui/mock-server.ts

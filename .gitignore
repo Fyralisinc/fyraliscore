@@ -85,6 +85,11 @@ id_ed25519*
 # Synthesis harness per-run calibration artifacts (the baseline + README are tracked)
 tests/synthesis_harness/runs/
 
+# Per-run "last run" snapshots — outputs, not source (were tracked by mistake;
+# the auto-commit Stop-hook kept re-snapshotting them).
+tests/synthesis_harness/_last_run.json
+tests/retrieval_e2e/_last_run.json
+
 # Real-LLM local run artifacts
 tests/real_llm/cache/
 tests/real_llm/reports/runs/
