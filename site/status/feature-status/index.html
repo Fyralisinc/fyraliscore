@@ -1,0 +1,2430 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Internal engineering and AI-agent documentation for Fyralis Core, the organizational-intelligence runtime. How the system works and why.">
+      
+      
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../wiring-gaps/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Feature status - Fyralis Core — Internal Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#feature-status-expected-vs-actual" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-header__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Fyralis Core — Internal Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Feature status
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-nav__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Fyralis Core — Internal Docs
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/app/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App — Gateway & Transport
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest — Signal Intake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/reasoning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reasoning — Think Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/domain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Domain — Substrate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/product/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product — CEO Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform — Authz & Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/workers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workers — Background Jobs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lib/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shared Libraries (lib)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-plane/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime & Data Plane
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Codebase status
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Codebase status
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature status
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#background-worker-fabric-wave-4-built-not-deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Background worker fabric (Wave-4) — built, not deployed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#access-control-authorization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Access control &amp; authorization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reasoning-execution-seams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Reasoning &amp; execution seams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ingestion-pipeline-data-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Ingestion pipeline &amp; data plane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integrations-per-source-installlive-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Integrations — per-source install/live coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code_intel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 code_intel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#product-surfaces-substrate-fidelity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Product surfaces &amp; substrate fidelity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#low-severity-findings-64" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟢 Low-severity findings (64)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wiring-gaps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Wiring gaps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dead-legacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy & test-only
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions (ADRs)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions (ADRs)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0000-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-kafka-first-ingestion-default/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 · Kafka-first ingestion default
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subsystem deep-dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Subsystem deep-dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deep-dives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About these docs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Ingestion
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/source-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/finance-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/finance-api-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance API map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/slack-dm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack DM (test env)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2_7" id="__nav_7_2_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sources
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_7_2_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sources
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/slack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/github/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/gmail/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gmail
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/notion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Notion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/google-calendar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Calendar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/google-drive/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Drive
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/jira/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jira
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_3" id="__nav_7_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub Intelligence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GitHub Intelligence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec & plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/IMPLEMENTATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Read API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/UI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browser UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#background-worker-fabric-wave-4-built-not-deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Background worker fabric (Wave-4) — built, not deployed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#access-control-authorization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Access control &amp; authorization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reasoning-execution-seams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔴 Reasoning &amp; execution seams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ingestion-pipeline-data-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Ingestion pipeline &amp; data plane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integrations-per-source-installlive-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Integrations — per-source install/live coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code_intel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 code_intel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#product-surfaces-substrate-fidelity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟠 Product surfaces &amp; substrate fidelity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#low-severity-findings-64" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🟢 Low-severity findings (64)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="feature-status-expected-vs-actual">Feature Status — Expected vs. Actual<a class="headerlink" href="#feature-status-expected-vs-actual" title="Permanent link">&para;</a></h1>
+<p>Per-feature status from the audit: what the code was clearly built to do
+(<code>expected</code>), what actually runs today (<code>status</code>), and the <code>gap</code>. Organized by
+theme (see the <a href="../">overview</a>). Severity reflects impact if the gap is
+unintended. <strong>131 findings total: 21 high (6 resolved — cutover circuit
+breaker, Google Calendar install, Google Drive install, Jira install, the
+Discord single-instance lease, and Discord crash-RESUME), 46 medium (9 resolved — Kafka full-pipeline persistence,
+<code>google_drive</code> async embedding, onboarding progress events, the
+<code>feels_onboarded_monitor</code> service, the per-(source,method) API rate limiter,
+webhook verification metrics, the Mercury/QuickBooks production install
+flow, the Gmail Pub/Sub ingress mount, and the Calendar/Drive live
+workers), 64 low</strong> — the high/medium are below; low
+findings are summarized at the end. <em>Resolutions 2026-06-02; see
+<a href="../../adr/0001-kafka-first-ingestion-default/">ADR-0001</a>.</em></p>
+<h2 id="background-worker-fabric-wave-4-built-not-deployed">🔴 Background worker fabric (Wave-4) — built, not deployed<a class="headerlink" href="#background-worker-fabric-wave-4-built-not-deployed" title="Permanent link">&para;</a></h2>
+<p>The single largest theme. Only <code>topology_sweeper</code> has a launcher; every other
+<code>services/workers/*</code> package is absent from compose and <code>scripts/</code>. See
+<a href="../../architecture/workers/">Workers</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Worker deployment</td>
+<td>8 worker packages run as compose/cron processes</td>
+<td>Only <code>topology_sweeper</code> launched (dogfood/<code>start.sh</code>); 7 others have no launcher</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Activation decay + archival</td>
+<td><code>hourly_decay</code>/<code>archive_decayed</code> run via maintenance worker</td>
+<td><code>decay.py</code> implemented, wrapped by <code>maintenance/daily.py</code> — but maintenance has no launcher → <strong>Models never decay/auto-archive</strong>; activation stays inflated</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Maintenance scheduler (Wave-4-D)</td>
+<td>In-proc scheduler runs daily/weekly/monthly upkeep</td>
+<td><code>MaintenanceScheduler</code> never instantiated outside tests → decay, partition-extend, calibration refresh all dormant</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Anomaly → <code>T3</code> generation</td>
+<td><code>anomaly_processor</code> detects 6 kinds, debounces, enqueues <code>T3</code></td>
+<td>Fully implemented, not-wired → <strong>no <code>T3</code> anomaly triggers in prod</strong>; <code>signal_memory_fabric</code> never accumulates</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Deadline → <code>T2</code> generation</td>
+<td><code>deadline_resolver</code> polls overdue predictions → <code>T2</code></td>
+<td>Implemented, not-wired → predictions past <code>evaluate_at</code> <strong>never auto-resolved</strong></td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Deferred entity resolution</td>
+<td><code>entity_resolver</code> resolves <code>_unresolved_phrases</code> → aliases + <code>T1</code> re-enqueue</td>
+<td>Implemented, not-wired → unresolved phrases never aliased/re-triggered; <code>entity_review_queue</code> has no consumer</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Calibration pipeline</td>
+<td><code>calibration_updater</code> refreshes <code>calibration_offsets</code> weekly</td>
+<td>Live read path consumes offsets, but the <strong>writer worker never runs</strong> → offsets never refreshed; only cold-start defaults apply</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Precipitation pattern formation</td>
+<td>Nightly clustering writes <code>pattern_candidates</code> + <code>T4</code></td>
+<td>Think's <em>promotion</em> half is live (<code>T4 pattern_review</code>); the <em>production</em> half (clustering/write) is not-wired → <strong><code>T4</code> starved of inputs</strong></td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td><code>edge_drift</code> parity check</td>
+<td>Worker samples <code>model_edges</code> vs. legacy arrays to catch divergence</td>
+<td>Not-wired → the guard for the dual-write migration never runs (silent divergence undetected)</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td><code>entity_aliases</code> slow path</td>
+<td><code>insert_alias</code>/<code>record_usage</code>/<code>list_ambiguous</code> driven by <code>entity_resolver</code></td>
+<td>Live ingest uses only <code>fast_path_resolve</code>; slow-path funcs consumed only by the unwired worker</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td><code>actor_visible_*</code> matview refresh</td>
+<td>Daily <code>refresh_all</code> keeps scope views current; <code>checks.py</code> reads them</td>
+<td>Sole caller is the undeployed <code>maintenance/daily.py</code> → matviews <strong>never refreshed</strong> at runtime (stale/empty scope data)</td>
+<td style="text-align: center;">high</td>
+</tr>
+</tbody>
+</table>
+<h2 id="access-control-authorization">🔴 Access control &amp; authorization<a class="headerlink" href="#access-control-authorization" title="Permanent link">&para;</a></h2>
+<p>See <a href="../../architecture/platform/">Platform</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@requires_access</code> route decorator</td>
+<td>Routes declaratively authorized + audited</td>
+<td>Applied on <strong>zero</strong> routes; gateway does one inline <code>can_read_by_id</code> (on <code>/dashboard/customer</code>), comment notes "decorator isn't applied here" → most entity routes have <strong>no <code>can_read</code> enforcement</strong></td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td><code>access_override_log</code> audit</td>
+<td>Every admin/first-person override appends an audit row</td>
+<td><code>record_override</code> only called from the never-applied decorator → live <code>can_read</code> paths set <code>override_applied=True</code> but <strong>write no audit rows</strong></td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td>Role management (grant/revoke/list)</td>
+<td>Runtime path to administer <code>actor_roles</code> that drive <code>can_read</code></td>
+<td>All three funcs invoked only by tests → <code>actor_roles</code> populated only via tests/manual SQL; <strong>no production path to grant roles</strong></td>
+<td style="text-align: center;">medium</td>
+</tr>
+</tbody>
+</table>
+<h2 id="reasoning-execution-seams">🔴 Reasoning &amp; execution seams<a class="headerlink" href="#reasoning-execution-seams" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Post-commit side-effects</td>
+<td>Dispatch anomaly handoff / prediction scheduling / realtime broadcast / metric invalidation</td>
+<td>Queue + <code>post_commit_worker</code> are live, but all 4 dispatchers are <strong>no-op loggers</strong> ("left for a later integration PR")</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Execution signal routing (<code>decide_route</code>)</td>
+<td>Classify every signal; persist shadow decisions (<code>EXECUTION_ROUTING_SHADOW=1</code>)</td>
+<td><code>decide_route</code>/<code>record_routing_decision</code> have <strong>no caller outside tests</strong>; ingestion never builds a <code>SignalEnvelope</code> → <strong>no <code>signal_routing_decisions</code> rows ever</strong></td>
+<td style="text-align: center;">high</td>
+</tr>
+</tbody>
+</table>
+<h2 id="ingestion-pipeline-data-plane">🟠 Ingestion pipeline &amp; data plane<a class="headerlink" href="#ingestion-pipeline-data-plane" title="Permanent link">&para;</a></h2>
+<p>See <a href="../../architecture/ingest/">Ingest</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kafka full-pipeline persistence</td>
+<td><code>observation_writer</code> writes observations from the normalized lane</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> Default inverted to kafka-first: a tenant with no flag row takes the full pipeline and the writer persists from the normalized lane by default. <code>KAFKA_PATH_ENABLED=FALSE</code> is now an operator / circuit-breaker <strong>kill-switch</strong> (inline fallback), read through one shared helper so ingress + writer can't drift. See <a href="../../adr/0001-kafka-first-ingestion-default/">ADR-0001</a>.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Cutover circuit breaker</td>
+<td>Long-running breaker trips <code>kafka_path_enabled=FALSE</code> on sustained lag</td>
+<td>✅ <strong>Wired + source-aware</strong> (<code>fix/cutover-breaker-source-aware</code>): runs as the <code>circuit_breaker</code> singleton in compose; measures lag across every <code>ingestion.raw.&lt;source&gt;</code> lane (group <code>normalizer.&lt;source&gt;</code>) and trips a tenant on its worst lane — the legacy single-<code>ingestion.raw</code> inertness is gone. Now has <code>/healthz</code>+<code>/metrics</code>, per-lane failure isolation, an operator re-enable tool (<code>scripts/reenable_kafka_path.py</code>), and a live-broker smoke test (<code>scripts/smoke_circuit_breaker_lag.py</code>) that verified the real readers + caught a latent <code>confluent_kafka</code> import crash</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td><code>google_drive</code> async embedding</td>
+<td>All production sources publish to <code>ingestion.embedding</code> on <code>embedding_pending</code></td>
+<td><strong>✅ Resolved (2026-06-02).</strong> <code>core.py</code> now derives the embedding allowlist from <code>INGESTION_SOURCES</code> (= <code>RawEnvelope.SourceLiteral</code>), which includes <code>google_drive</code>, so it publishes to <code>ingestion.embedding.google_drive</code> on <code>embedding_pending</code> like every other source. <code>shadow_write_raw</code>'s <code>source</code> type was aligned to the same literal to kill the drift class.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Onboarding progress events</td>
+<td>Workflow services emit <code>onboarding.progress</code> (shard.fetched, source.complete, …)</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> All 7 event kinds now have a producer call site: <code>tenant.onboarding.started</code>/<code>…complete</code> from <code>tenant_onboarding</code>, <code>source.onboarding.started</code> from <code>source_onboarding</code>, <code>shard.fetched</code> from <code>shard_fetch</code>, <code>source.onboarding.complete</code> from the <code>reconciler</code> clean pass (with <code>coverage_confidence</code>/<code>gaps_resolved</code> derived from the reconciliation outcome), and <code>feels_onboarded</code> + the ops-only <code>behind_schedule</code> from <code>feels_onboarded_monitor</code>. Each orchestrator takes an optional <code>kafka_producer</code> (wired in its <code>_run_*</code> entrypoint) and publishes <strong>post-commit</strong> via the shared <code>publish_progress_events</code> helper — claim-via-UPDATE ordering, so events fire once per transition with Bridge-side dedup.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td><code>feels_onboarded_monitor</code> service</td>
+<td>Runs as a long-running <code>WORKFLOW_SERVICE</code></td>
+<td><strong>✅ Resolved (2026-06-02).</strong> Given a per-module <code>__main__</code> (sibling to <code>oauth_poller</code>/<code>shard_fetch</code>/…) + a <code>feels_onboarded_monitor</code> compose service (<code>python -m …workflows.feels_onboarded_monitor</code>), so it boots and emits <code>feels_onboarded</code>. Now also fires the ops-only <code>behind_schedule</code> (migration <code>0080</code> adds a <code>behind_schedule_emitted_at</code> claim slot to <code>onboarding_runs</code>) and derives its source allowlist from the <code>Source</code> literal — fixing a latent drift that had dropped <code>google_drive</code>. The legacy <code>WORKFLOW_SERVICE</code> selector still works (kept for the subprocess test).</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Per-(source,method) API rate limiter</td>
+<td><code>shard_fetch</code>/<code>FetchPage</code> acquires tokens before each upstream call</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> New <code>rate_limit.FetchRateLimiter</code> gate is the first non-test importer of <code>BUCKET_DEFAULTS</code>: <code>ShardFetch._run_fetch_loop</code> now calls <code>.acquire(source, tenant_id)</code> <strong>before</strong> each fetcher/page call, consuming one token from the <code>rate:&lt;tenant&gt;:&lt;source&gt;:&lt;method&gt;</code> Lua bucket. Throttles the four sources with published budgets (slack/github/gmail/discord via <code>PRIMARY_FETCH_METHOD</code>); unbudgeted sources are explicit pass-throughs (no fabricated limits). A bounded wait that's exceeded raises <code>RateLimitWaitExceeded</code>, which the loop treats as a transient exit (shard stays <code>in_progress</code>, orphan-scan resumes) — same shape as a flush failure. Enabled when <code>REDIS_URL</code> is set (compose app-env); <code>SHARD_FETCH_RATE_LIMIT=0</code> opts out.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Webhook verification metrics</td>
+<td>Prometheus-scrapable <code>{provider,reason}</code> counters</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> <code>webhooks.metrics.render_prometheus()</code> renders all in-process counter families as Prometheus text exposition (0.0.4) and the gateway serves them at a public <code>GET /metrics</code> (allowlisted in <code>_PUBLIC_PATHS</code>, no Bearer). Families: <code>webhook_verification_failures_total{provider,reason}</code>, <code>webhook_resolver_outcomes_total</code>, <code>webhook_resolver_cache_total</code>, <code>webhook_router_kafka_path_total</code>, and the <code>webhook_resolver_duration_p95_seconds</code> gauge. Hand-rolled text — no <code>prometheus_client</code> dependency (mirrors <code>ingestion/observability.py</code>), so the simplicity principle holds.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+</tbody>
+</table>
+<h2 id="integrations-per-source-installlive-coverage">🟠 Integrations — per-source install/live coverage<a class="headerlink" href="#integrations-per-source-installlive-coverage" title="Permanent link">&para;</a></h2>
+<p>See <a href="../../architecture/ingest/">Ingest</a>. Production source families: slack, github,
+discord, gmail, notion, google_calendar, google_drive, jira, mercury, quickbooks.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Google Calendar install</td>
+<td>Gateway connect endpoint (like Gmail OAuth) emitting onboarding trigger</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> New <code>google_calendar/oauth.py</code> exposes <code>POST /integrations/google_calendar/connect/{preflight,finalize}</code> — a DWD connect wizard mirroring <code>gmail/oauth.py</code>. <code>preflight</code> enumerates the domain via the shared <code>DirectoryClient</code> (or returns the client_id + scopes to grant when the DWD grant is missing); <code>finalize</code> resolves the inclusion_spec and calls the existing <code>connect()</code>/<code>finalize_install()</code> to write the install + per-calendar rows + the <code>onboarding_triggers</code> row (source='google_calendar') in one transaction. Mounted in the gateway under the same <code>GMAIL_SERVICE_ACCOUNT_JSON*</code> DWD gate (Calendar reuses Gmail's service account); poll-only, so no Pub/Sub provisioning. Install is no longer sandbox-only.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Google Drive install</td>
+<td>Gateway connect endpoint</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> New <code>google_drive/oauth.py</code> exposes <code>POST /integrations/google_drive/connect/{preflight,finalize}</code> — a DWD connect wizard mirroring <code>google_calendar/oauth.py</code>. <code>finalize</code> resolves the inclusion_spec → per-user My-Drive targets and (when <code>include_shared_drives</code>) enumerates the org's Shared Drives, then calls the existing <code>connect()</code>/<code>finalize_install()</code> to write the install + per-target rows + the <code>onboarding_triggers</code> row (source='google_drive') in one transaction. Mounted in the gateway under the same <code>GMAIL_SERVICE_ACCOUNT_JSON*</code> DWD gate; poll-only (changes-API delta), so no async provisioning. Install is no longer sandbox-only.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Jira install</td>
+<td>A runtime caller that finalizes install + writes <code>onboarding_triggers</code></td>
+<td><strong>✅ Resolved (2026-06-02).</strong> New <code>jira/oauth.py</code> exposes <code>POST /integrations/jira/connect/{preflight,finalize}</code> — a <strong>Bearer-authed</strong> admin connect wizard (a genuine prod surface, unlike the dev <code>finance_router</code> panel). <code>preflight</code> verifies the API token via <code>JiraClient.myself()</code> and enumerates projects for the selector; <code>finalize</code> re-verifies creds <strong>before any write</strong>, stores the API token + optional webhook HMAC secret encrypted via the gateway <code>secret_store</code> (only opaque refs reach the DB), then calls <code>finalize_install()</code> (jira_installations + jira_projects + <code>onboarding_triggers</code> source='jira') and <code>register_webhook_installation()</code> (the <code>provider_installations</code> row the webhook edge resolves the tenant + signing secret from). Tenant comes from <code>request.state.auth</code>, not an <code>X-Tenant-Id</code> header.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Mercury/QuickBooks install</td>
+<td>Production credential-collection install flow</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> New <code>mercury/oauth.py</code> + <code>quickbooks/oauth.py</code> expose <code>POST /integrations/{mercury,quickbooks}/connect/{preflight,finalize}</code> — <strong>Bearer-authed</strong> credential wizards (genuine prod surfaces, distinct from the dev <code>finance_router</code> panel). Mercury submits a Bearer API token (verified + accounts enumerated via <code>list_accounts()</code>); QuickBooks submits <code>realm_id</code> + access/refresh tokens (verified via <code>company_info()</code> — the repo has no Intuit OAuth-bounce, so install is operator-mediated and <code>oauth_poller</code> owns refresh thereafter). Both verify creds <strong>before any write</strong>, store credentials encrypted via the gateway <code>secret_store</code> (only opaque refs reach the DB), then call <code>finalize_install()</code> (dedicated tables + <code>onboarding_triggers</code>) and — when an org id / verifier token + secret are supplied — <code>register_webhook_installation()</code>. Tenant from <code>request.state.auth</code>, not an <code>X-Tenant-Id</code> header.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Gmail Pub/Sub ingress</td>
+<td>Webhook ingress for the Gmail source</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> The <code>/webhooks/gmail/pubsub</code> ingress now mounts <strong>unconditionally</strong> (decoupled from the DWD service-account gate), so Google's pushes always hit a real endpoint instead of a silent 404. Readiness is explicit: when the OIDC env (<code>GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE</code> + <code>GMAIL_PUBSUB_PUSH_OIDC_SA</code>) is absent the route returns <code>503 not_configured</code> (was a <code>RuntimeError</code> → 500) and boot logs <code>gmail_pubsub_ingress_mounted_unconfigured</code> instead of skipping silently. The connect wizard stays gated on the SA JSON it genuinely needs.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Calendar/Drive live workers</td>
+<td>Push/watch workers like <code>gmail_watch</code>+<code>gmail_history</code></td>
+<td><strong>✅ Resolved (2026-06-02).</strong> Both halves of Gmail's live path now exist for Calendar + Drive. <strong>Poller</strong> (<code>gmail_history</code> analog): <code>google_{calendar,drive}_live_poller</code> lease active, cursor-seeded resources (new <code>last_live_poll_at</code> claim slot, migration 0082) and drain the delta on a short cadence via the shared <code>drain_live</code> → existing fetcher + <code>ingest()</code> (dedups at <code>observations.UNIQUE</code>). <strong>Native push</strong> (<code>gmail_watch</code> analog): <code>events.watch</code>/<code>changes.watch</code> client methods + a <code>watch_scheduler</code> register/renew the channel (state on the per-resource rows, migration 0083), and an always-mounted <code>/webhooks/google_{calendar,drive}/push</code> ingress constant-time-verifies the <code>X-Goog-Channel-Token</code> and drains via the same path. Channels register only when <code>GOOGLE_PUSH_WEBHOOK_BASE</code> is set (they need a domain-verified HTTPS endpoint); the poller is the liveness guarantee regardless. Five compose services + launchers added.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Discord HA single-instance lease</td>
+<td>Worker acquires a Redis lease before connecting (no double-delivery)</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> <code>run_discord_gateway_worker.py</code> now composes the M4.1 lease via <code>lifecycle.py</code>: it connects Redis, acquires the <code>gateway:discord:leader_lock</code> lease through <code>acquire_lease_with_backoff</code> <strong>before</strong> the worker connects, and runs <code>lease_refresh_loop</code> (30s TTL / 10s refresh) alongside the WS loop — on refresh failure (another pod took over) it requests a graceful worker shutdown instead of fighting for the surface. Redis is <strong>mandatory</strong>: a missing <code>REDIS_URL</code> fails loud (exit 2) rather than silently dropping the only double-delivery guard. Lease-acquire timeout / mid-run loss exit <code>3</code> (transient → orchestrator restarts to stand by). New <code>test_launcher_wiring.py</code> pins the composition.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+<tr>
+<td>Discord crash-RESUME</td>
+<td>Session state persisted (<code>gateway_session_state</code>) for restart RESUME</td>
+<td><strong>✅ Resolved (2026-06-02).</strong> The launcher now loads the persisted <code>gateway_session_state</code> on startup (<code>load_session_state</code> → <code>persisted_to_in_memory</code>) and hands the worker both <code>initial_state</code> (so a restart RESUMEs and Discord replays the buffered frames instead of re-IDENTIFYing) and an <code>on_dispatched</code> save hook (<code>make_save_hook</code>) that persists the session cursor after every dispatched frame. Keyed by <code>DISCORD_CLIENT_ID</code>; when it's unset the lease still guards double-delivery but RESUME is disabled with a visible warning. The in-process RESUME test (<code>test_session_resume_after_planned_restart</code>) + the new launcher-wiring test both pass.</td>
+<td style="text-align: center;">✅ resolved</td>
+</tr>
+</tbody>
+</table>
+<h2 id="code_intel">🟠 <code>code_intel</code><a class="headerlink" href="#code_intel" title="Permanent link">&para;</a></h2>
+<p>See <a href="../../architecture/ingest/">Ingest</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Code-graph reachability</td>
+<td>Blast-radius/code-search return real dependents per GitHub signal</td>
+<td>Only the <strong>read</strong> path is live (via <code>github_intel</code>); the index/embed/reindex <strong>write</strong> path has no production caller → <code>code_snapshots</code> never populated → results effectively <code>indexed:false</code></td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Self-update / reindex loop</td>
+<td>Default-branch advances trigger reindex keeping the graph live</td>
+<td>Worker writes <code>code_intel_index_triggers</code>, but <code>reindex</code> runs only when <code>CODE_INTEL_REINDEX_ROOT</code> is set — <strong>absent from the worker's compose env</strong> → triggers accumulate unconsumed</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Code-RAG embedding fill</td>
+<td>Pending <code>code_embeddings</code> get batch-embedded for <code>/code-search</code></td>
+<td>Only caller of <code>fill_pending_embeddings</code> is the demo script → embeddings stay pending forever; code-search empty outside demo</td>
+<td style="text-align: center;">medium</td>
+</tr>
+</tbody>
+</table>
+<h2 id="product-surfaces-substrate-fidelity">🟠 Product surfaces &amp; substrate fidelity<a class="headerlink" href="#product-surfaces-substrate-fidelity" title="Permanent link">&para;</a></h2>
+<p>See <a href="../../architecture/product/">Product</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Expected</th>
+<th>Current status</th>
+<th style="text-align: center;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Query/Ask rendering adapter</td>
+<td><code>HttpRenderingAdapter</code> → <code>/rendering/conversation-turn</code></td>
+<td>Code default is <code>MockRenderingAdapter</code> (stub HTML, no voice rules) unless <code>QUERY_RENDERING_BASE_URL</code> set → Ask silently degrades to mock if env missing</td>
+<td style="text-align: center;">high</td>
+</tr>
+<tr>
+<td>Query/Ask cache adapter</td>
+<td><code>PostgresCacheAdapter</code> persisting to <code>view_ceo_cache</code></td>
+<td>Code default is process-local <code>InMemoryCacheAdapter</code> unless <code>QUERY_CACHE_BACKEND=pg</code> → cache lost on restart, not shared across workers</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td>Confidence calibration (insert path)</td>
+<td><code>apply_calibration</code> reads empirical <code>calibration_offsets</code> (n≥20)</td>
+<td>Active in insert/validate, but offsets table never populated (writer worker undeployed) → <strong>permanently cold-start</strong>; <code>apply_calibration_sync</code> is dead</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td><code>model_edges</code> ↔ legacy arrays</td>
+<td>Stage-2/3 cutover drops <code>supporting_model_ids</code>/<code>contributing_models</code></td>
+<td>Still permanent dual-write (both cycle-checks + cascades run); the <code>edge_drift</code> parity guard is itself unwired</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td>CEO Map (<code>/api/map/*</code>)</td>
+<td>Map populated from live neighborhood/topology data</td>
+<td>Reads <code>model_neighborhoods</code>/<code>topology_events</code> (compat-only) + UMAP cache populated only by <code>topology_sweeper</code> → empty/degraded on tenants without sweeper output</td>
+<td style="text-align: center;">medium</td>
+</tr>
+<tr>
+<td>Spec routes (<code>/v1/spec/*</code>, ledger)</td>
+<td>Derived from substrate (models/decisions/predictions)</td>
+<td>Returns in-code seed payloads mirroring the UI mocks → fixture-backed, tenant-agnostic</td>
+<td style="text-align: center;">medium</td>
+</tr>
+</tbody>
+</table>
+<h2 id="low-severity-findings-64">🟢 Low-severity findings (64)<a class="headerlink" href="#low-severity-findings-64" title="Permanent link">&para;</a></h2>
+<p>Mostly polish, cosmetics, and small inconsistencies. Notable clusters:</p>
+<ul>
+<li><strong>Dead/duplicate code:</strong> a duplicate <code>@app.get('/v1/history')</code> handler (the second
+  is shadowed/unreachable).</li>
+<li><strong>Orphaned helpers:</strong> <code>query/prefetch.py</code> (named caller "Agent-GRT" doesn't exist).</li>
+<li><strong>Schema/migration tidy-ups:</strong> orphan tables from <code>0021</code> (<code>anomaly_thresholds</code>,
+  <code>dedup_keys_seen</code>); <code>topo_dirty_queue</code> unused; tables for undeployed workers
+  (<code>entity_review_queue</code>, <code>signal_memory_fabric</code>, <code>orphan_log</code>).</li>
+</ul>
+<p>These are itemized in <a href="../wiring-gaps/">Wiring gaps</a> and
+<a href="../dead-legacy/">Legacy &amp; test-only</a>.</p>
+<blockquote>
+<p><strong>TODO(human):</strong> Confirm which of the high-severity gaps are blocking vs.
+intentionally staged. The duplicate-migration-prefix deploy blocker was
+resolved on 2026-06-03 by renumbering the colliding files and restoring
+hard-fail checks.</p>
+</blockquote>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.tooltips"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

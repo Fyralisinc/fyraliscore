@@ -4,7 +4,7 @@ Last reviewed from the codebase on 2026-06-03 (re-layered; see [CODEBASE-MANAGEM
 
 Fyralis Core is an organizational intelligence runtime. It ingests company signals, stores them as tenant-scoped observations, reasons over them into a live model of the organization, and renders the result into CEO-facing product surfaces.
 
-The repository is intentionally a monolith at the source level: the FastAPI gateway, domain services, workers, migrations, simulation tooling, and React UI live together. Operationally, the system is split into a gateway process, a small set of polling/background workers, PostgreSQL with pgvector, Ollama for embeddings, external LLM providers for reasoning/rendering, and a Vite/React frontend.
+Core is **backend-only**: the FastAPI gateway, domain services, workers, and migrations live together in this repo. The demo runtime, the simulation authoring harness, the demo data generator, and the React UI moved to a separate overlay repo, **fyraliscore-demo** (GitHub: `Fyralisinc/fyraliscore-demo`); they plug into core through extension seams (Python entry points) and core imports nothing from the overlay. Operationally, the system is split into a gateway process, a small set of polling/background workers, PostgreSQL with pgvector, Ollama for embeddings, and external LLM providers for reasoning/rendering; the overlay adds the Vite/React frontend.
 
 ## 0. Source Layout (Layers)
 
@@ -13,33 +13,36 @@ The repository is intentionally a monolith at the source level: the FastAPI gate
 | Layer | Packages | Role |
 |---|---|---|
 | [services/app](services/app) | gateway, webhooks, realtime | HTTP/WS entrypoints and request dispatch. |
-| [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering, demo | CEO-facing surfaces composed from substrate + reasoning. |
+| [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering | CEO-facing surfaces composed from substrate + reasoning. (The demo runtime moved to the overlay.) |
 | [services/reasoning](services/reasoning) | think, retrieval, sage, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, adaptive synthesis, topology, scoring. |
 | [services/ingest](services/ingest) | ingestion, integrations, synthetic, code_intel, github_intel | Signal intake, third-party integrations, synthetic signals. |
 | [services/domain](services/domain) | models, acts, resources, observations, actors, entity_aliases, bridge, falsifiers | The core persisted substrate. |
 | [services/platform](services/platform) | access_control, execution | Cross-cutting infrastructure (authz, execution routing). |
 | [services/workers](services/workers) | anomaly_processor, entity_resolver, calibration_updater, deadline_resolver, precipitation, edge_drift, topology_sweeper, maintenance, … | Background worker packages. |
 
-`lib/` (`shared`, `llm`, `embeddings`, `topology`, `nexus`, `integrations`) is the shared lower layer and must not import `services` (enforced). The re-layering resolved prior name collisions: `services/reasoning/topology` is now clearly distinct from `lib/topology`, `services/ingest/integrations` from `lib/integrations`, and `services/product/demo` (runtime) from the top-level `demo/` (data generation).
+`lib/` (`shared`, `llm`, `embeddings`, `topology`, `nexus`, `integrations`) is the shared lower layer and must not import `services` (enforced). The re-layering resolved prior name collisions: `services/reasoning/topology` is now clearly distinct from `lib/topology`, and `services/ingest/integrations` from `lib/integrations`. The former `services/product/demo` runtime and the top-level `demo/` data generator both moved to the **fyraliscore-demo** overlay repo; an `import-linter` contract in `pyproject.toml` ("core never imports the demo / simulation overlays") enforces that core stays overlay-free.
 
 ## 1. System Map
 
 ```text
-React/Vite UI (:5173 in dev)
+React/Vite UI (overlay repo: fyraliscore-demo)
   /today, /model, /forecasts, /ledger, /debug
         |
         | HTTP /api/*, WS /stream/*
         v
 FastAPI gateway (:8000)
   auth, rate limits, ingest, CEO view, query, rendering,
-  demo sessions, today/model/spec routes, history, forecasts,
-  recommendations, conversations, debug, simulation
+  today/model/spec routes, history, forecasts,
+  recommendations, conversations, debug
+  (+ overlay-contributed demo/simulation routes when the
+   demo extension is installed)
         |
         | asyncpg
         v
 PostgreSQL 16 + pgvector
   observations, models, acts, resources, queues, cache,
-  audit/reconciliation/topology/demo/prediction tables
+  audit/reconciliation/topology/prediction tables
+  (demo tables are overlay-owned)
         |
         +--> Ollama /api/embeddings (nomic-embed-text, 768 dimensions)
         +--> LLM providers (Anthropic/OpenAI/DeepSeek)
@@ -70,8 +73,9 @@ source event
 | Component | Code | Responsibility |
 |---|---|---|
 | Gateway | [services/app/gateway/main.py](services/app/gateway/main.py) | Main FastAPI app factory, lifespan, middleware registration, exception handlers, and router mounting. |
-| UI | [ui/src/main.tsx](ui/src/main.tsx) | React Router app for `/today`, `/model`, `/forecasts`, `/ledger`, `/debug`. |
-| Database | [db/migrations](db/migrations) | Schema for substrate data, queues, cache, demo, topology, predictions, RLS policies. |
+| Gateway extension seam | [services/app/gateway/extensions.py](services/app/gateway/extensions.py) | Registry for installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. Keeps core overlay-free. |
+| UI | overlay repo `fyraliscore-demo` | React Router app for `/today`, `/model`, `/forecasts`, `/ledger`, `/debug`. No longer in core (was `ui/`). |
+| Database | [db/migrations](db/migrations) | Schema for substrate data, queues, cache, topology, predictions, RLS policies. (The demo tables were dropped from core by `0093_drop_demo_scaffolding.sql`; the overlay re-creates them.) |
 | Execution routing | [services/platform/execution](services/platform/execution) | Deterministic route gate for signals and future query/job entry points. The current rollout records shadow decisions without changing T1 Think enqueue behavior. |
 | Embeddings | [lib/embeddings](lib/embeddings) | Ollama/OpenAI embedder abstraction. Current schemas expect 768-dimensional vectors. |
 | LLM | [lib/llm/provider.py](lib/llm/provider.py) | Structured-output provider abstraction over Anthropic, OpenAI, and DeepSeek, with retry and cost tracking. |
@@ -81,9 +85,9 @@ source event
 | Judgment scoring | [services/reasoning/judgment](services/reasoning/judgment) | Shared leverage scoring for relationship/situation candidates and future attention-ranking surfaces. |
 | Rendering | [services/product/rendering](services/product/rendering) | LLM-backed UI prose generation with voice-rule checks and render cost records. |
 | CEO view cache | [services/product/greeting](services/product/greeting) | Snapshot composition, cache writes, `/view/ceo/home`, and WS streaming. |
-| Demo subsystem | [services/product/demo](services/product/demo) | Demo companies, per-session tenants, snapshots, auth tokens, simulator, SSE. |
+| Demo subsystem | overlay repo `fyraliscore-demo` (`fyralis_demo` package) | Demo companies, per-session tenants, snapshots, auth tokens, simulator, SSE. Moved out of core; mounts back via the gateway extension seam. |
 
-Local/prod compose currently defines `postgres`, `ollama`, `gateway`, `think_worker`, `post_commit_worker`, `topology_sweeper`, `ui`, `nginx-proxy`, and `acme-companion` in [docker-compose.yml](docker-compose.yml). Several worker packages are implemented but are not first-class compose services yet.
+Core [docker-compose.yml](docker-compose.yml) is backend-only: `postgres`, `ollama`, `gateway`, `think_worker`, `post_commit_worker`, `topology_sweeper` (plus the full-pipeline data plane). The `ui`, `nginx-proxy`, and `acme-companion` services moved to the overlay's `docker-compose.demo.yml`. Several worker packages are implemented but are not first-class compose services yet.
 
 ## 3. Cross-Cutting Conventions
 
@@ -126,7 +130,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 | CEO view | `view_ceo_cache`, `view_render_costs`, `viewer_state`, `card_conversations`, `card_exchanges` | Cached product payloads, render costs, per-viewer last-seen state, card probes. |
 | Recommendations | `model_watchers`; recommendation columns on `models`; `decision_deltas` and evidence | Recommendation workflow and Today review surface. |
 | Forecasts | `predictions`, `prediction_signals`, calibration tables | Forecast creation, resolution, and hit-rate/cost views. |
-| Demo | `tenants`, `demo_configs`, `demo_sessions`, `demo_session_costs` | Per-demo tenant provisioning and cost/session accounting. |
+| Tenancy | `tenants` (with `is_demo`) | The org/tenant root. Generic in core — no core logic branches on `is_demo`. The demo-specific tables (`demo_configs`, `demo_sessions`, `demo_session_costs`) and the `tenants.demo_config_id` column were dropped from core by `0093_drop_demo_scaffolding.sql` and are re-created by the overlay's own migration. |
 | Topology and relationship intelligence | `relationship_candidates`, `model_edges`; legacy `model_neighborhoods`, `model_neighborhood_membership`, `topology_events` | Active topology is the latent relationship field that creates pre-truth relationship/situation candidates from impact signatures. Typed edges store accepted pairwise meaning. Legacy accepted-memory topology tables remain for compatibility and map history. |
 | Execution routing/inquiry | `signal_routing_decisions`, `inquiry_sessions`, `inquiry_question_runs`, `inquiry_evidence_items` | Route ledger plus durable adaptive-inquiry sessions, question paths, context packets, and evidence reservoir cards linked to questions, hypotheses, retrieval paths, and sufficiency verdicts. |
 
@@ -138,11 +142,11 @@ Startup through `build_app()`:
 
 1. Configures structlog.
 2. Creates or accepts an asyncpg pool.
-3. Ensures demo seed config exists.
-4. Constructs `ActorRepo`, `EntityAliasRepo`, an optional Ollama client, and `RateLimiter`.
-5. Starts the realtime dispatcher.
-6. Wires the CEO-view stack when `GATEWAY_CEO_VIEW_ENABLED != 0`.
-7. Optionally starts the greeting scheduler.
+3. Constructs `ActorRepo`, `EntityAliasRepo`, an optional Ollama client, and `RateLimiter`.
+4. Starts the realtime dispatcher.
+5. Wires the CEO-view stack when `GATEWAY_CEO_VIEW_ENABLED != 0`.
+6. Optionally starts the greeting scheduler.
+7. Runs the registered gateway-extension startup hooks (when the demo overlay is installed, this is where the Pelago seed and simulation mount happen).
 8. Closes owned resources on lifespan shutdown.
 
 Middleware order:
@@ -153,7 +157,7 @@ Middleware order:
 | `BearerAuthMiddleware` | Validates bearer tokens against `actor_sessions`; injects auth context and sometimes `X-Tenant-Id` for CEO/demo routes. |
 | `RateLimitMiddleware` | Per-tenant/actor token-bucket limiting. |
 
-Important public or auth-bypassed route families include `/healthz`, `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/simulation/*`, `/debug/*` in dev/test, and the public demo picker/session-start endpoints.
+Important **core** public or auth-bypassed route families include `/healthz`, `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/debug/*` in dev/test, `/webhooks/*`, `/finance/*`, and `/slack/*`. Overlay public prefixes (the demo picker/session-start endpoints under `/v1/demo/*` and `/simulation/*`) are not hardcoded in core's `_PUBLIC_PATH_PREFIXES`; they are contributed at runtime by the installed demo extension.
 
 ### Mounted Route Families
 
@@ -170,7 +174,7 @@ Important public or auth-bypassed route families include `/healthz`, `/auth/sess
 | `/view/ceo/home`, `/view/ceo/force-refresh` | greeting router | Cached CEO view. |
 | `/view/ceo/ask`, turn actions | query router | Ask/query orchestration through retrieval + rendering. |
 | `/v1/cards/{id}/conversation`, `/probe` | conversations | Card-scoped follow-up probes. |
-| `/v1/demo/*`, `/v1/recommendations/stream` | demo | Demo lifecycle, simulator, SSE. |
+| `/v1/demo/*` *(overlay-contributed)* | demo overlay extension | Demo lifecycle, simulator, SSE. Mounted only when the `fyraliscore-demo` overlay is installed (via the gateway extension seam); not built into core. Core publishes `recommendation.event` on its process-local event bus and the overlay fans it out to demo SSE. |
 | `/v1/decision-deltas/*`, `/today/*` | decision delta / today routes | Today v2 proposed-change workflow. |
 | `/model/*`, `/map/*`, `/v1/model/*` | model/map/model trace | Model page, topology/map, trace. |
 | `/v1/history`, `/v1/forecasts/*`, spec routes | history/forecast/spec routers | Ledger/forecast/spec surfaces. |
@@ -365,40 +369,17 @@ Strategies live in [services/product/query/strategies](services/product/query/st
 
 ## 10. UI Architecture
 
-The frontend is a Vite + React + TypeScript app in [ui](ui).
-
-Routes in [ui/src/main.tsx](ui/src/main.tsx):
-
-| Route | Page | Backend surface |
-|---|---|---|
-| `/today` | Today briefing/review | `/today`, decision deltas, card probes, ask, streams. |
-| `/model` | Model page v2 | `/model/*`, `/v1/model/*`, map/topology APIs. |
-| `/forecasts` | Forecasts spec page | `/v1/forecasts/*`. |
-| `/ledger` | Ledger/history spec page | `/v1/history`, spec/ledger APIs. |
-| `/debug/*` | Debug inspector | `/debug/*`, dev/test only. |
-
-Legacy routes redirect into the current four-product-surface model: `/structure` and `/map` redirect to `/model`; `/history` redirects to `/ledger`; `/mind`, `/demo`, `/ask` redirect to `/today`.
-
-API clients live under [ui/src/api](ui/src/api). The Vite dev server proxies `/api/*` to gateway `http://localhost:8000` and `/stream/*` to gateway WebSockets unless `USE_MOCK=1`, in which case [ui/mock-server.ts](ui/mock-server.ts) and fixture data serve the app locally.
-
-The UI has a demo-session wrapper, [ui/src/shell/AutoDemoSession.tsx](ui/src/shell/AutoDemoSession.tsx), that provisions or reuses demo auth tokens in local/demo flows. Tokens are stored in local storage and sent as bearer auth by shared API helpers.
+The frontend is a Vite + React + TypeScript app that **moved out of core** into the `fyraliscore-demo` overlay repo (it was the top-level `ui/` directory). It is now an external client of the gateway, consuming `/api/*` over HTTP and `/stream/*` over WebSockets. From core's perspective it is just another bearer-authenticated client; the routes/pages it renders (`/today`, `/model`, `/forecasts`, `/ledger`, `/debug/*`) map onto the same core product surfaces documented above. See the overlay repo for the UI's internal architecture, mock server, and demo-session wrapper.
 
 ## 11. Demo and Simulation
 
-The demo system lets anonymous visitors choose a company, provision a fresh tenant, and interact with realistic seeded data.
+The demo runtime, the simulation authoring harness (formerly the top-level `simulation/`), and the demo data generator all **moved to the `fyraliscore-demo` overlay repo** (the `fyralis_demo` package). Core imports nothing from the overlay; the overlay plugs back in through three extension seams, all defined in core:
 
-Flow:
+- **Gateway extension registry** — [services/app/gateway/extensions.py](services/app/gateway/extensions.py), entry-point group `company_os.gateway_extensions`. The installed demo extension contributes its routers (the public company picker, `/v1/demo/sessions/start` clone-on-demand provisioning, simulator inject, SSE), startup hooks (the Pelago seed — formerly `services/app/gateway/demo_seed.py`, now overlay `fyralis_demo/seed.py` — and the simulation mount), and the demo public-path prefixes.
+- **Process-local event bus** — [lib/shared/events.py](lib/shared/events.py), entry-point group `company_os.event_subscribers`. Core publishes `recommendation.event`; the overlay subscribes and fans out to the demo SSE stream.
+- **Reasoning context-augmentor registry** — [services/reasoning/think/hooks.py](services/reasoning/think/hooks.py), entry-point group `company_os.reasoning_augmentors`. Core's default is strict retrieval; the overlay can register the "full active ledger" augmentation.
 
-1. `GET /v1/demo/companies` lists configured companies.
-2. `POST /v1/demo/sessions/start` creates a new tenant, loads a snapshot, finds/mints the CEO actor, creates an `actor_sessions` token, and returns session metadata.
-3. Authenticated demo calls use that token and tenant.
-4. Reset/end endpoints manage session lifecycle.
-5. Simulator endpoints inject signals and increment demo counters.
-6. `/v1/recommendations/stream` streams recommendation/demo events.
-
-Implementation lives in [services/product/demo/router.py](services/product/demo/router.py), [services/product/demo/sessions.py](services/product/demo/sessions.py), and [services/product/demo/snapshot.py](services/product/demo/snapshot.py). Demo model routing in [services/product/demo/model_routing.py](services/product/demo/model_routing.py) can choose cheaper/faster models per tenant/call kind.
-
-The gateway can also mount simulation helpers and static Slack UI from [simulation](simulation) when `GATEWAY_MOUNT_SIM=1`.
+When the overlay is installed, the end-to-end demo flow is unchanged from a user's view: pick a company → `POST /v1/demo/sessions/start` provisions a fresh tenant, loads a snapshot, mints a CEO `actor_sessions` token, and returns session metadata → authenticated demo calls use that token → simulator endpoints inject signals → recommendation events stream back. The demo's own tables (`demo_configs`, `demo_sessions`, `demo_session_costs`) and the `tenants.demo_config_id` column are now overlay-owned (core dropped them in `0093_drop_demo_scaffolding.sql`); core keeps only the generic `tenants` table with its `is_demo` column.
 
 ## 12. Background Workers
 
@@ -449,7 +430,7 @@ Authorization layers:
 | RLS | Later migrations enable permissive tenant policies on many tables. |
 | Debug routes | Mounted only for `dev`, `staging`, or `test` environment names. |
 
-The current dogfood/demo configuration has deliberate dev shortcuts: default tenant fallback, static CEO tokens, unauthenticated demo picker/session-start, and optional simulation/debug mounts. Shared or production deployments should review those env flags carefully.
+The current dogfood configuration has deliberate dev shortcuts: default tenant fallback, static CEO tokens, and optional debug mounts. (The unauthenticated demo picker/session-start and the simulation mount are overlay-contributed and present only when the demo extension is installed.) Shared or production deployments should review those env flags carefully.
 
 ## 14. Deployment and Local Development
 
@@ -462,13 +443,13 @@ Important env groups:
 | Database/embedding | `DATABASE_URL`, `OLLAMA_URL`, `OLLAMA_EMBED_MODEL`. |
 | LLM | `LLM_PROVIDER`, `LLM_MODEL`, provider API keys, Codex `CODEX_MODEL`/auth file overrides, timeouts. |
 | Tenant identity | `DEFAULT_TENANT_ID`, `COMPANY_OS_CEO_ACTOR_ID`, `DEV_BEARER_TOKEN`, `VIEW_CEO_TOKEN`. |
-| Gateway | `COMPANY_OS_ENV`, `GATEWAY_OWNS_POOL`, `GATEWAY_CEO_VIEW_ENABLED`, `GATEWAY_START_GRT_SCHEDULER`, `GATEWAY_MOUNT_SIM`. |
+| Gateway | `COMPANY_OS_ENV`, `GATEWAY_OWNS_POOL`, `GATEWAY_CEO_VIEW_ENABLED`, `GATEWAY_START_GRT_SCHEDULER`. (The former `GATEWAY_MOUNT_SIM` / `SIMULATION_TENANT_ID` vars were removed from core env templates; the simulation mount is now overlay-contributed.) |
 | Workers | `THINK_*`, `POST_COMMIT_WORKER_POLL_INTERVAL_S`, `GREETING_REFRESH_INTERVAL_SECONDS`. |
 | Execution retrieval | `EXECUTION_RETRIEVAL_ENGINE`, `INQUIRY_MAX_ROUNDS`, `INQUIRY_QUESTIONS_PER_ROUND`, `INQUIRY_EVIDENCE_RESERVOIR_LIMIT`, `INQUIRY_REASONING_PACKET_TOKENS`, `INQUIRY_TEMPORAL_WINDOW_DAYS`, `INQUIRY_SEMANTIC_BUDGET`. |
 | Execution routing | `EXECUTION_ROUTING_SHADOW`, `EXECUTION_ROUTING_ENABLED`. |
 | Debug | `DEBUG_ARTIFACT_CAPTURE`, `LOG_LEVEL`. |
 
-The production-ish compose topology builds the Python gateway image from [Dockerfile](Dockerfile) and the UI from `Dockerfile.ui`, fronts the UI with nginx-proxy/acme, and expects `.env.production` for secrets.
+Core's production-ish compose topology builds the Python gateway image from [Dockerfile](Dockerfile) and expects `.env.production` for secrets. The UI image (`Dockerfile.ui`) and the nginx-proxy/acme TLS edge fronting it moved to the overlay's `docker-compose.demo.yml`.
 
 ## 15. Testing Strategy
 
@@ -481,20 +462,11 @@ pytest -m ollama
 RUN_REAL_LLM=1 pytest -m real_llm
 ```
 
-The suite is organized by service package (`services/*/tests`) plus cross-service tests under [tests](tests). `pyproject.toml` configures pytest, strict markers, async mode, and warning filters. The integration harness installs a test-only tenant auto-registration trigger and reseeds demo company configs after destructive table truncation so older raw-SQL fixtures still exercise the current tenant-FK schema and demo routes do not run against an empty registry. Retrieval quality cases in [services/reasoning/retrieval/tests/test_retrieval_quality_harness.py](services/reasoning/retrieval/tests/test_retrieval_quality_harness.py) assert business-level reachability and exclusions across customer scope, commitment bridges, typed model edges, rejected/archived edge neighbors, decision constraints, actor-only signals, pattern/instance retrieval, mixed-size top-N behavior, recall aggregation, latency smoke limits, context-assembly survival for high-value graph hits, and multi-tenant isolation. The inquiry E2E harness in [tests/retrieval_e2e](tests/retrieval_e2e) seeds blocker, fast-query, recurrence, and cross-tenant distractor scenarios, then asserts route, question path, retrieval actions, evidence reservoir, sufficiency, context packet, compact model prompt, and efficiency metrics; it writes [tests/retrieval_e2e/_last_run.json](tests/retrieval_e2e/_last_run.json) when `RETRIEVAL_E2E_REPORT` is not disabled. Think context-use tests in [services/reasoning/think/tests/test_context_use.py](services/reasoning/think/tests/test_context_use.py), Think quality-report/promotion tests in [services/reasoning/think/tests](services/reasoning/think/tests), quality replay contract tests in [tests/quality_replay](tests/quality_replay), and the opt-in real-LLM eval in [tests/real_llm/tests/test_context_use_outcome.py](tests/real_llm/tests/test_context_use_outcome.py) check whether selected context is actually referenced by generated diffs and whether production records expose actionable quality failures, quality gates, replayable cases, and promotable fixtures; the integration case also runs a full Think transaction, applies an edge derived from selected graph context, and verifies the resulting `context_use` report persisted in `think_runs.ops_applied`. Deterministic Think-safety tests cover the production fallbacks for commitment creation, block transitions, decision revisits, future-plan prediction splitting, cheap `T2:belief_updated` cascade drain, live-LLM same-diff Model placeholder handling, strict-schema no-embedding reconciliation, supersession direction canonicalization, and bounded worker leasing under local in-flight pressure. The real-LLM harness under [tests/real_llm](tests/real_llm) provisions a proper tenant row before materializing scenario fixtures, seeds aliases for foundation customers/goals/commitments/decisions, infers obvious customer-commitment links from scenario titles, then runs DeepSeek-backed Think flows through the same migrations, queues, embeddings, provider cache, validator, and applier path used in production. Scenario 04, [tests/real_llm/scenarios/04_scale_chaos_b2b.yaml](tests/real_llm/scenarios/04_scale_chaos_b2b.yaml), is a large synthetic-customer corpus for memory/retrieval stress: 22 actors, 10 customers, 24 commitments, 8 decisions, and 119 signals across customer risk, aliases, stale replays, billing disputes, legal/security constraints, forecast contradictions, and hidden-connection evidence. Its lightweight structural test guards corpus coherence without services, while [tests/real_llm/tests/test_scale_chaos_ingestion.py](tests/real_llm/tests/test_scale_chaos_ingestion.py) can be opted in with `RUN_SCALE_CHAOS_FULL=1` to inject the entire corpus through production ingestion, embeddings, observation storage, and T1 enqueue without spending LLM tokens. [tests/real_llm/tests/test_entity_resolver_real_llm.py](tests/real_llm/tests/test_entity_resolver_real_llm.py) hits DeepSeek on the actual-content alias path, proving `NBI` can be resolved from a scenario signal that says "Nimbus Bank as NBI" into the existing Nimbus customer resource. [tests/real_llm/tests/test_scale_chaos_end_to_end.py](tests/real_llm/tests/test_scale_chaos_end_to_end.py) is the curated full-chain proof: it ingests that alias signal, resolves it with DeepSeek, injects a six-signal Nimbus crisis slice, runs Think/DeepSeek through validation and apply, then verifies Models/state changes and Bridge revenue/customer-detail surfaces. Scenarios 05 and 06, [tests/real_llm/scenarios/05_industrial_ops.yaml](tests/real_llm/scenarios/05_industrial_ops.yaml) and [tests/real_llm/scenarios/06_fintech_risk.yaml](tests/real_llm/scenarios/06_fintech_risk.yaml), are deep synthetic-company corpora for durability: industrial safety/telemetry/supplier risk and fintech ledger/KYC/fraud/regulatory risk. [tests/real_llm/tests/test_deep_durability_end_to_end.py](tests/real_llm/tests/test_deep_durability_end_to_end.py) can be opted in with `RUN_DURABILITY_E2E=1` to inject every signal in those corpora, resolve actual-content aliases (`TFI`, `MRA`, `ACS`, `BRCU`) with DeepSeek, drain Think, assert no pending or failed runs, verify context-use telemetry, confirm model/state-change creation, and check Bridge customer surfaces. [scripts/run_1000_signal_model_layer_probe.py](scripts/run_1000_signal_model_layer_probe.py) is the heavyweight single-customer scale probe: it materializes one company, injects up to 1000 diverse production-shaped signals across incidents, sales, security, legal, finance, roadmap, telemetry, aliases, contradictions, stale replays, market moves, and noise, optionally drains live DeepSeek-backed Think, then writes `run_summary.json`, `model_layer_summary.md`, `models.jsonl`, `model_edges.jsonl`, and `signal_manifest.jsonl` under `tests/real_llm/reports/runs/` for later graph-shape analysis; the summary now includes graph-health metrics for component shape, isolated Models, soft/actionable edge ratios, duplicate directed edges, self/orphan edges, and exact duplicate natural-language groups. The latest live hardening loop used these harnesses to test real output behavior for proposition-kind diversity, decision revisits, act cascades, customer-health Bridge queries, graph-context edge creation, cross-component customer-crisis chains, and full-corpus durability, then tightened prompt guidance and deterministic safety nets where live behavior was semantically close but operationally incomplete.
+The suite is organized by service package (`services/*/tests`) plus cross-service tests under [tests](tests). `pyproject.toml` configures pytest, strict markers, async mode, and warning filters. The integration harness installs a test-only tenant auto-registration trigger so older raw-SQL fixtures still exercise the current tenant-FK schema. (The demo subsystem and its tables moved to the overlay; core no longer reseeds demo company configs.) Retrieval quality cases in [services/reasoning/retrieval/tests/test_retrieval_quality_harness.py](services/reasoning/retrieval/tests/test_retrieval_quality_harness.py) assert business-level reachability and exclusions across customer scope, commitment bridges, typed model edges, rejected/archived edge neighbors, decision constraints, actor-only signals, pattern/instance retrieval, mixed-size top-N behavior, recall aggregation, latency smoke limits, context-assembly survival for high-value graph hits, and multi-tenant isolation. The inquiry E2E harness in [tests/retrieval_e2e](tests/retrieval_e2e) seeds blocker, fast-query, recurrence, and cross-tenant distractor scenarios, then asserts route, question path, retrieval actions, evidence reservoir, sufficiency, context packet, compact model prompt, and efficiency metrics; it writes [tests/retrieval_e2e/_last_run.json](tests/retrieval_e2e/_last_run.json) when `RETRIEVAL_E2E_REPORT` is not disabled. Think context-use tests in [services/reasoning/think/tests/test_context_use.py](services/reasoning/think/tests/test_context_use.py), Think quality-report/promotion tests in [services/reasoning/think/tests](services/reasoning/think/tests), quality replay contract tests in [tests/quality_replay](tests/quality_replay), and the opt-in real-LLM eval in [tests/real_llm/tests/test_context_use_outcome.py](tests/real_llm/tests/test_context_use_outcome.py) check whether selected context is actually referenced by generated diffs and whether production records expose actionable quality failures, quality gates, replayable cases, and promotable fixtures; the integration case also runs a full Think transaction, applies an edge derived from selected graph context, and verifies the resulting `context_use` report persisted in `think_runs.ops_applied`. Deterministic Think-safety tests cover the production fallbacks for commitment creation, block transitions, decision revisits, future-plan prediction splitting, cheap `T2:belief_updated` cascade drain, live-LLM same-diff Model placeholder handling, strict-schema no-embedding reconciliation, supersession direction canonicalization, and bounded worker leasing under local in-flight pressure. The real-LLM harness under [tests/real_llm](tests/real_llm) provisions a proper tenant row before materializing scenario fixtures, seeds aliases for foundation customers/goals/commitments/decisions, infers obvious customer-commitment links from scenario titles, then runs DeepSeek-backed Think flows through the same migrations, queues, embeddings, provider cache, validator, and applier path used in production. Scenario 04, [tests/real_llm/scenarios/04_scale_chaos_b2b.yaml](tests/real_llm/scenarios/04_scale_chaos_b2b.yaml), is a large synthetic-customer corpus for memory/retrieval stress: 22 actors, 10 customers, 24 commitments, 8 decisions, and 119 signals across customer risk, aliases, stale replays, billing disputes, legal/security constraints, forecast contradictions, and hidden-connection evidence. Its lightweight structural test guards corpus coherence without services, while [tests/real_llm/tests/test_scale_chaos_ingestion.py](tests/real_llm/tests/test_scale_chaos_ingestion.py) can be opted in with `RUN_SCALE_CHAOS_FULL=1` to inject the entire corpus through production ingestion, embeddings, observation storage, and T1 enqueue without spending LLM tokens. [tests/real_llm/tests/test_entity_resolver_real_llm.py](tests/real_llm/tests/test_entity_resolver_real_llm.py) hits DeepSeek on the actual-content alias path, proving `NBI` can be resolved from a scenario signal that says "Nimbus Bank as NBI" into the existing Nimbus customer resource. [tests/real_llm/tests/test_scale_chaos_end_to_end.py](tests/real_llm/tests/test_scale_chaos_end_to_end.py) is the curated full-chain proof: it ingests that alias signal, resolves it with DeepSeek, injects a six-signal Nimbus crisis slice, runs Think/DeepSeek through validation and apply, then verifies Models/state changes and Bridge revenue/customer-detail surfaces. Scenarios 05 and 06, [tests/real_llm/scenarios/05_industrial_ops.yaml](tests/real_llm/scenarios/05_industrial_ops.yaml) and [tests/real_llm/scenarios/06_fintech_risk.yaml](tests/real_llm/scenarios/06_fintech_risk.yaml), are deep synthetic-company corpora for durability: industrial safety/telemetry/supplier risk and fintech ledger/KYC/fraud/regulatory risk. [tests/real_llm/tests/test_deep_durability_end_to_end.py](tests/real_llm/tests/test_deep_durability_end_to_end.py) can be opted in with `RUN_DURABILITY_E2E=1` to inject every signal in those corpora, resolve actual-content aliases (`TFI`, `MRA`, `ACS`, `BRCU`) with DeepSeek, drain Think, assert no pending or failed runs, verify context-use telemetry, confirm model/state-change creation, and check Bridge customer surfaces. [scripts/run_1000_signal_model_layer_probe.py](scripts/run_1000_signal_model_layer_probe.py) is the heavyweight single-customer scale probe: it materializes one company, injects up to 1000 diverse production-shaped signals across incidents, sales, security, legal, finance, roadmap, telemetry, aliases, contradictions, stale replays, market moves, and noise, optionally drains live DeepSeek-backed Think, then writes `run_summary.json`, `model_layer_summary.md`, `models.jsonl`, `model_edges.jsonl`, and `signal_manifest.jsonl` under `tests/real_llm/reports/runs/` for later graph-shape analysis; the summary now includes graph-health metrics for component shape, isolated Models, soft/actionable edge ratios, duplicate directed edges, self/orphan edges, and exact duplicate natural-language groups. The latest live hardening loop used these harnesses to test real output behavior for proposition-kind diversity, decision revisits, act cascades, customer-health Bridge queries, graph-context edge creation, cross-component customer-crisis chains, and full-corpus durability, then tightened prompt guidance and deterministic safety nets where live behavior was semantically close but operationally incomplete.
 
 The inquiry adversarial slice currently covers stale counterevidence, ambiguous ownership, bounded human-validation routing, question-conditioned semantic embedding, and same-actor semantic-noise cases.
 
-UI tests:
-
-```bash
-cd ui
-npm test
-npm run test:e2e
-npm run typecheck
-```
-
-Playwright E2E uses the in-repo mock backend. The UI can be developed against either gateway proxy mode or `USE_MOCK=1` mode.
+UI tests (Vitest unit, Playwright E2E, typecheck) live with the frontend in the `fyraliscore-demo` overlay repo and are run from there; they are no longer part of this repo.
 
 ## 16. How to Extend the System
 
@@ -517,11 +489,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 
 ### Add a New UI Surface
 
-1. Add route in [ui/src/main.tsx](ui/src/main.tsx).
-2. Add API client/types in [ui/src/api](ui/src/api).
-3. Prefer a gateway adapter route over direct table-shaped UI coupling.
-4. Add mock fixture support for `USE_MOCK=1`.
-5. Add Vitest and, if user-facing flow matters, Playwright coverage.
+The UI lives in the `fyraliscore-demo` overlay repo, so a new surface is added there (route + API client/types + mock fixtures + Vitest/Playwright coverage). On the core side, prefer adding a gateway adapter route over direct table-shaped coupling, so the overlay UI consumes a stable `/api/*` surface.
 
 ### Add a New Worker
 
@@ -540,7 +508,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 | Dev auth shortcuts | Static tokens/default tenant are convenient but easy to misconfigure in shared envs. | `.env.example`, gateway public path config. |
 | Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingest/ingestion/handlers/__init__.py](services/ingest/ingestion/handlers/__init__.py). |
 | Spec references are historical | Many docstrings reference older `ARCHITECTURE-FINAL.md`, `SCHEMA-LOCK.md`, and `CONTRACTS.md` files not present in this checkout. | Code and migrations are the effective source of truth. |
-| Mixed old/new UI API surfaces | `/view/ceo/*`, `/today/*`, `/model/*`, spec routes, and legacy redirects coexist. | [ui/src/main.tsx](ui/src/main.tsx), [services/app/gateway](services/app/gateway). |
+| Mixed old/new UI API surfaces | `/view/ceo/*`, `/today/*`, `/model/*`, spec routes, and legacy redirects coexist. | [services/app/gateway](services/app/gateway) (consumed by the overlay UI). |
 | RLS vs app-level tenancy | RLS policies exist, but most correctness still depends on passing tenant IDs through app code. | migrations `0036`-`0041`, repositories. |
 
 ## 18. Source of Truth
@@ -549,8 +517,8 @@ When code and docs disagree, prefer this order:
 
 1. Database migrations in [db/migrations](db/migrations).
 2. Repository/service implementations under [services](services) and [lib](lib).
-3. Route wiring in [services/app/gateway/route_mounts.py](services/app/gateway/route_mounts.py), [services/app/gateway/ceo_view_wiring.py](services/app/gateway/ceo_view_wiring.py), and [ui/src/main.tsx](ui/src/main.tsx).
-4. Tests under [services](services), [tests](tests), and [ui/src/tests](ui/src/tests).
+3. Route wiring in [services/app/gateway/route_mounts.py](services/app/gateway/route_mounts.py) and [services/app/gateway/ceo_view_wiring.py](services/app/gateway/ceo_view_wiring.py) (UI route wiring lives in the overlay repo).
+4. Tests under [services](services) and [tests](tests) (UI tests live in the overlay repo).
 5. Design documents such as this one.
 
 This document is a map, not a lockfile. Update it when new routes, queues, worker deployments, schema families, or UI surfaces become first-class.

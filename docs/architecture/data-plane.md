@@ -11,11 +11,17 @@ full ingestion pipeline) Kafka + an S3-compatible raw tier.
 !!! note "Two deployment shapes"
     Local development per `README.md` runs only **Postgres + Ollama** (Docker)
     plus host processes started by `scripts/dogfood_up.sh` (gateway, Think worker,
-    post-commit worker, topology sweeper, Vite UI). The richer multi-container
+    post-commit worker, topology sweeper). The richer multi-container
     topology below is what `docker-compose.yml` defines for a full/"production-ish"
     deployment. **TODO(human):** confirm which environment `docker-compose.yml`
     actually targets (dogfood / staging / production) and the HA story
     (it ships single-broker Kafka, `replication_factor=1`).
+
+!!! note "UI and TLS edge live in the overlay"
+    Core `docker-compose.yml` is **backend-only** (gateway + workers + data
+    plane). The Vite/React UI container (`Dockerfile.ui`), the `nginx-proxy` /
+    `acme-companion` TLS edge, and the `demo.fyralis.xyz` domain moved to the
+    fyraliscore-demo overlay's `docker-compose.demo.yml`.
 
 ## Data stores
 
@@ -31,8 +37,7 @@ full ingestion pipeline) Kafka + an S3-compatible raw tier.
 
 ```mermaid
 graph TD
-    UI["React UI (:80 / :5173)"]
-    NGINX["nginx-proxy + acme-companion<br/>(HTTPS termination)"]
+    UI["React UI + nginx/acme TLS edge<br/>(overlay docker-compose.demo.yml)"]
     GW["Gateway (uvicorn :8000)<br/>+ in-proc realtime dispatcher & greeting scheduler"]
 
     subgraph ingrestore["Ingestion data plane (full-pipeline mode)"]
@@ -58,7 +63,7 @@ graph TD
     EXT["Source APIs<br/>Slack · GitHub · Discord · Gmail · Jira · …"]
     LLM["LLM providers<br/>Anthropic · OpenAI · DeepSeek"]
 
-    UI --> NGINX --> GW
+    UI -. "HTTP /api · WS /stream (overlay)" .-> GW
     EXT -->|"webhooks / OAuth"| GW
     GW --- PG
     GW --> OLLAMA
@@ -90,14 +95,15 @@ The `docker-compose.yml` stack (init one-shots, infra, then app processes):
 - **Infra:** `postgres`, `ollama`, `kafka`, `minio`, `redis`; **init one-shots:**
   `migrate` (`scripts/docker-migrate.sh`), `kafka-init`
   (`scripts/provision_kafka_topics.py`), `minio-init` (bucket creation).
-- **Ingress:** `gateway` (uvicorn) + nginx-proxy/acme-companion for HTTPS.
+- **Ingress:** `gateway` (uvicorn). The UI container and the nginx-proxy /
+  acme-companion TLS edge are **not** in core compose — they live in the overlay's
+  `docker-compose.demo.yml`.
 - **Backfill/onboarding workers:** `oauth_poller`, `tenant_onboarding`,
   `source_onboarding`, `shard_fetch`, `reconciler`, `periodic_reconciler`.
 - **Ingestion consumer chain:** `normalizer`, `observation_writer`,
   `embedding_worker`, `embedding_backlog`, `dlq_writer`.
 - **Live source workers:** `discord_gateway`, `gmail_watch`, `gmail_history`.
 - **Reasoning:** `think_worker`, `post_commit_worker`, `github_intel_worker`.
-- **UI:** `ui` (`Dockerfile.ui`).
 
 !!! warning "`topology_sweeper` is not a compose service"
     Despite appearing in the runtime diagram above, `topology_sweeper` is **not**
@@ -125,7 +131,7 @@ Kafka + a moto-S3 mock.
 
 ## How services communicate
 
-- **HTTP / WS** — UI ↔ gateway (`/api/*`, `/stream`); external providers → gateway webhooks.
+- **HTTP / WS** — overlay UI ↔ gateway (`/api/*`, `/stream`); external providers → gateway webhooks.
 - **asyncpg** — every Python process talks to PostgreSQL directly (the gateway owns its pool; workers create their own).
 - **Durable DB queues** — `think_trigger_queue`, `model_reeval_queue`,
   `pending_post_commit_actions`, polled with `FOR UPDATE SKIP LOCKED`. This is the

@@ -1,0 +1,2850 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Internal engineering and AI-agent documentation for Fyralis Core, the organizational-intelligence runtime. How the system works and why.">
+      
+      
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../source-isolation/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Canonical architecture - Fyralis Core — Internal Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#canonical-ingestion-architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-header__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Fyralis Core — Internal Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Canonical architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-nav__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Fyralis Core — Internal Docs
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/app/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App — Gateway & Transport
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest — Signal Intake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/reasoning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reasoning — Think Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/domain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Domain — Substrate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/product/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product — CEO Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform — Authz & Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/workers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workers — Background Jobs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lib/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shared Libraries (lib)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-plane/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime & Data Plane
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Codebase status
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Codebase status
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../status/feature-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../status/wiring-gaps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Wiring gaps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../status/dead-legacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy & test-only
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions (ADRs)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions (ADRs)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0000-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-kafka-first-ingestion-default/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 · Kafka-first ingestion default
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subsystem deep-dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Subsystem deep-dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deep-dives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About these docs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Ingestion
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-pipeline-in-one-diagram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The pipeline in one diagram
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-two-paths-and-why-the-full-pipeline-is-primary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. The two paths, and why the full pipeline is primary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The two paths, and why the full pipeline is primary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-gate-is-read-in-two-places-both-default-false" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The gate is read in two places (both default FALSE)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-five-pipeline-stages-source-agnostic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The five pipeline stages (source-agnostic)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The five pipeline stages (source-agnostic)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-contract-objects-what-flows-on-each-topic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The contract objects (what flows on each topic)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-workers-process-topology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The workers / process topology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-per-source-landing-how-each-of-the-8-reaches-observations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Per-source landing — how each of the 8 reaches observations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Per-source landing — how each of the 8 reaches observations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cutover-enabled-webhook-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cutover-enabled webhook sources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#special-webhook-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Special webhook source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#push-pubsub-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Push (Pub/Sub) source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pollbackfill-only-sources-no-webhook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poll/backfill-only sources (no webhook)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-one-intentional-inline-exception" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The one intentional inline exception
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-channel-quick-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source / channel quick reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#channel-trust-tier-handlersinitpy-channel_trust_map" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channel → trust tier (handlers/init.py CHANNEL_TRUST_MAP)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-onboarding-backfill-the-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Onboarding &amp; backfill (the control plane)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-idempotency-dedup-why-replays-are-safe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Idempotency &amp; dedup (why replays are safe)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-source-registry-every-place-a-source-must-be-allow-listed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The source registry (every place a source must be allow-listed)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-pipeline-handlers-kept-but-not-among-the-8-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-pipeline handlers (kept, but NOT among the 8 sources)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proving-it-the-sandbox" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proving it — the sandbox
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../finance-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../finance-api-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance API map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slack-dm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack DM (test env)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2_7" id="__nav_7_2_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sources
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_7_2_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sources
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/slack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/github/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/gmail/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gmail
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/notion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Notion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/google-calendar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Calendar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/google-drive/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Drive
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sources/jira/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jira
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_3" id="__nav_7_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub Intelligence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GitHub Intelligence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec & plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/IMPLEMENTATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Read API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/UI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browser UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-pipeline-in-one-diagram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The pipeline in one diagram
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-two-paths-and-why-the-full-pipeline-is-primary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. The two paths, and why the full pipeline is primary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The two paths, and why the full pipeline is primary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-gate-is-read-in-two-places-both-default-false" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The gate is read in two places (both default FALSE)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-five-pipeline-stages-source-agnostic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The five pipeline stages (source-agnostic)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The five pipeline stages (source-agnostic)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-contract-objects-what-flows-on-each-topic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The contract objects (what flows on each topic)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-workers-process-topology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The workers / process topology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-per-source-landing-how-each-of-the-8-reaches-observations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Per-source landing — how each of the 8 reaches observations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Per-source landing — how each of the 8 reaches observations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cutover-enabled-webhook-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cutover-enabled webhook sources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#special-webhook-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Special webhook source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#push-pubsub-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Push (Pub/Sub) source
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pollbackfill-only-sources-no-webhook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poll/backfill-only sources (no webhook)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-one-intentional-inline-exception" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The one intentional inline exception
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#source-channel-quick-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source / channel quick reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#channel-trust-tier-handlersinitpy-channel_trust_map" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channel → trust tier (handlers/init.py CHANNEL_TRUST_MAP)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-onboarding-backfill-the-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Onboarding &amp; backfill (the control plane)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-idempotency-dedup-why-replays-are-safe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Idempotency &amp; dedup (why replays are safe)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-source-registry-every-place-a-source-must-be-allow-listed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The source registry (every place a source must be allow-listed)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-pipeline-handlers-kept-but-not-among-the-8-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-pipeline handlers (kept, but NOT among the 8 sources)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proving-it-the-sandbox" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proving it — the sandbox
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="canonical-ingestion-architecture">Canonical Ingestion Architecture<a class="headerlink" href="#canonical-ingestion-architecture" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Status:</strong> authoritative as of branch <code>feature/unify-ingestion-pipeline</code>
+(off <code>integration/ingestion-hardening</code>), 2026-05-26.</p>
+<p><strong>Scope:</strong> the 8 production signal sources — <code>slack</code>, <code>discord</code>, <code>notion</code>,
+<code>github</code>, <code>google_drive</code>, <code>google_calendar</code>, <code>gmail</code>, <code>jira</code> — and the one
+pipeline they all share.</p>
+<p><strong>The one-sentence model:</strong> every source's <em>primary</em> path is the <strong>full Kafka
+pipeline</strong> (<code>source → ingestion.raw → normalizer → ingestion.normalized →
+observation_writer → observations</code>); synchronous in-process <code>ingest()</code> is only
+a <strong>fallback</strong> for Kafka-outage degradation (and one deliberate exception:
+Discord <em>interactions</em>, which need a synchronous response shape).</p>
+</blockquote>
+<p>This document contains every diagram needed to explain how ingestion is
+implemented. For an end-to-end prose overview and the source index, see
+<a href="../">README.md</a>. For one integration's specifics, see
+<a href="sources/">sources/</a>.</p>
+<hr />
+<h2 id="1-the-pipeline-in-one-diagram">1. The pipeline in one diagram<a class="headerlink" href="#1-the-pipeline-in-one-diagram" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TD
+    subgraph INGRESS["Ingress (per-source, §4)"]
+        WH["Webhook&lt;br/&gt;slack / github / jira / discord-interactions&lt;br/&gt;gateway /webhooks/{provider}"]
+        NWH["Notion webhook&lt;br/&gt;(special dedicated handler)"]
+        PUSH["Push&lt;br/&gt;Gmail Pub/Sub&lt;br/&gt;/webhooks/gmail/..."]
+        POLL["Poll / Backfill (ALL 8)&lt;br/&gt;ingestion workers (shard_fetch)"]
+    end
+
+    SW["shadow_write_raw()&lt;br/&gt;S3 PutIfAbsent + Kafka produce + flush()"]
+    S3[("S3 / MinIO&lt;br/&gt;fyralis-raw/&amp;lt;env&amp;gt;/&amp;lt;source&amp;gt;/&amp;lt;tenant&amp;gt;/&amp;lt;ymd&amp;gt;/&amp;lt;hash&amp;gt;&lt;br/&gt;(raw body, content-addressed)")]
+    RAW(["Kafka topic&lt;br/&gt;ingestion.raw"])
+
+    NORM["NORMALIZER worker (no DB)&lt;br/&gt;fetch raw from S3 →&lt;br/&gt;resolve_channel() → handler →&lt;br/&gt;NormalizedEnvelope"]
+    NORMT(["Kafka topic&lt;br/&gt;ingestion.normalized"])
+
+    WRITER["OBSERVATION_WRITER worker&lt;br/&gt;per-tenant flag gate;&lt;br/&gt;ingest_from_draft(): actor + entity&lt;br/&gt;resolve, embed, dedup, enqueue T1"]
+
+    OBS[("Postgres&lt;br/&gt;observations")]
+    EMB(["Kafka&lt;br/&gt;ingestion.embedding"])
+    DLQ(["Kafka&lt;br/&gt;ingestion.dlq"])
+    T1[("think_trigger_queue&lt;br/&gt;(T1 trigger → reasoning)")]
+
+    WH --&gt; SW
+    NWH --&gt; SW
+    PUSH --&gt; SW
+    POLL --&gt; SW
+    SW --&gt; S3
+    SW --&gt; RAW
+    RAW --&gt; NORM
+    NORM -. fetch .-&gt; S3
+    NORM --&gt; NORMT
+    NORMT --&gt; WRITER
+    WRITER --&gt; OBS
+    WRITER --&gt; EMB
+    WRITER --&gt; DLQ
+    OBS --&gt; T1</code></pre>
+<p>The synchronous <strong>fallback</strong> collapses all of the above into one call:
+<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/core.py"><code>services/ingest/ingestion/core.py::ingest()</code></a> runs
+handler → resolve → embed → INSERT in a single transaction against Postgres,
+with no Kafka/S3 hop.</p>
+<hr />
+<h2 id="2-the-two-paths-and-why-the-full-pipeline-is-primary">2. The two paths, and why the full pipeline is primary<a class="headerlink" href="#2-the-two-paths-and-why-the-full-pipeline-is-primary" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TD
+    A["Signal arrives at ingress"] --&gt; B{"Cutover-enabled provider&lt;br/&gt;AND flag&lt;br/&gt;ingestion.kafka_path_enabled = TRUE&lt;br/&gt;AND deps wired?"}
+    B -- "Yes" --&gt; C["_attempt_kafka_path()&lt;br/&gt;shadow_write_raw → ingestion.raw"]
+    C --&gt; D{"Kafka / S3 produce&lt;br/&gt;succeeded?"}
+    D -- "Yes" --&gt; E["202 Accepted&lt;br/&gt;(durable on broker, async finish)"]
+    D -- "No (outage)" --&gt; F
+    B -- "No" --&gt; F["Inline ingest()&lt;br/&gt;handler → resolve → embed → INSERT&lt;br/&gt;single Postgres txn"]
+    F --&gt; G["200 / 201&lt;br/&gt;(written before responding)"]
+    E -.-&gt;|"normalizer → writer"| H[("observations")]
+    G --&gt; H
+
+    style C fill:#dff
+    style F fill:#fed</code></pre>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Full pipeline (primary)</strong></th>
+<th><strong>Inline <code>ingest()</code> (fallback)</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trigger</td>
+<td>flag TRUE and deps wired</td>
+<td>flag FALSE, OR Kafka/S3 produce fails, OR direct call</td>
+</tr>
+<tr>
+<td>Webhook response</td>
+<td><code>202 Accepted</code></td>
+<td><code>200/201</code></td>
+</tr>
+<tr>
+<td>Durability</td>
+<td>S3 PutIfAbsent + Kafka idempotent produce + <code>flush()</code></td>
+<td>single Postgres txn</td>
+</tr>
+<tr>
+<td>Observation written by</td>
+<td><code>observation_writer</code> worker</td>
+<td>the caller's process</td>
+</tr>
+<tr>
+<td>Decoupling</td>
+<td>provider ack independent of DB load; bursts absorbed by Kafka</td>
+<td>provider ack blocks on DB</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why the full pipeline is canonical:</strong> it decouples provider acknowledgement
+from observation persistence, so a slow/locked Postgres or an embedding stall
+never makes us drop or 5xx a provider webhook; Kafka absorbs bursts; and one
+normalizer→writer chain gives a single place to apply back-pressure, retries,
+and DLQ. The inline path exists for <strong>graceful degradation</strong>
+(<code>_attempt_kafka_path</code> returns <code>False</code> → caller falls back to <code>ingest()</code>), kept
+correct by <strong>idempotency</strong>: S3 <code>PutIfAbsent</code> on the content hash +
+<code>observations UNIQUE (source_channel, external_id, occurred_at)</code> dedup mean a
+fallback write and a later pipeline replay converge to the same single row.</p>
+<h3 id="the-gate-is-read-in-two-places-both-default-false">The gate is read in two places (both default FALSE)<a class="headerlink" href="#the-gate-is-read-in-two-places-both-default-false" title="Permanent link">&para;</a></h3>
+<p>Flag <code>ingestion.kafka_path_enabled</code>, 30 s TTL cache
+(<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/feature_flags/client.py">feature_flags/client.py</a>):</p>
+<ol>
+<li><strong>Webhook router</strong>
+   (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/router.py">services/app/webhooks/router.py</a>) — decides
+   <em>cutover vs inline</em> at ingress for cutover-enabled providers.</li>
+<li><strong>Observation writer</strong>
+   (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/writers/observation_writer.py">writers/observation_writer.py</a>)
+   — per envelope, decides <em>full write vs shadow-only</em>; a FALSE tenant's
+   normalized envelopes are recorded as shadow events and <strong>not</strong> persisted.</li>
+</ol>
+<blockquote>
+<p><strong>The "0 observations despite a clean run" trap.</strong> A fresh tenant defaults to
+FALSE, so its data-plane envelopes flow through Kafka but the writer drops them
+in shadow mode. Enable per tenant:
+<code>TenantFlags.set_bool(tenant, "ingestion.kafka_path_enabled", True, set_by=...)</code>.
+The sandbox tenant <code>00000000-…-0001</code> already has it TRUE.</p>
+</blockquote>
+<hr />
+<h2 id="3-the-five-pipeline-stages-source-agnostic">3. The five pipeline stages (source-agnostic)<a class="headerlink" href="#3-the-five-pipeline-stages-source-agnostic" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart LR
+    I["1. Ingress&lt;br/&gt;size check · tenant resolve · signature verify"] --&gt;
+    SW["2. Shadow-write raw&lt;br/&gt;build_raw_s3_key · content hash&lt;br/&gt;PutIfAbsent · produce + flush"] --&gt;
+    N["3. Normalize (no DB)&lt;br/&gt;resolve_channel → get_handler&lt;br/&gt;→ ObservationDraft → NormalizedEnvelope"] --&gt;
+    W["4. Write observation&lt;br/&gt;flag-gated _full_mode_write&lt;br/&gt;→ ingest_from_draft&lt;br/&gt;(resolve, embed, dedup, INSERT, T1)"] --&gt;
+    T["5. Async tails&lt;br/&gt;embedding worker / backlog&lt;br/&gt;DLQ writer"]</code></pre>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Entry / file</th>
+<th>Topic in → out</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. Ingress</strong></td>
+<td>webhook <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/router.py">router.py::receive</a>; push <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/gmail_pubsub.py">gmail_pubsub.py</a>; poll/backfill <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/workflows/shard_fetch.py">shard_fetch.py</a></td>
+<td>— → <code>ingestion.raw</code></td>
+<td>size check, tenant resolution, signature verify</td>
+</tr>
+<tr>
+<td><strong>2. Shadow-write raw</strong></td>
+<td><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/shadow_write.py">shadow_write.py::shadow_write_raw</a></td>
+<td>— → <code>ingestion.raw</code> (+ S3)</td>
+<td><code>build_raw_s3_key</code>, content hash, <code>PutIfAbsent</code>, produce <strong>+ flush</strong> at the webhook boundary</td>
+</tr>
+<tr>
+<td><strong>3. Normalize</strong></td>
+<td><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/normalizer/worker.py">normalizer/worker.py</a> (<code>python -m services.ingest.ingestion.normalizer.worker</code>)</td>
+<td><code>ingestion.raw</code> → <code>ingestion.normalized</code></td>
+<td><strong>no DB</strong>; fetch raw from S3 → <code>resolve_channel(source, ingress_kind, meta)</code> → <code>get_handler(channel)</code> → <code>ObservationDraft</code> → <code>NormalizedEnvelope</code></td>
+</tr>
+<tr>
+<td><strong>4. Write observation</strong></td>
+<td><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/writers/observation_writer.py">writers/observation_writer.py</a></td>
+<td><code>ingestion.normalized</code> → Postgres <code>observations</code></td>
+<td>flag-gated <code>_full_mode_write</code> → <code>ingest_from_draft</code> (actor resolve, fast-path entities, embed, dedup, INSERT, enqueue T1)</td>
+</tr>
+<tr>
+<td><strong>5. Async tails</strong></td>
+<td><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/writers/embedding_worker">writers/embedding_worker/</a>, <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/recovery/embedding_backlog">recovery/embedding_backlog/</a>, <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/writers/dlq_writer">writers/dlq_writer/</a>, <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/dlq/publish.py">dlq/publish.py</a></td>
+<td><code>ingestion.embedding</code>, <code>ingestion.dlq</code></td>
+<td>embeds pending rows; persists failures to <code>ingestion_failures</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <strong>inline core</strong> (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/core.py">core.py</a>) is the shared
+implementation of stage-4 logic: <code>ingest()</code> (fallback entry) and the writer's
+<code>_full_mode_write()</code> both converge on <code>ingest_from_draft()</code>, so the observation
+produced is byte-identical regardless of path (verified by
+<code>test_observation_writer_m5.py::test_writer_observations_match_inline_for_same_input</code>).</p>
+<h3 id="the-contract-objects-what-flows-on-each-topic">The contract objects (what flows on each topic)<a class="headerlink" href="#the-contract-objects-what-flows-on-each-topic" title="Permanent link">&para;</a></h3>
+<pre class="mermaid"><code>classDiagram
+    class RawEnvelope {
+        envelope_version: 1
+        source: SourceLiteral
+        tenant_id: UUID
+        raw_s3_key: str
+        content_hash
+        ingress_kind: webhook|gateway|pubsub|backfill|poll
+        idem_hints
+    }
+    class ObservationDraft {
+        source_channel: str
+        content_text: str
+        content: dict
+        occurred_at: datetime
+        trust_tier: TrustTierValue
+        kind: signal|state_change|...
+        source_actor_ref
+        external_id
+        entities_hint
+        raw_payload
+    }
+    class NormalizedEnvelope {
+        wraps ObservationDraft
+        + tenant_id, source, ingress_kind
+    }
+    RawEnvelope --&gt; NormalizedEnvelope : normalizer produces
+    NormalizedEnvelope --&gt; ObservationDraft : carries</code></pre>
+<p><code>SourceLiteral = slack | github | discord | gmail | notion | google_calendar |
+google_drive | jira</code> and <code>IngressKindLiteral = webhook | gateway | pubsub |
+backfill | poll</code>
+(<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/raw_tier/envelope.py">raw_tier/envelope.py</a>).</p>
+<hr />
+<h2 id="4-the-workers-process-topology">4. The workers / process topology<a class="headerlink" href="#4-the-workers-process-topology" title="Permanent link">&para;</a></h2>
+<p>All workers launch from
+<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/docker-compose.yml">docker-compose.yml</a>, one process each.</p>
+<pre class="mermaid"><code>flowchart TB
+    subgraph CTRL["Onboarding / control plane"]
+        OB["oauth_poller"]
+        TON["tenant_onboarding"]
+        SON["source_onboarding"]
+        SF["shard_fetch"]
+        REC["reconciler"]
+        PREC["periodic_reconciler"]
+    end
+    subgraph DP["Data plane (the pipeline)"]
+        GW["gateway (FastAPI ingress)"]
+        DGW["discord_gateway_worker"]
+        NM["normalizer"]
+        OW["observation_writer"]
+        EW["embedding_worker"]
+        EB["embedding_backlog"]
+        DW["dlq_writer"]
+    end
+
+    GW --&gt;|ingestion.raw| NM
+    DGW --&gt;|ingestion.raw| NM
+    SF --&gt;|ingestion.raw| NM
+    NM --&gt;|ingestion.normalized| OW
+    OW --&gt;|ingestion.embedding| EW
+    OW --&gt;|ingestion.dlq| DW
+    EB -.-&gt;|backlog sweep| OW
+    OB --&gt; TON --&gt; SON --&gt; SF</code></pre>
+<p>The control plane drives <strong>onboarding &amp; backfill</strong> (see §6); the data plane is
+the live pipeline. <code>reconciler</code> / <code>periodic_reconciler</code> re-run fetchers to close
+gaps and to provide the <em>live</em> path for poll-only sources (Notion, Calendar,
+Drive).</p>
+<hr />
+<h2 id="5-per-source-landing-how-each-of-the-8-reaches-observations">5. Per-source landing — how each of the 8 reaches <code>observations</code><a class="headerlink" href="#5-per-source-landing-how-each-of-the-8-reaches-observations" title="Permanent link">&para;</a></h2>
+<p>Every source has a <strong>planner → fetcher → handler → reconciler</strong> quartet
+(<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion">services/ingest/ingestion/{planners,fetchers,handlers,reconcilers}/&lt;source&gt;.py</a>)
+for the poll/backfill path, plus its source-specific ingress.
+<strong>Backfill/poll always feeds the full pipeline</strong>: <code>shard_fetch</code> writes the raw
+body to S3 and produces a <code>RawEnvelope</code> to <code>ingestion.raw</code> exactly like a
+webhook — it never calls inline <code>ingest()</code>.</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Ingress["Live ingress by source"]
+        S1["slack · github · jira&lt;br/&gt;webhook (cutover)"]
+        S2["discord&lt;br/&gt;interactions=inline · messages=WSS gateway"]
+        S3["gmail&lt;br/&gt;Pub/Sub push"]
+        S4["notion&lt;br/&gt;webhook (special) + poll"]
+        S5["google_calendar · google_drive&lt;br/&gt;poll only"]
+    end
+    Q["planner → fetcher → handler → reconciler&lt;br/&gt;(backfill + poll, all 8)"]
+    P(["ingestion.raw → … → observations"])
+    S1 --&gt; P
+    S2 --&gt; P
+    S3 --&gt; P
+    S4 --&gt; P
+    S5 --&gt; P
+    Q --&gt; P</code></pre>
+<h3 id="cutover-enabled-webhook-sources">Cutover-enabled webhook sources<a class="headerlink" href="#cutover-enabled-webhook-sources" title="Permanent link">&para;</a></h3>
+<p>In <code>_CUTOVER_ENABLED_PROVIDERS</code> (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/router.py">router.py</a>).
+Flag TRUE → router calls <code>_attempt_kafka_path</code> → <code>202</code>; flag FALSE or Kafka down
+→ inline <code>ingest()</code>.</p>
+<ul>
+<li><strong><a href="../sources/slack/">slack</a></strong> — webhook <code>/webhooks/slack</code> → <code>slack:message</code>; backfill enumerates channels → history.</li>
+<li><strong><a href="../sources/github/">github</a></strong> — webhook <code>/webhooks/github</code> → <code>github:webhook</code> (App installation events handled separately first); backfill per accessible repo.</li>
+<li><strong><a href="../sources/jira/">jira</a></strong> — webhook <code>/webhooks/jira/events</code> (HMAC <code>X-Hub-Signature</code>, GitHub-style) → <code>jira:issue</code>; backfill via <code>POST /rest/api/3/search/jql</code> (classic <code>/search</code> is HTTP 410 since 2025). Live tenant resolution reuses the generic <code>provider_installations</code> edge; backfill uses dedicated <code>jira_*</code> tables.</li>
+</ul>
+<h3 id="special-webhook-source">Special webhook source<a class="headerlink" href="#special-webhook-source" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><a href="../sources/notion/">notion</a></strong> — webhook <code>/webhooks/notion/...</code> <strong>always</strong> routes to the full pipeline via a dedicated handler that fetches the full page and calls <code>shadow_write_raw()</code> directly (using the <code>app.state.notion_data_plane</code> alias, which points at the <em>same</em> producer/S3 instances). There is <strong>no</strong> inline path and <strong>no</strong> <code>_PROVIDER_CHANNEL</code> entry for Notion — the handler short-circuits the router before the inline block. Channel <code>notion:object</code>; a DB row with a status property → <code>kind=state_change</code>. The "live" path is a <strong>poll</strong> via <code>periodic_reconciler</code> (<code>NOTION_POLL_INTERVAL_SECONDS</code>).</li>
+</ul>
+<h3 id="push-pubsub-source">Push (Pub/Sub) source<a class="headerlink" href="#push-pubsub-source" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><a href="../sources/gmail/">gmail</a></strong> — Google Pub/Sub push hits the dedicated endpoint <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/gmail_pubsub.py">gmail_pubsub.py</a> (NOT the generic router), which publishes to <code>ingestion.raw</code> via the canonical <code>app.state.kafka_producer</code>/<code>s3_raw_client</code> (with <code>flush()</code>). Channel <code>gmail:</code>, <code>ingress_kind="pubsub"</code>. Backfill/poll via the History API (<code>ingress_kind="poll"</code>).</li>
+</ul>
+<h3 id="pollbackfill-only-sources-no-webhook">Poll/backfill-only sources (no webhook)<a class="headerlink" href="#pollbackfill-only-sources-no-webhook" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><a href="../sources/google-calendar/">google_calendar</a></strong> — <strong>no push/webhook</strong>. Planner enumerates calendars → fetcher pulls events (incremental via <code>nextSyncToken</code>) → <code>google_calendar:event</code>. Mutable entities use a versioned <code>external_id</code> (<code>gcal:{cal}:{event}:{status}:{start}</code>).</li>
+<li><strong><a href="../sources/google-drive/">google_drive</a></strong> — <strong>no push/webhook</strong>. Planner enumerates My Drive + Shared Drives → fetcher pulls file activity + <strong>content extraction</strong> (Docs/Sheets/Slides/PDF→text) + comments + revisions → all on channel <code>google_drive:file</code>, distinguished by <code>content.object_type</code> + <code>external_id</code> namespace. Incremental via the Changes-API start-page-token captured at backfill <strong>start</strong>. Versioned <code>external_id</code> <code>gdrive:{file_id}:{version}</code>.</li>
+</ul>
+<h3 id="the-one-intentional-inline-exception">The one intentional inline exception<a class="headerlink" href="#the-one-intentional-inline-exception" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><a href="../sources/discord/">discord</a></strong> has three surfaces:</li>
+<li><strong>interactions</strong> (slash commands, webhook type-2) → <code>discord:interaction</code>. <strong>Stays inline by design</strong> — Discord requires a specific synchronous response body (<code>CHANNEL_MESSAGE_WITH_SOURCE</code>), which the async <code>202</code> cutover contract cannot satisfy. <em>Not</em> in <code>_CUTOVER_ENABLED_PROVIDERS</code>.</li>
+<li><strong>gateway messages</strong> (live <code>MESSAGE_CREATE</code> over the bot WSS) → <code>discord_gateway_worker</code> builds a <code>RawEnvelope</code> → full pipeline → <code>discord:message</code>.</li>
+<li><strong>backfill</strong> (channel-window sampling) → full pipeline → <code>discord:message</code>.</li>
+</ul>
+<h3 id="source-channel-quick-reference">Source / channel quick reference<a class="headerlink" href="#source-channel-quick-reference" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Webhook→pipeline</th>
+<th>Push</th>
+<th>Poll/backfill→pipeline</th>
+<th>Primary channel(s)</th>
+<th>Inline-only?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>slack</td>
+<td>✅ cutover</td>
+<td>—</td>
+<td>✅</td>
+<td><code>slack:message</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>github</td>
+<td>✅ cutover</td>
+<td>—</td>
+<td>✅</td>
+<td><code>github:webhook</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>jira</td>
+<td>✅ cutover</td>
+<td>—</td>
+<td>✅</td>
+<td><code>jira:issue</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>notion</td>
+<td>✅ always (special handler)</td>
+<td>—</td>
+<td>✅ (poll)</td>
+<td><code>notion:object</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>gmail</td>
+<td>—</td>
+<td>✅ Pub/Sub</td>
+<td>✅</td>
+<td><code>gmail:</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>google_calendar</td>
+<td>—</td>
+<td>—</td>
+<td>✅</td>
+<td><code>google_calendar:event</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>google_drive</td>
+<td>—</td>
+<td>—</td>
+<td>✅</td>
+<td><code>google_drive:file</code> (+comment/revision)</td>
+<td>no</td>
+</tr>
+<tr>
+<td>discord</td>
+<td>interactions inline (by design)</td>
+<td>—</td>
+<td>✅ messages</td>
+<td><code>discord:message</code>, <code>discord:interaction</code></td>
+<td>interactions only</td>
+</tr>
+</tbody>
+</table>
+<h3 id="channel-trust-tier-handlersinitpy-channel_trust_map">Channel → trust tier (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/__init__.py">handlers/<strong>init</strong>.py</a> <code>CHANNEL_TRUST_MAP</code>)<a class="headerlink" href="#channel-trust-tier-handlersinitpy-channel_trust_map" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>Trust tier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>slack:message</code>, <code>gmail:</code>, <code>discord:message</code>, <code>discord:interaction</code></td>
+<td><code>attested_agent</code></td>
+</tr>
+<tr>
+<td><code>github:webhook</code>, <code>jira:issue</code>, <code>google_calendar:event</code>, <code>google_drive:file</code></td>
+<td><code>authoritative</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-onboarding-backfill-the-control-plane">6. Onboarding &amp; backfill (the control plane)<a class="headerlink" href="#6-onboarding-backfill-the-control-plane" title="Permanent link">&para;</a></h2>
+<p>When an install lands (OAuth callback / DWD provision), an <code>onboarding_triggers</code>
+row is written. That fans out through the control-plane workers into shard-level
+fetches that feed the same pipeline.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Inst as Install (OAuth / DWD)
+    participant OT as onboarding_triggers
+    participant OP as oauth_poller
+    participant TO as tenant_onboarding
+    participant SO as source_onboarding
+    participant SF as shard_fetch
+    participant PIPE as ingestion.raw → … → observations
+    participant REC as (periodic_)reconciler
+
+    Inst-&gt;&gt;OT: INSERT trigger (source, install)
+    OP-&gt;&gt;OT: poll outbox
+    OP-&gt;&gt;TO: start tenant onboarding run
+    TO-&gt;&gt;SO: per-source onboarding run (VALID_SOURCES)
+    SO-&gt;&gt;SF: planner → shards (onboarding_shards)
+    loop per shard
+        SF-&gt;&gt;PIPE: fetcher → RawEnvelope → ingestion.raw
+    end
+    SO--&gt;&gt;OT: run reaches complete / feels_onboarded
+    Note over REC: live path for poll-only sources +&lt;br/&gt;gap closure: re-run fetcher under poll
+    REC-&gt;&gt;PIPE: incremental fetch → ingestion.raw</code></pre>
+<p>State tables: <code>onboarding_runs</code>, <code>source_onboarding_runs</code>, <code>onboarding_shards</code>,
+<code>onboarding_triggers</code> (outbox), <code>workflow_states</code>/<code>signals</code>. The reconciler
+probes live high-water vs cursor and re-runs the fetcher to close gaps; for
+poll-only sources it <em>is</em> the live path.</p>
+<hr />
+<h2 id="7-idempotency-dedup-why-replays-are-safe">7. Idempotency &amp; dedup (why replays are safe)<a class="headerlink" href="#7-idempotency-dedup-why-replays-are-safe" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TD
+    A["Same logical event&lt;br/&gt;arrives twice&lt;br/&gt;(retry, replay, backfill∩live)"] --&gt; B["S3 PutIfAbsent&lt;br/&gt;on content_hash"]
+    B --&gt;|"already present"| C["no duplicate raw object"]
+    A2["Two observations&lt;br/&gt;same identity"] --&gt; D["UNIQUE (source_channel,&lt;br/&gt;external_id, occurred_at)"]
+    D --&gt;|"conflict"| E["INSERT … ON CONFLICT&lt;br/&gt;collapses to one row"]</code></pre>
+<ul>
+<li><strong>Raw tier</strong>: S3 <code>PutIfAbsent</code> keyed on the content hash → identical bodies
+  store once.</li>
+<li><strong>Observation tier</strong>: <code>UNIQUE (source_channel, external_id, occurred_at)</code> →
+  backfill twins, poll twins, and a fallback-then-replay converge to one row.</li>
+<li><strong>Mutable entities</strong> (calendar events, Drive files, Notion DB rows) embed a
+  <em>version</em> in <code>external_id</code> so a genuine change lands a new observation while
+  identical re-fetches dedup. See each source file's "Dedup / external_id"
+  section.</li>
+</ul>
+<hr />
+<h2 id="the-source-registry-every-place-a-source-must-be-allow-listed">The source registry (every place a source must be allow-listed)<a class="headerlink" href="#the-source-registry-every-place-a-source-must-be-allow-listed" title="Permanent link">&para;</a></h2>
+<p>Adding/keeping a source on the pipeline means it must appear in <strong>all</strong> of these
+(missing any one silently drops the source — usually a <code>normalizer_parse_error</code>
+DLQ or a never-started run). All 8 are currently present in all of them:</p>
+<ul>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/raw_tier/envelope.py">raw_tier/envelope.py</a> — <code>SourceLiteral</code> + <code>IngressKindLiteral</code></li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/raw_tier/s3.py">raw_tier/s3.py</a> <code>build_raw_s3_key</code> — source guard</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/normalizer/invariants.py">normalizer/invariants.py</a> <code>_S3_KEY_RE</code> — source alternation</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/core.py">core.py</a> — embedding gate</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/progress/events.py">progress/events.py</a> — <code>Source</code> Literal</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/dlq/publish.py">dlq/publish.py</a> — <code>_VALID_SOURCES</code></li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/workflows/tenant_onboarding.py">workflows/tenant_onboarding.py</a> — <code>VALID_SOURCES</code> + <code>_LOAD_ACTIVE_SOURCES_SQL</code> <code>provider IN (...)</code></li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/workflows/source_onboarding.py">workflows/source_onboarding.py</a> — <code>VALID_SOURCES</code> + install-load SQL</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/workflows/shard_fetch.py">workflows/shard_fetch.py</a> — install-load SQL</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/__init__.py">handlers/<strong>init</strong>.py</a> — handler import (runs <code>@register</code>); trust tier via <code>CHANNEL_TRUST_MAP</code> entry <strong>or</strong> the handler's own <code>setdefault</code> at import (gcal/drive/jira/notion)</li>
+<li>DB migrations — the four M6 source <code>CHECK</code> constraints (the newest migration must carry forward every prior source; see <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/db/migrations/0062_jira.sql">0062_jira.sql</a>)</li>
+<li>Webhook-only sources also need: <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/app/webhooks/router.py">router.py</a> maps (<code>_PROVIDER_TO_SHADOW_SOURCE</code>, <code>_CUTOVER_ENABLED_PROVIDERS</code>, <code>_PROVIDER_CHANNEL</code>) + a <code>tenant_resolver</code> extractor + a <code>signatures/&lt;provider&gt;.py</code> verifier</li>
+</ul>
+<blockquote>
+<p><strong>Migration landmine.</strong> The newest source (added after the last widening
+migration) poisons the prior widening migration's test re-run against a
+populated DB; integration tests must clean up. The four M6 source CHECKs are
+on <code>onboarding_shards</code>, <code>ingestion_failures</code>, <code>onboarding_triggers</code>,
+<code>source_onboarding_runs</code>.</p>
+</blockquote>
+<hr />
+<h2 id="non-pipeline-handlers-kept-but-not-among-the-8-sources">Non-pipeline handlers (kept, but NOT among the 8 sources)<a class="headerlink" href="#non-pipeline-handlers-kept-but-not-among-the-8-sources" title="Permanent link">&para;</a></h2>
+<p>Registered handlers that are <strong>not</strong> production ingestion sources — kept because
+they have live callers/tests, but with <strong>no</strong> planner/fetcher/reconciler and not
+in the source registry:</p>
+<ul>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/email.py">handlers/email.py</a> (<code>email:inbound</code>) and <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/calendar.py">handlers/calendar.py</a> (<code>calendar:sync</code>) — imported only by <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/product/demo/simulator.py">services/product/demo/simulator.py</a> (demo UI routes friendly payloads through inline <code>ingest()</code>). Superseded for real ingestion by <code>gmail</code> / <code>google_calendar</code>.</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/linear.py">handlers/linear.py</a> (<code>linear:webhook</code>) and <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/stripe.py">handlers/stripe.py</a> (<code>stripe:webhook</code>) — registered handlers with signature verifiers + tests, but no source-registry/quartet wiring; not reachable via the production webhook router. Legacy/forward-looking.</li>
+<li><a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/services/ingest/ingestion/handlers/system.py">handlers/system.py</a> (<code>internal:*</code>) — system-originated observations (state_change / anomaly / prediction_resolution), not external ingress.</li>
+</ul>
+<hr />
+<h2 id="proving-it-the-sandbox">Proving it — the sandbox<a class="headerlink" href="#proving-it-the-sandbox" title="Permanent link">&para;</a></h2>
+<p>The real-API sandbox (<a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/docker-compose.sandbox.yml">docker-compose.sandbox.yml</a>
++ <code>.env.sandbox</code>) stands the whole pipeline up locally under <strong>prod guards</strong>
+(<code>FYRALIS_ENV=prod</code>: real signature verification, real OAuth) and exercises the
+<strong>real</strong> Slack / GitHub / Discord / Notion / Jira APIs (the Google suite is out
+of scope there — it needs GCP domain-wide delegation). ngrok tunnels provider
+webhooks to the local gateway; the Discord live path is the bot WSS (no public
+URL).</p>
+<p>Validation oracle: <a href="https://github.com/Fyralisinc/fyraliscore/blob/cannonical/scripts/sandbox_inspect.py">scripts/sandbox_inspect.py</a>
+— pass when, per source, there is an enabled install, an <code>install</code> onboarding
+trigger, runs reaching <code>complete</code>/<code>feels_onboarded</code>, observations on the right
+<code>source_channel</code>, per-channel <code>total == distinct_external_id</code> (cross-path dedup
+holds), embeddings draining, and an empty <code>ingestion_failures</code>. The raw tier in
+MinIO (<code>fyralis-raw/dev/&lt;source&gt;/...</code>) is the durable evidence each source
+produced to <code>ingestion.raw</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.tooltips"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

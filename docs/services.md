@@ -44,10 +44,8 @@ not run; `infra` = data store / container.
 | Query (Ask) | in-gateway | [product](architecture/product.md) | Classify → strategy → retrieve → render a conversation turn. | `POST /view/ceo/ask` → retrieval, rendering | `services/product/query/` |
 | Today / Recommendations / Decision-deltas | in-gateway | [product](architecture/product.md) | Today briefing, action list (act/dismiss/ratify), proposed-change object. | gateway → domain acts/resources, SSE | `services/product/{today,recommendations,decision_deltas}/` |
 | Forecasts / History / Model-trace | in-gateway | [product](architecture/product.md) | Predictions/calibration page, ledger, Model-graph trace. | gateway → predictions, observations, `model_edges` | `services/product/{forecasts,history,model_trace}/` |
-| Demo | in-gateway | [product](architecture/product.md) | Anonymous demo tenancy: picker, session, simulator, SSE. | `/v1/demo/*` → tenants, ingest pipeline, scheduler | `services/product/demo/router.py` |
 | Workers (anomaly, entity, calibration, deadline, precipitation, edge-drift, maintenance) | worker | [workers](architecture/workers.md) | Substrate maintenance + trigger enqueue — **mostly undeployed**. | Postgres polls → `think_trigger_queue`, substrate | `services/workers/*` *(no compose service)* |
 | LLM provider / Embeddings / shared | library | [lib](architecture/lib.md) | Structured-output LLM, embeddings, DB/IDs/errors/types. | all services → SDKs, Ollama, Postgres | `lib/llm`, `lib/embeddings`, `lib/shared` |
-| UI | process | — | React/Vite frontend (`/today`, `/model`, `/forecasts`, `/ledger`, `/debug`). | browser → gateway `/api/*`, `WS /stream` | `Dockerfile.ui` / `ui/` |
 
 ## Data stores & infra
 
@@ -58,7 +56,14 @@ not run; `infra` = data store / container.
 | Redis | infra | Rate-limiter token buckets; optional cache. | compose `redis` |
 | Kafka (KRaft) | infra | Per-source ingestion lanes (`ingestion.{raw,normalized,embedding,dlq}.{source}`). | compose `kafka` |
 | S3 / MinIO | infra | Raw-tier object storage (`fyralis-raw`). | compose `minio` |
-| nginx-proxy + acme-companion | infra | HTTPS termination + Let's Encrypt. | compose `nginx-proxy`, `acme-companion` |
+
+!!! note "Demo and UI moved to the overlay"
+    The **demo** subsystem (company picker, per-session tenants, simulator, SSE)
+    and the **UI** (React/Vite frontend) — plus the nginx-proxy / acme-companion
+    TLS edge — are no longer in core. They live in the separate **fyraliscore-demo**
+    overlay repo. The demo mounts back into the gateway at runtime via the gateway
+    extension seam (`services/app/gateway/extensions.py`, entry-point group
+    `company_os.gateway_extensions`); core imports nothing from the overlay.
 
 > See [Runtime & Data Plane](architecture/data-plane.md) for how these processes
 > communicate (HTTP/WS, asyncpg, durable DB queues, Kafka, `LISTEN/NOTIFY`).

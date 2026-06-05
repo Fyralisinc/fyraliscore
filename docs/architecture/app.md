@@ -20,15 +20,24 @@ owns:
   `Authorization: Bearer <token>` against `actor_sessions`, populates
   `request.state.auth`, and on demo/public routes injects `X-Tenant-Id`) →
   `RateLimitMiddleware` (per-`(tenant, actor)` token bucket; `/ingest/*` gets a
-  higher tier). A fixed set of public path prefixes (`/healthz`, `/metrics`,
-  `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/webhooks/*`,
-  `/integrations/*/callback`, `/v1/demo/*`, `/debug/*`, …) bypass auth.
+  higher tier). A fixed set of **core** public path prefixes (`/healthz`,
+  `/metrics`, `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/webhooks/*`,
+  `/integrations/*/callback`, `/debug/*`, `/finance/*`, `/slack/*`, …) bypass
+  auth. Overlay public prefixes (e.g. `/v1/demo/*`, `/simulation/*`) are **not**
+  hardcoded here — they are contributed at runtime by an installed gateway
+  extension (see below).
 - **Route registration + mounted routers** (`services/app/gateway/route_mounts.py`):
   core/auth/ingest, substrate, contest, dashboard, Sage internal,
-  recommendations, Today core/artifacts, Structure, Map, demo,
-  decision-deltas, forecasts, model/trace, history, webhooks, OAuth
-  integrations, GitHub-intel, and env-gated finance, Slack-DM, simulation, and
-  debug surfaces.
+  recommendations, Today core/artifacts, Structure, Map, decision-deltas,
+  forecasts, model/trace, history, webhooks, OAuth integrations, GitHub-intel,
+  and env-gated finance, Slack-DM, and debug surfaces.
+- **An extension seam** (`services/app/gateway/extensions.py`, entry-point group
+  `company_os.gateway_extensions`): the gateway discovers installed extensions and
+  lets each contribute routers, startup hooks, and additional public path
+  prefixes. The demo/simulation surfaces — including the `/v1/demo/*` routers, the
+  Pelago seed, and the simulation mount — live in the separate **fyraliscore-demo**
+  overlay repo and plug in here; they are present only when that overlay is
+  installed. Core imports nothing from the overlay.
 - **A dependency lifecycle** (`_lifespan`): creates/owns the asyncpg pool
   (codecs for JSON/vector), constructs `GatewayDeps` (repos, optional Ollama
   embedder, rate limiter), wires the CEO-view stack, starts the realtime
@@ -53,7 +62,7 @@ owns:
 
 ```mermaid
 graph TD
-    UI["React UI"]
+    UI["React UI<br/>(external client — overlay repo)"]
     HOOKS["Provider webhooks<br/>Slack · GitHub · Discord · Jira · Notion · Mercury · QuickBooks · Gmail"]
     OAUTH["OAuth providers"]
 
@@ -66,7 +75,7 @@ graph TD
     end
 
     INGEST["services/ingest<br/>ingestion.core.ingest()"]
-    PRODUCT["services/product<br/>greeting · query · today · rendering · demo"]
+    PRODUCT["services/product<br/>greeting · query · today · rendering"]
     DOMAIN["services/domain<br/>repos"]
     PLATFORM["services/platform<br/>can_read / requires_access"]
     PG[("PostgreSQL")]
@@ -101,8 +110,9 @@ graph TD
 | Gateway app factory | `services/app/gateway/main.py` | `build_app()`, lifespan, middleware registration, exception handlers, route mounting call. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
+| Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
-| CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, simulation, Google ingress, and debug mounting. |
+| CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, Google ingress, and debug mounting. |
 | Bearer auth | `services/app/gateway/auth.py` | Token validation against `actor_sessions`, `AuthContext`, session minting. |
 | DB bootstrap | `services/app/gateway/db_bootstrap.py` | asyncpg pool creation + JSON/vector codec registration. |
 | Rate limiter | `services/app/gateway/rate_limit.py` | Per-`(tenant, actor)` token bucket, ingest vs. default tiers. |
@@ -121,12 +131,14 @@ graph TD
 - `POST /ingest/{channel}` — uniform signal ingestion (→ `ingestion.core.ingest()`).
 - `POST /webhooks/{provider}/*` — provider webhook ingress.
 - `GET /metrics` — Prometheus scrape of webhook verification + tenant-resolver counters (public; no Bearer).
-- `GET/POST /view/ceo/*`, `/v1/demo/*`, etc. — product surfaces (see [Product](product.md)).
+- `GET/POST /view/ceo/*`, etc. — core product surfaces (see [Product](product.md)).
+  Overlay surfaces such as `/v1/demo/*` appear only when the demo extension is installed.
 
 ## Dependencies
 
-**Inbound** *(verified)*: the React UI (HTTP + WS), external provider webhooks,
-OAuth callbacks, and test harnesses (`build_app()` with injected deps).
+**Inbound** *(verified)*: the React UI (HTTP + WS) — an external client that now
+lives in the fyraliscore-demo overlay repo — external provider webhooks, OAuth
+callbacks, and test harnesses (`build_app()` with injected deps).
 
 **Outbound** *(verified)*: `services.ingest.ingestion.core.ingest()`; the
 `services.domain` repos; the mounted `services.product` subsystems; PostgreSQL

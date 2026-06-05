@@ -1,0 +1,2339 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Internal engineering and AI-agent documentation for Fyralis Core, the organizational-intelligence runtime. How the system works and why.">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Codebase Category Map - Fyralis Core — Internal Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#codebase-category-map" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-header__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Fyralis Core — Internal Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Codebase Category Map
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Fyralis Core — Internal Docs" class="md-nav__button md-logo" aria-label="Fyralis Core — Internal Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Fyralis Core — Internal Docs
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/app/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App — Gateway & Transport
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest — Signal Intake
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/reasoning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reasoning — Think Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/domain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Domain — Substrate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/product/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product — CEO Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform — Authz & Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/workers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workers — Background Jobs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lib/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shared Libraries (lib)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/data-plane/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime & Data Plane
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Codebase status
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Codebase status
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wiring-gaps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Wiring gaps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dead-legacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy & test-only
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions (ADRs)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions (ADRs)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0000-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-kafka-first-ingestion-default/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 · Kafka-first ingestion default
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subsystem deep-dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Subsystem deep-dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deep-dives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About these docs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Ingestion
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/source-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/finance-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/finance-api-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Finance API map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/slack-dm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack DM (test env)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2_7" id="__nav_7_2_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sources
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_7_2_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sources
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/slack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/github/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/gmail/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gmail
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/notion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Notion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/google-calendar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Calendar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/google-drive/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Drive
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ingestion/sources/jira/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jira
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_3" id="__nav_7_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub Intelligence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GitHub Intelligence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec & plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/IMPLEMENTATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Read API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../github-intelligence/UI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Browser UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classification-legend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Classification Legend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#folder-categories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Folder Categories
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#actual-import-hotspots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Actual Import Hotspots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cleanup-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cleanup Order
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#immediate-candidate-work-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Immediate Candidate Work Items
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="codebase-category-map">Codebase Category Map<a class="headerlink" href="#codebase-category-map" title="Permanent link">&para;</a></h1>
+<p>Generated on 2026-06-03 from the tracked tree on
+<code>trim/remove-deprecated-tenant-resolution</code>.</p>
+<p>Purpose: classify each major folder/file family by what it owns, how it links
+to the rest of Fyralis, and what cleanup/hardening decision it needs. This is a
+working map for trimming, not a permanent architecture spec.</p>
+<p>Ignored local output such as <code>.secrets/</code>, <code>company_os.egg-info/</code>, <code>__pycache__/</code>,
+<code>.pytest_cache/</code>, <code>.ruff_cache/</code>, <code>.venv/</code>, and <code>node_modules/</code> is not product
+code. Keep it ignored and out of cleanup discussions unless a secret or build
+artifact is accidentally tracked.</p>
+<h2 id="runtime-graph">Runtime Graph<a class="headerlink" href="#runtime-graph" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ui/ React app
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  -&gt; services/app/gateway FastAPI routes
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>       -&gt; services/product CEO-facing surfaces
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>       -&gt; services/ingest webhook/connect/install entrypoints
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>       -&gt; services/domain persisted substrate
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>       -&gt; services/reasoning query, retrieval, Think, Sage
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>       -&gt; services/platform cross-cutting access/execution helpers
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>docker-compose.yml and scripts/start.sh
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  -&gt; gateway app
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  -&gt; ingest workflow services, normalizer, writers, backlog workers
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  -&gt; Think worker, post-commit worker, topology sweeper
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  -&gt; live integration pollers/watch schedulers
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  -&gt; Postgres, Kafka, Redis, S3/MinIO, Ollama
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>services/ingest
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>  -&gt; services/domain + db/migrations
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  -&gt; lib/shared, lib/embeddings, lib/integrations
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>services/reasoning
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>  -&gt; services/domain + lib/shared/lib/llm/lib/embeddings
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>  -&gt; services/platform for execution/inquiry support
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>services/product
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>  -&gt; services/domain + services/reasoning + lib/shared
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>  -&gt; gateway routers and ui/src/api clients
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>services/workers
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>  -&gt; services/domain + services/reasoning
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>  -&gt; mostly staged unless launched by scripts/compose
+</code></pre></div>
+<h2 id="classification-legend">Classification Legend<a class="headerlink" href="#classification-legend" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+<th>Cleanup stance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtime</code></td>
+<td>Launched by Docker, scripts, gateway routes, or imported by live paths.</td>
+<td>Harden and test before refactor.</td>
+</tr>
+<tr>
+<td><code>support</code></td>
+<td>Shared library, migration, config, or doc used by runtime.</td>
+<td>Keep, but enforce contracts and ownership.</td>
+</tr>
+<tr>
+<td><code>staged</code></td>
+<td>Implemented and tested, but not launched or not called in production flow.</td>
+<td>Decide wire-up vs. delete.</td>
+</tr>
+<tr>
+<td><code>test-offline</code></td>
+<td>Harness, mock, scenario, benchmark, or diagnostic tool.</td>
+<td>Keep only if named by an active quality workflow.</td>
+</tr>
+<tr>
+<td><code>parked</code></td>
+<td>Large subsystem not part of current Fyralis runtime.</td>
+<td>Isolate, move, or ignore deliberately.</td>
+</tr>
+<tr>
+<td><code>generated-local</code></td>
+<td>Cache, build output, secrets, egg-info, pycache.</td>
+<td>Never track; safe local cleanup.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="folder-categories">Folder Categories<a class="headerlink" href="#folder-categories" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Folder/file family</th>
+<th>Purpose</th>
+<th>Main links</th>
+<th>Status</th>
+<th>Cleanup/hardening notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>services/app/gateway/</code></td>
+<td>FastAPI app factory, middleware, state wiring, route mounting, gateway routers.</td>
+<td>Mounted by <code>Dockerfile</code>, <code>scripts/start.sh</code>, <code>docker-compose.yml</code>; calls product, ingest, domain, reasoning, platform.</td>
+<td><code>runtime</code></td>
+<td><code>main.py</code> is now a small factory. Next gateway cleanup should focus on route contracts, router ownership, and large routers such as <code>spec_routes.py</code>/finance/product-specific routes.</td>
+</tr>
+<tr>
+<td><code>services/app/webhooks/</code></td>
+<td>Public webhook edge, signature verification, tenant/install resolution, source-specific ingress.</td>
+<td>Gateway mounts it; writes into ingestion paths; uses domain/lib/shared.</td>
+<td><code>runtime</code></td>
+<td>Keep resolver path DB-backed. Harden metrics, auth failure taxonomy, replay tests, and per-source install lifecycle.</td>
+</tr>
+<tr>
+<td><code>services/app/realtime/</code></td>
+<td>WebSocket/SSE style realtime dispatch and stream coordination.</td>
+<td>Gateway state and product/demo/recommendation update surfaces.</td>
+<td><code>runtime/support</code></td>
+<td>Verify which streams have real browser consumers; trim unused stream event types only after UI grep.</td>
+</tr>
+<tr>
+<td><code>services/product/</code></td>
+<td>CEO-facing product APIs and composed views. Includes today, query, rendering, greeting, recommendations, forecasts, history, decision deltas, model trace, demo, conversations.</td>
+<td>Gateway routers call this layer; UI clients render it; uses domain/reasoning/lib.</td>
+<td><code>runtime</code> with some <code>staged</code> helpers</td>
+<td>Highest current product hotspot is <code>services/product/today/aggregator.py</code> at about 1900 lines. Split by data source/section after route/API contract stabilization.</td>
+</tr>
+<tr>
+<td><code>services/product/today/</code></td>
+<td>Today page aggregation and triage.</td>
+<td><code>today_core_router.py</code>, UI Today clients/components, domain/product helpers.</td>
+<td><code>runtime</code></td>
+<td>Dead helper files were trimmed. Remaining risk is aggregator size and implicit section contracts.</td>
+</tr>
+<tr>
+<td><code>services/product/query/</code></td>
+<td>Ask/query classification, adapters, caching, retrieval/rendering bridge.</td>
+<td>Gateway/query routes, reasoning retrieval, rendering, lib/llm.</td>
+<td><code>runtime</code> with config-sensitive fallbacks</td>
+<td>Confirm production env uses Postgres cache and real rendering. Otherwise default mocks hide product behavior.</td>
+</tr>
+<tr>
+<td><code>services/product/demo/</code></td>
+<td>Demo sessions, snapshots, simulator, SSE, demo router.</td>
+<td>Gateway demo routes, <code>demo/</code> snapshots, scripts, UI demo paths.</td>
+<td>mixed <code>runtime</code>/<code>test-offline</code></td>
+<td>Budget/model-routing/notification policy helpers have been flagged as test-only in status docs; decide whether demo runtime should enforce them.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/think/</code></td>
+<td>Core Think pipeline, LLM reasoning, validation, applier, post-commit queue, quality gates.</td>
+<td><code>scripts/run_think_worker.py</code>, <code>scripts/run_post_commit_worker.py</code>, product query/recommendations, domain.</td>
+<td><code>runtime</code></td>
+<td>Harden no-op post-commit dispatchers, LLM strict schemas, and quality gates before broad refactors.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/retrieval/</code></td>
+<td>Retrieval assembly, pathways, scoring, second-pass retrieval, maintenance helper.</td>
+<td>Product query/recommendations, Think, lib/embeddings, domain.</td>
+<td><code>runtime</code> plus staged maintenance</td>
+<td>Maintenance is only used by unwired maintenance worker. Keep retrieval core separate from offline upkeep.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/sage/</code></td>
+<td>Sage reader, inquiry traces, affordances, discovery, structural features, model predictions, topology optimizer.</td>
+<td>Gateway internal routes, product query/model trace, domain, recent migrations <code>0084</code>-<code>0092</code>.</td>
+<td><code>runtime/support</code> but newer</td>
+<td>Treat as active recent work. Cleanup should verify every migration-backed table has a reader/writer and a UI/API consumer.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/topology/</code></td>
+<td>Latent topology, UMAP projector, field/anchor logic, eval harness.</td>
+<td>Topology sweeper, map routes, tests, lib/shared.</td>
+<td>mixed <code>runtime</code>/<code>test-offline</code></td>
+<td>Separate offline eval harness from runtime projection code.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/calibration/</code>, <code>contestability/</code>, <code>dynamics/</code>, <code>relationships/</code>, <code>judgment/</code></td>
+<td>Scoring, calibration, contestability, relationship adjudication, trigger/dynamics helpers.</td>
+<td>Think, product recommendations, workers, domain.</td>
+<td>mixed</td>
+<td>Status docs identify calibration anchors and some dynamics paths as under-wired. Decide if they are product-critical or staged science.</td>
+</tr>
+<tr>
+<td><code>services/ingest/ingestion/</code></td>
+<td>Kafka-first ingestion data plane: workflows, raw tier, normalizer, writers, idempotency, rate limits, recovery.</td>
+<td>Compose services launch many modules; webhooks/integrations feed it; domain stores output.</td>
+<td><code>runtime</code></td>
+<td>This is the largest backend package. Keep generated compose and source registry in sync; harden migration fixtures and per-source parity tests.</td>
+</tr>
+<tr>
+<td><code>services/ingest/integrations/</code></td>
+<td>Source clients and OAuth/connect/install flows for Slack, Discord, Gmail, Google Calendar/Drive, GitHub, Jira, Grafana, Mercury, Notion, QuickBooks.</td>
+<td>Gateway connect routes, webhooks, ingestion fetchers/workflows, lib/integrations endpoints.</td>
+<td><code>runtime</code></td>
+<td>Cleanup by source family. Keep credential storage, tenant resolution, webhook registration, and backfill path together per source.</td>
+</tr>
+<tr>
+<td><code>services/ingest/github_intel/</code> and <code>services/ingest/code_intel/</code></td>
+<td>GitHub intelligence worker plus code graph/search indexing.</td>
+<td><code>scripts/run_github_intel_worker.py</code>, product/model/code UI, lib/llm/embeddings.</td>
+<td><code>runtime</code> read path, <code>staged</code> write path</td>
+<td>Existing status docs flag code-intel indexing/embedding fill as not fully wired. Decide whether to wire or remove the code-search promise.</td>
+</tr>
+<tr>
+<td><code>services/ingest/synthetic/</code></td>
+<td>Synthetic fixtures, mock clients, mock servers, scenario generators.</td>
+<td>Tests, simulation, demo harness.</td>
+<td><code>test-offline</code></td>
+<td>Keep as test/sim infrastructure. Do not mix into runtime source clients.</td>
+</tr>
+<tr>
+<td><code>services/domain/</code></td>
+<td>Persisted business substrate: models, acts, actors, resources, observations, bridge queries, entity aliases.</td>
+<td>Ingest writes; reasoning/product/workers read/write; backed by <code>db/migrations</code>.</td>
+<td><code>runtime/support</code></td>
+<td>Known boundary smell: <code>services/domain/models/repo.py</code> imports upward into reasoning/product. Track as a real architecture debt before deleting anything.</td>
+</tr>
+<tr>
+<td><code>services/platform/access_control/</code></td>
+<td>Cross-cutting authorization checks, hierarchy, roles, materialized visibility, audit, route decorator.</td>
+<td>Gateway, dashboard, retrieval, maintenance.</td>
+<td>partly <code>runtime</code>, partly <code>staged</code></td>
+<td>Decorator/audit/materialized refresh are under-applied. Either make declarative access control real or remove the unused wrapper layer.</td>
+</tr>
+<tr>
+<td><code>services/platform/execution/</code></td>
+<td>Execution routing contracts, route decisions, inquiry helper.</td>
+<td>Intended for ingestion/reasoning routing; currently mostly tests/status docs.</td>
+<td><code>staged</code></td>
+<td><code>routing.py</code> has no non-test caller. Best next hardening move is to shadow-wire it or delete the promise.</td>
+</tr>
+<tr>
+<td><code>services/workers/</code></td>
+<td>Background worker packages: anomaly, calibration, deadline, edge drift, entity resolver, maintenance, precipitation, topology sweeper/updater.</td>
+<td>Some scripts/compose launch only topology/Think-adjacent workers; many packages are tests-only.</td>
+<td>mostly <code>staged</code></td>
+<td>Treat as one worker-fabric decision. Either add launchers/compose/env/observability, or trim worker packages plus orphan migrations/tables.</td>
+</tr>
+<tr>
+<td><code>lib/shared/</code></td>
+<td>Shared DB/env/errors/types/ids/trust/migrations/tenant context/registries/secrets.</td>
+<td>Imported by nearly every backend layer.</td>
+<td><code>support</code></td>
+<td>Keep small and dependency-free. It is the stable base layer.</td>
+</tr>
+<tr>
+<td><code>lib/llm/</code></td>
+<td>Provider abstraction, LLM errors/timeouts, backend selection.</td>
+<td>Reasoning/product/demo/scripts. Has documented lazy imports into reasoning schemas.</td>
+<td><code>support</code> with boundary exception</td>
+<td>Keep the exception explicit in import-linter. Avoid adding more services imports here.</td>
+</tr>
+<tr>
+<td><code>lib/embeddings/</code></td>
+<td>Embedding backend interface and Ollama/OpenAI factory.</td>
+<td>Ingest embedding worker, reasoning retrieval/topology, tests.</td>
+<td><code>support</code></td>
+<td>Good shared boundary. Harden provider config and failure taxonomy.</td>
+</tr>
+<tr>
+<td><code>lib/integrations/</code></td>
+<td>Shared endpoint metadata/helpers for integrations.</td>
+<td>Ingest integration clients, tests.</td>
+<td><code>support</code> with boundary-sensitive tests</td>
+<td>Import graph shows service references here; keep production code pure or move endpoint helpers into ingest.</td>
+</tr>
+<tr>
+<td><code>db/migrations/</code> and <code>db/seed/</code></td>
+<td>Database schema and seed data.</td>
+<td>Every runtime layer through domain/lib/shared DB helpers; CI enforces unique numeric prefixes.</td>
+<td><code>support</code></td>
+<td>93 migrations. Cleanup should classify tables by live reader/writer before dropping anything. Migration fixtures currently expose some DB-backed test fragility.</td>
+</tr>
+<tr>
+<td><code>ui/</code></td>
+<td>React/Vite frontend, API clients, pages, components, model/map/today/spec/forecast views, e2e tests.</td>
+<td>Calls gateway HTTP/WebSocket APIs; <code>ui/package.json</code> owns typecheck/test/build.</td>
+<td><code>runtime</code></td>
+<td>API contracts are still mostly handwritten. Generate or validate clients from <code>contracts/http-routes.json</code> or OpenAPI before large UI cleanup.</td>
+</tr>
+<tr>
+<td><code>contracts/http-routes.json</code></td>
+<td>HTTP route inventory/contract artifact.</td>
+<td>Unit tests and future UI contract generation.</td>
+<td><code>support</code></td>
+<td>Make this generated and checked, or retire it. Manual drift is the current risk.</td>
+</tr>
+<tr>
+<td><code>tests/</code>, co-located <code>*/tests/</code>, <code>ui/e2e/</code>, <code>tests/real_llm/</code>, <code>tests/synthesis_harness/</code></td>
+<td>Unit, integration, e2e, real-LLM, quality replay, synthesis harness.</td>
+<td>Exercises all layers; CI runs a conservative subset plus nightly real-LLM.</td>
+<td><code>support/test-offline</code></td>
+<td>Use test reachability to distinguish staged features from dead code. Keep test-only harnesses clearly named.</td>
+</tr>
+<tr>
+<td><code>scripts/</code></td>
+<td>Local/dev/prod launchers, sandbox tools, dogfood scripts, diagnostics, backfills, migration/schema checks.</td>
+<td>Compose, local development, CI, production ops.</td>
+<td>mixed <code>runtime/support/test-offline</code></td>
+<td>Split launchers from diagnostics eventually. Runtime scripts should have env docs and tests; one-off probes can move under a diagnostics namespace.</td>
+</tr>
+<tr>
+<td><code>demo/</code></td>
+<td>Demo data generation and compressed SQL snapshots.</td>
+<td><code>scripts/start.sh</code>, product demo routes, tests.</td>
+<td><code>support/test-offline</code></td>
+<td>Keep if demo tenants are active. Otherwise move snapshots out of core runtime path.</td>
+</tr>
+<tr>
+<td><code>simulation/</code></td>
+<td>Scenario replay, personas, mock Slack UI, simulated workers.</td>
+<td>Tests, demo/dev workflows, synthetic ingest.</td>
+<td><code>test-offline</code></td>
+<td>Useful for product validation, but should not be imported by runtime packages.</td>
+</tr>
+<tr>
+<td><code>.github/</code></td>
+<td>CI, deploy workflows, CODEOWNERS.</td>
+<td>GitHub branch/deploy process.</td>
+<td><code>support</code></td>
+<td>CODEOWNERS is intentionally empty until real teams exist. Branch rules still matter more than docs.</td>
+</tr>
+<tr>
+<td><code>Dockerfile</code>, <code>Dockerfile.ui</code>, <code>docker-compose*.yml</code>, <code>nginx/</code>, <code>nginx-ui.conf</code></td>
+<td>Runtime packaging and local/prod orchestration.</td>
+<td>Gateway, UI, data services, workers.</td>
+<td><code>runtime/support</code></td>
+<td>Compose is the source of truth for what is actually deployed. Use it to settle "staged vs runtime" arguments.</td>
+</tr>
+<tr>
+<td><code>docs/</code>, <code>CODEBASE-ARCHITECTURE.md</code>, <code>CODEBASE-MANAGEMENT.md</code>, <code>FYRALIS.md</code>, <code>CLAUDE.md</code>, <code>CONTRIBUTING.md</code>, <code>mkdocs.yml</code>, <code>docs_hooks.py</code></td>
+<td>Architecture, operations, status, ADRs, project memory, docs site.</td>
+<td>Human process and CI/cleanup planning.</td>
+<td><code>support</code></td>
+<td>Several docs still lag recent trims. Update docs only when they constrain decisions; avoid new status sprawl.</td>
+</tr>
+<tr>
+<td><code>.specify/</code>, <code>specs/</code></td>
+<td>Speckit/spec workflow and historical feature specs.</td>
+<td>Planning docs and source specs, not runtime.</td>
+<td><code>support/test-offline</code></td>
+<td>Keep as planning infrastructure if it is actively used. Otherwise archive old feature specs.</td>
+</tr>
+<tr>
+<td><code>mocks/starscape.html</code>, <code>docs/mockups/map.html</code></td>
+<td>Static mockups/prototypes.</td>
+<td>Human design reference only.</td>
+<td><code>test-offline</code></td>
+<td>Move active mockups near UI stories/tests or archive them.</td>
+</tr>
+<tr>
+<td><code>lsob/</code></td>
+<td>Separate benchmark/evaluator ecosystem with its own packages, pyproject, uv.lock, compose, workflows.</td>
+<td>Mostly self-contained; a few imports touch shared/services namespaces.</td>
+<td><code>parked</code></td>
+<td>Since LSOB is out of scope now, isolate it from active cleanup. Best end-state is separate repo or subtree with explicit ownership.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="actual-import-hotspots">Actual Import Hotspots<a class="headerlink" href="#actual-import-hotspots" title="Permanent link">&para;</a></h2>
+<p>The largest measured internal links are:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Main outbound links</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>services/ingest/ingestion</code></td>
+<td>ingest internals, <code>lib/shared</code>, domain, embeddings</td>
+<td>The data plane is the densest subsystem and should be cleaned by workflow/source slice.</td>
+</tr>
+<tr>
+<td><code>services/ingest/integrations</code></td>
+<td>ingest internals, <code>lib/shared</code>, app/domain</td>
+<td>Source clients and app install flows are interleaved; cleanup by source is safer than broad moves.</td>
+</tr>
+<tr>
+<td><code>services/reasoning/think</code></td>
+<td>reasoning internals, <code>lib/shared</code>, domain, <code>lib/llm</code></td>
+<td>Think is a runtime core; harden before major slicing.</td>
+</tr>
+<tr>
+<td><code>services/app/gateway</code></td>
+<td>app internals, product, ingest, domain, reasoning</td>
+<td>Gateway is now mostly composition, but routers still encode product ownership.</td>
+</tr>
+<tr>
+<td><code>services/domain/models</code></td>
+<td><code>lib/shared</code>, domain, reasoning/product</td>
+<td>This is the key boundary debt to fix when stabilizing architecture.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cleanup-order">Cleanup Order<a class="headerlink" href="#cleanup-order" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Generated/local hygiene</strong>: delete local <code>__pycache__</code>, egg-info, caches when convenient; keep <code>.secrets/</code> ignored and never tracked.</li>
+<li><strong>Docs/status refresh</strong>: update stale root docs after recent trims and this map. Remove contradictory old claims before making new decisions from them.</li>
+<li><strong>Runtime contract pass</strong>: make route inventory/OpenAPI/UI clients mechanically checked. This addresses handwritten API drift.</li>
+<li><strong>Product hotspot pass</strong>: split <code>today/aggregator.py</code> and large product routers by owned section once contracts are pinned.</li>
+<li><strong>Platform decision pass</strong>: either wire <code>access_control</code> decorator/audit/materialized refresh and <code>execution/routing</code>, or delete their staged promises.</li>
+<li><strong>Worker fabric decision pass</strong>: for each <code>services/workers/*</code>, choose deploy, archive, or delete. Then align migrations/tables with that choice.</li>
+<li><strong>Ingest/code-intel pass</strong>: finish or remove the code-intel write/index/embed path so code-search is not a half-promise.</li>
+<li><strong>DB table liveness pass</strong>: table-by-table reader/writer inventory before dropping orphan migrations or tables.</li>
+<li><strong>LSOB separation pass</strong>: once core Fyralis is clean, move or isolate <code>lsob/</code> instead of letting it distort repo ownership and CI.</li>
+</ol>
+<h2 id="immediate-candidate-work-items">Immediate Candidate Work Items<a class="headerlink" href="#immediate-candidate-work-items" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Why now</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generate/check route contracts</td>
+<td>UI/API drift is a known roast point and a high leverage stabilizer.</td>
+<td><code>pytest tests/unit/test_http_contract.py</code>, UI typecheck/build.</td>
+</tr>
+<tr>
+<td>Split Today aggregator by section</td>
+<td>It is now the biggest obvious in-file implementation mass.</td>
+<td>Today route tests plus UI Today smoke/e2e.</td>
+</tr>
+<tr>
+<td>Decide <code>services/platform/execution/routing.py</code></td>
+<td>It is explicitly staged with no runtime caller.</td>
+<td>Add shadow caller and DB test, or remove table/docs/tests.</td>
+</tr>
+<tr>
+<td>Decide worker fabric</td>
+<td>Many "features" are only tests until launchers exist.</td>
+<td>Compose/script inventory plus targeted worker tests.</td>
+</tr>
+<tr>
+<td>Refresh docs/status stale rows</td>
+<td>Cleanup decisions should not rely on stale audit tables.</td>
+<td><code>mkdocs build</code> if docs extra is installed.</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.tooltips"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
