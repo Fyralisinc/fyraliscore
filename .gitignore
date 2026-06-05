@@ -101,3 +101,6 @@ MODEL-THINK-RETRIEVAL-DEEP-DIVE.md
 RETRIEVAL-REVAMP-IMPLEMENTATION-PLAN.md
 V1_PR_PROMPTS.md
 fyralis-sage-synthesis-self-evolution.md
+
+# MkDocs build output
+site/
