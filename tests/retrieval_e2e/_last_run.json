@@ -5,34 +5,35 @@
       "issues": [],
       "metrics": {
         "case": "deep_blocker_context",
-        "elapsed_ms": 49,
+        "elapsed_ms": 77,
         "evidence_count": 6,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1422,
-        "packet_estimated_tokens": 347,
+        "packet_estimated_tokens": 399,
         "pathways_run": [
           "A",
           "B",
           "C",
-          "G"
+          "G",
+          "sage_reader"
         ],
         "persisted_evidence_count": 6,
         "persisted_question_count": 3,
-        "prompt_chars": 13471,
+        "prompt_chars": 13553,
         "question_ids": [
-          "Q_COUNTEREVIDENCE",
-          "Q_CRITICAL_PATH",
-          "Q_OWNER"
+          "Q_CONSTRAINT",
+          "Q_OWNER",
+          "Q_COUNTEREVIDENCE"
         ],
         "question_primitives": [
-          "COUNTEREVIDENCE",
-          "DEPENDENCY",
-          "OWNERSHIP"
+          "CONSTRAINT",
+          "OWNERSHIP",
+          "COUNTEREVIDENCE"
         ],
         "question_rounds": {
+          "Q_CONSTRAINT": 1,
           "Q_COUNTEREVIDENCE": 1,
-          "Q_CRITICAL_PATH": 1,
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 6,
@@ -50,8 +51,8 @@
       "issues": [],
       "metrics": {
         "case": "fast_query_bounded",
-        "elapsed_ms": 30,
-        "evidence_count": 6,
+        "elapsed_ms": 24,
+        "evidence_count": 5,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1422,
@@ -62,11 +63,11 @@
           "C",
           "G"
         ],
-        "prompt_chars": 12558,
+        "prompt_chars": 12333,
         "question_ids": [],
         "question_primitives": [],
         "question_rounds": {},
-        "reservoir_evidence_count": 6,
+        "reservoir_evidence_count": 5,
         "retrieval_action_count": 0,
         "route": "FAST_PATH",
         "semantic_action_count": 0,
@@ -79,29 +80,30 @@
       "issues": [],
       "metrics": {
         "case": "recurrence_question_quality",
-        "elapsed_ms": 29,
+        "elapsed_ms": 70,
         "evidence_count": 4,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 900,
-        "packet_estimated_tokens": 245,
+        "packet_estimated_tokens": 372,
         "pathways_run": [
           "A",
           "B",
           "C",
           "G",
-          "D"
+          "D",
+          "sage_reader"
         ],
-        "prompt_chars": 11246,
+        "prompt_chars": 11363,
         "question_ids": [
-          "Q_COUNTEREVIDENCE",
           "Q_RECURRENCE",
-          "Q_GOAL_IMPACT"
+          "Q_GOAL_IMPACT",
+          "Q_COUNTEREVIDENCE"
         ],
         "question_primitives": [
-          "COUNTEREVIDENCE",
           "RECURRENCE",
-          "GOAL_IMPACT"
+          "GOAL_IMPACT",
+          "COUNTEREVIDENCE"
         ],
         "question_rounds": {
           "Q_COUNTEREVIDENCE": 1,
@@ -118,76 +120,74 @@
     },
     {
       "case": "ambiguous_owner_human_validation",
-      "issues": [
-        "ownership question was not asked",
-        "ownership question did not produce an answer record",
-        "expected human_validation_required, got sufficient_for_reasoning"
-      ],
+      "issues": [],
       "metrics": {
         "case": "ambiguous_owner_human_validation",
-        "elapsed_ms": 46,
+        "elapsed_ms": 62,
         "evidence_count": 4,
         "model_detail_full_rows": 1,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 671,
-        "packet_estimated_tokens": 241,
+        "packet_estimated_tokens": 278,
         "pathways_run": [
           "A",
           "B",
           "C",
-          "G"
+          "G",
+          "sage_reader"
         ],
-        "prompt_chars": 11873,
+        "prompt_chars": 11936,
         "question_ids": [
-          "Q_COUNTEREVIDENCE",
-          "Q_CRITICAL_PATH",
-          "Q_GOAL_IMPACT"
+          "Q_CONSTRAINT",
+          "Q_OWNER",
+          "Q_COUNTEREVIDENCE"
         ],
         "question_primitives": [
-          "COUNTEREVIDENCE",
-          "DEPENDENCY",
-          "GOAL_IMPACT"
+          "CONSTRAINT",
+          "OWNERSHIP",
+          "COUNTEREVIDENCE"
         ],
         "question_rounds": {
+          "Q_CONSTRAINT": 1,
           "Q_COUNTEREVIDENCE": 1,
-          "Q_CRITICAL_PATH": 1,
-          "Q_GOAL_IMPACT": 1
+          "Q_OWNER": 1
         },
         "reservoir_evidence_count": 4,
-        "retrieval_action_count": 9,
+        "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
-        "sufficiency": "sufficient_for_reasoning"
+        "sufficiency": "human_validation_required"
       },
-      "passed": false
+      "passed": true
     },
     {
       "case": "stale_counterevidence_guard",
       "issues": [],
       "metrics": {
         "case": "stale_counterevidence_guard",
-        "elapsed_ms": 46,
+        "elapsed_ms": 62,
         "evidence_count": 5,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1129,
-        "packet_estimated_tokens": 354,
+        "packet_estimated_tokens": 407,
         "pathways_run": [
           "A",
           "B",
           "C",
-          "G"
+          "G",
+          "sage_reader"
         ],
-        "prompt_chars": 12965,
+        "prompt_chars": 12979,
         "question_ids": [
+          "Q_OWNER",
           "Q_COUNTEREVIDENCE",
-          "Q_CRITICAL_PATH",
-          "Q_OWNER"
+          "Q_CRITICAL_PATH"
         ],
         "question_primitives": [
+          "OWNERSHIP",
           "COUNTEREVIDENCE",
-          "DEPENDENCY",
-          "OWNERSHIP"
+          "DEPENDENCY"
         ],
         "question_rounds": {
           "Q_COUNTEREVIDENCE": 1,
@@ -207,8 +207,8 @@
       "issues": [],
       "metrics": {
         "case": "human_validation_bounded",
-        "elapsed_ms": 20,
-        "evidence_count": 6,
+        "elapsed_ms": 21,
+        "evidence_count": 5,
         "model_detail_full_rows": 2,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1117,
@@ -219,11 +219,11 @@
           "C",
           "G"
         ],
-        "prompt_chars": 12388,
+        "prompt_chars": 12163,
         "question_ids": [],
         "question_primitives": [],
         "question_rounds": {},
-        "reservoir_evidence_count": 6,
+        "reservoir_evidence_count": 5,
         "retrieval_action_count": 0,
         "route": "HUMAN_VALIDATION_PATH",
         "semantic_action_count": 0,
@@ -236,33 +236,34 @@
       "issues": [],
       "metrics": {
         "case": "question_conditioned_semantic_embedding",
-        "elapsed_ms": 43,
+        "elapsed_ms": 59,
         "embedder_query_count": 3,
         "evidence_count": 7,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1477,
-        "packet_estimated_tokens": 412,
+        "packet_estimated_tokens": 484,
         "pathways_run": [
           "A",
           "B",
           "C",
-          "G"
+          "G",
+          "sage_reader"
         ],
-        "prompt_chars": 13669,
+        "prompt_chars": 13751,
         "question_ids": [
-          "Q_COUNTEREVIDENCE",
-          "Q_CRITICAL_PATH",
-          "Q_OWNER"
+          "Q_CONSTRAINT",
+          "Q_OWNER",
+          "Q_COUNTEREVIDENCE"
         ],
         "question_primitives": [
-          "COUNTEREVIDENCE",
-          "DEPENDENCY",
-          "OWNERSHIP"
+          "CONSTRAINT",
+          "OWNERSHIP",
+          "COUNTEREVIDENCE"
         ],
         "question_rounds": {
+          "Q_CONSTRAINT": 1,
           "Q_COUNTEREVIDENCE": 1,
-          "Q_CRITICAL_PATH": 1,
           "Q_OWNER": 1
         },
         "reservoir_evidence_count": 7,
@@ -278,35 +279,36 @@
       "issues": [],
       "metrics": {
         "case": "semantic_noise_distractor_guard",
-        "elapsed_ms": 44,
-        "evidence_count": 16,
+        "elapsed_ms": 90,
+        "evidence_count": 7,
         "model_detail_full_rows": 3,
         "model_detail_manifest_rows": 0,
         "model_section_chars": 1438,
-        "packet_estimated_tokens": 347,
+        "packet_estimated_tokens": 399,
         "pathways_run": [
           "A",
           "B",
           "C",
-          "G"
+          "G",
+          "sage_reader"
         ],
-        "prompt_chars": 14508,
+        "prompt_chars": 13773,
         "question_ids": [
-          "Q_COUNTEREVIDENCE",
-          "Q_CRITICAL_PATH",
-          "Q_OWNER"
+          "Q_CONSTRAINT",
+          "Q_OWNER",
+          "Q_COUNTEREVIDENCE"
         ],
         "question_primitives": [
-          "COUNTEREVIDENCE",
-          "DEPENDENCY",
-          "OWNERSHIP"
+          "CONSTRAINT",
+          "OWNERSHIP",
+          "COUNTEREVIDENCE"
         ],
         "question_rounds": {
+          "Q_CONSTRAINT": 1,
           "Q_COUNTEREVIDENCE": 1,
-          "Q_CRITICAL_PATH": 1,
           "Q_OWNER": 1
         },
-        "reservoir_evidence_count": 16,
+        "reservoir_evidence_count": 7,
         "retrieval_action_count": 8,
         "route": "DEEP_INQUIRY_PATH",
         "semantic_action_count": 3,
@@ -315,9 +317,9 @@
       "passed": true
     }
   ],
-  "generated_at": "2026-06-01T09:08:33.481898+00:00",
+  "generated_at": "2026-06-04T20:16:44.213510+00:00",
   "summary": {
-    "passed": 7,
+    "passed": 8,
     "total": 8
   }
 }
