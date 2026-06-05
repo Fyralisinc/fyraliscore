@@ -23,18 +23,18 @@ from typing import Any
 
 import httpx
 
-from lib.shared.errors import CompanyOSError
+from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
 
 
 EMBEDDING_DIM = 768  # SCHEMA-LOCK.md S1.1 / S2.1 / S6.1 — VECTOR(768)
 DEFAULT_MODEL = "nomic-embed-text"
 
 
-class OllamaError(CompanyOSError):
+class OllamaError(EmbedderError):
     default_code = "ollama_error"
 
 
-class OllamaDimensionMismatch(OllamaError):
+class OllamaDimensionMismatch(EmbedderDimensionMismatch, OllamaError):
     default_code = "ollama_dimension_mismatch"
 
 

@@ -467,6 +467,9 @@ async def test_pubsub_generator_reuses_existing_install(
         "VALUES ($1, $2, $3, $4, $5, 'active')",
         uuid7(), pre_tenant, pre_install, email, "1000",
     )
+    tenant_count_before_generator = int(
+        await fresh_db.fetchval("SELECT count(*) FROM tenants")
+    )
 
     app = _build_app(fresh_db)
     client = MockGmailClient(
@@ -486,8 +489,13 @@ async def test_pubsub_generator_reuses_existing_install(
         assert result.http_status == 200, result.response_body
 
     # No NEW tenant was created; the observation lands under pre_tenant.
-    n_tenants = int(await fresh_db.fetchval("SELECT count(*) FROM tenants"))
-    assert n_tenants == 1, "generator must not create a second tenant"
+    tenant_count_after_generator = int(
+        await fresh_db.fetchval("SELECT count(*) FROM tenants")
+    )
+    assert tenant_count_after_generator == tenant_count_before_generator, (
+        "generator must not create a tenant when a mailbox watch already "
+        "exists"
+    )
     count = int(await fresh_db.fetchval(
         "SELECT count(*) FROM observations WHERE tenant_id = $1",
         pre_tenant,

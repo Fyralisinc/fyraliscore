@@ -136,6 +136,7 @@ markers = [
     "integration: requires live Postgres (DATABASE_URL)",
     "ollama: requires live Ollama (OLLAMA_URL)",
     "slow: slow test (> 1s)",
+    "subprocess_e2e: multi-process workflow end-to-end test; run outside the default PR pytest job",
     "real_llm: real-LLM test (requires configured provider auth, runs only with RUN_REAL_LLM=1 or -m real_llm)",
     "requires_infra: requires external infrastructure not provisioned in M1 (pgbouncer, Kafka broker, Temporal cluster, real Redis, S3/R2 endpoint). Skipped unless the environment provides the named service.",
     "requires_docker: requires a running Docker daemon and (typically) the M2 dev compose stack (docker-compose.dev.yml — Kafka, moto-s3). Skipped cleanly when Docker isn't available.",

@@ -11,6 +11,7 @@ state immediately after US1 ships and before US2 lands.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import time
 from uuid import UUID, uuid4
@@ -30,6 +31,12 @@ from services.app.webhooks.tests.conftest import slack_sign
 
 
 pytestmark = pytest.mark.integration
+
+
+def _attach_secret_store(app, store: FernetSecretStore) -> None:
+    runtime = app.state.integration_runtime
+    app.state.integration_runtime = replace(runtime, secret_store=store)
+    app.state.secret_store = store
 
 
 @pytest.fixture
@@ -88,7 +95,7 @@ async def test_signed_slack_verifies_via_db_secret_ref(
         rate_limiter=RateLimiter(),
         configure_logging=False,
     )
-    app.state.secret_store = store
+    _attach_secret_store(app, store)
 
     # US1-era tenant resolution still uses the env-var path; US2
     # replaces this with the DB resolver. Until then, map team_id →
@@ -172,8 +179,9 @@ async def test_db_ref_unresolvable_returns_401_no_env_leak(
         rate_limiter=RateLimiter(),
         configure_logging=False,
     )
-    app.state.secret_store = FernetSecretStore(
-        fresh_db, master_kek=Fernet.generate_key(),
+    _attach_secret_store(
+        app,
+        FernetSecretStore(fresh_db, master_kek=Fernet.generate_key()),
     )
     monkeypatch.setenv(
         f"WEBHOOK_TENANT_SLACK_{team_id.upper()}", str(_tenant),

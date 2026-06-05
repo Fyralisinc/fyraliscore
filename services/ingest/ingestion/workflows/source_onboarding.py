@@ -432,6 +432,13 @@ SELECT id, onboarding_run_id, tenant_id, source, shard_kind, state
  WHERE id = $1
 """
 
+_LOCK_SOURCE_RUN_FOR_ROLLUP_SQL = """
+SELECT onboarding_run_id
+  FROM source_onboarding_runs
+ WHERE onboarding_run_id = $1 AND source = $2
+ FOR UPDATE
+"""
+
 _MARK_SHARD_DONE_SQL = """
 UPDATE onboarding_shards
    SET state = 'done', completed_at = now()
@@ -575,6 +582,12 @@ async def _load_shard(
     conn: asyncpg.Connection, shard_id: UUID,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_SHARD_SQL, shard_id)
+
+
+async def _lock_source_run_for_rollup(
+    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+) -> None:
+    await conn.fetchval(_LOCK_SOURCE_RUN_FOR_ROLLUP_SQL, run_id, source)
 
 
 async def _count_unfinished_shards(
@@ -890,6 +903,14 @@ class SourceOnboarding(LongRunningService):
 
         run_id = shard["onboarding_run_id"]
         source = shard["source"]
+
+        # Multiple SourceOnboarding replicas can drain sibling shard
+        # completion signals concurrently. Serialize the parent roll-up
+        # so the unfinished-shard count always observes earlier sibling
+        # completions before deciding whether to emit the handoff.
+        await _lock_source_run_for_rollup(
+            conn, run_id=run_id, source=source,
+        )
 
         if status == "failed":
             await conn.execute(

@@ -176,12 +176,18 @@ async def test_readings_cascade_when_model_deleted(tx_conn: asyncpg.Connection):
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_rls_blocks_cross_tenant_select(db_pool: asyncpg.Pool):
+async def test_rls_blocks_cross_tenant_select(
+    db_pool: asyncpg.Pool,
+    rls_app_pool: asyncpg.Pool,
+):
     from pgvector.asyncpg import register_vector
 
     tenant_a = uuid7()
     tenant_b = uuid7()
-    async with db_pool.acquire() as conn:
+    # `db_pool` above ensures migrations/test triggers are installed. Use the
+    # non-BYPASSRLS pool for the actual RLS assertions; superuser/owner roles
+    # see through policies even with FORCE ROW LEVEL SECURITY.
+    async with rls_app_pool.acquire() as conn:
         try:
             await register_vector(conn)
         except Exception:
@@ -201,7 +207,7 @@ async def test_rls_blocks_cross_tenant_select(db_pool: asyncpg.Pool):
                 conn, model_id=mid_b, tenant=tenant_b, reading_kind="contest",
             )
 
-    async with tenant_transaction(tenant_a, pool=db_pool) as tctx:
+    async with tenant_transaction(tenant_a, pool=rls_app_pool) as tctx:
         rows = await tctx.fetch(
             "SELECT reading_kind FROM model_signal_readings WHERE model_id = $1",
             mid_a,

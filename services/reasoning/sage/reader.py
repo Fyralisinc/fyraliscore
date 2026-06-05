@@ -656,10 +656,14 @@ async def _load_observations(
         tenant_id,
         ids,
     )
-    by_id = {
-        row["id"]: ObservationRow.model_validate(dict(row))
-        for row in rows
-    }
+    by_id = {}
+    for row in rows:
+        raw = dict(row)
+        raw["content"] = _coerce_obj(raw.get("content"))
+        raw["entities_mentioned"] = _coerce_list(
+            raw.get("entities_mentioned")
+        )
+        by_id[row["id"]] = ObservationRow.model_validate(raw)
     return [by_id[oid] for oid in ids if oid in by_id]
 
 
@@ -966,6 +970,23 @@ def _coerce_obj(value: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _coerce_list(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    return []
 
 
 def _negative_memory_model_ids(value: Any) -> set[UUID]:

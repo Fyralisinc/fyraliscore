@@ -173,46 +173,47 @@ async def embed_and_update(
     # observations table has FORCE ROW LEVEL SECURITY, so without
     # `app.current_tenant` the SELECT/UPDATE see no rows.
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.current_tenant', $1, true)",
-            str(env.tenant_id),
-        )
-
-        row = await conn.fetchrow(
-            _SELECT_OBSERVATION_SQL, env.observation_id,
-        )
-        if row is None:
-            _bump("embedding_worker.observation_missing")
-            log.info(
-                "embedding_worker.observation_missing",
-                extra={
-                    "tenant_id": str(env.tenant_id),
-                    "observation_id": str(env.observation_id),
-                },
-            )
-            return "observation_missing"
-
-        if not row["embedding_pending"]:
-            # Inline already filled in the embedding (the publish
-            # happens unconditionally; the worker filters here so
-            # the inline path retains source-of-truth semantics).
-            _bump("embedding_worker.guard_no_op")
-            return "guard_no_op"
-
-        content_text = row["content_text"]
-        if not content_text:
-            # Empty content_text — nothing to embed. Clear the
-            # pending flag so we don't keep re-processing.
+        async with conn.transaction():
             await conn.execute(
-                """
-                UPDATE observations
-                   SET embedding_pending = FALSE
-                 WHERE id = $1 AND embedding_pending = TRUE
-                """,
-                env.observation_id,
+                "SELECT set_config('app.current_tenant', $1::text, true)",
+                str(env.tenant_id),
             )
-            _bump("embedding_worker.guard_no_op")
-            return "guard_no_op"
+
+            row = await conn.fetchrow(
+                _SELECT_OBSERVATION_SQL, env.observation_id,
+            )
+            if row is None:
+                _bump("embedding_worker.observation_missing")
+                log.info(
+                    "embedding_worker.observation_missing",
+                    extra={
+                        "tenant_id": str(env.tenant_id),
+                        "observation_id": str(env.observation_id),
+                    },
+                )
+                return "observation_missing"
+
+            if not row["embedding_pending"]:
+                # Inline already filled in the embedding (the publish
+                # happens unconditionally; the worker filters here so
+                # the inline path retains source-of-truth semantics).
+                _bump("embedding_worker.guard_no_op")
+                return "guard_no_op"
+
+            content_text = row["content_text"]
+            if not content_text:
+                # Empty content_text — nothing to embed. Clear the
+                # pending flag so we don't keep re-processing.
+                await conn.execute(
+                    """
+                    UPDATE observations
+                       SET embedding_pending = FALSE
+                     WHERE id = $1 AND embedding_pending = TRUE
+                    """,
+                    env.observation_id,
+                )
+                _bump("embedding_worker.guard_no_op")
+                return "guard_no_op"
 
     # Embedder call OUTSIDE the conn-acquired block so we don't hold
     # the pool slot during a remote network call. EmbedderError covers
@@ -249,15 +250,18 @@ async def embed_and_update(
 
     # Write the embedding under the LLD §5.4 guard.
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.current_tenant', $1, true)",
-            str(env.tenant_id),
-        )
-        # pgvector accepts the string form "[f1,f2,...]" for vector
-        # literals; encoding here keeps the call site agnostic of
-        # whether pgvector's Python adapter is registered.
-        vec_str = "[" + ",".join(repr(float(x)) for x in vec) + "]"
-        result = await conn.execute(_UPDATE_SQL, vec_str, env.observation_id)
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1::text, true)",
+                str(env.tenant_id),
+            )
+            # pgvector accepts the string form "[f1,f2,...]" for vector
+            # literals; encoding here keeps the call site agnostic of
+            # whether pgvector's Python adapter is registered.
+            vec_str = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+            result = await conn.execute(
+                _UPDATE_SQL, vec_str, env.observation_id,
+            )
 
     # asyncpg returns "UPDATE <rowcount>" as the status string.
     rows_updated = 0

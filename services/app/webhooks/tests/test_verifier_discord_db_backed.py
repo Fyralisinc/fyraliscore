@@ -10,6 +10,7 @@ T047: a PING (type=1) with no matching install row still verifies via
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import time
 from uuid import UUID, uuid4
@@ -57,6 +58,8 @@ def _make_app(fresh_db: asyncpg.Pool, secret_store) -> FastAPI:
         rate_limiter=RateLimiter(),
         configure_logging=False,
     )
+    runtime = app.state.integration_runtime
+    app.state.integration_runtime = replace(runtime, secret_store=secret_store)
     app.state.secret_store = secret_store
     return app
 

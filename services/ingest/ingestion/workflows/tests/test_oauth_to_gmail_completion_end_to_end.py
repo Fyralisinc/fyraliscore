@@ -57,7 +57,11 @@ from services.ingest.ingestion.workflows.tenant_onboarding import (
 
 # A27.6: shared moto S3 server provides the raw-tier endpoint for the
 # M6.7 shard_fetch producer (subprocesses inherit S3_ENDPOINT_URL).
-pytestmark = [pytest.mark.timeout(240), pytest.mark.usefixtures("moto_s3_server")]
+pytestmark = [
+    pytest.mark.subprocess_e2e,
+    pytest.mark.timeout(240),
+    pytest.mark.usefixtures("moto_s3_server"),
+]
 
 
 # ---------------------------------------------------------------------
