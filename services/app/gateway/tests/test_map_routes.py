@@ -33,6 +33,13 @@ from services.reasoning.topology.umap_projector import (
     UMAPProjector,
 )
 
+# These tests fit a real `umap.UMAP` (via the projector or the /map/snapshot
+# route). umap-learn is numba-backed, and the first fit in a process pays a
+# one-time JIT cold-compile (~10s locally, >30s on a loaded CI runner) that
+# blows the global 30s pytest-timeout. Subsequent fits are ~0s. Raise the
+# per-test budget for this module so the first fit isn't flagged as a hang.
+pytestmark = pytest.mark.timeout(120)
+
 
 # ---------------------------------------------------------------------
 # Local helpers — tenant + actor seed (with tenants registry row),

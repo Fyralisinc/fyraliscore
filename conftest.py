@@ -15,6 +15,8 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import pathlib
 from collections.abc import AsyncGenerator
@@ -38,7 +40,29 @@ def _load_env() -> None:
         load_dotenv(env_file)
 
 
+# Operational secrets the test suite needs but that are NOT test-specific
+# assertions: a Fernet KEK for the encrypted-secrets store and an
+# application-level Discord bot token. Locally these come from `.env`;
+# CI (and a fresh clone without a `.env`) has neither, so the gateway's
+# secret-store wiring used to warn-then-fail under `filterwarnings=error`
+# and the Discord client raised `discord_secret_unavailable` before any
+# API call. `setdefault` means a real value (from `.env` or a CI secret)
+# always wins; absent one we fall back to a deterministic dev value so the
+# suite is hermetic. Negative-path tests that exercise "unset" do their own
+# `monkeypatch.delenv`, so these defaults don't mask them.
+def _ensure_test_secrets() -> None:
+    # A valid (url-safe base64, 32-byte) Fernet key — FernetSecretStore
+    # validates the key shape at construction, so a placeholder string
+    # would fail-fast. sha256 gives exactly 32 bytes, deterministically.
+    test_kek = base64.urlsafe_b64encode(
+        hashlib.sha256(b"fyralis-test-master-kek").digest()
+    ).decode("ascii")
+    os.environ.setdefault("MASTER_KEK", test_kek)
+    os.environ.setdefault("DISCORD_BOT_TOKEN", "test-discord-bot-token")
+
+
 _load_env()
+_ensure_test_secrets()
 
 
 def _database_url() -> str | None:
