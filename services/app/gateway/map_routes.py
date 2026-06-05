@@ -442,7 +442,7 @@ async def _build_snapshot(
     nodes = capped
 
     # 5c) Synthesize the band-to-band hierarchy (spec §4.2 + §4.4).
-    #     Pelago-style tenants ship no model_edges; without explicit
+    #     Some tenants ship no model_edges; without explicit
     #     edges the Model page is unreadable. We build the canonical
     #     downward flow:
     #         goal      --supports-->     commitment
@@ -1210,7 +1210,7 @@ def _classify_band(
     Order:
       1. Natural-text prefix patterns ("Goal G-", "Decision D-",
          "Commitment ", "Risk R-") take precedence over kind so
-         Pelago-style labelled entities land in the right band.
+         prefix-labelled entities land in the right band.
       2. Explicit customer/market signal in natural / proposition →
          "customer".
       3. proposition_kind in `_PROPOSITION_KIND_BAND` → mapped band.

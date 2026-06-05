@@ -238,7 +238,6 @@ _UNCERTAINTY_MARKERS = (
     "when it's ready",
     "if leadership",
     "if they",
-    "if pelago",
     "otherwise",
     "aspirational",
 )
@@ -248,7 +247,6 @@ _LOW_TRUST_MARKERS = (
     "heard it",
     "not sure",
     "+1 to",
-    "what sarah said",
 )
 
 

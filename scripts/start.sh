@@ -96,7 +96,6 @@ require_llm_auth() {
 require_llm_auth
 
 [ -d ".venv" ] || fail ".venv missing — create with: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
-[ -d "ui/node_modules" ] || { log "Installing UI deps…"; (cd ui && npm install --silent); }
 
 pg_isready -q || fail "Postgres not running (try: brew services start postgresql)"
 curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null 2>&1 \
@@ -217,12 +216,11 @@ else
   log "Gmail workers skipped — set GMAIL_SERVICE_ACCOUNT_JSON_FILE to enable."
 fi
 
-log "Starting UI on :${UI_PORT}…"
-( cd ui && npm run dev -- --host 127.0.0.1 --strictPort > "$LOGDIR/ui.log" 2>&1 ) &
-record_pid $!
+# The frontend (ui/) lives in the demo overlay repo (fyraliscore-demo).
+# This script launches the core backend only; run the UI from that repo.
 
 # ----------------------------------------------------------------------
-# 5. Health check + browser
+# 5. Health check
 # ----------------------------------------------------------------------
 log "Waiting for gateway /healthz…"
 ready=0
@@ -234,29 +232,12 @@ for i in $(seq 1 45); do
 done
 [ "$ready" = "1" ] || fail "Gateway never became healthy — see ${LOGDIR}/gateway.log"
 
-log "Waiting for UI…"
-for i in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:${UI_PORT}" >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-
-DEMO_URL="http://127.0.0.1:${UI_PORT}/demo"
 cat <<EOF
 
-=== Fyralis stack up ===
-  Demo picker:   ${DEMO_URL}
-  UI:            http://127.0.0.1:${UI_PORT}
+=== Fyralis core backend up ===
   Gateway:       http://127.0.0.1:${GATEWAY_PORT}
   Healthz:       curl http://127.0.0.1:${GATEWAY_PORT}/healthz
   Logs dir:      ${LOGDIR}/
   Tail logs:     tail -f ${LOGDIR}/*.log
   Stop stack:    scripts/stop.sh
 EOF
-
-if [ "$OPEN_BROWSER" = "1" ]; then
-  if command -v open >/dev/null 2>&1; then
-    (sleep 1; open "$DEMO_URL") &
-  elif command -v xdg-open >/dev/null 2>&1; then
-    (sleep 1; xdg-open "$DEMO_URL") &
-  fi
-fi

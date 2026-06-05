@@ -185,12 +185,12 @@ async def _run_conditional(pool: asyncpg.Pool, ctx: dict) -> dict:
     if ctx.get("skip"):
         return {"skipped": True}
     text = (
-        "If Pelago renews their contract by end of August, we'll ship the "
+        "If Acme renews their contract by end of August, we'll ship the "
         "Stripe integration by Q3. Otherwise we deprioritize."
     )
     return await H.run_think_with_text(
         pool, tenant_id=ctx["tenant"], actor_id=ctx["actor"],
-        content_text=text, seed_text="Pelago Stripe integration conditional",
+        content_text=text, seed_text="Acme Stripe integration conditional",
     )
 
 
@@ -205,7 +205,7 @@ CASE_CONDITIONAL = Case(
     assertion=H.assert_no_crash,
     failure_mode_under_test=(
         "engine emits an unconditional commitment Node ignoring the "
-        "'if Pelago renews' precondition; downstream consumers treat it "
+        "'if Acme renews' precondition; downstream consumers treat it "
         "as a hard ship date"
     ),
     expected_behavior="underspecified",

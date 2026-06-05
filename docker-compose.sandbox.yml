@@ -88,9 +88,5 @@ services:
     profiles: ["full"]
   post_commit_worker:
     profiles: ["full"]
-  ui:
-    profiles: ["full"]
-  nginx-proxy:
-    profiles: ["full"]
-  acme-companion:
-    profiles: ["full"]
+  # ui / nginx-proxy / acme-companion moved to the demo overlay repo
+  # (docker-compose.demo.yml); the sandbox no longer parks them here.

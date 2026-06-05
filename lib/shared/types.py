@@ -544,64 +544,10 @@ class EntityAliasRow(_Strict):
     source_event_id: UUID | None = None
 
 
-# =====================================================================
-# Demo infrastructure (migration 0023) — tenants registry, demo configs,
-# demo sessions, per-call cost ledger.
-# =====================================================================
-
-DemoCompanyId = Literal["truss", "northwind", "meridian", "pelago"]
-DemoSessionEndReason = Literal["user_ended", "inactivity", "cost_cap"]
-
-
-class TenantRow(_Strict):
-    id: UUID
-    name: str = "unnamed"
-    is_demo: bool = False
-    demo_config_id: UUID | None = None
-    created_at: datetime
-    archived_at: datetime | None = None
-
-
-class DemoConfigRow(_Strict):
-    id: UUID
-    company_id: DemoCompanyId
-    name: str
-    description: str
-    tagline: str = ""
-    snapshot_uri: str
-    model_routing: dict[str, Any] = Field(default_factory=dict)
-    cost_cap_usd_per_session: Decimal
-    notifications_suppressed: bool = True
-    determinism_seed: int | None = None
-    reset_on_session_end: bool = True
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime
-
-
-class DemoSessionRow(_Strict):
-    id: UUID
-    tenant_id: UUID
-    demo_config_id: UUID
-    ceo_actor_id: UUID | None = None
-    started_at: datetime
-    last_active_at: datetime
-    ended_at: datetime | None = None
-    end_reason: DemoSessionEndReason | None = None
-    total_cost_usd: Decimal
-    signals_injected: int = 0
-    actions_taken: int = 0
-    cost_cap_breached_at: datetime | None = None
-
-
-class DemoSessionCostRow(_Strict):
-    id: UUID
-    demo_session_id: UUID
-    call_kind: str
-    model_name: str
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: Decimal
-    occurred_at: datetime
+# Demo infrastructure types (tenant demo flag, demo configs, demo sessions,
+# per-call cost ledger) moved to the demo overlay — see fyralis_demo.types in
+# the fyraliscore-demo repo. Core's `tenants` registry remains; its demo tables
+# are dropped by migration 0093 and recreated by the overlay's own migrations.
 
 
 __all__ = [
@@ -614,7 +560,6 @@ __all__ = [
     "ResourceKind", "ResourceUtilizationState", "ResourceControllability",
     "ResourceTemporalCharacter", "ResourceTransactionType",
     "ActorType", "ActorStatus",
-    "DemoCompanyId", "DemoSessionEndReason",
     # row models
     "ObservationRow", "ObservationCreate",
     "ModelRow", "ModelCreate", "ModelStatusNoteRow",
@@ -626,5 +571,4 @@ __all__ = [
     "CustomerCommitmentRow", "CustomerCommitmentRelationshipKind", "CustomerCommitmentCriticality",
     "ActorRow", "ActorIdentityMappingRow",
     "EntityAliasRow",
-    "TenantRow", "DemoConfigRow", "DemoSessionRow", "DemoSessionCostRow",
 ]

@@ -2,7 +2,6 @@
 
 from lib.shared.testing.db_baseline import (  # noqa: F401
     install_test_tenant_auto_register,
-    seed_demo_configs,
     seed_test_baseline,
 )
 
