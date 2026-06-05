@@ -89,7 +89,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 import asyncpg

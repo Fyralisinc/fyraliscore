@@ -1,7 +1,7 @@
-"""Unit tests for services.sage.intent_inferer (Phase 3 v1).
+"""Unit tests for services.reasoning.sage.intent_inferer (Phase 3 v1).
 
 Pure Python — no DB, no LLM. Uses an inline synthetic StructuredCues
-factory so this file does not depend on services.sage.cue_extractor
+factory so this file does not depend on services.reasoning.sage.cue_extractor
 being implemented yet.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from services.sage.intent_inferer import (
+from services.reasoning.sage.intent_inferer import (
     RetrievalIntent,
     RetrievalIntentInferer,
 )

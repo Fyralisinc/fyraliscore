@@ -48,14 +48,9 @@ import time
 from uuid import UUID, uuid4
 
 import asyncpg
-import orjson
 import pytest
 
 from lib.shared.ids import uuid7
-from services.ingest.ingestion.workflows.shard_fetch import (
-    SIGNAL_KIND_COMPLETED as SHARD_FETCH_COMPLETED,
-    SIGNAL_KIND_REQUESTED as SHARD_FETCH_REQUESTED,
-)
 from services.ingest.ingestion.workflows.reconciler import (
     SIGNAL_KIND_SHARDS_COMPLETED,
     SIGNAL_KIND_SOURCE_COMPLETED,
@@ -65,14 +60,17 @@ from services.ingest.ingestion.workflows.reconciler import (
 from services.ingest.ingestion.workflows.tenant_onboarding import (
     BRIDGE_INBOX_ID,
     BRIDGE_INBOX_KIND,
-    SIGNAL_KIND_RUN_CREATED as ONBOARDING_RUN_CREATED,
     SIGNAL_KIND_TENANT_COMPLETED as TENANT_ONBOARDING_COMPLETED,
 )
 
 
 # A27.6: shared moto S3 server provides the raw-tier endpoint for the
 # M6.7 shard_fetch producer (subprocesses inherit S3_ENDPOINT_URL).
-pytestmark = [pytest.mark.timeout(240), pytest.mark.usefixtures("moto_s3_server")]
+pytestmark = [
+    pytest.mark.subprocess_e2e,
+    pytest.mark.timeout(240),
+    pytest.mark.usefixtures("moto_s3_server"),
+]
 
 
 # ---------------------------------------------------------------------

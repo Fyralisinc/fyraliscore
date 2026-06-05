@@ -1,13 +1,13 @@
 """tests/unit/sage/test_region_summaries_repo.py — Phase 11 region summaries.
 
-Direct repo tests for `region_sufficient_state` (migration 0053). The
+Direct repo tests for `region_sufficient_state` (migration 0088). The
 repo is a thin wrapper over SQL; we exercise the upsert insert/update
 paths, the bulk fetch dict shape, the GIN-backed reverse lookup, and
 both leaderboard orderings.
 
 Marked `pytest.mark.integration` for the same reason as
 test_inquiry_traces_repo.py — uses the gateway_pool fixture re-exported
-via services/gateway/tests/conftest.py.
+via services/app/gateway/tests/conftest.py.
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.region_summaries.repo import RegionSummariesRepo
-from services.sage.region_summaries.types import (
+from services.reasoning.sage.region_summaries.repo import RegionSummariesRepo
+from services.reasoning.sage.region_summaries.types import (
     Frontier,
     Hypothesis,
     RegionSufficientState,

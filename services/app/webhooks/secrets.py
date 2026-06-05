@@ -26,7 +26,9 @@ When `app_state` is provided and `tenant_id` is non-None:
      `(provider, tenant_id)`. (The router has the tenant already by
      this point — IN-07 / IN-08 path.)
   2. If `secret_ref` is populated, decrypt via
-     `app_state.secret_store.get(ref, tenant_id=...)` and return.
+     `app_state.integration_runtime.secret_store.get(ref, tenant_id=...)`
+     and return. Legacy `app_state.secret_store` remains supported as a
+     compatibility alias.
   3. Otherwise, if `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1` is set, fall
      through to the legacy env-var path.
   4. Otherwise, return `[]`.
@@ -147,6 +149,15 @@ def _load_from_env(provider: str, tenant_id: UUID | None) -> list[Secret]:
     return _parse_value(provider, raw, tenant_id)
 
 
+def _app_state_attr(app_state: Any, name: str) -> Any | None:
+    integration_runtime = getattr(app_state, "integration_runtime", None)
+    if integration_runtime is not None:
+        value = getattr(integration_runtime, name, None)
+        if value is not None:
+            return value
+    return getattr(app_state, name, None)
+
+
 # ---------------------------------------------------------------------
 # DB-backed path (IN-08)
 # ---------------------------------------------------------------------
@@ -159,8 +170,8 @@ async def _load_from_db(
     """Read `provider_installations.secret_ref` for the enabled row
     matching `(provider, tenant_id)` and resolve it via the secret
     store. Returns [] when no enabled row or no secret_ref."""
-    pool = getattr(app_state, "pool", None)
-    secret_store = getattr(app_state, "secret_store", None)
+    pool = _app_state_attr(app_state, "pool")
+    secret_store = _app_state_attr(app_state, "secret_store")
     if pool is None or secret_store is None:
         return []
 

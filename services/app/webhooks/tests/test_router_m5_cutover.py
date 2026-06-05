@@ -23,7 +23,6 @@ behaviour is deterministic — per the M5.3 sub-block reminder.
 """
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import json
 import time
@@ -33,7 +32,6 @@ from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
-import orjson
 import pytest
 
 from services.domain.actors.repo import ActorRepo
@@ -42,7 +40,6 @@ from services.ingest.ingestion import shadow_write as shadow_write_module
 from services.ingest.ingestion.feature_flags import (
     KAFKA_PATH_ENABLED,
     KAFKA_PATH_ENABLED_DEFAULT,
-    SHADOW_WRITE_ENABLED,
     FlagCache,
     TenantFlags,
 )

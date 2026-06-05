@@ -7,8 +7,7 @@ messages in 5s, then quiet for 30s" (bursty).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
 

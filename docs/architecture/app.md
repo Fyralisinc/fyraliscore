@@ -10,9 +10,11 @@ it also ingests provider webhooks and fans realtime state out to the UI.
 ## Responsibilities
 
 The gateway (`services/app/gateway/main.py`, built by `build_app()`) is the sole
-HTTP entrypoint. It owns:
+HTTP entrypoint. Route implementations live in focused routers; the app factory
+owns:
 
-- **A three-stage middleware chain** (executed in this order):
+- **A three-stage middleware chain** (`services/app/gateway/middleware.py`,
+  executed in this order):
   `RequestContextMiddleware` (assigns a `request_id`, binds tenant/actor to
   structlog, records access summaries) → `BearerAuthMiddleware` (validates
   `Authorization: Bearer <token>` against `actor_sessions`, populates
@@ -21,15 +23,19 @@ HTTP entrypoint. It owns:
   higher tier). A fixed set of public path prefixes (`/healthz`, `/metrics`,
   `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/webhooks/*`,
   `/integrations/*/callback`, `/v1/demo/*`, `/debug/*`, …) bypass auth.
-- **Route registration + mounted routers**: the core ingest/auth/substrate
-  routes plus mounted routers for demo, decision-deltas, forecasts, model/trace,
-  history, webhooks, OAuth integrations, GitHub-intel, and (dev/test only)
-  finance, Slack-DM, simulation, and debug.
+- **Route registration + mounted routers** (`services/app/gateway/route_mounts.py`):
+  core/auth/ingest, substrate, contest, dashboard, Sage internal,
+  recommendations, Today core/artifacts, Structure, Map, demo,
+  decision-deltas, forecasts, model/trace, history, webhooks, OAuth
+  integrations, GitHub-intel, and env-gated finance, Slack-DM, simulation, and
+  debug surfaces.
 - **A dependency lifecycle** (`_lifespan`): creates/owns the asyncpg pool
   (codecs for JSON/vector), constructs `GatewayDeps` (repos, optional Ollama
   embedder, rate limiter), wires the CEO-view stack, starts the realtime
-  dispatcher, sweeps stale OAuth install-states, and — when
-  `KAFKA_BOOTSTRAP_SERVERS` is set — wires the ingestion data-plane producer.
+  dispatcher, sweeps stale OAuth install-states, delegates CEO-view wiring to
+  `services/app/gateway/ceo_view_wiring.py`, and when
+  `KAFKA_BOOTSTRAP_SERVERS` is set wires the ingestion data-plane producer via
+  `services/app/gateway/state_wiring.py`.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -92,7 +98,11 @@ graph TD
 
 | Module | Path | What it does |
 |--------|------|--------------|
-| Gateway app factory | `services/app/gateway/main.py` | `build_app()`, middleware, route registration, lifespan, CEO-view wiring. |
+| Gateway app factory | `services/app/gateway/main.py` | `build_app()`, lifespan, middleware registration, exception handlers, route mounting call. |
+| Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
+| Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
+| Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
+| CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, simulation, Google ingress, and debug mounting. |
 | Bearer auth | `services/app/gateway/auth.py` | Token validation against `actor_sessions`, `AuthContext`, session minting. |
 | DB bootstrap | `services/app/gateway/db_bootstrap.py` | asyncpg pool creation + JSON/vector codec registration. |
 | Rate limiter | `services/app/gateway/rate_limit.py` | Per-`(tenant, actor)` token bucket, ingest vs. default tiers. |

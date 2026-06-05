@@ -71,11 +71,6 @@ fi
 # ---- Log directory --------------------------------------------------
 LOGDIR="/tmp/company_os_logs"
 mkdir -p "$LOGDIR"
-: > "$LOGDIR/gateway.log"
-: > "$LOGDIR/think_worker.log"
-: > "$LOGDIR/post_commit_worker.log"
-: > "$LOGDIR/topology_sweeper.log"
-: > "$LOGDIR/ui.log"
 
 PIDS=()
 
@@ -83,34 +78,22 @@ PIDS=()
 PY=".venv/bin/python"
 UVICORN=".venv/bin/uvicorn"
 
-echo "Starting gateway on :${GATEWAY_PORT}..."
 # uvicorn wants lowercase log-level; lowercase LOG_LEVEL before passing.
 UVICORN_LOG_LEVEL="$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')"
-"$UVICORN" services.app.gateway.main:app \
-  --host 0.0.0.0 --port "${GATEWAY_PORT}" \
-  --log-level "${UVICORN_LOG_LEVEL}" \
-  > "$LOGDIR/gateway.log" 2>&1 &
-PIDS+=($!)
-
-# Workers share the same DB pool config via env, separate processes so
-# a crash in one doesn't take down the gateway.
-echo "Starting think worker..."
-"$PY" scripts/run_think_worker.py > "$LOGDIR/think_worker.log" 2>&1 &
-PIDS+=($!)
-
-echo "Starting post_commit worker..."
-"$PY" scripts/run_post_commit_worker.py > "$LOGDIR/post_commit_worker.log" 2>&1 &
-PIDS+=($!)
-
-echo "Starting topology sweeper..."
-"$PY" scripts/run_topology_sweeper.py > "$LOGDIR/topology_sweeper.log" 2>&1 &
-PIDS+=($!)
-
-# ---- UI -------------------------------------------------------------
-echo "Starting UI (vite) on :5173..."
-( cd ui && npm run dev > "$LOGDIR/ui.log" 2>&1 & echo $! ) > /tmp/dogfood_ui.pid
-UI_PID=$(cat /tmp/dogfood_ui.pid)
-PIDS+=("$UI_PID")
+while IFS=$'\t' read -r proc_name proc_cwd proc_log proc_command; do
+  [ -n "$proc_name" ] || continue
+  : > "$LOGDIR/$proc_log"
+  echo "Starting ${proc_name}..."
+  ( cd "$proc_cwd" && bash -lc "$proc_command" ) \
+    > "$LOGDIR/$proc_log" 2>&1 &
+  PIDS+=($!)
+done < <(
+  "$PY" scripts/render_runtime_process_manifest.py dogfood \
+    --python-bin "$PY" \
+    --uvicorn-bin "$UVICORN" \
+    --gateway-port "${GATEWAY_PORT}" \
+    --uvicorn-log-level "${UVICORN_LOG_LEVEL}"
+)
 
 # ---- Record PIDs ----------------------------------------------------
 printf "%s\n" "${PIDS[@]}" > /tmp/company_os_dogfood.pids

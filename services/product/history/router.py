@@ -1,16 +1,14 @@
-"""services/product/history/router.py — FastAPI router for the Ledger page.
+"""services/product/history/router.py - FastAPI router for the Ledger page.
 
 Currently exposes:
 
-  GET /v1/history/summary?range_days=30
-      The Ledger summary strip — six counters with WoW deltas (events,
-      model_updates, predictions_made, predictions_accuracy,
-      actions_taken, contestations). See spec §6.1.
+  GET /v1/history?period=90d&types=...
+      The legacy Ledger page aggregator.
 
-Note: the existing `GET /v1/history` endpoint is still defined in
-services/app/gateway/main.py. The integrator wires this router in
-alongside that endpoint. We keep the new router separate so it can be
-swapped / extended without touching main.py.
+  GET /v1/history/summary?range_days=30
+      The Ledger summary strip - six counters with WoW deltas (events,
+      model_updates, predictions_made, predictions_accuracy,
+      actions_taken, contestations). See spec section 6.1.
 """
 from __future__ import annotations
 
@@ -19,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
+from services.product.history.aggregator import build_history
 from services.product.history.summary import build_summary
 
 
@@ -30,7 +29,7 @@ _MAX_RANGE_DAYS = 365
 
 
 # ---------------------------------------------------------------------
-# Helpers — auth + deps. Local copies so this router has no static
+# Helpers - auth + deps. Local copies so this router has no static
 # dependency on services.app.gateway.main.
 # ---------------------------------------------------------------------
 
@@ -63,6 +62,36 @@ def _bad_request(reason: str) -> JSONResponse:
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
+
+
+@router.get("")
+async def get_history(request: Request) -> JSONResponse:
+    auth = _auth(request)
+    if auth is None:
+        return _unauth()
+
+    period = request.query_params.get("period") or "90d"
+    if period not in ("7d", "30d", "90d", "365d", "all"):
+        return JSONResponse(
+            {
+                "error": "invalid_period",
+                "reason": "expected one of 7d/30d/90d/365d/all",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    types_raw = request.query_params.get("types")
+    types_list = [t for t in types_raw.split(",") if t] if types_raw else None
+
+    deps = _deps(request)
+    async with deps.pool.acquire() as conn:
+        payload = await build_history(
+            tenant_id=auth.tenant_id,
+            period=period,
+            conn=conn,
+            types=types_list,
+        )
+    return JSONResponse(payload.to_dict(), status_code=200)
 
 
 @router.get("/summary")

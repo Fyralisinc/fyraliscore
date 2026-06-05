@@ -37,7 +37,7 @@ pie showData
 | `active-conditional` | 84 | In the flow, but behind a flag/env (e.g. `KAFKA_PATH_ENABLED`, demo-only, dev/test panels). |
 | `tooling` | 66 | Scripts, probes, benchmarks, the synthetic/sim harness (expected). |
 | `not-wired` | 39 | **Implemented but no runtime launcher/caller** — the core of this report. |
-| `test-only` | 34 | Referenced only by tests (incl. the `lib/nexus` stub). |
+| `test-only` | 34 | Referenced only by tests. |
 | `legacy-retired` | 2 | Superseded, compat-only (post-verify; raw count 5). |
 | `stub` | 1 | Empty placeholder (`ingestion/idempotency/__init__.py`). |
 
@@ -92,17 +92,16 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    install router at all** (sandbox-script-only). Gmail mounts its Pub/Sub ingress
    only if `GMAIL_SERVICE_ACCOUNT_JSON` is set (silent skip otherwise).
 
-!!! danger "Deploy blocker on this branch — duplicate migration prefixes"
-    `db/migrations/` has duplicate numeric prefixes (**`0014_*` ×2, `0043_*` ×2**).
-    `scripts/docker-migrate.sh` runs a dup-prefix check and `exit 1`s on a match, so
-    the compose `migrate` one-shot **fails**; every service `depends_on:
-    migrate:service_completed_successfully`, so the **whole stack never starts** via
-    docker-compose. (The README's manual `psql` loop doesn't run this check, and the
-    project memory notes the check was *softened on `origin/cannonical`* — but this
-    working tree hard-fails.) **Verified.**
+!!! success "Duplicate migration prefixes resolved"
+    Resolved 2026-06-03. Historical `0014_*` / `0043_*` collisions were
+    renumbered, and the post-merge Sage migrations moved to `0084_*`-`0092_*`.
+    The shell migration runner, Python migration helper, and CI now reject any
+    future duplicate numeric prefix.
 
 ## The detail pages
 
+- **[Codebase category map](codebase-category-map.md)** — current folder/file
+  purpose map, runtime links, and cleanup order generated on 2026-06-03.
 - **[Feature status](feature-status.md)** — expected-vs-actual for every feature
   with a gap, by theme and severity (21 high, 46 medium, 64 low).
 - **[Wiring gaps](wiring-gaps.md)** — the 39 not-wired files + the stub, grouped by

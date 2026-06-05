@@ -18,10 +18,6 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.domain.observations.events import (
-    NewObservationEvent,
-    emit_pending_notifications,
-)
 from services.app.realtime.dispatcher import Dispatcher, EventFrame
 
 

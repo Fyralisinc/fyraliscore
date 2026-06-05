@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.fetchers import slack as sl
 from services.ingest.ingestion.fetchers.slack import (
     SHARD_KIND_CHANNEL_WINDOW,

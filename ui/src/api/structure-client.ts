@@ -6,6 +6,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
@@ -187,7 +188,7 @@ export function getStructureOverlay(
   signal?: AbortSignal
 ): Promise<StructureOverlayResponse> {
   return request<StructureOverlayResponse>(
-    `/v1/structure/overlay/${commitmentId}`,
+    API_ROUTES.structure.overlay(commitmentId),
     undefined,
     signal
   );
@@ -198,7 +199,7 @@ export function getStructureRecent(
   signal?: AbortSignal
 ): Promise<StructureRecentResponse> {
   return request<StructureRecentResponse>(
-    `/v1/structure/recent?since_minutes=${sinceMinutes}`,
+    API_ROUTES.structure.recent(sinceMinutes),
     undefined,
     signal
   );
@@ -208,7 +209,7 @@ export function getStructureResourcesAggregate(
   signal?: AbortSignal
 ): Promise<StructureResourcesAggregateResponse> {
   return request<StructureResourcesAggregateResponse>(
-    `/v1/structure/resources/aggregate`,
+    API_ROUTES.structure.resourceAggregate,
     undefined,
     signal
   );
@@ -219,7 +220,7 @@ export function getStructureResourceOverlay(
   signal?: AbortSignal
 ): Promise<StructureResourceOverlayResponse> {
   return request<StructureResourceOverlayResponse>(
-    `/v1/structure/resources/${resourceId}/overlay`,
+    API_ROUTES.structure.resourceOverlay(resourceId),
     undefined,
     signal
   );

@@ -14,7 +14,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import posixpath
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 

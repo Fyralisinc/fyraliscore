@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import PLANNER_DISPATCH
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.slack import (
     SHARD_KIND_CHANNEL_WINDOW,

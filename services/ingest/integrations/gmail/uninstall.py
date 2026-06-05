@@ -21,7 +21,7 @@ from uuid import UUID
 
 import structlog
 
-from lib.shared.tenant_context import TenantContext, tenant_transaction
+from lib.shared.tenant_context import tenant_transaction
 
 from services.ingest.integrations.gmail.audit import write_install_audit
 from services.ingest.integrations.gmail.client import (

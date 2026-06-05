@@ -5,8 +5,7 @@ for a dogfood tenant with fixture data.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from datetime import datetime, timezone
 
 import pytest
 
@@ -23,7 +22,6 @@ from services.product.greeting.tests.conftest import (
     seed_commitment,
     seed_goal,
     seed_model,
-    seed_observation,
     seed_resource,
     seed_state_change,
 )
@@ -49,12 +47,12 @@ async def test_empty_tenant_produces_valid_snapshot(greeting_db):
 
 async def test_greeting_snapshot_picks_up_seeds(greeting_db):
     # Seed enough substrate to exercise every field.
-    actor = await seed_actor(greeting_db)
+    await seed_actor(greeting_db)
     model_id = await seed_model(
         greeting_db, natural="Acme renewal structurally unsafe", confidence=0.84
     )
     goal_id = await seed_goal(greeting_db)
-    commit_id = await seed_commitment(
+    await seed_commitment(
         greeting_db,
         title="ship billing refactor",
         state="blocked",

@@ -35,7 +35,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect

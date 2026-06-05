@@ -31,7 +31,6 @@ from hypothesis import strategies as st
 
 from lib.shared.ids import uuid7
 
-from services.domain.bridge import queries
 from services.domain.bridge.queries import (
     ProposedCommitment,
     capability_at_risk,

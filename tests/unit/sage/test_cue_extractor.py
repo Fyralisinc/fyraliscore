@@ -1,4 +1,4 @@
-"""Unit tests for services.sage.cue_extractor.
+"""Unit tests for services.reasoning.sage.cue_extractor.
 
 These tests exercise the deterministic v1 of the Structured Cue
 Extractor (SAGE Phase 2, doc §7.2). No DB and no LLM — the
@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 
 
-from services.sage.cue_extractor import CueExtractor, StructuredCues
+from services.reasoning.sage.cue_extractor import CueExtractor, StructuredCues
 
 
 # ---------------------------------------------------------------------

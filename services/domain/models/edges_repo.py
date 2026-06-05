@@ -76,7 +76,6 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.edge_registry import (
-    EDGE_REGISTRY,
     EdgeKindSpec,
     EdgeRegistryError,
     assert_writable,

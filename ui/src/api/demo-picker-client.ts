@@ -5,6 +5,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader } from "./auth";
+import { API_ROUTES } from "./routes";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
@@ -52,14 +53,16 @@ async function request<T>(
 }
 
 export async function listDemoCompanies(): Promise<DemoCompany[]> {
-  const data = await request<{ items: DemoCompany[] }>("/v1/demo/companies");
+  const data = await request<{ items: DemoCompany[] }>(
+    API_ROUTES.demo.companies,
+  );
   return data.items;
 }
 
 export function startDemoSession(
   companyId: string
 ): Promise<DemoStartResponse> {
-  return request<DemoStartResponse>("/v1/demo/sessions/start", {
+  return request<DemoStartResponse>(API_ROUTES.demo.startSession, {
     method: "POST",
     body: JSON.stringify({ company_id: companyId }),
   });
@@ -69,7 +72,7 @@ export function endDemoSession(
   sessionId: string
 ): Promise<{ ended: boolean }> {
   return request<{ ended: boolean }>(
-    `/v1/demo/sessions/${sessionId}/end`,
+    API_ROUTES.demo.endSession(sessionId),
     { method: "POST", authed: true }
   );
 }
@@ -78,13 +81,13 @@ export function resetDemoSession(
   sessionId: string
 ): Promise<{ reset: boolean }> {
   return request<{ reset: boolean }>(
-    `/v1/demo/sessions/${sessionId}/reset`,
+    API_ROUTES.demo.resetSession(sessionId),
     { method: "POST", authed: true }
   );
 }
 
 export function getDemoSession(sessionId: string): Promise<DemoSessionInfo> {
-  return request<DemoSessionInfo>(`/v1/demo/sessions/${sessionId}`, {
+  return request<DemoSessionInfo>(API_ROUTES.demo.session(sessionId), {
     authed: true,
   });
 }

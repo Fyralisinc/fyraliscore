@@ -1,14 +1,14 @@
 """tests/unit/sage/test_model_predictions_repo.py — Phase 12 prediction repos.
 
-Two repos backed by migration 0054:
+Two repos backed by migration 0089:
   * ModelPredictionsRepo       — `model_predictions`
   * ModelPredictionErrorsRepo  — `model_prediction_errors`
 
-Plus the pure residual helpers in services/sage/model_predictions/residual.py
+Plus the pure residual helpers in services/reasoning/sage/model_predictions/residual.py
 (no DB; covered by the bottom half of this file).
 
 The repo tests are marked `pytest.mark.integration` and use the
-gateway_pool fixture re-exported via services/gateway/tests/conftest.py.
+gateway_pool fixture re-exported via services/app/gateway/tests/conftest.py.
 The residual-helper tests are pure and would run without a DB, but we
 group them in the same file so the Phase 12 surface is covered in one
 place. The module-level `integration` mark applies to both; the pure
@@ -26,16 +26,16 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.model_predictions.repo import (
+from services.reasoning.sage.model_predictions.repo import (
     ModelPredictionErrorsRepo,
     ModelPredictionsRepo,
 )
-from services.sage.model_predictions.residual import (
+from services.reasoning.sage.model_predictions.residual import (
     detect_prediction_error,
     score_residual_impact,
     score_residual_severity,
 )
-from services.sage.model_predictions.types import (
+from services.reasoning.sage.model_predictions.types import (
     ExpectedObservation,
     ModelPrediction,
     ModelPredictionError,
@@ -63,7 +63,7 @@ def _content_embedding(text: str, dim: int = 768) -> list[float]:
 
 async def _seed_observation(pool: asyncpg.Pool, tenant_id: UUID) -> UUID:
     """Thin wrapper around the shared observation seeder."""
-    from tests.unit.sage._seed import seed_observation as _shared_seed_observation
+    from ._seed import seed_observation as _shared_seed_observation
     return await _shared_seed_observation(
         pool, tenant_id=tenant_id, content_text="seed obs",
     )
@@ -81,7 +81,7 @@ async def _seed_model(
     The shared helper handles pgvector binding + confidence_at_assertion
     so this file only owns the per-test parameter shape.
     """
-    from tests.unit.sage._seed import seed_model as _shared_seed_model
+    from ._seed import seed_model as _shared_seed_model
     obs_id = await _seed_observation(pool, tenant_id)
     return await _shared_seed_model(
         pool,

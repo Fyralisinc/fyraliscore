@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, ConfigDict

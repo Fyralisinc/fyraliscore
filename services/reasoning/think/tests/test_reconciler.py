@@ -24,9 +24,6 @@ from lib.shared.ids import uuid7
 
 from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.reconciler import (
-    KindRule,
-    ReconcileResult,
-    ReconcilerConfig,
     _compute_signal_breakdown,
     _falsifier_cosine,
     _member_overlap_fraction,

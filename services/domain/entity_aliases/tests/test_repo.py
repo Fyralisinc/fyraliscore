@@ -570,7 +570,7 @@ async def test_perf_fast_path_under_5ms_at_10k(
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS
-                aliases_normalized_idx
+                entity_aliases_normalized_idx
               ON entity_aliases
                  (tenant_id, regexp_replace(lower(alias_text), '\\s+', ' ', 'g'))
             """

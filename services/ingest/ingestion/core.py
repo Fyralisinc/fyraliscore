@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -56,8 +55,6 @@ from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
-    HandlerNotFound,
     ObservationDraft,
     get_handler,
 )
@@ -393,7 +390,6 @@ async def ingest_from_draft(
         embedding, embedding_pending
     ))
     trigger_queue_id: UUID | None = None
-    existing_by_extid: ObservationRow | None = None
 
     with notify_scope() as scope:
         async with pool.acquire() as conn:

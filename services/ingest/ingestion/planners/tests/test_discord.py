@@ -1,14 +1,14 @@
 """Tests for services/ingest/ingestion/planners/discord.py (M6.6)."""
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import PLANNER_DISPATCH
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.discord import (
-    SAMPLING_RATE, SAMPLING_VERSION,
+    SAMPLING_VERSION,
     SHARD_KIND_CHANNEL_WINDOW,
     plan_shards_discord,
 )

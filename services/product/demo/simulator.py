@@ -32,8 +32,7 @@ from uuid import UUID
 
 import asyncpg
 
-from services.product.demo.repo import get_demo_session, increment_signal_count
-from services.product.demo.sse import publish_recommendation_event
+from services.product.demo.repo import increment_signal_count
 from services.ingest.ingestion.core import ingest
 
 # Eagerly import every ingestion handler we route to. The gateway's

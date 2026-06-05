@@ -1,6 +1,6 @@
 # Fyralis Core Architecture
 
-Last reviewed from the codebase on 2026-06-01 (re-layered; see [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md)).
+Last reviewed from the codebase on 2026-06-03 (re-layered; see [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md)).
 
 Fyralis Core is an organizational intelligence runtime. It ingests company signals, stores them as tenant-scoped observations, reasons over them into a live model of the organization, and renders the result into CEO-facing product surfaces.
 
@@ -14,7 +14,7 @@ The repository is intentionally a monolith at the source level: the FastAPI gate
 |---|---|---|
 | [services/app](services/app) | gateway, webhooks, realtime | HTTP/WS entrypoints and request dispatch. |
 | [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering, demo | CEO-facing surfaces composed from substrate + reasoning. |
-| [services/reasoning](services/reasoning) | think, retrieval, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, topology, scoring. |
+| [services/reasoning](services/reasoning) | think, retrieval, sage, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, adaptive synthesis, topology, scoring. |
 | [services/ingest](services/ingest) | ingestion, integrations, synthetic, code_intel, github_intel | Signal intake, third-party integrations, synthetic signals. |
 | [services/domain](services/domain) | models, acts, resources, observations, actors, entity_aliases, bridge, falsifiers | The core persisted substrate. |
 | [services/platform](services/platform) | access_control, execution | Cross-cutting infrastructure (authz, execution routing). |
@@ -69,7 +69,7 @@ source event
 
 | Component | Code | Responsibility |
 |---|---|---|
-| Gateway | [services/app/gateway/main.py](services/app/gateway/main.py) | Main FastAPI app, dependency lifecycle, middleware, core routes, router mounting. |
+| Gateway | [services/app/gateway/main.py](services/app/gateway/main.py) | Main FastAPI app factory, lifespan, middleware registration, exception handlers, and router mounting. |
 | UI | [ui/src/main.tsx](ui/src/main.tsx) | React Router app for `/today`, `/model`, `/forecasts`, `/ledger`, `/debug`. |
 | Database | [db/migrations](db/migrations) | Schema for substrate data, queues, cache, demo, topology, predictions, RLS policies. |
 | Execution routing | [services/platform/execution](services/platform/execution) | Deterministic route gate for signals and future query/job entry points. The current rollout records shadow decisions without changing T1 Think enqueue behavior. |
@@ -132,7 +132,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 
 ## 5. Gateway Architecture
 
-[services/app/gateway/main.py](services/app/gateway/main.py) is the main process entry point.
+[services/app/gateway/main.py](services/app/gateway/main.py) is the main process entry point. Route implementations live in focused routers; gateway middleware, dependency lookup, state wiring, CEO-view wiring, and route mounting live in sibling support modules.
 
 Startup through `build_app()`:
 
@@ -159,9 +159,13 @@ Important public or auth-bypassed route families include `/healthz`, `/auth/sess
 
 | Routes | Owner | Notes |
 |---|---|---|
-| `/ingest/{channel}` | gateway + ingestion | Uniform signal ingestion path. |
-| `/observations`, `/models`, `/commitments`, `/goals`, `/decisions`, `/resources` | gateway | Basic substrate list/read surfaces. |
-| `/dashboard/*`, `/v1/structure/*`, `/v1/recommendations/*`, `/v1/artifacts/*` | gateway | Product/data adapter endpoints. |
+| `/healthz`, `/metrics`, `/auth/session`, `/ingest/{channel}` | gateway core router + ingestion | Health/metrics/session minting and uniform signal ingestion path. |
+| `/observations`, `/models`, `/commitments`, `/goals`, `/decisions`, `/resources` | gateway substrate router | Basic substrate list/read surfaces. |
+| `/contest/{model_id}` | gateway contest router | Model contestability entrypoint. |
+| `/dashboard/*` | gateway dashboard router | Legacy product/data adapter endpoints. |
+| `/v1/structure/*` | gateway structure router | Structure overlays, recent graph payloads, and resource overlays. |
+| `/v1/recommendations/*` | gateway recommendations router | Recommendation list/action workflow. |
+| `/v1/artifacts/*`, `/v1/today` | gateway Today core router + artifact drawers | Legacy Today payload and drawer payload assembly. |
 | `/rendering/*` | rendering router | In-process rendering service mounted into gateway. |
 | `/view/ceo/home`, `/view/ceo/force-refresh` | greeting router | Cached CEO view. |
 | `/view/ceo/ask`, turn actions | query router | Ask/query orchestration through retrieval + rendering. |
@@ -178,7 +182,7 @@ The ingestion implementation lives in [services/ingest/ingestion/core.py](servic
 
 Flow:
 
-1. Gateway receives `POST /ingest/{channel}` and verifies channel-specific requirements such as Slack signatures.
+1. The gateway core router receives `POST /ingest/{channel}` and verifies channel-specific requirements such as Slack signatures.
 2. `get_handler(channel)` returns a handler from [services/ingest/ingestion/handlers](services/ingest/ingestion/handlers).
 3. The handler emits `ObservationDraft`: source channel, content text, raw JSON content, actor ref, external ID, occurred time, trust tier, entity hints, and kind.
 4. Ingestion pre-assigns an observation UUID.
@@ -531,7 +535,7 @@ Playwright E2E uses the in-repo mock backend. The UI can be developed against ei
 
 | Risk | Why it matters | Where to look |
 |---|---|---|
-| Gateway is large | `build_app()` is ~3,800 lines; many handlers + wiring in one file. A sequenced decomposition plan is recorded in CODEBASE-MANAGEMENT.md §8.2 (deferred because it needs a running gateway+DB to verify). | [services/app/gateway/main.py](services/app/gateway/main.py), route modules under [services/app/gateway](services/app/gateway). |
+| Large route modules remain | `main.py` is now a compact app factory, but some mounted route modules are still large (`today_routes.py`, `map_routes.py`, `model_page_routes.py`, `spec_routes.py`). | Route modules under [services/app/gateway](services/app/gateway). |
 | Worker deployment gap | Some worker modules still exist as available packages before becoming default compose services. Topology sweeper is now launched by compose and local scripts. | [services/workers](services/workers), [docker-compose.yml](docker-compose.yml). |
 | Dev auth shortcuts | Static tokens/default tenant are convenient but easy to misconfigure in shared envs. | `.env.example`, gateway public path config. |
 | Handler registration drift | Handler files and trust map can diverge from imported registered handlers. | [services/ingest/ingestion/handlers/__init__.py](services/ingest/ingestion/handlers/__init__.py). |
@@ -545,7 +549,7 @@ When code and docs disagree, prefer this order:
 
 1. Database migrations in [db/migrations](db/migrations).
 2. Repository/service implementations under [services](services) and [lib](lib).
-3. Route wiring in [services/app/gateway/main.py](services/app/gateway/main.py) and [ui/src/main.tsx](ui/src/main.tsx).
+3. Route wiring in [services/app/gateway/route_mounts.py](services/app/gateway/route_mounts.py), [services/app/gateway/ceo_view_wiring.py](services/app/gateway/ceo_view_wiring.py), and [ui/src/main.tsx](ui/src/main.tsx).
 4. Tests under [services](services), [tests](tests), and [ui/src/tests](ui/src/tests).
 5. Design documents such as this one.
 

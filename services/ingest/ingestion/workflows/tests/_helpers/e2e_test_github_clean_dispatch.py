@@ -5,7 +5,6 @@ changes → no gap.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from services.ingest.ingestion.fetchers import github as gh_fetcher
 from services.ingest.ingestion.reconcilers import github as gh_reconciler

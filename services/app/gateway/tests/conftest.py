@@ -24,13 +24,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import pathlib
 import struct
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -41,14 +39,14 @@ import pytest_asyncio
 
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.app.gateway.auth import create_session
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.app.gateway.main import GatewayDeps, build_app
 from services.app.gateway.rate_limit import RateLimiter
-from services.ingest.ingestion.handlers.slack import verify_slack_signature
-from tests.db_baseline import (
+from lib.shared.testing.db_baseline import (
     install_test_tenant_auto_register,
     seed_test_baseline,
 )
@@ -204,11 +202,12 @@ async def gateway_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     )
     try:
         async with pool.acquire() as conn:
-            await _run_migrations(conn)
-            await install_test_tenant_auto_register(conn)
-            await _truncate_all(conn)
-            await seed_test_baseline(conn)
-        yield pool
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await install_test_tenant_auto_register(conn)
+                await _truncate_all(conn)
+                await seed_test_baseline(conn)
+                yield pool
     finally:
         # Force-terminate to release all server-side locks immediately.
         try:
@@ -337,7 +336,6 @@ async def app_deps(
         alias_repo=alias_repo,
         embedder=embedder,  # type: ignore[arg-type]
         rate_limiter=rate_limiter,
-        slack_signing_secret=SLACK_TEST_SECRET,
     )
 
 
@@ -350,7 +348,6 @@ async def client(app_deps) -> AsyncGenerator[httpx.AsyncClient, None]:
         alias_repo=app_deps.alias_repo,
         embedder=app_deps.embedder,
         rate_limiter=app_deps.rate_limiter,
-        slack_signing_secret=app_deps.slack_signing_secret,
         configure_logging=False,
     )
     transport = httpx.ASGITransport(app=app)

@@ -32,7 +32,6 @@ and the [feature table](feature-status.md).
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
 | `services/domain/models/decay.py` | `hourly_decay` + `archive_decayed` activation/decay UPDATEs | Imported solely by `maintenance/daily.py`, which has no launcher → Models never decay/auto-archive in prod. |
-| `services/domain/falsifiers/__init__.py` 🗑 | Thin re-export shim of `models.falsifier` adequacy | No importer anywhere — all callers import `models.falsifier` directly. The "single import site" it intended to be is unused. |
 
 ## Platform (access control + execution)
 
@@ -73,13 +72,9 @@ See [Ingest](../architecture/ingest.md).
 
 ## Product surfaces
 
-See [Product](../architecture/product.md). (`query/prefetch.py`, `today/freshness.py`,
-`today/stake.py` were flagged unwired but are test-referenced — see
-[Legacy & test-only](dead-legacy.md).)
-
-| File | What it is | Why not in flow |
-|------|------------|-----------------|
-| `services/product/today/map.py` 🗑 | `build_map`: DECIDE/MOVED/HANDLED three-row Map payload | Zero importers repo-wide; the aggregator hard-codes `map_data=None` (comment: "Map deliberately suppressed"). |
+See [Product](../architecture/product.md). No zero-runtime product-surface
+modules remain in this table. `query/prefetch.py` is a dormant helper tracked in
+[Legacy & test-only](dead-legacy.md).
 
 ## Migrations for undeployed features
 

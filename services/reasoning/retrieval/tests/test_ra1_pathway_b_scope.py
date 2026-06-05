@@ -14,8 +14,6 @@ Verification criteria (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-1):
 """
 from __future__ import annotations
 
-import json
-import uuid
 from uuid import UUID
 
 import pytest
@@ -230,7 +228,7 @@ async def test_ra1_pathway_b_scope_filter_excludes_unrelated(
 ):
     """Models whose scope does not overlap either dimension must be
     filtered out when scope is applied."""
-    actor_a = await _make_actor(tx_conn, tenant)
+    await _make_actor(tx_conn, tenant)
     actor_other = await _make_actor(tx_conn, tenant)
     obs = await _make_observation(tx_conn, tenant)
     commit_irrel = await _make_commitment(tx_conn, tenant, actor_other, obs)

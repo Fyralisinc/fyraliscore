@@ -1,4 +1,4 @@
-"""Unit tests for services.sage.affordances.policy.derive_default_profile_from_model.
+"""Unit tests for services.reasoning.sage.affordances.policy.derive_default_profile_from_model.
 
 These tests exercise the heuristic mapping from a Model's stance +
 memory-grammar shape to a v1 retrieval affordance profile. No DB.
@@ -21,7 +21,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.sage.affordances.policy import derive_default_profile_from_model
+from services.reasoning.sage.affordances.policy import derive_default_profile_from_model
 
 
 _TENANT = uuid4()

@@ -32,7 +32,7 @@ import signal
 import subprocess
 import sys
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import orjson
@@ -383,11 +383,37 @@ async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
     # because that wouldn't import our test fetcher module. Instead,
     # use python -c to (a) import the test fetcher (installs the
     # dispatch override), (b) then call shard_fetch.main().
-    bootstrap_code = (
-        "import shard_fetch_resume_fetcher; "
-        "from services.ingest.ingestion.workflows.shard_fetch import main; "
-        "main()"
-    )
+    bootstrap_code = """
+import services.ingest.ingestion.kafka.producer as kafka_producer
+
+
+class _NoopProducer:
+    def __init__(self, *_args, **_kwargs):
+        self.published = []
+
+    async def start(self):
+        return None
+
+    async def produce(
+        self, topic, value, *, key=None, headers=None, on_delivery=None
+    ):
+        self.published.append((topic, value, key, headers))
+        if on_delivery is not None:
+            on_delivery(None, None)
+
+    async def flush(self, timeout_seconds=10.0):
+        return 0
+
+    async def stop(self, timeout_seconds=10.0):
+        return None
+
+
+kafka_producer.IdempotentProducer = _NoopProducer
+import shard_fetch_resume_fetcher
+from services.ingest.ingestion.workflows.shard_fetch import main
+
+main()
+"""
 
     # ----- Process A: start, wait for page-0 cursor, SIGTERM. -----
     proc_a = subprocess.Popen(

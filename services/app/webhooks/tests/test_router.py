@@ -16,11 +16,11 @@ returns a `Resolved` outcome bound to `_TENANT` by default.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from uuid import UUID
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import httpx
 import pytest
@@ -126,6 +126,39 @@ async def test_missing_signature_returns_401(_router_app) -> None:
     transport = httpx.ASGITransport(app=_router_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post("/webhooks/slack/events", content=b'{"team_id":"T"}')
+    assert r.status_code == 401
+    body = r.json()
+    assert body["context"]["reason"] == "missing_signature_header"
+    assert body["context"]["provider"] == "slack"
+
+
+@pytest.mark.asyncio
+async def test_integration_runtime_resolver_preferred_over_legacy_alias(
+    _patch_secrets_and_tenant: None,
+) -> None:
+    from fastapi import FastAPI
+
+    from services.app.webhooks.router import build_webhooks_router
+
+    class _ExplodingLegacyResolver:
+        async def resolve(self, provider, payload, headers):
+            raise AssertionError("legacy tenant_resolver alias was used")
+
+    app = FastAPI()
+    app.include_router(build_webhooks_router())
+    app.state.deps = MagicMock()
+    app.state.tenant_resolver = _ExplodingLegacyResolver()
+    app.state.integration_runtime = SimpleNamespace(
+        pool=None,
+        secret_store=None,
+        tenant_resolver=_StubResolver(),
+        tenant_flags=None,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post("/webhooks/slack/events", content=b'{"team_id":"T"}')
+
     assert r.status_code == 401
     body = r.json()
     assert body["context"]["reason"] == "missing_signature_header"

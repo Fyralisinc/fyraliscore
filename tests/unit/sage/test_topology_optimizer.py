@@ -8,7 +8,7 @@ contract worth testing is the end-to-end effect on the Discovery
 Utility Layer tables, not the internal call graph.
 
 Uses the same `gateway_pool` + `tenant_id` fixtures (per-test pool +
-fresh DB via TRUNCATE) re-exported through services/gateway/tests/
+fresh DB via TRUNCATE) re-exported through services/app/gateway/tests/
 conftest.py. `pytest.mark.integration` keeps these out of any pure-
 unit selection that runs without a database.
 
@@ -34,19 +34,19 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
-from services.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
-from services.sage.discovery.types import Signature
-from services.sage.inquiry_traces.repo import OutcomeEventsRepo
-from services.sage.topology_optimizer import (
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
+from services.reasoning.sage.discovery.types import Signature
+from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
+from services.reasoning.sage.topology_optimizer import (
     OptimizationRunReport,
     REINFORCE_DELTA,
     TopologyOptimizer,
     optimize_topology,
 )
-from tests.unit.sage._seed import seed_model as _shared_seed_model
+from ._seed import seed_model as _shared_seed_model
 
 
 pytestmark = pytest.mark.integration

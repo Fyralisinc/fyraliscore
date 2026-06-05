@@ -37,7 +37,6 @@ End-to-end + property + false-positive (4):
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -53,8 +52,6 @@ from services.workers.anomaly_processor import (
 )
 from services.workers.anomaly_processor.debounce import (
     compute_region_hash,
-    decide_debounce,
-    most_recent_anomaly_in_region,
 )
 from services.workers.anomaly_processor.detectors import (
     AnomalyCandidate,
@@ -70,12 +67,7 @@ from services.workers.anomaly_processor.memory_fabric import (
     record_subthreshold_signal,
 )
 from services.workers.anomaly_processor.significance import (
-    SIGNIFICANCE_THRESHOLD,
     compute_significance,
-)
-from services.workers.anomaly_processor.worker import (
-    TenantRateLimiter,
-    enqueue_t3_trigger,
 )
 
 from .conftest import (
@@ -86,7 +78,6 @@ from .conftest import (
     insert_minimal_model,
     insert_observation,
     insert_resource,
-    insert_resource_deployment,
 )
 
 
@@ -251,7 +242,7 @@ async def test_activation_decay_anomaly_fires(
         seed_obs = await insert_observation(conn, tenant)
         # Cohort of 4 'belief' models at activation 0.3, one at 0.95.
         for i in range(4):
-            mid = await insert_minimal_model(
+            await insert_minimal_model(
                 conn, tenant, born_from_event_id=seed_obs,
                 natural=f"cold model {i}",
                 activation=0.3,
@@ -618,8 +609,8 @@ async def test_debounce_suppresses_duplicate(
     tenant_cleanup,
 ):
     async with fresh_db.acquire() as conn:
-        seed = await insert_observation(conn, tenant)
-        r = await insert_resource(
+        await insert_observation(conn, tenant)
+        await insert_resource(
             conn, tenant, kind="capacity",
             current_value={"total_units": 10, "deployed_units": 10, "available_units": 0},
         )

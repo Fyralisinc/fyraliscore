@@ -17,7 +17,6 @@ persisted session_state and continues.
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import os
 import pathlib
@@ -62,7 +61,6 @@ from services.ingest.integrations.discord.gateway.lifecycle import (
     acquire_lease_with_backoff,
 )
 from services.ingest.integrations.discord.gateway.session_state import (
-    PersistedGatewaySession,
     load_session_state,
     save_session_state,
 )
@@ -166,7 +164,6 @@ async def test_lease_takeover_on_crashed_holder(fresh_db: asyncpg.Pool):
     Verifies the bounded-takeover property: a crashed holder does NOT
     lock the lease forever. TTL-based expiry is the safety net.
     """
-    from redis.asyncio import Redis
 
     with RedisContainer("redis:7-alpine") as redis_box, \
          KafkaContainer("confluentinc/cp-kafka:7.6.1") as kafka_box:
@@ -263,7 +260,6 @@ async def test_session_resume_after_planned_restart(fresh_db: asyncpg.Pool):
     import respx
     from services.ingest.integrations.discord.gateway.client import (
         DiscordGatewayClient,
-        GatewaySessionState,
     )
     from services.ingest.integrations.discord.gateway.lifecycle import (
         persisted_to_in_memory,
@@ -415,7 +411,6 @@ async def test_no_frames_lost_across_sigkill(fresh_db: asyncpg.Pool):
     processed three frames" — the test cares whether they actually
     reached the shadow pipeline.
     """
-    from confluent_kafka import Consumer as RawConsumer
 
     with RedisContainer("redis:7-alpine") as redis_box, \
          KafkaContainer("confluentinc/cp-kafka:7.6.1") as kafka_box:

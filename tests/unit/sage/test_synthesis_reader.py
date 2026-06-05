@@ -9,10 +9,10 @@ import pytest
 
 from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
 from services.reasoning.retrieval.primary import TriggerContext
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.reader import SynthesisReader
-from tests.unit.sage._seed import ZERO_EMBEDDING, seed_model, seed_observation
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.reader import SynthesisReader
+from ._seed import ZERO_EMBEDDING, seed_model, seed_observation
 
 
 pytestmark = pytest.mark.integration

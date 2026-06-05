@@ -23,7 +23,6 @@ frontend can fall back to its spec-aligned fixture.
 """
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -1217,8 +1216,8 @@ async def _build_item_trace(
 
 
 def _deps(request: Request):
-    from services.app.gateway.main import _deps as _gw_deps
-    return _gw_deps(request)
+    from services.app.gateway.deps import get_gateway_deps
+    return get_gateway_deps(request)
 
 
 def _auth_or_none(request: Request) -> AuthContext | None:

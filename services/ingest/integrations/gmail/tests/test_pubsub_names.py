@@ -1,7 +1,6 @@
 """Tests for the deterministic Pub/Sub resource naming."""
 from __future__ import annotations
 
-import os
 from uuid import UUID
 
 import pytest

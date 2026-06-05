@@ -24,6 +24,7 @@ import asyncio
 import os
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -32,8 +33,13 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 from services.app.gateway.auth import create_session
 from services.app.realtime.main import configure_realtime
+
+
+if TYPE_CHECKING:
+    from services.app.realtime.dispatcher import Dispatcher
 
 
 pytestmark = pytest.mark.integration
@@ -106,11 +112,12 @@ async def realtime_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         pytest.skip("DATABASE_URL not set")
     await _wait_idle(dsn)
     pool = await asyncpg.create_pool(dsn, min_size=2, max_size=20)
-    async with pool.acquire() as conn:
-        await _run_migrations(conn)
-        await _truncate_all(conn)
     try:
-        yield pool
+        async with pool.acquire() as conn:
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await _truncate_all(conn)
+                yield pool
     finally:
         try:
             pool.terminate()
@@ -191,7 +198,7 @@ async def valid_session_b(
 @pytest_asyncio.fixture
 async def dispatcher_app(
     realtime_pool: asyncpg.Pool,
-) -> AsyncGenerator[tuple[FastAPI, "services.app.realtime.dispatcher.Dispatcher"], None]:
+) -> AsyncGenerator[tuple[FastAPI, Dispatcher], None]:
     """Standalone FastAPI app with realtime mounted.
 
     Starts + stops the dispatcher around the yield.
@@ -200,7 +207,7 @@ async def dispatcher_app(
 
     app = FastAPI()
     disp = Dispatcher(realtime_pool)
-    deps = configure_realtime(app, pool=realtime_pool, dispatcher=disp, start=False)
+    configure_realtime(app, pool=realtime_pool, dispatcher=disp, start=False)
     await disp.start()
     try:
         yield app, disp

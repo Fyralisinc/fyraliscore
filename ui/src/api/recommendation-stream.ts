@@ -3,6 +3,8 @@
 // only accepts the bearer token via the Authorization header, which the
 // browser EventSource API cannot set.
 
+import { API_ROUTES } from "./routes";
+
 export type RecStreamEvent =
   | { event: "ready"; data: Record<string, unknown> }
   | {
@@ -15,7 +17,7 @@ type EventHandler = (ev: RecStreamEvent) => void;
 type ErrorHandler = (err: Error) => void;
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
-const PATH = "/v1/recommendations/stream";
+const PATH = API_ROUTES.recommendationStream;
 
 export class RecommendationStream {
   private controller: AbortController | null = null;

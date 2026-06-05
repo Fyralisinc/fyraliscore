@@ -44,10 +44,10 @@ every row carries `tenant_id` and queries scope by it.
   deactivation blocked if the owner has non-terminal commitments) and
   `EntityAliasRepo` (casefold/whitespace-collapse normalization, advisory-lock
   idempotency, ambiguity detection).
-- **Bridge / falsifiers** — `bridge/queries.py` holds dashboard-grade,
+- **Bridge / falsifier rules** — `bridge/queries.py` holds dashboard-grade,
   tenant-scoped queries (revenue-at-risk, capability-at-risk, feasibility,
-  critical path, customer health); `falsifiers/` is a thin re-export of
-  `models/falsifier.py`.
+  critical path, customer health); `models/falsifier.py` owns falsifier
+  adequacy rules.
 
 ## How it's wired
 

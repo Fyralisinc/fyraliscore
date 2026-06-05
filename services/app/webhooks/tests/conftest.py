@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import time
+from typing import TYPE_CHECKING
 
 import pytest
 
 from services.app.webhooks import metrics
+
+
+if TYPE_CHECKING:
+    from nacl.signing import SigningKey
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +111,7 @@ def stripe_sign(secret: str, body: bytes, ts: int) -> str:
     return f"t={ts},v1={sig}"
 
 
-def discord_keypair() -> tuple[str, "SigningKey"]:  # type: ignore[name-defined]
+def discord_keypair() -> tuple[str, SigningKey]:
     """Generate an ed25519 keypair. Returns (public_key_hex, signing_key).
 
     Tests use signing_key.sign(...) to produce a signature; the public

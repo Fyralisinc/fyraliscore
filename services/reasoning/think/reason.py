@@ -51,11 +51,10 @@ from services.reasoning.retrieval.assembler import (
     assemble_context,
 )
 from services.reasoning.retrieval.primary import (
-    RetrievalResult,
     TriggerContext,
 )
 from services.platform.execution.inquiry import InquiryResult, retrieve_for_execution
-from services.sage.inquiry_traces.emitter import (
+from services.reasoning.sage.inquiry_traces.emitter import (
     TraceContext as _SageTraceContext,
     emission_enabled as _sage_emission_enabled,
     set_trace_context as _sage_set_trace_context,

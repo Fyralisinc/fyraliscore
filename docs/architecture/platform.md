@@ -96,7 +96,7 @@ graph TD
 ## Entry points
 
 - `@requires_access(...)` decorators on gateway route handlers (call `can_read_by_id`).
-- `BearerAuthMiddleware.dispatch` (in `services/app/gateway/main.py`) — resolves the auth context every access check relies on.
+- `BearerAuthMiddleware.dispatch` (in `services/app/gateway/middleware.py`) — resolves the auth context every access check relies on.
 - `retrieve_for_execution(...)` — called by the [Think worker](reasoning.md) (deep) and [Query](product.md) strategies (fast).
 - `refresh_all()` — invoked nightly by the [maintenance worker](workers.md).
 - `decide_route(...)` — infrastructure-ready; **not yet wired into `ingestion.core.ingest`** (shadow only).

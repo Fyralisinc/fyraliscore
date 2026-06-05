@@ -33,7 +33,6 @@ import asyncpg
 from services.ingest.synthetic.backfill_harness.harness import BackfillHarness
 from services.ingest.synthetic.fault_profiles import FLAKY
 from services.ingest.synthetic.validation_runs import assertions as A
-from services.ingest.synthetic.validation_runs import composition as C
 from services.ingest.synthetic.validation_runs.cleanup import reset_state
 from services.ingest.synthetic.validation_runs.composition import (
     SigningSecrets,

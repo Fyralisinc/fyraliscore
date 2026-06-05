@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -26,7 +26,6 @@ import pytest
 from lib.shared.ids import uuid7
 
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
-from services.reasoning.think.tests.conftest import ScriptedProvider
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -293,10 +292,10 @@ async def test_for_update_skip_locked_allows_concurrent_workers(
     via FOR UPDATE SKIP LOCKED (proved by asyncpg lock + count)."""
     c1 = await _seed_model(fresh_db, tenant)
     c2 = await _seed_model(fresh_db, tenant)
-    r1 = await _enqueue_reeval_row(
+    await _enqueue_reeval_row(
         fresh_db, tenant, cause_model_id=c1,
     )
-    r2 = await _enqueue_reeval_row(
+    await _enqueue_reeval_row(
         fresh_db, tenant, cause_model_id=c2,
     )
 

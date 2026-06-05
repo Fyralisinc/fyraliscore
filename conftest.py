@@ -15,6 +15,8 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import pathlib
 from collections.abc import AsyncGenerator
@@ -24,6 +26,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
+
+from lib.shared.migrations import schema_bootstrap_lock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
@@ -36,7 +40,29 @@ def _load_env() -> None:
         load_dotenv(env_file)
 
 
+# Operational secrets the test suite needs but that are NOT test-specific
+# assertions: a Fernet KEK for the encrypted-secrets store and an
+# application-level Discord bot token. Locally these come from `.env`;
+# CI (and a fresh clone without a `.env`) has neither, so the gateway's
+# secret-store wiring used to warn-then-fail under `filterwarnings=error`
+# and the Discord client raised `discord_secret_unavailable` before any
+# API call. `setdefault` means a real value (from `.env` or a CI secret)
+# always wins; absent one we fall back to a deterministic dev value so the
+# suite is hermetic. Negative-path tests that exercise "unset" do their own
+# `monkeypatch.delenv`, so these defaults don't mask them.
+def _ensure_test_secrets() -> None:
+    # A valid (url-safe base64, 32-byte) Fernet key — FernetSecretStore
+    # validates the key shape at construction, so a placeholder string
+    # would fail-fast. sha256 gives exactly 32 bytes, deterministically.
+    test_kek = base64.urlsafe_b64encode(
+        hashlib.sha256(b"fyralis-test-master-kek").digest()
+    ).decode("ascii")
+    os.environ.setdefault("MASTER_KEK", test_kek)
+    os.environ.setdefault("DISCORD_BOT_TOKEN", "test-discord-bot-token")
+
+
 _load_env()
+_ensure_test_secrets()
 
 
 def _database_url() -> str | None:
@@ -73,23 +99,24 @@ RLS_TEST_PW = "rls_test_pw"
 async def _provision_rls_app_role(super_dsn: str) -> str:
     conn = await asyncpg.connect(super_dsn)
     try:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM pg_roles WHERE rolname = $1", RLS_TEST_ROLE
-        )
-        if not exists:
-            await conn.execute(
-                f'CREATE ROLE "{RLS_TEST_ROLE}" LOGIN PASSWORD '
-                f"'{RLS_TEST_PW}' NOSUPERUSER NOBYPASSRLS"
+        async with schema_bootstrap_lock(conn):
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_roles WHERE rolname = $1", RLS_TEST_ROLE
             )
-        await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{RLS_TEST_ROLE}"')
-        await conn.execute(
-            "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
-            f'ON ALL TABLES IN SCHEMA public TO "{RLS_TEST_ROLE}"'
-        )
-        await conn.execute(
-            "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
-            f'TO "{RLS_TEST_ROLE}"'
-        )
+            if not exists:
+                await conn.execute(
+                    f'CREATE ROLE "{RLS_TEST_ROLE}" LOGIN PASSWORD '
+                    f"'{RLS_TEST_PW}' NOSUPERUSER NOBYPASSRLS"
+                )
+            await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{RLS_TEST_ROLE}"')
+            await conn.execute(
+                "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
+                f'ON ALL TABLES IN SCHEMA public TO "{RLS_TEST_ROLE}"'
+            )
+            await conn.execute(
+                "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
+                f'TO "{RLS_TEST_ROLE}"'
+            )
     finally:
         await conn.close()
     host_tail = super_dsn.split("@", 1)[1]  # host:port/db[?params]
@@ -330,8 +357,9 @@ async def db_pool(request) -> AsyncGenerator[asyncpg.Pool, None]:
     dsn = _requires_db(request)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
     async with pool.acquire() as conn:
-        await _run_migrations(conn)
-        await _install_test_tenant_auto_register(conn)
+        async with schema_bootstrap_lock(conn):
+            await _run_migrations(conn)
+            await _install_test_tenant_auto_register(conn)
     try:
         yield pool
     finally:
@@ -346,12 +374,13 @@ async def fresh_db(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Pool, None]:
     state between tests through the database.
     """
     async with db_pool.acquire() as conn:
-        tables = await _tables_to_truncate(conn)
-        if tables:
-            table_list = ", ".join(f'"{t}"' for t in tables)
-            await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
-        await _seed_test_baseline(conn)
-    yield db_pool
+        async with schema_bootstrap_lock(conn):
+            tables = await _tables_to_truncate(conn)
+            if tables:
+                table_list = ", ".join(f'"{t}"' for t in tables)
+                await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
+            await _seed_test_baseline(conn)
+            yield db_pool
 
 
 # ---------------------------------------------------------------------

@@ -15,8 +15,6 @@ and orphan-unblock invariants. These adversarial cases exercise:
 """
 from __future__ import annotations
 
-from typing import Any
-from uuid import UUID
 
 import asyncpg
 
@@ -26,7 +24,6 @@ from services.reasoning.think.cascade import (
     MAX_CASCADE_DEPTH,
     cascade,
 )
-from services.reasoning.think.observability import METRICS
 
 from .. import _fixtures as F
 from .._runner import Case

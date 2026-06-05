@@ -12,8 +12,6 @@ These tests are the load-bearing proof that the migration's intent is
 realized at the database, not just on paper."""
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncGenerator
 from uuid import UUID
 
 import asyncpg

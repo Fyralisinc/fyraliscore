@@ -1,13 +1,12 @@
 """Gateway HTTP tests for POST /ingest/{channel}.
 
 Complements services/ingest/ingestion/tests/test_ingest_core.py by exercising
-the full HTTP layer: Slack signature verification, 404 on unknown
-channels, 413 on oversized payload, 400 on malformed JSON.
+the full HTTP layer: bearer auth, 404 on unknown channels, 413 on oversized
+payloads, and 400 on malformed JSON.
 """
 from __future__ import annotations
 
 import json
-import time
 
 import httpx
 import pytest
@@ -53,7 +52,7 @@ async def test_ingest_unknown_channel_returns_404(
 
 
 @pytest.mark.asyncio
-async def test_ingest_slack_missing_signature_returns_403(
+async def test_ingest_slack_message_is_bearer_authenticated_not_hmac(
     client: httpx.AsyncClient, valid_session, build_slack_payload
 ):
     token, _ = valid_session
@@ -62,30 +61,8 @@ async def test_ingest_slack_missing_signature_returns_403(
         json=build_slack_payload(),
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
-    assert resp.json()["error"] == "slack_signature"
-
-
-@pytest.mark.asyncio
-async def test_ingest_slack_tampered_body_returns_403(
-    client: httpx.AsyncClient, valid_session, build_slack_payload, sign_slack
-):
-    token, _ = valid_session
-    original = build_slack_payload(text="original")
-    body = json.dumps(original).encode()
-    sig_headers = sign_slack(body)
-    # Send a DIFFERENT body with the signature of `body`.
-    tampered = json.dumps(build_slack_payload(text="tampered")).encode()
-    resp = await client.post(
-        "/ingest/slack:message",
-        content=tampered,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            **sig_headers,
-        },
-    )
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["observation_id"]
 
 
 @pytest.mark.asyncio
@@ -109,18 +86,16 @@ async def test_ingest_oversized_payload_returns_413(
 
 @pytest.mark.asyncio
 async def test_ingest_malformed_json_returns_400(
-    client: httpx.AsyncClient, valid_session, sign_slack
+    client: httpx.AsyncClient, valid_session
 ):
     token, _ = valid_session
     bad = b"{not json"
-    sig_headers = sign_slack(bad)
     resp = await client.post(
         "/ingest/slack:message",
         content=bad,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            **sig_headers,
         },
     )
     assert resp.status_code == 400
@@ -268,27 +243,23 @@ async def test_ingest_oversize_before_auth_still_401(
 
 
 @pytest.mark.asyncio
-async def test_ingest_slack_signature_validates_after_bounded_read(
+async def test_ingest_large_json_body_passes_after_bounded_read(
     client: httpx.AsyncClient,
     valid_session,
     build_slack_payload,
-    sign_slack,
 ):
-    """A5: the dependency must hand the route the exact bytes Slack
-    signed — otherwise HMAC fails on a 500 KB payload."""
+    """A5: the dependency must hand the route the complete bounded body."""
     token, _ = valid_session
     big_text = "x" * (500 * 1024)  # 500 KB body
     payload = build_slack_payload(text=big_text)
     body = json.dumps(payload).encode()
     assert len(body) < MAX_PAYLOAD_BYTES  # sanity
-    sig_headers = sign_slack(body)
     resp = await client.post(
         "/ingest/slack:message",
         content=body,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            **sig_headers,
         },
     )
     assert resp.status_code in (200, 201), resp.text

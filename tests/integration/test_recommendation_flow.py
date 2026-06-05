@@ -15,13 +15,13 @@ seed a recommendation Model directly to keep this test deterministic
 and fast — its purpose is to assert the surrounding plumbing (storage,
 ranker, act handler, dismiss handler, audit chain) is wired correctly.
 """
+# ruff: noqa: F811
 from __future__ import annotations
 
 import asyncpg
 import httpx
 import pytest
 
-from lib.shared.ids import uuid7
 
 # Reuse the gateway test fixtures via the recommendations conftest —
 # both modules pull from services/app/gateway/tests/conftest.py, so the

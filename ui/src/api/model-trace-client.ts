@@ -4,6 +4,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   AdjacencyResponse,
   TraceChain,
@@ -65,7 +66,7 @@ export function trace(
     params.set("max_depth", String(opts.maxDepth));
   }
   return request<TraceChain>(
-    `/v1/model/${encodeURIComponent(nodeId)}/trace?${params.toString()}`,
+    API_ROUTES.modelTrace.trace(nodeId, params.toString()),
     undefined,
     signal
   );
@@ -76,7 +77,7 @@ export function getSupports(
   signal?: AbortSignal
 ): Promise<AdjacencyResponse> {
   return request<AdjacencyResponse>(
-    `/v1/model/${encodeURIComponent(nodeId)}/supports`,
+    API_ROUTES.modelTrace.supports(nodeId),
     undefined,
     signal
   );
@@ -87,7 +88,7 @@ export function getDependsOn(
   signal?: AbortSignal
 ): Promise<AdjacencyResponse> {
   return request<AdjacencyResponse>(
-    `/v1/model/${encodeURIComponent(nodeId)}/depends_on`,
+    API_ROUTES.modelTrace.dependsOn(nodeId),
     undefined,
     signal
   );

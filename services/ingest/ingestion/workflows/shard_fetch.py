@@ -253,7 +253,6 @@ from services.ingest.ingestion.raw_tier.s3 import (
 )
 from services.ingest.ingestion.workflows.runtime import LongRunningService
 from services.ingest.ingestion.workflows.signals import (
-    WorkflowSignal,
     claim_signals,
     emit_signal,
 )

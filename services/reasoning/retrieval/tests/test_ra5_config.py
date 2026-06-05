@@ -15,8 +15,6 @@ Verification (AUDIT-FIXES-IMPLEMENTATION-PLAN §2 RA-5):
 from __future__ import annotations
 
 import json
-import os
-import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -27,7 +25,6 @@ from lib.shared.types import ModelCreate
 
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.config import (
-    CONFIG,
     RetrievalConfig,
     reload_config,
 )
@@ -111,7 +108,7 @@ def test_ra5_config_reload_updates_singleton(monkeypatch):
 async def test_ra5_semantic_k_change_alters_retrieval_results(
     tx_conn, fresh_db, tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     vec = make_embedding("alice ships reliably")
     base_trigger_kwargs = dict(
         kind="T1",

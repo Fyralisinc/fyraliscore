@@ -8,17 +8,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
-from lib.shared.errors import (
-    FalsifierInadequateError, InvariantViolation, TrustTierError,
-)
 from lib.shared.ids import uuid7
 
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
-from services.reasoning.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp
+from services.reasoning.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff
 from services.reasoning.think.validator import (
     OutOfRegionError, ValidationFailure, validate,
 )

@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 
 from lib.shared.ids import uuid7
+from lib.shared.migrations import schema_bootstrap_lock
 
 
 pytestmark = pytest.mark.integration
@@ -89,11 +90,12 @@ async def m_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         pytest.skip("DATABASE_URL not set")
     await _wait_idle(dsn)
     pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
-    async with pool.acquire() as conn:
-        await _run_migrations(conn)
-        await _truncate_all(conn)
     try:
-        yield pool
+        async with pool.acquire() as conn:
+            async with schema_bootstrap_lock(conn):
+                await _run_migrations(conn)
+                await _truncate_all(conn)
+                yield pool
     finally:
         try:
             pool.terminate()

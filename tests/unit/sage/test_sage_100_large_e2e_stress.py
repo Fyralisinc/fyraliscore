@@ -15,8 +15,8 @@ import pytest
 from lib.shared.ids import uuid7
 from services.platform.execution.inquiry import InquiryConfig, run_inquiry_retrieval
 from services.reasoning.retrieval.primary import TriggerContext
-from tests.unit.sage._seed import ZERO_EMBEDDING
-from tests.unit.sage.test_synthesis_reader_extensive import (
+from ._seed import ZERO_EMBEDDING
+from .test_synthesis_reader_extensive import (
     ALL_PRIMITIVES,
     _insert_edge,
     _model_row,

@@ -263,7 +263,7 @@ async def test_writer_observations_match_inline_for_same_input(
         "event_id": "Ev_inline",
         "event_time": int(ts_inline),
     }
-    inline_result = await inline_ingest(
+    await inline_ingest(
         "slack:message",
         slack_payload,
         pool=fresh_db,
@@ -272,7 +272,6 @@ async def test_writer_observations_match_inline_for_same_input(
         alias_repo=EntityAliasRepo(fresh_db),
         embedder=embedder,
     )
-    inline_obs = inline_result.observation
 
     # ---- B. Writer path: feed the M2.3 NormalizedEnvelope shape ----
     #         the normalizer would have emitted from an equivalent

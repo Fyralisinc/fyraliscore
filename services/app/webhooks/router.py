@@ -13,9 +13,10 @@ Request flow:
        Slack URL-verification handshake have a dict to inspect.
        Malformed JSON does NOT immediately reject — the verifier still
        runs first so an attacker cannot probe the JSON-validity oracle.
-    5. Call `request.app.state.tenant_resolver.resolve(provider, payload,
-       headers)` to map the (provider, installation_id) pair to a
-       tenant. The outcome is captured but the rejection (if any) is
+    5. Resolve runtime from `request.app.state.integration_runtime`
+       (with legacy aliases as a compatibility bridge), then call the
+       tenant resolver to map the (provider, installation_id) pair to
+       a tenant. The outcome is captured but the rejection (if any) is
        deferred until AFTER signature verification — same security
        posture as before IN-08: signature failure first, then tenant.
     6. Load secrets via `await load_secrets(provider, tenant_id,
@@ -30,10 +31,10 @@ Request flow:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import structlog
@@ -72,6 +73,48 @@ from services.app.webhooks.verifier import WebhookVerificationError
 
 
 log = structlog.get_logger("webhooks.router")
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookRuntime:
+    """Runtime dependencies consumed by the webhook ingress router.
+
+    The canonical source is ``app.state.integration_runtime``. Legacy
+    aliases remain supported while tests and older mounted apps still wire
+    ``app.state.tenant_resolver`` / ``app.state.tenant_flags`` directly.
+    """
+
+    pool: Any | None
+    secret_store: Any | None
+    tenant_resolver: Any | None
+    tenant_flags: Any | None
+    kafka_producer: Any | None
+    s3_raw_client: Any | None
+    github_client: Any | None
+    github_replay_cache: Any | None
+
+
+def _webhook_runtime(request: Request) -> WebhookRuntime:
+    state = request.app.state
+    integration_runtime = getattr(state, "integration_runtime", None)
+
+    def runtime_attr(name: str) -> Any | None:
+        if integration_runtime is not None:
+            value = getattr(integration_runtime, name, None)
+            if value is not None:
+                return value
+        return getattr(state, name, None)
+
+    return WebhookRuntime(
+        pool=runtime_attr("pool"),
+        secret_store=runtime_attr("secret_store"),
+        tenant_resolver=runtime_attr("tenant_resolver"),
+        tenant_flags=runtime_attr("tenant_flags"),
+        kafka_producer=runtime_attr("kafka_producer"),
+        s3_raw_client=runtime_attr("s3_raw_client"),
+        github_client=runtime_attr("github_client"),
+        github_replay_cache=runtime_attr("github_replay_cache"),
+    )
 
 
 # Providers whose webhook bodies belong on the new ingestion data
@@ -155,6 +198,7 @@ def _kafka_partition_for_tenant(
 async def _attempt_kafka_path(
     request: Request,
     *,
+    runtime: WebhookRuntime,
     provider: str,
     source: str,
     tenant_id: Any,
@@ -179,8 +223,8 @@ async def _attempt_kafka_path(
     `fallback` metric is the only signal an operator sees that
     cutover connectivity is degraded.
     """
-    kafka_producer = getattr(request.app.state, "kafka_producer", None)
-    s3_client = getattr(request.app.state, "s3_raw_client", None)
+    kafka_producer = runtime.kafka_producer
+    s3_client = runtime.s3_raw_client
     if kafka_producer is None or s3_client is None:
         # Cutover requires both S3 + Kafka wired. A missing dep at
         # this point is a deployment misconfiguration (the flag
@@ -259,6 +303,7 @@ async def _attempt_kafka_path(
 async def _maybe_shadow_write_webhook(
     request: Request,
     *,
+    runtime: WebhookRuntime,
     provider: str,
     tenant_id: Any,
     raw_body: bytes,
@@ -274,10 +319,10 @@ async def _maybe_shadow_write_webhook(
 
     No-ops cleanly when:
       - provider is not in the shadow-source map (linear/stripe).
-      - app.state.kafka_producer or app.state.s3_raw_client is unset
+      - runtime.kafka_producer or runtime.s3_raw_client is unset
         (gateway-config: the lifespan handler hasn't wired the
         shadow deps; pre-M2 deployments).
-      - app.state.tenant_flags reports
+      - runtime.tenant_flags reports
         ingestion.shadow_write_enabled=False for this tenant.
 
     Per LLD §11 (per-tenant flag) + M2 §M2.1.
@@ -287,9 +332,9 @@ async def _maybe_shadow_write_webhook(
         if source is None:
             return  # linear / stripe / future providers — not in scope
 
-        kafka_producer = getattr(request.app.state, "kafka_producer", None)
-        s3_client = getattr(request.app.state, "s3_raw_client", None)
-        tenant_flags = getattr(request.app.state, "tenant_flags", None)
+        kafka_producer = runtime.kafka_producer
+        s3_client = runtime.s3_raw_client
+        tenant_flags = runtime.tenant_flags
 
         if kafka_producer is None or s3_client is None:
             # Shadow deps not wired — silent skip. Pre-M2 deployments
@@ -515,6 +560,7 @@ def _slack_lifecycle_event(payload: Mapping[str, Any] | None) -> str | None:
 async def _handle_github_lifecycle(
     *,
     request: Request,
+    runtime: WebhookRuntime,
     outcome: Any,
     payload: Mapping[str, Any],
     event_type: str,
@@ -525,7 +571,7 @@ async def _handle_github_lifecycle(
     `services.ingest.integrations.github.lifecycle.dispatch` and return its
     JSON body with HTTP 200.
     """
-    pool = getattr(request.app.state, "pool", None)
+    pool = runtime.pool
     if pool is None or installation_id is None:
         log.error(
             "github_lifecycle_deps_missing",
@@ -534,16 +580,15 @@ async def _handle_github_lifecycle(
         )
         return JSONResponse({"handled": event_type}, status_code=200)
 
-    github_client = getattr(request.app.state, "github_client", None)
+    github_client = runtime.github_client
     cache_dict = None
     if github_client is not None:
         cache_dict = getattr(github_client, "_installation_tokens", None)
 
-    tenant_resolver = getattr(request.app.state, "tenant_resolver", None)
+    tenant_resolver = runtime.tenant_resolver
 
     try:
         from services.ingest.integrations.github.lifecycle import dispatch
-        from lib.shared.errors import ValidationError as _ValidationError
         body = await dispatch(
             event_type=event_type,
             payload=payload,
@@ -572,6 +617,7 @@ async def _handle_github_lifecycle(
 
 async def _handle_slack_lifecycle(
     request: Request,
+    runtime: WebhookRuntime,
     outcome: Any,
     payload: Mapping[str, Any],
     event_type: str,
@@ -591,9 +637,9 @@ async def _handle_slack_lifecycle(
         # happen, but defensively close the request out.
         return JSONResponse({"handled": event_type}, status_code=200)
 
-    pool = getattr(request.app.state, "pool", None)
-    secret_store = getattr(request.app.state, "secret_store", None)
-    tenant_resolver = getattr(request.app.state, "tenant_resolver", None)
+    pool = runtime.pool
+    secret_store = runtime.secret_store
+    tenant_resolver = runtime.tenant_resolver
     if pool is None or secret_store is None or tenant_resolver is None:
         log.error(
             "slack_uninstall_deps_missing",
@@ -634,11 +680,12 @@ def build_webhooks_router() -> APIRouter:
     """Create the FastAPI router. Mounted at the app root by the
     gateway so paths read as `/webhooks/{provider}/{subpath:path}`.
 
-    The router is stateless — all deps are resolved off `request.app.state`
-    so tests can construct the gateway app and exercise the router
-    without further wiring. Notably, `app.state.tenant_resolver` is
-    the IN-07 DB-backed resolver wired by IN-08 (see
-    `services/app/gateway/main.py::_wire_in08_state`).
+    The router is stateless — all deps are resolved off the gateway
+    runtime attached to `request.app.state`, so tests can construct the
+    gateway app and exercise the router without further wiring. Notably,
+    `app.state.integration_runtime.tenant_resolver` is the DB-backed
+    resolver wired by gateway startup (see
+    `services/app/gateway/state_wiring.py::wire_integration_runtime_state`).
     """
     router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -691,15 +738,17 @@ def build_webhooks_router() -> APIRouter:
         ):
             return notion_webhook.handle_verification_handshake(payload)
 
+        runtime = _webhook_runtime(request)
+
         # Step 5: resolve tenant via the IN-07 DB-backed resolver.
         # `payload or {}` keeps the API contract clean for Stripe
         # (header-only id extraction) and for malformed bodies.
-        tenant_resolver = getattr(request.app.state, "tenant_resolver", None)
+        tenant_resolver = runtime.tenant_resolver
         if tenant_resolver is None:
             # Gateway misconfiguration — fail loud rather than silently
-            # falling back to the legacy env-var resolver. The
-            # `_wire_in08_state` lifespan hook is the single chokepoint
-            # that populates this attribute.
+            # falling back to a legacy resolver. Gateway lifespan
+            # integration wiring is the single chokepoint that
+            # populates this dependency.
             log.error("webhook_router_tenant_resolver_missing", provider=provider)
             return JSONResponse(
                 {
@@ -781,9 +830,7 @@ def build_webhooks_router() -> APIRouter:
         # outcome enforcement. Defense-in-depth — observation-layer
         # dedup is the correctness backstop.
         if provider == "github":
-            replay_cache = getattr(
-                request.app.state, "github_replay_cache", None,
-            )
+            replay_cache = runtime.github_replay_cache
             github_installation_id = _github_installation_id_from_payload(
                 payload,
             )
@@ -868,6 +915,7 @@ def build_webhooks_router() -> APIRouter:
             if slack_lifecycle is not None:
                 return await _handle_slack_lifecycle(
                     request,
+                    runtime,
                     outcome,
                     payload,
                     slack_lifecycle,
@@ -886,6 +934,7 @@ def build_webhooks_router() -> APIRouter:
             if event_type in ("installation", "installation_repositories"):
                 return await _handle_github_lifecycle(
                     request=request,
+                    runtime=runtime,
                     outcome=outcome,
                     payload=payload or {},
                     event_type=event_type,
@@ -894,9 +943,8 @@ def build_webhooks_router() -> APIRouter:
 
             # Repo filter: only applies when the installation pinned an
             # explicit list. NULL = "all repositories" (no filter).
-            pool = getattr(request.app.state, "pool", None)
             selected = await _load_github_selected_repositories(
-                pool, outcome.installation_row_id,
+                runtime.pool, outcome.installation_row_id,
             )
             if selected is not None:
                 repo_full = _github_repo_full_name(payload)
@@ -930,9 +978,7 @@ def build_webhooks_router() -> APIRouter:
         flag_enabled = False
         cutover_source = _CUTOVER_ENABLED_PROVIDERS.get(provider)
         if cutover_source is not None:
-            tenant_flags = getattr(
-                request.app.state, "tenant_flags", None,
-            )
+            tenant_flags = runtime.tenant_flags
             if tenant_flags is not None:
                 flag_enabled = await tenant_flags.kafka_path_enabled(
                     tenant_id_uuid,
@@ -945,6 +991,7 @@ def build_webhooks_router() -> APIRouter:
             # M5.2's full-mode path.
             succeeded = await _attempt_kafka_path(
                 request,
+                runtime=runtime,
                 provider=provider,
                 source=cutover_source,
                 tenant_id=tenant_id_uuid,
@@ -1086,6 +1133,7 @@ def build_webhooks_router() -> APIRouter:
         if not flag_enabled:
             await _maybe_shadow_write_webhook(
                 request,
+                runtime=runtime,
                 provider=provider,
                 tenant_id=tenant_id_uuid,
                 raw_body=raw,

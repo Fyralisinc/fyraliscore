@@ -13,15 +13,13 @@ import signal
 import subprocess
 import sys
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
-import orjson
 import pytest
 
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.workflows.reconciler import (
-    SIGNAL_KIND_SHARDS_COMPLETED,
     SIGNAL_KIND_SOURCE_COMPLETED,
     TENANT_ONBOARDING_INBOX_ID,
     TENANT_ONBOARDING_INBOX_KIND,
@@ -36,7 +34,11 @@ from services.ingest.ingestion.workflows.tenant_onboarding import (
 # A27.6: the shared moto S3 server provides the raw-tier endpoint the
 # M6.7 shard_fetch producer writes to (subprocesses inherit
 # S3_ENDPOINT_URL via os.environ.copy()).
-pytestmark = [pytest.mark.timeout(300), pytest.mark.usefixtures("moto_s3_server")]
+pytestmark = [
+    pytest.mark.subprocess_e2e,
+    pytest.mark.timeout(300),
+    pytest.mark.usefixtures("moto_s3_server"),
+]
 
 
 def _ensure_clean_helper() -> str:

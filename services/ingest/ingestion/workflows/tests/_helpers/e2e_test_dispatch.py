@@ -17,7 +17,6 @@ sidesteps that.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import asyncpg
 

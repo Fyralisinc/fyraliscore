@@ -285,8 +285,7 @@ export type RecCard = {
   expand_cta?: string;           // "Ask why" | "Inspect" | "Open"
   actions: TriageAction[];       // primary first; UI collapses into Approve / Discuss / Not now
   detail?: DetailPanel;
-  // CEO-map Tier 1 enrichment fields (optional; absent when substrate
-  // can't derive them honestly).
+  // Today card enrichment fields derived by the backend aggregator.
   stake?: Stake | null;
   truth_freshness_seconds?: number | null;
 };

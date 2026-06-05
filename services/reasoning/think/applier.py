@@ -620,7 +620,7 @@ async def _emit_valid_diff_outcome_events(
     query so a 20-node diff costs ~1 query, not 20*19.
     """
     try:
-        from services.sage.inquiry_traces.emitter import (
+        from services.reasoning.sage.inquiry_traces.emitter import (
             current_trace_context,
             emit_event,
             emission_enabled,

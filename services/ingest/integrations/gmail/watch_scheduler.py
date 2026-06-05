@@ -14,7 +14,6 @@ import asyncio
 import os
 import random
 import socket
-from typing import Any
 from uuid import UUID
 
 import asyncpg

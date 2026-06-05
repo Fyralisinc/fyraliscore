@@ -4,11 +4,9 @@ context.
 """
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from services.reasoning.retrieval.assembler import (
@@ -19,6 +17,7 @@ from services.reasoning.retrieval.assembler import (
 from services.reasoning.retrieval.config import RetrievalConfig
 from services.reasoning.retrieval.primary import TriggerContext, primary_retrieve
 
+from services.platform.access_control.materialized import refresh_all
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
 
 
@@ -106,6 +105,7 @@ async def test_assembler_access_redacts_private_model_for_outside_actor(
     tx_conn, fresh_db, tenant
 ):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await refresh_all(conn=tx_conn, concurrently=False)
     # Pick a Model scoped to the hero_actor and mark it private.
     hero_actor = fs.hero_actor_id
     rows = await tx_conn.fetch(
@@ -189,10 +189,6 @@ async def test_assembler_bridge_context_none_without_counterparty(
     # has a counterparty, bridge_context is None.
     have_ref = any(
         c.external_counterparty_ref is not None
-        for c in bundle.acts_summary["commitments"]
-    )
-    has_customer_commit = any(
-        (await_func := None) or False
         for c in bundle.acts_summary["commitments"]
     )
     # Explicit check against the DB for customer_commitments linkage:

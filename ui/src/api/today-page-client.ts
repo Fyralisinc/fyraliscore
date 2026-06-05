@@ -4,6 +4,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   ApplyResult,
   CorrectionBody,
@@ -59,7 +60,7 @@ export function getTodayPage(
   since?: string,
 ): Promise<TodayPageData> {
   const qp = since ? `?since=${encodeURIComponent(since)}` : "";
-  return request<TodayPageData>(`/today${qp}`, undefined, signal);
+  return request<TodayPageData>(API_ROUTES.todayPage.root(qp), undefined, signal);
 }
 
 export function getDeltaDetail(
@@ -67,7 +68,7 @@ export function getDeltaDetail(
   signal?: AbortSignal,
 ): Promise<DecisionDelta> {
   return request<DecisionDelta>(
-    `/today/deltas/${encodeURIComponent(deltaId)}`,
+    API_ROUTES.todayPage.delta(deltaId),
     undefined,
     signal,
   );
@@ -78,7 +79,7 @@ export function getDeltaEvidence(
   signal?: AbortSignal,
 ): Promise<EvidenceResponse> {
   return request<EvidenceResponse>(
-    `/today/deltas/${encodeURIComponent(deltaId)}/evidence`,
+    API_ROUTES.todayPage.evidence(deltaId),
     undefined,
     signal,
   );
@@ -89,7 +90,7 @@ export function applyDelta(
   signal?: AbortSignal,
 ): Promise<ApplyResult> {
   return request<ApplyResult>(
-    `/today/deltas/${encodeURIComponent(deltaId)}/apply`,
+    API_ROUTES.todayPage.apply(deltaId),
     { method: "POST", body: JSON.stringify({}) },
     signal,
   );
@@ -101,7 +102,7 @@ export function delegateDelta(
   signal?: AbortSignal,
 ): Promise<DelegateResult> {
   return request<DelegateResult>(
-    `/today/deltas/${encodeURIComponent(deltaId)}/delegate`,
+    API_ROUTES.todayPage.delegate(deltaId),
     { method: "POST", body: JSON.stringify(body) },
     signal,
   );
@@ -113,7 +114,7 @@ export function submitCorrection(
   signal?: AbortSignal,
 ): Promise<CorrectionResult> {
   return request<CorrectionResult>(
-    `/today/deltas/${encodeURIComponent(deltaId)}/correction`,
+    API_ROUTES.todayPage.correction(deltaId),
     { method: "POST", body: JSON.stringify(body) },
     signal,
   );

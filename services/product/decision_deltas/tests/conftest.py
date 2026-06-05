@@ -5,6 +5,7 @@ tenant_id, seeded_actor) so the router-level tests get a fully wired
 FastAPI app + real Postgres. Also exposes small helpers to seed
 decision deltas and source recommendations directly via SQL.
 """
+# ruff: noqa: F811
 from __future__ import annotations
 
 import json

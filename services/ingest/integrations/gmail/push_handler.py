@@ -23,11 +23,8 @@ from uuid import UUID
 import structlog
 
 from lib.shared.errors import CompanyOSError
-from lib.shared.tenant_context import tenant_transaction
 
 from services.ingest.integrations.gmail.client import (
-    GMAIL_METADATA_SCOPE,
-    GMAIL_READONLY_SCOPE,
     GmailClient,
     GoogleApiError,
     GoogleHttpClient,

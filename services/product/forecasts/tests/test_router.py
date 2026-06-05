@@ -35,7 +35,6 @@ async def forecasts_client(app_deps) -> AsyncGenerator[httpx.AsyncClient, None]:
         alias_repo=app_deps.alias_repo,
         embedder=app_deps.embedder,
         rate_limiter=app_deps.rate_limiter,
-        slack_signing_secret=app_deps.slack_signing_secret,
         configure_logging=False,
     )
     app.include_router(build_router())

@@ -1,0 +1,333 @@
+"""Canonical runtime process manifest.
+
+The application has several runtime launch surfaces: local dogfood
+scripts, docker compose, and tests. This module keeps the process names
+and commands in one typed list so new workers do not quietly appear in
+one surface and disappear from another.
+"""
+from __future__ import annotations
+
+import shlex
+from dataclasses import dataclass
+from typing import Literal
+
+
+RuntimeMode = Literal["dogfood", "production"]
+
+
+@dataclass(frozen=True)
+class RuntimeProcess:
+    name: str
+    family: str
+    command: tuple[str, ...] | None
+    modes: frozenset[RuntimeMode]
+    description: str
+    compose_service: str | None = None
+    log_file: str | None = None
+    cwd: str = "."
+    has_healthcheck: bool = False
+    singleton: bool = False
+
+    def compose_command(self) -> str | None:
+        if self.command is None:
+            return None
+        return shlex.join(self.command)
+
+
+def _proc(
+    name: str,
+    family: str,
+    command: tuple[str, ...] | None,
+    modes: tuple[RuntimeMode, ...],
+    description: str,
+    *,
+    compose_service: str | None = None,
+    log_file: str | None = None,
+    cwd: str = ".",
+    has_healthcheck: bool = False,
+    singleton: bool = False,
+) -> RuntimeProcess:
+    return RuntimeProcess(
+        name=name,
+        family=family,
+        command=command,
+        modes=frozenset(modes),
+        description=description,
+        compose_service=compose_service,
+        log_file=log_file,
+        cwd=cwd,
+        has_healthcheck=has_healthcheck,
+        singleton=singleton,
+    )
+
+
+_PROCESSES: tuple[RuntimeProcess, ...] = (
+    _proc(
+        "gateway",
+        "app",
+        None,
+        ("dogfood", "production"),
+        "FastAPI gateway and in-process schedulers.",
+        compose_service="gateway",
+        log_file="gateway.log",
+    ),
+    _proc(
+        "think_worker",
+        "reasoning",
+        ("python", "scripts/run_think_worker.py"),
+        ("dogfood", "production"),
+        "Claim reasoning worker.",
+        compose_service="think_worker",
+        log_file="think_worker.log",
+    ),
+    _proc(
+        "post_commit_worker",
+        "reasoning",
+        ("python", "scripts/run_post_commit_worker.py"),
+        ("dogfood", "production"),
+        "Post-commit cascade and follow-up worker.",
+        compose_service="post_commit_worker",
+        log_file="post_commit_worker.log",
+    ),
+    _proc(
+        "topology_sweeper",
+        "reasoning",
+        ("python", "scripts/run_topology_sweeper.py"),
+        ("dogfood",),
+        "Local latent relationship-field refresh loop.",
+        log_file="topology_sweeper.log",
+    ),
+    _proc(
+        "ui",
+        "app",
+        ("npm", "run", "dev"),
+        ("dogfood", "production"),
+        "Frontend UI.",
+        compose_service="ui",
+        log_file="ui.log",
+        cwd="ui",
+    ),
+    _proc(
+        "oauth_poller",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.oauth_poller"),
+        ("production",),
+        "OAuth install polling workflow.",
+        compose_service="oauth_poller",
+    ),
+    _proc(
+        "tenant_onboarding",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.tenant_onboarding"),
+        ("production",),
+        "Tenant onboarding workflow.",
+        compose_service="tenant_onboarding",
+    ),
+    _proc(
+        "source_onboarding",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.source_onboarding"),
+        ("production",),
+        "Source onboarding workflow.",
+        compose_service="source_onboarding",
+    ),
+    _proc(
+        "shard_fetch",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.shard_fetch"),
+        ("production",),
+        "Backfill shard fetch workflow.",
+        compose_service="shard_fetch",
+    ),
+    _proc(
+        "reconciler",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.reconciler"),
+        ("production",),
+        "Onboarding reconciliation workflow.",
+        compose_service="reconciler",
+    ),
+    _proc(
+        "feels_onboarded_monitor",
+        "ingest-workflow",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.workflows.feels_onboarded_monitor",
+        ),
+        ("production",),
+        "Onboarding progress monitor.",
+        compose_service="feels_onboarded_monitor",
+        singleton=True,
+    ),
+    _proc(
+        "periodic_reconciler",
+        "ingest-workflow",
+        ("python", "-m", "services.ingest.ingestion.workflows.periodic_reconciler"),
+        ("production",),
+        "Steady-state ingestion gap reconciler.",
+        compose_service="periodic_reconciler",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "normalizer",
+        "ingest-consumer",
+        ("python", "-m", "services.ingest.ingestion.normalizer.worker"),
+        ("production",),
+        "Raw-envelope normalizer.",
+        compose_service="normalizer",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "observation_writer",
+        "ingest-consumer",
+        ("python", "-m", "services.ingest.ingestion.writers.observation_writer"),
+        ("production",),
+        "Normalized observation writer.",
+        compose_service="observation_writer",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "dlq_writer",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.dlq_writer.dlq_writer",
+        ),
+        ("production",),
+        "Dead-letter writer.",
+        compose_service="dlq_writer",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "embedding_worker",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.embedding_worker.embedding_worker",
+        ),
+        ("production",),
+        "Kafka embedding worker.",
+        compose_service="embedding_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "embedding_backlog",
+        "ingest-recovery",
+        ("python", "-m", "services.ingest.ingestion.recovery.embedding_backlog"),
+        ("production",),
+        "DB-scanning embedding backlog drainer.",
+        compose_service="embedding_backlog",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "circuit_breaker",
+        "ingest-recovery",
+        ("python", "-m", "services.ingest.ingestion.feature_flags"),
+        ("production",),
+        "Ingestion Kafka cutover circuit breaker.",
+        compose_service="circuit_breaker",
+        has_healthcheck=True,
+        singleton=True,
+    ),
+    _proc(
+        "discord_gateway_worker",
+        "live-source",
+        ("python", "scripts/run_discord_gateway_worker.py"),
+        ("production",),
+        "Discord gateway session worker.",
+        compose_service="discord_gateway_worker",
+        singleton=True,
+    ),
+    _proc(
+        "gmail_watch_scheduler",
+        "live-source",
+        ("python", "scripts/run_gmail_watch_scheduler.py"),
+        ("production",),
+        "Gmail watch renewal scheduler.",
+        compose_service="gmail_watch_scheduler",
+    ),
+    _proc(
+        "gmail_history_poller",
+        "live-source",
+        ("python", "scripts/run_gmail_history_poller.py"),
+        ("production",),
+        "Gmail history poller.",
+        compose_service="gmail_history_poller",
+    ),
+    _proc(
+        "google_calendar_live_poller",
+        "live-source",
+        ("python", "scripts/run_google_calendar_live_poller.py"),
+        ("production",),
+        "Google Calendar live poller.",
+        compose_service="google_calendar_live_poller",
+    ),
+    _proc(
+        "google_drive_live_poller",
+        "live-source",
+        ("python", "scripts/run_google_drive_live_poller.py"),
+        ("production",),
+        "Google Drive live poller.",
+        compose_service="google_drive_live_poller",
+    ),
+    _proc(
+        "google_calendar_watch_scheduler",
+        "live-source",
+        ("python", "scripts/run_google_calendar_watch_scheduler.py"),
+        ("production",),
+        "Google Calendar watch renewal scheduler.",
+        compose_service="google_calendar_watch_scheduler",
+    ),
+    _proc(
+        "google_drive_watch_scheduler",
+        "live-source",
+        ("python", "scripts/run_google_drive_watch_scheduler.py"),
+        ("production",),
+        "Google Drive watch renewal scheduler.",
+        compose_service="google_drive_watch_scheduler",
+    ),
+    _proc(
+        "github_intel_worker",
+        "live-source",
+        ("python", "scripts/run_github_intel_worker.py"),
+        ("production",),
+        "GitHub ordered intelligence worker.",
+        compose_service="github_intel_worker",
+    ),
+)
+
+
+def all_processes() -> tuple[RuntimeProcess, ...]:
+    return _PROCESSES
+
+
+def processes_for(mode: RuntimeMode) -> tuple[RuntimeProcess, ...]:
+    return tuple(p for p in _PROCESSES if mode in p.modes)
+
+
+def dogfood_processes() -> tuple[RuntimeProcess, ...]:
+    return processes_for("dogfood")
+
+
+def production_processes() -> tuple[RuntimeProcess, ...]:
+    return processes_for("production")
+
+
+def process_by_name(name: str) -> RuntimeProcess:
+    for process in _PROCESSES:
+        if process.name == name:
+            return process
+    raise KeyError(name)
+
+
+__all__ = [
+    "RuntimeProcess",
+    "all_processes",
+    "dogfood_processes",
+    "process_by_name",
+    "processes_for",
+    "production_processes",
+]

@@ -27,7 +27,6 @@ from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.app.gateway.main import build_app
 from services.app.gateway.rate_limit import RateLimiter
-from services.ingest.synthetic.fault_profiles import RATE_LIMITED
 from services.ingest.synthetic.fixtures import make_github_repos
 from services.ingest.synthetic.live_generators.github_webhook import (
     GithubWebhookGenerator,
@@ -397,7 +396,7 @@ async def test_github_webhook_default_kwarg_preserves_existing_behavior(
     """No node_id/occurred_at_iso kwargs → auto-minted node_id; the
     observation's external_id is that node_id. Backward-compat guard."""
     iid = "999DEF"
-    tenant_id = await _seed_github_install(fresh_db, iid)
+    await _seed_github_install(fresh_db, iid)
     app = _build_app(fresh_db)
     async with GithubWebhookGenerator(
         app=app, mock_client=_mock(iid), signing_secret=_SECRET,
@@ -424,7 +423,7 @@ async def test_github_webhook_injected_identity_propagates_to_observation(
     from datetime import datetime, timezone
 
     iid = "999INJ"
-    tenant_id = await _seed_github_install(fresh_db, iid)
+    await _seed_github_install(fresh_db, iid)
     app = _build_app(fresh_db)
     injected_node = "I_kwDOtwin0001"
     injected_ts = "2026-02-02T03:04:05Z"

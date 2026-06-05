@@ -28,54 +28,63 @@
 
 ### P0-1: Slack signature verification effectively bypassed when secret is unset
 
-**Priority:** P0 · **Effort:** S
+**Priority:** P0 · **Effort:** S · **Status:** Resolved 2026-06-03
 
 **Problem**
 
-`services/app/gateway/main.py:598-610` gates Slack HMAC verification on `channel == "slack:message"`. When `deps.slack_signing_secret` is missing, the code passes `secret or ""` to `verify_slack_signature`. With an empty key, HMAC is computed against the empty secret and the request is silently accepted as valid — enabling unauthenticated webhook injection from anyone who can reach `/ingest`.
+Historical `POST /ingest/slack:message` gated Slack HMAC verification on a
+gateway-level `deps.slack_signing_secret`. When that value was missing, the code
+passed `secret or ""` to `verify_slack_signature`.
 
-**Impact**
+**Resolution**
 
-Reliability + Security: arbitrary, attacker-controlled signals injected directly into the substrate (observations/triggers). Pollutes think pipeline, models, recommendations.
-
-**Proposed Change**
-
-- If `COMPANY_OS_ENV != "dev"` and `slack_signing_secret` is unset → return `503 (slack_signing_secret_not_configured)`
-- In dev, log a loud warning and require an explicit `INSECURE_SLACK_INGEST=1` opt-in
-- Update `verify_slack_signature` to refuse empty secrets defensively
+`/ingest/{channel}` is now treated as a bearer-authenticated internal/dev ingest
+endpoint and no longer owns Slack-specific HMAC state. Public Slack traffic uses
+`/webhooks/slack/...`, whose verifier loads per-provider secrets via
+`services/app/webhooks/secrets.py` and `provider_installations`/secret-store
+state. `GatewayDeps` and `build_app()` no longer carry a Slack-only signing
+secret.
 
 **Acceptance Criteria**
 
-- `POST /ingest channel slack:message` in prod with no secret → `503`
-- Same call in prod with valid signature → `200`
-- Same call in prod with bad signature → `401`
-- Same call in dev without `INSECURE_SLACK_INGEST=1` → `503`
+- No `slack_signing_secret` field on `GatewayDeps`.
+- No `slack_signing_secret` parameter on `build_app()`.
+- `/webhooks/slack/...` remains signature-verified through the webhook secret
+  loader.
+- `/ingest/{channel}` still requires bearer auth.
 
 **Test Plan**
 
-- Unit: `test_slack_signature_required_in_prod` (3 paths above)
-- Integration: send a forged Slack POST against the gateway with no secret; expect `503`
+- Gateway ingest tests cover bearer-authenticated `/ingest/slack:message`
+  without a gateway Slack secret.
+- Webhook verifier tests cover Slack HMAC via `WEBHOOK_SECRET_SLACK` and
+  DB-backed secret-store rows.
 
 ---
 
-### P0-2: Duplicated migration prefix `0014_*` produces non-deterministic schema
+### P0-2: Duplicated migration prefixes produced non-deterministic schema
 
-**Priority:** P0 · **Effort:** S
+**Priority:** P0 · **Effort:** S · **Status:** Resolved 2026-06-03
 
 **Problem**
 
-`db/migrations/0014_access_control.sql` and `db/migrations/0014_customer_commitments_superset.sql` share the `0014_` prefix. `scripts/docker-migrate.sh` iterates over filenames; ordering depends on `ls` sort. Different environments may apply them in different orders. `check_schema_drift.py` is permissive enough that the divergence is invisible.
+Historical migration files shared the `0014_*` and `0043_*` prefixes. The
+`main`/`cannonical` consolidation also introduced Sage migrations numbered
+`0049_*`-`0057_*`, colliding with ingestion migrations already using those
+prefixes. `scripts/docker-migrate.sh` correctly rejected the duplicate prefix
+set, so a fresh compose migration run could not start.
 
 **Impact**
 
 Correctness: cross-environment schema divergence; downstream queries depending on column order/indexes can silently miss rows. Hard to reproduce bugs in prod.
 
-**Proposed Change**
+**Resolution**
 
-- Rename `0014_customer_commitments_superset.sql` → `0025_customer_commitments_superset.sql`
-- Update `check_schema_drift.py`'s expected order
-- Add a `lib/shared/db.py` boot assertion that scans `db/migrations/*.sql` and fails on duplicate prefixes
-- Run `check_schema_drift.py` in CI before deploy and fail on drift
+- Renamed `0014_customer_commitments_superset.sql` → `0025_customer_commitments_superset.sql`.
+- Renamed `0043_single_demo_company.sql` → `0026_single_demo_company.sql`.
+- Renamed the Sage migration series to `0084_*`-`0092_*`.
+- Restored hard-fail duplicate-prefix behavior in `lib.shared.migrations`.
+- Added a CI migration filename check.
 
 **Acceptance Criteria**
 
@@ -214,6 +223,44 @@ Unit: simulate concurrency with `asyncio.gather(*[apply_diff(...) for _ in range
 
 ---
 
+### P1-0: Ruff unused-import / fixture-shadowing baseline blocked stricter lint
+
+**Priority:** P1 · **Effort:** M · **Status:** Resolved 2026-06-03
+
+**Problem**
+
+The repo previously advertised `ruff check --select E9,F63,F7,F82,F821,F811,F401 .`
+in CI, but the codebase had a large pre-existing `F401`/`F811` baseline,
+mostly unused imports, pytest fixture-name collisions, and generated or demo
+code. During the 2026-06-03 cleanup this baseline was removed or made explicit
+with narrow file-level ignores where pytest fixture shadowing is intentional.
+
+**Impact**
+
+Maintainability: unused imports and fixture shadowing were noisy enough that
+future real lint findings could hide in the baseline.
+
+**Resolution**
+
+- Removed stale imports with ruff's fixer.
+- Deleted a duplicated `/v1/history` gateway handler caught by `F811`.
+- Added narrow file-level `F811` ignores for pytest modules that intentionally
+  import fixtures and use the same names as fixture parameters.
+- Restored CI to enforce `E9,F63,F7,F82,F821,F811,F401`.
+
+**Acceptance Criteria**
+
+- `ruff check --select E9,F63,F7,F82,F821,F811,F401 .` passes locally and in CI.
+- Intentional pytest fixture redefinitions have narrow per-file ignores.
+- Generated/demo artifacts are excluded by policy rather than by accident.
+
+**Test Plan**
+
+- Run the full ruff command above.
+- Run the focused backend test suite to catch fixture import regressions.
+
+---
+
 ### P1-1: `GATEWAY_MOUNT_SIM=1` enabled in production docker-compose
 
 **Priority:** P1 · **Effort:** S
@@ -276,7 +323,7 @@ Integration: spawn worker → simulate hang via `await asyncio.sleep(600)` → s
 
 **Problem**
 
-`db/migrations/0014_customer_commitments_superset.sql:50`: `NUMERIC` (no precision) defaults to integer-only on inserts via Python `Decimal('123.45')`. Other money columns explicitly use `NUMERIC(10,6)` (`0018_view_render_costs.sql`).
+`db/migrations/0025_customer_commitments_superset.sql:50`: `NUMERIC` (no precision) defaults to integer-only on inserts via Python `Decimal('123.45')`. Other money columns explicitly use `NUMERIC(10,6)` (`0018_view_render_costs.sql`).
 
 **Impact**
 
@@ -805,11 +852,14 @@ Many sites: `Conversation.tsx:25`, `RecCard.tsx:502,517,676`, `JustUpdated.tsx:2
 
 ### P2-32: `GATEWAY_OWNS_POOL` and `GATEWAY_START_GRT_SCHEDULER` undocumented
 
-**Priority:** P2 · **Effort:** S
+**Priority:** P2 · **Effort:** S · **Status:** Partially resolved 2026-06-03
 
-Both flags drive critical lifecycle behavior; neither in `.env.example`.
+`GATEWAY_OWNS_POOL` was removed from the gateway app factory. Pool ownership is
+now deterministic: `build_app()` closes the pool only when it created it; an
+injected pool remains owned by the caller. `GATEWAY_START_GRT_SCHEDULER` still
+needs a separate docs/config pass if it remains live.
 
-**Proposed Change:** Document both; add startup validation that warns if `OWNS_POOL=1` but the lifespan didn't actually create the pool.
+**Remaining Change:** Document or remove `GATEWAY_START_GRT_SCHEDULER`.
 
 ---
 
@@ -909,7 +959,6 @@ Both flags drive critical lifecycle behavior; neither in `.env.example`.
 
 ### Undefined Behavior
 
-- Two replicas where both have `GATEWAY_OWNS_POOL=1` — pool can be closed while in use
 - Migration ordering of duplicate `0014_*` files
 - `applied_triggers` race outcome on PK collision (currently raises uncaught)
 - Numeric coercion of `Decimal('123.45')` into a `NUMERIC` column with default precision (silent truncate)
@@ -923,7 +972,7 @@ Both flags drive critical lifecycle behavior; neither in `.env.example`.
 
 | Task | Why | Effort |
 |------|-----|--------|
-| P0-1 Slack signature bypass fix | Closes auth bypass, ~20 LoC | S |
+| P0-1 Slack signature bypass fix | Resolved 2026-06-03 | S |
 | P0-2 Rename duplicate 0014 migration | Removes a class of latent bugs | S |
 | P0-3 Strip Authorization from logs | Direct compliance + security gain | S |
 | P0-6 `ON CONFLICT DO NOTHING RETURNING` | Single-query fix, regression-test exists | S |

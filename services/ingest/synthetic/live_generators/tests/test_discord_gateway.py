@@ -27,7 +27,7 @@ from lib.shared.ids import uuid7
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.integrations.discord.gateway.dispatch import DispatchDeps
-from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
+from services.ingest.synthetic.fault_profiles import FaultProfile
 from services.ingest.synthetic.fixtures import make_discord_guild
 from services.ingest.synthetic.live_generators import (
     DiscordGatewayGenerator,
@@ -36,9 +36,7 @@ from services.ingest.synthetic.live_generators import (
 from services.ingest.synthetic.mock_clients import MockDiscordClient
 from services.ingest.synthetic.scenarios import (
     GatewayChannelEntry,
-    HIGH_VOLUME_BURST,
     LiveGatewayScenario,
-    MULTI_CHANNEL_PER_GUILD,
 )
 from services.app.webhooks.tenant_resolver import (
     InstallationCache,

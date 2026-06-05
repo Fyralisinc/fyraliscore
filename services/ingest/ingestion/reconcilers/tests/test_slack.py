@@ -8,8 +8,6 @@ import pytest
 
 from services.ingest.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
-    ReconciliationDecision,
-    ResharedShard,
 )
 from services.ingest.ingestion.reconcilers import slack as sl_rec
 from services.ingest.ingestion.reconcilers.slack import (

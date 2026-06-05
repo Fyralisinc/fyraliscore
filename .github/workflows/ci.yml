@@ -27,9 +27,9 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.6.9
 
-      # Conservative ruleset: catches real bugs (undefined names, syntax
-      # errors, unused imports) without enforcing style across the repo.
-      # Expand the --select list once the team agrees on a style baseline.
+      # Conservative ruleset: catches syntax/runtime bugs, unused imports,
+      # and accidental fixture/import redefinitions without enforcing broad
+      # style churn across the repo.
       - name: Ruff check
         run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
 
@@ -57,10 +57,58 @@ jobs:
       - name: Check layer boundaries
         run: lint-imports
 
+  migration-filenames:
+    name: Migrations (unique prefixes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject duplicate migration prefixes
+        run: |
+          dupes="$(
+            for f in db/migrations/*.sql; do
+              basename "$f" | sed -E 's/^([0-9]+)_.*/\1/'
+            done | sort | uniq -d
+          )"
+          if [ -n "$dupes" ]; then
+            echo "duplicate migration prefixes detected: ${dupes}" >&2
+            exit 1
+          fi
+
+  ui:
+    name: UI (typecheck + tests + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
   tests:
     name: Tests (unit + integration)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     services:
       postgres:
@@ -99,9 +147,11 @@ jobs:
       # Real-LLM tests are gated by RUN_REAL_LLM and DEEPSEEK_API_KEY (neither
       # set here, so they're skipped). Ollama-marked tests are excluded
       # because we don't spin up Ollama in PR CI — that runs nightly.
+      # The workflow subprocess E2Es spawn several long-running services and
+      # belong in a dedicated ingestion workflow, not the default PR suite.
       - name: Run unit + integration tests
         run: |
           .venv/bin/python -m pytest \
             --ignore=tests/real_llm \
-            -m "not ollama and not real_llm" \
+            -m "not ollama and not real_llm and not subprocess_e2e" \
             -v --tb=short

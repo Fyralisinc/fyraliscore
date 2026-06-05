@@ -15,8 +15,6 @@ The registry `STRATEGIES` maps QueryCategory -> strategy module so
 """
 from __future__ import annotations
 
-from typing import Callable
-
 from services.product.query.classifier import QueryCategory
 
 from . import arbitrary as _arbitrary

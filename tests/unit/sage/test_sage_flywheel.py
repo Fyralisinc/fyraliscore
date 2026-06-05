@@ -27,12 +27,12 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.inquiry_traces import OutcomeEventsRepo
-from services.sage.outcome_evaluator import OutcomeEvaluator
-from services.sage.topology_optimizer import TopologyOptimizer
-from tests.unit.sage._seed import seed_model as _shared_seed_model
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.inquiry_traces import OutcomeEventsRepo
+from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
+from services.reasoning.sage.topology_optimizer import TopologyOptimizer
+from ._seed import seed_model as _shared_seed_model
 
 pytestmark = pytest.mark.integration
 

@@ -11,9 +11,8 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timezone
 from uuid import UUID
 
 import asyncpg
@@ -35,7 +34,6 @@ from services.ingest.ingestion.core import (
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     HandlerNotFound,
-    ObservationDraft,
     get_handler,
     handler_channels,
 )

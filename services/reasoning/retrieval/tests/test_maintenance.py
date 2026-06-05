@@ -5,10 +5,8 @@ that no Model row is mutated.
 """
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from services.reasoning.retrieval.maintenance import (
@@ -108,7 +106,7 @@ async def test_maintenance_archival_suggestion(tx_conn, fresh_db, tenant):
 
 
 async def test_maintenance_percentile_snapshot(tx_conn, fresh_db, tenant):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     report = await background_relationship_maintenance(tenant, tx_conn)
     # Fixture has 100 Models across 5+ proposition kinds — percentile
     # snapshots should be non-zero.
@@ -133,7 +131,7 @@ async def test_maintenance_percentile_snapshot(tx_conn, fresh_db, tenant):
 
 
 async def test_maintenance_does_not_mutate_models(tx_conn, fresh_db, tenant):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     rows_before = await tx_conn.fetch(
         "SELECT id, status, activation, last_retrieved_at, retrieval_count, "
         "archived_at FROM models WHERE tenant_id = $1",
@@ -159,7 +157,7 @@ async def test_maintenance_does_not_mutate_models(tx_conn, fresh_db, tenant):
 
 
 async def test_maintenance_run_id_groups_entries(tx_conn, fresh_db, tenant):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     report = await background_relationship_maintenance(tenant, tx_conn)
     # Every row from this run has run_id == report.run_id.
     rows = await tx_conn.fetch(
@@ -173,7 +171,7 @@ async def test_maintenance_run_id_groups_entries(tx_conn, fresh_db, tenant):
 async def test_maintenance_tenant_isolation(
     tx_conn, fresh_db, tenant, other_tenant
 ):
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Run for other_tenant (empty).
     report = await background_relationship_maintenance(other_tenant, tx_conn)
     assert report.active_models_scanned == 0

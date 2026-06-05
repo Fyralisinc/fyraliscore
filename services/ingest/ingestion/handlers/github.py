@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,7 +35,6 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     HandlerError,
     ObservationDraft,
     register,

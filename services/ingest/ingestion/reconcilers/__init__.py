@@ -60,7 +60,7 @@ per-source reconcilers may override per source-specific concerns.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 from uuid import UUID
 
 import asyncpg

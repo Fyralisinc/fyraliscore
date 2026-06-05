@@ -22,12 +22,12 @@ from services.platform.execution.inquiry import (
     QuestionPolicySignal,
 )
 from services.reasoning.retrieval.primary import TriggerContext
-from services.sage.affordances.repo import AffordanceProfilesRepo
-from services.sage.affordances.types import RetrievalAffordanceProfile
-from services.sage.outcome_evaluator import OutcomeEvaluator
-from services.sage.reader import ReaderBudget, SynthesisReader
-from services.sage.topology_optimizer import TopologyOptimizer
-from tests.unit.sage._seed import ZERO_EMBEDDING, seed_model, seed_observation
+from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
+from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
+from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
+from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
+from services.reasoning.sage.topology_optimizer import TopologyOptimizer
+from ._seed import ZERO_EMBEDDING, seed_model, seed_observation
 
 
 pytestmark = pytest.mark.integration

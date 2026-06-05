@@ -298,15 +298,8 @@ async def _handle_t4_background(
 
     if trigger.subkind == "model_reeval":
         dependent_model_id = trigger.model_id
-        cause_model_id: UUID | None = None
         cause_kind = "supporting_archived"
         if trigger.seed_signature:
-            cmid = trigger.seed_signature.get("cause_model_id")
-            if cmid is not None:
-                try:
-                    cause_model_id = UUID(str(cmid))
-                except (ValueError, TypeError):
-                    cause_model_id = None
             ck = trigger.seed_signature.get("cause_kind")
             if isinstance(ck, str):
                 cause_kind = ck

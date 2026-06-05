@@ -26,7 +26,6 @@ import os
 import pathlib
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
 
 import asyncpg
 import pytest

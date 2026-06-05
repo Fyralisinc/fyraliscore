@@ -7,7 +7,6 @@ scenario-shaped rather than pathway-shaped.
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,9 +14,7 @@ from uuid import UUID
 
 import pytest
 
-from lib.shared.ids import uuid7
 from services.domain.models.edges_repo import EdgesRepo
-from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.assembler import AccessContext, assemble_context
 from services.reasoning.retrieval.config import RetrievalConfig
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext, primary_retrieve

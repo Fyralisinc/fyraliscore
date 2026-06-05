@@ -1,0 +1,849 @@
+/* ───────────────────────────────────────────────
+ * SCROLLBAR
+ * ─────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule-soft); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--rule); border: 2px solid transparent; background-clip: padding-box; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ───────────────────────────────────────────────
+ * DEMO PICKER (/demo) — landing page for the VC pitch flow.
+ * ─────────────────────────────────────────────── */
+
+.demo-picker-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 80px 32px 64px;
+  gap: 56px;
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255,255,255,0.85) 0%, transparent 60%),
+    var(--base);
+}
+
+.demo-picker-head {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 720px;
+}
+
+.demo-picker-mark {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.18) 0%, transparent 60%),
+    linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+  color: var(--accent-soft);
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 600;
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(19, 78, 74, 0.25),
+    0 1px 2px rgba(19, 78, 74, 0.32),
+    0 6px 16px rgba(19, 78, 74, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.demo-picker-title {
+  font-family: var(--serif);
+  font-size: 44px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--ink);
+  font-optical-sizing: auto;
+}
+
+.demo-picker-subtitle {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink-3);
+  max-width: 560px;
+}
+
+.demo-picker-error {
+  background: var(--critical-bg);
+  border: 1px solid var(--critical-bg-2);
+  color: var(--critical-text);
+  font-size: 13px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  max-width: 520px;
+  text-align: center;
+}
+
+.demo-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  width: 100%;
+  max-width: 1100px;
+}
+
+.demo-picker-skeleton {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 13px;
+  padding: 60px 0;
+}
+
+.demo-picker-card {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FCFCFD 100%);
+  border-radius: 14px;
+  padding: 28px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-card);
+  transition:
+    transform var(--t-base) var(--ease-spring),
+    box-shadow var(--t-base) var(--ease-out);
+}
+
+.demo-picker-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.demo-picker-card-tagline {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.demo-picker-card-name {
+  font-family: var(--serif);
+  font-size: 30px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--ink);
+  font-optical-sizing: auto;
+}
+
+.demo-picker-card-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  flex: 1;
+}
+
+.demo-picker-card-cta {
+  margin-top: 6px;
+  align-self: flex-start;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%);
+  color: #FFFFFF;
+  border: none;
+  box-shadow:
+    0 1px 2px rgba(19, 78, 74, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transition:
+    transform var(--t-quick) var(--ease-spring),
+    box-shadow var(--t-quick) var(--ease-out),
+    background var(--t-fast) var(--ease-out);
+  cursor: pointer;
+}
+
+.demo-picker-card-cta:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 2px 4px rgba(19, 78, 74, 0.3),
+    0 6px 16px rgba(19, 78, 74, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.demo-picker-card-cta:active {
+  transform: scale(0.98);
+  box-shadow: var(--shadow-button-press);
+}
+
+.demo-picker-foot {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  text-align: center;
+  max-width: 640px;
+}
+
+.demo-picker-loading {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+}
+
+.demo-picker-loading-pulse {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 6px var(--accent-faint),
+    0 0 18px rgba(15, 118, 110, 0.35);
+  animation: pulse 1.4s var(--ease-organic) infinite;
+}
+
+.demo-picker-loading-title {
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+.demo-picker-loading-body {
+  font-size: 13px;
+  color: var(--ink-3);
+  max-width: 380px;
+  line-height: 1.55;
+}
+
+@media (max-width: 1023px) {
+  .demo-picker-grid { grid-template-columns: 1fr; max-width: 520px; }
+  .demo-picker-shell { padding: 56px 20px 48px; gap: 36px; }
+  .demo-picker-title { font-size: 34px; }
+}
+
+/* ───────────────────────────────────────────────
+ * DEMO SESSION BAR — floating session controls on /
+ * ─────────────────────────────────────────────── */
+
+.demo-session-bar {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--rule-soft);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card-hover);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.demo-session-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 12px;
+  border-right: 1px solid var(--rule-faint);
+}
+.demo-session-stat:last-of-type { border-right: none; }
+
+.demo-session-stat-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.demo-session-stat-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.demo-session-stat-cap {
+  color: var(--ink-3);
+}
+
+.demo-session-actions { display: flex; gap: 6px; }
+
+.demo-session-btn {
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: var(--base-recess);
+  color: var(--ink-2);
+  border: 1px solid var(--rule-soft);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.demo-session-btn:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--rule);
+}
+.demo-session-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.demo-session-btn-end {
+  /* Neutral by default — End-demo is a dev affordance, not a danger
+     state. Critical color appears only on hover so the user knows the
+     consequence at the moment of action. */
+  background: var(--base-recess);
+  border-color: var(--rule-soft);
+  color: var(--warm-ink-2);
+}
+.demo-session-btn-end:hover:not(:disabled) {
+  background: var(--critical-bg);
+  border-color: var(--critical-bg-2);
+  color: var(--critical-text);
+}
+
+.demo-session-toast {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 60;
+  background: var(--ink);
+  color: var(--surface);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: var(--shadow-overlay);
+}
+
+/* ───────────────────────────────────────────────
+ * LIVE INDICATOR — header dot when SSE is connected
+ * ─────────────────────────────────────────────── */
+
+.live-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-left: 12px;
+  vertical-align: middle;
+}
+.live-dot::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-faint);
+  animation: pulse 3.6s var(--ease-organic) infinite;
+}
+.live-dot.off { color: var(--ink-4); }
+.live-dot.off::before {
+  background: var(--ink-5);
+  box-shadow: none;
+  animation: none;
+}
+
+/* When a card has just arrived from a stream event, briefly flash its
+ * border so the change is visible to a watcher. */
+.card[data-just-arrived="true"] {
+  animation: just-arrived 1.6s var(--ease-out);
+}
+@keyframes just-arrived {
+  0%   { box-shadow: 0 0 0 1px var(--accent), 0 0 0 6px var(--accent-faint), var(--shadow-card); }
+  60%  { box-shadow: 0 0 0 1px var(--accent-soft), 0 0 0 4px var(--accent-faint), var(--shadow-card); }
+  100% { box-shadow: var(--shadow-card); }
+}
+
+/* ───────────────────────────────────────────────
+ * SIGNAL SIMULATOR PANEL
+ * ─────────────────────────────────────────────── */
+
+.sim-panel {
+  position: fixed;
+  /* Slot below the demo-session-bar (which lives at top:12px, ~52px tall)
+   * so the Minimize button is never covered by the End demo control. */
+  top: 76px;
+  right: 16px;
+  bottom: 16px;
+  width: 360px;
+  background: var(--surface);
+  border: 1px solid var(--rule-soft);
+  border-radius: 12px;
+  box-shadow: var(--shadow-overlay);
+  display: flex;
+  flex-direction: column;
+  z-index: 70;
+  font-family: var(--sans);
+  overflow: hidden;
+}
+
+.sim-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule-faint);
+  background: linear-gradient(180deg, #FFFFFF 0%, #FAFBFC 100%);
+}
+.sim-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.sim-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink-3);
+  padding: 6px 10px;
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.sim-collapse:hover { color: var(--ink); background: var(--base-recess); border-color: var(--ink-3); }
+.sim-collapse-x { font-size: 16px; line-height: 1; }
+/* Inner spans must not intercept clicks — the parent button handles the
+ * collapse, and Playwright's first click would otherwise hit the span
+ * and fail to bubble in some browsers. */
+.sim-collapse > * { pointer-events: none; }
+
+.sim-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rule-faint);
+  background: var(--surface-soft);
+}
+.sim-tab {
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 450;
+  color: var(--ink-3);
+  transition: all var(--t-fast) var(--ease-out);
+}
+.sim-tab:hover { color: var(--ink); background: var(--base-recess); }
+.sim-tab.active {
+  background: var(--accent-faint);
+  color: var(--accent-deep);
+  font-weight: 500;
+}
+
+.sim-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+}
+
+.sim-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sim-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+.sim-input,
+.sim-textarea {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.sim-input:focus,
+.sim-textarea:focus { border-color: var(--accent); }
+.sim-textarea { resize: vertical; min-height: 60px; }
+.sim-mono { font-family: var(--mono); font-size: 12px; }
+
+.sim-send-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.sim-send {
+  background: linear-gradient(180deg, #1A1B22 0%, #0A0A0F 100%);
+  color: var(--surface);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18), inset 0 1px 0 rgba(255,255,255,0.1);
+  transition: transform var(--t-quick) var(--ease-spring);
+}
+.sim-send:hover:not(:disabled) { transform: translateY(-1px); }
+.sim-send:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.sim-status { font-size: 11.5px; color: var(--ink-3); }
+.sim-status.warn { color: var(--critical); }
+.sim-status.ok { color: var(--accent); }
+
+.sim-suggested {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule-faint);
+}
+.sim-suggested-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.sim-suggested-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-suggested-item {
+  text-align: left;
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--rule-faint);
+  background: var(--surface-soft);
+  transition: all var(--t-fast) var(--ease-out);
+}
+.sim-suggested-item:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.sim-tab-handle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  padding: 12px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  writing-mode: vertical-rl;
+  z-index: 50;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out),
+              transform 220ms var(--ease-out),
+              box-shadow var(--t-fast) var(--ease-out);
+  /* Pulsing glow draws the eye to the only "do something" affordance
+   * that's hidden until clicked. Animation defined below. */
+  animation: sim-handle-glow 2.4s var(--ease-organic) infinite;
+}
+.sim-tab-handle:hover {
+  color: var(--ink);
+  transform: translateY(-50%) translateX(-3px);
+  /* Pause the pulse on hover so the static highlight reads cleanly. */
+  animation-play-state: paused;
+  box-shadow: 0 0 0 4px var(--accent-faint), -4px 0 18px rgba(20, 184, 166, 0.32);
+}
+.sim-tab-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes sim-handle-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 var(--accent-faint),
+      -2px 0 8px rgba(15, 23, 42, 0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 0 6px transparent,
+      -2px 0 18px rgba(20, 184, 166, 0.45),
+      0 0 22px rgba(20, 184, 166, 0.35);
+  }
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .sim-tab-handle { animation: none; box-shadow: -2px 0 12px rgba(20, 184, 166, 0.35); }
+}
+
+@media (max-width: 720px) {
+  .sim-panel {
+    /* On phones, the panel is full-width but still collapsible via
+     * the Minimize button. On tablets/laptops it stays at 360px so the
+     * cockpit stays visible underneath. */
+    width: calc(100vw - 32px);
+    max-width: 360px;
+  }
+}
+@media (max-width: 480px) {
+  .sim-panel {
+    width: calc(100vw - 24px);
+    max-width: none;
+    top: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+}
+
+/* ───────────────────────────────────────────────
+ * TRIAGE TOAST — confirms what just happened after a path commit
+ * ─────────────────────────────────────────────── */
+
+.triage-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 80;
+  transform: translateX(-50%) translateY(0);
+  min-width: 320px;
+  max-width: 540px;
+  padding: 12px 36px 12px 16px;
+  background: var(--ink);
+  color: var(--surface);
+  border-radius: 10px;
+  box-shadow: var(--shadow-overlay);
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 1;
+  transition: opacity 480ms var(--ease-out), transform 480ms var(--ease-out);
+}
+.triage-toast.out {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+}
+.triage-toast.kind-act    { border-left: 3px solid var(--accent); }
+.triage-toast.kind-snooze { border-left: 3px solid var(--ink-3); }
+.triage-toast.kind-hold   { border-left: 3px solid var(--ink-3); }
+.triage-toast.kind-route  { border-left: 3px solid var(--ink-3); }
+.triage-toast.kind-dismiss{ border-left: 3px solid var(--critical); }
+
+.triage-toast-headline { font-weight: 500; color: var(--surface); }
+.triage-toast-detail   { font-size: 11.5px; color: var(--surface-2, rgba(255,255,255,0.7)); margin-top: 2px; }
+
+.triage-toast-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--surface-2, rgba(255,255,255,0.55));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+.triage-toast-close:hover { color: var(--surface); }
+.triage-toast-action {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--surface);
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  text-decoration: none;
+}
+.triage-toast-action:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ───────────────────────────────────────────────
+ * REASONING CHAIN — multi-section detail panel narrative
+ * Pulls supporting Models (state/relation/pattern/concern/prediction)
+ * and renders them as a readable epistemic walk-through.
+ * ─────────────────────────────────────────────── */
+
+.detail-voice .reasoning-lede {
+  font-size: 14px;
+  color: var(--ink);
+  margin-bottom: 14px;
+}
+.detail-voice .reasoning-heading {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 14px 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.detail-voice .reasoning-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.detail-voice .reasoning-list li {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  padding-left: 14px;
+  position: relative;
+}
+.detail-voice .reasoning-list li::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+.detail-voice .reasoning-conf {
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-left: 4px;
+}
+.detail-voice .reasoning-action {
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--accent-faint);
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+  margin-top: 6px;
+}
+
+/* Inline ask turns rendered within an expanded RecCard. The card-level
+   ask used to write into the page-level conversation list far below
+   the cards, which felt like the request never landed. Rendering the
+   answer right under the input keeps the loop tight. */
+.detail-ask-status {
+  font-size: 12px;
+  color: var(--ink-3);
+  font-style: italic;
+  margin-top: 8px;
+}
+.detail-ask-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.detail-ask-turn {
+  background: var(--rule-faint);
+  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  border-radius: 0 6px 6px 0;
+}
+.detail-ask-turn-q {
+  font-size: 12px;
+  color: var(--ink-3);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.detail-ask-turn-a {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.detail-ask-turn-a p {
+  margin: 0 0 6px 0;
+}
+
+/* Thinking placeholder rendered while a /view/ceo/ask call is in
+   flight. The LLM round-trip is multi-second; without this skeleton
+   the page just sits silent and looks broken. Three pulsing bars +
+   animated dots reuse the existing design tokens. */
+.turn.thinking {
+  opacity: 0.95;
+}
+.thinking-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-bottom: 10px;
+}
+.thinking-label {
+  margin-left: 4px;
+  font-style: italic;
+}
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: thinking-bounce 1.2s infinite ease-in-out both;
+}
+.thinking-dot:nth-child(1) { animation-delay: -0.24s; }
+.thinking-dot:nth-child(2) { animation-delay: -0.12s; }
+@keyframes thinking-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1.0); opacity: 1; }
+}
+.skeleton-line {
+  height: 11px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--rule-faint) 0%,
+    var(--accent-faint) 50%,
+    var(--rule-faint) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s infinite linear;
+  margin-bottom: 8px;
+}
+.skeleton-line-long  { width: 92%; }
+.skeleton-line-mid   { width: 74%; }
+.skeleton-line-short { width: 48%; }
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.detail-ask-thinking {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--rule-faint);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line, .thinking-dot {
+    animation: none;
+  }
+}
+

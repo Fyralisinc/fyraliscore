@@ -22,7 +22,6 @@ port to Temporal Schedule later.
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import os
 import signal
@@ -43,7 +42,6 @@ from services.ingest.ingestion.feature_flags.circuit_breaker import (
     get_metrics,
     make_breaker_pool,
     reset_metrics,
-    run_circuit_breaker,
 )
 from services.ingest.ingestion.feature_flags.client import (
     KAFKA_PATH_ENABLED,

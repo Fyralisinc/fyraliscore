@@ -8,6 +8,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   ListLedgerEventsParams,
   ListLedgerEventsResponse,
@@ -76,7 +77,7 @@ export async function listOperatingThreads(
   }
   const q = qp.toString();
   const data = await tryRequest<ListThreadsResponse>(
-    `/v1/spec/operating_threads/${q ? `?${q}` : ""}`,
+    API_ROUTES.spec.operatingThreads(q ? `?${q}` : ""),
     undefined,
     signal
   );
@@ -89,7 +90,7 @@ export async function getOperatingThread(
   signal?: AbortSignal
 ): Promise<OperatingThread | null> {
   const data = await tryRequest<OperatingThread>(
-    `/v1/spec/operating_threads/${encodeURIComponent(id)}`,
+    API_ROUTES.spec.operatingThread(id),
     undefined,
     signal
   );
@@ -101,7 +102,7 @@ export async function listRecentModelChanges(
   signal?: AbortSignal
 ): Promise<RecentModelChange[]> {
   const data = await tryRequest<{ items: RecentModelChange[] }>(
-    `/v1/spec/operating_threads/recent_changes`,
+    API_ROUTES.spec.recentModelChanges,
     undefined,
     signal
   );
@@ -115,7 +116,7 @@ export async function listSpecDeltas(
   signal?: AbortSignal
 ): Promise<ListSpecDeltasResponse> {
   const data = await tryRequest<ListSpecDeltasResponse>(
-    `/v1/spec/decision_deltas/`,
+    API_ROUTES.spec.decisionDeltas,
     undefined,
     signal
   );
@@ -128,7 +129,7 @@ export async function getSpecDelta(
   signal?: AbortSignal
 ): Promise<SpecDelta | null> {
   const data = await tryRequest<SpecDelta>(
-    `/v1/spec/decision_deltas/${encodeURIComponent(id)}`,
+    API_ROUTES.spec.decisionDelta(id),
     undefined,
     signal
   );
@@ -147,7 +148,7 @@ export async function mutateSpecDelta(
   body?: Record<string, unknown>,
   signal?: AbortSignal
 ): Promise<SpecDelta | null> {
-  const path = `/v1/spec/decision_deltas/${encodeURIComponent(id)}/${op}`;
+  const path = API_ROUTES.spec.decisionDeltaMutation(id, op);
   try {
     const res = await fetch(`${BASE}${path}`, {
       method: "POST",
@@ -177,7 +178,7 @@ export async function listSpecForecasts(
   signal?: AbortSignal
 ): Promise<SpecForecast[]> {
   const data = await tryRequest<{ items: SpecForecast[] }>(
-    `/v1/spec/forecasts/`,
+    API_ROUTES.spec.forecasts,
     undefined,
     signal
   );
@@ -190,7 +191,7 @@ export async function getSpecForecast(
   signal?: AbortSignal
 ): Promise<SpecForecast | null> {
   const data = await tryRequest<SpecForecast>(
-    `/v1/spec/forecasts/${encodeURIComponent(id)}`,
+    API_ROUTES.spec.forecast(id),
     undefined,
     signal
   );
@@ -213,7 +214,7 @@ export async function listLedgerEvents(
   if (params?.highImpactOnly) qp.set("high_impact_only", "1");
   const q = qp.toString();
   const data = await tryRequest<ListLedgerEventsResponse>(
-    `/v1/spec/ledger_events/${q ? `?${q}` : ""}`,
+    API_ROUTES.spec.ledgerEvents(q ? `?${q}` : ""),
     undefined,
     signal
   );

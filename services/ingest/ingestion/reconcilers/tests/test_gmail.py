@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
 from services.ingest.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
-    ReconciliationDecision,
     ResharedShard,
 )
 from services.ingest.ingestion.reconcilers import gmail as gmail_reconciler

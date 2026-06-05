@@ -13,7 +13,7 @@ test loop.
 from __future__ import annotations
 
 import json
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 import pytest

@@ -28,7 +28,7 @@ inferable from context (we keep it explicit).
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg

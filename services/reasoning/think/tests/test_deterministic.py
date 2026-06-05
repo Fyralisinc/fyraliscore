@@ -21,8 +21,7 @@ Scenarios (Wave 3-B Outstanding #4):
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -33,7 +32,6 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.deterministic import (
     deterministic_handler,
     is_authoritative,
-    _trigger_ref,
 )
 from services.reasoning.think.tests.conftest import make_embedding
 

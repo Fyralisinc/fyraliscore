@@ -22,8 +22,6 @@ from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
 from lib.shared.errors import FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
@@ -954,7 +952,6 @@ async def test_hourly_decay_matches_spec_formula(
 ) -> None:
     """activation=1.0, 120 hourly decays → ~0.368 (e^-1)."""
     import math
-    from services.domain.models.decay import hourly_decay
 
     with notify_scope():
         row = await repo.insert(

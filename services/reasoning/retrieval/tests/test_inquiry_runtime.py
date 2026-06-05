@@ -657,9 +657,13 @@ async def test_fast_path_baseline_evidence_is_classified_against_hypotheses(
 
     assert result.questions == ()
     assert any(card.supports_hypotheses for card in result.evidence_cards)
+    tiers = result.context_packet["tiers"]
     assert any(
+        item.get("supports_hypotheses")
+        for item in tiers["decisive_evidence"]
+    ) or any(
         group.get("claim_supported")
-        for group in result.context_packet["tiers"]["supporting_evidence_groups"]
+        for group in tiers["supporting_evidence_groups"]
     )
 
 

@@ -5,7 +5,6 @@ Phase-1 exit gate: cache table created and working.
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
 
 import pytest
 

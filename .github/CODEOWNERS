@@ -1,46 +1,18 @@
-# CODEOWNERS — ownership map for the layered codebase.
+# CODEOWNERS
 #
-# ─────────────────────────────────────────────────────────────────────────
-# ⚠️  PLACEHOLDER OWNERS. The @fyraliscore/* team slugs below do NOT exist yet.
-#     Replace them with real GitHub teams/users BEFORE enabling branch
-#     protection's "Require review from Code Owners" — otherwise PRs will be
-#     un-mergeable (no resolvable owner). Until then this file is documentation
-#     of intended ownership and is safe (CODEOWNERS only enforces when branch
-#     protection opts in).
-# ─────────────────────────────────────────────────────────────────────────
+# Intentionally empty for now.
 #
-# Ownership follows the architectural layers (see CODEBASE-ARCHITECTURE.md).
-# Last matching pattern wins, so the specific layer rules below override the
-# repo-wide default.
-
-# Repo-wide default
-*                               @fyraliscore/maintainers
-
-# Shared libraries & schema (highest blast radius — review carefully)
-/lib/                           @fyraliscore/platform-team
-/db/                            @fyraliscore/platform-team
-/pyproject.toml                 @fyraliscore/platform-team
-/.importlinter                  @fyraliscore/platform-team
-
-# Service layers
-/services/app/                  @fyraliscore/app-team
-/services/product/              @fyraliscore/product-team
-/services/reasoning/            @fyraliscore/reasoning-team
-/services/ingest/               @fyraliscore/ingest-team
-/services/domain/               @fyraliscore/domain-team
-/services/platform/             @fyraliscore/platform-team
-/services/workers/              @fyraliscore/platform-team
-
-# Frontend
-/ui/                            @fyraliscore/frontend-team
-
-# CI / infra / ops
-/.github/                       @fyraliscore/platform-team
-/docker-compose*.yml            @fyraliscore/platform-team
-/Dockerfile*                    @fyraliscore/platform-team
-/scripts/                       @fyraliscore/platform-team
-
-# Docs
-/docs/                          @fyraliscore/maintainers
-/CODEBASE-ARCHITECTURE.md       @fyraliscore/maintainers
-/CODEBASE-MANAGEMENT.md         @fyraliscore/maintainers
+# Do not add placeholder teams here. GitHub treats CODEOWNERS as enforcement
+# input when branch protection requires code-owner review, so fictional owners
+# can make real PRs impossible to merge. Add concrete GitHub users or existing
+# organization teams only after they have been created and verified.
+#
+# Suggested future map once the org has real handles:
+#   /db/                  @Fyralisinc/platform
+#   /lib/                 @Fyralisinc/platform
+#   /services/app/        @Fyralisinc/app
+#   /services/domain/     @Fyralisinc/domain
+#   /services/ingest/     @Fyralisinc/ingest
+#   /services/product/    @Fyralisinc/product
+#   /services/reasoning/  @Fyralisinc/reasoning
+#   /ui/                  @Fyralisinc/frontend

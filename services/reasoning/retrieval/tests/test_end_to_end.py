@@ -4,11 +4,8 @@ and verify the overall contract.
 """
 from __future__ import annotations
 
-import asyncio
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
@@ -126,7 +123,7 @@ async def test_every_proposition_kind_roundtrips_through_retrieval(
     with no signature → all patterns; pathway A for state/relation/
     hypothesis/concern). Check that we can round-trip every kind.
     """
-    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Fetch every distinct proposition_kind in the fixture.
     rows = await tx_conn.fetch(
         "SELECT DISTINCT proposition_kind FROM models WHERE tenant_id = $1",

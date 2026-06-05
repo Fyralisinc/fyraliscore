@@ -78,7 +78,6 @@ module to trigger the assignment. Tests rebind via
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import asyncpg
 import orjson

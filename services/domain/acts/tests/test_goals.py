@@ -1,13 +1,12 @@
 """Integration tests for services/domain/acts/goals.py — real Postgres."""
 from __future__ import annotations
 
-from uuid import UUID
 
 import pytest
 
 from lib.shared.errors import InvariantViolation, ValidationError
 from services.domain.acts import goals, invariants as inv
-from services.domain.acts.tests.conftest import TENANT_A, TENANT_B, make_actor, make_observation, future_due
+from services.domain.acts.tests.conftest import TENANT_A, TENANT_B, make_observation, future_due
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -240,7 +239,7 @@ async def test_goal_cached_health_critical_on_closed_and_others_incomplete(
         created_by_event_id=event_id,
         tenant_id=TENANT_A,
     )
-    b = await commitments.create(
+    await commitments.create(
         title="B",
         initial_state="active",
         owner_id=actor_id,

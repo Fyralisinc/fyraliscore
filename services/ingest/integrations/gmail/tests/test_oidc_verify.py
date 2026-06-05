@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 import pytest
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from services.app.webhooks.signatures import google_oidc

@@ -132,7 +132,6 @@ from services.ingest.integrations.gmail.client import (
 from services.ingest.integrations.gmail.dwd import get_minter
 from services.ingest.ingestion.workflows.retry import (
     retry_with_backoff_on_429,
-    retry_with_jitter_on_5xx,
 )
 
 

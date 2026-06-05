@@ -33,16 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import asyncpg
-from redis.asyncio import Redis as AsyncRedis
 
 from services.ingest.integrations.discord.gateway.client import (
-    DiscordGatewayClient,
     GatewaySessionState,
 )
 from services.ingest.integrations.discord.gateway.leader_lock import (
@@ -52,7 +49,6 @@ from services.ingest.integrations.discord.gateway.leader_lock import (
 )
 from services.ingest.integrations.discord.gateway.session_state import (
     PersistedGatewaySession,
-    load_session_state,
     save_session_state,
 )
 

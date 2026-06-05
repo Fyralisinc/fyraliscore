@@ -1,4 +1,4 @@
-"""Unit tests for services.sage.structural_gates (Phase 6 v1).
+"""Unit tests for services.reasoning.sage.structural_gates (Phase 6 v1).
 
 Pure-Python, deterministic. No DB, no LLM. Uses lightweight test
 doubles (SimpleNamespace) for the structural-feature inputs so this
@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from services.sage.structural_gates import (
+from services.reasoning.sage.structural_gates import (
     GateInputs,
     GateScore,
     StructuralGateScorer,

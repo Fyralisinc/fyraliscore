@@ -36,7 +36,6 @@ import os
 from typing import Any
 from uuid import UUID
 
-import asyncpg
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -164,8 +163,6 @@ async def connect_finalize(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="invalid scope")
     if not isinstance(inclusion_spec, dict):
         raise HTTPException(status_code=400, detail="inclusion_spec must be an object")
-
-    scope_long = SCOPE_ALIAS[scope_alias]
 
     minter = get_minter()
 

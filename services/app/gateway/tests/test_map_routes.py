@@ -20,7 +20,6 @@ import json
 import math
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -33,6 +32,13 @@ from services.reasoning.topology.umap_projector import (
     MIN_MODELS_FOR_UMAP,
     UMAPProjector,
 )
+
+# These tests fit a real `umap.UMAP` (via the projector or the /map/snapshot
+# route). umap-learn is numba-backed, and the first fit in a process pays a
+# one-time JIT cold-compile (~10s locally, >30s on a loaded CI runner) that
+# blows the global 30s pytest-timeout. Subsequent fits are ~0s. Raise the
+# per-test budget for this module so the first fit isn't flagged as a hang.
+pytestmark = pytest.mark.timeout(120)
 
 
 # ---------------------------------------------------------------------
@@ -447,10 +453,10 @@ async def test_snapshot_crosses_neighborhood_flag(
     # crossing the boundary.
     m1 = await _seed_model(gateway_pool, tenant_id, natural="m1")
     m2 = await _seed_model(gateway_pool, tenant_id, natural="m2")
-    n1 = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[m1], named_signature="N1",
     )
-    n2 = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[m2], named_signature="N2",
     )
     await _seed_edge(
@@ -542,7 +548,7 @@ async def test_model_story_includes_supporting_edges_with_signatures(
     token, _ = valid_session
     target = await _seed_model(gateway_pool, tenant_id, natural="target")
     supporter = await _seed_model(gateway_pool, tenant_id, natural="supporter")
-    nbh = await _seed_neighborhood(
+    await _seed_neighborhood(
         gateway_pool, tenant_id, members=[supporter],
         named_signature="engineering velocity",
     )

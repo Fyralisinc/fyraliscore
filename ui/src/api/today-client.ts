@@ -5,6 +5,7 @@
 
 import { ApiError } from "./client";
 import { getAuthHeader, handleAuthFailure } from "./auth";
+import { API_ROUTES } from "./routes";
 import type {
   ArtifactDetail,
   ArtifactKind,
@@ -38,7 +39,7 @@ async function request<T>(
 }
 
 export function getToday(signal?: AbortSignal): Promise<TodayResponse> {
-  return request<TodayResponse>("/v1/today", undefined, signal);
+  return request<TodayResponse>(API_ROUTES.today.legacy, undefined, signal);
 }
 
 export function postTriage(
@@ -55,20 +56,20 @@ export function postTriage(
     if (body.notes) actBody.notes = body.notes;
     if (body.selected_path_id) actBody.selected_path_id = body.selected_path_id;
     return request<TriageResponse>(
-      `/v1/recommendations/${recommendationId}/act`,
+      API_ROUTES.today.recommendationAct(recommendationId),
       { method: "POST", body: JSON.stringify(actBody) },
       signal
     );
   }
   if (body.action === "dismiss") {
     return request<TriageResponse>(
-      `/v1/recommendations/${recommendationId}/dismiss`,
+      API_ROUTES.today.recommendationDismiss(recommendationId),
       { method: "POST", body: JSON.stringify({ reason: body.reason ?? body.notes ?? "user dismissed" }) },
       signal
     );
   }
   return request<TriageResponse>(
-    `/v1/recommendations/${recommendationId}/triage`,
+    API_ROUTES.today.recommendationTriage(recommendationId),
     { method: "POST", body: JSON.stringify(body) },
     signal
   );
@@ -80,7 +81,7 @@ export function postWatch(
   signal?: AbortSignal
 ): Promise<WatchResponse> {
   return request<WatchResponse>(
-    `/v1/recommendations/${recommendationId}/watch`,
+    API_ROUTES.today.recommendationWatch(recommendationId),
     { method: "POST", body: JSON.stringify({ predicate }) },
     signal
   );
@@ -91,7 +92,7 @@ export function deleteWatch(
   signal?: AbortSignal
 ): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(
-    `/v1/recommendations/${recommendationId}/watch`,
+    API_ROUTES.today.recommendationWatch(recommendationId),
     { method: "DELETE" },
     signal
   );
@@ -103,7 +104,7 @@ export function getArtifact(
   signal?: AbortSignal
 ): Promise<ArtifactDetail> {
   return request<ArtifactDetail>(
-    `/v1/artifacts/${kind}/${id}`,
+    API_ROUTES.today.artifact(kind, id),
     undefined,
     signal
   );
@@ -113,7 +114,7 @@ export function postRename(
   newName: string,
   signal?: AbortSignal
 ): Promise<{ ok: boolean; name: string }> {
-  return request("/v1/today/brand", {
+  return request(API_ROUTES.today.brand, {
     method: "POST",
     body: JSON.stringify({ name: newName }),
     signal,

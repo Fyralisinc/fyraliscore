@@ -63,9 +63,9 @@ def register_map_routes(app: FastAPI) -> None:
         auth = _auth_or_none(request)
         if auth is None:
             return _unauth()
-        from services.app.gateway.main import _deps  # local: avoid cycle
+        from services.app.gateway.deps import get_gateway_deps
 
-        deps = _deps(request)
+        deps = get_gateway_deps(request)
 
         # Parse query params manually so we can return 400 for bad
         # input without fighting FastAPI's coercion machinery.
@@ -128,9 +128,9 @@ def register_map_routes(app: FastAPI) -> None:
         auth = _auth_or_none(request)
         if auth is None:
             return _unauth()
-        from services.app.gateway.main import _deps
+        from services.app.gateway.deps import get_gateway_deps
 
-        deps = _deps(request)
+        deps = get_gateway_deps(request)
         qp = request.query_params
         since = _parse_since(qp.get("since"))
         if since is None:
@@ -193,9 +193,9 @@ def register_map_routes(app: FastAPI) -> None:
         auth = _auth_or_none(request)
         if auth is None:
             return _unauth()
-        from services.app.gateway.main import _deps
+        from services.app.gateway.deps import get_gateway_deps
 
-        deps = _deps(request)
+        deps = get_gateway_deps(request)
         try:
             mid = UUID(model_id)
         except (ValueError, TypeError):
@@ -212,9 +212,9 @@ def register_map_routes(app: FastAPI) -> None:
         auth = _auth_or_none(request)
         if auth is None:
             return _unauth()
-        from services.app.gateway.main import _deps
+        from services.app.gateway.deps import get_gateway_deps
 
-        deps = _deps(request)
+        deps = get_gateway_deps(request)
         projector = UMAPProjector(deps.pool)
         cache = await projector.refresh(auth.tenant_id)
         # `cache["fitted_at"]` is an ISO string; coerce to datetime
@@ -440,7 +440,6 @@ async def _build_snapshot(
         cap = _LENS_CAP if lens == b else _OVERVIEW_CAP[b]
         capped.extend(items[:cap])
     nodes = capped
-    visible_ids = {n.id for n in nodes}
 
     # 5c) Synthesize the band-to-band hierarchy (spec §4.2 + §4.4).
     #     Pelago-style tenants ship no model_edges; without explicit
