@@ -1,13 +1,18 @@
 # Fyralis Core
 
-Organizational intelligence runtime. A multi-tenant FastAPI gateway, Postgres
-(pgvector) data store, Ollama-backed embeddings, and a Vite/React UI, plus
-worker processes for asynchronous reasoning and post-commit propagation.
+Organizational intelligence runtime — **backend only**. A multi-tenant FastAPI
+gateway, a Postgres (pgvector) data store, Ollama-backed embeddings, and worker
+processes for asynchronous reasoning and post-commit propagation.
+
+> The **UI, demo, and simulation** live in a separate overlay repo,
+> **[fyraliscore-demo](https://github.com/Fyralisinc/fyraliscore-demo)**, which
+> installs this package and plugs in via entry-point seams. Core depends on
+> nothing in that repo.
 
 For the architecture and module-level reference, see
 [CODEBASE-ARCHITECTURE.md](CODEBASE-ARCHITECTURE.md).
 
-This document is the end-to-end setup guide for running the stack locally.
+This document is the end-to-end setup guide for running the backend locally.
 
 ---
 
@@ -20,14 +25,13 @@ codebase is developed against; minor patch differences are fine.
 | ------------------- | ------------------ | ------------------------------------------------------- |
 | Python              | 3.11+              | `pyproject.toml` requires `>=3.11`                      |
 | Docker + Compose v2 | recent             | Brings up Postgres (pgvector) and Ollama                |
-| Node.js             | 20+                | For the UI in [ui/](ui/)                                |
 | `psql` client       | any 14+            | Used to apply DB migrations                             |
 | `curl`              | any                | Used by `dogfood_up.sh` health checks                   |
 
 macOS quick install:
 
 ```bash
-brew install python@3.11 node postgresql@16
+brew install python@3.11 postgresql@16
 brew install --cask docker
 ```
 
@@ -58,9 +62,8 @@ Open `.env` and set, at minimum:
 
 Optional: create a second overlay file `.env.dogfood` for values that
 differ between your day-to-day env and the dogfood stack (model choices,
-worker/sweeper intervals, the dev bearer token, etc.). `scripts/dogfood_up.sh`
-sources `.env` first and `.env.dogfood` last, so dogfood values win.
-Both files are gitignored.
+worker/sweeper intervals, etc.). `scripts/dogfood_up.sh` sources `.env`
+first and `.env.dogfood` last, so dogfood values win. Both files are gitignored.
 
 > **Security note.** `.env` and any `.env.*` variant other than
 > `.env.example` are gitignored. Never commit real keys. Rotate any key
@@ -70,9 +73,9 @@ Both files are gitignored.
 
 ## 3. Start Postgres and Ollama
 
-The repo ships a `docker-compose.yml` with two services: `postgres`
-(pgvector/pg16) and `ollama` (with the `nomic-embed-text` model
-auto-pulled on first start).
+The repo ships a `docker-compose.yml` with the backend stack. For local setup
+you typically only need `postgres` (pgvector/pg16) and `ollama` (with the
+`nomic-embed-text` model auto-pulled on first start):
 
 ```bash
 docker compose up -d postgres ollama
@@ -141,41 +144,16 @@ python scripts/check_schema_drift.py
 
 A zero exit code means the live DB matches the expected schema.
 
----
-
-## 6. Seed the dogfood tenant
-
-This creates the CEO actor (`Rachin`) and the simulation personas in
-your local DB. Idempotent.
-
-```bash
-set -a && source .env && set +a
-python scripts/seed_dogfood_tenant.py
-```
-
-You should see something like:
-
-```
-Seeded tenant 00000000-0000-0000-0000-000000000001: 13 actors (CEO + personas).
-```
+> Tenant + persona seeding for the demo (the old `seed_dogfood_tenant.py`)
+> moved to the overlay repo. The backend creates tenants through the normal
+> onboarding flow; for local dev you can use `DEFAULT_TENANT_ID` from `.env`.
 
 ---
 
-## 7. Install UI dependencies
+## 6. Bring up the backend stack
 
-```bash
-cd ui
-npm install
-cd ..
-```
-
----
-
-## 8. Bring up the full stack
-
-The dogfood script starts the gateway, Think worker, post-commit worker,
-topology sweeper, and the Vite dev server. It writes logs to
-`/tmp/company_os_logs/` and PIDs to
+The dogfood script starts the gateway, Think worker, post-commit worker, and
+topology sweeper. It writes logs to `/tmp/company_os_logs/` and PIDs to
 `/tmp/company_os_dogfood.pids`.
 
 ```bash
@@ -185,38 +163,26 @@ topology sweeper, and the Vite dev server. It writes logs to
 You should see:
 
 ```
-=== Company OS dogfood stack up ===
+=== Company OS dogfood backend up ===
   Gateway:         http://localhost:8000
-  Main UI:         http://localhost:5173
-  Slack simulator: http://localhost:8000/simulation/slack_ui/
   Healthz:         curl http://localhost:8000/healthz
 ```
 
-Open <http://localhost:5173> in a browser. The dev bearer token from
-`.env.dogfood` (`DEV_BEARER_TOKEN=dogfood-ceo-token`) is used by the UI
-to authenticate without an explicit `/auth/session` round-trip.
-
-To tail logs:
+To tail logs / inspect DB state / stop everything:
 
 ```bash
 ./scripts/dogfood_logs.sh
-```
-
-To inspect database state:
-
-```bash
 ./scripts/dogfood_inspect.sh
-```
-
-To stop everything:
-
-```bash
 ./scripts/dogfood_down.sh
 ```
 
+> To run the **UI** against this backend, check out
+> [fyraliscore-demo](https://github.com/Fyralisinc/fyraliscore-demo) and follow
+> its README (it points the UI at the gateway via `VITE_API_BASE`).
+
 ---
 
-## 9. Running tests
+## 7. Running tests
 
 The test suite uses a real Postgres (no mocks), so the `docker compose`
 services from step 3 must be running.
@@ -238,18 +204,15 @@ provider key:
 RUN_REAL_LLM=1 pytest -m real_llm
 ```
 
-UI tests:
+Architecture import boundaries are enforced by import-linter:
 
 ```bash
-cd ui
-npm test           # vitest unit tests
-npm run test:e2e   # playwright (uses the in-repo mock server)
-npm run typecheck
+lint-imports
 ```
 
 ---
 
-## 10. Running individual processes
+## 8. Running individual processes
 
 If you don't want the full dogfood stack, you can run the components
 individually:
@@ -266,14 +229,11 @@ python scripts/run_post_commit_worker.py
 
 # Topology sweeper
 python scripts/run_topology_sweeper.py
-
-# UI dev server (with API mocks, no backend required)
-cd ui && npm run dev:mock
 ```
 
 ---
 
-## 11. Common issues
+## 9. Common issues
 
 **`ERROR: .env not found`** — copy `.env.example` to `.env` and fill in
 `DEEPSEEK_API_KEY` or your chosen provider's key. For Codex dogfood, set
@@ -298,7 +258,7 @@ it (`brew services stop postgresql`) or change the port in
 
 ---
 
-## 12. Layout
+## 10. Layout
 
 ```
 .
@@ -307,7 +267,7 @@ it (`brew services stop postgresql`) or change the port in
 ├── CONTRIBUTING.md           # Conventions, import rules, how to extend
 ├── README.md                 # This file
 ├── .env.example              # Env template (copy to .env)
-├── docker-compose.yml        # Postgres (pgvector) + Ollama
+├── docker-compose.yml        # Backend stack (gateway + workers + data plane)
 ├── pyproject.toml            # Python package, dev deps, import-linter contracts
 ├── conftest.py               # Pytest fixtures (DB pool, etc.)
 ├── db/migrations/            # SQL migrations, applied in filename order
@@ -320,11 +280,12 @@ it (`brew services stop postgresql`) or change the port in
 │   ├── domain/               #   Core persisted substrate (models, acts, resources, …)
 │   ├── platform/             #   Cross-cutting infra (access_control, execution)
 │   └── workers/              #   Background worker packages
-├── simulation/               # Slack-like simulator + personas
 ├── scripts/                  # CLI utilities and dogfood orchestration
-├── tests/                    # Cross-service integration + real-LLM tests
-└── ui/                       # Vite/React frontend
+└── tests/                    # Cross-service integration + real-LLM tests
 ```
+
+The **UI, demo, and simulation** live in the overlay repo
+[fyraliscore-demo](https://github.com/Fyralisinc/fyraliscore-demo).
 
 See [CODEBASE-ARCHITECTURE.md §0](CODEBASE-ARCHITECTURE.md) for the layer map and
 [CONTRIBUTING.md](CONTRIBUTING.md) for the enforced import boundaries.

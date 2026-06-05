@@ -8,8 +8,6 @@ from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
 from services.app.gateway.settings import GatewaySettings
-from services.domain.actors.repo import ActorRepo
-from services.domain.entity_aliases.repo import EntityAliasRepo
 
 
 log = get_logger("gateway")
@@ -21,7 +19,7 @@ async def configure_ceo_view(
     pool: asyncpg.Pool,
     settings: GatewaySettings | None = None,
 ) -> None:
-    """Wire rendering, greeting, query, simulation, ingress, and debug routers."""
+    """Wire rendering, greeting, query, ingress, and debug routers."""
     from uuid import UUID as _UUID
 
     settings = settings or getattr(app_.state, "gateway_settings", None)
@@ -135,74 +133,9 @@ async def configure_ceo_view(
     )
     app_.state.conversations = {"repo": conv_repo, "handler": probe_handler}
 
-    # Simulation authoring endpoints. Default on outside prod.
-    from lib.shared.env import env_name as _env_name_fn, is_prod as _is_prod
-
-    env_name = _env_name_fn()
-    prod = _is_prod()
-    sim_requested = (
-        settings.mount_sim if settings.mount_sim is not None else not prod
-    )
-    if prod and sim_requested:
-        log.error(
-            "sim_mount_refused_in_prod",
-            reason=(
-                "GATEWAY_MOUNT_SIM=1 ignored in production; "
-                "/simulation/* is an unauthenticated injection surface"
-            ),
-        )
-    if sim_requested and not prod:
-        try:
-            from simulation.server import SimDeps, build_sim_router
-            from simulation.workers._common import (
-                _resolve_run_id,
-                _resolve_tenant_id,
-                ensure_personas_seeded,
-            )
-
-            sim_tenant = _resolve_tenant_id(None)
-            sim_run = _resolve_run_id(None)
-            try:
-                await ensure_personas_seeded(pool, sim_tenant)
-            except Exception as seed_exc:  # noqa: BLE001
-                log.warning("sim_persona_seed_failed", error=str(seed_exc))
-            sim_deps = SimDeps(
-                pool=pool,
-                tenant_id=sim_tenant,
-                run_id=sim_run,
-                embedder=(
-                    getattr(app_.state, "deps", None).embedder
-                    if getattr(app_.state, "deps", None) is not None
-                    else None
-                ),
-                actor_repo=ActorRepo(pool),
-                alias_repo=EntityAliasRepo(pool),
-            )
-            app_.include_router(build_sim_router(sim_deps))
-            app_.state.sim_deps = sim_deps
-            try:
-                import pathlib as _pl
-
-                from fastapi.staticfiles import StaticFiles as _StaticFiles
-
-                static_dir = (
-                    _pl.Path(__file__).resolve().parents[3]
-                    / "simulation"
-                    / "slack_ui"
-                )
-                if static_dir.is_dir() and not any(
-                    getattr(r, "name", None) == "slack_ui_static"
-                    for r in app_.routes
-                ):
-                    app_.mount(
-                        "/simulation/slack_ui",
-                        _StaticFiles(directory=str(static_dir), html=True),
-                        name="slack_ui_static",
-                    )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("sim_static_mount_failed", error=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("sim_mount_failed", error=str(exc))
+    # Simulation authoring endpoints moved to the demo overlay, which contributes
+    # the /simulation panel (router + slack_ui static) via its gateway extension
+    # startup hook. Core no longer imports the `simulation` package.
 
     # Gmail Pub/Sub push ingress.
     try:

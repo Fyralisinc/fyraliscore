@@ -2,12 +2,11 @@
 
 > Source: `services/product/` (packages `greeting`, `today`, `forecasts`, `query`,
 > `conversations`, `recommendations`, `decision_deltas`, `history`, `model_trace`,
-> `rendering`, `demo`). Part of the [architecture overview](index.md).
+> `rendering`). Part of the [architecture overview](index.md).
 
 **One-line:** the read/compose/render frontier — it composes cached substrate
 snapshots + reasoning retrieval into voice-compliant, LLM-rendered CEO surfaces
-(home / Ask / Today / Forecasts / History) and hosts the demo tenancy subsystem.
-It does almost no signal mutation.
+(home / Ask / Today / Forecasts / History). It does almost no signal mutation.
 
 ## Responsibilities
 
@@ -51,36 +50,40 @@ Proposed-Change object; `forecasts/` backs predictions/accuracy/calibration;
 `history/` derives the ledger; `model_trace/` walks `model_edges` for Trace
 Back/Forward.
 
-### Demo / simulation (`demo`)
+### Demo / simulation (moved to the overlay)
 
-`demo/router.py` mounts `/v1/demo/*`: the public picker + `sessions/start` (which
-provisions a fresh tenant, loads a snapshot with per-tenant UUID remap, mints a
-CEO `actor_sessions` token, promotes recommendations → decision deltas, and
-registers the tenant with the greeting scheduler), plus `simulator/inject` (drives
-the full `ingestion.core.ingest` pipeline) and SSE
-`/v1/recommendations/stream`. `budget.py` enforces per-session cost caps;
-`model_routing.py` overrides the LLM model per demo tenant/call-kind.
+The demo tenancy subsystem (the public company picker, `/v1/demo/sessions/start`
+clone-on-demand provisioning, the signal simulator, per-session budgets, and demo
+model routing) is **no longer a core surface**. It moved to the separate
+**fyraliscore-demo** overlay repo (the `fyralis_demo` package) and plugs back in at
+runtime through the gateway extension seam (`services/app/gateway/extensions.py`,
+entry-point group `company_os.gateway_extensions`). When the overlay is installed,
+that extension contributes the `/v1/demo/*` routers, startup hooks (Pelago seed,
+simulation mount), and the demo public-path prefixes. Core imports nothing from the
+overlay; the demo SSE fan-out is driven by core's process-local event bus
+(`lib/shared/events.py`, group `company_os.event_subscribers`), to which core
+publishes `recommendation.event` and the overlay subscribes.
 
 ## How it's wired
 
 ```mermaid
 graph TD
-    UI["React UI"]
+    UI["React UI<br/>(external client — overlay repo)"]
     GW["gateway routes"]
     SCHED["greeting.GreetingScheduler<br/>(in-proc)"]
     SNAP["SnapshotComposer (read-only)"]
     RND["rendering.RenderingService"]
     QRY["query.QueryHandler"]
-    DEMO["demo.router"]
+    EXT["gateway extension seam<br/>(overlay contributes /v1/demo/*)"]
     DOMAIN["services/domain (substrate)"]
     REASON["reasoning.retrieval + platform.execution"]
     LLM["lib.llm provider"]
     CACHE[("view_ceo_cache")]
-    INGEST["ingest.core.ingest()"]
 
     UI -->|"GET /view/ceo/home, WS /view/ceo/stream"| GW
     UI -->|"POST /view/ceo/ask"| GW
     GW --> QRY
+    GW -. "overlay-contributed routers" .-> EXT
     SCHED --> SNAP --> DOMAIN
     SCHED -->|"render fan-out"| RND
     SCHED --> CACHE
@@ -88,8 +91,6 @@ graph TD
     QRY --> REASON
     QRY --> RND
     RND --> LLM
-    DEMO -->|"provision tenant + register"| SCHED
-    DEMO -->|"simulator inject"| INGEST
 ```
 
 ## Key modules
@@ -102,8 +103,6 @@ graph TD
 | `QueryHandler` | `services/product/query/core.py` | Ask: classify → strategy → retrieve → render. |
 | `build_today` | `services/product/today/aggregator.py` | Today payload from recs + calibration + acts. |
 | recommendations handlers | `services/product/recommendations/handlers.py` | act/dismiss/ratify → domain mutations + audit. |
-| `demo_router` | `services/product/demo/router.py` | Demo lifecycle, simulator, SSE. |
-| `start_session` | `services/product/demo/sessions.py` | Clone-on-demand demo tenant + token. |
 | forecasts router | `services/product/forecasts/router.py` | `/v1/forecasts/*` list/accuracy/calibration. |
 
 ## Entry points
@@ -111,28 +110,26 @@ graph TD
 All mounted into the gateway: `/rendering/*` (internal), `/view/ceo/home` + WS
 `/view/ceo/stream`, `/view/ceo/ask`, `/v1/cards/{id}/conversation`,
 `/v1/recommendations/*`, `/v1/decision-deltas/*`, `/v1/forecasts/*`, `/v1/history`,
-`/v1/model/*`, and `/v1/demo/*`. The greeting scheduler starts in-process via the
-gateway lifespan when `GATEWAY_START_GRT_SCHEDULER != 0`.
+and `/v1/model/*`. (The `/v1/demo/*` routes are **not** core — they are contributed
+at runtime by the demo overlay via the gateway extension seam; see above.) The
+greeting scheduler starts in-process via the gateway lifespan when
+`GATEWAY_START_GRT_SCHEDULER != 0`.
 
 ## Dependencies
 
-**Inbound** *(verified)*: the gateway (mounted routers + scheduler start); the UI;
-the demo `AutoDemoSession`.
+**Inbound** *(verified)*: the gateway (mounted routers + scheduler start); the
+React UI (an external client that now lives in the fyraliscore-demo overlay repo).
 
 **Outbound** *(verified)*: `services.domain` (snapshot/today/recommendation reads
-+ mutations); `reasoning.retrieval` + `platform.execution` (Ask retrieval);
-`lib.llm.provider` (rendering + classifier); and `ingest.core.ingest` (demo
-simulator — a noted product→ingest edge).
++ mutations); `reasoning.retrieval` + `platform.execution` (Ask retrieval); and
+`lib.llm.provider` (rendering + classifier).
 
 ## Design rationale
 
 > **TODO(human):** Capture the *why* behind:
 >
-> - Whether `demo/simulator.py` importing `ingest.core.ingest` directly is an
->   accepted layering exception or debt to break.
 > - The canonical path among duplicate surfaces (inline `/v1/today` handlers vs.
 >   the `/today/*` spec routes; in-memory vs. HTTP/pg query adapters).
 > - The cost/latency rationale for the per-card "Gate 4b" second render pass.
 > - The auth posture of `/view/ceo/home` + `/view/ceo/ask` falling back to a default
 >   tenant when the token is missing (dogfood) — acceptable in shared deploys?
-> - The narrative meaning of the demo companies (Pelago / Truss / Northwind / …).

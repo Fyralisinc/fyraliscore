@@ -1,10 +1,13 @@
 # Company OS (fyraliscore) Constitution
 
-Company OS is a multi-tenant organizational intelligence runtime: a FastAPI
-gateway, an asyncpg-driven Postgres+pgvector substrate, Ollama-backed
-embeddings, an Anthropic/OpenAI/DeepSeek-pluggable LLM stack, two background
-workers (Think, post-commit), and a Vite/React cockpit. The system reasons
-over ingested signals to produce **Observations → Models → Acts → Resources**.
+Company OS (fyraliscore) is a backend-only multi-tenant organizational
+intelligence runtime: a FastAPI gateway, an asyncpg-driven Postgres+pgvector
+substrate, Ollama-backed embeddings, an Anthropic/OpenAI/DeepSeek-pluggable LLM
+stack, and background workers (Think, post-commit). The Vite/React cockpit, the
+demo runtime, and the simulation harness moved to the fyraliscore-demo overlay
+repo and plug in through entry-point extension seams; core imports nothing from
+the overlay. The system reasons over ingested signals to produce
+**Observations → Models → Acts → Resources**.
 Because the substrate is an evolving epistemic store — not a CRUD app — the
 following principles are load-bearing, not aspirational.
 
@@ -86,8 +89,10 @@ defense-in-depth. The flip from permissive to strict RLS is a separate,
 gated migration; until then, hand-rolled `WHERE tenant_id = $1` remains
 authoritative and required.
 
-Cross-tenant joins are forbidden. Global registries (`tenants`,
-`demo_configs`) are the only tables intentionally outside this regime.
+Cross-tenant joins are forbidden. The global `tenants` registry is the only
+core table intentionally outside this regime. (The `demo_configs` table, also
+historically outside the regime, was dropped from core when the demo subsystem
+moved to the fyraliscore-demo overlay; it is now overlay-owned.)
 
 ### IV. Integration Tests Use a Real Database (NON-NEGOTIABLE)
 
@@ -129,7 +134,8 @@ models:
 
 The two MUST NOT be merged. A reasoning failure must not corrupt prose;
 a prose retry must not re-reason the substrate. Per-tenant model routing
-(`services/product/demo/model_routing.py`) overrides the global default — code
+(now in the fyraliscore-demo overlay, formerly
+`services/product/demo/model_routing.py`) can override the global default — code
 paths SHOULD read provider/model from config, not hardcode them.
 
 **Voice rules** (`services/product/rendering/voice_rules.py`) are enforced as
@@ -253,18 +259,21 @@ These are not preferences; they're load-bearing.
   `text-embedding-3-small` with `dimensions=768` as the alternate
   backend. Selection via `make_embedder()` /  `EMBEDDER_BACKEND`.
 - **LLMs**: pluggable provider (`lib.llm.provider.build_provider`).
-  Default reasoning model `claude-opus-4-7`. Per-tenant override
-  via `demo_configs.model_routing`. Costs are recorded per call.
+  Default reasoning model `claude-opus-4-7`. Per-tenant override via the
+  overlay's demo model routing (the `demo_configs` table is overlay-owned;
+  it is no longer in core). Costs are recorded per call.
 - **Logging**: `structlog` with JSON output. Every request bound with
   `request_id`, `tenant_id`, `actor_id`. No `print()` in service
   code.
-- **Frontend**: React 18 + Vite 5 + TypeScript 5 + Tailwind 3. Tests
-  via Vitest (unit) and Playwright (e2e, with mock server). Real-time
-  via WebSocket (`/view/ceo/stream`) and SSE
-  (`/v1/recommendations/stream`).
-- **Containers**: `docker-compose.yml` is the single deploy topology.
-  TLS via Let's Encrypt (`acme-companion`). The dogfood path runs
-  the same images under `scripts/dogfood_up.sh`.
+- **Frontend**: React 18 + Vite 5 + TypeScript 5 + Tailwind 3, in the
+  fyraliscore-demo overlay repo (not core). Tests via Vitest (unit) and
+  Playwright (e2e, with mock server). Real-time via WebSocket
+  (`/view/ceo/stream`); the SSE `/v1/recommendations/stream` surface is
+  overlay-contributed, fed by core's `recommendation.event` bus.
+- **Containers**: core `docker-compose.yml` is the backend-only deploy
+  topology. The UI container and the TLS edge (Let's Encrypt via
+  `acme-companion`) live in the overlay's `docker-compose.demo.yml`. The
+  dogfood path runs the same backend images under `scripts/dogfood_up.sh`.
 
 ## Development Workflow
 
@@ -277,10 +286,11 @@ Before opening a PR, the contributor MUST:
 2. Run `python scripts/check_schema_drift.py` if migrations or
    models changed; zero exit code required.
 3. Run `ruff` (config in `pyproject.toml`).
-4. For UI changes: `npm run typecheck`, `npm test`, and at least one
-   e2e check (`npm run test:e2e` against the mock server).
-5. For UI/frontend changes, exercise the feature in a browser
-   (dogfood or `dev:mock`). Type-check passing is not feature-correct.
+4. For UI/frontend changes (in the fyraliscore-demo overlay repo): run that
+   repo's gates — `npm run typecheck`, `npm test`, and at least one e2e check
+   (`npm run test:e2e` against the mock server).
+5. For UI/frontend changes, exercise the feature in a browser. Type-check
+   passing is not feature-correct.
 
 ### Spec-driven changes
 

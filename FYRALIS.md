@@ -82,7 +82,7 @@
   - [History / ledger](#history--ledger)
   - [Model trace, model page & map](#model-trace-model-page--map-servicesproductmodel_tracerouterpy-gatewaymodel_page_routespy-gatewaymap_routespy)
   - [Spec surface](#spec-surface-servicesappgatewayspec_routespy)
-  - [Demo](#demo-servicesproductdemorouterpy)
+  - [Demo (overlay-contributed)](#demo-overlay-contributed)
   - [Realtime WebSocket](#realtime-websocket-servicesapprealtimemainpy)
   - [Webhooks](#webhooks-servicesappwebhooksrouterpy-prefix-webhooks)
   - [OAuth & integration install](#oauth--integration-install-servicesingestintegrations)
@@ -161,10 +161,10 @@ The Think worker (`scripts/run_think_worker.py`) drains `think_trigger_queue`; t
 | Ingestion lanes | **Kafka (KRaft)** | per-source topic quad (raw / normalized / embedding / dlq); full-pipeline mode only |
 | Raw tier | **S3 / MinIO** | bucket `fyralis-raw` (`S3_RAW_BUCKET`) |
 | Rate limiter | **Redis** | backs the embedding-backlog drainer (Lua EVALSHA) |
-| Frontend | **React / Vite on :5173** | `ui/`; HTTP `/api` + WS `/stream`; no Python coupling |
+| Frontend | **React / Vite** | lives in the **fyraliscore-demo** overlay repo (was core `ui/`); HTTP `/api` + WS `/stream`; external client, no Python coupling |
 | Background workers | **Worker processes** | Think, post-commit, topology sweeper, ingestion consumers, live source pollers (`services/workers`, `services/ingest`) |
 
-Local dev brings up Postgres + Ollama via `docker-compose.yml`; `scripts/dogfood_up.sh` launches the gateway, Think + post-commit workers, topology sweeper, and the Vite dev server. Setup details: `README.md`.
+Local dev brings up Postgres + Ollama via `docker-compose.yml`; `scripts/dogfood_up.sh` launches the gateway, Think + post-commit workers, and the topology sweeper. (The UI now lives in the overlay repo and is run from there.) Setup details: `README.md`.
 
 ---
 
@@ -176,12 +176,13 @@ Fyralis Core (package `company-os`) is a source-level monolith, not a fleet of m
 
 Each `services/<layer>/` is a **PEP 420 namespace package** (no `__init__.py` at the layer root, matching `services/` itself) carrying its own `README.md`. Layers are ordered so that **higher layers depend on lower ones** ("import downward, not upward"): App sits on top of Product/Ingest, Product on Reasoning, Reasoning and Ingest on the Domain substrate, and everything bottoms out on `lib/`. `services/platform` is cross-cutting (authz + execution routing), and `services/workers` holds background packages that drive the substrate.
 
-Boundaries are enforced by **import-linter** (`lint-imports`, configured in `pyproject.toml` under `[tool.importlinter]`, run as the CI `architecture` job). Only invariants that are *empirically true today* are encoded, so a failure is always a real regression — never an aspirational rule the code already breaks. The two enforced contracts:
+Boundaries are enforced by **import-linter** (`lint-imports`, configured in `pyproject.toml` under `[tool.importlinter]`, run as the CI `architecture` job). Only invariants that are *empirically true today* are encoded, so a failure is always a real regression — never an aspirational rule the code already breaks. The enforced contracts:
 
 | # | Contract (type) | What it forbids | Documented exceptions |
 |---|---|---|---|
 | 1 | `lib` is independent of `services` (`forbidden`) | Any `lib.*` module importing `services.*` | Three deliberate lazy/function-local imports in `lib/llm/provider.py` (reasoning `circuit_breaker`, `diff_schema`, `strict_schema`) and test-only fixtures in `lib/`. |
 | 2 | Reasoning core does not *directly* import App/Product/Ingest (`forbidden`, `allow_indirect_imports = true`) | `services.reasoning.*` newly reaching up into `services.app` / `services.product` / `services.ingest` | A known **transitive** edge `reasoning → services/domain/models/repo.py → product/reasoning` exists and is tracked as debt in `CODEBASE-MANAGEMENT.md`, not enforced against. |
+| 3 | Core never imports the demo / simulation overlays (`forbidden`) | Any core module importing the `fyralis_demo` / simulation overlay packages | None — core is overlay-free; the overlay plugs in only through entry-point seams (`company_os.gateway_extensions`, `company_os.event_subscribers`, `company_os.reasoning_augmentors`). |
 
 Contract 2 is direct-only by design: it catches a reasoning module *newly* coupling upward (the common regression) without red-gating the one pre-existing upward edge in `domain/models/repo.py`. Naming collisions from the re-layering were resolved so `services/reasoning/topology` is distinct from `lib/topology`, and `services/ingest/integrations` from `lib/integrations`.
 
@@ -190,7 +191,7 @@ Contract 2 is direct-only by design: it catches a reasoning module *newly* coupl
 ```mermaid
 graph TD
     SRC["External signal sources<br/>Slack · GitHub · Discord · Gmail · GCal/Drive<br/>Jira · Notion · Mercury · QuickBooks"]
-    UI["React / Vite UI (:5173 dev)"]
+    UI["React / Vite UI<br/>(external client — overlay repo)"]
     GW["services/app<br/>Gateway & Transport — FastAPI :8000,<br/>WS /stream, webhooks"]
     INGEST["services/ingest<br/>handlers, integrations, normalizer"]
     DOMAIN["services/domain<br/>Substrate — observations, models, acts, resources"]
@@ -267,11 +268,11 @@ One row per layer; packages and ownership condensed from `docs/architecture/inde
 | **Ingest** | `services/ingest` (`ingestion`, `integrations`, `synthetic`, `code_intel`, `github_intel`) | Per-channel handlers, third-party integrations, normalization to observations, the Kafka full-pipeline path, intel enrichment. |
 | **Reasoning** | `services/reasoning` (`think`, `retrieval`, `topology`, `judgment`, `relationships`, `dynamics`, `contestability`, `calibration`) | Retrieval, LLM reasoning, diff validation/apply, reconciliation, topology, judgment/scoring. |
 | **Domain** | `services/domain` (`models`, `acts`, `resources`, `observations`, `actors`, `entity_aliases`, `bridge`, `falsifiers`) | The persisted, tenant-scoped substrate; system-of-record repositories (`*/repo.py`). |
-| **Product** | `services/product` (`greeting`, `today`, `query`, `conversations`, `forecasts`, `recommendations`, `decision_deltas`, `history`, `model_trace`, `rendering`, `demo`) | CEO-facing surfaces composed from substrate + reasoning: greeting/CEO view, today briefing, query/ask, forecasts, recommendations, rendering, demo tenancy. |
+| **Product** | `services/product` (`greeting`, `today`, `query`, `conversations`, `forecasts`, `recommendations`, `decision_deltas`, `history`, `model_trace`, `rendering`) | CEO-facing surfaces composed from substrate + reasoning: greeting/CEO view, today briefing, query/ask, forecasts, recommendations, rendering. (The demo tenancy subsystem moved to the **fyraliscore-demo** overlay; it mounts back via the gateway extension seam.) |
 | **Platform** | `services/platform` (`access_control`, `execution`) | Five-layer `can_read` access control (`@requires_access`) and the execution-routing / adaptive-inquiry gate. |
 | **Workers** | `services/workers` (`anomaly_processor`, `entity_resolver`, `calibration_updater`, `deadline_resolver`, `precipitation`, `edge_drift`, `topology_sweeper`, `topology_updater`, `neighborhood_detector`, `maintenance`) | Polling/scheduled substrate-maintenance and trigger-enqueue jobs — **mostly undeployed** (no compose service). |
 | **lib** | `lib` (`shared`, `llm`, `embeddings`, `integrations`, `topology`, `nexus`) | Shared building blocks: DB/IDs/errors/types helpers, structured-output LLM provider, embeddings; **must not import `services`** (enforced). |
-| **data-plane** | — (compose) | Runtime processes and data stores: PostgreSQL 16 + pgvector (substrate, durable queues, cache), Kafka (KRaft, per-source lanes), S3/MinIO (raw tier), Redis (rate limiter), Ollama (768-d embeddings), nginx-proxy + acme-companion (HTTPS). |
+| **data-plane** | — (compose) | Backend-only runtime processes and data stores: PostgreSQL 16 + pgvector (substrate, durable queues, cache), Kafka (KRaft, per-source lanes), S3/MinIO (raw tier), Redis (rate limiter), Ollama (768-d embeddings). (The UI container and the nginx-proxy + acme-companion HTTPS edge moved to the overlay's `docker-compose.demo.yml`.) |
 
 ---
 
@@ -283,7 +284,8 @@ The HTTP/WS edge. It terminates every external request, authenticates and rate-l
 
 - ASGI app: `uvicorn services.app.gateway:app` — the module-level `app` is built by `build_app()` in `services/app/gateway/main.py`. Every dependency (pool, repos, embedder, rate limiter) is injectable so tests construct the app synchronously; production wires them in the `_lifespan` handler.
 - Port **8000** (Docker `gateway` service `expose: "8000"`; sandbox publishes `8000:8000`).
-- `build_app()` delegates route mounting to `services/app/gateway/route_mounts.py`: core/auth/ingest, substrate, contest, dashboard, Sage internal, recommendations, Today core/artifacts, Structure, Map, demo, decision-deltas, forecasts, model-trace, history, spec/model-page/today routes, webhooks, OAuth integrations, Jira/Mercury/QuickBooks install surfaces, GitHub-intel, and env-gated finance + Slack-DM debug panels.
+- `build_app()` delegates route mounting to `services/app/gateway/route_mounts.py`: core/auth/ingest, substrate, contest, dashboard, Sage internal, recommendations, Today core/artifacts, Structure, Map, decision-deltas, forecasts, model-trace, history, spec/model-page/today routes, webhooks, OAuth integrations, Jira/Mercury/QuickBooks install surfaces, GitHub-intel, and env-gated finance + Slack-DM debug panels.
+- An **extension seam** (`services/app/gateway/extensions.py`, entry-point group `company_os.gateway_extensions`) lets installed overlays contribute routers, startup hooks, and public path prefixes. The demo/simulation surfaces (`/v1/demo/*`, the Pelago seed, the simulation mount) live in the **fyraliscore-demo** overlay and plug in here — present only when that overlay is installed. Core imports nothing from the overlay.
 - `_lifespan` owns: creating the asyncpg pool (`db_bootstrap.create_gateway_pool`, JSON/vector codecs), constructing `GatewayDeps`, integration state wiring (`state_wiring.py`: secret store + `TenantResolver` + `TenantFlags` + GitHub client/replay cache), starting the realtime dispatcher, a 5-min `oauth_install_states` sweep task, CEO-view wiring (`ceo_view_wiring.py`), and when `KAFKA_BOOTSTRAP_SERVERS` is set the ingestion data-plane producer + S3 raw client (`state_wiring.py`).
 
 ### Middleware chain
@@ -298,7 +300,7 @@ Added last-to-first, so they run in this order on every request:
 
 Auth (`services/app/gateway/auth.py`): tokens are opaque uuid7 strings; the DB stores only `SHA-256(token)`. `validate_token()` returns an `AuthContext(session_id, actor_id, tenant_id, expires_at)` or `None` for unknown/expired/revoked (no distinguishing oracle — all yield 401). Sessions are minted via `POST /auth/session` (`create_session`, dev-gated by `AUTH_BOOTSTRAP_SECRET`). A `Bearer`+`X-Tenant-Id` mismatch returns 403 `tenant_mismatch`.
 
-Public bypass (skip Bearer + rate-limit): exact paths `/healthz`, `/metrics`, `/auth/session`, and each provider's `/integrations/<p>/callback|installed|install-error`; prefixes `/view/ceo/`, `/rendering/`, `/simulation/`, `/debug/`, `/webhooks/`, `/finance/`, `/slack/`, plus `/stream` and the demo picker routes. `/integrations/<p>/install` stays Bearer-required.
+Public bypass (skip Bearer + rate-limit): exact paths `/healthz`, `/metrics`, `/auth/session`, and each provider's `/integrations/<p>/callback|installed|install-error`; **core** prefixes `/view/ceo/`, `/rendering/`, `/debug/`, `/webhooks/`, `/finance/`, `/slack/`, plus `/stream`. `/integrations/<p>/install` stays Bearer-required. Overlay public prefixes (`/simulation/`, the demo picker routes under `/v1/demo/`) are **not** hardcoded in core's `_PUBLIC_PATH_PREFIXES`; they are contributed at runtime by the installed demo extension.
 
 Rate limiting (`services/app/gateway/rate_limit.py`) is an **in-process** `asyncio`-locked token bucket (Redis was deferred), keyed `(tier, (tenant_id, actor_id))`:
 
@@ -339,7 +341,7 @@ Gmail enters via a separate Pub/Sub push endpoint (`services/app/webhooks/gmail_
 
 ```mermaid
 graph TD
-    UI["React UI"]
+    UI["React UI<br/>(external client — overlay repo)"]
     HOOKS["Provider webhooks<br/>slack · github · discord · jira · notion · mercury · quickbooks · grafana"]
     GMAIL["Gmail Pub/Sub push"]
     OAUTH["OAuth providers"]
@@ -687,7 +689,7 @@ sequenceDiagram
 
 ## Product Layer — CEO Surfaces
 
-`services/product/` is the read/compose/render frontier: it turns cached substrate snapshots and reasoning retrieval into voice-compliant, LLM-rendered surfaces for the CEO. It does almost no signal mutation — the one exception is recommendation handlers (act/dismiss/ratify) and demo provisioning. Every package is mounted into the gateway; the only always-on worker is the greeting scheduler, started in-process by the gateway lifespan.
+`services/product/` is the read/compose/render frontier: it turns cached substrate snapshots and reasoning retrieval into voice-compliant, LLM-rendered surfaces for the CEO. It does almost no signal mutation — the one exception is recommendation handlers (act/dismiss/ratify). Every package is mounted into the gateway; the only always-on worker is the greeting scheduler, started in-process by the gateway lifespan. (The demo tenancy subsystem that used to live here moved to the **fyraliscore-demo** overlay; see below.)
 
 ### Surfaces
 
@@ -703,7 +705,7 @@ sequenceDiagram
 | History / Ledger | `history/` | Chronological audit / reconciliation / state-change events in six canonical buckets | `observations(kind='state_change')` joined to commitments/Models |
 | Model trace / map | `model_trace/` | Trace Back (what supports a node) / Trace Forward (what it enables) | BFS walks over `model_edges` (`supports`, `instance_of`, `superseded_by`) |
 | Conversations | `conversations/` | Per-card probe threads | persisted threads; free-form Ask routed through `QueryHandler` |
-| Demo | `demo/` | Anonymous multi-tenant sandbox: company picker, session start, signal injection | clone-on-demand tenant, snapshot load, `actor_sessions` token |
+| Demo *(overlay)* | overlay `fyralis_demo` | Anonymous multi-tenant sandbox: company picker, session start, signal injection | moved to the **fyraliscore-demo** overlay repo; mounts back via the gateway extension seam |
 
 ### Greeting scheduler — the CEO-view pre-compute
 
@@ -726,7 +728,13 @@ Each refresh composes a read-only `SubstrateSnapshot` (`greeting/snapshot.py`), 
 
 ### Demo — anonymous multi-tenant sandbox
 
-`demo/router.py` mounts `/v1/demo/*`. `/v1/demo/companies` and `/v1/demo/sessions/start` are the only public (unauthenticated) routes, exported as `PUBLIC_DEMO_PREFIXES` to the gateway. `demo/sessions.py::start_session` provisions a fresh `tenant_id` (clone-on-demand), loads a SQL snapshot with per-tenant UUID remap, mints a short-lived CEO `actor_sessions` token (4h TTL), promotes recommendations → decision deltas, and registers the tenant with the greeting scheduler. `simulator.py` drives the full `ingest.core.ingest` pipeline (a noted product→ingest edge); `budget.py` enforces per-session cost caps; `model_routing.py` overrides the LLM model per demo tenant/call-kind (`demo_configs.model_routing[<call_kind>]` → `["default"]` → env `LLM_MODEL`).
+The demo subsystem (the public company picker, `/v1/demo/sessions/start` clone-on-demand provisioning, the signal simulator, per-session budgets, and demo model routing) **moved out of core** into the **fyraliscore-demo** overlay repo (the `fyralis_demo` package). It plugs back in through three core-defined extension seams and core imports nothing from it:
+
+- **Gateway extension registry** — `services/app/gateway/extensions.py` (entry-point group `company_os.gateway_extensions`). The installed demo extension contributes the `/v1/demo/*` routers, its public path prefixes, and startup hooks: the Pelago seed (was core `services/app/gateway/demo_seed.py`, now overlay `fyralis_demo/seed.py`) and the simulation mount.
+- **Process-local event bus** — `lib/shared/events.py` (entry-point group `company_os.event_subscribers`). Core publishes `recommendation.event`; the overlay subscribes and fans out to the demo SSE stream.
+- **Reasoning context-augmentor registry** — `services/reasoning/think/hooks.py` (entry-point group `company_os.reasoning_augmentors`). Core defaults to strict retrieval; the overlay can register the "full active ledger" augmentation.
+
+When the overlay is installed, the flow is as before: `start_session` provisions a fresh `tenant_id` (clone-on-demand), loads a snapshot with per-tenant UUID remap, mints a short-lived CEO `actor_sessions` token, promotes recommendations → decision deltas, and registers the tenant with the greeting scheduler; the simulator drives the full ingest pipeline. The demo's own tables (`demo_configs`, `demo_sessions`, `demo_session_costs`) and the `tenants.demo_config_id` column are overlay-owned — core dropped them in `db/migrations/0093_drop_demo_scaffolding.sql` and keeps only the generic `tenants` table with its `is_demo` column. The demo Pydantic models (TenantRow/DemoConfigRow/DemoSessionRow/DemoSessionCostRow) likewise moved out of `lib/shared/types.py` into the overlay's `fyralis_demo/types.py`.
 
 ---
 
@@ -853,7 +861,7 @@ None of the `services/workers/*` packages ship a `__main__.py`; the undeployed o
 
 ### Runtime & Data Plane
 
-Two deployment shapes. Local dev (`README.md` / `scripts/dogfood_up.sh`) runs only **Postgres + Ollama** in Docker plus host processes (gateway, Think worker, post-commit worker, topology sweeper, Vite UI). The full multi-container topology below is what `docker-compose.yml` defines.
+Two deployment shapes. Local dev (`README.md` / `scripts/dogfood_up.sh`) runs only **Postgres + Ollama** in Docker plus host processes (gateway, Think worker, post-commit worker, topology sweeper). The full multi-container topology below is what core's backend-only `docker-compose.yml` defines. (The UI container and the nginx/acme TLS edge live in the overlay's `docker-compose.demo.yml`.)
 
 **Data stores:**
 
@@ -864,12 +872,13 @@ Two deployment shapes. Local dev (`README.md` / `scripts/dogfood_up.sh`) runs on
 | **Redis** | Rate-limiter state (token-bucket Lua `EVALSHA`); optional cache. |
 | **Kafka (KRaft, single broker)** | Per-source ingestion lanes `ingestion.{raw,normalized,embedding,dlq}.{source}` + control-plane `tenant_traffic_signal`. Full-pipeline mode only. |
 | **S3 / MinIO** | Raw-tier object storage (`fyralis-raw`). |
-| **nginx-proxy + acme-companion** | HTTPS termination / cert automation in front of the gateway + UI. |
 
-**Compose stack** (`docker-compose.yml`): infra (`postgres`, `ollama`, `kafka`, `minio`, `redis`); init one-shots (`migrate` → `scripts/docker-migrate.sh`, `kafka-init` → `scripts/provision_kafka_topics.py`, `minio-init`); ingress (`gateway` on uvicorn, `nginx-proxy`, `acme-companion`); the worker set listed above; and `ui`. Overlays: `docker-compose.per-source.yml` (one normalizer pinned per source), `docker-compose.dev.yml` (Kafka + moto-S3 mock).
+> The UI container and the **nginx-proxy + acme-companion** HTTPS/cert-automation edge are no longer in core compose; they moved to the overlay's `docker-compose.demo.yml`.
+
+**Compose stack** (core `docker-compose.yml`, backend-only): infra (`postgres`, `ollama`, `kafka`, `minio`, `redis`); init one-shots (`migrate` → `scripts/docker-migrate.sh`, `kafka-init` → `scripts/provision_kafka_topics.py`, `minio-init`); ingress (`gateway` on uvicorn); and the worker set listed above. The `ui`, `nginx-proxy`, and `acme-companion` services moved to the overlay's `docker-compose.demo.yml`. Overlays: `docker-compose.per-source.yml` (one normalizer pinned per source), `docker-compose.dev.yml` (Kafka + moto-S3 mock).
 
 **How processes communicate:**
-- **HTTP / WS** — UI ↔ gateway (`/api/*`, `/stream`); external providers → gateway webhooks/OAuth.
+- **HTTP / WS** — overlay UI ↔ gateway (`/api/*`, `/stream`); external providers → gateway webhooks/OAuth.
 - **asyncpg** — every Python process talks to Postgres directly (gateway owns its pool; workers create their own).
 - **Durable DB queues** — `think_trigger_queue`, `model_reeval_queue`, `pending_post_commit_actions`, polled `FOR UPDATE SKIP LOCKED`. Primary work-handoff, independent of Kafka.
 - **Kafka** — full ingestion pipeline only; the inline gateway path does not require it (`kafka_path_enabled` is a per-tenant kill-switch).
@@ -877,8 +886,7 @@ Two deployment shapes. Local dev (`README.md` / `scripts/dogfood_up.sh`) runs on
 
 ```mermaid
 graph TD
-    UI["React UI (:80 / :5173)"]
-    NGINX["nginx-proxy + acme-companion"]
+    UI["React UI + nginx/acme TLS edge<br/>(overlay docker-compose.demo.yml)"]
     GW["Gateway (uvicorn :8000)"]
 
     subgraph ingrestore["Ingestion data plane (full pipeline)"]
@@ -904,7 +912,7 @@ graph TD
     EXT["Source APIs"]
     LLM["LLM providers"]
 
-    UI --> NGINX --> GW
+    UI -. "HTTP /api · WS /stream (overlay)" .-> GW
     EXT -->|"webhooks / OAuth"| GW
     GW --- PG
     GW --> OLLAMA
@@ -947,8 +955,8 @@ graph LR
   C -.->|"public path"| PUB["_PUBLIC_PATHS /<br/>_PUBLIC_PATH_PREFIXES<br/>(bypass bearer)"]
 ```
 
-- **Standard auth (`Bearer`)** — `Authorization: Bearer <token>` is hashed and looked up in `actor_sessions` by `services/app/gateway/auth.py:validate_token`; success populates `request.state.auth` with `tenant_id` / `actor_id`. Tokens are minted by `POST /auth/session` (gated by `X-Bootstrap-Secret` matching `AUTH_BOOTSTRAP_SECRET`) or by `POST /v1/demo/sessions/start`. (No `DEV_BEARER_TOKEN` constant exists in code; local dev mints a real session token.)
-- **Public bypass** — `_PUBLIC_PATHS` / `_PUBLIC_PATH_PREFIXES` in `services/app/gateway/middleware.py` let a fixed set through with no bearer: `/healthz`, `/metrics`, `/auth/session`, all `/view/ceo/*`, `/rendering/*`, `/webhooks/*`, the OAuth `*/callback`/`*/installed`/`*/install-error` redirects, `/v1/demo/companies`, `/v1/demo/sessions/start`, and the dev panels `/debug/*`, `/finance/*`, `/slack/*`, `/simulation*`.
+- **Standard auth (`Bearer`)** — `Authorization: Bearer <token>` is hashed and looked up in `actor_sessions` by `services/app/gateway/auth.py:validate_token`; success populates `request.state.auth` with `tenant_id` / `actor_id`. Tokens are minted by `POST /auth/session` (gated by `X-Bootstrap-Secret` matching `AUTH_BOOTSTRAP_SECRET`) or, when the demo overlay is installed, by its `POST /v1/demo/sessions/start`. (No `DEV_BEARER_TOKEN` constant exists in code; local dev mints a real session token.)
+- **Public bypass** — `_PUBLIC_PATHS` / `_PUBLIC_PATH_PREFIXES` in `services/app/gateway/middleware.py` let a fixed set of **core** paths through with no bearer: `/healthz`, `/metrics`, `/auth/session`, all `/view/ceo/*`, `/rendering/*`, `/webhooks/*`, the OAuth `*/callback`/`*/installed`/`*/install-error` redirects, and the dev panels `/debug/*`, `/finance/*`, `/slack/*`. Overlay public prefixes — the demo picker routes (`/v1/demo/companies`, `/v1/demo/sessions/start`) and `/simulation*` — are **not** hardcoded here; they are contributed at runtime by the installed demo extension.
 - **Webhook auth** is the per-provider HMAC/JWT signature (`services/app/webhooks/signatures.py`), not a bearer.
 - **CEO-view auth** (`/view/ceo/*`) uses a separate `VIEW_CEO_TOKEN` resolved by the stream manager (`services/product/greeting/api.py:_auth`), falling back to a default tenant in single-tenant dogfood mode.
 - **Dev-panel auth** (`/finance`, `/slack`, `/debug`) is scoped by an `X-Tenant-Id` header, no bearer; env-gated at mount.
@@ -1061,7 +1069,9 @@ In the tables below, **Auth** = `Bearer` (session required), `Public` (allowlist
 | POST | `/v1/spec/decision_deltas/{delta_id}/accept` · `/delegate` · `/contest` · `/snooze` · `/add_context` | Spec delta actions. | Bearer |
 | GET | `/v1/spec/forecasts` (+ `/`, `/{forecast_id}`) · `/v1/spec/ledger_events` (+ `/`) | Spec-shaped forecasts / ledger. | Bearer |
 
-### Demo (`services/product/demo/router.py`)
+### Demo (overlay-contributed)
+
+The endpoints below are **not** built into core — they live in the **fyraliscore-demo** overlay (`fyralis_demo`) and are mounted via the gateway extension seam (`services/app/gateway/extensions.py`) only when that overlay is installed. The demo SSE stream is driven by core's process-local event bus: core publishes `recommendation.event` (`lib/shared/events.py`) and the overlay subscribes and fans out.
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
@@ -1126,7 +1136,7 @@ Providers handled by the unified router (the `VERIFIERS` registry in `services/a
 
 ### Mounting summary
 
-Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, github-intel, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, simulation, debug, gmail/gcal/gdrive OAuth + push). The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
+Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, github-intel, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, debug, gmail/gcal/gdrive OAuth + push). Overlay-contributed routers (demo, simulation) are mounted at runtime through the gateway extension seam (`services/app/gateway/extensions.py`) when the demo overlay is installed. The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
 
 ---
 
@@ -1172,7 +1182,7 @@ Grouped by domain; one line each. File column is the migration that creates the 
 #### Identity
 | Table | File | Purpose |
 |-------|------|---------|
-| `tenants` | 0023 | The org/tenant root (`is_demo`, `demo_config_id`); referenced by FKs from 0037 onward. |
+| `tenants` | 0023 | The org/tenant root (keeps the generic `is_demo` column; no core logic branches on it); referenced by FKs from 0037 onward. The demo-specific `demo_config_id` column and the `demo_configs` / `demo_sessions` / `demo_session_costs` tables were dropped from core by `0093_drop_demo_scaffolding.sql` and are re-created by the overlay. |
 | `actors` | 0001 | People/systems/teams within a tenant (`type`, `email`, `metadata`). |
 | `actor_identity_mappings` | 0001 | `(source_channel, source_actor_ref) → actor_id` cross-source identity links. |
 | `entity_aliases` | 0001 | Fuzzy/canonical entity name resolution with `alias_embedding`. |
@@ -1238,7 +1248,7 @@ graph LR
 
 ## Developer Onboarding
 
-A new engineer goes from clone to a running stack (gateway on `:8000`, UI on `:5173`) by following the numbered quickstart below. The whole flow is also in `README.md`; this is the condensed, command-dense version. The runtime needs only **Postgres + Ollama** locally — Kafka/MinIO/Redis in `docker-compose.yml` are the production data plane and are not required for dogfood dev (the synthetic ingestion harness is used instead).
+A new engineer goes from clone to a running backend stack (gateway on `:8000`) by following the numbered quickstart below. The whole flow is also in `README.md`; this is the condensed, command-dense version. The runtime needs only **Postgres + Ollama** locally — Kafka/MinIO/Redis in `docker-compose.yml` are the production data plane and are not required for dogfood dev (the synthetic ingestion harness is used instead). The UI lives in the **fyraliscore-demo** overlay repo; run it from there if you want the browser cockpit.
 
 ### Prerequisites
 
@@ -1246,7 +1256,7 @@ A new engineer goes from clone to a running stack (gateway on `:8000`, UI on `:5
 | --- | --- | --- |
 | Python | 3.11+ (`pyproject.toml` requires `>=3.11`) | gateway, workers, scripts |
 | Docker + Compose v2 | recent | brings up Postgres (pgvector) + Ollama |
-| Node.js | 20+ | the Vite/React UI in `ui/` |
+| Node.js | 20+ | only for the React/Vite UI, which lives in the **fyraliscore-demo** overlay repo (not needed for the backend) |
 | `psql` | 14+ | applies SQL migrations |
 | `curl` | any | `dogfood_up.sh` health checks |
 
@@ -1279,10 +1289,7 @@ python scripts/check_schema_drift.py                # exit 0 == live DB matches 
 # 5. Seed the dogfood tenant (CEO "Rachin" + 12 sim personas; idempotent)
 python scripts/seed_dogfood_tenant.py
 
-# 6. UI deps
-( cd ui && npm install )
-
-# 7. Bring up the full stack
+# 6. Bring up the backend stack (UI lives in the fyraliscore-demo overlay repo)
 ./scripts/dogfood_up.sh
 ```
 
@@ -1290,29 +1297,27 @@ Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`, partition DO blocks), s
 
 ```
 Gateway:         http://localhost:8000
-Main UI:         http://localhost:5173
-Slack simulator: http://localhost:8000/simulation/slack_ui/
 Healthz:         curl http://localhost:8000/healthz
 ```
 
-The UI sends `Authorization: Bearer <token>` with a **real session token** — minted by `POST /auth/session` or the demo `POST /v1/demo/sessions/start` flow and validated against `actor_sessions`; there is no static-token bypass in the gateway. (`DEV_BEARER_TOKEN=dogfood-ceo-token` ships in `.env.example`/`README.md` as documented config, but no current code path honors it.) Logs go to `/tmp/company_os_logs/`, PIDs to `/tmp/company_os_dogfood.pids`. Helpers: `scripts/dogfood_logs.sh` (tail), `scripts/dogfood_inspect.sh` (DB state), `scripts/dogfood_down.sh` (kills the whole process group).
+(The Main UI and the Slack simulator are served by the **fyraliscore-demo** overlay, not by core's dogfood stack.) The overlay UI sends `Authorization: Bearer <token>` with a **real session token** — minted by `POST /auth/session` or, when the demo overlay is installed, its `POST /v1/demo/sessions/start` flow — validated against `actor_sessions`; there is no static-token bypass in the gateway. (`DEV_BEARER_TOKEN=dogfood-ceo-token` ships in `.env.example`/`README.md` as documented config, but no current code path honors it.) Logs go to `/tmp/company_os_logs/`, PIDs to `/tmp/company_os_dogfood.pids`. Helpers: `scripts/dogfood_logs.sh` (tail), `scripts/dogfood_inspect.sh` (DB state), `scripts/dogfood_down.sh` (kills the whole process group).
 
 ```mermaid
 flowchart LR
   pg[("Postgres<br/>pgvector :5432")]
   ol[("Ollama :11434<br/>nomic-embed-text")]
-  subgraph dogfood["scripts/dogfood_up.sh"]
+  subgraph dogfood["scripts/dogfood_up.sh (backend-only)"]
     gw["gateway (uvicorn)<br/>services.app.gateway.main:app :8000"]
     tw["run_think_worker.py"]
     pc["run_post_commit_worker.py"]
     ts["run_topology_sweeper.py"]
-    ui["vite dev :5173"]
   end
+  ui["React/Vite UI<br/>(overlay repo)"]
   gw --> pg & ol
   tw --> pg
   pc --> pg
   ts --> pg
-  ui --> gw
+  ui -. "HTTP /api · WS /stream" .-> gw
   tw -->|build_provider| llm["LLM provider<br/>(deepseek/…)"]
 ```
 
@@ -1322,11 +1327,11 @@ Skip `dogfood_up.sh` and run pieces directly (each reads `DATABASE_URL` and othe
 
 | Component | Command | Notes |
 | --- | --- | --- |
-| Gateway | `uvicorn services.app.gateway.main:app --host 0.0.0.0 --port 8000 --reload` | spawns GRT scheduler + realtime dispatcher in-process; mounts sim router when `GATEWAY_MOUNT_SIM=1` |
+| Gateway | `uvicorn services.app.gateway.main:app --host 0.0.0.0 --port 8000 --reload` | spawns GRT scheduler + realtime dispatcher in-process; overlay-contributed routers (demo, simulation) mount via the gateway extension seam when the demo overlay is installed |
 | Think worker | `python scripts/run_think_worker.py` | builds the LLM provider via `lib.llm.provider.build_provider`, runs `ThinkWorker(pool).run()` |
 | Post-commit worker | `python scripts/run_post_commit_worker.py` | polls `process_batch` every `POST_COMMIT_WORKER_POLL_INTERVAL_S` (default 5s) |
 | Topology sweeper | `python scripts/run_topology_sweeper.py` | `run_forever` on `TOPOLOGY_SWEEPER_INTERVAL_S` (900s); `TOPOLOGY_SWEEPER_ONCE=1` runs a single sweep and exits |
-| UI (no backend) | `cd ui && npm run dev:mock` | `USE_MOCK=1 vite` — serves the UI against in-repo API mocks |
+| UI | — | lives in the **fyraliscore-demo** overlay repo; run it from there (against this gateway or the overlay's mock server) |
 
 ### Running tests
 
@@ -1340,15 +1345,9 @@ pytest -m "not slow"         # skip slow (>1s) tests
 RUN_REAL_LLM=1 pytest -m real_llm   # real-LLM tests (need a configured provider key)
 ```
 
-Markers are declared in `pyproject.toml` (`--strict-markers`): `integration`, `ollama`, `slow`, `real_llm`, plus `requires_infra` (Kafka/Temporal/Redis/S3) and `requires_docker` (testcontainers Kafka, moto-s3) which skip cleanly when the service/daemon is absent. `lint-imports` enforces the architecture boundary contracts (lib never imports services; reasoning never directly imports app/product/ingest).
+Markers are declared in `pyproject.toml` (`--strict-markers`): `integration`, `ollama`, `slow`, `real_llm`, plus `requires_infra` (Kafka/Temporal/Redis/S3) and `requires_docker` (testcontainers Kafka, moto-s3) which skip cleanly when the service/daemon is absent. `lint-imports` enforces the architecture boundary contracts (lib never imports services; reasoning never directly imports app/product/ingest; core never imports the demo / simulation overlays).
 
-UI tests (run inside `ui/`):
-
-```bash
-npm test           # vitest unit tests
-npm run test:e2e   # USE_MOCK=1 playwright (in-repo mock server)
-npm run typecheck  # tsc --noEmit
-```
+UI tests (Vitest unit, Playwright E2E, typecheck) live with the frontend in the **fyraliscore-demo** overlay repo and are run from there.
 
 ### Docs site
 
@@ -1368,7 +1367,7 @@ This section covers running and operating the local dogfood stack, the surfaces 
 
 ### Using the app (end-user view)
 
-After `./scripts/dogfood_up.sh`, open <http://localhost:5173> (the Vite UI). The gateway runs separately on `http://localhost:8000`. The UI is a single-page React app (`ui/src/main.tsx`) whose CEO-facing surfaces are:
+After `./scripts/dogfood_up.sh`, the gateway runs on `http://localhost:8000`. The browser cockpit (the React/Vite UI) lives in the **fyraliscore-demo** overlay repo and is run from there; pointed at this gateway, its CEO-facing surfaces are:
 
 | Route | Surface | Purpose |
 | --- | --- | --- |
@@ -1378,13 +1377,12 @@ After `./scripts/dogfood_up.sh`, open <http://localhost:5173> (the Vite UI). The
 | `/ledger` | Ledger | Decisions / commitments / goals history (`/history` redirects here) |
 | `/debug/*` | Developer console | Sub-pages: `signals`, `think-runs`, `models`, `acts`, `renders`, `cache` |
 
-- **Slack simulator** is served by the gateway at <http://localhost:8000/simulation/slack_ui/>. It is mounted only when `GATEWAY_MOUNT_SIM=1`, which is the **default in dev** (`"0" if prod else "1"` in `services/app/gateway/ceo_view_wiring.py`) and forced off (`0`) in `docker-compose.yml`'s `gateway` service.
-- **Demo tenancy** lives under `/v1/demo/*` (`services/product/demo/router.py`). The picker endpoints `GET /v1/demo/companies` and `POST /v1/demo/sessions/start` are public (in the gateway middleware's public path config); `start` mints the session token used for everything else (reset/end/inject).
-- **Auth in dev:** the UI sends `Authorization: Bearer <token>` (`ui/src/api/auth.ts`) and the gateway validates **every** token against `actor_sessions` via `BearerAuthMiddleware` — there is no static-token shortcut. Dev tokens are minted by `POST /auth/session` or the demo session-start flow; the `DEV_BEARER_TOKEN` in `.env.example`/`README.md` is documented but unwired in current code. Public paths (`/healthz`, `/metrics`, `/webhooks/`, `/v1/demo/companies`, `/v1/demo/sessions/start`, `/debug/`, `/finance/`, `/slack/`, `/stream*`) skip the bearer check.
+- **Slack simulator** and the **demo tenancy** under `/v1/demo/*` are **overlay-contributed**: they live in the fyraliscore-demo overlay and mount into the gateway via the extension seam (`services/app/gateway/extensions.py`) only when that overlay is installed. The demo picker endpoints `GET /v1/demo/companies` and `POST /v1/demo/sessions/start` are public (the extension contributes those public-path prefixes); `start` mints the session token used for everything else (reset/end/inject).
+- **Auth in dev:** the overlay UI sends `Authorization: Bearer <token>` and the gateway validates **every** token against `actor_sessions` via `BearerAuthMiddleware` — there is no static-token shortcut. Dev tokens are minted by `POST /auth/session` or, with the demo overlay installed, its session-start flow; the `DEV_BEARER_TOKEN` in `.env.example`/`README.md` is documented but unwired in current code. Core public paths (`/healthz`, `/metrics`, `/webhooks/`, `/debug/`, `/finance/`, `/slack/`, `/stream*`) skip the bearer check; overlay public paths (`/v1/demo/companies`, `/v1/demo/sessions/start`) are added by the demo extension.
 
 ### Operating the stack
 
-Four orchestration scripts manage the dev stack. `dogfood_up.sh` starts five processes — the gateway (uvicorn `services.app.gateway.main:app` on `:8000`), `think_worker`, `post_commit_worker`, `topology_sweeper`, and the Vite UI on `:5173` — each backgrounded with its own log file.
+Four orchestration scripts manage the dev stack. `dogfood_up.sh` is backend-only: it starts the gateway (uvicorn `services.app.gateway.main:app` on `:8000`), `think_worker`, `post_commit_worker`, and `topology_sweeper` — each backgrounded with its own log file. (The UI lives in the fyraliscore-demo overlay repo and is run from there.)
 
 ```mermaid
 flowchart LR
@@ -1394,7 +1392,6 @@ flowchart LR
     tw[think_worker]
     pc[post_commit_worker]
     ts[topology_sweeper]
-    ui[vite UI :5173]
   end
   procs -->|stdout/stderr| logs[/tmp/company_os_logs/*.log]
   procs -->|PIDs| pids[/tmp/company_os_dogfood.pids]
@@ -1404,16 +1401,16 @@ flowchart LR
 
 | Script | What it does |
 | --- | --- |
-| `scripts/dogfood_up.sh` | Sources `.env` then `.env.dogfood` (overrides win); validates the LLM provider key for `LLM_PROVIDER` (deepseek/openai/anthropic/codex); runs `pg_isready` and `curl $OLLAMA_URL/api/tags`; checks `.venv` exists; truncates the five logs; launches all processes; then polls `GET /healthz` for up to 30s |
+| `scripts/dogfood_up.sh` | Sources `.env` then `.env.dogfood` (overrides win); validates the LLM provider key for `LLM_PROVIDER` (deepseek/openai/anthropic/codex); runs `pg_isready` and `curl $OLLAMA_URL/api/tags`; checks `.venv` exists; truncates the backend logs; launches the backend processes; then polls `GET /healthz` for up to 30s |
 | `scripts/dogfood_down.sh` | Reads `/tmp/company_os_dogfood.pids`, sends `kill -TERM` to each process group (then `-KILL` after 2s), and removes the PID files |
 | `scripts/dogfood_logs.sh` | Tails all five logs (uses `multitail` if present, else prefixed `tail -f`) |
 | `scripts/dogfood_inspect.sh` | One-shot SQL dump of the dogfood tenant: observation/model/commitment/goal counts, recent Think runs, LLM render costs, view-cache age, top active models |
 
-- **Logs:** `/tmp/company_os_logs/{gateway,think_worker,post_commit_worker,topology_sweeper,ui}.log`.
-- **PIDs:** `/tmp/company_os_dogfood.pids` (plus `/tmp/dogfood_ui.pid`).
+- **Logs:** `/tmp/company_os_logs/{gateway,think_worker,post_commit_worker,topology_sweeper}.log`.
+- **PIDs:** `/tmp/company_os_dogfood.pids`.
 - **Health check:** the gateway exposes `GET /healthz` (returns `{"status":"ok"}`) and a Prometheus `GET /metrics` text endpoint; both are public. There is **no `/readyz`** on the gateway — readiness is implied by `/healthz` returning 200 after startup. (The Kafka *ingestion* consumers in `docker-compose.yml` expose their own `/healthz` on `INGESTION_HEALTH_PORT` 9300, used by the compose healthchecks; the dev dogfood stack does not run those.)
 - **Compose healthchecks** (`docker-compose.yml`): `postgres` via `pg_isready`, `ollama` pulls `nomic-embed-text` on start, `kafka` lists topics, `minio` via `mc ready`/health endpoint, `redis` via `redis-cli ping`. Long-running workers wait on these plus the one-shot `migrate`/`kafka-init`/`minio-init`.
-- **Individual processes** (no full stack): see `README.md` §10 — run the gateway with `uvicorn services.app.gateway.main:app`, or each worker via `scripts/run_*.py`; `cd ui && npm run dev:mock` runs the UI against in-repo API mocks with no backend.
+- **Individual processes** (no full stack): see `README.md` §10 — run the gateway with `uvicorn services.app.gateway.main:app`, or each worker via `scripts/run_*.py`. The UI (and its mock-server dev mode) lives in the fyraliscore-demo overlay repo.
 
 ### Troubleshooting (FAQ table)
 
@@ -1425,7 +1422,7 @@ flowchart LR
 | `ERROR: Ollama not reachable at http://localhost:11434` | Ollama still cold-starting / model not pulled | Wait ~30s on first run (it pulls `nomic-embed-text`); check `docker compose logs ollama`; manual pull: `docker compose exec ollama ollama pull nomic-embed-text` |
 | Embedding model missing | `nomic-embed-text` not present in Ollama | `curl -s http://localhost:11434/api/tags \| grep nomic-embed-text`; pull manually if absent |
 | Schema drift errors at startup | A migration wasn't applied | Re-run the migration loop (`README.md` §5: `psql` over `db/migrations/*.sql`, idempotent); confirm with `python scripts/check_schema_drift.py` (exit 0 = clean) against `company_os` |
-| Empty UI pages (Today/Model/Forecasts blank) | Demo/tenant not seeded or no signals ingested | Run `python scripts/seed_dogfood_tenant.py`; for demo data start a session via `/v1/demo/sessions/start`. Note: running `pytest` truncates `demo_configs`, so re-seed/re-register the demo company afterward |
+| Empty UI pages (Today/Model/Forecasts blank) | Tenant not seeded or no signals ingested | Run `python scripts/seed_dogfood_tenant.py`. (Demo-tenant data via `/v1/demo/sessions/start` requires the fyraliscore-demo overlay installed; the demo tables are overlay-owned.) |
 | Kafka-dependent tests hang | `workflows/` e2e tests need a live Kafka broker | Skip them or bring up Kafka (`docker compose up -d kafka`); the core dogfood stack does not use Kafka |
 | `embedding_pending` backlog grows | Inline live path left observations unembedded (or an embed request was lost) | The `embedding_backlog` drainer (`services.ingest.ingestion.recovery.embedding_backlog`, rate-limited via Redis) covers this in the full compose stack; in dev confirm Ollama is reachable so embeds succeed |
 | `permission denied` / empty rows when querying with RLS on | Row-Level Security bypass requires a **superuser** connection; ordinary roles see nothing without the tenant GUC set | Connect as a Postgres superuser for admin/debug queries (RLS is bypassed for superusers), or set the tenant context the app uses |
@@ -1471,7 +1468,7 @@ Recipes live in `CODEBASE-ARCHITECTURE.md` §16. The common one — **add a new 
 5. Ensure an **`observations` partition** covers the source's `occurred_at` and add a **migration** `db/migrations/NNNN_short_name.sql` (applied in lexicographic order, idempotent `IF NOT EXISTS` / guarded `DO`; keep the 4-digit prefix unique and monotonic; run `python scripts/check_schema_drift.py` after).
 6. Add ingestion + gateway tests, co-located in `<package>/tests/`.
 
-Other §16 recipes: new model proposition kind (`services/domain/models/propositions.py` + `diff_schema`), new UI surface (`ui/src/main.tsx`), new worker (idempotent, Postgres-queue/cursor state, `FOR UPDATE SKIP LOCKED`).
+Other §16 recipes: new model proposition kind (`services/domain/models/propositions.py` + `diff_schema`), new UI surface (in the fyraliscore-demo overlay repo, backed by a gateway adapter route in core), new worker (idempotent, Postgres-queue/cursor state, `FOR UPDATE SKIP LOCKED`).
 
 ### Local checks before pushing
 

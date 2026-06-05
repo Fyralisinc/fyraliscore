@@ -14,5 +14,5 @@ INLINE_TIMEOUT_MS = int(os.environ.get("GITHUB_INTEL_INLINE_TIMEOUT_MS", "1500")
 # Blast-radius traversal depth.
 MAX_BLAST_HOPS = int(os.environ.get("CODE_INTEL_MAX_BLAST_HOPS", "3"))
 
-# Default repo full-name when a tenant maps to a single repo (demo convenience).
+# Default repo full-name when a tenant maps to a single repo (env-configured).
 DEFAULT_REPO = os.environ.get("GITHUB_INTEL_DEFAULT_REPO", "")

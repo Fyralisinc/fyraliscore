@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-03
 - **Deciders:** Fyralis engineering
-- **Related:** [CODEBASE-MANAGEMENT.md](../../CODEBASE-MANAGEMENT.md), [CONTRIBUTING.md](../../CONTRIBUTING.md)
+- **Related:** [CODEBASE-MANAGEMENT.md](https://github.com/Fyralisinc/fyraliscore/blob/main/CODEBASE-MANAGEMENT.md), [CONTRIBUTING.md](https://github.com/Fyralisinc/fyraliscore/blob/main/CONTRIBUTING.md)
 
 ## Context
 

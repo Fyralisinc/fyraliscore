@@ -24,8 +24,8 @@ from services.app.gateway.db_bootstrap import (
     close_gateway_pool,
     create_gateway_pool,
 )
-from services.app.gateway.demo_seed import ensure_demo_seed
 from services.app.gateway.deps import GatewayDeps, attach_gateway_deps
+from services.app.gateway.extensions import run_extension_startup_hooks
 from services.app.gateway.logging_config import configure_structlog, get_logger
 from services.app.gateway.middleware import (
     BearerAuthMiddleware,
@@ -348,22 +348,28 @@ async def _start_gateway_deps(
     return runtime
 
 
-async def _start_demo_seed(
+async def _start_extension_startup_hooks(
+    app_: FastAPI,
     *,
     pool: asyncpg.Pool,
     startup_status: StartupStatus,
     settings: GatewaySettings,
 ) -> None:
+    """Run startup hooks contributed by installed gateway extensions.
+
+    Core ships none; the demo overlay seeds its config and mounts the
+    simulation panel here. Optional — a failure degrades but never blocks.
+    """
     try:
         await _await_startup(
-            "demo_seed",
-            ensure_demo_seed(pool),
+            "extension_startup_hooks",
+            run_extension_startup_hooks(app_, pool),
             timeout_s=settings.db_startup_timeout_s,
         )
-        startup_status.ok("demo_seed", required=False)
+        startup_status.ok("extensions", required=False)
     except Exception as exc:  # noqa: BLE001 - optional startup work
-        startup_status.degraded("demo_seed", required=False, exc=exc)
-        log.exception("demo_seed_warning")
+        startup_status.degraded("extensions", required=False, exc=exc)
+        log.exception("extension_startup_hooks_warning")
 
 
 async def _start_integration_runtime(
@@ -727,7 +733,8 @@ def build_app(
                 rate_limiter=rate_limiter,
             )
 
-            await _start_demo_seed(
+            await _start_extension_startup_hooks(
+                app_,
                 pool=runtime.pool,
                 startup_status=startup_status,
                 settings=settings,

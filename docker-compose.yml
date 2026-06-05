@@ -14,7 +14,8 @@
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
 #   consume : normalizer, observation_writer, dlq_writer, embedding_worker
-#   app     : think_worker, post_commit_worker, ui, nginx, acme
+#   app     : think_worker, post_commit_worker, github_intel_worker
+#   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
 # `.env.production` (gitignored) — see `.env.production.example`.
@@ -215,7 +216,6 @@ services:
     container_name: company_os_gateway
     environment:
       <<: *app-env
-      GATEWAY_MOUNT_SIM: "0"
       GATEWAY_START_GRT_SCHEDULER: "1"
     expose:
       - "8000"
@@ -397,50 +397,12 @@ services:
       CODE_INTEL_MAX_BLAST_HOPS: ${CODE_INTEL_MAX_BLAST_HOPS:-3}
       GITHUB_INTEL_TENANTS: ${GITHUB_INTEL_TENANTS:-${COMPANY_OS_TENANT_ID:-00000000-0000-0000-0000-000000000001}}
 
-  # ---- UI + edge ----------------------------------------------------
-  ui:
-    build:
-      context: .
-      dockerfile: Dockerfile.ui
-    container_name: company_os_ui
-    restart: unless-stopped
-    expose:
-      - "80"
-    environment:
-      VIRTUAL_HOST: demo.fyralis.xyz
-      LETSENCRYPT_HOST: demo.fyralis.xyz
-      LETSENCRYPT_EMAIL: rachin.kalakheti@gmail.com
-
-  nginx-proxy:
-    image: nginxproxy/nginx-proxy:alpine
-    container_name: nginx-proxy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/tmp/docker.sock:ro
-      - nginx-certs:/etc/nginx/certs
-      - ./nginx/vhost.d:/etc/nginx/vhost.d
-      - nginx-html:/usr/share/nginx/html
-
-  acme-companion:
-    image: nginxproxy/acme-companion
-    container_name: acme-companion
-    restart: unless-stopped
-    environment:
-      DEFAULT_EMAIL: rachin.kalakheti@gmail.com
-    volumes_from:
-      - nginx-proxy
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - acme:/etc/acme.sh
+  # The UI + TLS edge (nginx-proxy / acme-companion) and the demo domain
+  # (demo.fyralis.xyz) live in the demo overlay repo's docker-compose.demo.yml.
+  # Core ships the backend gateway (exposed on :8000) + workers + data plane.
 
 volumes:
   company_os_pgdata:
   company_os_ollama:
   company_os_kafka:
   company_os_minio:
-  nginx-certs:
-  nginx-html:
-  acme:

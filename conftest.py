@@ -238,70 +238,6 @@ async def _install_test_tenant_auto_register(conn: asyncpg.Connection) -> None:
         )
 
 
-async def _seed_demo_configs(conn: asyncpg.Connection) -> None:
-    """Restore migration-seeded demo companies after `fresh_db` TRUNCATE."""
-    await conn.execute(
-        """
-        INSERT INTO demo_configs (
-          id, company_id, name, description, tagline, snapshot_uri,
-          model_routing, cost_cap_usd_per_session, determinism_seed
-        ) VALUES
-          (
-            '00000000-0000-7d23-8000-000000000001'::uuid,
-            'truss',
-            'Truss',
-            '40-person AI-native developer infrastructure company.',
-            'Series A, founder at full cognitive load',
-            'demo/snapshots/truss-v1.sql.zst',
-            '{"think":"haiku","render":"haiku","entity_resolver":"haiku"}'::jsonb,
-            5.00,
-            42
-          ),
-          (
-            '00000000-0000-7d23-8000-000000000002'::uuid,
-            'northwind',
-            'Northwind Software',
-            'Series B SaaS, 180 employees, $14M ARR, growing 80% YoY.',
-            'Series B, healthy growth, normal Tuesday',
-            'demo/snapshots/northwind-v1.sql.zst',
-            '{"think":"haiku","render":"haiku","entity_resolver":"haiku"}'::jsonb,
-            5.00,
-            43
-          ),
-          (
-            '00000000-0000-7d23-8000-000000000003'::uuid,
-            'meridian',
-            'Meridian Industrial',
-            'Series C enterprise software, 1100 employees, $85M ARR.',
-            'Series C, $4.2M ARR customer escalating',
-            'demo/snapshots/meridian-v1.sql.zst',
-            '{"think":"haiku","render":"haiku","entity_resolver":"haiku"}'::jsonb,
-            7.50,
-            44
-          ),
-          (
-            '00000000-0000-7d23-8000-000000000004'::uuid,
-            'pelago',
-            'Pelago',
-            'Series A B2B SaaS revenue-intelligence platform.',
-            'Series A, multi-shock year, founder running on signals',
-            'demo/snapshots/pelago-v1.sql.zst',
-            '{"think":"haiku","render":"haiku","entity_resolver":"haiku"}'::jsonb,
-            5.00,
-            42
-          )
-        ON CONFLICT (company_id) DO UPDATE
-          SET name = EXCLUDED.name,
-              description = EXCLUDED.description,
-              tagline = EXCLUDED.tagline,
-              snapshot_uri = EXCLUDED.snapshot_uri,
-              model_routing = EXCLUDED.model_routing,
-              cost_cap_usd_per_session = EXCLUDED.cost_cap_usd_per_session,
-              determinism_seed = EXCLUDED.determinism_seed;
-        """
-    )
-
-
 async def _seed_test_baseline(conn: asyncpg.Connection) -> None:
     default_tenant = os.environ.get("DEFAULT_TENANT_ID")
     tenant_ids: set[UUID] = {
@@ -323,7 +259,6 @@ async def _seed_test_baseline(conn: asyncpg.Connection) -> None:
             tenant_id,
             f"test_baseline_{tenant_id}",
         )
-    await _seed_demo_configs(conn)
 
 
 async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:

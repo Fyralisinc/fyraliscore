@@ -7,10 +7,9 @@
 #   - think_worker    (services.reasoning.think.worker.ThinkWorker)
 #   - post_commit_worker (services.reasoning.think.post_commit.process_batch loop)
 #   - topology_sweeper (latent relationship-field refresh loop)
-#   - ui              (vite dev server on :5173)
 #
-# The gateway spawns the GRT scheduler and realtime dispatcher in-process;
-# the SIM router is mounted when GATEWAY_MOUNT_SIM=1 (default in dev).
+# Backend only — the UI lives in the fyraliscore-demo overlay repo.
+# The gateway spawns the GRT scheduler and realtime dispatcher in-process.
 
 set -euo pipefail
 
@@ -114,10 +113,8 @@ done
 
 cat <<EOF
 
-=== Company OS dogfood stack up ===
+=== Company OS dogfood backend up ===
   Gateway:         http://localhost:${GATEWAY_PORT}
-  Main UI:         http://localhost:5173
-  Slack simulator: http://localhost:${GATEWAY_PORT}/simulation/slack_ui/
   Healthz:         curl http://localhost:${GATEWAY_PORT}/healthz
   Logs:            $LOGDIR/
   Tail all:        scripts/dogfood_logs.sh
