@@ -55,7 +55,11 @@ from services.ingest.synthetic.live_generators import (
     DiscordGatewayGenerator,
     GithubWebhookGenerator,
     GmailPubSubGenerator,
+    GooglePushGenerator,
     GuildBinding,
+    HMAC_PROVIDERS,
+    HmacWebhookGenerator,
+    NotionWebhookGenerator,
     SlackWebhookGenerator,
 )
 from services.ingest.synthetic.mock_clients import (
@@ -81,14 +85,29 @@ REPLAY_SOURCES = ("gmail", "slack", "github")  # Discord has no replay (A24)
 class SigningSecrets:
     slack: str = "v-slack-signing-secret"
     github: str = "v-github-signing-secret"
+    # The four HMAC providers added after the original 4-source harness; each
+    # resolved via the `WEBHOOK_SECRET_<PROVIDER>` env fallback (gated by
+    # WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1) the same way slack/github are.
+    jira: str = "v-jira-signing-secret"
+    mercury: str = "v-mercury-signing-secret"
+    quickbooks: str = "v-quickbooks-verifier-token"
+    grafana: str = "v-grafana-signing-secret"
+    # Notion's app-level verification token (NOT a per-tenant secret_ref); the
+    # signatures/notion.py verifier keys HMAC on it.
+    notion: str = "v-notion-verification-token"
     # A symmetric AES key the secret-store factory needs in `test` env.
     master_kek: str = "KuT6Cixjs4991zhixcpj1QAFbiQj3b9N8meZV2AJJyw="
 
     def apply_to_env(self) -> None:
         import os
-        os.environ["WEBHOOK_SECRET_SLACK"] = self.slack
         os.environ["WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW"] = "1"
+        os.environ["WEBHOOK_SECRET_SLACK"] = self.slack
         os.environ["WEBHOOK_SECRET_GITHUB"] = self.github
+        os.environ["WEBHOOK_SECRET_JIRA"] = self.jira
+        os.environ["WEBHOOK_SECRET_MERCURY"] = self.mercury
+        os.environ["WEBHOOK_SECRET_QUICKBOOKS"] = self.quickbooks
+        os.environ["WEBHOOK_SECRET_GRAFANA"] = self.grafana
+        os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
         # by the generator, but the values must be present).
@@ -120,6 +139,23 @@ class LiveTarget:
     installation_id: str | None = None  # github
     channel_id: str | None = None       # slack/discord
     repo_full_name: str | None = None   # github
+    # HMAC-webhook providers (tenant resolved via provider_installations).
+    jira_site: str | None = None            # jira: issue.self host == installation_id
+    mercury_org: str | None = None          # mercury: organizationId == installation_id
+    mercury_account: str | None = None      # mercury: transaction.accountId
+    qbo_realm: str | None = None            # quickbooks: realmId == installation_id
+    qbo_entity: str | None = None           # quickbooks: entity name (e.g. Invoice)
+    grafana_instance: str | None = None     # grafana: externalURL host == installation_id
+    # Google push (watch-row resolved).
+    gcal_calendar_id: str | None = None
+    gcal_channel_id: str | None = None
+    gcal_watch_token: str | None = None
+    gdrive_drive_id: str | None = None
+    gdrive_kind: str | None = None
+    gdrive_channel_id: str | None = None
+    gdrive_watch_token: str | None = None
+    # Notion (workspace_id == the seeded provider_installations.installation_id).
+    notion_workspace_id: str | None = None
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -139,6 +175,32 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           installation_id=f"x3-{slug}-github",
                           repo_full_name=f"{fixture_params.get('org_or_user', slug)}/live-{slug}")
+    if source == "jira":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          jira_site=f"{slug}.atlassian.net")
+    if source == "mercury":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          mercury_org=f"live-org-{slug}",
+                          mercury_account=f"live-acct-{slug}")
+    if source == "quickbooks":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          qbo_realm=f"live-realm-{slug}", qbo_entity="Invoice")
+    if source == "grafana":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          grafana_instance=f"{slug}.grafana.net")
+    if source == "google_calendar":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gcal_calendar_id=f"live-{slug}",
+                          gcal_channel_id=f"chan-gcal-{slug}",
+                          gcal_watch_token=f"tok-gcal-{slug}")
+    if source == "google_drive":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gdrive_drive_id=f"live-{slug}", gdrive_kind="my_drive",
+                          gdrive_channel_id=f"chan-gdrive-{slug}",
+                          gdrive_watch_token=f"tok-gdrive-{slug}")
+    if source == "notion":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          notion_workspace_id=f"x3-{slug}-notion")
     raise ValueError(f"unknown source {source!r}")
 
 
@@ -151,9 +213,14 @@ class LiveDrivers:
     discord_gateway: DiscordGatewayGenerator
     slack_webhook: SlackWebhookGenerator
     github_webhook: GithubWebhookGenerator
-    fastapi_app: FastAPI            # shared by slack + github
+    fastapi_app: FastAPI            # shared by slack + github + the 4 HMAC + notion
     gmail_app: FastAPI              # gmail's own minimal app
     _exit_stack: Any = None
+    # Sources added after the original 4 (None when no target needs them).
+    hmac: dict[str, Any] = field(default_factory=dict)  # provider -> HmacWebhookGenerator
+    google_push: Any = None         # GooglePushGenerator (gcal + gdrive)
+    notion_webhook: Any = None      # NotionWebhookGenerator
+    google_app: FastAPI | None = None
 
 
 async def build_live_drivers(
@@ -313,16 +380,165 @@ async def build_live_drivers(
         ),
     )
 
+    # ---- HMAC providers added after the original 4 (jira/mercury/quickbooks/
+    # grafana). Same shared app + same M5.3 cutover deps as slack/github; only
+    # built when a target needs them. ----
+    present = {t.source for t in targets}
+    hmac_gens: dict[str, Any] = {}
+    _hmac_secret = {
+        "jira": secrets.jira, "mercury": secrets.mercury,
+        "quickbooks": secrets.quickbooks, "grafana": secrets.grafana,
+    }
+    for provider in HMAC_PROVIDERS:
+        if provider in present:
+            hmac_gens[provider] = await stack.enter_async_context(
+                HmacWebhookGenerator(
+                    app=shared_app, provider=provider,
+                    signing_secret=_hmac_secret[provider],
+                ),
+            )
+
+    # ---- Notion (shared app; shadow-write to ingestion.raw.notion). ----
+    notion_gen = None
+    if "notion" in present:
+        notion_gen = await stack.enter_async_context(
+            NotionWebhookGenerator(
+                app=shared_app, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, verification_token=secrets.notion,
+            ),
+        )
+
+    # ---- Google push (gcal + gdrive) on a dedicated app (the push router is
+    # not mounted by build_app). Inline drain → core.ingest. ----
+    google_app: FastAPI | None = None
+    google_push_gen = None
+    if "google_calendar" in present or "google_drive" in present:
+        from services.app.webhooks.google_push import router as google_push_router
+        google_app = FastAPI()
+        google_app.include_router(google_push_router)
+        google_app.state.pool = pool
+        google_push_gen = await stack.enter_async_context(
+            GooglePushGenerator(app=google_app, pool=pool),
+        )
+
     return LiveDrivers(
         gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
         slack_webhook=slack_gen, github_webhook=github_gen,
         fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
+        hmac=hmac_gens, google_push=google_push_gen,
+        notion_webhook=notion_gen, google_app=google_app,
     )
 
 
 async def teardown_live_drivers(drivers: LiveDrivers) -> None:
     if drivers._exit_stack is not None:
         await drivers._exit_stack.aclose()
+
+
+# =====================================================================
+# Live-only install/watch seeding (for the sources added after the 4).
+# =====================================================================
+async def seed_live_installs(
+    pool: asyncpg.Pool, targets: list[LiveTarget],
+) -> None:
+    """Seed the rows the NEW sources' live ingress resolves against, on top of
+    the dedicated backfill install tables the X3 harness already wrote:
+
+      - jira/mercury/quickbooks/grafana: a `provider_installations`
+        (provider, installation_id) row — the webhook tenant_resolver keys on
+        it (the dedicated jira_installations/… tables drive backfill only).
+        secret_ref is NULL: the signing secret comes from the
+        `WEBHOOK_SECRET_<PROVIDER>` env fallback the runner exported.
+      - google_calendar/google_drive: a DEDICATED watched resource row
+        (calendar / drive target) with a warm cursor + watch_channel_id +
+        watch_token, distinct from backfill's rows so the live delta never
+        perturbs backfill's corpus. The warm cursor puts the fetcher in
+        INCREMENTAL mode so a push drains exactly the live delta.
+
+    notion needs no seeding here — its live webhook resolves via the SAME
+    provider_installations row (installation_id = `x3-{slug}-notion`) the
+    harness seeded for backfill.
+    """
+    from lib.shared.ids import uuid7
+
+    async with pool.acquire() as conn:
+        for t in targets:
+            if t.source == "jira":
+                inst = t.jira_site
+            elif t.source == "mercury":
+                inst = t.mercury_org
+            elif t.source == "quickbooks":
+                inst = t.qbo_realm
+            elif t.source == "grafana":
+                inst = t.grafana_instance
+            else:
+                inst = None
+            if inst is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO provider_installations
+                      (id, tenant_id, provider, installation_id, secret_ref, enabled)
+                    VALUES ($1, $2, $3, $4, NULL, TRUE)
+                    ON CONFLICT (provider, installation_id)
+                        DO UPDATE SET tenant_id = EXCLUDED.tenant_id, enabled = TRUE
+                    """,
+                    uuid7(), t.tenant_id, t.source, inst,
+                )
+                continue
+
+            if t.source == "google_calendar":
+                install_id = await conn.fetchval(
+                    "SELECT id FROM google_calendar_installations "
+                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    t.tenant_id,
+                )
+                if install_id is None:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO google_calendar_calendars (
+                        id, tenant_id, google_calendar_installation_id,
+                        calendar_id, owner_email, sync_token, state,
+                        watch_channel_id, watch_token, watch_state
+                    ) VALUES ($1, $2, $3, $4, $5, 'sync-warm', 'active',
+                              $6, $7, 'active')
+                    ON CONFLICT (google_calendar_installation_id, calendar_id)
+                        DO UPDATE SET sync_token = 'sync-warm',
+                            watch_channel_id = EXCLUDED.watch_channel_id,
+                            watch_token = EXCLUDED.watch_token,
+                            watch_state = 'active'
+                    """,
+                    uuid7(), t.tenant_id, install_id,
+                    t.gcal_calendar_id, t.gcal_calendar_id,
+                    t.gcal_channel_id, t.gcal_watch_token,
+                )
+            elif t.source == "google_drive":
+                install_id = await conn.fetchval(
+                    "SELECT id FROM google_drive_installations "
+                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    t.tenant_id,
+                )
+                if install_id is None:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO google_drive_targets (
+                        id, tenant_id, google_drive_installation_id,
+                        drive_kind, drive_id, owner_email, start_page_token,
+                        state, watch_channel_id, watch_token, watch_state
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'live-start', 'active',
+                              $7, $8, 'active')
+                    ON CONFLICT (google_drive_installation_id, drive_kind,
+                                 drive_id, owner_email)
+                        DO UPDATE SET start_page_token = 'live-start',
+                            watch_channel_id = EXCLUDED.watch_channel_id,
+                            watch_token = EXCLUDED.watch_token,
+                            watch_state = 'active'
+                    """,
+                    uuid7(), t.tenant_id, install_id,
+                    t.gdrive_kind, t.gdrive_drive_id, t.gdrive_drive_id,
+                    t.gdrive_channel_id, t.gdrive_watch_token,
+                )
 
 
 # =====================================================================
@@ -593,6 +809,17 @@ async def dispatch_live_concurrent(
                     guild_id=t.guild_id, channel_id=t.channel_id,
                     content=f"live-{t.slug}-{i}",
                 )
+            elif t.source in ("jira", "mercury", "quickbooks", "grafana"):
+                r = await drivers.hmac[t.source].simulate_event(
+                    target=t, content=f"live-{t.slug}-{i}",
+                )
+                status = getattr(r, "http_status", None)
+            elif t.source in ("google_calendar", "google_drive"):
+                r = await drivers.google_push.simulate_push(target=t)
+                status = getattr(r, "http_status", None)
+            elif t.source == "notion":
+                r = await drivers.notion_webhook.simulate_event(target=t)
+                status = getattr(r, "http_status", None)
             await _record_status(t.source, status)
         async with lock:
             result.dispatched_by_tenant[t.tenant_id] = events_per_tenant

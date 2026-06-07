@@ -51,6 +51,7 @@ def make_mercury(
     account_kinds: list[str] | None = None,
     base_iso: str = "2026-01-05T00:00:00Z",
     page_size: int = 100,
+    seed: str = "",
 ) -> dict[str, Any]:
     """Build a deterministic Mercury install fixture.
 
@@ -61,6 +62,14 @@ def make_mercury(
       base_iso: Anchor timestamp (2026-01); txns are spaced backwards from it
         so the list is newest-first (Mercury's ordering).
       page_size: The mock client's per-page cap for `list_transactions`.
+      seed: Optional namespacing salt mixed into the synthetic `account_id`
+        (which is what the transaction `external_id` keys on,
+        `mercury:{account_id}:txn:…`). Default "" preserves the original ids;
+        a per-tenant value (e.g. the tenant slug) makes the account_ids — and
+        therefore every observation's external_id — tenant-unique, mirroring
+        production where each tenant's Mercury org has distinct account ids.
+        Without it, a multi-tenant synthetic run collides on the global
+        `observations` UNIQUE(source_channel, external_id, occurred_at) index.
 
     Returns:
       Fixture dict consumable by `MockMercuryClient(fixture=...)`.
@@ -71,7 +80,10 @@ def make_mercury(
     accounts_map: dict[str, dict[str, Any]] = {}
     account_order: list[str] = []
     for a in range(accounts):
-        account_id = f"acct_{_digest('mercury-account', a)[:16]}"
+        # seed="" reproduces the original ids (back-compat for existing tests);
+        # a non-empty seed namespaces the account_id per tenant.
+        _acct_parts = ("mercury-account", a) if not seed else ("mercury-account", seed, a)
+        account_id = f"acct_{_digest(*_acct_parts)[:16]}"
         account_order.append(account_id)
         kind = kinds[a % len(kinds)]
         # Deterministic-but-varied balance (cents precision).
