@@ -3,6 +3,8 @@
 // of truth. Keep these types read-only on the wire boundary; UI-only
 // enrichments live in dedicated `*View` helper types in the components.
 
+import type { ResolutionThread } from "./resolution-thread-types";
+
 // --- Status + category enums -----------------------------------------
 
 export type DeltaStatus =
@@ -184,6 +186,8 @@ export interface DecisionDelta {
   resolutionTargetAt?: string | null;
   // In-flight notes (delegation/contest/correction)
   annotations?: DeltaAnnotations;
+  // Optional intervention contract Fyralis will monitor after acceptance.
+  resolutionThread?: ResolutionThread;
   // Detail endpoint only.
   evidence?: EvidenceItem[];
 }

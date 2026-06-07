@@ -20,6 +20,8 @@ ALTER TABLE inquiry_outcome_events
       'node_used_in_valid_diff',
       'path_used_in_valid_diff',
       'reader_decision_used_in_valid_diff',
+      'reader_decision_low_value',
+      'outcome_quality_assessed',
       'validation_failed_due_to_missing_evidence',
       'validation_failed_due_to_bad_reference',
       'user_accepted_node',

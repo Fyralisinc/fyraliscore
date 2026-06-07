@@ -13,6 +13,7 @@ import ModelPageV2 from "./pages/model-v2/ModelPage";
 import ForecastsPage from "./pages/forecasts/ForecastsPage";
 import LedgerPage from "./pages/ledger-v2/LedgerPage";
 import { AutoDemoSession } from "./shell/AutoDemoSession";
+import { AskOverlayProvider } from "./ask/AskOverlayProvider";
 import { DebugLayout } from "./debug/DebugLayout";
 import { SignalsList } from "./debug/pages/SignalsList";
 import { SignalDetailPage } from "./debug/pages/SignalDetail";
@@ -32,77 +33,79 @@ if (!root) throw new Error("root element missing");
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/today" replace />} />
-        <Route
-          path="/today"
-          element={
-            <AutoDemoSession>
-              <TodayBriefing />
-            </AutoDemoSession>
-          }
-        />
-        {/* Legacy focused-review deep link → in-place expansion. */}
-        <Route
-          path="/today/review/:deltaId"
-          element={<TodayReviewRedirect />}
-        />
-        <Route
-          path="/model"
-          element={
-            <AutoDemoSession>
-              <ModelPageV2 />
-            </AutoDemoSession>
-          }
-        />
-        <Route
-          path="/forecasts"
-          element={
-            <AutoDemoSession>
-              <ForecastsPage />
-            </AutoDemoSession>
-          }
-        />
-        <Route
-          path="/ledger"
-          element={
-            <AutoDemoSession>
-              <LedgerPage />
-            </AutoDemoSession>
-          }
-        />
+      <AskOverlayProvider>
+        <Routes>
+          <Route path="/" element={<Navigate to="/today" replace />} />
+          <Route
+            path="/today"
+            element={
+              <AutoDemoSession>
+                <TodayBriefing />
+              </AutoDemoSession>
+            }
+          />
+          {/* Legacy focused-review deep link → in-place expansion. */}
+          <Route
+            path="/today/review/:deltaId"
+            element={<TodayReviewRedirect />}
+          />
+          <Route
+            path="/model"
+            element={
+              <AutoDemoSession>
+                <ModelPageV2 />
+              </AutoDemoSession>
+            }
+          />
+          <Route
+            path="/forecasts"
+            element={
+              <AutoDemoSession>
+                <ForecastsPage />
+              </AutoDemoSession>
+            }
+          />
+          <Route
+            path="/ledger"
+            element={
+              <AutoDemoSession>
+                <LedgerPage />
+              </AutoDemoSession>
+            }
+          />
 
-        {/* Spec navigation aliases */}
-        <Route path="/sources" element={<Navigate to="/model" replace />} />
-        <Route path="/settings" element={<Navigate to="/today" replace />} />
+          {/* Spec navigation aliases */}
+          <Route path="/sources" element={<Navigate to="/model" replace />} />
+          <Route path="/settings" element={<Navigate to="/today" replace />} />
 
-        {/* Legacy redirects */}
-        <Route path="/structure" element={<Navigate to="/model" replace />} />
-        <Route path="/map" element={<Navigate to="/model" replace />} />
-        <Route path="/history" element={<Navigate to="/ledger" replace />} />
-        <Route path="/mind" element={<Navigate to="/today" replace />} />
-        <Route path="/demo" element={<Navigate to="/today" replace />} />
-        <Route path="/commitments" element={<Navigate to="/model" replace />} />
-        <Route path="/customers" element={<Navigate to="/model" replace />} />
-        <Route path="/risks" element={<Navigate to="/model" replace />} />
-        <Route path="/decisions" element={<Navigate to="/model" replace />} />
-        <Route path="/owners" element={<Navigate to="/model" replace />} />
-        <Route path="/teams" element={<Navigate to="/model" replace />} />
-        <Route path="/ask" element={<Navigate to="/today" replace />} />
+          {/* Legacy redirects */}
+          <Route path="/structure" element={<Navigate to="/model" replace />} />
+          <Route path="/map" element={<Navigate to="/model" replace />} />
+          <Route path="/history" element={<Navigate to="/ledger" replace />} />
+          <Route path="/mind" element={<Navigate to="/today" replace />} />
+          <Route path="/demo" element={<Navigate to="/today" replace />} />
+          <Route path="/commitments" element={<Navigate to="/model" replace />} />
+          <Route path="/customers" element={<Navigate to="/model" replace />} />
+          <Route path="/risks" element={<Navigate to="/model" replace />} />
+          <Route path="/decisions" element={<Navigate to="/model" replace />} />
+          <Route path="/owners" element={<Navigate to="/model" replace />} />
+          <Route path="/teams" element={<Navigate to="/model" replace />} />
+          <Route path="/ask" element={<Navigate to="/today?ask=1" replace />} />
 
-        <Route path="/debug" element={<DebugLayout />}>
-          <Route index element={<Navigate to="signals" replace />} />
-          <Route path="signals" element={<SignalsList />} />
-          <Route path="signals/:id" element={<SignalDetailPage />} />
-          <Route path="think-runs" element={<ThinkRunsList />} />
-          <Route path="think-runs/:id" element={<ThinkRunDetail />} />
-          <Route path="models" element={<ModelsList />} />
-          <Route path="models/:id" element={<ModelDetail />} />
-          <Route path="acts" element={<Acts />} />
-          <Route path="renders" element={<Renders />} />
-          <Route path="cache" element={<Cache />} />
-        </Route>
-      </Routes>
+          <Route path="/debug" element={<DebugLayout />}>
+            <Route index element={<Navigate to="signals" replace />} />
+            <Route path="signals" element={<SignalsList />} />
+            <Route path="signals/:id" element={<SignalDetailPage />} />
+            <Route path="think-runs" element={<ThinkRunsList />} />
+            <Route path="think-runs/:id" element={<ThinkRunDetail />} />
+            <Route path="models" element={<ModelsList />} />
+            <Route path="models/:id" element={<ModelDetail />} />
+            <Route path="acts" element={<Acts />} />
+            <Route path="renders" element={<Renders />} />
+            <Route path="cache" element={<Cache />} />
+          </Route>
+        </Routes>
+      </AskOverlayProvider>
     </BrowserRouter>
   </React.StrictMode>
 );

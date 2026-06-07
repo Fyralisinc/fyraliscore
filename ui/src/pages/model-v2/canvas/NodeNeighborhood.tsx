@@ -16,7 +16,7 @@ import { FloatingToolbar, StatusChip } from "../components/primitives";
 const CANVAS_W = 1200;
 const CANVAS_H = 760;
 const CENTER_W = 460;
-const CENTER_H = 220;
+const CENTER_H = 260;
 const NEIGHBOR_W = 232;
 const NEIGHBOR_H = 130;
 const LABEL_W = 132;
@@ -297,7 +297,34 @@ function CentralNodeCard({
           ${(item.metrics.arrExposure / 1_000_000).toFixed(2)}M ARR exposure
         </div>
       ) : null}
+      {item.dealReality ? (
+        <DealRealityCompact item={item} />
+      ) : null}
     </article>
+  );
+}
+
+function DealRealityCompact({ item }: { item: ItemDetail["item"] }) {
+  const deal = item.dealReality;
+  if (!deal) return null;
+  const missing = deal.buyerConsensus
+    .filter((s) => /missing|not|concern|unvalidated|unknown/i.test(s.status))
+    .slice(0, 2);
+  return (
+    <div className="fm-deal-compact" data-testid="deal-reality-compact">
+      <div className="fm-deal-compact__row">
+        <span>Consensus {deal.consensusScore}/100</span>
+        <span>{deal.forecastRecommendation}</span>
+      </div>
+      <p>{deal.recommendedNextProof}</p>
+      {missing.length > 0 ? (
+        <div className="fm-deal-compact__gaps">
+          {missing.map((s) => (
+            <span key={s.role}>{s.label}: {s.status}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

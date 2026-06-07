@@ -14,6 +14,7 @@
 import type {
   CategoryFocus,
   CategoryId,
+  DealReality,
   ItemDetail,
   ModelCategory,
   ModelItemSummary,
@@ -98,6 +99,16 @@ const items: Record<string, ModelItemSummary> = {
     relationshipHint: "serves Beacon renewal",
     owner: "Customer Success",
   },
+  "c-acme-security-alignment": {
+    id: "c-acme-security-alignment",
+    categoryId: "commitments",
+    assertion: "Schedule Acme CFO and security alignment call.",
+    shortLabel: "Schedule Acme CFO + security call",
+    status: "at_risk",
+    relationshipHint: "needed to progress Acme expansion",
+    impactMetric: "$1.2M",
+    owner: "AE + Security",
+  },
 
   // Decisions
   "d-pricing-owner": {
@@ -132,6 +143,15 @@ const items: Record<string, ModelItemSummary> = {
     shortLabel: "Conversation-AI re-scope unresolved",
     status: "watch",
     relationshipHint: "4 customer requests waiting",
+  },
+  "d-acme-forecast": {
+    id: "d-acme-forecast",
+    categoryId: "decisions",
+    assertion: "Acme Expansion forecast category is unsupported by buyer evidence.",
+    shortLabel: "Acme forecast unsupported",
+    status: "critical",
+    relationshipHint: "Commit → Best Case recommended",
+    impactMetric: "$1.2M",
   },
 
   // Risks & Constraints
@@ -170,8 +190,26 @@ const items: Record<string, ModelItemSummary> = {
     status: "watch",
     relationshipHint: "affects 3 customers",
   },
+  "r-acme-security-review": {
+    id: "r-acme-security-review",
+    categoryId: "risks",
+    assertion: "Acme security review is required but not scheduled.",
+    shortLabel: "Acme security review not scheduled",
+    status: "critical",
+    relationshipHint: "blocks late-stage forecast confidence",
+    impactMetric: "$1.2M",
+  },
 
   // Customers & Revenue
+  "cu-acme-expansion": {
+    id: "cu-acme-expansion",
+    categoryId: "customers",
+    assertion: "Acme Expansion deal reality is at risk: Commit is unsupported.",
+    shortLabel: "Acme Expansion deal reality",
+    status: "at_risk",
+    relationshipHint: "Consensus 52 · forecast Best Case",
+    impactMetric: "$1.2M",
+  },
   "cu-beacon": {
     id: "cu-beacon",
     categoryId: "customers",
@@ -242,6 +280,14 @@ const items: Record<string, ModelItemSummary> = {
     status: "at_risk",
     relationshipHint: "blocks 1 decision",
   },
+  "p-acme-security-owner": {
+    id: "p-acme-security-owner",
+    categoryId: "people",
+    assertion: "Internal security owner for Acme is not assigned.",
+    shortLabel: "Acme security owner unassigned",
+    status: "critical",
+    relationshipHint: "blocks buyer proof",
+  },
 
   // Systems & Capacity
   "s-platform-capacity": {
@@ -268,6 +314,14 @@ const items: Record<string, ModelItemSummary> = {
     shortLabel: "Support tooling fragmented",
     status: "watch",
     relationshipHint: "affects 3 customers",
+  },
+  "s-sso-roadmap": {
+    id: "s-sso-roadmap",
+    categoryId: "systems",
+    assertion: "SSO roadmap date is not committed.",
+    shortLabel: "SSO roadmap date uncommitted",
+    status: "blocked",
+    relationshipHint: "constrains Acme proof requirement",
   },
 
   // Finance & Capital
@@ -417,11 +471,11 @@ const bundleSeeds: BundleSeed[] = [
     sourceCategoryId: "commitments",
     targetCategoryId: "customers",
     verb: "affects",
-    label: "affects 3 customers · $2.04M",
-    instanceCount: 3,
+    label: "affects 4 customers · $3.24M",
+    instanceCount: 4,
     severity: "high",
-    impactLabel: "$2.04M ARR",
-    impactValue: 2_040_000,
+    impactLabel: "$3.24M ARR",
+    impactValue: 3_240_000,
     topExample: {
       sourceShortLabel: "Stabilize Salesforce sync",
       targetShortLabel: "Beacon renewal",
@@ -433,11 +487,11 @@ const bundleSeeds: BundleSeed[] = [
     sourceCategoryId: "risks",
     targetCategoryId: "customers",
     verb: "exposes",
-    label: "exposes $2.04M ARR",
-    instanceCount: 2,
+    label: "exposes $3.24M ARR",
+    instanceCount: 3,
     severity: "high",
-    impactLabel: "$2.04M ARR",
-    impactValue: 2_040_000,
+    impactLabel: "$3.24M ARR",
+    impactValue: 3_240_000,
     topExample: {
       sourceShortLabel: "Salesforce sync instability",
       targetShortLabel: "3 anchor accounts",
@@ -495,8 +549,8 @@ const bundleSeeds: BundleSeed[] = [
     sourceCategoryId: "people",
     targetCategoryId: "decisions",
     verb: "owns",
-    label: "3 owner gaps",
-    instanceCount: 3,
+    label: "4 owner gaps",
+    instanceCount: 4,
     severity: "medium",
     visual: { colorToken: "ochre", strength: "medium", direction: "source_to_target", lineStyle: "dashed" },
     modes: ["impact", "ownership"],
@@ -505,8 +559,8 @@ const bundleSeeds: BundleSeed[] = [
     sourceCategoryId: "systems",
     targetCategoryId: "commitments",
     verb: "constrains",
-    label: "constrains 6 commitments",
-    instanceCount: 6,
+    label: "constrains 7 commitments",
+    instanceCount: 7,
     severity: "high",
     visual: { colorToken: "blue", strength: "high", direction: "source_to_target", lineStyle: "solid" },
     modes: ["dependencies"],
@@ -643,9 +697,25 @@ const instanceSeeds: Record<string, RelationshipInstance[]> = {
       explanation: "Conversation-AI re-scope unresolved blocks ICP scoring commitments.",
       impactLabel: "4 customer requests affected",
     },
+    {
+      id: "i-5",
+      sourceItem: items["d-acme-forecast"],
+      targetItem: items["c-acme-security-alignment"],
+      verb: "blocks",
+      explanation: "Unsupported Acme Commit forecast blocks a clean mutual next step.",
+      impactLabel: "$1.2M forecast risk",
+    },
   ],
   // Commitments → Customers: affects 3
   [bundleId("commitments", "affects", "customers")]: [
+    {
+      id: "ic-0",
+      sourceItem: items["c-acme-security-alignment"],
+      targetItem: items["cu-acme-expansion"],
+      verb: "affects",
+      explanation: "Acme CFO and security alignment affects Acme Expansion progress.",
+      impactLabel: "$1.2M expansion",
+    },
     {
       id: "ic-1",
       sourceItem: items["c-stabilize-sf"],
@@ -689,6 +759,14 @@ const instanceSeeds: Record<string, RelationshipInstance[]> = {
       explanation: "Beacon renewal risk exposes anchor revenue.",
       impactLabel: "$840K ARR",
     },
+    {
+      id: "ir-3",
+      sourceItem: items["r-acme-security-review"],
+      targetItem: items["cu-acme-expansion"],
+      verb: "exposes",
+      explanation: "Unscheduled Acme security review exposes the expansion forecast.",
+      impactLabel: "$1.2M pipeline exposed",
+    },
   ],
   // People → Decisions: 3 owner gaps
   [bundleId("people", "owns", "decisions")]: [
@@ -715,6 +793,32 @@ const instanceSeeds: Record<string, RelationshipInstance[]> = {
       verb: "owns",
       explanation: "GTM lead missing — gap on Conversation-AI re-scope.",
       impactLabel: "owner gap",
+    },
+    {
+      id: "io-4",
+      sourceItem: items["p-acme-security-owner"],
+      targetItem: items["d-acme-forecast"],
+      verb: "owns",
+      explanation: "Security owner is unassigned — gap on Acme forecast correction.",
+      impactLabel: "owner gap",
+    },
+  ],
+  // People → Commitments: ownership gaps and execution owners
+  [bundleId("people", "owns", "commitments")]: [
+    {
+      id: "ip-1",
+      sourceItem: items["p-acme-security-owner"],
+      targetItem: items["c-acme-security-alignment"],
+      verb: "owns",
+      explanation: "Unassigned security owner leaves Acme security alignment without a seller-side owner.",
+      impactLabel: "buyer proof blocked",
+    },
+    {
+      id: "ip-2",
+      sourceItem: items["p-vp-eng"],
+      targetItem: items["c-stabilize-sf"],
+      verb: "owns",
+      explanation: "VP Engineering owns Salesforce sync stabilization.",
     },
   ],
   // Goals → Commitments: serves
@@ -757,6 +861,14 @@ const instanceSeeds: Record<string, RelationshipInstance[]> = {
       targetItem: items["c-launch-dw-pricing"],
       verb: "limits",
       explanation: "DW pipeline undersized — limits DW pricing launch.",
+    },
+    {
+      id: "is-3",
+      sourceItem: items["s-sso-roadmap"],
+      targetItem: items["c-acme-security-alignment"],
+      verb: "constrains",
+      explanation: "Uncommitted SSO roadmap constrains Acme proof and security alignment.",
+      impactLabel: "proof requirement unmet",
     },
   ],
 };
@@ -804,6 +916,217 @@ const traceCauseSeeds: Record<string, Trace> = {
   },
 };
 
+const dealRealityByItemId: Record<string, DealReality> = {
+  "cu-acme-expansion": {
+    modelType: "deal_state",
+    opportunityId: "opp_acme_expansion",
+    dealHealth: "at_risk",
+    stageAssessment: "Stage is overstated. Deal is not yet in Commit.",
+    forecastRecommendation: "Best Case",
+    consensusScore: 52,
+    buyerConsensus: [
+      {
+        role: "champion",
+        label: "Champion",
+        status: "supportive",
+        concern: "Engaged but has not mobilized the economic buyer.",
+      },
+      {
+        role: "economic_buyer",
+        label: "Economic buyer",
+        status: "missing",
+        concern: "CFO has not seen an ROI case.",
+      },
+      {
+        role: "technical_buyer",
+        label: "Technical buyer",
+        status: "concerned",
+        concern: "Needs SSO readiness before rollout.",
+      },
+      {
+        role: "security",
+        label: "Security",
+        status: "not engaged",
+        concern: "Review required but not scheduled.",
+      },
+      {
+        role: "finance",
+        label: "Finance",
+        status: "not validated",
+        concern: "Budget justification is not evidenced.",
+      },
+      {
+        role: "end_users",
+        label: "End users",
+        status: "positive",
+        concern: "Pilot team is still active in the workspace.",
+      },
+    ],
+    proofRequirements: [
+      {
+        requirement: "SSO roadmap-safe language",
+        stakeholder: "technical buyer",
+        status: "unmet",
+        owner: "Product",
+        deadline: "Friday",
+        evidence: "Buyer asked whether SSO will be ready before rollout.",
+        internalDependency: "SSO roadmap date is not committed.",
+        recommendedAction:
+          "Approve buyer-safe implementation language before the next call.",
+      },
+      {
+        requirement: "SOC2 and security packet",
+        stakeholder: "security",
+        status: "partially satisfied",
+        owner: "Security",
+        recommendedAction:
+          "Send SOC2 pack and bring security owner into the alignment call.",
+      },
+      {
+        requirement: "ROI case tied to support-cost reduction",
+        stakeholder: "finance",
+        status: "missing",
+        owner: "AE + RevOps",
+        recommendedAction:
+          "Send quantified ROI proof before the CFO alignment call.",
+      },
+    ],
+    internalBlockers: [
+      {
+        blocker: "SSO date uncommitted",
+        source: "Product roadmap Node",
+        impact: "Buyer cannot approve rollout plan.",
+        owner: "Product",
+        recommendedAction:
+          "Do not send a date; create roadmap-safe implementation language.",
+      },
+      {
+        blocker: "Security review owner missing",
+        source: "People & Teams Node",
+        impact: "No one is accountable for satisfying buyer security proof.",
+        owner: "Unassigned",
+        recommendedAction:
+          "Assign security owner before requesting buyer alignment call.",
+      },
+    ],
+    recommendedNextProof:
+      "Get champion to schedule CFO + security alignment call, bring internal security owner, and send ROI proof before the call.",
+    managerRecommendation:
+      "Move forecast from Commit to Best Case unless security review is scheduled this week.",
+    resolutionThread: {
+      id: "rt-acme-deal-reality",
+      title: "Restore Acme Expansion to a supportable late-stage path",
+      status: "active",
+      currentState:
+        "Commit forecast is unsupported: security review is unscheduled and economic buyer evidence is missing.",
+      targetState:
+        "Security review scheduled, economic buyer has ROI proof, and SSO-safe language is approved.",
+      owner: "AE + RevOps",
+      nextReviewAt: "2026-05-19T12:34:00Z",
+      successCriteria: [
+        "Internal security owner assigned.",
+        "Product approves SSO-safe implementation language.",
+        "CFO + security alignment call is scheduled.",
+        "ROI proof sent before the call.",
+      ],
+      steps: [
+        {
+          id: "step-security-owner",
+          label: "Assign internal security owner",
+          owner: "VP Sales Ops",
+          status: "waiting",
+          proofNeeded: "Named owner appears in Slack or CRM note.",
+        },
+        {
+          id: "step-sso-language",
+          label: "Approve SSO-safe buyer language",
+          owner: "Product",
+          status: "blocked",
+          proofNeeded: "Product-approved wording is attached to the deal.",
+          blockedBy: "SSO roadmap date remains uncommitted.",
+        },
+        {
+          id: "step-roi-proof",
+          label: "Send quantified ROI case",
+          owner: "AE + RevOps",
+          status: "not_started",
+          proofNeeded: "ROI one-pager sent to champion and CFO.",
+        },
+        {
+          id: "step-buyer-call",
+          label: "Schedule CFO + security alignment call",
+          owner: "AE",
+          status: "not_started",
+          proofNeeded:
+            "Calendar invite includes buyer CFO, buyer security, AE, and internal security.",
+        },
+      ],
+      watchedSignals: [
+        {
+          id: "watch-calendar",
+          label: "Buyer alignment meeting",
+          sourceType: "Calendar",
+          expected: "CFO + security call appears this week.",
+          status: "missing",
+        },
+        {
+          id: "watch-product",
+          label: "SSO language approval",
+          sourceType: "Product / Slack",
+          expected: "Product approves roadmap-safe wording.",
+          status: "watching",
+        },
+        {
+          id: "watch-email",
+          label: "ROI proof sent",
+          sourceType: "Email",
+          expected: "ROI one-pager is sent before buyer call.",
+          status: "watching",
+        },
+        {
+          id: "watch-crm",
+          label: "Forecast category",
+          sourceType: "CRM",
+          expected: "Commit changes to Best Case until blockers clear.",
+          status: "watching",
+        },
+      ],
+      escalationTriggers: [
+        "No security owner assigned within 24 hours.",
+        "No buyer alignment meeting scheduled this week.",
+        "Product cannot approve SSO-safe language by Friday.",
+        "Champion replies positively but still excludes CFO/security.",
+      ],
+    },
+    supportingEvidence: [
+      "Buyer asked for SSO confirmation in the last call.",
+      "Calendar shows no security review scheduled.",
+      "Product roadmap has no committed SSO date.",
+      "Similar Globex deal slipped 21 days after security-review delay.",
+    ],
+    counterevidence: [
+      "Champion replied positively twice this week.",
+      "AE reports verbal urgency from buyer.",
+    ],
+    falsificationConditions: [
+      "Economic buyer confirms budget and procurement path.",
+      "Security review is scheduled and SSO requirement is satisfied.",
+      "Buyer signs mutual success plan.",
+    ],
+    similarDeals: [
+      {
+        name: "Globex, 2025 Q4",
+        pattern:
+          "Champion loved the product, but security review delay pushed close by 21 days.",
+        whatWorked:
+          "Regulated-enterprise reference and seller-side security owner joined the call.",
+        appliedLesson:
+          "Bring security owner into Acme call and send regulated-customer reference before procurement.",
+      },
+    ],
+  },
+};
+
 // ---------------------------------------------------------------------
 // Public fixture surface.
 // ---------------------------------------------------------------------
@@ -827,7 +1150,7 @@ export function fixtureOverview(mode: RelationshipBundle["mode"]): ModelOverview
     changedTodayCount: 24,
     blockedCount: 6,
     contestedCount: categories.reduce((s, c) => s + c.contestedCount, 0),
-    exposureAtRisk: 2_040_000,
+    exposureAtRisk: 3_240_000,
     lastUpdatedAt: new Date().toISOString(),
   };
   return { summary, categories, relationshipBundles: bundles, mode };
@@ -902,6 +1225,7 @@ export function fixtureRelationshipFocus(
 export function fixtureItemDetail(itemId: string): ItemDetail | null {
   const item = items[itemId];
   if (!item) return null;
+  const dealReality = dealRealityByItemId[itemId];
   // Build neighbors from any bundle that references this item.
   const outgoing: RelationshipInstance[] = [];
   const incoming: RelationshipInstance[] = [];
@@ -929,30 +1253,50 @@ export function fixtureItemDetail(itemId: string): ItemDetail | null {
     item: {
       ...item,
       authority: "mixed",
-      evidenceSummary: "Triangulated from CRM, support tickets, and engineering capacity reports.",
-      falsificationConditions: [
-        "Sync errors drop below 0.5% for 14 days.",
-        "Anchor renewal closes without sync-related blocker.",
-      ],
+      evidenceSummary: dealReality
+        ? "Triangulated from CRM, call transcript, calendar, roadmap, Slack, and similar deal memory."
+        : "Triangulated from CRM, support tickets, and engineering capacity reports.",
+      falsificationConditions: dealReality?.falsificationConditions ?? [
+          "Sync errors drop below 0.5% for 14 days.",
+          "Anchor renewal closes without sync-related blocker.",
+        ],
       lifecycle: {
         createdAt: new Date(Date.now() - 14 * 86400_000).toISOString(),
         updatedAt: new Date(Date.now() - 21 * 60_000).toISOString(),
         lastConfirmedAt: new Date(Date.now() - 21 * 60_000).toISOString(),
       },
       metrics: {
-        arrExposure: 2_040_000,
-        affectedCustomers: 3,
+        arrExposure: itemId === "cu-acme-expansion" ? 1_200_000 : 2_040_000,
+        affectedCustomers: itemId === "cu-acme-expansion" ? 1 : 3,
       },
       relationshipCounts: counts,
+      dealReality,
     },
     neighbors: { incoming, outgoing },
-    evidence: [
-      { id: "ev-1", source: "Support", summary: "12 anchor support tickets reference sync failures this week." },
-      { id: "ev-2", source: "CRM", summary: "Beacon CSM logged renewal blocker tied to sync reliability." },
-    ],
-    missingContext: [
-      { reason: "Product usage data not connected.", impact: "Customer impact may be under-counted." },
-    ],
+    evidence: dealReality
+      ? (dealReality.supportingEvidence ?? []).map((summary, i) => ({
+          id: `deal-ev-${i + 1}`,
+          source: ["CRM", "Call", "Calendar", "Product", "Memory"][i] ?? "Evidence",
+          summary,
+        }))
+      : [
+          { id: "ev-1", source: "Support", summary: "12 anchor support tickets reference sync failures this week." },
+          { id: "ev-2", source: "CRM", summary: "Beacon CSM logged renewal blocker tied to sync reliability." },
+        ],
+    missingContext: dealReality
+      ? [
+          {
+            reason: "Economic buyer is unknown.",
+            impact: "Consensus score cannot clear late-stage threshold.",
+          },
+          {
+            reason: "Security review has no scheduled meeting.",
+            impact: "Close-date confidence is unsupported.",
+          },
+        ]
+      : [
+          { reason: "Product usage data not connected.", impact: "Customer impact may be under-counted." },
+        ],
   };
 }
 

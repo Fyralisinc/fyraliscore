@@ -100,6 +100,8 @@ class RetrievalConfig:
 
     # ---- Pathway C (temporal) ----
     temporal_window_minutes: int = 60
+    temporal_max_observations: int = 120
+    temporal_max_models: int = 80
     # RA-5 fix for audit §4 arg 2: include observations where the
     # actor is in entities_mentioned, not only as author_id.
     temporal_include_entity_mentions: bool = True
@@ -137,7 +139,7 @@ class RetrievalConfig:
 
     # ---- Second-pass ----
     second_pass_sparse_threshold: int = 5
-    second_pass_bridge_confidence_threshold: float = 0.7
+    second_pass_customer_confidence_threshold: float = 0.7
 
     # ---- Maintenance ----
     activation_pruning_threshold_days: int = 30

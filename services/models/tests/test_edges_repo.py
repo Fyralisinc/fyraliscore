@@ -294,6 +294,55 @@ async def test_link_rejects_support_and_contradiction_same_pair(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_link_accepts_accepted_dynamic_edge_kind(
+    tx_conn, tenant, make_model,
+):
+    a = await make_model("A")
+    b = await make_model("B")
+    await tx_conn.execute(
+        """
+        INSERT INTO relationship_ontology_proposals (
+          id, tenant_id, proposed_edge_kind, status,
+          description, relationship_summary,
+          nearest_existing_kind, retrieval_fallback_kind, directionality,
+          example_count, promotion_criteria
+        )
+        VALUES (
+          $1, $2, 'gated_by_decision', 'accepted',
+          'Progress depends on an explicit approval decision.',
+          'The target cannot progress until the source decision is made.',
+          'blocks', 'blocks', 'directed',
+          3, '{"minimum_distinct_examples":3}'::jsonb
+        )
+        """,
+        uuid7(),
+        tenant,
+    )
+
+    repo = EdgesRepo()
+    ids = await repo.link(
+        tx_conn,
+        source=a,
+        target=b,
+        kind="gated_by_decision",
+        tenant_id=tenant,
+        detected_by="manual",
+        weight=0.7,
+        confidence=0.8,
+        explanation="B is gated by a decision represented by A.",
+    )
+
+    assert len(ids) == 1
+    row = await tx_conn.fetchrow(
+        "SELECT edge_kind, weight FROM model_edges WHERE id = $1",
+        ids[0],
+    )
+    assert row["edge_kind"] == "gated_by_decision"
+    assert row["weight"] == 0.7
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_unlink_removes_edge(tx_conn, tenant, make_model):
     a = await make_model("A")
     b = await make_model("B")

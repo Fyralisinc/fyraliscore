@@ -8,6 +8,8 @@ import pytest
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow
 from services.models.repo import _SELECT_COLS_SQL, _hydrate_row
+from services.retrieval.primary import TriggerContext
+from services.sage.reader import SynthesisReader
 from services.think.diff_schema import ClaimOp
 from services.topology import ExpectedPair, run_topology_eval
 from services.topology.field import LatentTopologyService, impact_signature
@@ -169,7 +171,11 @@ async def test_latent_topology_generates_candidates_and_t4_trigger(
     # `blocks`/`enables` now carry `causal_hypothesis` basis (mechanism
     # required). Other allowed kinds (same_issue_as / early_warning_for /
     # contradicts / analogous_to / supports) keep `topology_suggested`.
-    assert row["basis"] in {"topology_suggested", "causal_hypothesis"}
+    assert row["basis"] in {
+        "topology_suggested",
+        "causal_hypothesis",
+        "ontology_gap",
+    }
     metadata = (
         json.loads(row["metadata"])
         if isinstance(row["metadata"], str)
@@ -376,11 +382,140 @@ async def test_topology_candidate_selection_uses_evidence_lane(
     assert result.inserted_candidates
     matched = [
         row for row in result.inserted_candidates
-        if {row["source_model_id"], row["target_model_id"]} == {seed.id, downstream.id}
+        if (
+            {row["source_model_id"], row["target_model_id"]} == {seed.id, downstream.id}
+            if row["candidate_kind"] == "edge"
+            else set(row["member_model_ids"] or []) == {seed.id, downstream.id}
+        )
     ]
     assert matched
     metadata = matched[0]["metadata"]
     assert "evidence" in metadata["topology"]["selection_sources"]
+
+
+async def test_latent_topology_generates_edge_type_candidate_for_decision_gate(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    seed = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural=(
+            "Beacon launch is blocked until the executive approval decision "
+            "for the security exception is made"
+        ),
+        embedding=_axis_embedding(8),
+        scope_entities=[{"type": "customer", "id": str(uuid7())}],
+    )
+    decision = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural=(
+            "Executive sign off decision for Beacon security exception is "
+            "waiting on approval and blocks release authority"
+        ),
+        embedding=_axis_embedding(9),
+        scope_entities=[{"type": "decision", "id": str(uuid7())}],
+    )
+
+    result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=6,
+        min_insert_score=0.25,
+        min_think_score=0.25,
+    ).generate_for_model(tx_conn, model=seed)
+
+    edge_type_rows = [
+        row for row in result.inserted_candidates
+        if row["candidate_kind"] == "edge_type"
+        and set(row["member_model_ids"] or []) == {seed.id, decision.id}
+    ]
+    assert edge_type_rows
+    row = edge_type_rows[0]
+    assert row["basis"] == "ontology_gap"
+    assert row["proposed_proposition"]["proposed_edge_kind"] == "gated_by_decision"
+    assert row["proposed_proposition"]["parent_kind"] == "blocks"
+    assert row["metadata"]["ontology_gap"]["retrieval_fallback_kind"] == "blocks"
+    assert row["metadata"]["topology"]["object_type"] == "edge_type_candidate"
+
+    trigger = await tx_conn.fetchrow(
+        """
+        SELECT payload
+        FROM think_trigger_queue
+        WHERE tenant_id = $1
+          AND payload->>'relationship_candidate_id' = $2
+        """,
+        tenant,
+        str(row["id"]),
+    )
+    assert trigger is not None
+
+
+async def test_topology_edge_type_candidate_feeds_sage_hidden_model_retrieval(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    seed = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural=(
+            "Beacon launch is blocked until the executive approval decision "
+            "for the security exception is made"
+        ),
+        embedding=_axis_embedding(10),
+        scope_entities=[{"type": "customer", "id": str(uuid7())}],
+    )
+    decision = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural=(
+            "Executive sign off decision for Beacon security exception is "
+            "waiting on approval and blocks release authority"
+        ),
+        embedding=_axis_embedding(11),
+        scope_entities=[{"type": "decision", "id": str(uuid7())}],
+    )
+
+    topology_result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=6,
+        min_insert_score=0.25,
+        min_think_score=0.25,
+    ).generate_for_model(tx_conn, model=seed)
+
+    assert any(
+        row["candidate_kind"] == "edge_type"
+        and row["proposed_proposition"]["proposed_edge_kind"] == "gated_by_decision"
+        and set(row["member_model_ids"] or []) == {seed.id, decision.id}
+        for row in topology_result.inserted_candidates
+    )
+
+    result = await SynthesisReader().read(
+        conn=tx_conn,
+        tenant_id=tenant,
+        trigger=TriggerContext(
+            kind="T1",
+            tenant_id=tenant,
+            observation_id=born_from_event,
+            seed_natural_text="What is blocking Beacon launch?",
+            precomputed_seed_vector=[0.0] * 768,
+        ),
+        question_id="Q_DEPENDENCY",
+        question="What is blocking Beacon launch?",
+        question_primitive="DEPENDENCY",
+        hypotheses=(),
+    )
+
+    assert decision.id in {model.id for model in result.models}
+    trace = next(trace for trace in result.activations if trace.model_id == decision.id)
+    assert trace.selected is True
+    assert any("propagated:blocks" in reason for reason in trace.activation_reasons)
 
 
 def _axis_embedding(axis: int) -> list[float]:

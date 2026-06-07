@@ -10,19 +10,34 @@ import pytest
 
 from lib.llm.provider import LLMConfig, LLMProvider
 from lib.shared.types import ModelCreate, ModelRow
+from services.models.address import build_belief_address
 from services.models.repo import ModelsRepo
 from services.execution.inquiry import (
+    EvidenceCard,
     Hypothesis,
     InquiryConfig,
     InquiryQuestion,
     ModelRelevance,
+    QuestionAnswer,
+    SufficiencyVerdict,
+    _append_structural_closure,
     _apply_relevance_diversity,
     _adaptive_baseline_top_n,
     _adaptive_evidence_limit,
+    _answer_question,
     _cap_pathway_models,
     _candidate_questions_for_round,
+    _classify_hypothesis_links,
+    _cold_weak_noop_gate,
+    _compile_context_packet,
     _has_broad_signal_language,
     _merge_llm_and_safety_questions,
+    _model_coverage_features,
+    _model_relevance_cluster_key,
+    _pack_structural_links,
+    _select_minimal_sufficient_evidence,
+    _signal_class_for_trigger,
+    _upsert_evidence,
     run_inquiry_retrieval,
 )
 from services.retrieval.assembler import AccessContext, assemble_context
@@ -91,13 +106,19 @@ def _model_row_for_compaction(
     domain_tags: list[str],
     scope_entities: list[dict[str, str]],
     supporting_model_ids: list[Any] | None = None,
+    abstraction_level: str = "atomic",
+    polarity: str | None = None,
+    proposition_extra: dict[str, Any] | None = None,
 ) -> ModelRow:
     now = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+    proposition = {"kind": "belief", "assertion": natural}
+    if proposition_extra:
+        proposition.update(proposition_extra)
     return ModelRow(
         id=uuid4(),
         tenant_id=uuid4(),
         born_from_event_id=uuid4(),
-        proposition={"kind": "belief", "assertion": natural},
+        proposition=proposition,
         natural=natural,
         embedding=[0.1, 0.2, 0.3],
         scope_actors=[],
@@ -120,10 +141,10 @@ def _model_row_for_compaction(
         visible_to_subjects=True,
         proposition_kind="belief",
         claim_role=claim_role,
-        abstraction_level="atomic",
+        abstraction_level=abstraction_level,
         time_mode="current",
         modality="inferred",
-        polarity="negative" if claim_role == "concern" else "neutral",
+        polarity=polarity or ("negative" if claim_role == "concern" else "neutral"),
         domain_tags=domain_tags,
         memory_grammar_version="v1",
         confirmed_count=0,
@@ -151,6 +172,20 @@ def _relevance_for_model(model: ModelRow, score: float) -> ModelRelevance:
         penalty=0.0,
         reasons=("test",),
     )
+
+
+def _belief_address_for_test(
+    *,
+    subject: str,
+    assertion: str,
+    claim_role: str = "concern",
+) -> dict[str, Any]:
+    return build_belief_address({
+        "kind": "belief",
+        "claim_role": claim_role,
+        "subject": subject,
+        "assertion": assertion,
+    })
 
 
 def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
@@ -369,6 +404,234 @@ def test_coverage_compaction_caps_dense_material_neighborhoods():
     assert notes["strategy"] == "coverage_aware"
 
 
+def test_belief_address_distinguishes_compaction_clusters_for_similar_text():
+    same_customer = str(uuid4())
+    first_address = _belief_address_for_test(
+        subject="Beacon renewal",
+        assertion="SOC2 owner is missing",
+    )
+    second_address = _belief_address_for_test(
+        subject="Beacon renewal",
+        assertion="legal approval is blocked",
+    )
+    first = _model_row_for_compaction(
+        natural="Beacon renewal risk needs attention.",
+        claim_role="concern",
+        domain_tags=["revenue", "customers"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+        proposition_extra={
+            "belief_address": first_address,
+            "semantic_address": first_address,
+        },
+    )
+    second = _model_row_for_compaction(
+        natural="Beacon renewal risk needs attention.",
+        claim_role="concern",
+        domain_tags=["revenue", "customers"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+        proposition_extra={
+            "belief_address": second_address,
+            "semantic_address": second_address,
+        },
+    )
+    duplicate = _model_row_for_compaction(
+        natural="Beacon renewal risk needs attention.",
+        claim_role="concern",
+        domain_tags=["revenue", "customers"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+        proposition_extra={
+            "belief_address": first_address,
+            "semantic_address": first_address,
+        },
+    )
+
+    assert _model_relevance_cluster_key(first) != _model_relevance_cluster_key(second)
+    assert _model_relevance_cluster_key(first) == _model_relevance_cluster_key(duplicate)
+    features = {
+        feature
+        for feature, _weight in _model_coverage_features(
+            first,
+            {"sage_reader"},
+            {"Q_CONSTRAINT"},
+        )
+    }
+    assert f"belief_fingerprint:{first_address['fingerprint']}" in features
+    assert any(feature.startswith("belief_obligation:spo:") for feature in features)
+    assert "answerable:CONSTRAINT" in features
+
+
+def test_compaction_preserves_distinct_belief_obligations_under_duplicate_pressure():
+    same_customer = str(uuid4())
+    duplicate_address = _belief_address_for_test(
+        subject="Beacon renewal",
+        assertion="SOC2 owner is missing",
+    )
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    for idx in range(36):
+        model = _model_row_for_compaction(
+            natural="Beacon renewal risk needs attention.",
+            claim_role="concern",
+            domain_tags=["revenue", "customers"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+            proposition_extra={
+                "belief_address": duplicate_address,
+                "semantic_address": duplicate_address,
+            },
+        )
+        pairs.append((model, _relevance_for_model(model, 0.64 - idx * 0.001)))
+
+    unique_ids: set[Any] = set()
+    for idx in range(8):
+        address = _belief_address_for_test(
+            subject="Beacon renewal",
+            assertion=f"independent blocker {idx} needs owner",
+        )
+        model = _model_row_for_compaction(
+            natural="Beacon renewal risk needs attention.",
+            claim_role="concern",
+            domain_tags=["revenue", "customers"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+            proposition_extra={
+                "belief_address": address,
+                "semantic_address": address,
+            },
+        )
+        unique_ids.add(model.id)
+        pairs.append((model, _relevance_for_model(model, 0.50 - idx * 0.002)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=44,
+        weak_signal=False,
+        broad_signal=False,
+        threshold=0.30,
+        min_keep=4,
+        model_pathways={model.id: {"semantic", "sage_reader"} for model, _ in pairs},
+        model_questions={model.id: {"Q_CONSTRAINT"} for model, _ in pairs},
+    )
+
+    compacted_ids = {model.id for model, _ in compacted}
+    assert unique_ids <= compacted_ids
+    assert dropped >= 8
+    assert notes["cluster_count"] >= 9
+
+
+def test_compaction_preserves_diverse_obligations_across_roles_and_entities():
+    shared_customer = str(uuid4())
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    duplicate_address = _belief_address_for_test(
+        subject="Beacon renewal",
+        assertion="generic renewal risk needs attention",
+    )
+
+    for idx in range(90):
+        model = _model_row_for_compaction(
+            natural="Portfolio renewal risk needs attention.",
+            claim_role="concern",
+            domain_tags=["portfolio", "revenue"],
+            scope_entities=[{"type": "customer", "id": shared_customer}],
+            proposition_extra={
+                "belief_address": duplicate_address,
+                "semantic_address": duplicate_address,
+            },
+        )
+        pairs.append((model, _relevance_for_model(model, 0.68 - idx * 0.0005)))
+
+    must_keep: set[Any] = set()
+    diverse_specs = [
+        ("Beacon renewal", "SOC2 evidence blocks enterprise launch", "relation", "relationship"),
+        ("Beacon renewal", "owner is missing for security review", "concern", "atomic"),
+        ("Beacon renewal", "month-end export stalls recur", "pattern", "atomic"),
+        ("Beacon renewal", "signed order contradicts churn risk", "concern", "atomic"),
+        ("Northstar renewal", "legal approval blocks close plan", "concern", "atomic"),
+        ("Orion launch", "sandbox quota exhaustion blocks release", "concern", "atomic"),
+        ("Vela import", "owner is platform enablement", "fact", "atomic"),
+        ("HelioWorks handoff", "customer goal is at risk", "prediction", "atomic"),
+        ("Atlas workflow", "assign owner for mitigation", "recommendation", "atomic"),
+        ("Kestrel system", "maps invoice questions to evidence", "capability", "atomic"),
+    ]
+    for idx, (subject, assertion, role, level) in enumerate(diverse_specs):
+        address = _belief_address_for_test(
+            subject=subject,
+            assertion=assertion,
+            claim_role=role,
+        )
+        model = _model_row_for_compaction(
+            natural="Portfolio renewal risk needs attention.",
+            claim_role=role,
+            abstraction_level=level,
+            domain_tags=["portfolio", "revenue", "execution"],
+            scope_entities=[
+                {
+                    "type": "customer",
+                    "id": shared_customer if idx < 4 else str(uuid4()),
+                }
+            ],
+            proposition_extra={
+                "belief_address": address,
+                "semantic_address": address,
+            },
+        )
+        must_keep.add(model.id)
+        pairs.append((model, _relevance_for_model(model, 0.47 - idx * 0.01)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=64,
+        weak_signal=False,
+        broad_signal=False,
+        threshold=0.30,
+        min_keep=4,
+        model_pathways={model.id: {"semantic", "sage_reader"} for model, _ in pairs},
+        model_questions={
+            model.id: {"Q_CONSTRAINT", "Q_COUNTEREVIDENCE", "Q_GOAL_IMPACT"}
+            for model, _ in pairs
+        },
+    )
+
+    compacted_ids = {model.id for model, _ in compacted}
+    assert must_keep <= compacted_ids
+    assert len(compacted) <= 18
+    assert dropped >= 50
+    assert notes["cluster_count"] >= len(diverse_specs) + 1
+
+
+def test_material_compaction_does_not_keep_unique_fingerprints_after_answer_saturation():
+    same_customer = str(uuid4())
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    for idx in range(80):
+        address = _belief_address_for_test(
+            subject="Beacon renewal",
+            assertion=f"minor renewal risk detail {idx}",
+        )
+        model = _model_row_for_compaction(
+            natural="Beacon renewal risk needs attention.",
+            claim_role="concern",
+            domain_tags=["revenue", "customers"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+            proposition_extra={
+                "belief_address": address,
+                "semantic_address": address,
+            },
+        )
+        pairs.append((model, _relevance_for_model(model, 0.64 - idx * 0.001)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=64,
+        weak_signal=False,
+        broad_signal=False,
+        threshold=0.30,
+        min_keep=4,
+        model_pathways={model.id: {"semantic", "sage_reader"} for model, _ in pairs},
+        model_questions={model.id: {"Q_CONSTRAINT"} for model, _ in pairs},
+    )
+
+    assert len(compacted) <= 18
+    assert dropped >= 62
+    assert notes["target_limit"] == 18
+
+
 def test_coverage_compaction_uses_larger_broad_portfolio_budget():
     pairs: list[tuple[ModelRow, ModelRelevance]] = []
     for idx in range(64):
@@ -391,9 +654,168 @@ def test_coverage_compaction_uses_larger_broad_portfolio_budget():
         model_questions={model.id: {"Q_GOAL_IMPACT"} for model, _ in pairs},
     )
 
-    assert 24 <= len(compacted) <= 48
-    assert dropped >= 16
-    assert notes["target_limit"] == 48
+    assert 20 <= len(compacted) <= 32
+    assert dropped >= 32
+    assert notes["target_limit"] == 32
+
+
+def test_broad_compaction_preserves_repeated_trend_breadth():
+    same_customer = str(uuid4())
+    pairs: list[tuple[ModelRow, ModelRelevance]] = []
+    for idx in range(64):
+        model = _model_row_for_compaction(
+            natural=(
+                "portfolio renewal risk: legal review, security approvals, "
+                f"capacity pressure, and billing disputes affect account {idx}"
+            ),
+            claim_role="concern",
+            domain_tags=["portfolio", "revenue"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+        )
+        pairs.append((model, _relevance_for_model(model, 0.58 - idx * 0.001)))
+
+    compacted, dropped, notes = _apply_relevance_diversity(
+        pairs,
+        top_n=64,
+        weak_signal=False,
+        broad_signal=True,
+        threshold=0.24,
+        min_keep=3,
+        model_pathways={model.id: {"semantic", "sage_reader"} for model, _ in pairs},
+        model_questions={model.id: {"Q_CONSTRAINT"} for model, _ in pairs},
+    )
+
+    assert len(compacted) >= 20
+    assert len(compacted) <= 32
+    assert dropped <= 44
+    assert notes["floor"] == 20
+    assert notes["target_limit"] == 32
+
+
+def test_structural_closure_keeps_linked_counterevidence_and_relation_only():
+    same_customer = str(uuid4())
+    root = _model_row_for_compaction(
+        natural="Acme launch is blocked by integration readiness risk.",
+        claim_role="concern",
+        domain_tags=["execution", "risk"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+    )
+    selected_pairs = [(root, _relevance_for_model(root, 0.84))]
+
+    redundant_sibling = _model_row_for_compaction(
+        natural="Acme launch has another ordinary readiness risk note.",
+        claim_role="concern",
+        domain_tags=["execution", "risk"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+        supporting_model_ids=[root.id],
+        polarity="negative",
+    )
+    counter = _model_row_for_compaction(
+        natural=(
+            "A mitigation exists, but it does not remove the active risk "
+            "and should not erase the blocker."
+        ),
+        claim_role="concern",
+        domain_tags=["execution", "risk"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+        supporting_model_ids=[root.id],
+        polarity="mixed",
+    )
+    relation = _model_row_for_compaction(
+        natural="Latent invariant B-17 explains the dependency.",
+        claim_role="relation",
+        domain_tags=["graph", "dependencies"],
+        scope_entities=[],
+        supporting_model_ids=[root.id],
+        abstraction_level="relationship",
+        polarity="neutral",
+        proposition_extra={
+            "subject": str(root.id),
+            "relation": "explains",
+            "object": "latent invariant B-17",
+        },
+    )
+    candidates = [
+        *selected_pairs,
+        (redundant_sibling, _relevance_for_model(redundant_sibling, 0.52)),
+        (counter, _relevance_for_model(counter, 0.28)),
+        (relation, _relevance_for_model(relation, 0.02)),
+    ]
+
+    closed, notes = _append_structural_closure(
+        selected_pairs,
+        candidates,
+        top_n=12,
+        weak_signal=False,
+        broad_signal=False,
+        threshold=0.30,
+        model_pathways={
+            root.id: {"semantic"},
+            redundant_sibling.id: {"semantic"},
+            counter.id: {"semantic"},
+            relation.id: {"G", "model_edge"},
+        },
+        model_questions={
+            root.id: {"Q_CONSTRAINT"},
+            redundant_sibling.id: {"Q_CONSTRAINT"},
+            counter.id: {"Q_COUNTEREVIDENCE"},
+            relation.id: {"Q_CRITICAL_PATH"},
+        },
+    )
+
+    closed_ids = {model.id for model, _ in closed}
+    assert counter.id in closed_ids
+    assert relation.id in closed_ids
+    assert redundant_sibling.id not in closed_ids
+    assert notes["added"] == 2
+    assert notes["reasons"][str(counter.id)] == "linked_counterevidence"
+    assert notes["reasons"][str(relation.id)] == "linked_relation"
+
+
+def test_structural_link_packing_places_late_relation_next_to_anchor():
+    same_customer = str(uuid4())
+    root = _model_row_for_compaction(
+        natural="Acme launch is blocked by integration readiness risk.",
+        claim_role="concern",
+        domain_tags=["execution", "risk"],
+        scope_entities=[{"type": "customer", "id": same_customer}],
+    )
+    fillers = [
+        _model_row_for_compaction(
+            natural=f"Acme launch has ordinary adjacent note {idx}.",
+            claim_role="concern",
+            domain_tags=["execution", "risk"],
+            scope_entities=[{"type": "customer", "id": same_customer}],
+        )
+        for idx in range(16)
+    ]
+    relation = _model_row_for_compaction(
+        natural="Readiness risk is caused by the shared identity provider dependency.",
+        claim_role="relation",
+        domain_tags=["graph", "dependencies"],
+        scope_entities=[],
+        supporting_model_ids=[root.id],
+        abstraction_level="relationship",
+        polarity="neutral",
+        proposition_extra={
+            "subject": str(root.id),
+            "relation": "caused_by",
+            "object": "shared identity provider dependency",
+        },
+    )
+    selected_pairs = [
+        (root, _relevance_for_model(root, 0.90)),
+        *((model, _relevance_for_model(model, 0.70)) for model in fillers),
+        (relation, _relevance_for_model(relation, 0.42)),
+    ]
+
+    packed, notes = _pack_structural_links(selected_pairs)
+
+    packed_ids = [model.id for model, _ in packed]
+    assert packed_ids[0] == root.id
+    assert packed_ids[1] == relation.id
+    assert set(packed_ids) == {model.id for model, _ in selected_pairs}
+    assert notes["moved"] == 1
 
 
 def test_adaptive_budget_limits_by_signal_class():
@@ -431,6 +853,79 @@ def test_adaptive_budget_limits_by_signal_class():
     )
 
 
+@pytest.mark.asyncio
+async def test_cold_weak_noop_gate_abstains_without_scope_anchor(
+    tx_conn,
+    tenant,
+):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[],
+        scope_actors=[],
+        seed_natural_text=(
+            "Workspace chatter for customer-40: lunch notes, travel plans, "
+            "and general team coordination. Marker RTS-011-weak_workspace_noise."
+        ),
+        seed_occurred_at=datetime.now(timezone.utc),
+    )
+
+    gate = _cold_weak_noop_gate(trigger, "weak")
+    assert gate["used"] is True
+
+    result = await run_inquiry_retrieval(
+        trigger,
+        tx_conn,
+        mode="deep",
+        top_n=64,
+        config=InquiryConfig(persist=False, max_rounds=1),
+    )
+
+    assert result.sufficiency.status == "no_update_needed"
+    assert result.retrieval_result.models == []
+    assert result.evidence_cards == ()
+    assert result.notes["cold_weak_noop_gate"]["used"] is True
+
+
+def test_cold_weak_noop_gate_ignores_learned_scope_for_explicit_noop(tenant):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[uuid4()],
+        scope_actors=["customer-40"],
+        seed_natural_text=(
+            "Workspace chatter for customer-40: lunch notes, travel plans, "
+            "and general team coordination. Marker RTS-011-weak_workspace_noise."
+        ),
+        seed_occurred_at=datetime.now(timezone.utc),
+    )
+
+    gate = _cold_weak_noop_gate(trigger, "weak")
+
+    assert gate["used"] is True
+
+
+def test_weak_noop_declaration_dominates_generic_followup_boilerplate(tenant):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[uuid4()],
+        scope_actors=["customer-40"],
+        seed_natural_text=(
+            "Workspace chatter for customer-40: lunch notes, travel plans, "
+            "and general team coordination. Follow up: identify the current "
+            "blocker, dependency, owner constraint, counterevidence, and next "
+            "action for the same scope."
+        ),
+        seed_occurred_at=datetime.now(timezone.utc),
+    )
+    signal_class = _signal_class_for_trigger(trigger)
+    gate = _cold_weak_noop_gate(trigger, signal_class)
+
+    assert signal_class == "weak"
+    assert gate["used"] is True
+
+
 def test_pathway_model_cap_records_adaptive_trim():
     models = [
         _model_row_for_compaction(
@@ -448,6 +943,282 @@ def test_pathway_model_cap_records_adaptive_trim():
     assert len(result.models) == 5
     assert result.notes["models_before_adaptive_cap"] == 12
     assert result.notes["models_after_adaptive_cap"] == 5
+
+
+def test_premise_challenge_language_answers_counterevidence_question():
+    hypotheses = (
+        Hypothesis(
+            id="H1",
+            claim="Acme is blocked only by SSO.",
+            confidence=0.5,
+            impact_if_true="high",
+        ),
+        Hypothesis(
+            id="H2",
+            claim="An active commitment, owner, or promised outcome is affected.",
+            confidence=0.35,
+            impact_if_true="medium",
+        ),
+        Hypothesis(
+            id="H0",
+            claim="The premise is stale or incomplete.",
+            confidence=0.2,
+            impact_if_true="low",
+        ),
+    )
+    trigger_text = "Why is Acme blocked by SSO?"
+    summary = (
+        "Acme SSO is one blocker, but it is not the only blocker: "
+        "data migration is also active, and no explicit owner is represented."
+    )
+
+    supports, weakens, contradicts = _classify_hypothesis_links(
+        summary,
+        hypotheses,
+        trigger_text=trigger_text,
+    )
+
+    assert "H1" in weakens | contradicts
+    assert "H2" in weakens
+
+    evidence_by_key: dict[tuple[str, str], EvidenceCard] = {}
+    _upsert_evidence(
+        evidence_by_key,
+        key=("observation", "premise-challenge"),
+        source_type="observation",
+        source_ref_id=None,
+        summary=summary,
+        trust_tier="authoritative",
+        timestamp=datetime(2026, 4, 1, 18, 5, tzinfo=timezone.utc),
+        path="semantic",
+        question_id="Q_COUNTEREVIDENCE",
+        hypotheses=hypotheses,
+        score=0.9,
+        raw_content_ref="observation:premise-challenge",
+        trigger_text=trigger_text,
+    )
+    answer = _answer_question(
+        InquiryQuestion(
+            question_id="Q_COUNTEREVIDENCE",
+            question="What premise in the question is stale or incomplete?",
+            primitive="COUNTEREVIDENCE",
+            tests_hypotheses=("H1", "H0"),
+            expected_value=0.9,
+            expected_cost=0.2,
+            retrieval_target="counterevidence",
+            stop_condition="premise checked",
+            score=0.7,
+        ),
+        evidence_by_key,
+        trigger_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        stale_after_days=30,
+    )
+
+    assert answer.answer_status in {"supported", "partially_supported"}
+    assert answer.counterevidence
+
+
+def test_context_packet_preserves_state_workflow_gotcha_and_premise_under_distractors(tenant):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[{"type": "customer", "id": str(uuid4())}],
+        seed_natural_text=(
+            "Why is Acme onboarding blocked by SSO and still marked Commit?"
+        ),
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+    )
+    hypotheses = (
+        Hypothesis(
+            id="H1",
+            claim="Acme onboarding is blocked by SSO and Commit remains justified.",
+            confidence=0.52,
+            impact_if_true="high",
+        ),
+        Hypothesis(
+            id="H2",
+            claim="An active commitment, owner, or promised outcome is affected.",
+            confidence=0.36,
+            impact_if_true="medium",
+        ),
+        Hypothesis(
+            id="H3",
+            claim="The signal may be part of a broader recurring pattern.",
+            confidence=0.28,
+            impact_if_true="high",
+        ),
+        Hypothesis(
+            id="H0",
+            claim="The premise is stale, incomplete, or already captured.",
+            confidence=0.18,
+            impact_if_true="low",
+        ),
+    )
+    evidence_by_key: dict[tuple[str, str], EvidenceCard] = {}
+
+    important = {
+        "state": "Acme state changed from Commit to At Risk after data migration became active.",
+        "workflow": "Acme onboarding is missing the security review owner assignment step before procurement can move forward.",
+        "gotcha": "Recurring trap: security review stalls unless ownership is assigned early.",
+        "premise": "SSO is not the only blocker; data migration is also active and the CRM Commit premise is unsupported.",
+    }
+    for key, summary in important.items():
+        _upsert_evidence(
+            evidence_by_key,
+            key=("observation", key),
+            source_type="observation",
+            source_ref_id=None,
+            summary=summary,
+            trust_tier="authoritative",
+            timestamp=datetime(2026, 4, 1, 18, 10, tzinfo=timezone.utc),
+            path="capability_probe",
+            question_id={
+                "state": "Q_CRITICAL_PATH",
+                "workflow": "Q_ACTIVE_COMMITMENT",
+                "gotcha": "Q_RECURRENCE",
+                "premise": "Q_COUNTEREVIDENCE",
+            }[key],
+            hypotheses=hypotheses,
+            score=0.95,
+            raw_content_ref=f"observation:{key}",
+            trigger_text=trigger.seed_natural_text,
+        )
+    for idx in range(80):
+        _upsert_evidence(
+            evidence_by_key,
+            key=("model", f"distractor-{idx}"),
+            source_type="model",
+            source_ref_id=None,
+            summary=f"Unrelated noisy model about account {idx} lunch notes.",
+            trust_tier="model",
+            timestamp=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+            path="semantic",
+            question_id="Q0",
+            hypotheses=hypotheses,
+            score=0.01,
+            raw_content_ref=f"model:distractor-{idx}",
+            trigger_text=trigger.seed_natural_text,
+        )
+
+    by_raw_ref = {card.raw_content_ref: card for card in evidence_by_key.values()}
+    questions = [
+        InquiryQuestion(
+            question_id="Q_CRITICAL_PATH",
+            question="What changed in Acme's state?",
+            primitive="DEPENDENCY",
+            tests_hypotheses=("H1",),
+            expected_value=0.9,
+            expected_cost=0.25,
+            retrieval_target="state",
+            stop_condition="state transition found",
+            score=0.65,
+        ),
+        InquiryQuestion(
+            question_id="Q_ACTIVE_COMMITMENT",
+            question="What workflow step is missing?",
+            primitive="COMMITMENT",
+            tests_hypotheses=("H2",),
+            expected_value=0.85,
+            expected_cost=0.2,
+            retrieval_target="workflow",
+            stop_condition="missing step found",
+            score=0.65,
+        ),
+        InquiryQuestion(
+            question_id="Q_RECURRENCE",
+            question="What recurring local trap applies?",
+            primitive="RECURRENCE",
+            tests_hypotheses=("H3",),
+            expected_value=0.8,
+            expected_cost=0.3,
+            retrieval_target="gotcha",
+            stop_condition="gotcha found",
+            score=0.5,
+        ),
+        InquiryQuestion(
+            question_id="Q_COUNTEREVIDENCE",
+            question="What premise is incomplete?",
+            primitive="COUNTEREVIDENCE",
+            tests_hypotheses=("H1", "H0"),
+            expected_value=0.9,
+            expected_cost=0.2,
+            retrieval_target="premise",
+            stop_condition="premise checked",
+            score=0.7,
+        ),
+    ]
+    answers = [
+        QuestionAnswer(
+            question_id="Q_CRITICAL_PATH",
+            answer_status="supported",
+            summary="State transition found.",
+            supporting_evidence=(str(by_raw_ref["observation:state"].evidence_id),),
+        ),
+        QuestionAnswer(
+            question_id="Q_ACTIVE_COMMITMENT",
+            answer_status="supported",
+            summary="Workflow gap found.",
+            supporting_evidence=(str(by_raw_ref["observation:workflow"].evidence_id),),
+        ),
+        QuestionAnswer(
+            question_id="Q_RECURRENCE",
+            answer_status="supported",
+            summary="Recurring gotcha found.",
+            supporting_evidence=(str(by_raw_ref["observation:gotcha"].evidence_id),),
+        ),
+        QuestionAnswer(
+            question_id="Q_COUNTEREVIDENCE",
+            answer_status="supported",
+            summary="Premise challenge found.",
+            counterevidence=(str(by_raw_ref["observation:premise"].evidence_id),),
+        ),
+    ]
+
+    selected, notes = _select_minimal_sufficient_evidence(
+        list(evidence_by_key.values()),
+        hypotheses=hypotheses,
+        questions=questions,
+        answers=answers,
+        route="DEEP_INQUIRY_PATH",
+        mode="deep",
+        evidence_limit=12,
+    )
+    packet = _compile_context_packet(
+        trigger,
+        "DEEP_INQUIRY_PATH",
+        hypotheses,
+        questions,
+        answers,
+        selected,
+        SufficiencyVerdict(
+            "sufficient_for_reasoning",
+            "capability packet probe",
+            len(selected),
+            len(answers),
+            (),
+        ),
+        token_budget=4000,
+    )
+
+    selected_refs = {card.raw_content_ref for card in selected}
+    decisive_refs = {
+        item["raw_content_ref"]
+        for item in packet["tiers"]["decisive_evidence"]
+    }
+    assert {f"observation:{key}" for key in important} <= selected_refs
+    assert {f"observation:{key}" for key in important} <= decisive_refs
+    assert notes["coverage"]["questions"] == 1.0
+    assert packet["answer_obligations"]["premise_status"] == "stale_or_incomplete"
+    assert {
+        "current_blocker",
+        "current_stage",
+        "dynamic_state",
+        "premise_challenge",
+        "recurring_gotcha",
+        "workflow_missing_step",
+    } <= set(packet["state_contract"]["covered_slots"])
+    assert packet["state_contract"]["premise_check"]["counterevidence_refs"]
+    assert packet["budget"]["reservoir_evidence_count"] <= 12
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(

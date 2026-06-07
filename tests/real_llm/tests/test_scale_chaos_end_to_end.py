@@ -1,19 +1,15 @@
-"""Scenario 04 end-to-end checks across ingestion, alias resolution, Think, and Bridge."""
+"""Scenario 04 end-to-end checks across ingestion, alias resolution, and Think."""
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-from decimal import Decimal
-
 import asyncpg
 import pytest
 
 from lib.embeddings.ollama import OllamaClient
 from lib.llm.provider import LLMProvider
 from services.actors.repo import ActorRepo
-from services.bridge.dashboards import CustomerDetailDashboard, render_customer_detail
-from services.bridge.queries import RevenueAtRiskReport, revenue_at_risk
 from services.entity_aliases.repo import EntityAliasRepo
 from services.think.worker import ThinkWorker, WorkerConfig
 from services.workers.entity_resolver.worker import (
@@ -30,7 +26,7 @@ from tests.real_llm.infrastructure.think_drain import (
 
 @pytest.mark.asyncio
 @real_llm_test(attempts=1, pass_threshold=1, timeout_seconds=900)
-async def test_scenario_04_nimbus_alias_to_think_to_bridge_end_to_end(
+async def test_scenario_04_nimbus_alias_to_think_end_to_end(
     scenario_04: Scenario,
     fresh_db: asyncpg.Pool,
     actor_repo: ActorRepo,
@@ -38,7 +34,7 @@ async def test_scenario_04_nimbus_alias_to_think_to_bridge_end_to_end(
     embedder: OllamaClient,
     provider: LLMProvider,
 ) -> None:
-    """Full proof path: signal text alias -> DeepSeek resolver -> Think -> Bridge."""
+    """Full proof path: signal text alias -> DeepSeek resolver -> Think."""
     assert scenario_04.tenant_id is not None
     tenant_id = scenario_04.tenant_id
 
@@ -93,7 +89,7 @@ async def test_scenario_04_nimbus_alias_to_think_to_bridge_end_to_end(
         original_obs_ids=[alias_obs_id, *nimbus_obs_ids],
     )
     await _assert_nimbus_memory_created(scenario_04, pool=fresh_db)
-    await _assert_nimbus_bridge_surfaces_risk(scenario_04, pool=fresh_db)
+    await _assert_nimbus_customer_commitment_links(scenario_04, pool=fresh_db)
 
 
 async def _inject_nbi_alias_signal(
@@ -287,7 +283,7 @@ async def _assert_nimbus_memory_created(
     )
 
 
-async def _assert_nimbus_bridge_surfaces_risk(
+async def _assert_nimbus_customer_commitment_links(
     scenario: Scenario,
     *,
     pool: asyncpg.Pool,
@@ -297,26 +293,18 @@ async def _assert_nimbus_bridge_surfaces_risk(
     nimbus_id = scenario.customer_id("Nimbus Bank")
 
     async with pool.acquire() as conn:
-        report: RevenueAtRiskReport = await revenue_at_risk(tenant_id, conn=conn)
-        detail: CustomerDetailDashboard = await render_customer_detail(
+        rows = await conn.fetch(
+            """
+            SELECT c.title
+            FROM customer_commitments cc
+            JOIN commitments c ON c.id = cc.commitment_id
+            WHERE cc.tenant_id = $1
+              AND cc.customer_resource_id = $2
+            """,
+            tenant_id,
             nimbus_id,
-            tenant_id=tenant_id,
-            window_days=30,
-            conn=conn,
         )
 
-    nimbus_row = next(
-        (row for row in report.customers if row.customer_resource_id == nimbus_id),
-        None,
-    )
-    assert nimbus_row is not None, (
-        "Nimbus Bank missing from revenue-at-risk report after end-to-end run"
-    )
-    assert nimbus_row.total_at_risk_usd >= Decimal("0")
-
-    assert detail.customer_resource_id == nimbus_id
-    assert detail.identity == "Nimbus Bank"
-    assert detail.arr_usd == Decimal("2400000")
-    served_titles = {item.title for item in detail.served_commitments}
+    served_titles = {str(row["title"]) for row in rows}
     assert "Finish Nimbus audit export rollout" in served_titles
     assert "Stabilize Nimbus SAML incident response" in served_titles

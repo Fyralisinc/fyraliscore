@@ -85,6 +85,19 @@ def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
             if model_id is not None:
                 referenced.add(model_id)
 
+    for op in getattr(diff, "ontology_gap_ops", []) or []:
+        for value in (
+            getattr(op, "source_model_id", None),
+            getattr(op, "target_model_id", None),
+        ):
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+        for value in getattr(op, "evidence_model_ids", None) or []:
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
     for op in diff.act_ops:
         model_id = _coerce_uuid(getattr(op, "confidence_basis", None))
         if model_id is not None:
@@ -102,6 +115,11 @@ def _referenced_observation_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
             if obs_id is not None:
                 referenced.add(obs_id)
     for op in diff.edge_ops:
+        for value in getattr(op, "evidence_event_ids", None) or []:
+            obs_id = _coerce_uuid(value)
+            if obs_id is not None:
+                referenced.add(obs_id)
+    for op in getattr(diff, "ontology_gap_ops", []) or []:
         for value in getattr(op, "evidence_event_ids", None) or []:
             obs_id = _coerce_uuid(value)
             if obs_id is not None:
@@ -129,6 +147,7 @@ def summarize_context_use(
     total_ops = (
         len(diff.claim_ops)
         + len(diff.edge_ops)
+        + len(getattr(diff, "ontology_gap_ops", []) or [])
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
@@ -158,6 +177,16 @@ def summarize_context_use(
             edge_ops_between_selected += 1
         if endpoints & graph_model_ids:
             edge_ops_touching_graph += 1
+    ontology_gap_ops_between_selected = 0
+    ontology_gap_ops_touching_graph = 0
+    for op in getattr(diff, "ontology_gap_ops", []) or []:
+        source = _coerce_uuid(getattr(op, "source_model_id", None))
+        target = _coerce_uuid(getattr(op, "target_model_id", None))
+        endpoints = {x for x in (source, target) if x is not None}
+        if len(endpoints) == 2 and endpoints <= selected_model_ids:
+            ontology_gap_ops_between_selected += 1
+        if endpoints & graph_model_ids:
+            ontology_gap_ops_touching_graph += 1
 
     selected_count = len(selected_model_ids)
     graph_count = len(graph_model_ids)
@@ -167,7 +196,9 @@ def summarize_context_use(
         len(selected_referenced) + len(observation_referenced)
     )
     graph_context_used = (
-        bool(graph_referenced) or edge_ops_touching_graph > 0
+        bool(graph_referenced)
+        or edge_ops_touching_graph > 0
+        or ontology_gap_ops_touching_graph > 0
     )
     model_context_used = bool(selected_referenced)
     observation_context_used = bool(observation_referenced)
@@ -247,6 +278,11 @@ def summarize_context_use(
         "edge_ops_count": len(diff.edge_ops),
         "edge_ops_between_selected_models": edge_ops_between_selected,
         "edge_ops_touching_graph_models": edge_ops_touching_graph,
+        "ontology_gap_ops_count": len(getattr(diff, "ontology_gap_ops", []) or []),
+        "ontology_gap_ops_between_selected_models": (
+            ontology_gap_ops_between_selected
+        ),
+        "ontology_gap_ops_touching_graph_models": ontology_gap_ops_touching_graph,
         "claim_ops_count": len(diff.claim_ops),
         "act_ops_count": len(diff.act_ops),
         "resource_ops_count": len(diff.resource_ops),

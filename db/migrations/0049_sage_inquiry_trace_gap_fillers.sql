@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS inquiry_outcome_events (
       'omitted_evidence_later_requested',
       'node_used_in_valid_diff',
       'path_used_in_valid_diff',
+      'reader_decision_low_value',
       'validation_failed_due_to_missing_evidence',
       'validation_failed_due_to_bad_reference',
       'user_accepted_node',

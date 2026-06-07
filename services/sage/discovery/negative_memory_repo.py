@@ -221,13 +221,13 @@ class NegativeMemoryRepo:
         memory_type: NegativeMemoryType | None = None,
         conn: asyncpg.Connection | None = None,
     ) -> list[NegativeMemory]:
-        """Return non-expired negative memory whose `signature @> $sig`.
+        """Return non-expired negative memory compatible with `signature`.
 
-        Containment direction matches DiscoveryShortcutsRepo: stored
-        signatures are supersets of probes. A probe like
-        ``{question_primitive: DEPENDENCY}`` surfaces every memory
-        that mentions DEPENDENCY, even if the memory also pins down
-        `signal_type` and `entities`.
+        Matching mirrors DiscoveryShortcutsRepo: both containment
+        directions count. A stored broad dead-end for
+        ``{signal_type: T1, question_primitive: DEPENDENCY}`` should
+        match a later probe that carries extra cue entities, while a
+        more specific stored dead-end should still match a broad probe.
         """
         sig = _normalize_signature(signature)
         params: list[Any] = [self.tenant_id, _jsonb(sig)]
@@ -236,13 +236,26 @@ class NegativeMemoryRepo:
             params.append(memory_type)
             type_clause = f" AND memory_type = ${len(params)}"
         sql = f"""
-            SELECT {_SELECT_COLS_SQL}
+            SELECT {_SELECT_COLS_SQL},
+                   CASE
+                     WHEN signature @> $2::jsonb THEN 2
+                     WHEN $2::jsonb @> signature THEN 1
+                     ELSE 0
+                   END AS match_rank
               FROM negative_memory
              WHERE tenant_id  = $1
-               AND signature  @> $2::jsonb
+               AND (
+                 signature @> $2::jsonb
+                 OR $2::jsonb @> signature
+               )
                AND expires_at > now()
                {type_clause}
-          ORDER BY created_at DESC
+          ORDER BY match_rank DESC,
+                   (
+                     SELECT count(*)
+                     FROM jsonb_object_keys(signature)
+                   ) DESC,
+                   created_at DESC
         """
         ctx = await self._acquire(conn)
         async with ctx as c:

@@ -293,7 +293,7 @@ async def assert_any_cascade_chain_intact(
     )
 
 
-async def assert_bridge_revenue_at_risk(
+async def assert_customer_revenue_at_risk(
     tenant_id: UUID,
     customer_resource_id: UUID,
     range_usd: tuple[float, float],
@@ -332,5 +332,5 @@ __all__ = [
     "assert_any_cascade_chain_intact",
     "assert_commitment_transitioned",
     "assert_cascade_chain_intact",
-    "assert_bridge_revenue_at_risk",
+    "assert_customer_revenue_at_risk",
 ]

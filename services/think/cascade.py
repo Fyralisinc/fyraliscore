@@ -457,15 +457,6 @@ async def _branch_commitment_state(
         )
         for cr in customer_rows:
             cid = cr["id"]
-            # Compute current revenue_at_risk via Bridge primitive.
-            from services.resources.bridge import revenue_at_risk_for_customer
-            try:
-                async with conn.transaction():
-                    rar = await revenue_at_risk_for_customer(cid, conn=conn)
-            except Exception:
-                # Bridge recompute is best-effort; the savepoint keeps
-                # DB errors from poisoning the cascade transaction.
-                rar = None
             obs_id = await emit_state_change(
                 conn,
                 kind="customer_health_recomputed",
@@ -476,7 +467,6 @@ async def _branch_commitment_state(
                 metadata={
                     "trigger_commitment_id": str(commitment_id),
                     "trigger_new_state": new_state,
-                    "revenue_at_risk": str(rar) if rar is not None else None,
                 },
             )
             out.append(
@@ -486,7 +476,10 @@ async def _branch_commitment_state(
                     entity_kind="customer_resource",
                     entity_id=cid,
                     tenant_id=tenant_id,
-                    metadata={"revenue_at_risk": str(rar) if rar else None},
+                    metadata={
+                        "trigger_commitment_id": str(commitment_id),
+                        "trigger_new_state": new_state,
+                    },
                     observation_id=obs_id,
                 )
             )

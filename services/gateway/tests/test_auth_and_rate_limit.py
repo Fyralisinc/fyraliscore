@@ -109,6 +109,7 @@ async def test_rate_limit_allows_up_to_capacity_then_429(
 ):
     token, _actor = valid_session
     headers = {"Authorization": f"Bearer {token}"}
+    rate_limiter.clock = lambda: 0.0  # type: ignore[assignment]
     capacity, _ = rate_limiter.budget(RateTier.DEFAULT)
     # Burst the whole bucket on GET /observations (DEFAULT tier).
     ok_count = 0

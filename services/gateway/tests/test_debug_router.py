@@ -110,3 +110,110 @@ def test_think_quality_cases_endpoint_delegates_to_case_builder(monkeypatch):
         "low_context_ratio": 0.3,
         "include_artifacts": False,
     }
+
+
+def test_sage_health_endpoint_delegates_to_report_builder(monkeypatch):
+    tenant_id = uuid4()
+    captured = {}
+
+    async def fake_health(
+        conn,
+        *,
+        tenant_id,
+        structural_freshness_hours,
+        optimizer_lag_minutes,
+    ):
+        captured.update(
+            {
+                "tenant_id": str(tenant_id),
+                "structural_freshness_hours": structural_freshness_hours,
+                "optimizer_lag_minutes": optimizer_lag_minutes,
+            }
+        )
+        return {"status": "ok", "findings": []}
+
+    monkeypatch.setattr(
+        "services.sage.health.build_sage_health_report",
+        fake_health,
+    )
+
+    app = FastAPI()
+    app.state.pool = _Pool()
+    app.include_router(build_debug_router())
+    client = TestClient(app)
+
+    response = client.get(
+        "/debug/sage-health?structural_freshness_hours=12&optimizer_lag_minutes=45",
+        headers={"X-Tenant-Id": str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert captured == {
+        "tenant_id": str(tenant_id),
+        "structural_freshness_hours": 12,
+        "optimizer_lag_minutes": 45,
+    }
+
+
+def test_relationship_ontology_review_endpoint_delegates(monkeypatch):
+    tenant_id = uuid4()
+    proposal_id = uuid4()
+    captured = {}
+
+    async def fake_review(
+        self,
+        conn,
+        *,
+        tenant_id,
+        proposal_id,
+        status,
+        reviewed_by,
+        note,
+    ):
+        captured.update(
+            {
+                "tenant_id": str(tenant_id),
+                "proposal_id": str(proposal_id),
+                "status": status,
+                "reviewed_by": reviewed_by,
+                "note": note,
+            }
+        )
+        return {
+            "id": proposal_id,
+            "tenant_id": tenant_id,
+            "proposed_edge_kind": "gated_by_decision",
+            "status": status,
+        }
+
+    monkeypatch.setattr(
+        "services.relationships.ontology_proposals."
+        "RelationshipOntologyProposalsRepo.review",
+        fake_review,
+    )
+
+    app = FastAPI()
+    app.state.pool = _Pool()
+    app.include_router(build_debug_router())
+    client = TestClient(app)
+
+    response = client.post(
+        f"/debug/relationship-ontology-proposals/{proposal_id}/review",
+        headers={"X-Tenant-Id": str(tenant_id)},
+        json={
+            "status": "accepted",
+            "reviewed_by": "operator",
+            "note": "Repeated decision-gate evidence.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["proposal"]["status"] == "accepted"
+    assert captured == {
+        "tenant_id": str(tenant_id),
+        "proposal_id": str(proposal_id),
+        "status": "accepted",
+        "reviewed_by": "operator",
+        "note": "Repeated decision-gate evidence.",
+    }

@@ -1216,6 +1216,246 @@
   font-size: 14px;
 }
 
+/* Resolution tracker ------------------------------------------------- */
+
+.tdv2-resolution {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: 18px 20px;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent-authority);
+  border-radius: 14px;
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.tdv2-resolution__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.tdv2-resolution__title {
+  margin: 4px 0 0;
+  font-family: var(--font-serif-v2);
+  font-size: 19px;
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tdv2-resolution__status {
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+.tdv2-resolution__status--active,
+.tdv2-resolution__status--monitoring,
+.tdv2-resolution__status--confirmed,
+.tdv2-resolution__status--resolved {
+  border-color: rgba(62, 106, 87, 0.3);
+  color: var(--accent-trust);
+  background: rgba(62, 106, 87, 0.07);
+}
+
+.tdv2-resolution__status--blocked,
+.tdv2-resolution__status--failed,
+.tdv2-resolution__status--waiting_on_owner {
+  border-color: rgba(127, 47, 41, 0.28);
+  color: var(--accent-authority);
+  background: rgba(127, 47, 41, 0.06);
+}
+
+.tdv2-resolution__states {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.tdv2-resolution__states > div {
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  min-width: 0;
+}
+
+.tdv2-resolution__states span,
+.tdv2-resolution__block h4,
+.tdv2-resolution__escalate h4 {
+  display: block;
+  margin: 0 0 5px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.tdv2-resolution__states strong {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.tdv2-resolution__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.tdv2-resolution__grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: var(--space-5);
+}
+
+@media (max-width: 880px) {
+  .tdv2-resolution__states,
+  .tdv2-resolution__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tdv2-resolution__steps,
+.tdv2-resolution__watch,
+.tdv2-resolution__escalate ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tdv2-resolution__steps,
+.tdv2-resolution__watch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tdv2-resolution__step,
+.tdv2-resolution__watch li {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.tdv2-resolution__step strong,
+.tdv2-resolution__watch strong {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.tdv2-resolution__step span,
+.tdv2-resolution__step small,
+.tdv2-resolution__watch span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.tdv2-resolution__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-top: 5px;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 4px rgba(141, 133, 118, 0.12);
+}
+
+.tdv2-resolution__dot--in_progress,
+.tdv2-resolution__dot--done {
+  background: var(--accent-trust);
+  box-shadow: 0 0 0 4px rgba(62, 106, 87, 0.12);
+}
+
+.tdv2-resolution__dot--waiting,
+.tdv2-resolution__dot--not_started {
+  background: var(--accent-authority);
+  box-shadow: 0 0 0 4px rgba(201, 163, 90, 0.16);
+}
+
+.tdv2-resolution__dot--blocked,
+.tdv2-resolution__dot--failed {
+  background: var(--accent-authority);
+  box-shadow: 0 0 0 4px rgba(127, 47, 41, 0.12);
+}
+
+.tdv2-resolution__watch-status {
+  align-self: start;
+  min-width: 76px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: rgba(141, 133, 118, 0.1);
+}
+
+.tdv2-resolution__watch li {
+  grid-template-columns: auto 1fr;
+}
+
+.tdv2-resolution__watch-status--seen {
+  color: var(--accent-trust);
+  background: rgba(62, 106, 87, 0.08);
+}
+
+.tdv2-resolution__watch-status--missing,
+.tdv2-resolution__watch-status--contradicted {
+  color: var(--accent-authority);
+  background: rgba(127, 47, 41, 0.06);
+}
+
+.tdv2-resolution__escalate {
+  border-top: 1px solid var(--border-default);
+  padding-top: var(--space-3);
+}
+
+.tdv2-resolution__escalate ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+@media (max-width: 760px) {
+  .tdv2-resolution__escalate ul {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tdv2-resolution__escalate li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.tdv2-resolution__escalate li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent-authority);
+}
+
 /* Ask Fyralis -------------------------------------------------------- */
 
 .tdv2-ask {

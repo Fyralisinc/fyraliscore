@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -96,15 +96,19 @@ from lib.shared.types import (
 )
 
 from services.models.calibration import apply_calibration
+from services.models.batch import ModelBatchPlan, PlannedModel, plan_model_batch
 from services.models.edges_repo import EdgesRepo
 from services.models.falsifier import is_adequate_falsifier
-from services.models.propositions import (
-    canonicalize_proposition,
-    ensure_situation_compositional_defaults,
-    validate_proposition,
-)
+from services.models.constructor import ConstructedModel, construct_model
 from services.models.recommendations import validate_recommendation
-from services.observations.state_change import emit_state_change
+from services.observations.events import NewObservationEvent, schedule_notify
+from services.observations.state_change import (
+    STATE_CHANGE_CHANNEL,
+    STATE_CHANGE_TRUST_TIER,
+    emit_state_change,
+    render_state_change_text,
+)
+from services.sage.affordances.policy import derive_default_profile_from_model
 from services.topology import LatentTopologyService
 from services.topology.anchor import content_anchor
 # NOTE: audit module is imported lazily inside the methods that use it.
@@ -127,6 +131,8 @@ class ModelsRepoError(CompanyOSError):
 _CONFIDENCE_MIN = 0.05
 _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
+_BULK_INSERT_PARAM_LIMIT = 60_000
+_BULK_INSERT_DEFAULT_CHUNK_SIZE = 1_000
 _log = structlog.get_logger(__name__)
 
 
@@ -189,6 +195,53 @@ _SELECT_COLS = (
     "target_actor_id", "caused_act_change_id",
 )
 _SELECT_COLS_SQL = ", ".join(_SELECT_COLS)
+
+_BULK_MODEL_COPY_COLUMNS = [
+    "id",
+    "tenant_id",
+    "born_from_event_id",
+    "proposition",
+    "natural",
+    "embedding",
+    "scope_actors",
+    "scope_entities",
+    "scope_temporal",
+    "confidence",
+    "activation",
+    "falsifier",
+    "signal_readings",
+    "reading_contestable",
+    "supporting_event_ids",
+    "supporting_model_ids",
+    "evidential_weight",
+    "status",
+    "created_at",
+    "evaluate_at",
+    "resolution_criteria",
+    "contributing_models",
+    "visible_to_subjects",
+    "confidence_at_assertion",
+    "activation_coefficient",
+    "domain_tags",
+    "topo_embedding",
+    "topo_updated_at",
+]
+
+_BULK_MODEL_VALUE_CASTS = {
+    "proposition": "jsonb",
+    "embedding": "vector",
+    "scope_actors": "uuid[]",
+    "scope_entities": "jsonb",
+    "scope_temporal": "jsonb",
+    "falsifier": "jsonb",
+    "signal_readings": "jsonb",
+    "supporting_event_ids": "uuid[]",
+    "supporting_model_ids": "uuid[]",
+    "resolution_criteria": "jsonb",
+    "contributing_models": "uuid[]",
+    "domain_tags": "text[]",
+    "topo_embedding": "vector",
+}
 
 
 # =====================================================================
@@ -330,6 +383,179 @@ def _jsonb(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _sql_ident(identifier: str) -> str:
+    if (
+        not identifier
+        or identifier[0].isdigit()
+        or not all(char.isalnum() or char == "_" for char in identifier)
+    ):
+        raise ValueError(f"Unsafe SQL identifier: {identifier!r}")
+    return f'"{identifier}"'
+
+
+async def _table_uses_row_security(conn: asyncpg.Connection, table: str) -> bool:
+    row = await conn.fetchrow(
+        """
+        SELECT relrowsecurity OR relforcerowsecurity AS enabled
+        FROM pg_class
+        WHERE oid = $1::regclass
+        """,
+        table,
+    )
+    return bool(row and row["enabled"])
+
+
+async def _bulk_write_records(
+    conn: asyncpg.Connection,
+    table: str,
+    *,
+    records: Sequence[Sequence[Any]],
+    columns: Sequence[str],
+    casts: dict[str, str] | None = None,
+    chunk_size: int = _BULK_INSERT_DEFAULT_CHUNK_SIZE,
+) -> None:
+    """Write many rows while respecting PostgreSQL RLS.
+
+    PostgreSQL rejects COPY FROM on tables with row-level security for
+    non-owner app roles. When RLS is enabled, use chunked multi-value
+    INSERTs so the real product policies still apply.
+    """
+    if not records:
+        return
+    if not await _table_uses_row_security(conn, table):
+        await conn.copy_records_to_table(table, records=records, columns=columns)
+        return
+
+    await _insert_records_values(
+        conn,
+        table,
+        records=records,
+        columns=columns,
+        casts=casts or {},
+        chunk_size=chunk_size,
+    )
+
+
+async def _insert_records_values(
+    conn: asyncpg.Connection,
+    table: str,
+    *,
+    records: Sequence[Sequence[Any]],
+    columns: Sequence[str],
+    casts: dict[str, str],
+    chunk_size: int,
+) -> None:
+    if not records:
+        return
+    if not columns:
+        raise ValueError("Bulk insert requires at least one column")
+
+    table_sql = _sql_ident(table)
+    columns_sql = ", ".join(_sql_ident(column) for column in columns)
+    max_rows_by_params = max(1, _BULK_INSERT_PARAM_LIMIT // len(columns))
+    effective_chunk_size = max(1, min(chunk_size, max_rows_by_params))
+
+    for offset in range(0, len(records), effective_chunk_size):
+        chunk = records[offset:offset + effective_chunk_size]
+        params: list[Any] = []
+        values_sql: list[str] = []
+        param_idx = 1
+        for row in chunk:
+            if len(row) != len(columns):
+                raise ValueError(
+                    f"Bulk row for {table} has {len(row)} values; "
+                    f"expected {len(columns)}"
+                )
+            placeholders: list[str] = []
+            for column, value in zip(columns, row, strict=True):
+                cast = casts.get(column)
+                placeholder = f"${param_idx}"
+                if cast:
+                    placeholder = f"{placeholder}::{cast}"
+                placeholders.append(placeholder)
+                params.append(value)
+                param_idx += 1
+            values_sql.append(f"({', '.join(placeholders)})")
+
+        await conn.execute(
+            f"INSERT INTO {table_sql} ({columns_sql}) VALUES {', '.join(values_sql)}",
+            *params,
+        )
+
+
+async def _bulk_upsert_default_affordance_profiles(
+    conn: asyncpg.Connection,
+    rows: Sequence[ModelRow],
+) -> int:
+    """Seed derived retrieval affordances for freshly inserted Models.
+
+    The profile is utility-layer metadata and is inserted only when missing,
+    so future reinforcement is preserved and canonical Model truth is not
+    rewritten through this path.
+    """
+    if not rows:
+        return 0
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.retrieval_affordance_profiles')"
+    )
+    if table_name is None:
+        return 0
+
+    params: list[tuple[Any, ...]] = []
+    for row in rows:
+        try:
+            profile = derive_default_profile_from_model(row)
+        except Exception:
+            _log.warning(
+                "models.affordance_default_derive_failed",
+                model_id=str(row.id),
+                tenant_id=str(row.tenant_id),
+                exc_info=True,
+            )
+            continue
+        params.append(
+            (
+                profile.model_id,
+                profile.tenant_id,
+                list(profile.answers_question_primitives),
+                list(profile.supports_hypothesis_types),
+                list(profile.weakens_hypothesis_types),
+                list(profile.common_composition_types),
+                list(profile.action_affordances),
+                _jsonb(profile.activation_signatures),
+                _jsonb(profile.projection_policy),
+                float(profile.utility_score),
+                profile.decay_after,
+                profile.last_reinforced_at,
+            )
+        )
+    if not params:
+        return 0
+
+    await conn.executemany(
+        """
+        INSERT INTO retrieval_affordance_profiles (
+          model_id, tenant_id,
+          answers_question_primitives, supports_hypothesis_types,
+          weakens_hypothesis_types, common_composition_types,
+          action_affordances, activation_signatures, projection_policy,
+          utility_score, decay_after, last_reinforced_at,
+          last_updated_at
+        ) VALUES (
+          $1, $2,
+          $3::text[], $4::text[],
+          $5::text[], $6::text[],
+          $7::text[], $8::jsonb, $9::jsonb,
+          $10, $11, $12,
+          now()
+        )
+        ON CONFLICT (model_id) DO NOTHING
+        """,
+        params,
+    )
+    return len(params)
+
+
 def _clip_confidence(value: float) -> float:
     if value < _CONFIDENCE_MIN:
         return _CONFIDENCE_MIN
@@ -355,7 +581,7 @@ async def _expand_scope_entities_via_customer_commitments(
 
     A live customer memory often lands on the linked commitment ("Renew
     Globex contract") even when callers ask from the customer ("Globex").
-    This bridge keeps customer and commitment memory discoverable without
+    This linkage keeps customer and commitment memory discoverable without
     forcing the LLM to duplicate every scope perfectly.
     """
     if not scope_entities or len(scope_entities) != 1:
@@ -1040,6 +1266,322 @@ async def _sync_model_composition_members(
     )
 
 
+async def _bulk_sync_model_scope_sidecars(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> None:
+    actor_rows: list[tuple[UUID, UUID, UUID, str]] = []
+    entity_rows: list[tuple[UUID, UUID, str, UUID, str]] = []
+    seen_actor_rows: set[tuple[UUID, UUID]] = set()
+    seen_entity_rows: set[tuple[UUID, str, UUID]] = set()
+    for model in models:
+        for actor_id in model.scope_actors or []:
+            key = (model.id, actor_id)
+            if key in seen_actor_rows:
+                continue
+            seen_actor_rows.add(key)
+            actor_rows.append((model.id, model.tenant_id, actor_id, "model_scope"))
+        for raw in model.scope_entities or []:
+            if not isinstance(raw, dict):
+                continue
+            entity_type = raw.get("type")
+            entity_id = raw.get("id")
+            if not entity_type or entity_id is None:
+                continue
+            try:
+                entity_uuid = entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id))
+            except (ValueError, TypeError):
+                continue
+            key = (model.id, str(entity_type), entity_uuid)
+            if key in seen_entity_rows:
+                continue
+            seen_entity_rows.add(key)
+            entity_rows.append((
+                model.id,
+                model.tenant_id,
+                str(entity_type),
+                entity_uuid,
+                "model_scope",
+            ))
+    if actor_rows:
+        await _bulk_write_records(
+            conn,
+            "model_scope_actors",
+            records=actor_rows,
+            columns=["model_id", "tenant_id", "actor_id", "source"],
+        )
+    if entity_rows:
+        await _bulk_write_records(
+            conn,
+            "model_scope_entities",
+            records=entity_rows,
+            columns=["model_id", "tenant_id", "entity_type", "entity_id", "source"],
+        )
+
+
+async def _bulk_sync_model_composition_members(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> None:
+    rows: list[tuple[UUID, UUID, UUID, list[UUID], str]] = []
+    seen_rows: set[tuple[UUID, UUID]] = set()
+    for model in models:
+        proposition = model.proposition if isinstance(model.proposition, dict) else {}
+        grammar = derive_memory_grammar(proposition)
+        if grammar.claim_role != "situation":
+            continue
+        member_ids = [
+            member_id
+            for member_id in _uuid_list_from_json(proposition.get("member_model_ids"))
+            if member_id != model.id
+        ]
+        if len(member_ids) < 2:
+            continue
+        evidence_event_ids = _uuid_list_from_json(proposition.get("evidence_event_ids"))
+        for member_id in member_ids:
+            key = (model.id, member_id)
+            if key in seen_rows:
+                continue
+            seen_rows.add(key)
+            rows.append((
+                model.id,
+                model.tenant_id,
+                member_id,
+                evidence_event_ids,
+                "model_proposition",
+            ))
+    if rows:
+        await _bulk_write_records(
+            conn,
+            "model_composition_members",
+            records=rows,
+            columns=[
+                "composite_model_id",
+                "tenant_id",
+                "member_model_id",
+                "evidence_event_ids",
+                "source",
+            ],
+            casts={"evidence_event_ids": "uuid[]"},
+        )
+
+
+async def _bulk_insert_model_relations(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> None:
+    rows: list[tuple[Any, ...]] = []
+    seen_edges: set[tuple[UUID, UUID, UUID, str]] = set()
+    for model in models:
+        for source in model.supporting_model_ids or []:
+            if source == model.id:
+                continue
+            key = (model.tenant_id, source, model.id, "supports")
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            rows.append(_bulk_edge_row(
+                tenant_id=model.tenant_id,
+                source=source,
+                target=model.id,
+                kind="supports",
+                created_by_event_id=model.born_from_event_id,
+                evidence_model_id=source,
+            ))
+        for source in model.contributing_models or []:
+            if source == model.id:
+                continue
+            key = (
+                model.tenant_id,
+                source,
+                model.id,
+                "contributes_to_resolution",
+            )
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            rows.append(_bulk_edge_row(
+                tenant_id=model.tenant_id,
+                source=source,
+                target=model.id,
+                kind="contributes_to_resolution",
+                created_by_event_id=model.born_from_event_id,
+                evidence_model_id=source,
+            ))
+    if not rows:
+        return
+    await _bulk_write_records(
+        conn,
+        "model_edges",
+        records=rows,
+        columns=[
+            "id",
+            "tenant_id",
+            "source_model_id",
+            "target_model_id",
+            "edge_kind",
+            "weight",
+            "metadata",
+            "status",
+            "detected_by",
+            "created_by_event_id",
+            "confidence",
+            "evidence_event_ids",
+            "evidence_model_ids",
+            "explanation",
+            "review_status",
+            "last_confirmed_at",
+            "confirmed_count",
+        ],
+        casts={
+            "metadata": "jsonb",
+            "evidence_event_ids": "uuid[]",
+            "evidence_model_ids": "uuid[]",
+        },
+    )
+
+
+def _bulk_edge_row(
+    *,
+    tenant_id: UUID,
+    source: UUID,
+    target: UUID,
+    kind: str,
+    created_by_event_id: UUID | None,
+    evidence_model_id: UUID,
+) -> tuple[Any, ...]:
+    confirmed_at = datetime.now(timezone.utc)
+    return (
+        uuid7(),
+        tenant_id,
+        source,
+        target,
+        kind,
+        None,
+        _jsonb({}),
+        "active",
+        "llm_explicit",
+        created_by_event_id,
+        1.0,
+        [created_by_event_id] if created_by_event_id is not None else [],
+        [evidence_model_id],
+        None,
+        "accepted",
+        confirmed_at,
+        1,
+    )
+
+
+async def _bulk_emit_model_state_changes(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> None:
+    rows: list[tuple[Any, ...]] = []
+    events: list[NewObservationEvent] = []
+    occurred_at = datetime.now(timezone.utc)
+    for model in models:
+        metadata = {
+            "proposition_kind": model.proposition_kind,
+            "claim_role": model.claim_role,
+            "abstraction_level": model.abstraction_level,
+            "confidence": model.confidence,
+        }
+        content = {
+            "entity_id": str(model.id),
+            "state_change_kind": "insert_model",
+            "entity_kind": "model",
+            "metadata": metadata,
+        }
+        obs_id = uuid7()
+        rows.append((
+            obs_id,
+            model.tenant_id,
+            occurred_at,
+            "state_change",
+            STATE_CHANGE_CHANNEL,
+            _jsonb(content),
+            render_state_change_text("insert_model", model.id, "model", metadata),
+            False,
+            STATE_CHANGE_TRUST_TIER,
+            model.born_from_event_id,
+            _jsonb([]),
+        ))
+        events.append(NewObservationEvent(
+            id=obs_id,
+            kind="state_change",
+            tenant_id=model.tenant_id,
+            source_channel=STATE_CHANGE_CHANNEL,
+        ))
+    if rows:
+        await _bulk_write_records(
+            conn,
+            "observations",
+            records=rows,
+            columns=[
+                "id",
+                "tenant_id",
+                "occurred_at",
+                "kind",
+                "source_channel",
+                "content",
+                "content_text",
+                "embedding_pending",
+                "trust_tier",
+                "cause_id",
+                "entities_mentioned",
+            ],
+            casts={
+                "content": "jsonb",
+                "entities_mentioned": "jsonb",
+            },
+        )
+    for event in events:
+        schedule_notify(event)
+
+
+async def _bulk_emit_model_audits(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> None:
+    from services.think.audit import (
+        CAUSE_CREATE,
+        model_state_snapshot,
+    )
+
+    rows: list[tuple[Any, ...]] = []
+    for model in models:
+        snapshot = model_state_snapshot(model)
+        rows.append((
+            model.id,
+            model.tenant_id,
+            model.born_from_event_id,
+            CAUSE_CREATE,
+            _jsonb(snapshot),
+            sorted(snapshot.keys()),
+            [],
+        ))
+    if rows:
+        await _bulk_write_records(
+            conn,
+            "audit_events",
+            records=rows,
+            columns=[
+                "model_id",
+                "tenant_id",
+                "cause_id",
+                "cause_type",
+                "new_state",
+                "changed_fields",
+                "source_model_ids",
+            ],
+            casts={
+                "new_state": "jsonb",
+                "changed_fields": "text[]",
+                "source_model_ids": "uuid[]",
+            },
+        )
+
+
 async def _read_array_part(
     conn: asyncpg.Connection,
     model_id: UUID,
@@ -1160,10 +1702,18 @@ def _hydrate_row(record: asyncpg.Record) -> ModelRow:
                 pass
     emb = raw.get("embedding")
     if emb is not None and not isinstance(emb, list):
-        try:
-            raw["embedding"] = [float(x) for x in emb]
-        except TypeError:
-            pass
+        if isinstance(emb, (bytes, bytearray)):
+            emb = emb.decode()
+        if isinstance(emb, str):
+            try:
+                raw["embedding"] = json.loads(emb)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        else:
+            try:
+                raw["embedding"] = [float(x) for x in emb]
+            except (TypeError, ValueError):
+                pass
     try:
         return ModelRow.model_validate(raw)
     except Exception as e:
@@ -1226,6 +1776,21 @@ class ModelsRepo:
           - ValidationError (proposition schema / scope actor missing /
             embedding shape wrong)
         """
+        constructed = construct_model(proposed)
+        return await self._insert_constructed(
+            constructed,
+            conn=conn,
+            apply_confidence_calibration=apply_confidence_calibration,
+        )
+
+    async def _insert_constructed(
+        self,
+        constructed: ConstructedModel,
+        *,
+        conn: asyncpg.Connection | None,
+        apply_confidence_calibration: bool,
+    ) -> ModelRow:
+        proposed = constructed.proposed
         # -- 1. Falsifier adequacy if confidence > 0.7 -----------------
         if proposed.confidence > _FALSIFIER_REQUIRED_ABOVE:
             ok, reason = is_adequate_falsifier(proposed.falsifier)
@@ -1236,17 +1801,9 @@ class ModelsRepo:
                     confidence=proposed.confidence,
                 )
 
-        # -- 2. Validate proposition JSON ------------------------------
-        canonical_prop = canonicalize_proposition(proposed.proposition)
-        defaults_entry = {
-            "proposition": canonical_prop,
-            "natural": proposed.natural,
-            "falsifier": proposed.falsifier,
-        }
-        ensure_situation_compositional_defaults(defaults_entry)
-        validate_proposition(canonical_prop)
-        proposed = proposed.model_copy(update={"proposition": canonical_prop})
-        prop_kind: PropositionKind = canonical_prop["kind"]  # type: ignore[assignment]
+        # -- 2. Use constructed canonical Model draft -------------------
+        proposed = constructed.proposed
+        prop_kind: PropositionKind = constructed.core.proposition["kind"]  # type: ignore[assignment]
 
         # confidence_at_assertion is the pre-calibration number. We
         # preserve it immutably (clipped into bounds to satisfy the
@@ -1275,6 +1832,286 @@ class ModelsRepo:
                     conf_at_assertion,
                     apply_confidence_calibration=apply_confidence_calibration,
                 )
+
+    async def insert_many(
+        self,
+        proposed: Sequence[ModelCreate],
+        *,
+        conn: asyncpg.Connection | None = None,
+        apply_confidence_calibration: bool = True,
+    ) -> list[ModelRow]:
+        """Insert a dependency-safe batch of Models.
+
+        The batch planner pre-constructs every Model, assigns stable ids,
+        rejects intra-batch cycles before any write, and orders inserts so
+        referenced Models exist before dependents. Each row still goes
+        through the canonical ``insert`` pipeline, preserving sidecars,
+        typed edges, audit events, state_change observations, topology,
+        and recommendation behavior.
+
+        Returned rows follow the caller's original input order.
+        """
+        if not proposed:
+            return []
+
+        plan = plan_model_batch(list(proposed))
+
+        async def _run(c: asyncpg.Connection) -> list[ModelRow]:
+            if not self._batch_requires_serial_insert(plan):
+                return await self._insert_many_bulk(
+                    plan,
+                    conn=c,
+                    apply_confidence_calibration=apply_confidence_calibration,
+                )
+
+            rows_by_id: dict[UUID, ModelRow] = {}
+            for stratum in plan.strata:
+                for planned in stratum:
+                    row = await self._insert_constructed(
+                        planned.constructed,
+                        conn=c,
+                        apply_confidence_calibration=apply_confidence_calibration,
+                    )
+                    rows_by_id[row.id] = row
+            return [
+                rows_by_id[planned.id]
+                for planned in sorted(plan.models, key=lambda item: item.index)
+            ]
+
+        if conn is not None:
+            return await _run(conn)
+        async with self._require_pool().acquire() as owned:
+            async with owned.transaction():
+                return await _run(owned)
+
+    def _batch_requires_serial_insert(self, plan: ModelBatchPlan) -> bool:
+        """Return True when batch rows need single-Model side effects."""
+        for planned in plan.models:
+            if planned.constructed.core.grammar.claim_role == "recommendation":
+                return True
+        return False
+
+    async def _insert_many_bulk(
+        self,
+        plan: ModelBatchPlan,
+        *,
+        conn: asyncpg.Connection,
+        apply_confidence_calibration: bool,
+    ) -> list[ModelRow]:
+        """Set-oriented insert path for ordinary Model batches.
+
+        This keeps the insert-many contract honest while removing the
+        per-row SQL chatter that made large Model batches unusably slow.
+        """
+        await _ensure_vector_codec(conn)
+        await self._validate_batch_scope_actors(conn, plan)
+
+        rows_by_id: dict[UUID, ModelRow] = {}
+        for stratum in plan.strata:
+            prepared = await self._prepare_bulk_insert_stratum(
+                conn,
+                stratum,
+                apply_confidence_calibration=apply_confidence_calibration,
+            )
+            if not prepared:
+                continue
+            await _bulk_write_records(
+                conn,
+                "models",
+                records=[item["params"] for item in prepared],
+                columns=_BULK_MODEL_COPY_COLUMNS,
+                casts=_BULK_MODEL_VALUE_CASTS,
+            )
+            hydrated = [item["row"] for item in prepared]
+            rows_by_id.update((row.id, row) for row in hydrated)
+
+            await _bulk_sync_model_scope_sidecars(conn, hydrated)
+            await _bulk_sync_model_composition_members(conn, hydrated)
+            await _bulk_insert_model_relations(conn, hydrated)
+            await _bulk_upsert_default_affordance_profiles(conn, hydrated)
+            await _bulk_emit_model_state_changes(conn, hydrated)
+            await _bulk_emit_model_audits(conn, hydrated)
+
+            if self._run_topology_on_insert:
+                for row in hydrated:
+                    try:
+                        async with conn.transaction():
+                            await _TOPOLOGY.generate_for_model(conn, model=row)
+                    except Exception:
+                        pass
+
+        return [
+            rows_by_id[planned.id]
+            for planned in sorted(plan.models, key=lambda item: item.index)
+        ]
+
+    async def _validate_batch_scope_actors(
+        self,
+        conn: asyncpg.Connection,
+        plan: ModelBatchPlan,
+    ) -> None:
+        actors_by_tenant: dict[UUID, set[UUID]] = {}
+        for planned in plan.models:
+            proposed = planned.constructed.proposed
+            if proposed.scope_actors:
+                actors_by_tenant.setdefault(proposed.tenant_id, set()).update(
+                    proposed.scope_actors
+                )
+        for tenant_id, actor_ids in actors_by_tenant.items():
+            existing = await conn.fetch(
+                """
+                SELECT id FROM actors
+                WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+                """,
+                tenant_id,
+                list(actor_ids),
+            )
+            existing_ids = {row["id"] for row in existing}
+            missing = sorted(actor_ids - existing_ids, key=str)
+            if missing:
+                raise ValidationError(
+                    f"scope_actors reference {len(missing)} non-existent actor(s)",
+                    missing=[str(actor_id) for actor_id in missing],
+                )
+
+    async def _prepare_bulk_insert_stratum(
+        self,
+        conn: asyncpg.Connection,
+        stratum: Sequence[PlannedModel],
+        *,
+        apply_confidence_calibration: bool,
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for planned in stratum:
+            constructed = planned.constructed
+            proposed = constructed.proposed
+
+            if proposed.confidence > _FALSIFIER_REQUIRED_ABOVE:
+                ok, reason = is_adequate_falsifier(proposed.falsifier)
+                if not ok:
+                    raise FalsifierInadequateError(
+                        reason or "falsifier inadequate",
+                        falsifier=proposed.falsifier,
+                        confidence=proposed.confidence,
+                    )
+
+            prop_kind: PropositionKind = constructed.core.proposition["kind"]  # type: ignore[assignment]
+            if proposed.supporting_model_ids:
+                await _check_no_support_cycle(
+                    conn,
+                    new_model_id=planned.id,
+                    new_supports=list(proposed.supporting_model_ids),
+                )
+
+            conf_at_assertion = _clip_confidence(proposed.confidence_at_assertion)
+            if apply_confidence_calibration:
+                calibrated_conf = await apply_calibration(
+                    proposed.confidence,
+                    proposed.scope_actors,
+                    prop_kind,
+                    tenant_id=proposed.tenant_id,
+                    conn=conn,
+                )
+            else:
+                calibrated_conf = proposed.confidence
+            final_conf = _clip_confidence(calibrated_conf)
+
+            embedding = await self._resolve_embedding(proposed)
+            if len(embedding) != EMBEDDING_DIM:
+                raise ValidationError(
+                    f"embedding dim {len(embedding)} != {EMBEDDING_DIM}",
+                    got=len(embedding),
+                    expected=EMBEDDING_DIM,
+                )
+            topo_anchor: list[float] | None = None
+            try:
+                topo_anchor = content_anchor(embedding)
+            except Exception:
+                topo_anchor = None
+
+            domain_tags = list(proposed.domain_tags or constructed.core.grammar.domain_tags)
+            created_at = datetime.now(timezone.utc)
+            row = ModelRow(
+                id=planned.id,
+                tenant_id=proposed.tenant_id,
+                born_from_event_id=proposed.born_from_event_id,
+                proposition=proposed.proposition,
+                natural=proposed.natural,
+                embedding=embedding,
+                scope_actors=list(proposed.scope_actors),
+                scope_entities=list(proposed.scope_entities),
+                scope_temporal=dict(proposed.scope_temporal),
+                confidence=final_conf,
+                activation=1.0,
+                falsifier=proposed.falsifier,
+                signal_readings=list(proposed.signal_readings),
+                reading_contestable=proposed.reading_contestable,
+                supporting_event_ids=list(proposed.supporting_event_ids),
+                supporting_model_ids=list(proposed.supporting_model_ids),
+                evidential_weight=proposed.evidential_weight,
+                status="active",
+                archived_at=None,
+                archive_reason=None,
+                created_at=created_at,
+                last_retrieved_at=None,
+                retrieval_count=0,
+                evaluate_at=proposed.evaluate_at,
+                resolution_criteria=proposed.resolution_criteria,
+                contributing_models=list(proposed.contributing_models),
+                visible_to_subjects=proposed.visible_to_subjects,
+                proposition_kind=str(prop_kind),
+                claim_role=constructed.core.grammar.claim_role,
+                abstraction_level=constructed.core.grammar.abstraction_level,
+                time_mode=constructed.core.grammar.time_mode,
+                modality=constructed.core.grammar.modality,
+                polarity=constructed.core.grammar.polarity,
+                domain_tags=domain_tags,
+                memory_grammar_version="v1",
+                confirmed_count=0,
+                contested_count=0,
+                last_confirmed_at=None,
+                confidence_at_assertion=conf_at_assertion,
+                resolved_at=None,
+                resolution_outcome=None,
+                activation_coefficient=proposed.activation_coefficient,
+                target_actor_id=None,
+                caused_act_change_id=None,
+            )
+            prepared.append({
+                "id": planned.id,
+                "row": row,
+                "params": (
+                    planned.id,
+                    proposed.tenant_id,
+                    proposed.born_from_event_id,
+                    _jsonb(proposed.proposition),
+                    proposed.natural,
+                    embedding,
+                    list(proposed.scope_actors),
+                    _jsonb(proposed.scope_entities),
+                    _jsonb(proposed.scope_temporal),
+                    final_conf,
+                    1.0,
+                    _jsonb(proposed.falsifier) if proposed.falsifier is not None else None,
+                    _jsonb(proposed.signal_readings),
+                    proposed.reading_contestable,
+                    list(proposed.supporting_event_ids),
+                    list(proposed.supporting_model_ids),
+                    proposed.evidential_weight,
+                    "active",
+                    created_at,
+                    proposed.evaluate_at,
+                    _jsonb(proposed.resolution_criteria) if proposed.resolution_criteria is not None else None,
+                    list(proposed.contributing_models),
+                    proposed.visible_to_subjects,
+                    conf_at_assertion,
+                    proposed.activation_coefficient,
+                    domain_tags,
+                    topo_anchor,
+                    datetime.now(timezone.utc) if topo_anchor is not None else None,
+                ),
+            })
+        return prepared
 
     async def _insert_core(
         self,
@@ -1450,6 +2287,8 @@ class ModelsRepo:
                 created_by_event_id=hydrated.born_from_event_id,
                 update_arrays=False,
             )
+
+        await _bulk_upsert_default_affordance_profiles(conn, [hydrated])
 
         # 7c-pre. Positional topo_embedding (migration 0032). Project
         # the 768-d content embedding deterministically into the 128-d

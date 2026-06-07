@@ -246,7 +246,7 @@ async def test_think_persists_context_use_and_applies_context_edge(
             tenant_id=tenant,
             detected_by="manual",
             confidence=0.86,
-            explanation="Bridge and target share the same hidden issue.",
+            explanation="Connecting evidence and target share the same hidden issue.",
         )
 
     trigger_id = uuid7()

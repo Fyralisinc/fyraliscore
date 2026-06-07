@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 import asyncpg
 import pytest
 
+from lib.shared.types import ModelCreate
+from services.models.repo import ModelsRepo
+from services.retrieval.assembler import AccessContext, assemble_context
 from services.retrieval.primary import TriggerContext, primary_retrieve
 from services.retrieval.second_pass import second_pass_expand
 
@@ -139,3 +142,125 @@ async def test_second_pass_reconsolidates_new_models_only(
                 f"model {mid} activation bumped twice "
                 f"({by_id[mid]} -> {after_by_id[mid]})"
             )
+
+
+async def test_second_pass_dependency_evidence_survives_context_assembly(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(
+        tx_conn,
+        tenant,
+        pool=fresh_db,
+        n_observations=80,
+        n_models=90,
+        n_commitments=20,
+        n_goals=8,
+        n_customers=4,
+    )
+    seed_commitment_id = fs.commitment_ids[10]
+    dependency_commitment_id = fs.commitment_ids[9]
+    existing_dependency_model_ids = fs.scope_by_commitment.get(
+        dependency_commitment_id,
+        [],
+    )
+    if existing_dependency_model_ids:
+        await tx_conn.execute(
+            """
+            UPDATE models
+            SET status = 'archived',
+                archived_at = now(),
+                archive_reason = 'second-pass test narrows dependency evidence'
+            WHERE id = ANY($1::uuid[])
+            """,
+            existing_dependency_model_ids,
+        )
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    for idx in range(8):
+        await repo.insert(
+            ModelCreate(
+                tenant_id=tenant,
+                born_from_event_id=fs.observation_ids[idx],
+                proposition={
+                    "kind": "state",
+                    "subject": "acme-onboarding",
+                    "assertion": f"seed-side local status filler {idx}",
+                },
+                natural=f"Acme onboarding seed-side local status filler {idx}",
+                embedding=make_embedding(f"seed-side local status filler {idx}"),
+                scope_entities=[
+                    {"type": "commitment", "id": str(seed_commitment_id)}
+                ],
+                scope_temporal={"type": "now"},
+                confidence=0.65,
+                confidence_at_assertion=0.65,
+            ),
+            conn=tx_conn,
+        )
+    dependency_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[20],
+            proposition={
+                "kind": "state",
+                "subject": "acme-onboarding",
+                "assertion": (
+                    "security review ownership must be assigned before "
+                    "procurement can move forward"
+                ),
+            },
+            natural=(
+                "Acme onboarding cannot move forward until security review "
+                "ownership is assigned before procurement."
+            ),
+            embedding=make_embedding(
+                "Acme security review ownership before procurement"
+            ),
+            scope_entities=[
+                {"type": "commitment", "id": str(dependency_commitment_id)}
+            ],
+            scope_temporal={"type": "now"},
+            confidence=0.7,
+            confidence_at_assertion=0.7,
+        ),
+        conn=tx_conn,
+    )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[
+            {"type": "commitment", "id": str(seed_commitment_id)}
+        ],
+        seed_natural_text=(
+            "What step is missing from Acme onboarding before procurement "
+            "can move forward?"
+        ),
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding(
+            "Acme onboarding missing step before procurement"
+        ),
+        max_hops=0,
+    )
+    first = await primary_retrieve(trigger, tx_conn, top_n=30)
+    first_ids = {model.id for model in first.models}
+    assert dependency_model.id not in first_ids
+
+    expanded = await second_pass_expand(
+        first,
+        ["dependency_context"],
+        tx_conn,
+    )
+    expanded_ids = {model.id for model in expanded.models}
+    assert dependency_model.id in expanded_ids
+
+    bundle = await assemble_context(
+        expanded,
+        AccessContext(tenant_id=tenant, requestor_actor_id=None),
+        tx_conn,
+        budget_models=8,
+    )
+    assert dependency_model.id in {model.id for model in bundle.models}

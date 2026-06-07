@@ -99,6 +99,49 @@ services:
       OLLAMA_URL: http://ollama:11434
     env_file: .env.production
 
+  sage_structural_features_worker:
+    build: .
+    container_name: company_os_sage_structural_features_worker
+    command: python scripts/run_sage_structural_features_worker.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      SAGE_STRUCTURAL_FEATURES_INTERVAL_S: "3600"
+    env_file: .env.production
+
+  sage_topology_optimizer_worker:
+    build: .
+    container_name: company_os_sage_topology_optimizer_worker
+    command: python scripts/run_sage_topology_optimizer_worker.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      SAGE_TOPOLOGY_OPTIMIZER_INTERVAL_S: "60"
+      SAGE_TOPOLOGY_OPTIMIZER_LOOKBACK_HOURS: "24"
+      SAGE_TOPOLOGY_OPTIMIZER_LIMIT: "50"
+    env_file: .env.production
+
+  relationship_ontology_proposals_worker:
+    build: .
+    container_name: company_os_relationship_ontology_proposals_worker
+    command: python scripts/run_relationship_ontology_proposals_worker.py
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_INTERVAL_S: "900"
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_MIN_EXAMPLES: "3"
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_LIMIT_PER_TENANT: "500"
+    env_file: .env.production
+
   ui:
     build:
       context: .

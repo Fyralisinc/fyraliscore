@@ -1555,6 +1555,7 @@ class _CodexAppServerClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_codex_app_server_stream_limit(),
         )
         self._stderr_tail.clear()
         self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -1696,6 +1697,13 @@ def _codex_app_server_error_requires_restart(exc: BaseException) -> bool:
         "empty response from codex app-server",
     )
     return any(marker in msg for marker in restart_markers)
+
+
+def _codex_app_server_stream_limit() -> int:
+    raw = os.environ.get("CODEX_APP_SERVER_STREAM_LIMIT_BYTES")
+    if raw:
+        return max(65_536, int(raw))
+    return 16 * 1024 * 1024
 
 
 _CODEX_APP_SERVER_CLIENT: _CodexAppServerClient | None = None

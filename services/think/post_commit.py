@@ -170,6 +170,7 @@ def _summarize_op_count(diff: ValidatedDiff) -> dict[str, int]:
     return {
         "claim_ops": len(diff.claim_ops),
         "edge_ops": len(diff.edge_ops),
+        "ontology_gap_ops": len(diff.ontology_gap_ops),
         "act_ops": len(diff.act_ops),
         "resource_ops": len(diff.resource_ops),
     }
@@ -198,6 +199,11 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
     for op in diff.edge_ops:
         _add("model", op.source_model_id)
         _add("model", op.target_model_id)
+    for op in diff.ontology_gap_ops:
+        _add("model", op.source_model_id)
+        _add("model", op.target_model_id)
+        for model_id in op.evidence_model_ids:
+            _add("model", model_id)
     for op in diff.act_ops:
         ent = op.entity or {}
         eid = ent.get("id")

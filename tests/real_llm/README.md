@@ -4,7 +4,7 @@
 
 This suite exercises Company OS end-to-end against a configured real LLM across
 six hand-authored company scenarios. It is the only test layer that drives
-the cognitive path (Ingestion → Think → Acts → Bridge) with a non-deterministic
+the cognitive path (Ingestion → Think → Acts → customer links) with a non-deterministic
 model rather than a script. Coverage is intentionally narrow — six scenarios,
 regular behavioural tests plus opt-in large-corpus durability runs — so iteration
 cost stays low. Tests use tolerance bands and existential assertions rather
@@ -61,12 +61,11 @@ tests/real_llm/
 ├── tests/
 │   ├── test_smoke.py                — 6 cheap scenario sanity checks
 │   ├── test_entity_resolver_real_llm.py — DeepSeek alias resolution from signal text
-│   ├── test_scale_chaos_end_to_end.py — scenario_04 alias -> Think -> Bridge proof
+│   ├── test_scale_chaos_end_to_end.py — scenario_04 alias -> Think -> customer-link proof
 │   ├── test_deep_durability_end_to_end.py — opt-in every-signal durability runs
 │   ├── test_ingestion_real_llm.py   — ~4 tests
 │   ├── test_think_reasoning.py      — ~8 tests (the expensive bulk)
 │   ├── test_acts_cascade.py         — ~5 tests
-│   ├── test_bridge_queries.py       — ~4 tests
 │   ├── test_cross_component.py      — ~4 tests (end-to-end flows)
 │   └── test_scale_chaos_ingestion.py — opt-in full scenario_04 ingestion
 ├── cache/                       — gitignored; per-epoch cached LLM responses
@@ -139,7 +138,7 @@ end-to-end validation. They cover industrial safety/telemetry/supplier risk and
 fintech ledger/KYC/fraud/regulatory risk respectively. Their full E2E test
 injects every signal, resolves actual-content aliases with DeepSeek, drains
 Think, checks context-use telemetry, verifies Models/state changes, and confirms
-Bridge customer surfaces.
+customer-link surfaces.
 
 To inject the entire corpus without running Think/LLM reasoning:
 

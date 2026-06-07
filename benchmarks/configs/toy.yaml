@@ -1,0 +1,17 @@
+benchmark: toy_memory
+split: smoke
+max_cases: 3
+systems:
+  - lexical_fixed_answerer
+answerer:
+  model: fixed_extract_answerer_v1
+  temperature: 0
+packet_budgets:
+  - 5000
+metrics:
+  - accuracy
+  - evidence_recall_at_10
+  - token_cost
+  - latency_ms
+  - abstention_accuracy
+

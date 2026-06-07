@@ -133,6 +133,10 @@ async def test_sage_100_large_model_e2e_stress(
                 seeded["hub_model_id"],
             }
             irrelevant_selected = selected_attr_ids - expected_ids
+            counter_cards = [
+                card for card in result.evidence_cards
+                if card.contradicts_hypotheses or card.weakens_hypotheses
+            ]
 
             assert seeded["target_model_id"] in (
                 retrieved_model_ids | selected_activation_ids
@@ -145,6 +149,7 @@ async def test_sage_100_large_model_e2e_stress(
                 case.expected_token in card.summary.casefold()
                 for card in result.evidence_cards
             ), case.name
+            assert counter_cards, f"{case.name}: no counterevidence survived"
             assert len(result.retrieval_result.models) <= 48
             assert len(irrelevant_selected) <= 12, (
                 case.name,
@@ -156,6 +161,7 @@ async def test_sage_100_large_model_e2e_stress(
                 "attributions": float(len(attribution_rows)),
                 "irrelevant_selected": float(len(irrelevant_selected)),
                 "evidence_cards": float(len(result.evidence_cards)),
+                "counterevidence_cards": float(len(counter_cards)),
             })
 
     assert len(metrics) == case_count
@@ -172,10 +178,14 @@ async def test_sage_100_large_model_e2e_stress(
         "evidence_cards_p50": statistics.median([
             m["evidence_cards"] for m in metrics
         ]),
+        "counterevidence_cards_p50": statistics.median([
+            m["counterevidence_cards"] for m in metrics
+        ]),
     }
     print("SAGE_100_LARGE_E2E_METRICS", json.dumps(summary, sort_keys=True))
     assert summary["irrelevant_selected_p95"] <= 8
     assert summary["evidence_cards_p50"] <= 16
+    assert summary["counterevidence_cards_p50"] >= 1
     assert summary["elapsed_p95"] < 15.0
 
 
@@ -230,7 +240,9 @@ async def _seed_stress_corpus(
 ) -> dict[str, UUID]:
     now = datetime.now(timezone.utc)
     target_observation_id = uuid7()
+    falsifier_observation_id = uuid7()
     noise_observation_id = uuid7()
+    falsifier_claim = _stress_falsifier_claim(case)
     await conn.executemany(
         """
         INSERT INTO observations (
@@ -255,6 +267,18 @@ async def _seed_stress_corpus(
                 json.dumps({"content_text": case.target_claim}),
                 case.target_claim,
                 f"target-{target_observation_id}",
+                json.dumps([
+                    {"type": "customer", "id": case.customer},
+                    {"type": "system", "id": case.system},
+                ]),
+            ),
+            (
+                falsifier_observation_id,
+                tenant_id,
+                now,
+                json.dumps({"content_text": falsifier_claim}),
+                falsifier_claim,
+                f"falsifier-{falsifier_observation_id}",
                 json.dumps([
                     {"type": "customer", "id": case.customer},
                     {"type": "system", "id": case.system},
@@ -289,8 +313,25 @@ async def _seed_stress_corpus(
             case.target_claim,
             scope_entities,
             scope_temporal,
-            [target_observation_id],
+            [target_observation_id, falsifier_observation_id],
             confidence=0.93,
+            signal_readings=[
+                {
+                    "kind": "observe",
+                    "event_id": str(target_observation_id),
+                    "weight": 1.0,
+                },
+                {
+                    "kind": "contradiction",
+                    "event_id": str(falsifier_observation_id),
+                    "weight": -0.95,
+                    "reason": "fresh adversarial falsifier",
+                },
+            ],
+            falsifier={
+                "kind": "observation_pattern",
+                "pattern": "not blocked",
+            },
         ),
         _model_row(
             bridge_model_id,
@@ -359,7 +400,7 @@ async def _seed_stress_corpus(
                 $4::jsonb, $5, $6,
                 '{}'::uuid[], $7::jsonb, $8::jsonb,
                 $9, $9, 1.0,
-                NULL, $10::jsonb,
+                $12::jsonb, $10::jsonb,
                 $11::uuid[], '{}'::uuid[],
                 'active'
             )
@@ -435,10 +476,18 @@ async def _seed_stress_corpus(
     )
     return {
         "target_observation_id": target_observation_id,
+        "falsifier_observation_id": falsifier_observation_id,
         "target_model_id": target_model_id,
         "bridge_model_id": bridge_model_id,
         "hub_model_id": hub_model_id,
     }
+
+
+def _stress_falsifier_claim(case: StressCase) -> str:
+    return (
+        f"{case.customer} {case.system} is not blocked; "
+        f"the prior risk is resolved by {case.expected_token}."
+    )
 
 
 def _profile_row(

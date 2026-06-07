@@ -182,27 +182,40 @@ class DiscoveryShortcutsRepo:
         limit: int = 10,
         conn: asyncpg.Connection | None = None,
     ) -> list[DiscoveryShortcut]:
-        """Return shortcuts whose `from_signature @> $signature` and
+        """Return shortcuts compatible with the probe signature and
         whose `expires_at` (if set) is in the future, sorted by
         `utility_score DESC`.
 
-        Containment direction: we look for shortcuts whose signature
-        is a *superset* of (contains) the probe. Concretely, if a
+        We accept both containment directions. If a
         shortcut was learned for
         ``{question_primitive: DEPENDENCY, entities: [SSO]}`` then a
         probe like ``{question_primitive: DEPENDENCY}`` will surface
-        it, because the stored signature contains the probe. This is
-        the right direction: more specific learned shortcuts answer
-        more general probes.
+        it. Conversely, if a shortcut was learned for the broader
+        ``{signal_type: T1, question_primitive: DEPENDENCY}``, then a
+        later probe with extra cue entities should also surface it.
         """
         sig = _normalize_signature(signature)
         sql = f"""
-            SELECT {_SELECT_COLS_SQL}
+            SELECT {_SELECT_COLS_SQL},
+                   CASE
+                     WHEN from_signature @> $2::jsonb THEN 2
+                     WHEN $2::jsonb @> from_signature THEN 1
+                     ELSE 0
+                   END AS match_rank
               FROM discovery_shortcuts
              WHERE tenant_id = $1
-               AND from_signature @> $2::jsonb
+               AND (
+                 from_signature @> $2::jsonb
+                 OR $2::jsonb @> from_signature
+               )
                AND (expires_at IS NULL OR expires_at > now())
-          ORDER BY utility_score DESC, updated_at DESC
+          ORDER BY match_rank DESC,
+                   (
+                     SELECT count(*)
+                     FROM jsonb_object_keys(from_signature)
+                   ) DESC,
+                   utility_score DESC,
+                   updated_at DESC
              LIMIT $3
         """
         ctx = await self._acquire(conn)

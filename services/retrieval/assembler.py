@@ -17,7 +17,7 @@ Converts a RetrievalResult into a ContextBundle:
         * acts          ≤ 10 (across goals + commitments + decisions
                              combined, deviation (c) documented below)
         * resources     ≤ 5
-  - Attaches a bridge_context dict if any commitment has
+  - Attaches a customer_context dict if any commitment has
     `external_counterparty_ref` set.
 
 Compression ordering (deviation (c) BUILD-LOG):
@@ -28,7 +28,7 @@ Compression ordering (deviation (c) BUILD-LOG):
     10 by last_state_change_at / created_at descending. The cap of 10
     is per BUILD-PLAN (not 10 per kind).
   - Resources — prefer those with an active customer_commitments
-    linkage (hit the Bridge spine first); then by last_updated_at
+    linkage first; then by last_updated_at
     descending.
 
 MMR diversity (RA-4): `mmr_select(items_with_scores, budget_tokens,
@@ -395,7 +395,7 @@ class ContextBundle:
     The caller-facing return. Size bounds are hard caps (not target
     budgets); items over the cap are dropped (ordered by score).
 
-    `bridge_context` is a dict of customer_resource_id → Bridge summary
+    `customer_context` is a dict of customer_resource_id → customer summary
     OR None when no commitment in `acts_summary` has an
     `external_counterparty_ref`.
 
@@ -414,7 +414,7 @@ class ContextBundle:
         default_factory=lambda: {"goals": [], "commitments": [], "decisions": []}
     )
     resources_summary: list[ResourceRow] = field(default_factory=list)
-    bridge_context: dict[str, Any] | None = None
+    customer_context: dict[str, Any] | None = None
     topology_context: dict[str, Any] | None = None
     access_redactions: int = 0
     notes: dict[str, Any] = field(default_factory=dict)
@@ -499,19 +499,18 @@ async def _filter_models_via_db(
 
 
 # ---------------------------------------------------------------------
-# Bridge traversal
+# Customer-commitment traversal
 # ---------------------------------------------------------------------
 
 
-async def _compute_bridge_context(
+async def _compute_customer_context(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     commitments: list[CommitmentRow],
 ) -> dict[str, Any] | None:
     """
     For each Commitment with `external_counterparty_ref` set, compute
-    the Bridge summary: revenue_at_risk for that customer + list of
-    at-risk commitment ids.
+    the customer summary: linked commitments and at-risk commitment ids.
 
     Returns None if no commitment has a counterparty ref.
     """
@@ -555,28 +554,15 @@ async def _compute_bridge_context(
     if not customer_commits:
         return None
 
-    # For each customer, compute revenue_at_risk. Import the bridge
-    # primitive lazily to avoid circular deps.
-    from services.resources.bridge import (
-        AT_RISK_COMMITMENT_STATES,
-        revenue_at_risk_for_customer,
-    )
-
     summaries: list[dict[str, Any]] = []
     for customer_id, cids in customer_commits.items():
-        try:
-            rar = await revenue_at_risk_for_customer(customer_id, conn=conn)
-        except Exception:
-            rar = None
-        # At-risk commitments among those linked to the customer.
         at_risk: list[UUID] = []
         for c in commitments:
-            if c.id in cids and c.state in AT_RISK_COMMITMENT_STATES:
+            if c.id in cids and c.state in {"blocked", "paused", "doneunverified"}:
                 at_risk.append(c.id)
         summaries.append(
             {
                 "customer_resource_id": customer_id,
-                "revenue_at_risk": str(rar) if rar is not None else None,
                 "linked_commitment_ids": [str(x) for x in cids],
                 "at_risk_commitment_ids": [str(x) for x in at_risk],
             }
@@ -798,8 +784,8 @@ async def assemble_context(
         )
     resources_cap = res_tenant[:budget_resources]
 
-    # --- Bridge context ---
-    bridge_context = await _compute_bridge_context(
+    # --- Customer context ---
+    customer_context = await _compute_customer_context(
         conn,
         access_context.tenant_id,
         acts_cap["commitments"],
@@ -847,7 +833,7 @@ async def assemble_context(
         models=models_cap,
         acts_summary=acts_cap,
         resources_summary=resources_cap,
-        bridge_context=bridge_context,
+        customer_context=customer_context,
         topology_context=topology_context,
         access_redactions=redactions,
         notes=notes,

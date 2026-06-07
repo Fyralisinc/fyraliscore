@@ -37,8 +37,8 @@ export function CategorySheet({
         onClose();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   const { category, topItems, relationshipBundles, relatedCategories } = focus;

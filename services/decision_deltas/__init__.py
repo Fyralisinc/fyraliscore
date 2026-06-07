@@ -10,7 +10,7 @@ to a first-class object that the CEO reviews directly.
 Module layout
 -------------
   repo.py     — CRUD against `decision_deltas` + `decision_delta_evidence`.
-  promote.py  — bridge: build a delta from an existing recommendation row.
+  promote.py  — adapter: build a delta from an existing recommendation row.
   apply.py    — accept-and-apply: run consequence_preview side effects,
                 emit ledger event.
   router.py   — FastAPI APIRouter at /v1/decision_deltas.

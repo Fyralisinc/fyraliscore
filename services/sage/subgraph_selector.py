@@ -128,16 +128,14 @@ _ACTIVATION_THRESHOLDS: dict[str, float] = {
 }
 _DEFAULT_ACTIVATION_THRESHOLD: float = 0.30
 
-# Bridge nodes are preserved across pruning even when their activation
+# Connector nodes are preserved across pruning even when their activation
 # is below the question-primitive threshold (doc §7.6 "connect two
 # otherwise separate regions").
 _BRIDGE_SCORE_FLOOR: float = 0.60
 
-# Generic-hub regularization. For most question primitives a Node with
-# ``hub_score >= 0.7`` is rolled up into a summary unless it provides
-# counterevidence or sits on a high-gate bridge edge. CONSTRAINT-type
-# questions are different — they often want the bottleneck hub itself
-# — so we exempt them.
+# Generic-hub regularization. A Node with ``hub_score >= 0.7`` is rolled
+# up into a summary unless it provides counterevidence, sits on a
+# high-gate bridge edge, or is an actual role-filling constraint hub.
 _HUB_SCORE_FLOOR: float = 0.70
 _HUB_EXEMPT_PRIMITIVES: frozenset[str] = frozenset({"CONSTRAINT"})
 
@@ -146,7 +144,7 @@ _HUB_EXEMPT_PRIMITIVES: frozenset[str] = frozenset({"CONSTRAINT"})
 # spec (§7.5 — suppresses generic hubs through edges, not just nodes).
 _GATE_SCORE_FLOOR: float = 0.30
 
-# Bridge-edge floor used when deciding whether a high-hub Node should
+# Connector-edge floor used when deciding whether a high-hub Node should
 # be kept anyway because it sits on a meaningful inter-region edge.
 _BRIDGE_EDGE_GATE_FLOOR: float = 0.60
 
@@ -154,6 +152,9 @@ _BRIDGE_EDGE_GATE_FLOOR: float = 0.60
 # at least this fraction of their ``activation_reasons``, the
 # lower-scoring one is rolled up.
 _REDUNDANT_REASON_OVERLAP: float = 0.80
+_REDUNDANCY_IGNORED_REASON_PREFIXES: tuple[str, ...] = (
+    "propagated:",
+)
 
 # Staleness: an activated Node may carry a structural-features row
 # whose ``updated_at`` is None. We treat presence of an explicit
@@ -210,19 +211,24 @@ class SubgraphSelector:
         summarized_hubs: list[UUID] = []
         role_covered: set[str] = set()
 
-        # Bridge candidates first — we need them resolved before we can
-        # ask "is this hub justified by a bridge edge?".
+        # Connector candidates first — we need them resolved before we can
+        # ask "is this hub justified by an inter-region edge?".
         for n in activated_nodes:
             sf = n.structural_features
             if sf is not None and (sf.bridge_score or 0.0) >= _BRIDGE_SCORE_FLOOR:
                 bridge_nodes.add(n.model_id)
 
         # ---- per-node keep/drop/summarize decisions -------------------
-        # Sort deterministically: highest activation first, then UUID
-        # for stable tie-breaks (important for the budget-cap rule).
+        # Sort deterministically: highest activation first, then caller
+        # input order for ties. The caller is responsible for making that
+        # input order evidence-stable; using UUIDs here leaks namespace
+        # allocation into ranking and projection.
+        input_order = {
+            node.model_id: idx for idx, node in enumerate(activated_nodes)
+        }
         ordered = sorted(
             activated_nodes,
-            key=lambda x: (-x.activation_score, str(x.model_id)),
+            key=lambda x: (-x.activation_score, input_order.get(x.model_id, 0)),
         )
 
         # Track previously-kept nodes' reason-sets so we can detect
@@ -237,8 +243,11 @@ class SubgraphSelector:
 
             # --- preserved-no-matter-what categories -------------------
             is_bridge = mid in bridge_nodes
-            is_counter = mid in counter_set
-            role_match = _role_match(reasons, required_roles)
+            is_suppressed = _is_suppressed_by_negative_memory(reasons)
+            is_counter = mid in counter_set and not is_suppressed
+            role_match = None if is_suppressed else _role_match(
+                reasons, required_roles,
+            )
 
             # --- explicit caller-tagged drops --------------------------
             if reason_set & _OUT_OF_SCOPE_REASON_TAGS:
@@ -254,7 +263,7 @@ class SubgraphSelector:
                 hub_score >= _HUB_SCORE_FLOOR
                 and not is_counter
                 and not is_bridge
-                and primitive not in _HUB_EXEMPT_PRIMITIVES
+                and not _hub_exempt_for_primitive(primitive, reasons)
                 and not _has_high_gate_bridge_edge(mid, gate_by_endpoint)
             ):
                 if len(summarized_hubs) < self._budget.max_summarized_hubs:
@@ -335,10 +344,15 @@ class SubgraphSelector:
             covered_roles=role_covered,
         )
 
-        # Stable ordering of outputs for deterministic tests.
-        selected_nodes = tuple(sorted(keep, key=str))
-        selected_edges_t = tuple(sorted(selected_edges, key=str))
-        bridge_nodes_t = tuple(sorted(bridge_nodes & keep, key=str))
+        # Stable ordering of outputs for downstream projection: selected
+        # nodes and bridges preserve selector relevance order, while edges
+        # preserve candidate order unless the edge budget already forced a
+        # gate-score sort above.
+        selected_nodes = tuple(n.model_id for n in ordered if n.model_id in keep)
+        selected_edges_t = tuple(selected_edges)
+        bridge_nodes_t = tuple(
+            n.model_id for n in ordered if n.model_id in bridge_nodes and n.model_id in keep
+        )
         summarized_t = tuple(summarized_hubs)
         excluded_t = tuple(excluded)
 
@@ -412,14 +426,32 @@ def _role_match(
     return None
 
 
+def _is_suppressed_by_negative_memory(reasons: tuple[str, ...]) -> bool:
+    return any(reason.startswith("negative_memory:") for reason in reasons)
+
+
+def _hub_exempt_for_primitive(
+    primitive: str,
+    reasons: tuple[str, ...],
+) -> bool:
+    if primitive not in _HUB_EXEMPT_PRIMITIVES:
+        return False
+    role_tags = {
+        r.split(":", 1)[1] for r in reasons if r.startswith("role:")
+    }
+    return bool(role_tags & {"blocker", "constraint", "resource"})
+
+
 def _is_redundant(
     candidate_reasons: frozenset[str],
     kept_reason_sets: list[tuple[UUID, frozenset[str]]],
     overlap_threshold: float,
 ) -> bool:
+    candidate_reasons = _content_bearing_reasons(candidate_reasons)
     if not candidate_reasons:
         return False
     for _, kept in kept_reason_sets:
+        kept = _content_bearing_reasons(kept)
         if not kept:
             continue
         inter = len(candidate_reasons & kept)
@@ -429,6 +461,21 @@ def _is_redundant(
         if (inter / denom) >= overlap_threshold:
             return True
     return False
+
+
+def _content_bearing_reasons(reasons: frozenset[str]) -> frozenset[str]:
+    """Reason tags safe for semantic de-duplication.
+
+    Structural propagation tags explain how a node entered the retrieval
+    neighborhood; they do not prove that two endpoint models are redundant
+    evidence. Keeping them out of this overlap test prevents hidden connected
+    models from being collapsed into their visible source.
+    """
+    return frozenset(
+        reason
+        for reason in reasons
+        if not reason.startswith(_REDUNDANCY_IGNORED_REASON_PREFIXES)
+    )
 
 
 def _apply_node_budget(

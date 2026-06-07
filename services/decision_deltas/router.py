@@ -9,7 +9,7 @@ Endpoints (mounted at /v1/decision_deltas):
   POST   /{delta_id}/delegate                 transition to delegated
   POST   /{delta_id}/contest                  transition to contested
   POST   /{delta_id}/add_context              evidence/notes addendum
-  POST   /from_recommendation/{rec_id}        promotion bridge
+  POST   /from_recommendation/{rec_id}        promotion adapter
 
 Auth + tenant come from the gateway BearerAuthMiddleware
 (`request.state.auth` = AuthContext). The router does not own the

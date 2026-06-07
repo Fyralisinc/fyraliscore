@@ -47,6 +47,17 @@ docker-compose.override.yml
 .scheduled_tasks.lock
 .claude/scheduled_tasks.lock
 
+# ---- AI coding tool remnants ----
+.claude/
+.specify/
+.agents/
+.hypothesis/
+.cursor/
+.aider*
+.continue/
+.windsurf/
+.codeium/
+
 # ---- Simulation run artifacts ----
 truss_run/
 truss_run_*/

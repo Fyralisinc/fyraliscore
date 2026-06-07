@@ -223,6 +223,22 @@ def _adjudicate(
     candidate_id = candidate["id"]
     candidate_metadata = candidate.get("metadata") or {}
     edge_kind = candidate.get("edge_kind")
+    if candidate.get("candidate_kind") == "edge_type":
+        proposal = candidate.get("proposed_proposition") or {}
+        return CandidateAdjudication(
+            candidate_id=candidate_id,
+            review_status="needs_review",
+            reason="edge_type_candidate_requires_ontology_promotion",
+            decision_reason="needs_review_unrelated_ops",
+            metadata={
+                "proposed_edge_kind": (
+                    proposal.get("proposed_edge_kind")
+                    if isinstance(proposal, dict)
+                    else None
+                ),
+                "promotion_surface": "ontology_gap",
+            },
+        )
 
     accepted_edge_ids = _accepted_edge_ids(candidate, applied)
     accepted_model_id, situation_validation = _accepted_situation(

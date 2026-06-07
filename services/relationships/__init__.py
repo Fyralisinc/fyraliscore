@@ -13,10 +13,17 @@ from .candidates import (
     RelationshipCandidate,
     generate_scope_overlap_candidates,
     make_edge_candidate,
+    make_edge_type_candidate,
     make_situation_candidate,
     rank_candidates,
 )
 from .repo import RelationshipCandidateMetrics, RelationshipCandidatesRepo
+from .ontology_proposals import (
+    RelationshipOntologyProposal,
+    RelationshipOntologyProposalsRepo,
+    aggregate_edge_type_candidates,
+    normalize_proposed_edge_kind,
+)
 
 _ADJUDICATION_EXPORTS = {
     "CandidateAdjudication",
@@ -44,9 +51,14 @@ __all__ = [
     "ModelSignal",
     "RelationshipCandidate",
     "RelationshipCandidateMetrics",
+    "RelationshipOntologyProposal",
+    "RelationshipOntologyProposalsRepo",
     "generate_scope_overlap_candidates",
+    "aggregate_edge_type_candidates",
     "make_edge_candidate",
+    "make_edge_type_candidate",
     "make_situation_candidate",
+    "normalize_proposed_edge_kind",
     "rank_candidates",
     "RelationshipCandidatesRepo",
     "adjudicate_candidate_for_trigger",

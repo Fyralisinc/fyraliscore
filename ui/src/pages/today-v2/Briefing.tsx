@@ -19,6 +19,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { AppShell } from "@/shell/AppShell";
 import { Sidebar } from "@/shell/Sidebar";
+import { useAskOverlay } from "@/ask/AskOverlayProvider";
 
 import { useTodayPage } from "@/hooks/useTodayPage";
 import { getDeltaEvidence } from "@/api/today-page-client";
@@ -51,6 +52,7 @@ type ToastState = { kind: ToastKind; text: string; id: number };
 
 export default function TodayBriefing() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { openAsk } = useAskOverlay();
   const { data, loading, error, applyChange, delegate, correct, refetch } =
     useTodayPage();
 
@@ -290,6 +292,7 @@ export default function TodayBriefing() {
                 <BriefingHeader
                   summary={data.summary}
                   generatedAt={data.generatedAt}
+                  onAskClick={() => openAsk()}
                 />
                 <FyralisBrief
                   synthesis={

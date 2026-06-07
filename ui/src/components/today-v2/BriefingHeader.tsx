@@ -13,6 +13,7 @@ import type { TodaySummary } from "@/api/today-page-types";
 interface Props {
   summary: TodaySummary;
   generatedAt: string;
+  onAskClick?: () => void;
 }
 
 function formatStamp(iso: string): string {
@@ -29,7 +30,7 @@ function formatStamp(iso: string): string {
   }
 }
 
-export function BriefingHeader({ summary, generatedAt }: Props) {
+export function BriefingHeader({ summary, generatedAt, onAskClick }: Props) {
   const need = summary.needJudgment;
   const absorbed = summary.signalsAbsorbed;
   const processed = summary.signalsProcessed;
@@ -43,6 +44,7 @@ export function BriefingHeader({ summary, generatedAt }: Props) {
             className="tdv2-header__ask"
             data-testid="header-ask"
             aria-label="Ask Fyralis"
+            onClick={onAskClick}
           >
             <SearchIcon />
             <span className="tdv2-header__ask-label">Ask Fyralis</span>

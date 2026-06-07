@@ -1,4 +1,4 @@
-"""services/resources/customer_commitments.py — the Bridge spine.
+"""services/resources/customer_commitments.py — customer-commitment links.
 
 Wave 5-B update (Q2 resolved — migration 0014 applied, SCHEMA-LOCK.md
 W5.Q2). The table now carries the superset §27 shape:

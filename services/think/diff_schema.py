@@ -168,6 +168,45 @@ class EdgeOp(BaseModel):
 
 
 # =====================================================================
+# OntologyGapOp — pre-truth edge-type proposals.
+# =====================================================================
+
+
+class OntologyGapOp(BaseModel):
+    """
+    A proposal for a relationship the current edge ontology cannot represent.
+
+    These ops do NOT create `model_edges`. They persist an inspectable
+    `relationship_candidates(candidate_kind='edge_type')` row that can be used
+    as retrieval structure immediately via `parent_kind` / `nearest_existing_kind`,
+    then promoted later through an ontology/registry workflow.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["propose_edge_type"] = "propose_edge_type"
+    source_model_id: UUID
+    target_model_id: UUID
+    proposed_edge_kind: str
+    description: str
+    relationship_summary: str
+    parent_kind: str | None = None
+    nearest_existing_kind: str | None = None
+    directionality: Literal["directed", "symmetric", "unknown"] = "unknown"
+    inverse_label: str | None = None
+    dropped_dimensions: list[str] = Field(default_factory=list)
+    evidence_event_ids: list[UUID] = Field(default_factory=list)
+    evidence_model_ids: list[UUID] = Field(default_factory=list)
+    confidence: float = 0.6
+    impact: float = 0.75
+    actionability: float = 0.65
+    urgency: float = 0.5
+    uncertainty: float = 0.7
+    authority_required: float = 0.5
+    novelty: float = 1.0
+
+
+# =====================================================================
 # ValidatedDiff — the top-level container.
 # =====================================================================
 
@@ -188,6 +227,7 @@ class ValidatedDiff(BaseModel):
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
+    ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     # Predictions that should be scheduled with the deadline resolver
@@ -224,6 +264,7 @@ class RawDiff(BaseModel):
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
+    ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     new_predictions: list[ClaimOp] = Field(default_factory=list)
@@ -250,6 +291,7 @@ __all__ = [
     "ActOp",
     "ActOpKind",
     "EdgeOp",
+    "OntologyGapOp",
     "ResourceOp",
     "ResourceOpKind",
     "ValidatedDiff",

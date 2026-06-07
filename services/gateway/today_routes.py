@@ -60,6 +60,7 @@ from fastapi.responses import JSONResponse
 
 from services.decision_deltas import apply as apply_mod
 from services.decision_deltas import repo as dd_repo
+from services.resolution_threads import repo as resolution_repo
 
 
 # =====================================================================
@@ -655,6 +656,7 @@ def _delta_to_wire(
     *,
     include_evidence: bool = False,
     priority_rank: int | None = None,
+    resolution_thread: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the spec-shaped DecisionDelta wire DTO. Field order roughly
     matches the spec interface for readability when debugging."""
@@ -724,8 +726,146 @@ def _delta_to_wire(
         # the focused-review card can show timeline annotations.
         "annotations":       _extract_annotations(impact),
     }
+    if resolution_thread is not None:
+        out["resolutionThread"] = resolution_thread
+    else:
+        raw_resolution_thread = _normalize_resolution_thread(
+            _first(impact, "resolutionThread", "resolution_thread")
+        )
+        if raw_resolution_thread is not None:
+            out["resolutionThread"] = raw_resolution_thread
     if include_evidence:
         out["evidence"] = [_evidence_to_wire(e) for e in view.evidence]
+    return out
+
+
+_RESOLUTION_THREAD_STATUSES: frozenset[str] = frozenset({
+    "draft",
+    "active",
+    "waiting_on_owner",
+    "blocked",
+    "monitoring",
+    "confirmed",
+    "resolved",
+    "failed",
+})
+_RESOLUTION_STEP_STATUSES: frozenset[str] = frozenset({
+    "not_started",
+    "in_progress",
+    "waiting",
+    "blocked",
+    "done",
+    "failed",
+})
+_RESOLUTION_SIGNAL_STATUSES: frozenset[str] = frozenset({
+    "watching",
+    "seen",
+    "missing",
+    "contradicted",
+})
+
+
+def _first(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if str(v).strip()]
+
+
+def _normalize_resolution_thread(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    title = _optional_str(_first(raw, "title", "name", "label"))
+    current = _optional_str(_first(raw, "currentState", "current_state"))
+    target = _optional_str(_first(raw, "targetState", "target_state"))
+    owner = _optional_str(_first(raw, "owner", "ownerLabel", "owner_label"))
+    if not (title and current and target and owner):
+        return None
+
+    status = str(_first(raw, "status") or "active")
+    if status not in _RESOLUTION_THREAD_STATUSES:
+        status = "active"
+
+    return {
+        "id": str(_first(raw, "id") or title),
+        "title": title,
+        "status": status,
+        "currentState": current,
+        "targetState": target,
+        "owner": owner,
+        "nextReviewAt": _optional_str(_first(raw, "nextReviewAt", "next_review_at")),
+        "successCriteria": _str_list(_first(raw, "successCriteria", "success_criteria")),
+        "steps": _normalize_resolution_steps(_first(raw, "steps")),
+        "watchedSignals": _normalize_resolution_signals(
+            _first(raw, "watchedSignals", "watched_signals")
+        ),
+        "escalationTriggers": _str_list(_first(raw, "escalationTriggers", "escalation_triggers")),
+    }
+
+
+def _normalize_resolution_steps(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        label = _optional_str(_first(item, "label", "title", "name"))
+        owner = _optional_str(_first(item, "owner", "ownerLabel", "owner_label"))
+        if not (label and owner):
+            continue
+        status = str(_first(item, "status") or "not_started")
+        if status not in _RESOLUTION_STEP_STATUSES:
+            status = "not_started"
+        step: dict[str, Any] = {
+            "id": str(_first(item, "id") or f"step-{idx + 1}"),
+            "label": label,
+            "owner": owner,
+            "status": status,
+            "dueAt": _optional_str(_first(item, "dueAt", "due_at", "deadline")),
+            "proofNeeded": _optional_str(_first(item, "proofNeeded", "proof_needed", "proof")),
+            "blockedBy": _optional_str(_first(item, "blockedBy", "blocked_by")),
+        }
+        out.append({k: v for k, v in step.items() if v is not None})
+    return out
+
+
+def _normalize_resolution_signals(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        label = _optional_str(_first(item, "label", "title", "name"))
+        source = _optional_str(_first(item, "sourceType", "source_type", "source"))
+        expected = _optional_str(_first(item, "expected", "expectation"))
+        if not (label and source and expected):
+            continue
+        status = str(_first(item, "status") or "watching")
+        if status not in _RESOLUTION_SIGNAL_STATUSES:
+            status = "watching"
+        out.append({
+            "id": str(_first(item, "id") or f"signal-{idx + 1}"),
+            "label": label,
+            "sourceType": source,
+            "expected": expected,
+            "status": status,
+        })
     return out
 
 
@@ -1134,6 +1274,7 @@ def register_today_routes(app: FastAPI) -> None:
                 now=now,
             )
 
+        resolution_by_delta: dict[UUID, resolution_repo.ResolutionThread] = {}
         async with pool.acquire() as conn:
             # We list ALL non-archived deltas, then rank in Python.
             views_proposed = await dd_repo.list_deltas(
@@ -1185,6 +1326,11 @@ def register_today_routes(app: FastAPI) -> None:
                     ))
                 for v in all_views:
                     v.evidence = by_delta.get(v.id, [])
+                resolution_by_delta = await resolution_repo.get_threads_by_source_delta_ids(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    source_decision_delta_ids=[v.id for v in all_views],
+                )
 
         # Rank.
         scored = sorted(
@@ -1206,7 +1352,15 @@ def register_today_routes(app: FastAPI) -> None:
         # Build wire DTOs with deterministic priorityRank.
         wire: list[dict[str, Any]] = []
         for i, v in enumerate(scored):
-            wire.append(_delta_to_wire(v, priority_rank=i))
+            persisted_thread = resolution_by_delta.get(v.id)
+            wire.append(_delta_to_wire(
+                v,
+                priority_rank=i,
+                resolution_thread=(
+                    resolution_repo.thread_to_wire(persisted_thread)
+                    if persisted_thread is not None else None
+                ),
+            ))
 
         primary = None
         other_changes: list[dict[str, Any]] = []
@@ -1256,9 +1410,20 @@ def register_today_routes(app: FastAPI) -> None:
             view = await dd_repo.get_delta(
                 conn, tenant_id=auth.tenant_id, delta_id=did,
             )
+            thread = await resolution_repo.get_thread_by_source_delta(
+                conn,
+                tenant_id=auth.tenant_id,
+                source_decision_delta_id=did,
+            )
         if view is None:
             return _not_found()
-        return JSONResponse(_delta_to_wire(view, include_evidence=True))
+        return JSONResponse(_delta_to_wire(
+            view,
+            include_evidence=True,
+            resolution_thread=(
+                resolution_repo.thread_to_wire(thread) if thread is not None else None
+            ),
+        ))
 
     # -----------------------------------------------------------------
     # GET /today/deltas/{delta_id}/evidence
@@ -1312,6 +1477,11 @@ def register_today_routes(app: FastAPI) -> None:
                         delta_id=did,
                         user_id=auth.actor_id,
                     )
+                    thread = await resolution_repo.get_thread_by_source_delta(
+                        conn,
+                        tenant_id=auth.tenant_id,
+                        source_decision_delta_id=did,
+                    )
         except dd_repo.DeltaNotFoundError:
             return _not_found()
         except dd_repo.InvalidStatusTransitionError:
@@ -1332,7 +1502,14 @@ def register_today_routes(app: FastAPI) -> None:
         return JSONResponse({
             "status":          "applied",
             "resultMessage":   _result_message(view, triggered),
-            "updatedDelta":    _delta_to_wire(view, include_evidence=True),
+            "updatedDelta":    _delta_to_wire(
+                view,
+                include_evidence=True,
+                resolution_thread=(
+                    resolution_repo.thread_to_wire(thread)
+                    if thread is not None else None
+                ),
+            ),
             "nextDeltaId":     next_id,
             "ledgerEventId":   (
                 str(ledger_event_id) if ledger_event_id else None

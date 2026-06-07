@@ -12,8 +12,6 @@ import asyncpg
 from lib.embeddings.ollama import OllamaClient
 from lib.llm.provider import LLMProvider
 from services.actors.repo import ActorRepo
-from services.bridge.dashboards import CustomerDetailDashboard, render_customer_detail
-from services.bridge.queries import RevenueAtRiskReport, revenue_at_risk
 from services.entity_aliases.repo import EntityAliasRepo
 from services.think.worker import ThinkWorker, WorkerConfig
 from services.workers.entity_resolver.worker import (
@@ -338,37 +336,28 @@ async def collect_full_signal_summary(
     )
 
 
-async def assert_customer_bridge_surface(
+async def assert_customer_commitment_links(
     scenario: Scenario,
     *,
     pool: asyncpg.Pool,
     customer_name: str,
     required_commitments: set[str],
 ) -> None:
-    """Verify Bridge can still surface customer memory after the stress run."""
+    """Verify customer memory remains linked after the stress run."""
     assert scenario.tenant_id is not None
     customer_id = scenario.customer_id(customer_name)
     async with pool.acquire() as conn:
-        report: RevenueAtRiskReport = await revenue_at_risk(
+        rows = await conn.fetch(
+            """
+            SELECT c.title
+            FROM customer_commitments cc
+            JOIN commitments c ON c.id = cc.commitment_id
+            WHERE cc.tenant_id = $1
+              AND cc.customer_resource_id = $2
+            """,
             scenario.tenant_id,
-            conn=conn,
-        )
-        detail: CustomerDetailDashboard = await render_customer_detail(
             customer_id,
-            tenant_id=scenario.tenant_id,
-            window_days=30,
-            conn=conn,
         )
-
-    report_row = next(
-        (row for row in report.customers if row.customer_resource_id == customer_id),
-        None,
-    )
-    assert report_row is not None, (
-        f"{customer_name} missing from revenue-at-risk report"
-    )
-    assert detail.customer_resource_id == customer_id
-    assert detail.identity == customer_name
-    served_titles = {item.title for item in detail.served_commitments}
+    served_titles = {str(row["title"]) for row in rows}
     missing = required_commitments - served_titles
-    assert not missing, f"{customer_name} detail missing commitments: {missing}"
+    assert not missing, f"{customer_name} missing commitment links: {missing}"

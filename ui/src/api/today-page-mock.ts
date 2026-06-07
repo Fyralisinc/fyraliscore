@@ -99,6 +99,171 @@ const PRIMARY: DecisionDelta = {
   ],
 };
 
+const OTHER_ACME_DEAL_REALITY: DecisionDelta = {
+  id: "delta-other-acme-deal-reality",
+  title: "Move Acme Expansion forecast from Commit to Best Case",
+  userFacingType: "proposed_change",
+  internalType: "decision_delta",
+  status: "needs_authority",
+  priorityRank: 1,
+  sourceCategory: "customers_revenue",
+  relatedCategories: ["customers_revenue", "risks_constraints", "systems_capacity", "people_teams"],
+  proposedBy: "fyralis",
+  createdAt: "2026-05-17T12:34:00Z",
+  updatedAt: "2026-05-17T12:34:00Z",
+  currentState: [
+    { key: "forecast", label: "Forecast", value: "Commit", valueType: "status", severity: "watch" },
+    { key: "consensus", label: "Consensus score", value: "52 / 100", valueType: "text", severity: "watch" },
+    { key: "security", label: "Security review", value: "Not scheduled", valueType: "status", severity: "critical" },
+    { key: "economic_buyer", label: "Economic buyer", value: "Missing", valueType: "status", severity: "critical" },
+  ],
+  proposedState: [
+    { key: "forecast", label: "Forecast", value: "Best Case", valueType: "status", severity: "watch" },
+    { key: "next_proof", label: "Next best proof", value: "CFO + security alignment with ROI proof", valueType: "text", severity: "positive" },
+    { key: "owner", label: "Internal owner", value: "Assign security owner", valueType: "owner", severity: "watch" },
+    { key: "reeval", label: "Re-evaluate in", value: "48 hours", valueType: "duration", severity: "neutral" },
+  ],
+  summaryLine: "Commit → Best Case",
+  whyThisMatters:
+    "Acme is forecast as Commit, but the buying group is not aligned. Security is not engaged, the economic buyer has not validated ROI, and SSO proof depends on an uncommitted Product roadmap item.",
+  keyMetrics: [
+    { label: "$1.2M forecast exposure", value: "$1.2M", unit: "pipeline", severity: "critical" },
+    { label: "52 consensus score", value: 52, unit: "score", severity: "high" },
+    { label: "3 proof requirements unresolved", value: 3, unit: "proof requirements", severity: "high" },
+    { label: "78% confidence", value: 78, unit: "percent", severity: "high" },
+  ],
+  evidenceSummary: {
+    totalSignals: 5,
+    quality: "strong",
+    groups: [
+      { id: "src-call", label: "Buyer asked whether SSO will be ready before rollout", sourceType: "Call transcript", count: 1, quality: "strong", strengthScore: 0.88 },
+      { id: "src-calendar", label: "No buyer security review scheduled", sourceType: "Calendar", count: 1, quality: "strong", strengthScore: 0.86 },
+      { id: "src-roadmap", label: "SSO roadmap has no committed date", sourceType: "Product roadmap", count: 1, quality: "strong", strengthScore: 0.9 },
+      { id: "src-crm", label: "CRM still marks forecast as Commit", sourceType: "CRM", count: 1, quality: "medium", strengthScore: 0.7 },
+      { id: "src-memory", label: "Similar Globex deal slipped 21 days after security delay", sourceType: "Deal memory", count: 1, quality: "medium", strengthScore: 0.74 },
+    ],
+  },
+  missingContext: [
+    { id: "miss-economic-buyer", text: "Economic buyer has not validated budget or ROI", severity: "high" },
+    { id: "miss-security-owner", text: "Internal security owner is not assigned", severity: "high" },
+    { id: "miss-sso-language", text: "SSO roadmap-safe buyer language is not approved", severity: "medium" },
+  ],
+  impactIfAccepted: [
+    { id: "op-forecast", text: "Update Acme forecast recommendation to Best Case", operationType: "update_node", severity: "positive" },
+    { id: "op-blocker", text: "Create internal blocker for SSO roadmap ambiguity", operationType: "create_node", severity: "watch" },
+    { id: "op-owner", text: "Notify AE, Product, and Security owner candidates", operationType: "notify_actor", severity: "neutral" },
+    { id: "op-reeval", text: "Re-evaluate when security review is scheduled", operationType: "schedule_re_evaluation", severity: "neutral" },
+  ],
+  relatedModelLinks: [
+    { category: "customers_revenue", label: "Acme Expansion deal reality", href: "/model?focus=item&itemId=cu-acme-expansion" },
+    { category: "risks_constraints", label: "Security review risk", href: "/model?focus=item&itemId=r-acme-security-review" },
+    { category: "systems_capacity", label: "SSO roadmap dependency", href: "/model?focus=item&itemId=s-sso-roadmap" },
+  ],
+  availableActions: ["accept", "delegate", "review_evidence", "report_correction"],
+  applyPreview: {
+    nodeOpsCount: 4,
+    notificationsCount: 3,
+    reEvaluationScheduledAt: "2026-05-19T12:34:00Z",
+    ledgerEventWillBeCreated: true,
+  },
+  targetNodeKind: "customer",
+  targetNodeId: "cu-acme-expansion",
+  confidence: 0.78,
+  resolutionTargetAt: "2026-05-19T12:34:00Z",
+  resolutionThread: {
+    id: "rt-acme-deal-reality",
+    title: "Restore Acme Expansion to a supportable late-stage path",
+    status: "active",
+    currentState:
+      "Commit forecast is unsupported: security review is unscheduled and economic buyer evidence is missing.",
+    targetState:
+      "Security review scheduled, economic buyer has ROI proof, and SSO-safe language is approved.",
+    owner: "AE + RevOps",
+    nextReviewAt: "2026-05-19T12:34:00Z",
+    successCriteria: [
+      "Internal security owner assigned.",
+      "Product approves SSO-safe implementation language.",
+      "CFO + security alignment call is scheduled.",
+      "ROI proof sent before the call.",
+    ],
+    steps: [
+      {
+        id: "step-security-owner",
+        label: "Assign internal security owner",
+        owner: "VP Sales Ops",
+        status: "waiting",
+        proofNeeded: "Named owner appears in Slack or CRM note.",
+      },
+      {
+        id: "step-sso-language",
+        label: "Approve SSO-safe buyer language",
+        owner: "Product",
+        status: "blocked",
+        proofNeeded: "Product-approved wording is attached to the deal.",
+        blockedBy: "SSO roadmap date remains uncommitted.",
+      },
+      {
+        id: "step-roi-proof",
+        label: "Send quantified ROI case",
+        owner: "AE + RevOps",
+        status: "not_started",
+        proofNeeded: "ROI one-pager sent to champion and CFO.",
+      },
+      {
+        id: "step-buyer-call",
+        label: "Schedule CFO + security alignment call",
+        owner: "AE",
+        status: "not_started",
+        proofNeeded:
+          "Calendar invite includes buyer CFO, buyer security, AE, and internal security.",
+      },
+    ],
+    watchedSignals: [
+      {
+        id: "watch-calendar",
+        label: "Buyer alignment meeting",
+        sourceType: "Calendar",
+        expected: "CFO + security call appears this week.",
+        status: "missing",
+      },
+      {
+        id: "watch-product",
+        label: "SSO language approval",
+        sourceType: "Product / Slack",
+        expected: "Product approves roadmap-safe wording.",
+        status: "watching",
+      },
+      {
+        id: "watch-email",
+        label: "ROI proof sent",
+        sourceType: "Email",
+        expected: "ROI one-pager is sent before buyer call.",
+        status: "watching",
+      },
+      {
+        id: "watch-crm",
+        label: "Forecast category",
+        sourceType: "CRM",
+        expected: "Commit changes to Best Case until blockers clear.",
+        status: "watching",
+      },
+    ],
+    escalationTriggers: [
+      "No security owner assigned within 24 hours.",
+      "No buyer alignment meeting scheduled this week.",
+      "Product cannot approve SSO-safe language by Friday.",
+      "Champion replies positively but still excludes CFO/security.",
+    ],
+  },
+  evidence: [
+    { id: "ev-acme-1", source: "call", sourceLabel: "Call transcript", title: "Acme technical buyer asks for SSO date", occurredAt: "2026-05-16T16:20:00Z", trustTier: "attested", quality: "strong", excerpt: "Buyer asked whether SSO will be ready before rollout.", ordinal: 0 },
+    { id: "ev-acme-2", source: "calendar", sourceLabel: "Calendar", title: "No Acme security review scheduled", occurredAt: "2026-05-17T08:00:00Z", trustTier: "verified", quality: "strong", excerpt: "No meeting includes Acme security stakeholders this week.", ordinal: 1 },
+    { id: "ev-acme-3", source: "product", sourceLabel: "Roadmap", title: "SSO date remains uncommitted", occurredAt: "2026-05-16T19:10:00Z", trustTier: "verified", quality: "strong", excerpt: "Product roadmap Node has no committed SSO delivery date.", ordinal: 2 },
+    { id: "ev-acme-4", source: "crm", sourceLabel: "CRM opportunity", title: "Forecast category remains Commit", occurredAt: "2026-05-17T10:05:00Z", trustTier: "authoritative", quality: "medium", excerpt: "Opportunity stage and forecast category are ahead of buyer consensus evidence.", ordinal: 3 },
+    { id: "ev-acme-5", source: "memory", sourceLabel: "Similar deal memory", title: "Globex slipped after security review delay", occurredAt: "2025-11-18T17:00:00Z", trustTier: "verified", quality: "medium", excerpt: "Globex slipped 21 days when security review was scheduled late.", ordinal: 4 },
+  ],
+};
+
 const OTHER_PRICING: DecisionDelta = {
   id: "delta-other-pricing",
   title: "Assign owner for pricing model decision",
@@ -413,15 +578,16 @@ export const TODAY_PAGE_FIXTURE: TodayPageData = {
     signalsProcessed: 98,
     signalsAbsorbed: 91,
     modelUpdates: 12,
-    needJudgment: 7,
-    requiresAuthority: 4,
+    needJudgment: 8,
+    requiresAuthority: 5,
     delegatable: 2,
     monitoring: 1,
     contested: 0,
-    exposure: { amount: 2_040_000, currency: "USD", formatted: "$2.04M" },
+    exposure: { amount: 3_240_000, currency: "USD", formatted: "$3.24M" },
   },
   primaryJudgment: PRIMARY,
   otherChanges: [
+    OTHER_ACME_DEAL_REALITY,
     OTHER_PRICING,
     OTHER_Q3_SCOPE,
     OTHER_PACKAGING,
@@ -436,13 +602,14 @@ export const TODAY_PAGE_FIXTURE: TodayPageData = {
     delegatedChanges: 1,
     contestedChanges: 0,
     reassuranceCopy:
-      "Customer reliability and pricing ownership are the only areas requiring your attention.",
+      "Acme deal reality, customer reliability, and pricing ownership are the only areas requiring your attention.",
   },
 };
 
 const ALL: Record<string, DecisionDelta> = Object.fromEntries(
   [
     PRIMARY,
+    OTHER_ACME_DEAL_REALITY,
     OTHER_PRICING,
     OTHER_Q3_SCOPE,
     OTHER_PACKAGING,
@@ -464,6 +631,7 @@ function withMutations(d: DecisionDelta): DecisionDelta {
 export function mockGetTodayPage(): TodayPageData {
   const primary = withMutations(PRIMARY);
   const others = [
+    OTHER_ACME_DEAL_REALITY,
     OTHER_PRICING,
     OTHER_Q3_SCOPE,
     OTHER_PACKAGING,
@@ -511,6 +679,7 @@ export function mockApply(id: string): ApplyResult | null {
   MUTATED.set(id, updated);
   const remaining = [
     PRIMARY,
+    OTHER_ACME_DEAL_REALITY,
     OTHER_PRICING,
     OTHER_Q3_SCOPE,
     OTHER_PACKAGING,

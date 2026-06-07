@@ -121,6 +121,7 @@ class ProjectionBudget:
     """
 
     max_evidence_per_node: int = 5
+    max_projected_items: int = 96
     max_raw_excerpts_total: int = 8
     max_total_tokens: int = 24_000
     fresh_window_days: int = 30
@@ -213,6 +214,22 @@ def _tier_score(tier: str | None) -> float:
     if not tier:
         return 0.0
     return _TIER_RANK.get(tier.lower(), 0.3)
+
+
+def _obs_matches_falsifier(obs: "_ObsRow", falsifier: dict[str, Any]) -> bool:
+    """Whether an observation exercises a model's declared falsifier."""
+    falsifier_kind = (falsifier.get("kind") or "").lower()
+    if falsifier_kind not in {"observation_pattern", "prediction_deadline"}:
+        return False
+    pattern = (falsifier.get("pattern") or "").lower()
+    if not pattern:
+        return True
+    blob = " ".join(
+        s for s in (
+            obs.kind, obs.source_channel, obs.content_text,
+        ) if s
+    ).lower()
+    return pattern in blob
 
 
 # ---------------------------------------------------------------------
@@ -362,11 +379,15 @@ class EvidenceProjector:
             omitted.extend(model_omitted)
 
         # Apply token budget — may demote raw_excerpt / evidence_card
-        # entries to ref_only.
+        # entries to ref_only. Then enforce the item budget; token
+        # demotion alone can otherwise preserve hundreds of low-marginal
+        # summary/ref entries.
         projected, budget_omitted = self._apply_token_budget(
             all_picks, question_primitive=question_primitive,
         )
         omitted.extend(budget_omitted)
+        projected, item_omitted = self._apply_item_budget(projected)
+        omitted.extend(item_omitted)
 
         coverage = self._compute_coverage(projected, all_picks)
 
@@ -519,6 +540,7 @@ class EvidenceProjector:
                 if question_primitive in _RAW_EXCERPT_QUESTION_PRIMITIVES
                 else "evidence_card"
             )
+            falsification_relevant = _obs_matches_falsifier(obs, model.falsifier)
             counter_picks.append(
                 _Pick(
                     node_id=model.id,
@@ -531,6 +553,7 @@ class EvidenceProjector:
                     score=min(1.0, score),
                     counterevidence=True,
                     fresh=obs.occurred_at >= fresh_cutoff,
+                    falsification_relevant=falsification_relevant,
                 )
             )
         counter_picks.sort(key=lambda p: p.score, reverse=True)
@@ -549,24 +572,15 @@ class EvidenceProjector:
         # relevant would never fire.
         falsifier_kind = (model.falsifier.get("kind") or "").lower()
         if falsifier_kind in {"observation_pattern", "prediction_deadline"}:
-            pattern = (model.falsifier.get("pattern") or "").lower()
             for oid in model.supporting_event_ids:
                 if oid in seen_evidence:
                     continue
                 obs = obs_map.get(oid)
                 if obs is None:
                     continue
-                if not pattern:
-                    chosen = obs
-                else:
-                    blob = " ".join(
-                        s for s in (
-                            obs.kind, obs.source_channel, obs.content_text,
-                        ) if s
-                    ).lower()
-                    if pattern not in blob:
-                        continue
-                    chosen = obs
+                if not _obs_matches_falsifier(obs, model.falsifier):
+                    continue
+                chosen = obs
                 picks.append(
                     _Pick(
                         node_id=model.id,
@@ -810,6 +824,47 @@ class EvidenceProjector:
             ]
 
         return final, omitted
+
+    def _apply_item_budget(
+        self,
+        picks: list[_Pick],
+    ) -> tuple[list[_Pick], list[tuple[UUID, str]]]:
+        """Apply a hard cap to projected item count.
+
+        The token budget controls prompt size, but it is not a good proxy
+        for marginal utility because summary/ref-only items are cheap
+        enough for broad questions to preserve very wide tails. This cap
+        keeps the strongest picks, while protecting counterevidence and
+        falsifier-relevant evidence before ordinary support.
+        """
+        cap = int(self._budget.max_projected_items)
+        if cap <= 0 or len(picks) <= cap:
+            return picks, []
+
+        protected: list[_Pick] = []
+        ordinary: list[_Pick] = []
+        for pick in picks:
+            if pick.counterevidence or pick.falsification_relevant:
+                protected.append(pick)
+            else:
+                ordinary.append(pick)
+
+        def rank_key(pick: _Pick) -> tuple[float, datetime]:
+            return (
+                pick.score,
+                pick.occurred_at or datetime.min.replace(tzinfo=timezone.utc),
+            )
+
+        protected.sort(key=rank_key, reverse=True)
+        ordinary.sort(key=rank_key, reverse=True)
+        kept = (protected + ordinary)[:cap]
+        kept_ids = {(p.node_id, p.evidence_id, p.reason) for p in kept}
+        omitted = [
+            (p.evidence_id, "projected_item_cap")
+            for p in picks
+            if (p.node_id, p.evidence_id, p.reason) not in kept_ids
+        ]
+        return kept, omitted
 
     # ----- coverage --------------------------------------------------
 

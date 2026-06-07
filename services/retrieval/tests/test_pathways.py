@@ -85,7 +85,7 @@ async def test_pathway_a_customer_seed_surfaces_commitments(
     commit_ids = {c.id for c in result.acts["commitments"]}
     assert len(commit_ids) >= 1
     assert len(result.resources) >= 1
-    # Customer-scoped retrieval must cross the customer_commitments bridge
+    # Customer-scoped retrieval must cross the customer_commitments link
     # and surface Models scoped to the linked commitment.
     linked_model_ids = set(fs.scope_by_commitment[fs.hero_commitment_id])
     assert linked_model_ids & {m.id for m in result.models}

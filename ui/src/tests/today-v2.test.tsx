@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import TodayBriefing from "@/pages/today-v2/Briefing";
+import { AskOverlayProvider } from "@/ask/AskOverlayProvider";
 import {
   TODAY_PAGE_FIXTURE,
   mockApply,
@@ -33,6 +34,7 @@ vi.mock("@/api/today-page-client", () => ({
 
 const PRIMARY_ID = "delta-primary-001";
 const PRICING_ID = "delta-other-pricing";
+const ACME_ID = "delta-other-acme-deal-reality";
 
 function renderBriefing(initialEntry = "/today") {
   return render(
@@ -44,12 +46,25 @@ function renderBriefing(initialEntry = "/today") {
   );
 }
 
+function renderBriefingWithAsk(initialEntry = "/today") {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <AskOverlayProvider>
+        <Routes>
+          <Route path="/today" element={<TodayBriefing />} />
+        </Routes>
+      </AskOverlayProvider>
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   _resetTodayPageMock();
 });
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 // =====================================================================
@@ -106,6 +121,17 @@ describe("Today page", () => {
     expect(screen.queryByTestId(`focused-review-${PRIMARY_ID}`)).toBeNull();
   });
 
+  it("deal reality deltas show the monitored resolution tracker", async () => {
+    renderBriefing(`/today?review=${ACME_ID}`);
+    const sheet = await screen.findByTestId(`focused-review-${ACME_ID}`);
+    const tracker = within(sheet).getByTestId("resolution-thread-rt-acme-deal-reality");
+    expect(within(tracker).getByText(/Resolution tracker/i)).toBeInTheDocument();
+    expect(within(tracker).getByText(/Restore Acme Expansion/i)).toBeInTheDocument();
+    expect(within(tracker).getByText(/Assign internal security owner/i)).toBeInTheDocument();
+    expect(within(tracker).getByText(/Fyralis watches/i)).toBeInTheDocument();
+    expect(within(tracker).getAllByText(/Buyer alignment meeting/i).length).toBeGreaterThan(0);
+  });
+
   it("focused review header shows PROPOSED CHANGE label, title, and badge", async () => {
     renderBriefing();
     const sheet = await screen.findByTestId(`focused-review-${PRIMARY_ID}`);
@@ -116,6 +142,100 @@ describe("Today page", () => {
 
   it("Ask Fyralis suggestions render and a stubbed typed answer appears inline", async () => {
     const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/ask/sessions")) {
+        const now = new Date().toISOString();
+        return new Response(JSON.stringify({
+          session: {
+            id: "ask-session-strip",
+            tenant_id: "tenant",
+            viewer_id: "viewer",
+            initial_scope: {
+              type: "current_object",
+              label: "Salesforce sync instability is now material enough to assign ownership",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            current_scope: {
+              type: "current_object",
+              label: "Salesforce sync instability is now material enough to assign ownership",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            mode: "quick_inquiry",
+            status: "open",
+            created_at: now,
+            updated_at: now,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/v1/ask/sessions/ask-session-strip/messages")) {
+        const now = new Date().toISOString();
+        return new Response(JSON.stringify({
+          session: {
+            id: "ask-session-strip",
+            tenant_id: "tenant",
+            viewer_id: "viewer",
+            initial_scope: {
+              type: "current_object",
+              label: "Salesforce sync instability is now material enough to assign ownership",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            current_scope: {
+              type: "current_object",
+              label: "Salesforce sync instability is now material enough to assign ownership",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            mode: "quick_inquiry",
+            status: "open",
+            created_at: now,
+            updated_at: now,
+          },
+          message_id: "ask-message-strip",
+          answer_id: "ask-answer-strip",
+          retrieval_run_id: "ask-run-strip",
+          mode: "quick_inquiry",
+          intent: "causal_context",
+          latency_ms: 12,
+          payload: {
+            answer: "Fyralis surfaced this because related evidence crossed the ownership threshold.",
+            confidence: 0.81,
+            why: ["The active Synthesis node points at assignment risk."],
+            counterevidence: ["No direct counterevidence survived the packet."],
+            impact: ["This changes the review priority."],
+            recommended_actions: ["Use this as the current Synthesis read."],
+            unknowns: [],
+            related_nodes: [],
+            evidence: [{
+              id: "evidence-strip",
+              source_ref: null,
+              source_kind: "model",
+              summary: "Assignment risk model.",
+              strength: "supporting",
+              supports_answer: true,
+              is_counterevidence: false,
+              token_estimate: 10,
+              omitted_reason: null,
+              raw_payload: {},
+            }],
+            omitted_evidence_count: 0,
+            possible_state_change: null,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    }));
     renderBriefing();
     await screen.findByTestId(`ask-strip-${PRIMARY_ID}`);
     expect(screen.getByTestId("ask-suggestion-why_now")).toBeInTheDocument();
@@ -179,5 +299,146 @@ describe("Today page", () => {
     renderBriefing();
     await screen.findByTestId("briefing-header");
     expect(screen.getByTestId("header-ask")).toBeInTheDocument();
+  });
+
+  it("global Ask overlay opens, answers, and expands evidence", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/ask/sessions")) {
+        return new Response(JSON.stringify({
+          session: {
+            id: "ask-session-test",
+            tenant_id: "tenant",
+            viewer_id: "viewer",
+            initial_scope: {
+              type: "current_page",
+              label: "Today review",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            current_scope: {
+              type: "current_page",
+              label: "Today review",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            mode: "quick_inquiry",
+            status: "open",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/v1/ask/sessions/ask-session-test/messages")) {
+        return new Response(JSON.stringify({
+          session: {
+            id: "ask-session-test",
+            tenant_id: "tenant",
+            viewer_id: "viewer",
+            initial_scope: {
+              type: "current_page",
+              label: "Today review",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            current_scope: {
+              type: "current_page",
+              label: "Today review",
+              root_node_ids: [],
+              related_entity_ids: [],
+              filters: {},
+              access_mode: "full",
+            },
+            mode: "quick_inquiry",
+            status: "open",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          message_id: "ask-message-test",
+          answer_id: "ask-answer-test",
+          retrieval_run_id: "ask-run-test",
+          mode: "quick_inquiry",
+          intent: "causal_context",
+          latency_ms: 12,
+          payload: {
+            answer: "Fyralis sees ownership ambiguity behind the current review.",
+            confidence: 0.8,
+            why: ["The active Synthesis node points at owner ambiguity."],
+            counterevidence: ["No direct counterevidence survived the packet."],
+            impact: ["This changes the review priority."],
+            recommended_actions: ["Use this as the current Synthesis read."],
+            unknowns: ["One omitted evidence item is available."],
+            related_nodes: [],
+            evidence: [{
+              id: "evidence-1",
+              source_ref: null,
+              source_kind: "model",
+              summary: "Owner ambiguity model.",
+              strength: "supporting",
+              supports_answer: true,
+              is_counterevidence: false,
+              token_estimate: 10,
+              omitted_reason: null,
+              raw_payload: {},
+            }],
+            omitted_evidence_count: 1,
+            possible_state_change: null,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/v1/ask/evidence/expand")) {
+        return new Response(JSON.stringify({
+          retrieval_run_id: "ask-run-test",
+          evidence: [{
+            id: "evidence-1",
+            source_ref: null,
+            source_kind: "model",
+            summary: "Owner ambiguity model.",
+            strength: "supporting",
+            supports_answer: true,
+            is_counterevidence: false,
+            token_estimate: 10,
+            omitted_reason: null,
+            raw_payload: {},
+          }],
+          omitted: [{
+            id: "omitted-1",
+            source_ref: null,
+            source_kind: "omitted_model",
+            summary: "Budget omitted related context.",
+            strength: "unknown",
+            supports_answer: false,
+            is_counterevidence: false,
+            token_estimate: 10,
+            omitted_reason: "budget_exhausted",
+            raw_payload: {},
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderBriefingWithAsk();
+    await screen.findByTestId("briefing-header");
+    await user.click(screen.getByTestId("header-ask"));
+    const overlay = await screen.findByTestId("ask-overlay");
+    expect(overlay).toBeInTheDocument();
+    await user.type(
+      within(overlay).getByRole("textbox", { name: "Ask Fyralis" }),
+      "What is most at risk?",
+    );
+    await user.click(within(overlay).getByLabelText("Send"));
+    expect(await screen.findByText(/ownership ambiguity/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Expand evidence/i }));
+    expect(await screen.findByText(/Budget omitted related context/i)).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 });

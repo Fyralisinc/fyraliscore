@@ -31,6 +31,156 @@ from services.gateway.tests.test_map_routes import (  # type: ignore
     _ensure_tenant,
     _auth,
 )
+from services.gateway.model_page_routes import _deal_reality_from_proposition
+from services.resolution_threads import repo as resolution_repo
+
+
+def test_deal_reality_projection_from_situation_payload():
+    payload = {
+        "kind": "belief",
+        "claim_role": "situation",
+        "model_type": "deal_state",
+        "opportunity_id": "opp_acme_expansion",
+        "deal_health": "at_risk",
+        "stage_assessment": "Stage is overstated. Deal is not yet in Commit.",
+        "forecast_recommendation": "best_case",
+        "buyer_consensus": {
+            "champion": "supportive",
+            "economic_buyer": "missing",
+            "security": "not_engaged",
+        },
+        "proof_requirements": [
+            {
+                "requirement": "SSO roadmap confirmation",
+                "stakeholder": "technical_buyer",
+                "status": "unmet",
+                "owner": "product_lead",
+            }
+        ],
+        "internal_blockers": [
+            {
+                "blocker": "SSO date uncommitted",
+                "source": "Product roadmap Node",
+                "impact": "Buyer cannot approve rollout plan.",
+            }
+        ],
+        "recommended_next_proof": "Schedule CFO + security alignment.",
+        "falsification_conditions": ["Security review is scheduled."],
+        "resolution_thread": {
+            "id": "rt-acme-deal-reality",
+            "title": "Restore Acme Expansion to a supportable late-stage path",
+            "status": "active",
+            "current_state": "Commit forecast is unsupported.",
+            "target_state": "Security review scheduled.",
+            "owner": "AE + RevOps",
+            "success_criteria": ["Security owner assigned."],
+            "steps": [
+                {
+                    "id": "step-security-owner",
+                    "label": "Assign internal security owner",
+                    "owner": "VP Sales Ops",
+                    "status": "waiting",
+                    "proof_needed": "Named owner appears in Slack.",
+                }
+            ],
+            "watched_signals": [
+                {
+                    "id": "watch-calendar",
+                    "label": "Buyer alignment meeting",
+                    "source_type": "Calendar",
+                    "expected": "CFO + security call appears this week.",
+                    "status": "missing",
+                }
+            ],
+            "escalation_triggers": ["No buyer alignment meeting scheduled."],
+        },
+    }
+
+    projected = _deal_reality_from_proposition(payload)
+
+    assert projected is not None
+    assert projected["modelType"] == "deal_state"
+    assert projected["opportunityId"] == "opp_acme_expansion"
+    assert projected["dealHealth"] == "at_risk"
+    assert projected["forecastRecommendation"] == "best_case"
+    assert projected["consensusScore"] == 33
+    assert projected["buyerConsensus"][1] == {
+        "role": "economic_buyer",
+        "label": "Economic Buyer",
+        "status": "missing",
+    }
+    assert projected["proofRequirements"][0]["requirement"] == "SSO roadmap confirmation"
+    assert projected["internalBlockers"][0]["blocker"] == "SSO date uncommitted"
+    assert projected["falsificationConditions"] == ["Security review is scheduled."]
+    assert projected["resolutionThread"]["id"] == "rt-acme-deal-reality"
+    assert projected["resolutionThread"]["steps"][0]["proofNeeded"] == "Named owner appears in Slack."
+    assert projected["resolutionThread"]["watchedSignals"][0]["status"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_item_detail_uses_persisted_resolution_thread_for_deal_reality(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    item_id = await _seed_model(
+        gateway_pool,
+        tenant_id,
+        natural="Acme Expansion deal reality is at risk: Commit is unsupported.",
+        proposition_kind="state",
+    )
+    await gateway_pool.execute(
+        """
+        UPDATE models
+        SET proposition = $3::jsonb
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        item_id,
+        tenant_id,
+        json.dumps({
+            "kind": "belief",
+            "model_type": "deal_state",
+            "opportunity_id": "opp_acme_expansion",
+            "stage_assessment": "Stage is overstated.",
+            "forecast_recommendation": "Best Case",
+            "buyer_consensus": {"economic_buyer": "missing"},
+            "recommended_next_proof": "Schedule CFO + security alignment.",
+        }),
+    )
+    async with gateway_pool.acquire() as conn:
+        await resolution_repo.create_thread(
+            conn,
+            tenant_id=tenant_id,
+            target_node_kind="customer",
+            target_node_id=item_id,
+            payload={
+                "title": "Restore Acme Expansion to a supportable late-stage path",
+                "status": "active",
+                "current_state": "Commit forecast is unsupported.",
+                "target_state": "Security review scheduled.",
+                "owner": "AE + RevOps",
+                "steps": [],
+                "watched_signals": [
+                    {
+                        "label": "Buyer alignment meeting",
+                        "source_type": "Calendar",
+                        "expected": "CFO + security call appears this week.",
+                        "status": "watching",
+                    }
+                ],
+                "escalation_triggers": [],
+            },
+        )
+
+    resp = await client.get(f"/model/items/{item_id}", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    thread = resp.json()["item"]["dealReality"]["resolutionThread"]
+    assert thread["title"].startswith("Restore Acme Expansion")
+    assert thread["targetNodeId"] == str(item_id)
+    assert thread["watchedSignals"][0]["label"] == "Buyer alignment meeting"
 
 
 @pytest.mark.asyncio

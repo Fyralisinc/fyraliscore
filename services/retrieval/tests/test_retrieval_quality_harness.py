@@ -419,7 +419,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
         tenant_id=tenant,
         detected_by="manual",
         confidence=0.91,
-        explanation="Bridge model shares the same operational issue.",
+        explanation="Connecting model shares the same operational issue.",
     )
     await edge_repo.link(
         tx_conn,
@@ -695,7 +695,7 @@ async def test_quality_high_value_graph_memory_survives_context_assembly(
         tenant_id=tenant,
         detected_by="manual",
         confidence=0.92,
-        explanation="Bridge model connects the operating fact to a warning.",
+        explanation="Connecting model ties the operating fact to a warning.",
     )
     await EdgesRepo().link(
         tx_conn,

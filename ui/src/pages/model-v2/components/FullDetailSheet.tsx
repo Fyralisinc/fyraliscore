@@ -7,6 +7,7 @@
 // about a single claim.
 
 import { useEffect } from "react";
+import type { ResolutionThread } from "@/api/resolution-thread-types";
 import type { ItemDetail } from "../types";
 import { StatusChip } from "./primitives";
 
@@ -60,6 +61,8 @@ export function FullDetailSheet({
           ) : null}
           {item.authority ? <span>Authority: {item.authority.replace(/_/g, " ")}</span> : null}
         </div>
+
+        {item.dealReality ? <DealRealityBrief detail={detail} /> : null}
 
         <section className="fm-detail__section">
           <h3>Subject &amp; type</h3>
@@ -162,6 +165,201 @@ export function FullDetailSheet({
   );
 }
 
+function DealRealityBrief({ detail }: { detail: ItemDetail }) {
+  const deal = detail.item.dealReality;
+  if (!deal) return null;
+  return (
+    <section className="fm-detail__section fm-deal-brief" data-testid="deal-reality-brief">
+      <h3>Deal Reality</h3>
+      <div className="fm-deal-brief__assessment">
+        <span>Current assessment</span>
+        <strong>{deal.stageAssessment}</strong>
+      </div>
+      <div className="fm-deal-brief__metrics">
+        <Metric label="Consensus" value={`${deal.consensusScore}/100`} />
+        <Metric label="Forecast" value={deal.forecastRecommendation} />
+        <Metric label="Health" value={titleize(deal.dealHealth)} />
+      </div>
+      <div className="fm-deal-brief__callout">
+        <span>Next best proof</span>
+        <p>{deal.recommendedNextProof}</p>
+      </div>
+      {deal.managerRecommendation ? (
+        <div className="fm-deal-brief__callout fm-deal-brief__callout--manager">
+          <span>Manager recommendation</span>
+          <p>{deal.managerRecommendation}</p>
+        </div>
+      ) : null}
+
+      {deal.resolutionThread ? (
+        <DealResolutionThread thread={deal.resolutionThread} />
+      ) : null}
+
+      <div className="fm-deal-brief__subsection">
+        <h4>Buyer consensus</h4>
+        <div className="fm-deal-brief__stakeholders">
+          {deal.buyerConsensus.map((s) => (
+            <div key={s.role} className="fm-deal-brief__stakeholder">
+              <strong>{s.label}</strong>
+              <span>{s.status}</span>
+              {s.concern ? <small>{s.concern}</small> : null}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {deal.proofRequirements.length > 0 ? (
+        <div className="fm-deal-brief__subsection">
+          <h4>Proof requirements</h4>
+          <ul>
+            {deal.proofRequirements.map((p) => (
+              <li key={`${p.requirement}-${p.stakeholder}`}>
+                <strong>{p.requirement}</strong>
+                <br />
+                <span className="fm-muted">
+                  {p.status} · {p.stakeholder}
+                  {p.owner ? ` · owner: ${p.owner}` : ""}
+                </span>
+                {p.recommendedAction ? (
+                  <>
+                    <br />
+                    <span>{p.recommendedAction}</span>
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {deal.internalBlockers.length > 0 ? (
+        <div className="fm-deal-brief__subsection">
+          <h4>Hidden internal blockers</h4>
+          <ul>
+            {deal.internalBlockers.map((b) => (
+              <li key={`${b.blocker}-${b.source}`}>
+                <strong>{b.blocker}</strong>
+                <br />
+                <span className="fm-muted">{b.source} · {b.impact}</span>
+                {b.recommendedAction ? (
+                  <>
+                    <br />
+                    <span>{b.recommendedAction}</span>
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {deal.similarDeals && deal.similarDeals.length > 0 ? (
+        <div className="fm-deal-brief__subsection">
+          <h4>Similarity memory</h4>
+          <ul>
+            {deal.similarDeals.map((s) => (
+              <li key={s.name}>
+                <strong>{s.name}</strong>
+                <br />
+                <span>{s.pattern}</span>
+                {s.appliedLesson ? (
+                  <>
+                    <br />
+                    <span className="fm-muted">{s.appliedLesson}</span>
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {deal.counterevidence && deal.counterevidence.length > 0 ? (
+        <div className="fm-deal-brief__subsection">
+          <h4>Counterevidence</h4>
+          <ul>
+            {deal.counterevidence.map((c, i) => (
+              <li key={i}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DealResolutionThread({ thread }: { thread: ResolutionThread }) {
+  return (
+    <div
+      className="fm-deal-brief__subsection fm-resolution"
+      data-testid={`model-resolution-thread-${thread.id}`}
+    >
+      <div className="fm-resolution__head">
+        <div>
+          <h4>Resolution tracker</h4>
+          <strong>{thread.title}</strong>
+        </div>
+        <span className={`fm-resolution__status fm-resolution__status--${thread.status}`}>
+          {titleize(thread.status)}
+        </span>
+      </div>
+
+      <div className="fm-resolution__states">
+        <div>
+          <span>Current</span>
+          <p>{thread.currentState}</p>
+        </div>
+        <div>
+          <span>Target</span>
+          <p>{thread.targetState}</p>
+        </div>
+      </div>
+
+      <p className="fm-resolution__meta">
+        Owner: {thread.owner}
+        {thread.nextReviewAt ? ` · Review ${humanDate(thread.nextReviewAt)}` : ""}
+      </p>
+
+      <div className="fm-resolution__grid">
+        <div>
+          <span className="fm-resolution__eyebrow">Work to complete</span>
+          <ul className="fm-resolution__list">
+            {thread.steps.slice(0, 4).map((step) => (
+              <li key={step.id}>
+                <span className={`fm-resolution__dot fm-resolution__dot--${step.status}`} />
+                <div>
+                  <strong>{step.label}</strong>
+                  <small>{titleize(step.status)} · {step.owner}</small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <span className="fm-resolution__eyebrow">Fyralis watches</span>
+          <ul className="fm-resolution__watch">
+            {thread.watchedSignals.map((signal) => (
+              <li key={signal.id}>
+                <strong>{signal.label}</strong>
+                <small>{titleize(signal.status)} · {signal.sourceType}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="fm-deal-brief__metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function humanCategory(id: string): string {
   switch (id) {
     case "goals": return "Goal";
@@ -187,4 +385,8 @@ function humanDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function titleize(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }

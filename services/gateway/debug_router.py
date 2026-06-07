@@ -2,9 +2,9 @@
 
 Powers the /debug UI that shows the full substrate and the end-to-end
 processing log for every signal. Scoped by X-Tenant-Id (falls back to
-DEFAULT_TENANT_ID in dev). All endpoints are read-only; the single
-mutating endpoint is `POST /debug/force-refresh-cache` which just
-forwards to GRT.
+DEFAULT_TENANT_ID in dev). Most endpoints are read-only; mutating
+endpoints are limited to dev/operator actions such as cache refresh and
+relationship ontology proposal review.
 
 Fields returned are the raw DB shape — this is a developer tool, not
 a user-facing surface. If you want voice or cards, use /view/ceo/*.
@@ -14,11 +14,18 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+
+
+class OntologyProposalReviewRequest(BaseModel):
+    status: Literal["accepted", "rejected", "superseded"]
+    reviewed_by: str | None = Field(default=None, max_length=120)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 # --------------------------------------------------------------------
@@ -342,6 +349,84 @@ def build_debug_router() -> APIRouter:
                 low_context_ratio=low_context_ratio,
                 include_artifacts=include_artifacts,
             )
+
+    @router.get("/sage-health")
+    async def get_sage_health(
+        req: Request,
+        structural_freshness_hours: int = Query(6, ge=1, le=168),
+        optimizer_lag_minutes: int = Query(30, ge=1, le=1440),
+    ):
+        tid = _resolve_tenant(req)
+        pool = await _pool_from_request(req)
+        from services.sage.health import build_sage_health_report
+
+        async with pool.acquire() as conn:
+            return await build_sage_health_report(
+                conn,
+                tenant_id=tid,
+                structural_freshness_hours=structural_freshness_hours,
+                optimizer_lag_minutes=optimizer_lag_minutes,
+            )
+
+    @router.get("/relationship-ontology-proposals")
+    async def list_relationship_ontology_proposals(
+        req: Request,
+        status: Optional[str] = Query(
+            None,
+            pattern="^(draft|review_ready|accepted|rejected|superseded)$",
+        ),
+        limit: int = Query(50, ge=1, le=500),
+    ):
+        tid = _resolve_tenant(req)
+        pool = await _pool_from_request(req)
+        args: list[Any] = [tid]
+        where = ["tenant_id = $1"]
+        if status is not None:
+            args.append(status)
+            where.append(f"status = ${len(args)}")
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM relationship_ontology_proposals "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY "
+                "  CASE status WHEN 'review_ready' THEN 0 ELSE 1 END, "
+                "  max_judgment_leverage_score DESC, updated_at DESC "
+                f"LIMIT {limit}",
+                *args,
+            )
+        return {"proposals": [_jsonify(r) for r in rows]}
+
+    @router.post("/relationship-ontology-proposals/{proposal_id}/review")
+    async def review_relationship_ontology_proposal(
+        proposal_id: str,
+        body: OntologyProposalReviewRequest,
+        req: Request,
+    ):
+        tid = _resolve_tenant(req)
+        try:
+            pid = UUID(proposal_id)
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="bad proposal_id")
+        pool = await _pool_from_request(req)
+        from services.relationships.ontology_proposals import (
+            RelationshipOntologyProposalsRepo,
+        )
+
+        async with pool.acquire() as conn:
+            proposal = await RelationshipOntologyProposalsRepo().review(
+                conn,
+                tenant_id=tid,
+                proposal_id=pid,
+                status=body.status,
+                reviewed_by=body.reviewed_by,
+                note=body.note,
+            )
+        if proposal is None:
+            raise HTTPException(
+                status_code=404,
+                detail="proposal not found or transition not allowed",
+            )
+        return {"proposal": proposal}
 
     # ---------- Models -------------------------------------------
     @router.get("/models")

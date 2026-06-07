@@ -393,6 +393,61 @@ async def test_max_total_tokens_budget_demotes_to_ref_only(
 
 
 @pytest.mark.asyncio
+async def test_max_projected_items_budget_drops_low_marginal_tail(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    seed_obs = await _seed_observation(gateway_pool, tenant_id=tenant_id)
+    model_ids: list[UUID] = []
+    counter_obs = await _seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="late counterevidence",
+    )
+    for idx in range(6):
+        support = await _seed_observation(
+            gateway_pool,
+            tenant_id=tenant_id,
+            content_text=f"support-{idx}",
+            trust_tier="authoritative" if idx < 2 else "medium",
+        )
+        signal_readings = []
+        if idx == 5:
+            signal_readings.append({
+                "event_id": str(counter_obs),
+                "kind": "contradiction",
+                "weight": -0.8,
+            })
+        model_ids.append(
+            await _seed_model(
+                gateway_pool,
+                tenant_id=tenant_id,
+                born_from_event_id=seed_obs,
+                supporting_event_ids=[support],
+                signal_readings=signal_readings,
+                natural=f"model-{idx}",
+            )
+        )
+
+    projector = EvidenceProjector(
+        budget=ProjectionBudget(max_projected_items=4),
+    )
+    result = await projector.project(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        selected_model_ids=model_ids,
+        question_primitive="STATUS",
+    )
+
+    assert len(result.projected) == 4
+    assert any(
+        p.reason == "decisive_counterevidence"
+        and p.evidence_id == counter_obs
+        for p in result.projected
+    )
+    assert any(reason == "projected_item_cap" for _, reason in result.omitted)
+
+
+@pytest.mark.asyncio
 async def test_coverage_counterevidence_share_computed(
     gateway_pool: asyncpg.Pool, tenant_id: UUID,
 ):
@@ -440,6 +495,55 @@ async def test_coverage_counterevidence_share_computed(
     assert result.coverage["counterevidence_share"] == pytest.approx(expected)
     assert 0.0 <= result.coverage["freshness_share"] <= 1.0
     assert 0.0 <= result.coverage["falsification_share"] <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_counterevidence_matching_falsifier_counts_as_falsification(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    """A contradiction reading that also matches the model falsifier
+    should count toward both counterevidence and falsification coverage."""
+    seed_obs = await _seed_observation(gateway_pool, tenant_id=tenant_id)
+    support_obs = await _seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="support",
+    )
+    counter_obs = await _seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="the launch is not blocked anymore",
+    )
+    model_id = await _seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=seed_obs,
+        supporting_event_ids=[support_obs, counter_obs],
+        signal_readings=[
+            {
+                "event_id": str(counter_obs),
+                "kind": "contradiction",
+                "weight": -0.9,
+            },
+        ],
+        falsifier={"kind": "observation_pattern", "pattern": "not blocked"},
+    )
+
+    result = await EvidenceProjector().project(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        selected_model_ids=[model_id],
+        question_primitive="DEPENDENCY",
+    )
+
+    counter = [
+        p for p in result.projected
+        if p.evidence_id == counter_obs
+    ]
+    assert len(counter) == 1
+    assert counter[0].reason == "decisive_counterevidence"
+    assert result.coverage["counterevidence_share"] > 0.0
+    assert result.coverage["falsification_share"] > 0.0
 
 
 @pytest.mark.asyncio

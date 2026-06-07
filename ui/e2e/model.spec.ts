@@ -5,12 +5,8 @@
 
 import { test, expect, type Route } from "@playwright/test";
 
-const BASE = "http://localhost:5173";
-
 // Pre-seed localStorage so AutoDemoSession resolves immediately
-// instead of hanging on /api/v1/demo/sessions/start (which mock-server
-// doesn't implement). Without this, the page never reaches the model
-// view and every test fails on "model-page not visible".
+// instead of waiting on the demo bootstrap path in every test.
 async function seedSession(page: import("@playwright/test").Page) {
   await page.addInitScript(() => {
     localStorage.setItem("demoAuthToken", "test-token");
@@ -69,7 +65,7 @@ test.describe("Model page (v2) — overview", () => {
   });
 
   test("renders the page shell + 8 category modules", async ({ page }) => {
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
     await expect(page.getByTestId("model-page")).toBeVisible();
     await expect(page.getByTestId("model-header")).toBeVisible();
     await expect(page.getByTestId("model-modebar")).toBeVisible();
@@ -84,7 +80,7 @@ test.describe("Model page (v2) — overview", () => {
   });
 
   test("renders top relationship bundles with verbs", async ({ page }) => {
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
     // Impact mode shows at least the canonical Decisions → Commitments
     // blocks bundle.
     const blocksBundle = page.getByTestId("bundle-decisions__blocks__commitments");
@@ -96,7 +92,7 @@ test.describe("Model page (v2) — overview", () => {
   });
 
   test("mode bar switches the visible bundles", async ({ page }) => {
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
     await page.getByTestId("mode-ownership").click();
     // Ownership mode shows the people→commitments owns bundle.
     await expect(page.getByTestId("bundle-people__owns__commitments")).toBeVisible();
@@ -116,25 +112,24 @@ test.describe("Model page (v2) — overview", () => {
 test.describe("Model page (v2) — state transitions", () => {
   test.beforeEach(async ({ page }) => {
     await stubModelApiAsEmpty(page);
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
   });
 
-  test("category click enters CategoryZoom and reveals top items", async ({ page }) => {
+  test("category click opens the category sheet and reveals top items", async ({ page }) => {
     await page.getByTestId("category-commitments").click();
-    await expect(page.getByTestId("categoryzoom-canvas")).toBeVisible();
-    await expect(page.getByTestId("category-expanded-commitments")).toBeVisible();
+    await expect(page.getByTestId("category-sheet")).toBeVisible();
     // Top items include the spec-aligned "Stabilize Salesforce sync".
     await expect(page.getByText("Stabilize Salesforce sync")).toBeVisible();
-    // Back button returns to overview.
-    await page.getByTestId("model-back").click();
+    // Closing the sheet returns attention to the overview.
+    await page.getByRole("button", { name: "Close" }).click();
     await expect(page.getByTestId("overview-canvas")).toBeVisible();
   });
 
-  test("Esc returns to the previous state", async ({ page }) => {
+  test("Esc closes the category sheet", async ({ page }) => {
     await page.getByTestId("category-decisions").click();
-    await expect(page.getByTestId("categoryzoom-canvas")).toBeVisible();
+    await expect(page.getByTestId("category-sheet")).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("overview-canvas")).toBeVisible();
+    await expect(page.getByTestId("category-sheet")).toHaveCount(0);
   });
 
   test("relationship click enters RelationshipZoom (corridor)", async ({ page }) => {
@@ -149,7 +144,7 @@ test.describe("Model page (v2) — state transitions", () => {
 
   test("item micro-card click enters NodeZoom", async ({ page }) => {
     await page.getByTestId("category-commitments").click();
-    await expect(page.getByTestId("category-expanded-commitments")).toBeVisible();
+    await expect(page.getByTestId("category-sheet")).toBeVisible();
     await page.getByTestId("micro-c-stabilize-sf").click();
     await expect(page.getByTestId("nodezoom-canvas")).toBeVisible();
     await expect(page.getByTestId("node-central")).toBeVisible();
@@ -200,7 +195,7 @@ test.describe("Model page (v2) — state transitions", () => {
 test.describe("Model page (v2) — search overlay", () => {
   test.beforeEach(async ({ page }) => {
     await stubModelApiAsEmpty(page);
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
   });
 
   test("Cmd/Ctrl+K opens the search overlay", async ({ page, browserName }) => {
@@ -237,7 +232,7 @@ test.describe("Model page (v2) — error + empty states", () => {
     await page.route("**/api/model/overview*", (r) =>
       r.fulfill({ status: 500, body: "boom" }),
     );
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
     await expect(page.getByTestId("model-page")).toBeVisible();
     // Fixture renders the 8 categories even on API failure.
     await expect(page.getByTestId("category-commitments")).toBeVisible();
@@ -247,7 +242,7 @@ test.describe("Model page (v2) — error + empty states", () => {
 test.describe("Model page (v2) — design fix additions", () => {
   test.beforeEach(async ({ page }) => {
     await stubModelApiAsEmpty(page);
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
   });
 
   test("hovering a bundle reveals the inspect-preview tooltip", async ({ page }) => {
@@ -300,7 +295,7 @@ test.describe("Model page (v2) — design fix additions", () => {
 test.describe("Model page (v2) — accessibility", () => {
   test.beforeEach(async ({ page }) => {
     await stubModelApiAsEmpty(page);
-    await page.goto(`${BASE}/model`);
+    await page.goto("/model");
   });
 
   test("category modules carry ARIA labels with counts", async ({ page }) => {

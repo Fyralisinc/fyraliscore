@@ -341,6 +341,102 @@ async def test_synthesized_situation_is_queryable_by_grammar_and_membership(
             assert reverse_lookup_id == sit["id"]
 
 
+@pytest.mark.asyncio
+async def test_operational_bundle_applies_as_atomic_models_not_one_fact_blob(
+    fresh_db, tenant
+):
+    natural = (
+        "Form controls visible: radio 500 GB [add $300.00] checked=false; "
+        "radio Windows 8 [add $100.00] checked=false; radio Ubuntu checked=true; "
+        "'Quantity' value='2'; 'Catalog item' value='Development Laptop (PC)'"
+    )
+    async with fresh_db.acquire() as conn:
+        oid = await _seed_observation(conn, tenant, natural)
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[_insert_op(
+                tenant_id=tenant,
+                born_from_event_id=oid,
+                natural=natural,
+                subject="catalog form",
+                confidence=0.6,
+            )],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+                models_repo=repo,
+            )
+
+            rows = await conn.fetch(
+                """
+                SELECT id, claim_role, abstraction_level, "natural", proposition
+                FROM models
+                WHERE tenant_id = $1 AND born_from_event_id = $2
+                ORDER BY created_at, id::text
+                """,
+                tenant,
+                oid,
+            )
+
+    assert result["split_summary"] == {
+        "compound_inputs": 1,
+        "atomic_outputs": 5,
+        "synthesized_situations": 1,
+    }
+    assert len(rows) == 6
+    atomic_rows = [row for row in rows if row["claim_role"] != "situation"]
+    situation_rows = [row for row in rows if row["claim_role"] == "situation"]
+    assert len(atomic_rows) == 5
+    assert len(situation_rows) == 1
+
+    atom_naturals = {row["natural"] for row in atomic_rows}
+    assert any("500 GB adds 300 USD" in natural for natural in atom_naturals)
+    assert any("Windows 8 adds 100 USD" in natural for natural in atom_naturals)
+    assert any("Quantity value is '2'" in natural for natural in atom_naturals)
+    assert any(
+        "Catalog item value is 'Development Laptop (PC)'" in natural
+        for natural in atom_naturals
+    )
+
+    for row in atomic_rows:
+        prop = row["proposition"]
+        if isinstance(prop, str):
+            import json
+            prop = json.loads(prop)
+        assert prop["kind"] == "belief"
+        assert prop["claim_role"] == "fact"
+        assert prop["abstraction_level"] == "atomic"
+        assert prop["operational_split_source"] == "universal_facets"
+        facets = prop.get("operational_facets") or []
+        values = {
+            facet.get("value")
+            for facet in facets
+            if isinstance(facet, dict) and facet.get("value")
+        }
+        assert not {"500 GB", "Windows 8"}.issubset(values)
+        assert all(
+            facet.get("property") not in {"checked", "selected", "value"}
+            for facet in facets
+            if isinstance(facet, dict)
+        )
+
+    sit_prop = situation_rows[0]["proposition"]
+    if isinstance(sit_prop, str):
+        import json
+        sit_prop = json.loads(sit_prop)
+    assert set(sit_prop["member_model_ids"]) == {
+        str(row["id"]) for row in atomic_rows
+    }
+    assert "operational_facets" not in sit_prop
+    assert "operational_roles" not in sit_prop
+
+
 # =====================================================================
 # Quality gate
 # =====================================================================

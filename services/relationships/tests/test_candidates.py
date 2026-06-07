@@ -9,6 +9,7 @@ from services.relationships.candidates import (
     candidate_rules,
     generate_scope_overlap_candidates,
     make_edge_candidate,
+    make_edge_type_candidate,
     make_situation_candidate,
     rank_candidates,
 )
@@ -71,6 +72,64 @@ def test_edge_candidate_rejects_self_edge() -> None:
             edge_kind="supports",
             basis="inferred",
             explanation="bad self-edge",
+            scores=JudgmentScores(),
+        )
+
+
+def test_edge_type_candidate_carries_ontology_gap_payload() -> None:
+    tenant_id = uuid7()
+    source_model_id = uuid7()
+    target_model_id = uuid7()
+    candidate = make_edge_type_candidate(
+        tenant_id=tenant_id,
+        proposed_edge_kind="gated_by_decision",
+        description="Progress depends on an explicit decision gate.",
+        relationship_summary=(
+            "A model cannot progress until a specific decision is made."
+        ),
+        parent_kind="blocks",
+        nearest_existing_kind="blocks",
+        directionality="directed",
+        dropped_dimensions=(
+            "authority surface",
+            "decision dependency",
+            "approval state",
+        ),
+        example_source_model_id=source_model_id,
+        example_target_model_id=target_model_id,
+        scores=JudgmentScores(
+            impact=0.9,
+            uncertainty=0.7,
+            urgency=0.8,
+            authority_required=0.9,
+            actionability=0.8,
+            novelty=0.8,
+            confidence=0.6,
+        ),
+    )
+
+    assert candidate.candidate_kind == "edge_type"
+    assert candidate.basis == "ontology_gap"
+    assert candidate.source_model_id is None
+    assert candidate.target_model_id is None
+    assert candidate.edge_kind is None
+    assert candidate.member_model_ids == (source_model_id, target_model_id)
+    assert candidate.proposed_proposition is not None
+    assert candidate.proposed_proposition["kind"] == "ontology_gap"
+    assert candidate.proposed_proposition["proposed_edge_kind"] == "gated_by_decision"
+    assert candidate.proposed_proposition["parent_kind"] == "blocks"
+    assert candidate.metadata["ontology_gap"]["retrieval_fallback_kind"] == "blocks"
+    assert candidate.review_status == "needs_review"
+
+
+def test_edge_type_candidate_rejects_partial_example_pair() -> None:
+    with pytest.raises(ValueError):
+        make_edge_type_candidate(
+            tenant_id=uuid7(),
+            proposed_edge_kind="accountable_for",
+            description="Accountability proposal.",
+            relationship_summary="Only one endpoint was supplied.",
+            example_source_model_id=uuid7(),
             scores=JudgmentScores(),
         )
 

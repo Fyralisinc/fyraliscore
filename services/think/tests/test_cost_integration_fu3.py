@@ -61,7 +61,7 @@ class UsageEmittingScriptedProvider(ScriptedProvider):
             system=system, user=user, temperature=temperature,
             max_tokens=max_tokens, schema_hint=schema_hint,
         )
-        # Bridge usage like a real provider's SDK-response extractor.
+        # Adapter usage like a real provider's SDK-response extractor.
         self._record_usage(
             self.input_tokens_per_call,
             self.output_tokens_per_call,

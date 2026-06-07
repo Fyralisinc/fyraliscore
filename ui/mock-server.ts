@@ -268,6 +268,180 @@ export function mockBackend(): Plugin {
           return;
         }
 
+        // ---- Ask Fyralis overlay --------------------------------
+        if (method === "POST" && /^\/api\/v1\/ask\/sessions(?:\?.*)?$/.test(url)) {
+          const body = await readJson(req);
+          const now = new Date().toISOString();
+          json(res, {
+            session: {
+              id: "ask-session-mock",
+              tenant_id: "tenant-fyralis-demo",
+              viewer_id: "actor-rachin",
+              initial_scope: body.initial_scope,
+              current_scope: body.initial_scope,
+              source_route: body.source_route ?? null,
+              source_object_id: body.source_object_id ?? null,
+              source_object_type: body.source_object_type ?? null,
+              mode: "quick_inquiry",
+              status: "open",
+              created_at: now,
+              updated_at: now,
+            },
+          });
+          return;
+        }
+        const askMessageMatch = url.match(
+          /^\/api\/v1\/ask\/sessions\/([^/]+)\/messages(?:\?.*)?$/,
+        );
+        if (method === "POST" && askMessageMatch) {
+          const body = await readJson(req);
+          const query = String(body.query ?? "");
+          const scope = body.scope ?? {
+            type: "current_page",
+            label: "Current page",
+            root_node_ids: [],
+            related_entity_ids: [],
+            filters: {},
+            access_mode: "full",
+          };
+          const wantsGap = /missing|stale|contradict|wrong/i.test(query);
+          const change = wantsGap
+            ? {
+                id: "ask-change-mock",
+                answer_id: "ask-answer-mock",
+                proposed_op: {
+                  op: "validate_synthesis_gap",
+                  query,
+                  scope,
+                  validation_required: true,
+                },
+                status: "proposed",
+                linked_trigger_id: null,
+              }
+            : null;
+          json(res, {
+            session: {
+              id: askMessageMatch[1],
+              tenant_id: "tenant-fyralis-demo",
+              viewer_id: "actor-rachin",
+              initial_scope: scope,
+              current_scope: scope,
+              source_route: null,
+              source_object_id: null,
+              source_object_type: null,
+              mode: wantsGap ? "deep_inquiry" : "quick_inquiry",
+              status: "open",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            message_id: `ask-msg-${Date.now()}`,
+            answer_id: "ask-answer-mock",
+            retrieval_run_id: "ask-run-mock",
+            mode: wantsGap ? "deep_inquiry" : "quick_inquiry",
+            intent: wantsGap ? "state_gap_inquiry" : "causal_context",
+            latency_ms: 180,
+            payload: {
+              answer: `In ${scope.label}, Fyralis' current Synthesis read points to a concentrated ownership and evidence-quality question behind "${query}".`,
+              confidence: wantsGap ? 0.62 : 0.78,
+              why: [
+                "The strongest active node points at ownership ambiguity.",
+                "Recent evidence repeats the same blocker from two surfaces.",
+              ],
+              counterevidence: [
+                "No direct counterevidence survived the compact packet.",
+              ],
+              impact: [
+                "This may change the next review priority inside the current scope.",
+              ],
+              recommended_actions: wantsGap
+                ? ["Review the proposed state change through validation."]
+                : ["Use this as the current Synthesis read; no mutation is needed."],
+              unknowns: [
+                "One omitted evidence item is available for expansion.",
+              ],
+              related_nodes: [
+                {
+                  id: "00000000-0000-0000-0000-000000000001",
+                  label: "Ownership ambiguity is blocking the workstream",
+                  confidence: 0.82,
+                  activation: 0.91,
+                  role: "supporting",
+                },
+              ],
+              evidence: [
+                {
+                  id: "ask-evidence-1",
+                  source_ref: "00000000-0000-0000-0000-000000000011",
+                  source_kind: "model",
+                  summary: "Active Synthesis node: ownership ambiguity is blocking the workstream.",
+                  strength: "supporting",
+                  supports_answer: true,
+                  is_counterevidence: false,
+                  token_estimate: 18,
+                  omitted_reason: null,
+                  raw_payload: {},
+                },
+              ],
+              omitted_evidence_count: 1,
+              possible_state_change: change,
+            },
+          });
+          return;
+        }
+        if (method === "POST" && url.startsWith("/api/v1/ask/evidence/expand")) {
+          json(res, {
+            retrieval_run_id: "ask-run-mock",
+            evidence: [
+              {
+                id: "ask-evidence-1",
+                source_ref: "00000000-0000-0000-0000-000000000011",
+                source_kind: "model",
+                summary: "Active Synthesis node: ownership ambiguity is blocking the workstream.",
+                strength: "supporting",
+                supports_answer: true,
+                is_counterevidence: false,
+                token_estimate: 18,
+                omitted_reason: null,
+                raw_payload: {},
+              },
+            ],
+            omitted: [
+              {
+                id: "ask-omitted-1",
+                source_ref: "00000000-0000-0000-0000-000000000012",
+                source_kind: "omitted_model",
+                summary: "A lower-ranked related model was omitted because the compact packet hit its budget.",
+                strength: "unknown",
+                supports_answer: false,
+                is_counterevidence: false,
+                token_estimate: 20,
+                omitted_reason: "budget_exhausted",
+                raw_payload: {},
+              },
+            ],
+          });
+          return;
+        }
+        const askActionMatch = url.match(
+          /^\/api\/v1\/ask\/proposed-state-changes\/([^/]+)\/action(?:\?.*)?$/,
+        );
+        if (method === "POST" && askActionMatch) {
+          const body = await readJson(req);
+          json(res, {
+            change: {
+              id: askActionMatch[1],
+              answer_id: "ask-answer-mock",
+              proposed_op: {
+                op: "validate_synthesis_gap",
+                validation_required: true,
+              },
+              status: body.action === "accept" ? "accepted" : body.action === "reject" ? "rejected" : "delegated",
+              linked_trigger_id: body.action === "accept" ? "ask-trigger-mock" : null,
+            },
+          });
+          return;
+        }
+
         // ---- Wave 2: Decision Deltas (Today v2) ------------------
         if (method === "GET" && /^\/api\/v1\/decision_deltas\/?(\?|$)/.test(url)) {
           const { mockListDeltas } = await import("./src/api/decision-deltas-mock");

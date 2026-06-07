@@ -524,11 +524,13 @@ async def primary_retrieve(
         "weights": dict(weights),
         "pathways_run": [],
         "pathways_skipped": [],
-        "config_summary": {
-            "semantic_k": cfg.semantic_k,
-            "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
-            "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
-            "scoring_mode": cfg.scoring_mode,
+            "config_summary": {
+                "semantic_k": cfg.semantic_k,
+                "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
+                "temporal_max_observations": cfg.temporal_max_observations,
+                "temporal_max_models": cfg.temporal_max_models,
+                "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
+                "scoring_mode": cfg.scoring_mode,
             "assembler_use_mmr": cfg.assembler_use_mmr,
             "assembler_budget_models": cfg.assembler_budget_models,
             "assembler_budget_observations": cfg.assembler_budget_observations,
@@ -626,6 +628,8 @@ async def primary_retrieve(
                     conn,
                     scope_actors=effective_scope_actors,
                     scope_entities=effective_seed_entities,
+                    max_observations=cfg.temporal_max_observations,
+                    max_models=cfg.temporal_max_models,
                     include_entity_mentions=cfg.temporal_include_entity_mentions,
                 )
                 pathway_results.append(pr_c)

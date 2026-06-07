@@ -20,9 +20,9 @@ Implements the rule-based topology updates described in doc §16
 Canonical topology ops (merge, split, promote, demote — doc §16.3,
 §1262-1271) are produced as `dict` candidate payloads only; the
 optimizer NEVER writes to `models`, `model_edges`, or `observations`.
-The candidates are forwarded to `enqueue_for_validation`, which is a
-no-op stub today (see TODO) and will gate them through the existing
-validation pipeline in a later phase.
+Multi-model candidates are persisted into the existing pre-truth
+`relationship_candidates` review layer so Think/humans can validate
+them before any canonical truth changes.
 
 Trigger taxonomy (`trigger_event`) matches doc §16.1:
 
@@ -39,6 +39,7 @@ trigger to choose between cheap and expensive update paths.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,13 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.judgment.scoring import JudgmentScores, clamp_score
+from services.relationships.candidates import (
+    RelationshipCandidate,
+    make_edge_candidate,
+    make_situation_candidate,
+)
+from services.relationships.repo import RelationshipCandidatesRepo
 from services.sage.affordances.repo import AffordanceProfilesRepo
 from services.sage.discovery.negative_memory_repo import NegativeMemoryRepo
 from services.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
@@ -59,8 +67,13 @@ from services.sage.region_summaries.refresh import (
     should_refresh,
 )
 from services.sage.region_summaries.repo import RegionSummariesRepo
-from services.sage.structural_features.job import recompute_features_for_tenant
+from services.sage.structural_features.compute import (
+    build_adjacency,
+    compute_edge_features,
+    compute_model_features,
+)
 from services.sage.structural_features.repo import StructuralFeaturesRepo
+from services.sage.structural_features.types import StructuralEdge
 from services.sage.topology_optimizer.types import OptimizationRunReport
 
 
@@ -74,15 +87,32 @@ _log = logging.getLogger(__name__)
 REINFORCE_DELTA = 0.1
 DECAY_FACTOR = 0.95
 SHORTCUT_POSITIVE_DELTA = 0.2
+DIRECT_NODE_SHORTCUT_POSITIVE_DELTA = 1.0
 NEGATIVE_MEMORY_TTL = timedelta(days=60)
 
 # Heuristic thresholds for canonical-topology-op proposals.
 PROMOTE_RECURRENCE_THRESHOLD = 3      # composition pattern seen >= N times.
+ACCESS_PROMOTE_MIN_EVENTS = 8        # access routes need broad within-run support.
+ACCESS_PROMOTE_MIN_MODELS = 8        # avoid canonicalizing local conveniences.
 SPLIT_PRED_ERROR_THRESHOLD = 0.5      # min prediction_error to consider.
 SPLIT_DISTINCT_NEIGHBORS = 3          # min distinct useful-path neighbors.
 DEMOTE_LOW_UTILITY = 0.1              # max affordance utility to demote.
 DEMOTE_QUIET_AFTER = timedelta(days=30)  # min time since last reinforcement.
 MERGE_SHARED_PATH_HITS = 2            # pair both seen in >=N useful paths.
+PROMOTE_SOURCE_MODEL_ID_LIMIT = 64    # bounded candidate payload sample.
+NEGATIVE_MEMORY_OMISSION_REASONS = frozenset({
+    "access_denied",
+    "low_confidence",
+    "out_of_scope",
+    "stale",
+})
+
+# Feedback-loop structural refresh is intentionally bounded. Full-tenant
+# structural recomputation belongs to the scheduled structural-features job;
+# doing it after every inquiry makes adaptation O(company size).
+STRUCTURAL_REFRESH_FOCUS_LIMIT = 64
+STRUCTURAL_REFRESH_LOCAL_NODE_LIMIT = 512
+STRUCTURAL_REFRESH_EDGE_LIMIT = 2048
 
 # Map from doc §16.1 triggers to RegionSummaries refresh reasons.
 _TRIGGER_TO_REFRESH_REASON = {
@@ -99,18 +129,17 @@ _TRIGGER_TO_REFRESH_REASON = {
 
 
 # ---------------------------------------------------------------------
-# enqueue_for_validation — stub for the canonical-op gate.
+# enqueue_for_validation — pure compatibility helper.
 # ---------------------------------------------------------------------
 
 
 def enqueue_for_validation(candidates: list[dict]) -> list[dict]:
-    """Forward canonical-op candidates to the validation pipeline.
+    """Return canonical-op candidates for compatibility with older callers.
 
-    No-op stub for Phase 13: returns the candidate list unchanged so
-    callers (and tests) can inspect the proposed ops without applying
-    them. A later phase wires this to the validation queue.
+    The product path is `TopologyOptimizer._enqueue_for_validation`, which
+    persists reviewable candidates using the caller's tenant/connection.
+    This function remains a pure inspector helper for tests and scripts.
     """
-    # TODO: wire to validation pipeline.
     return list(candidates)
 
 
@@ -155,7 +184,19 @@ def _payload_str_list(payload: dict, key: str) -> list[str]:
     raw = payload.get(key)
     if not isinstance(raw, list):
         return []
-    return [s for s in raw if isinstance(s, str) and s]
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            value = item.strip()
+        elif isinstance(item, dict):
+            value = str(
+                item.get("id") or item.get("name") or item.get("type") or ""
+            ).strip()
+        else:
+            value = ""
+        if value and value not in out:
+            out.append(value)
+    return out
 
 
 def _path_key(payload: dict) -> tuple[Any, ...] | None:
@@ -209,6 +250,32 @@ def _signature_from_payload(payload: dict) -> dict[str, Any]:
     return signature
 
 
+def _route_signature_from_signature(signature: dict[str, Any]) -> dict[str, Any]:
+    """Return a same-entity route signature without question primitive.
+
+    Low-value no-answer packets may change question mix on the next attempt.
+    If we only remember one primitive was useless, a follow-up read can
+    rediscover the same irrelevant region through another primitive. Requiring
+    entities keeps this from becoming a tenant-wide negative memory.
+    """
+
+    raw_entities = signature.get("entities")
+    if not isinstance(raw_entities, list) or not raw_entities:
+        return {}
+    entities = [
+        str(item).strip()
+        for item in raw_entities
+        if str(item).strip()
+    ][:12]
+    if not entities:
+        return {}
+    route_signature: dict[str, Any] = {"entities": entities}
+    signal_type = signature.get("signal_type")
+    if signal_type:
+        route_signature["signal_type"] = signal_type
+    return route_signature
+
+
 # ---------------------------------------------------------------------
 # Inference helpers — pure over the outcome event list.
 # ---------------------------------------------------------------------
@@ -223,6 +290,31 @@ def _infer_useful_nodes(events: Iterable[OutcomeEventRow]) -> set[UUID]:
         mid = _payload_uuid(e.payload, "model_id", "node_id")
         if mid is not None:
             out.add(mid)
+    return out
+
+
+def _infer_useful_node_events(
+    events: Iterable[OutcomeEventRow],
+) -> list[OutcomeEventRow]:
+    event_list = list(events)
+    ordered = [
+        *[
+            event for event in event_list
+            if event.event_type == "reader_decision_used_in_valid_diff"
+        ],
+        *[
+            event for event in event_list
+            if event.event_type == "node_used_in_valid_diff"
+        ],
+    ]
+    seen: set[UUID] = set()
+    out: list[OutcomeEventRow] = []
+    for event in ordered:
+        model_id = _payload_uuid(event.payload, "model_id", "node_id")
+        if model_id is None or model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append(event)
     return out
 
 
@@ -246,6 +338,55 @@ def _infer_useful_paths(
         seen.add(key)
         out.append(e)
     return out
+
+
+def _activation_contexts_by_model(
+    events: Iterable[OutcomeEventRow],
+) -> dict[UUID, list[dict[str, Any]]]:
+    contexts: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        if event.event_type not in {
+            "node_used_in_valid_diff",
+            "reader_decision_used_in_valid_diff",
+        }:
+            continue
+        model_id = _payload_uuid(event.payload, "model_id", "node_id")
+        if model_id is None:
+            continue
+        signature = _signature_from_payload(event.payload)
+        if signature:
+            contexts[model_id].append(signature)
+    return contexts
+
+
+def _merge_activation_signatures(
+    existing: dict[str, Any] | None,
+    contexts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(existing or {})
+
+    def merge_list(key: str, values: Iterable[str]) -> None:
+        current = [
+            str(value)
+            for value in merged.get(key, [])
+            if value is not None
+        ] if isinstance(merged.get(key), list) else []
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in current:
+                current.append(text)
+        if current:
+            merged[key] = current[:64]
+
+    for context in contexts:
+        merge_list("entities", _payload_str_list(context, "entities"))
+        signal_type = _payload_str(context, "signal_type")
+        if signal_type:
+            merge_list("signal_types", [signal_type])
+        primitive = _payload_str(context, "question_primitive")
+        if primitive:
+            merge_list("question_primitives", [primitive])
+    return merged
 
 
 def _infer_noisy_paths_and_omissions(
@@ -275,8 +416,15 @@ def _infer_noisy_paths_and_omissions(
     noisy: list[OutcomeEventRow] = []
     omit_counts: Counter[UUID] = Counter()
     for e in events:
-        if e.event_type != "retrieved_evidence_omitted":
+        if e.event_type not in {
+            "retrieved_evidence_omitted",
+            "reader_decision_low_value",
+        }:
             continue
+        if e.event_type == "retrieved_evidence_omitted":
+            reason = _payload_str(e.payload, "omission_reason")
+            if reason not in NEGATIVE_MEMORY_OMISSION_REASONS:
+                continue
         mid = _payload_uuid(e.payload, "model_id", "source_ref_id", "node_id")
         path_key = _path_key(e.payload)
         if mid is not None and mid in later_requested_models:
@@ -298,6 +446,15 @@ def _infer_missing_anchors(
         for e in events
         if e.event_type == "validation_failed_due_to_missing_evidence"
     ]
+
+
+def _latest_quality_payload(events: Iterable[OutcomeEventRow]) -> dict[str, Any]:
+    """Most recent `outcome_quality_assessed` payload, if present."""
+    latest: OutcomeEventRow | None = None
+    for event in events:
+        if event.event_type == "outcome_quality_assessed":
+            latest = event
+    return dict(latest.payload) if latest is not None else {}
 
 
 # ---------------------------------------------------------------------
@@ -331,6 +488,7 @@ class TopologyOptimizer:
         region_summaries_repo: RegionSummariesRepo | None = None,
         structural_features_repo: StructuralFeaturesRepo | None = None,
         outcome_events_repo: OutcomeEventsRepo | None = None,
+        relationship_candidates_repo: RelationshipCandidatesRepo | None = None,
     ) -> None:
         self._pool = pool
         self._tenant_id = tenant_id
@@ -360,6 +518,9 @@ class TopologyOptimizer:
         self._outcome_events = outcome_events_repo or OutcomeEventsRepo(
             pool, tenant_id=tenant_id,
         )
+        self._relationship_candidates = (
+            relationship_candidates_repo or RelationshipCandidatesRepo()
+        )
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -385,21 +546,25 @@ class TopologyOptimizer:
         )
 
         useful_nodes = _infer_useful_nodes(events)
+        useful_node_events = _infer_useful_node_events(events)
         useful_path_events = _infer_useful_paths(events)
         noisy_omissions, omit_counts = _infer_noisy_paths_and_omissions(
             events, useful_paths=useful_path_events,
         )
         missing_anchors = _infer_missing_anchors(events)
+        quality_payload = _latest_quality_payload(events)
 
         # 1. Affordance updates (utility layer, never models table).
         reinforces, decays = await self._update_affordances(
             useful_nodes=useful_nodes,
             omit_counts=omit_counts,
+            events=events,
             conn=conn,
         )
 
         # 2. Shortcut updates (utility layer).
         shortcut_creates, shortcut_failures = await self._update_shortcuts(
+            useful_nodes=useful_node_events,
             useful_paths=useful_path_events,
             noisy_paths=noisy_omissions,
             conn=conn,
@@ -422,7 +587,11 @@ class TopologyOptimizer:
         # 4b. Structural feature refresh (utility layer). This keeps
         # bridge/hub scores and edge-overlap features current enough for
         # the next reader pass without mutating canonical graph truth.
-        structural_counts = await self._refresh_structural_features(conn=conn)
+        structural_counts = await self._refresh_structural_features(
+            useful_nodes=useful_nodes,
+            useful_paths=useful_path_events,
+            conn=conn,
+        )
 
         # 4c. Question-policy credit assignment. This is the bridge
         # from writer success back to reader decision quality.
@@ -444,6 +613,8 @@ class TopologyOptimizer:
         ))
         promote = tuple(self._propose_promotes(
             events=events,
+            useful_nodes=useful_node_events,
+            useful_paths=useful_path_events,
             session_id=inquiry_session_id,
         ))
         demote = tuple(self._propose_demotes(
@@ -451,14 +622,23 @@ class TopologyOptimizer:
             session_id=inquiry_session_id,
         ))
 
-        # Stub: hand the candidates to validation. No-op for Phase 13.
-        enqueue_for_validation(list(merge + split + promote + demote))
+        validation_enqueued = await self._enqueue_for_validation(
+            list(merge + split + promote + demote),
+            session_id=inquiry_session_id,
+            conn=conn,
+        )
 
         metrics: dict[str, float] = {
             "useful_nodes": float(len(useful_nodes)),
             "useful_paths": float(len(useful_path_events)),
             "noisy_paths": float(len(noisy_omissions)),
             "missing_anchors": float(len(missing_anchors)),
+            "quality_failure_modes": float(
+                len(quality_payload.get("failure_modes") or [])
+            ),
+            "objective_alignment_score": float(
+                quality_payload.get("objective_alignment_score") or 0.0
+            ),
             "trigger_recognized": float(
                 1.0 if trigger_event in _TRIGGER_TO_REFRESH_REASON else 0.0
             ),
@@ -469,6 +649,7 @@ class TopologyOptimizer:
                 structural_counts.get("edges_written", 0)
             ),
             "question_policy_updates": float(question_policy_updates),
+            "canonical_validation_enqueued": float(validation_enqueued),
         }
 
         return OptimizationRunReport(
@@ -496,8 +677,10 @@ class TopologyOptimizer:
         *,
         useful_nodes: set[UUID],
         omit_counts: Counter[UUID],
+        events: list[OutcomeEventRow],
         conn: asyncpg.Connection | None,
     ) -> tuple[int, int]:
+        activation_contexts = _activation_contexts_by_model(events)
         reinforces = 0
         for mid in useful_nodes:
             try:
@@ -511,6 +694,18 @@ class TopologyOptimizer:
                 continue
             if row is not None:
                 reinforces += 1
+                contexts = activation_contexts.get(mid, [])
+                if contexts:
+                    merged = _merge_activation_signatures(
+                        row.activation_signatures,
+                        contexts,
+                    )
+                    if merged != row.activation_signatures:
+                        await self._update_affordance_activation_signatures(
+                            model_id=mid,
+                            activation_signatures=merged,
+                            conn=conn,
+                        )
             else:
                 # No profile yet — the optimizer doesn't auto-seed
                 # (see policy.derive_default_profile_from_model). Skip.
@@ -541,6 +736,41 @@ class TopologyOptimizer:
                 decays += 1
         return reinforces, decays
 
+    async def _update_affordance_activation_signatures(
+        self,
+        *,
+        model_id: UUID,
+        activation_signatures: dict[str, Any],
+        conn: asyncpg.Connection | None,
+    ) -> None:
+        async def _do(c: asyncpg.Connection) -> None:
+            await c.execute(
+                """
+                UPDATE retrieval_affordance_profiles
+                   SET activation_signatures = $3::jsonb,
+                       last_updated_at = now()
+                 WHERE model_id = $1
+                   AND tenant_id = $2
+                """,
+                model_id,
+                self._tenant_id,
+                json.dumps(activation_signatures, default=str),
+            )
+
+        try:
+            if conn is not None:
+                await _do(conn)
+                return
+            if self._pool is None:
+                return
+            async with self._pool.acquire() as owned:
+                await _do(owned)
+        except Exception:  # pragma: no cover
+            _log.exception(
+                "affordance.activation_signature_update failed",
+                extra={"model_id": str(model_id)},
+            )
+
     async def _update_question_policy_stats(
         self,
         *,
@@ -552,7 +782,11 @@ class TopologyOptimizer:
             e for e in events
             if e.event_type == "reader_decision_used_in_valid_diff"
         ]
-        if not credit_events:
+        low_value_events = [
+            e for e in events
+            if e.event_type == "reader_decision_low_value"
+        ]
+        if not credit_events and not low_value_events:
             return 0
         if conn is None and self._pool is None:
             return 0
@@ -672,11 +906,34 @@ class TopologyOptimizer:
     async def _update_shortcuts(
         self,
         *,
+        useful_nodes: list[OutcomeEventRow],
         useful_paths: list[OutcomeEventRow],
         noisy_paths: list[OutcomeEventRow],
         conn: asyncpg.Connection | None,
     ) -> tuple[int, int]:
         creates = 0
+        seen_direct: set[tuple[str, UUID]] = set()
+        for ev in useful_nodes:
+            signature = _signature_from_payload(ev.payload)
+            to_model_id = _payload_uuid(ev.payload, "model_id", "node_id")
+            if not signature or to_model_id is None:
+                continue
+            key = (json.dumps(signature, sort_keys=True), to_model_id)
+            if key in seen_direct:
+                continue
+            seen_direct.add(key)
+            try:
+                await self._shortcuts.upsert_from_outcome(
+                    signature,
+                    to_model_id=to_model_id,
+                    delta_utility=DIRECT_NODE_SHORTCUT_POSITIVE_DELTA,
+                    conn=conn,
+                )
+            except Exception:  # pragma: no cover
+                _log.exception("shortcut.upsert_from_useful_node failed")
+                continue
+            creates += 1
+
         for ev in useful_paths:
             signature = _signature_from_payload(ev.payload)
             if not signature:
@@ -779,19 +1036,33 @@ class TopologyOptimizer:
             inserted += 1
 
         # 3b. Noisy paths — insert one negative memory per noisy event.
+        route_negative_memory_keys: set[str] = set()
         for ev in noisy_paths:
             signature = _signature_from_payload(ev.payload) or {
                 "signal_type": "noisy_path",
             }
+            model_id = _payload_uuid(ev.payload, "model_id", "node_id")
+            if ev.event_type == "reader_decision_low_value" and model_id is not None:
+                memory_type = "low_value_node"
+                rejected_path: dict[str, Any] | list[Any] | None = {
+                    "model_id": str(model_id),
+                    "attribution_id": _payload_str(ev.payload, "attribution_id"),
+                    "question_id": _payload_str(ev.payload, "question_id"),
+                    "reason": _payload_str(ev.payload, "reason")
+                    or "selected reader context was not used",
+                }
+            else:
+                memory_type = "noisy_path"
+                rejected_path = ev.payload.get("retrieval_paths") or [
+                    {"path_key": list(_path_key(ev.payload) or ())}
+                ]
             mem = NegativeMemory(
                 id=uuid7(),
                 tenant_id=self._tenant_id,
-                memory_type="noisy_path",
+                memory_type=memory_type,
                 signature=signature,
                 rejected_claim=None,
-                rejected_path=ev.payload.get("retrieval_paths") or [
-                    {"path_key": list(_path_key(ev.payload) or ())}
-                ],
+                rejected_path=rejected_path,
                 reason=_payload_str(ev.payload, "reason", "omission_reason")
                 or "retrieved evidence omitted and not later requested",
                 evidence_snapshot_hash=_payload_str(
@@ -806,6 +1077,46 @@ class TopologyOptimizer:
                 _log.exception("negative_memory.insert(noisy_path) failed")
                 continue
             inserted += 1
+            if ev.event_type == "reader_decision_low_value":
+                route_signature = _route_signature_from_signature(signature)
+                route_key = (
+                    json.dumps(route_signature, sort_keys=True, default=str)
+                    if route_signature else None
+                )
+                if route_signature and route_key not in route_negative_memory_keys:
+                    route_negative_memory_keys.add(str(route_key))
+                    route_mem = NegativeMemory(
+                        id=uuid7(),
+                        tenant_id=self._tenant_id,
+                        memory_type="noisy_path",
+                        signature=route_signature,
+                        rejected_claim=None,
+                        rejected_path={
+                            "route": "selected_reader_context_unused",
+                            "model_id": (
+                                str(model_id) if model_id is not None else None
+                            ),
+                            "question_id": _payload_str(ev.payload, "question_id"),
+                            "reason": _payload_str(ev.payload, "reason")
+                            or "selected reader context was not used",
+                        },
+                        reason=(
+                            "selected_reader_context_unused_by_valid_noop_route"
+                        ),
+                        evidence_snapshot_hash=_payload_str(
+                            ev.payload, "evidence_snapshot_hash",
+                        ),
+                        confidence=None,
+                        expires_at=expires_at,
+                    )
+                    try:
+                        await self._negative_memory.insert(route_mem, conn=conn)
+                    except Exception:  # pragma: no cover
+                        _log.exception(
+                            "negative_memory.insert(low_value_route) failed",
+                        )
+                        continue
+                    inserted += 1
 
         # 3c. Failed shortcuts — payload field `shortcut_id` indicates
         # the shortcut that just misfired (recorded in step 2 too).
@@ -845,26 +1156,126 @@ class TopologyOptimizer:
     async def _refresh_structural_features(
         self,
         *,
+        useful_nodes: set[UUID],
+        useful_paths: list[OutcomeEventRow],
         conn: asyncpg.Connection | None,
     ) -> dict[str, int]:
-        if conn is not None:
+        focus_ids = set(useful_nodes)
+        for event in useful_paths:
+            source = _payload_uuid(event.payload, "source_model_id")
+            target = _payload_uuid(event.payload, "target_model_id")
+            if source is not None:
+                focus_ids.add(source)
+            if target is not None:
+                focus_ids.add(target)
+        if not focus_ids:
+            return {"models_written": 0, "edges_written": 0}
+
+        ordered_focus = sorted(focus_ids, key=str)[:STRUCTURAL_REFRESH_FOCUS_LIMIT]
+
+        async def _do(c: asyncpg.Connection) -> dict[str, int]:
             try:
-                return await recompute_features_for_tenant(
-                    self._tenant_id, conn, pool=None,
+                incident_rows = await c.fetch(
+                    """
+                    SELECT id, source_model_id, target_model_id, edge_kind, weight
+                    FROM model_edges
+                    WHERE tenant_id = $1
+                      AND status = 'active'
+                      AND (
+                        source_model_id = ANY($2::uuid[])
+                        OR target_model_id = ANY($2::uuid[])
+                      )
+                    ORDER BY created_at DESC, id
+                    LIMIT $3
+                    """,
+                    self._tenant_id,
+                    ordered_focus,
+                    STRUCTURAL_REFRESH_EDGE_LIMIT,
                 )
             except Exception:  # pragma: no cover
-                _log.exception("structural_features.recompute failed")
+                _log.exception("structural_features.local_incident_fetch failed")
                 return {"models_written": 0, "edges_written": 0}
+
+            local_ids = set(ordered_focus)
+            for row in incident_rows:
+                local_ids.add(row["source_model_id"])
+                local_ids.add(row["target_model_id"])
+                if len(local_ids) >= STRUCTURAL_REFRESH_LOCAL_NODE_LIMIT:
+                    break
+
+            ordered_local_ids = sorted(local_ids, key=str)[
+                :STRUCTURAL_REFRESH_LOCAL_NODE_LIMIT
+            ]
+            try:
+                edge_rows = await c.fetch(
+                    """
+                    SELECT id, source_model_id, target_model_id, edge_kind, weight
+                    FROM model_edges
+                    WHERE tenant_id = $1
+                      AND status = 'active'
+                      AND source_model_id = ANY($2::uuid[])
+                      AND target_model_id = ANY($2::uuid[])
+                    ORDER BY created_at DESC, id
+                    LIMIT $3
+                    """,
+                    self._tenant_id,
+                    ordered_local_ids,
+                    STRUCTURAL_REFRESH_EDGE_LIMIT,
+                )
+            except Exception:  # pragma: no cover
+                _log.exception("structural_features.local_edge_fetch failed")
+                return {"models_written": 0, "edges_written": 0}
+
+            edges = [
+                StructuralEdge(
+                    edge_id=row["id"],
+                    source_model_id=row["source_model_id"],
+                    target_model_id=row["target_model_id"],
+                    edge_kind=row["edge_kind"],
+                    weight=row["weight"],
+                )
+                for row in edge_rows
+            ]
+            try:
+                undirected, _out, _in = build_adjacency(ordered_local_ids, edges)
+                model_rows = await compute_model_features(
+                    ordered_local_ids,
+                    edges,
+                    tenant_id=self._tenant_id,
+                )
+                edge_feature_rows = await compute_edge_features(
+                    edges,
+                    undirected,
+                    tenant_id=self._tenant_id,
+                )
+                repo = self._structural_features
+                if repo is None:
+                    repo = StructuralFeaturesRepo(  # type: ignore[arg-type]
+                        self._pool,
+                        tenant_id=self._tenant_id,
+                    )
+                models_written = await repo.upsert_model_features(
+                    model_rows,
+                    conn=c,
+                )
+                edges_written = await repo.upsert_edge_features(
+                    edge_feature_rows,
+                    conn=c,
+                )
+                return {
+                    "models_written": models_written,
+                    "edges_written": edges_written,
+                }
+            except Exception:  # pragma: no cover
+                _log.exception("structural_features.local_refresh failed")
+                return {"models_written": 0, "edges_written": 0}
+
+        if conn is not None:
+            return await _do(conn)
         if self._pool is None:
             return {"models_written": 0, "edges_written": 0}
         async with self._pool.acquire() as owned:
-            try:
-                return await recompute_features_for_tenant(
-                    self._tenant_id, owned, pool=None,
-                )
-            except Exception:  # pragma: no cover
-                _log.exception("structural_features.recompute failed")
-                return {"models_written": 0, "edges_written": 0}
+            return await _do(owned)
 
     # ------------------------------------------------------------------
     # Step 4b — region summary refreshes
@@ -942,6 +1353,99 @@ class TopologyOptimizer:
                     continue
             refreshes += 1
         return refreshes
+
+    # ------------------------------------------------------------------
+    # Step 4d — validation queue handoff
+    # ------------------------------------------------------------------
+
+    async def _enqueue_for_validation(
+        self,
+        candidates: list[dict],
+        *,
+        session_id: UUID,
+        conn: asyncpg.Connection | None = None,
+    ) -> int:
+        """Persist multi-model canonical-op proposals into the pre-truth queue."""
+        payloads = enqueue_for_validation(candidates)
+        if not payloads:
+            return 0
+
+        if conn is not None:
+            return await self._enqueue_for_validation_with_conn(
+                payloads,
+                session_id=session_id,
+                conn=conn,
+            )
+        if self._pool is None:
+            return 0
+        async with self._pool.acquire() as owned_conn:
+            return await self._enqueue_for_validation_with_conn(
+                payloads,
+                session_id=session_id,
+                conn=owned_conn,
+            )
+
+    async def _enqueue_for_validation_with_conn(
+        self,
+        candidates: list[dict],
+        *,
+        session_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> int:
+        inserted = 0
+        for payload in candidates:
+            candidate = _canonical_op_to_relationship_candidate(
+                tenant_id=self._tenant_id,
+                payload=payload,
+                session_id=session_id,
+            )
+            if candidate is None:
+                continue
+            op_key = candidate.metadata.get("canonical_op_key")
+            if not isinstance(op_key, str) or not op_key:
+                continue
+            try:
+                existing = await conn.fetchval(
+                    """
+                    SELECT id
+                    FROM relationship_candidates
+                    WHERE tenant_id = $1
+                      AND source = 'sage_topology_optimizer'
+                      AND metadata->>'canonical_op_key' = $2
+                      AND review_status = ANY($3::text[])
+                    LIMIT 1
+                    """,
+                    self._tenant_id,
+                    op_key,
+                    ["candidate", "needs_review", "accepted"],
+                )
+                if existing is not None:
+                    continue
+                await self._relationship_candidates.insert(conn, candidate)
+            except asyncpg.UniqueViolationError:
+                # Another concurrent optimizer worker inserted the same
+                # canonical_op_key. The unique index is the real invariant;
+                # this worker simply reports that it did not enqueue a new row.
+                continue
+            except (
+                asyncpg.UndefinedTableError,
+                asyncpg.UndefinedColumnError,
+            ) as exc:
+                _log.debug(
+                    "topology_optimizer.validation_queue_unavailable",
+                    error=str(exc),
+                )
+                return inserted
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "topology_optimizer.validation_enqueue_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    canonical_op_key=op_key,
+                )
+                continue
+            inserted += 1
+        return inserted
 
     # ------------------------------------------------------------------
     # Step 5 — canonical-op candidate proposals (NEVER applied).
@@ -1059,14 +1563,18 @@ class TopologyOptimizer:
         self,
         *,
         events: list[OutcomeEventRow],
+        useful_nodes: list[OutcomeEventRow],
+        useful_paths: list[OutcomeEventRow],
         session_id: UUID,
     ) -> list[dict]:
-        """Composition patterns seen >= N times across recent sessions.
+        """Stable useful access patterns that may deserve canonical structure.
 
-        Recurrence is read from outcome event payloads — payload key
-        `composition_pattern_id` carries the pattern id and
-        `recurrence_count` (when present) the running count. This is a
-        stub until Phase 13 wires a cross-session aggregator.
+        Explicit `composition_pattern_id` payloads still win when present.
+        In normal product flow, however, the writer emits useful node/path
+        events without benchmark-specific composition labels. Those repeated
+        signature -> useful target patterns are also promoted as validation
+        candidates so the canonical layer can eventually absorb durable read
+        structure instead of keeping it forever as sidecar routing metadata.
         """
         pattern_counts: Counter[str] = Counter()
         sample_payloads: dict[str, dict] = {}
@@ -1087,17 +1595,95 @@ class TopologyOptimizer:
             if count < PROMOTE_RECURRENCE_THRESHOLD:
                 continue
             payload = sample_payloads.get(pid, {})
+            raw_members = payload.get("member_model_ids", [])
+            member_model_ids = (
+                list(raw_members)
+                if isinstance(raw_members, (list, tuple))
+                else []
+            )
             out.append({
                 "op": "promote",
                 "source_model_ids": [
-                    str(u) for u in payload.get("member_model_ids", [])
+                    str(u) for u in member_model_ids[
+                        :PROMOTE_SOURCE_MODEL_ID_LIMIT
+                    ]
                     if u is not None
                 ],
+                "source_model_count": len(member_model_ids),
+                "source_model_id_limit": PROMOTE_SOURCE_MODEL_ID_LIMIT,
                 "proposed_kind": "promote_composition_to_model",
                 "composition_pattern_id": pid,
                 "reason": (
                     f"composition pattern {pid!r} observed {count} times "
                     f"(threshold {PROMOTE_RECURRENCE_THRESHOLD})"
+                ),
+                "evidence_session_ids": [str(session_id)],
+            })
+
+        access_counts: Counter[str] = Counter()
+        access_members: dict[str, set[UUID]] = defaultdict(set)
+        access_signature: dict[str, dict[str, Any]] = {}
+        for ev in [*useful_nodes, *useful_paths]:
+            signature = _signature_from_payload(ev.payload)
+            if not signature:
+                continue
+            target_ids = [
+                uid for uid in (
+                    _payload_uuid(ev.payload, "model_id", "node_id"),
+                    _payload_uuid(ev.payload, "to_model_id", "target_model_id"),
+                    _payload_uuid(ev.payload, "from_model_id", "source_model_id"),
+                )
+                if uid is not None
+            ]
+            if not target_ids:
+                continue
+            key = json.dumps(
+                {
+                    "signal_type": signature.get("signal_type"),
+                    "question_primitive": signature.get("question_primitive"),
+                    "entities": sorted(
+                        str(item)
+                        for item in signature.get("entities", [])
+                        if item is not None
+                    )[:8],
+                },
+                sort_keys=True,
+                default=str,
+            )
+            access_counts[key] += 1
+            access_signature.setdefault(key, signature)
+            access_members[key].update(target_ids)
+
+        existing_pattern_ids = {
+            item.get("composition_pattern_id")
+            for item in out
+            if item.get("composition_pattern_id")
+        }
+        for key, count in access_counts.items():
+            if count < ACCESS_PROMOTE_MIN_EVENTS:
+                continue
+            members = sorted(access_members.get(key, set()), key=str)
+            if len(members) < ACCESS_PROMOTE_MIN_MODELS:
+                continue
+            pattern_id = f"access:{key}"
+            if pattern_id in existing_pattern_ids:
+                continue
+            signature = access_signature.get(key, {})
+            out.append({
+                "op": "promote",
+                "source_model_ids": [
+                    str(mid)
+                    for mid in members[:PROMOTE_SOURCE_MODEL_ID_LIMIT]
+                ],
+                "source_model_count": len(members),
+                "source_model_id_limit": PROMOTE_SOURCE_MODEL_ID_LIMIT,
+                "proposed_kind": "promote_access_pattern_to_canonical_route",
+                "composition_pattern_id": pattern_id,
+                "signature": signature,
+                "reason": (
+                    f"signature produced {count} useful node/path events "
+                    f"across {len(members)} models in this inquiry; "
+                    "propose validation-gated canonical route/grouping"
                 ),
                 "evidence_session_ids": [str(session_id)],
             })
@@ -1158,6 +1744,176 @@ class TopologyOptimizer:
                 "evidence_session_ids": [str(session_id)],
             })
         return out
+
+
+def _canonical_op_to_relationship_candidate(
+    *,
+    tenant_id: UUID,
+    payload: dict,
+    session_id: UUID,
+) -> RelationshipCandidate | None:
+    """Map safe multi-model topology proposals into the pre-truth layer.
+
+    Single-model split/demote proposals need a different review table; the
+    existing relationship candidate schema represents only edges and
+    multi-model situations, so we persist merge/promote candidates here.
+    """
+    op = str(payload.get("op") or "")
+    proposed_kind = str(payload.get("proposed_kind") or "")
+    model_ids = _candidate_model_ids(payload)
+    if op == "merge" and len(model_ids) >= 2:
+        source_id, target_id = tuple(sorted(model_ids[:2], key=str))
+        metadata = _canonical_candidate_metadata(
+            payload,
+            session_id=session_id,
+            op_key=_canonical_op_key(payload),
+        )
+        scores = JudgmentScores(
+            impact=0.55,
+            urgency=0.35,
+            actionability=0.60,
+            uncertainty=0.30,
+            authority_required=0.55,
+            reversibility=0.45,
+            novelty=0.35,
+            confidence=0.78,
+        )
+        return make_edge_candidate(
+            tenant_id=tenant_id,
+            source_model_id=source_id,
+            target_model_id=target_id,
+            edge_kind="same_issue_as",
+            basis="topology_suggested",
+            explanation=str(
+                payload.get("reason")
+                or "topology optimizer proposed a duplicate/merge review"
+            ),
+            scores=scores,
+            evidence_model_ids=(source_id, target_id),
+            metadata=metadata,
+            source="sage_topology_optimizer",
+            review_status="needs_review",
+        )
+
+    if op == "promote" and len(model_ids) >= 2:
+        members = tuple(sorted(dict.fromkeys(model_ids), key=str))
+        observed_member_count = _payload_int(
+            payload,
+            "source_model_count",
+            default=len(members),
+        )
+        metadata = _canonical_candidate_metadata(
+            payload,
+            session_id=session_id,
+            op_key=_canonical_op_key(payload),
+        )
+        signature = payload.get("signature") if isinstance(payload, dict) else None
+        signature_hint = ""
+        if isinstance(signature, dict):
+            primitive = signature.get("question_primitive")
+            signal_type = signature.get("signal_type")
+            if primitive or signal_type:
+                signature_hint = f" ({signal_type or 'signal'} / {primitive or 'read'})"
+        summary = (
+            f"Stable useful access pattern{signature_hint} across "
+            f"{observed_member_count} models."
+        )
+        reason = str(
+            payload.get("reason")
+            or "topology optimizer proposed a canonical route/grouping"
+        )
+        scores = JudgmentScores(
+            impact=clamp_score(0.45 + min(len(members), 8) * 0.04),
+            urgency=0.35,
+            actionability=0.55,
+            uncertainty=0.35,
+            authority_required=0.45,
+            reversibility=0.50,
+            novelty=0.50,
+            confidence=0.74,
+        )
+        return make_situation_candidate(
+            tenant_id=tenant_id,
+            situation=(
+                proposed_kind
+                or "promote_access_pattern_to_canonical_route"
+            ),
+            summary=summary,
+            relationship_summary=reason,
+            member_model_ids=members,
+            basis="topology_suggested",
+            scores=scores,
+            metadata={
+                **metadata,
+                "pressure_type": "execution",
+                "observed_member_count": observed_member_count,
+            },
+            source="sage_topology_optimizer",
+            review_status="needs_review",
+        )
+    return None
+
+
+def _candidate_model_ids(payload: dict) -> list[UUID]:
+    raw: list[Any] = []
+    source_ids = payload.get("source_model_ids")
+    if isinstance(source_ids, list):
+        raw.extend(source_ids)
+    for key in ("source_model_id", "target_model_id", "model_id"):
+        if payload.get(key) is not None:
+            raw.append(payload.get(key))
+    out: list[UUID] = []
+    for item in raw:
+        uid = _coerce_uuid(item)
+        if uid is not None and uid not in out:
+            out.append(uid)
+    return out
+
+
+def _canonical_candidate_metadata(
+    payload: dict,
+    *,
+    session_id: UUID,
+    op_key: str,
+) -> dict[str, Any]:
+    evidence_session_ids = [
+        str(item)
+        for item in payload.get("evidence_session_ids", [])
+        if item is not None
+    ] or [str(session_id)]
+    return {
+        "origin": "sage_topology_optimizer",
+        "canonical_op": payload.get("op"),
+        "canonical_proposed_kind": payload.get("proposed_kind"),
+        "canonical_op_key": op_key,
+        "source_model_count": payload.get("source_model_count"),
+        "source_model_id_limit": payload.get("source_model_id_limit"),
+        "canonical_candidate": payload,
+        "evidence_session_ids": evidence_session_ids,
+    }
+
+
+def _payload_int(payload: dict, key: str, *, default: int) -> int:
+    try:
+        return int(payload.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _canonical_op_key(payload: dict) -> str:
+    return json.dumps(
+        {
+            "op": payload.get("op"),
+            "proposed_kind": payload.get("proposed_kind"),
+            "source_model_ids": sorted(
+                str(mid) for mid in _candidate_model_ids(payload)
+            ),
+            "composition_pattern_id": payload.get("composition_pattern_id"),
+            "signature": payload.get("signature"),
+        },
+        sort_keys=True,
+        default=str,
+    )
 
 
 __all__ = [

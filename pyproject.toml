@@ -41,7 +41,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lib*", "services*"]
+include = ["benchmarks*", "lib*", "services*"]
 exclude = ["tests*", "ui*"]
 namespaces = true
 

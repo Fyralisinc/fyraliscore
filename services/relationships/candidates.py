@@ -24,7 +24,7 @@ from lib.shared.memory_grammar import derive_memory_grammar
 from services.judgment.scoring import JudgmentScores, clamp_score
 
 
-CandidateKind = Literal["edge", "situation"]
+CandidateKind = Literal["edge", "situation", "edge_type"]
 CandidateBasis = Literal[
     "observed",
     "inferred",
@@ -32,6 +32,7 @@ CandidateBasis = Literal[
     "topology_suggested",
     "causal_hypothesis",
     "causal_confirmed",
+    "ontology_gap",
 ]
 ReviewStatus = Literal[
     "candidate",
@@ -267,6 +268,110 @@ def make_situation_candidate(
         evidence_event_ids=evidence_event_ids,
         proposed_proposition=proposition,
         explanation=relationship_summary,
+        scores=scores,
+        source=source,
+        metadata=candidate_metadata,
+        review_status=review_status,
+    )
+
+
+def make_edge_type_candidate(
+    *,
+    tenant_id: UUID,
+    proposed_edge_kind: str,
+    description: str,
+    relationship_summary: str,
+    scores: JudgmentScores,
+    parent_kind: str | None = None,
+    nearest_existing_kind: str | None = None,
+    directionality: Literal["directed", "symmetric", "unknown"] = "unknown",
+    inverse_label: str | None = None,
+    dropped_dimensions: tuple[str, ...] = (),
+    evidence_model_ids: tuple[UUID, ...] = (),
+    evidence_event_ids: tuple[UUID, ...] = (),
+    example_source_model_id: UUID | None = None,
+    example_target_model_id: UUID | None = None,
+    promotion_criteria: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    source: str = "relationship_ontology_gap",
+    review_status: ReviewStatus = "needs_review",
+) -> RelationshipCandidate:
+    """Create a pre-truth proposal for a missing edge kind.
+
+    This is intentionally not a `model_edges` row and not a normal edge
+    candidate. It records that a valuable relationship was observed, but the
+    current ontology cannot represent it without losing useful semantics.
+    """
+    normalized_kind = proposed_edge_kind.strip()
+    if not normalized_kind:
+        raise ValueError("edge type candidate requires proposed_edge_kind")
+    if not description.strip():
+        raise ValueError("edge type candidate requires description")
+    if not relationship_summary.strip():
+        raise ValueError("edge type candidate requires relationship_summary")
+    if (
+        example_source_model_id is None
+        and example_target_model_id is not None
+        or example_source_model_id is not None
+        and example_target_model_id is None
+    ):
+        raise ValueError(
+            "edge type candidate examples require both source and target model ids",
+        )
+    if (
+        example_source_model_id is not None
+        and example_source_model_id == example_target_model_id
+    ):
+        raise ValueError("edge type candidate example cannot be a self-edge")
+
+    example_models: tuple[UUID, ...] = ()
+    examples: list[dict[str, str]] = []
+    if example_source_model_id is not None and example_target_model_id is not None:
+        example_models = (example_source_model_id, example_target_model_id)
+        examples.append({
+            "source_model_id": str(example_source_model_id),
+            "target_model_id": str(example_target_model_id),
+        })
+
+    proposal = {
+        "kind": "ontology_gap",
+        "proposed_edge_kind": normalized_kind,
+        "description": description.strip(),
+        "relationship_summary": relationship_summary.strip(),
+        "parent_kind": parent_kind or nearest_existing_kind,
+        "nearest_existing_kind": nearest_existing_kind,
+        "directionality": directionality,
+        "inverse_label": inverse_label,
+        "dropped_dimensions": list(dropped_dimensions),
+        "examples": examples,
+        "promotion_criteria": promotion_criteria
+        or {
+            "minimum_distinct_examples": 3,
+            "requires_human_or_llm_adjudication": True,
+            "requires_registry_spec": True,
+        },
+    }
+    candidate_metadata = dict(metadata or {})
+    candidate_metadata["ontology_gap"] = {
+        "proposed_edge_kind": normalized_kind,
+        "nearest_existing_kind": nearest_existing_kind,
+        "parent_kind": parent_kind or nearest_existing_kind,
+        "dropped_dimensions": list(dropped_dimensions),
+        "retrieval_fallback_kind": parent_kind or nearest_existing_kind,
+    }
+    return RelationshipCandidate(
+        id=uuid7(),
+        tenant_id=tenant_id,
+        candidate_kind="edge_type",
+        basis="ontology_gap",
+        member_model_ids=example_models,
+        evidence_model_ids=evidence_model_ids or example_models,
+        evidence_event_ids=evidence_event_ids,
+        proposed_proposition=proposal,
+        explanation=(
+            f"Proposed edge type `{normalized_kind}` because "
+            f"{relationship_summary.strip()}"
+        ),
         scores=scores,
         source=source,
         metadata=candidate_metadata,
@@ -812,6 +917,7 @@ __all__ = [
     "candidate_rules",
     "generate_scope_overlap_candidates",
     "make_edge_candidate",
+    "make_edge_type_candidate",
     "make_situation_candidate",
     "rank_candidates",
 ]

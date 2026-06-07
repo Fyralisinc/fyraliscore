@@ -19,6 +19,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { AppShell } from "@/shell/AppShell";
 import { Sidebar } from "@/shell/Sidebar";
+import { useAskOverlay } from "@/ask/AskOverlayProvider";
 
 import { LEDGER_PAGE_FIXTURE } from "@/api/ledger-v2-mock";
 import type {
@@ -49,6 +50,7 @@ const FIXTURE_NOW = new Date("2026-05-18T12:00:00.000Z");
 
 export default function LedgerPage() {
   const [params, setParams] = useSearchParams();
+  const { openAsk } = useAskOverlay();
   const payload = LEDGER_PAGE_FIXTURE;
 
   const mode = useMemo<LedgerMode>(() => {
@@ -103,7 +105,7 @@ export default function LedgerPage() {
         sidebar={<Sidebar activeRoute="ledger" mode="collapsed" />}
         main={
           <div className="lg-main">
-            <LedgerHeader data={payload.header} />
+            <LedgerHeader data={payload.header} onAskClick={() => openAsk()} />
             <LedgerBrief data={payload.brief} />
             <ModeSelector mode={mode} onChange={setMode} />
 

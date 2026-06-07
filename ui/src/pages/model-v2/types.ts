@@ -4,6 +4,8 @@
 // "category", "relationship bundle"). Internally they map onto Nodes
 // in the substrate, but we never call them Nodes in the customer UI.
 
+import type { ResolutionThread } from "@/api/resolution-thread-types";
+
 export type CategoryId =
   | "goals"
   | "commitments"
@@ -101,6 +103,59 @@ export type ModelItem = ModelItemSummary & {
   // The renderer composes a humane summary line like:
   //   "Blocked by 2 · Serves 3 customers · Related decision 1"
   relationshipCounts?: Record<string, number>;
+  dealReality?: DealReality;
+};
+
+export type DealRealityStakeholder = {
+  role: string;
+  label: string;
+  status: string;
+  concern?: string;
+};
+
+export type DealRealityProofRequirement = {
+  requirement: string;
+  stakeholder: string;
+  status: string;
+  owner?: string;
+  deadline?: string;
+  evidence?: string;
+  internalDependency?: string;
+  recommendedAction?: string;
+};
+
+export type DealRealityInternalBlocker = {
+  blocker: string;
+  source: string;
+  impact: string;
+  owner?: string;
+  recommendedAction?: string;
+};
+
+export type DealRealitySimilarDeal = {
+  name: string;
+  pattern: string;
+  whatWorked?: string;
+  appliedLesson?: string;
+};
+
+export type DealReality = {
+  modelType: "deal_state";
+  opportunityId: string;
+  dealHealth: "healthy" | "watch" | "at_risk" | "blocked" | "critical";
+  stageAssessment: string;
+  forecastRecommendation: string;
+  consensusScore: number;
+  buyerConsensus: DealRealityStakeholder[];
+  proofRequirements: DealRealityProofRequirement[];
+  internalBlockers: DealRealityInternalBlocker[];
+  recommendedNextProof: string;
+  managerRecommendation?: string;
+  supportingEvidence?: string[];
+  counterevidence?: string[];
+  falsificationConditions?: string[];
+  similarDeals?: DealRealitySimilarDeal[];
+  resolutionThread?: ResolutionThread;
 };
 
 export type ModelCategory = {

@@ -255,5 +255,5 @@ expected_behaviors:
   - "Customer churn signals from Globex should produce at least one Model scoped to the Globex customer resource with proposition referencing renewal risk or evaluation of alternatives."
   - "Commitment progress signals (PR opened, reviewed, merged, deployed) should advance the 'Implement refund flow' commitment state from active toward complete and produce state_change observations."
   - "Cascade should update 'Ship payments v2 by end of quarter' goal health when the refund-flow commitment completes, since it contributes_to_goal that goal."
-  - "Bridge revenue_at_risk query for Globex should reflect $60K ARR exposure once the churn signal Models are produced."
+  - "Customer revenue-at-risk linkage for Globex should reflect $60K ARR exposure once the churn signal Models are produced."
   - "The feature_launch_cycle multi-actor sequence should produce coordinated Models scoped across PM, design, engineering, and marketing — not collapse into a single actor's perspective."

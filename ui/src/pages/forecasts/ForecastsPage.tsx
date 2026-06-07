@@ -16,6 +16,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { AppShell } from "@/shell/AppShell";
 import { Sidebar } from "@/shell/Sidebar";
+import { useAskOverlay } from "@/ask/AskOverlayProvider";
 import { useForecastsPage } from "@/hooks/useForecastsPage";
 import type { ForecastMode } from "@/api/forecasts-types";
 import { ForecastsHeader } from "@/components/forecasts/ForecastsHeader";
@@ -33,6 +34,7 @@ const VALID_MODES: ReadonlySet<ForecastMode> = new Set([
 
 export default function ForecastsPage() {
   const [params, setParams] = useSearchParams();
+  const { openAsk } = useAskOverlay();
   const [horizonDays, setHorizonDays] = useState(() => {
     const v = Number(params.get("horizon") ?? "90");
     return Number.isFinite(v) && v >= 14 ? v : 90;
@@ -91,20 +93,8 @@ export default function ForecastsPage() {
   );
 
   const handleAskClick = useCallback(() => {
-    // For now: jump to the inspector by selecting the default
-    // forecast if none is selected. The inspector itself contains
-    // the Ask Fyralis input.
-    if (!page.selectedId && page.payload?.selected_forecast_id) {
-      handleSelect(page.payload.selected_forecast_id);
-    }
-    // Try to focus the ask input.
-    requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLInputElement>(
-        ".fc-inspector .fc-ask__input",
-      );
-      el?.focus();
-    });
-  }, [page.selectedId, page.payload, handleSelect]);
+    openAsk();
+  }, [openAsk]);
 
   const selectedDetail =
     page.selectedId ? page.detailById[page.selectedId] ?? null : null;

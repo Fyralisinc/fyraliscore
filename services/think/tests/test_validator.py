@@ -18,7 +18,14 @@ from lib.shared.errors import (
 from lib.shared.ids import uuid7
 
 from services.retrieval.primary import RetrievalResult, TriggerContext
-from services.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp
+from services.think.diff_schema import (
+    ActOp,
+    ClaimOp,
+    EdgeOp,
+    OntologyGapOp,
+    RawDiff,
+    ResourceOp,
+)
 from services.think.validator import (
     OutOfRegionError, ValidationFailure, validate,
 )
@@ -978,6 +985,298 @@ async def test_validate_accepts_evidence_backed_edge_op(fresh_db, tenant):
         assert len(validated.edge_ops) == 1
         assert validated.edge_ops[0].edge_kind == "contradicts"
         assert validated.edge_ops[0].evidence_event_ids == [obs_id]
+
+
+async def test_validate_accepts_accepted_dynamic_edge_kind(fresh_db, tenant):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO relationship_ontology_proposals (
+              id, tenant_id, proposed_edge_kind, status,
+              description, relationship_summary,
+              nearest_existing_kind, retrieval_fallback_kind, directionality,
+              example_count, promotion_criteria
+            )
+            VALUES (
+              $1, $2, 'gated_by_decision', 'accepted',
+              'Progress depends on an explicit approval decision.',
+              'The target cannot progress until the source decision is made.',
+              'blocks', 'blocks', 'directed',
+              3, '{"minimum_distinct_examples":3}'::jsonb
+            )
+            """,
+            uuid7(),
+            tenant,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="gated_by_decision",
+                    weight=0.7,
+                    confidence=0.85,
+                    evidence_event_ids=[obs_id],
+                    explanation="B is gated by a decision represented by A.",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.edge_ops) == 1
+    assert validated.edge_ops[0].edge_kind == "gated_by_decision"
+    assert validated.edge_ops[0].evidence_event_ids == [obs_id]
+
+
+async def test_validate_accepts_ontology_gap_op_for_unknown_edge_type(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    source, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    target, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=source,
+                    target_model_id=target,
+                    proposed_edge_kind="gated_by_decision",
+                    description="Progress depends on an explicit approval decision.",
+                    relationship_summary=(
+                        "The blocker cannot resolve until the approval decision is made."
+                    ),
+                    parent_kind="blocks",
+                    nearest_existing_kind="blocks",
+                    directionality="directed",
+                    dropped_dimensions=[
+                        "authority surface",
+                        "approval state",
+                    ],
+                    evidence_event_ids=[obs_id],
+                    confidence=0.7,
+                    impact=0.9,
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.ontology_gap_ops) == 1
+    op = validated.ontology_gap_ops[0]
+    assert op.proposed_edge_kind == "gated_by_decision"
+    assert op.parent_kind == "blocks"
+    assert op.evidence_event_ids == [obs_id]
+
+
+async def test_validate_accepts_diverse_ontology_gap_matrix(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    shapes = [
+        (
+            "gated_by_decision",
+            "blocks",
+            "Progress depends on a specific approval decision.",
+            "The work is blocked until the approval decision is made.",
+            ["authority surface", "approval state"],
+        ),
+        (
+            "depends_on_assumption",
+            "supports",
+            "The plan rests on an assumption that may later fail.",
+            "The target assumption underpins whether the source plan remains valid.",
+            ["assumption dependency", "future fragility"],
+        ),
+        (
+            "transfers_risk_to",
+            "early_warning_for",
+            "One mitigation reduces local risk by moving it elsewhere.",
+            "The source action creates an early warning on the target risk surface.",
+            ["risk recipient", "second order consequence"],
+        ),
+        (
+            "competes_for_priority_with",
+            "blocks",
+            "Two initiatives draw from the same finite decision capacity.",
+            "The source can delay the target because both compete for priority.",
+            ["shared priority budget", "capacity conflict"],
+        ),
+        (
+            "accountable_for",
+            "explains",
+            "One model names the owner accountable for another outcome.",
+            "The target explains who is accountable for the source outcome.",
+            ["ownership", "accountability surface"],
+        ),
+        (
+            "proxy_for",
+            "predicts",
+            "A measurable signal stands in for a harder-to-measure state.",
+            "Movement in the source signal predicts the target latent state.",
+            ["latent variable", "measurement proxy"],
+        ),
+    ]
+
+    source_models = []
+    evidence_ids = []
+    for _shape in shapes:
+        source, obs_id = await _make_model(fresh_db, tenant, confidence=0.66)
+        target, _ = await _make_model(fresh_db, tenant, confidence=0.67)
+        source_models.append((source, target))
+        evidence_ids.append(obs_id)
+
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=source,
+                    target_model_id=target,
+                    proposed_edge_kind=kind,
+                    description=description,
+                    relationship_summary=summary,
+                    parent_kind=fallback,
+                    nearest_existing_kind=fallback,
+                    directionality="directed",
+                    dropped_dimensions=dropped,
+                    evidence_event_ids=[obs_id],
+                    confidence=0.75,
+                    impact=0.82,
+                    actionability=0.71,
+                    urgency=0.62,
+                    uncertainty=0.56,
+                    authority_required=0.4,
+                    novelty=0.91,
+                )
+                for (
+                    (source, target),
+                    obs_id,
+                    (kind, fallback, description, summary, dropped),
+                ) in zip(source_models, evidence_ids, shapes, strict=True)
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert [op.proposed_edge_kind for op in validated.ontology_gap_ops] == [
+        shape[0] for shape in shapes
+    ]
+    assert [op.parent_kind for op in validated.ontology_gap_ops] == [
+        shape[1] for shape in shapes
+    ]
+    assert validated.dropped_op_count == 0
+
+
+async def test_validate_drops_ontology_gap_op_for_registered_edge_kind(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    source, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    target, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=source,
+                    changes={"confidence": 0.61},
+                )
+            ],
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=source,
+                    target_model_id=target,
+                    proposed_edge_kind="blocks",
+                    description="This should be a normal registered edge.",
+                    relationship_summary="The relation already fits blocks.",
+                    parent_kind="blocks",
+                    nearest_existing_kind="blocks",
+                    dropped_dimensions=["none"],
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.ontology_gap_ops == []
+    assert len(validated.claim_ops) == 1
+    assert validated.dropped_op_count == 1
+    assert "already exists" in validated.dropped_op_errors[0]
+
+
+async def test_validate_drops_ontology_gap_op_for_accepted_dynamic_edge_kind(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    source, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    target, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO relationship_ontology_proposals (
+              id, tenant_id, proposed_edge_kind, status,
+              description, relationship_summary,
+              nearest_existing_kind, retrieval_fallback_kind, directionality,
+              example_count, promotion_criteria
+            )
+            VALUES (
+              $1, $2, 'gated_by_decision', 'accepted',
+              'Progress depends on an explicit approval decision.',
+              'The target cannot progress until the source decision is made.',
+              'blocks', 'blocks', 'directed',
+              3, '{"minimum_distinct_examples":3}'::jsonb
+            )
+            """,
+            uuid7(),
+            tenant,
+        )
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=source,
+                    changes={"confidence": 0.61},
+                )
+            ],
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=source,
+                    target_model_id=target,
+                    proposed_edge_kind="gated_by_decision",
+                    description="Progress depends on an explicit approval decision.",
+                    relationship_summary=(
+                        "The blocker cannot resolve until the approval decision is made."
+                    ),
+                    parent_kind="blocks",
+                    nearest_existing_kind="blocks",
+                    directionality="directed",
+                    dropped_dimensions=["authority surface"],
+                    evidence_event_ids=[obs_id],
+                    confidence=0.7,
+                    impact=0.9,
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.ontology_gap_ops == []
+    assert len(validated.claim_ops) == 1
+    assert validated.dropped_op_count == 1
+    assert "already exists" in validated.dropped_op_errors[0]
 
 
 async def test_validate_neutralizes_existing_graph_cycle_edge(fresh_db, tenant):

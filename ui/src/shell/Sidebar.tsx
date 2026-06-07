@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import { useAskOverlay } from "@/ask/AskOverlayProvider";
 
 export type ActiveRoute =
   | "today"
@@ -55,6 +56,7 @@ const utilityNav: NavItem[] = [
 
 export function Sidebar({ activeRoute = "today", mode = "expanded" }: SidebarProps) {
   const collapsed = mode === "collapsed";
+  const { isOpen: askOpen, openAsk } = useAskOverlay();
   return (
     <nav
       className={`fy-sidebar${collapsed ? " fy-sidebar--collapsed" : ""}`}
@@ -95,12 +97,21 @@ export function Sidebar({ activeRoute = "today", mode = "expanded" }: SidebarPro
       <div className="fy-sidebar__group-label fy-sidebar__only-expanded">Utilities</div>
       <div className="fy-sidebar__group" role="group" aria-label="Utilities">
         {utilityNav.map((item) => (
-          <SidebarLink
-            key={item.route}
-            item={item}
-            active={activeRoute === item.route}
-            variant="secondary"
-          />
+          item.route === "ask" ? (
+            <SidebarButton
+              key={item.route}
+              item={item}
+              active={askOpen || activeRoute === item.route}
+              onClick={() => openAsk()}
+            />
+          ) : (
+            <SidebarLink
+              key={item.route}
+              item={item}
+              active={activeRoute === item.route}
+              variant="secondary"
+            />
+          )
         ))}
       </div>
 
@@ -109,6 +120,33 @@ export function Sidebar({ activeRoute = "today", mode = "expanded" }: SidebarPro
       <ModelHealthCard />
       <UserCard />
     </nav>
+  );
+}
+
+function SidebarButton({
+  item,
+  active,
+  onClick,
+}: {
+  item: NavItem;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const className = [
+    "fy-sidebar__nav-item",
+    active ? "fy-sidebar__nav-item--active" : "",
+    "fy-sidebar__nav-item--secondary",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <button type="button" className={className} onClick={onClick} title={item.label}>
+      <span className="fy-sidebar__nav-icon" aria-hidden="true">
+        {item.icon}
+      </span>
+      <span className="fy-sidebar__nav-label">{item.label}</span>
+    </button>
   );
 }
 

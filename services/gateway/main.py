@@ -507,15 +507,16 @@ def build_app(
     from services.decision_deltas.router import build_router as build_decision_deltas_router
     from services.forecasts import build_router as build_forecasts_router
     from services.model_trace.router import router as model_trace_router
+    from services.resolution_threads.router import build_router as build_resolution_threads_router
     from services.history.router import router as history_router
     from services.webhooks.router import build_webhooks_router
 
     app.include_router(build_decision_deltas_router())
+    app.include_router(build_resolution_threads_router())
     app.include_router(build_forecasts_router())
     app.include_router(model_trace_router)
     app.include_router(history_router)
     app.include_router(build_webhooks_router())
-
 
     # Model page v2.
     # Adapter over the existing models / model_edges / model_trace
@@ -1131,80 +1132,6 @@ def _register_routes(app: FastAPI) -> None:
             },
             status_code=200,
         )
-
-    # ---------------- Dashboard endpoints (Wave 5-B) ------------------
-    # These wrap services/bridge/ for the UI. Each applies tenant
-    # isolation via auth.tenant_id; the per-customer endpoint also
-    # consults access_control.can_read_by_id on the customer Resource.
-    @app.get("/dashboard/revenue-at-risk")
-    async def get_dashboard_revenue_at_risk(
-        request: Request, horizon_days: int = 90,
-    ) -> dict[str, Any]:
-        from services.bridge import render_revenue_at_risk
-        auth: AuthContext = request.state.auth
-        deps = _deps(request)
-        async with deps.pool.acquire() as conn:
-            result = await render_revenue_at_risk(
-                auth.tenant_id, horizon_days=int(horizon_days), conn=conn
-            )
-        return json.loads(result.model_dump_json())
-
-    @app.get("/dashboard/goals")
-    async def get_dashboard_goals(request: Request) -> dict[str, Any]:
-        from services.bridge import render_goals
-        auth: AuthContext = request.state.auth
-        deps = _deps(request)
-        async with deps.pool.acquire() as conn:
-            result = await render_goals(auth.tenant_id, conn=conn)
-        return json.loads(result.model_dump_json())
-
-    @app.get("/dashboard/capacity")
-    async def get_dashboard_capacity(request: Request) -> dict[str, Any]:
-        from services.bridge import render_capacity
-        auth: AuthContext = request.state.auth
-        deps = _deps(request)
-        async with deps.pool.acquire() as conn:
-            result = await render_capacity(auth.tenant_id, conn=conn)
-        return json.loads(result.model_dump_json())
-
-    @app.get("/dashboard/customer/{customer_id}")
-    async def get_dashboard_customer(
-        customer_id: str, request: Request, window_days: int = 30,
-    ) -> Any:
-        from services.access_control.checks import can_read_by_id
-        from services.bridge import render_customer_detail
-
-        auth: AuthContext = request.state.auth
-        deps = _deps(request)
-        try:
-            cid = UUID(customer_id)
-        except (ValueError, TypeError):
-            return JSONResponse(
-                {"error": "invalid_customer_id"}, status_code=400
-            )
-        async with deps.pool.acquire() as conn:
-            # Access-control check: customer Resource must be visible
-            # to the caller. 5-A's decorator isn't applied here because
-            # we want to surface a 404 vs 403 distinction cleanly and
-            # pass the tenant through explicitly.
-            decision = await can_read_by_id(
-                auth.actor_id, "resource", cid,
-                conn=conn, tenant_id=auth.tenant_id,
-            )
-            if not decision.allowed:
-                status_code = 404 if decision.reason == "entity_not_found" else 403
-                return JSONResponse(
-                    {"error": "access_denied", "reason": decision.reason},
-                    status_code=status_code,
-                )
-            try:
-                result = await render_customer_detail(
-                    cid, tenant_id=auth.tenant_id,
-                    window_days=int(window_days), conn=conn,
-                )
-            except ValueError as e:
-                return JSONResponse({"error": str(e)}, status_code=404)
-        return json.loads(result.model_dump_json())
 
     # ---------------- /v1/recommendations (Stage 1 decision support) -
     # Three endpoints: list (ranker), act, dismiss. All require an
@@ -1894,7 +1821,7 @@ def _register_routes(app: FastAPI) -> None:
                 label = cv.get("label") or md.get("label") or r["identity"] or "Resource"
 
                 # Sum deployed quantities across active deployments. The
-                # bridge stores `{value: X}` so we extract via JSONB
+                # deployment row stores `{value: X}` so we extract via JSONB
                 # arrow operator and cast.
                 deployed_row = await conn.fetchrow(
                     "SELECT COALESCE(SUM((deployed_quantity->>'value')::float), 0) AS total, "
@@ -2625,6 +2552,27 @@ async def _configure_ceo_view(app_: FastAPI, *, pool: asyncpg.Pool) -> None:
     app_.include_router(
         build_query_router(qry_handler, default_tenant_id=default_tenant_uuid),
     )
+
+    # ---- 3.2 Ask Fyralis overlay ------------------------------------
+    from services.ask.api import build_router as build_ask_router
+    from services.ask.orchestrator import AskOrchestrator
+    from services.ask.store import PostgresAskStore
+    from services.sage.reader import SynthesisReader
+
+    default_actor = os.environ.get("DEFAULT_ACTOR_ID")
+    ask_orchestrator = AskOrchestrator(
+        store=PostgresAskStore(pool),
+        conn_provider=pool.acquire,
+        reader=SynthesisReader(pool=pool),
+    )
+    app_.include_router(
+        build_ask_router(
+            ask_orchestrator,
+            default_tenant_id=default_tenant_uuid,
+            default_viewer_id=_UUID(default_actor) if default_actor else None,
+        )
+    )
+    app_.state.ask_orchestrator = ask_orchestrator
 
     # ---- 3.5 Card conversations (Driftwood revision) ---------------
     from services.conversations import (

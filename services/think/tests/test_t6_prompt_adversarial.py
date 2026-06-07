@@ -17,7 +17,7 @@ def _bundle(topology_context=None) -> ContextBundle:
         models=[],
         acts_summary={"goals": [], "commitments": [], "decisions": []},
         resources_summary=[],
-        bridge_context=None,
+        customer_context=None,
         topology_context=topology_context,
     )
 

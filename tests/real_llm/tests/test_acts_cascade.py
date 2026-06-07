@@ -9,7 +9,7 @@ from services.actors.repo import ActorRepo
 from services.entity_aliases.repo import EntityAliasRepo
 from tests.real_llm.infrastructure.assertion_helpers import (
     assert_any_cascade_chain_intact,
-    assert_bridge_revenue_at_risk,
+    assert_customer_revenue_at_risk,
     assert_cascade_chain_intact,
     assert_commitment_transitioned,
 )
@@ -340,7 +340,7 @@ async def test_customer_revenue_at_risk_after_churn_signal(
     )
 
     globex_id = scenario_02.customer_id("Globex Inc")
-    await assert_bridge_revenue_at_risk(
+    await assert_customer_revenue_at_risk(
         scenario_02.tenant_id,
         globex_id,
         range_usd=(0.0, 500_000.0),

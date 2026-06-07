@@ -1,5 +1,10 @@
 import { defineConfig } from "@playwright/test";
 
+const port = Number(process.env.E2E_PORT ?? "5173");
+const baseURL =
+  process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${port}`;
+const reuseExistingServer = process.env.E2E_REUSE_SERVER !== "0";
+
 // Playwright config for the Company OS UI. The E2E suite assumes that
 // the Gateway + Postgres + Ollama are running on the developer's
 // machine (documented in e2e/alice-merges-pr.spec.ts). The Vite dev
@@ -11,13 +16,13 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL,
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "USE_MOCK=1 npm run dev -- --port 5173",
-    url: "http://localhost:5173",
-    reuseExistingServer: true,
+    command: `USE_MOCK=1 npm run dev -- --host localhost --port ${port} --strictPort`,
+    url: baseURL,
+    reuseExistingServer,
     timeout: 60_000,
   },
 });

@@ -35,6 +35,10 @@ import type {
   ImpactItem,
   ModelCategoryKey,
 } from "@/api/today-page-types";
+import type {
+  ResolutionThread,
+  ResolutionWatchedSignalStatus,
+} from "@/api/resolution-thread-types";
 import { AskFyralisStrip } from "./AskFyralisStrip";
 
 interface Props {
@@ -206,6 +210,10 @@ export function FocusedReviewCard({
       </div>
 
       <WhatHappensIfAccepted items={delta.impactIfAccepted} />
+
+      {delta.resolutionThread ? (
+        <ResolutionThreadPanel thread={delta.resolutionThread} />
+      ) : null}
 
       <AskFyralisStrip delta={delta} />
     </article>
@@ -432,6 +440,109 @@ function WhatHappensIfAccepted({ items }: { items: ImpactItem[] }) {
       </ol>
     </section>
   );
+}
+
+function ResolutionThreadPanel({ thread }: { thread: ResolutionThread }) {
+  return (
+    <section
+      className="tdv2-resolution"
+      data-testid={`resolution-thread-${thread.id}`}
+    >
+      <div className="tdv2-resolution__head">
+        <div>
+          <h3 className="tdv2-section__heading">Resolution tracker</h3>
+          <p className="tdv2-resolution__title">{thread.title}</p>
+        </div>
+        <span className={`tdv2-resolution__status tdv2-resolution__status--${thread.status}`}>
+          {resolutionStatusLabel(thread.status)}
+        </span>
+      </div>
+
+      <div className="tdv2-resolution__states">
+        <div>
+          <span>Current</span>
+          <strong>{thread.currentState}</strong>
+        </div>
+        <div>
+          <span>Target</span>
+          <strong>{thread.targetState}</strong>
+        </div>
+      </div>
+
+      <div className="tdv2-resolution__meta">
+        <span>Owner: {thread.owner}</span>
+        {thread.nextReviewAt ? <span>Review {formatStamp(thread.nextReviewAt)}</span> : null}
+      </div>
+
+      <div className="tdv2-resolution__grid">
+        <div className="tdv2-resolution__block">
+          <h4>Work to complete</h4>
+          <ol className="tdv2-resolution__steps">
+            {thread.steps.map((step) => (
+              <li key={step.id} className="tdv2-resolution__step">
+                <span className={`tdv2-resolution__dot tdv2-resolution__dot--${step.status}`} />
+                <div>
+                  <strong>{step.label}</strong>
+                  <span>{step.owner}</span>
+                  {step.proofNeeded ? <small>{step.proofNeeded}</small> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+
+        <div className="tdv2-resolution__block">
+          <h4>Fyralis watches</h4>
+          <ul className="tdv2-resolution__watch">
+            {thread.watchedSignals.map((signal) => (
+              <li key={signal.id}>
+                <span className={`tdv2-resolution__watch-status tdv2-resolution__watch-status--${signal.status}`}>
+                  {watchedSignalLabel(signal.status)}
+                </span>
+                <div>
+                  <strong>{signal.label}</strong>
+                  <span>{signal.sourceType}: {signal.expected}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {thread.escalationTriggers.length > 0 ? (
+        <div className="tdv2-resolution__escalate">
+          <h4>Escalate if</h4>
+          <ul>
+            {thread.escalationTriggers.map((trigger, idx) => (
+              <li key={idx}>{trigger}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function resolutionStatusLabel(status: ResolutionThread["status"]): string {
+  switch (status) {
+    case "draft": return "Draft";
+    case "active": return "Active";
+    case "waiting_on_owner": return "Waiting on owner";
+    case "blocked": return "Blocked";
+    case "monitoring": return "Monitoring";
+    case "confirmed": return "Confirmed";
+    case "resolved": return "Resolved";
+    case "failed": return "Failed";
+  }
+}
+
+function watchedSignalLabel(status: ResolutionWatchedSignalStatus): string {
+  switch (status) {
+    case "watching": return "watching";
+    case "seen": return "seen";
+    case "missing": return "missing";
+    case "contradicted": return "contradicted";
+  }
 }
 
 function ImpactGlyph({ type }: { type: ImpactItem["operationType"] }) {

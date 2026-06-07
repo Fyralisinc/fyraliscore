@@ -2,7 +2,7 @@
 
 These are intentionally expensive and opt-in. Each test injects every signal in
 the corpus through production ingestion, resolves actual-content aliases with a
-real LLM, drains Think with DeepSeek, and verifies Models plus Bridge surfaces.
+real LLM, drains Think with DeepSeek, and verifies Models plus customer links.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from services.actors.repo import ActorRepo
 from services.entity_aliases.repo import EntityAliasRepo
 from tests.real_llm.infrastructure.durability_flow import (
     FullSignalSummary,
-    assert_customer_bridge_surface,
+    assert_customer_commitment_links,
     collect_full_signal_summary,
     flatten_observation_ids,
     inject_all_sequences,
@@ -50,7 +50,7 @@ def _scenario_enabled(scenario_id: str) -> bool:
     reason="industrial_ops not listed in DURABILITY_SCENARIOS",
 )
 @real_llm_test(attempts=1, pass_threshold=1, timeout_seconds=7200)
-async def test_scenario_05_every_signal_reaches_think_and_bridge(
+async def test_scenario_05_every_signal_reaches_think_and_customer_links(
     scenario_05: Scenario,
     fresh_db: asyncpg.Pool,
     actor_repo: ActorRepo,
@@ -110,7 +110,7 @@ async def test_scenario_05_every_signal_reaches_think_and_bridge(
         original_observation_ids=observation_ids,
     )
     _assert_full_signal_summary_is_healthy(summary)
-    await assert_customer_bridge_surface(
+    await assert_customer_commitment_links(
         scenario_05,
         pool=fresh_db,
         customer_name="Titan Foundry Inc",
@@ -131,7 +131,7 @@ async def test_scenario_05_every_signal_reaches_think_and_bridge(
     reason="fintech_risk not listed in DURABILITY_SCENARIOS",
 )
 @real_llm_test(attempts=1, pass_threshold=1, timeout_seconds=7200)
-async def test_scenario_06_every_signal_reaches_think_and_bridge(
+async def test_scenario_06_every_signal_reaches_think_and_customer_links(
     scenario_06: Scenario,
     fresh_db: asyncpg.Pool,
     actor_repo: ActorRepo,
@@ -191,7 +191,7 @@ async def test_scenario_06_every_signal_reaches_think_and_bridge(
         original_observation_ids=observation_ids,
     )
     _assert_full_signal_summary_is_healthy(summary)
-    await assert_customer_bridge_surface(
+    await assert_customer_commitment_links(
         scenario_06,
         pool=fresh_db,
         customer_name="Atlas Card Services",

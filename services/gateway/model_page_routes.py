@@ -37,6 +37,7 @@ from services.model_trace.repo import (
     trace_back,
     trace_forward,
 )
+from services.resolution_threads import repo as resolution_repo
 
 
 # =====================================================================
@@ -167,6 +168,13 @@ _FINANCE_TOKENS: tuple[str, ...] = (
 )
 
 
+_DEAL_TOKENS: tuple[str, ...] = (
+    "deal ", "opportunity", "pipeline", "forecast category",
+    "economic buyer", "champion", "buying group", "buyer consensus",
+    "security review", "procurement", "proof requirement",
+)
+
+
 def _classify_category(
     *, band: str | None, natural: str, proposition_kind: str = "",
 ) -> str:
@@ -195,6 +203,8 @@ def _classify_category(
             return "people"
     if any(tok in n for tok in _PEOPLE_TOKENS):
         return "people"
+    if any(tok in n for tok in _DEAL_TOKENS):
+        return "customers"
     if any(tok in n for tok in _SYSTEMS_TOKENS):
         return "systems"
     if any(tok in n for tok in _FINANCE_TOKENS):
@@ -555,6 +565,333 @@ def _item_summary(rec: dict[str, Any]) -> dict[str, Any]:
         "status": _item_status(rec),
         "confidence": float(rec.get("confidence") or 0.0),
     }
+
+
+def _deal_reality_from_proposition(raw: Any) -> dict[str, Any] | None:
+    """Project a Deal State Model proposition into the Model-page wire
+    contract. The canonical substrate remains a situation Model; this
+    adapter only adds a richer UI payload when the proposition carries
+    deal-state fields.
+    """
+    if isinstance(raw, str):
+        try:
+            prop = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(raw, dict):
+        prop = raw
+    else:
+        return None
+
+    nested = (
+        prop.get("dealReality")
+        or prop.get("deal_reality")
+        or prop.get("dealState")
+        or prop.get("deal_state")
+    )
+    if isinstance(nested, dict):
+        payload = {**prop, **nested}
+    else:
+        payload = prop
+
+    if payload.get("model_type") != "deal_state" and payload.get("modelType") != "deal_state":
+        return None
+
+    consensus = _normalize_buyer_consensus(_first(payload, "buyerConsensus", "buyer_consensus"))
+    consensus_score = _coerce_int(_first(payload, "consensusScore", "consensus_score"))
+    if consensus_score is None:
+        consensus_score = _score_consensus(consensus)
+
+    deal = {
+        "modelType": "deal_state",
+        "opportunityId": str(_first(payload, "opportunityId", "opportunity_id") or ""),
+        "dealHealth": _normalize_deal_health(_first(payload, "dealHealth", "deal_health")),
+        "stageAssessment": str(
+            _first(payload, "stageAssessment", "stage_assessment", "currentAssessment", "current_assessment", "assessment")
+            or "Deal state requires review."
+        ),
+        "forecastRecommendation": str(
+            _first(payload, "forecastRecommendation", "forecast_recommendation")
+            or "Review"
+        ),
+        "consensusScore": consensus_score,
+        "buyerConsensus": consensus,
+        "proofRequirements": _normalize_proof_requirements(
+            _first(payload, "proofRequirements", "proof_requirements")
+        ),
+        "internalBlockers": _normalize_internal_blockers(
+            _first(payload, "internalBlockers", "internal_blockers")
+        ),
+        "recommendedNextProof": str(
+            _first(payload, "recommendedNextProof", "recommended_next_proof", "nextBestProof", "next_best_proof")
+            or "Identify the missing buyer proof."
+        ),
+        "managerRecommendation": _optional_str(
+            _first(payload, "managerRecommendation", "manager_recommendation")
+        ),
+        "supportingEvidence": _str_list(_first(payload, "supportingEvidence", "supporting_evidence")),
+        "counterevidence": _str_list(_first(payload, "counterevidence", "counter_evidence")),
+        "falsificationConditions": _str_list(
+            _first(payload, "falsificationConditions", "falsification_conditions")
+        ),
+        "similarDeals": _normalize_similar_deals(_first(payload, "similarDeals", "similar_deals")),
+    }
+    resolution_thread = _normalize_resolution_thread(
+        _first(payload, "resolutionThread", "resolution_thread")
+    )
+    if resolution_thread is not None:
+        deal["resolutionThread"] = resolution_thread
+    return deal
+
+
+def _first(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if str(v).strip()]
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_deal_health(value: Any) -> str:
+    raw = str(value or "watch").lower().replace(" ", "_")
+    if raw in {"healthy", "watch", "at_risk", "blocked", "critical"}:
+        return raw
+    return "watch"
+
+
+_RESOLUTION_THREAD_STATUSES: frozenset[str] = frozenset({
+    "draft",
+    "active",
+    "waiting_on_owner",
+    "blocked",
+    "monitoring",
+    "confirmed",
+    "resolved",
+    "failed",
+})
+_RESOLUTION_STEP_STATUSES: frozenset[str] = frozenset({
+    "not_started",
+    "in_progress",
+    "waiting",
+    "blocked",
+    "done",
+    "failed",
+})
+_RESOLUTION_SIGNAL_STATUSES: frozenset[str] = frozenset({
+    "watching",
+    "seen",
+    "missing",
+    "contradicted",
+})
+
+
+def _normalize_resolution_thread(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    title = _optional_str(_first(raw, "title", "name", "label"))
+    current = _optional_str(_first(raw, "currentState", "current_state"))
+    target = _optional_str(_first(raw, "targetState", "target_state"))
+    owner = _optional_str(_first(raw, "owner", "ownerLabel", "owner_label"))
+    if not (title and current and target and owner):
+        return None
+
+    status = str(_first(raw, "status") or "active")
+    if status not in _RESOLUTION_THREAD_STATUSES:
+        status = "active"
+
+    return {
+        "id": str(_first(raw, "id") or title),
+        "title": title,
+        "status": status,
+        "currentState": current,
+        "targetState": target,
+        "owner": owner,
+        "nextReviewAt": _optional_str(_first(raw, "nextReviewAt", "next_review_at")),
+        "successCriteria": _str_list(_first(raw, "successCriteria", "success_criteria")),
+        "steps": _normalize_resolution_steps(_first(raw, "steps")),
+        "watchedSignals": _normalize_resolution_signals(
+            _first(raw, "watchedSignals", "watched_signals")
+        ),
+        "escalationTriggers": _str_list(_first(raw, "escalationTriggers", "escalation_triggers")),
+    }
+
+
+def _normalize_resolution_steps(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        label = _optional_str(_first(item, "label", "title", "name"))
+        owner = _optional_str(_first(item, "owner", "ownerLabel", "owner_label"))
+        if not (label and owner):
+            continue
+        status = str(_first(item, "status") or "not_started")
+        if status not in _RESOLUTION_STEP_STATUSES:
+            status = "not_started"
+        step: dict[str, Any] = {
+            "id": str(_first(item, "id") or f"step-{idx + 1}"),
+            "label": label,
+            "owner": owner,
+            "status": status,
+            "dueAt": _optional_str(_first(item, "dueAt", "due_at", "deadline")),
+            "proofNeeded": _optional_str(_first(item, "proofNeeded", "proof_needed", "proof")),
+            "blockedBy": _optional_str(_first(item, "blockedBy", "blocked_by")),
+        }
+        out.append({k: v for k, v in step.items() if v is not None})
+    return out
+
+
+def _normalize_resolution_signals(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        label = _optional_str(_first(item, "label", "title", "name"))
+        source = _optional_str(_first(item, "sourceType", "source_type", "source"))
+        expected = _optional_str(_first(item, "expected", "expectation"))
+        if not (label and source and expected):
+            continue
+        status = str(_first(item, "status") or "watching")
+        if status not in _RESOLUTION_SIGNAL_STATUSES:
+            status = "watching"
+        out.append({
+            "id": str(_first(item, "id") or f"signal-{idx + 1}"),
+            "label": label,
+            "sourceType": source,
+            "expected": expected,
+            "status": status,
+        })
+    return out
+
+
+def _normalize_buyer_consensus(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [
+            {
+                "role": str(role),
+                "label": _humanize_role(str(role)),
+                "status": str(status),
+            }
+            for role, status in value.items()
+        ]
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = str(_first(item, "role", "stakeholder", "type") or "stakeholder")
+        out.append({
+            "role": role,
+            "label": str(_first(item, "label", "name") or _humanize_role(role)),
+            "status": str(_first(item, "status", "state") or "unknown"),
+            "concern": _optional_str(_first(item, "concern", "gap", "risk")),
+        })
+    return out
+
+
+def _score_consensus(consensus: list[dict[str, Any]]) -> int:
+    if not consensus:
+        return 0
+    positive = 0
+    for item in consensus:
+        status = str(item.get("status") or "").lower()
+        if status in {"supportive", "positive", "engaged", "validated", "approved", "aligned"}:
+            positive += 1
+    return round((positive / len(consensus)) * 100)
+
+
+def _normalize_proof_requirements(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        requirement = _optional_str(_first(item, "requirement", "name", "proof"))
+        if not requirement:
+            continue
+        out.append({
+            "requirement": requirement,
+            "stakeholder": str(_first(item, "stakeholder", "buyerRole", "buyer_role") or "buyer"),
+            "status": str(_first(item, "status", "state") or "unknown"),
+            "owner": _optional_str(_first(item, "owner", "internalOwner", "internal_owner")),
+            "deadline": _optional_str(_first(item, "deadline", "dueAt", "due_at")),
+            "evidence": _optional_str(_first(item, "evidence", "evidenceSummary", "evidence_summary")),
+            "internalDependency": _optional_str(_first(item, "internalDependency", "internal_dependency")),
+            "recommendedAction": _optional_str(_first(item, "recommendedAction", "recommended_action")),
+        })
+    return out
+
+
+def _normalize_internal_blockers(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        blocker = _optional_str(_first(item, "blocker", "name", "issue"))
+        if not blocker:
+            continue
+        out.append({
+            "blocker": blocker,
+            "source": str(_first(item, "source", "sourceNode", "source_node") or "Model"),
+            "impact": str(_first(item, "impact") or "Deal movement is blocked."),
+            "owner": _optional_str(_first(item, "owner")),
+            "recommendedAction": _optional_str(_first(item, "recommendedAction", "recommended_action")),
+        })
+    return out
+
+
+def _normalize_similar_deals(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = _optional_str(_first(item, "name", "deal", "label"))
+        pattern = _optional_str(_first(item, "pattern", "summary"))
+        if not name or not pattern:
+            continue
+        out.append({
+            "name": name,
+            "pattern": pattern,
+            "whatWorked": _optional_str(_first(item, "whatWorked", "what_worked")),
+            "appliedLesson": _optional_str(_first(item, "appliedLesson", "applied_lesson")),
+        })
+    return out
+
+
+def _humanize_role(role: str) -> str:
+    return role.replace("_", " ").title()
 
 
 async def _build_overview(
@@ -1015,6 +1352,20 @@ async def _build_item_detail(
         # customers · Related decision 1".
         "relationshipCounts": _count_neighbors(outgoing, incoming),
     }
+    deal_reality = _deal_reality_from_proposition(rec.get("proposition"))
+    if deal_reality is not None:
+        threads = await resolution_repo.list_threads(
+            pool,
+            tenant_id=tenant_id,
+            target_node_id=item_id,
+            limit=1,
+        )
+        if threads:
+            deal_reality["resolutionThread"] = resolution_repo.thread_to_wire(threads[0])
+        item["dealReality"] = deal_reality
+        falsifiers = deal_reality.get("falsificationConditions") or []
+        if falsifiers:
+            item["falsificationConditions"] = falsifiers
     return {
         "item": item,
         "neighbors": {

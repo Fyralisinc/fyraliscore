@@ -323,7 +323,7 @@ async def test_cascade_customer_health_recompute_on_doneverified(
                 created_by_event_id=oid,
                 tenant_id=tenant, conn=conn,
             )
-            # Bridge linkage.
+            # Customer linkage.
             await conn.execute(
                 """
                 INSERT INTO customer_commitments

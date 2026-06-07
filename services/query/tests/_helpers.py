@@ -141,7 +141,7 @@ def _empty_bundle() -> ContextBundle:
         models=[],
         acts_summary={"goals": [], "commitments": [], "decisions": []},
         resources_summary=[],
-        bridge_context=None,
+        customer_context=None,
         access_redactions=0,
         notes={"budgets": {}, "access_redactions": 0,
                "retrieval_trigger_kind": "T1",
