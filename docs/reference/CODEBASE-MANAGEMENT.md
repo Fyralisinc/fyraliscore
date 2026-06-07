@@ -320,7 +320,7 @@ rather than hidden or hacked:
 
 Resolved on 2026-06-03: `cannonical` was merged into `main`, together with the
 newer Sage work that had landed on `main`. Per
-[ADR-0002](docs/adr/0002-main-is-the-single-integration-trunk.md), `main` is now
+[ADR-0002](../adr/0002-main-is-the-single-integration-trunk.md), `main` is now
 the single integration trunk.
 
 Operating rules:

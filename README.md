@@ -10,7 +10,7 @@ processes for asynchronous reasoning and post-commit propagation.
 > nothing in that repo.
 
 For the architecture and module-level reference, see
-[CODEBASE-ARCHITECTURE.md](CODEBASE-ARCHITECTURE.md).
+[CODEBASE-ARCHITECTURE.md](docs/reference/CODEBASE-ARCHITECTURE.md).
 
 This document is the end-to-end setup guide for running the backend locally.
 
@@ -262,9 +262,10 @@ it (`brew services stop postgresql`) or change the port in
 
 ```
 .
-├── CODEBASE-ARCHITECTURE.md  # Architecture & module reference (incl. §0 layer map)
-├── CODEBASE-MANAGEMENT.md    # Why the codebase is organized this way (decision record)
 ├── CONTRIBUTING.md           # Conventions, import rules, how to extend
+├── docs/                     # Internal MkDocs site — incl. "Codebase reference":
+│                             #   CODEBASE-ARCHITECTURE.md (module map + §0 layer map),
+│                             #   CODEBASE-MANAGEMENT.md (the why), FYRALIS.md (comprehensive)
 ├── README.md                 # This file
 ├── .env.example              # Env template (copy to .env)
 ├── docker-compose.yml        # Backend stack (gateway + workers + data plane)
@@ -287,5 +288,5 @@ it (`brew services stop postgresql`) or change the port in
 The **UI, demo, and simulation** live in the overlay repo
 [fyraliscore-demo](https://github.com/Fyralisinc/fyraliscore-demo).
 
-See [CODEBASE-ARCHITECTURE.md §0](CODEBASE-ARCHITECTURE.md) for the layer map and
+See [CODEBASE-ARCHITECTURE.md §0](docs/reference/CODEBASE-ARCHITECTURE.md) for the layer map and
 [CONTRIBUTING.md](CONTRIBUTING.md) for the enforced import boundaries.

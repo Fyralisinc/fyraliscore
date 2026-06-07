@@ -44,6 +44,11 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      # GitHub-compatible slugs so hand-authored TOCs (e.g. reference/FYRALIS.md)
+      # with "## A / B" → #a--b anchors resolve under --strict.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -89,6 +94,11 @@ nav:
       - Runtime & Data Plane: architecture/data-plane.md
   - Services: services.md
   - Glossary: glossary.md
+  - Codebase reference:
+      - Architecture & module map: reference/CODEBASE-ARCHITECTURE.md
+      - Codebase management (the why): reference/CODEBASE-MANAGEMENT.md
+      - Comprehensive reference: reference/FYRALIS.md
+      - Memory & model layer: memory-layer.md
   - Codebase status:
       - Overview: status/index.md
       - Feature status: status/feature-status.md

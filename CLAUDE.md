@@ -26,5 +26,7 @@ system works and why — not a public API/SDK reference.
   - The pre-existing `docs/ingestion/`, `docs/github-intelligence/`, `docs/testing/`,
     and `docs/history/` trees are kept on disk but `exclude_docs`-ed from the build
     (they link straight to source files). Don't add site links to them.
-  - The deeper narrative decision record is `CODEBASE-MANAGEMENT.md`; module-level
-    reference is `CODEBASE-ARCHITECTURE.md` (both at the repo root).
+  - The deeper narrative decision record is `CODEBASE-MANAGEMENT.md`; the
+    module-level reference is `CODEBASE-ARCHITECTURE.md`; the comprehensive
+    end-to-end reference is `FYRALIS.md`. All three now live in the internal docs
+    under `docs/reference/` (the *Codebase reference* nav section), not the repo root.

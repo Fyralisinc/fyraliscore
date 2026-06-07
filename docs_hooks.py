@@ -26,13 +26,20 @@ import re
 from pathlib import Path
 
 # Trees this hook is allowed to touch (relative to docs_dir, posix).
-_LEGACY_PREFIXES = ("ingestion/", "github-intelligence/")
+# `reference/` holds the centralized codebase docs (CODEBASE-ARCHITECTURE.md,
+# CODEBASE-MANAGEMENT.md, FYRALIS.md) which link straight to source files.
+_LEGACY_PREFIXES = (
+    "ingestion/",
+    "github-intelligence/",
+    "reference/",
+    "memory-layer.md",  # standalone memory/model-layer reference; links to source
+)
 
 # Targets that don't exist anywhere in the repo → drop the link, keep the words.
 _MISSING_TARGETS = {"03-low-level-design.md", "05-lld-amendments.md"}
 
-# GitHub blob base for source-file links. Branch matches the working branch.
-_BLOB_BASE = "https://github.com/Fyralisinc/fyraliscore/blob/cannonical/"
+# GitHub blob base for source-file links. Points at the integration trunk.
+_BLOB_BASE = "https://github.com/Fyralisinc/fyraliscore/blob/main/"
 
 # [text](target) — target captured greedily up to the closing paren; a link
 # "title" (rare) is split off in the replacer.

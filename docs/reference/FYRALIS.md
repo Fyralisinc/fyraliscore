@@ -2,7 +2,7 @@
 
 > **Organizational-intelligence runtime** (Python package `company-os`). This is a single-file, end-to-end reference: what Fyralis is, the problem it solves, its layer-by-layer technical implementation, architecture diagrams, an API/WebSocket reference, a developer-onboarding guide, an end-user & troubleshooting guide, and code-level conventions.
 >
-> **Provenance.** Derived from the source tree on branch `cannonical` and **verified against code** (generated 2026-06-02). Where a claim is an inference not pinned down by code, it is labelled as such. For the canonical narrative records see `CODEBASE-ARCHITECTURE.md` (module reference) and `CODEBASE-MANAGEMENT.md` (decision record) at the repo root; the published MkDocs site lives under `docs/`.
+> **Provenance.** Derived from the source tree (originally on the `cannonical` branch, since merged into `main`) and **verified against code** (generated 2026-06-02). Where a claim is an inference not pinned down by code, it is labelled as such. For the canonical narrative records see [CODEBASE-ARCHITECTURE.md](CODEBASE-ARCHITECTURE.md) (module reference) and [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md) (decision record), siblings of this page in the *Codebase reference* section.
 
 ### How this document maps to documentation types
 

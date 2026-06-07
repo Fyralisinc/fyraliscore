@@ -114,20 +114,20 @@ See [Reasoning](architecture/reasoning.md) for the Think pipeline and
 > falsifiable beliefs ("Models") rather than documents or dashboards, and what
 > success looks like — is not inferable from source. Fill in a few paragraphs of
 > framing here. The decision narrative for the monorepo + layering already lives
-> in `CODEBASE-MANAGEMENT.md` at the repo root.
+> in the [Codebase management](reference/CODEBASE-MANAGEMENT.md) reference.
 
-## Pointers to existing deep-dives
+## Pointers to deep-dives
 
-Some detailed internal docs predate this site and are **not** yet part of the
-built MkDocs site (they link directly to source files, which MkDocs cannot
-resolve). They remain in the repo and are worth reading:
+Several detailed internal docs link directly to source files. A build hook
+(`docs_hooks.py`) rewrites those source links to GitHub *blob* URLs at build
+time, so they build cleanly under `--strict` and are part of this site:
 
-- `docs/ingestion/` — end-to-end ingestion architecture and a page per source.
-- `docs/github-intelligence/` — the GitHub intelligence layer (spec, API, UI).
-- `docs/testing/` — comprehensive test reports.
-- `CODEBASE-ARCHITECTURE.md`, `CODEBASE-MANAGEMENT.md`, `CONTRIBUTING.md` (repo root).
+- **Codebase reference** — [Architecture & module map](reference/CODEBASE-ARCHITECTURE.md),
+  [Codebase management (the why)](reference/CODEBASE-MANAGEMENT.md), and the
+  [Comprehensive reference](reference/FYRALIS.md).
+- [Memory & model layer](memory-layer.md) — the models substrate + think pipeline.
+- [Ingestion](ingestion/README.md) — end-to-end ingestion architecture and a page per source.
+- [GitHub Intelligence](github-intelligence/plan.md) — the GitHub intelligence layer (spec, API, UI).
 
-> **TODO(human):** Decide whether to port the `docs/ingestion/` and
-> `docs/github-intelligence/` deep-dives into this site. Doing so means
-> converting their ~150 links to source files into either GitHub blob links or
-> prose references (MkDocs `--strict` rejects links that escape `docs/`).
+`docs/testing/` (comprehensive test reports) is kept on disk but excluded from
+the built site; `CONTRIBUTING.md` lives at the repo root.

@@ -4,7 +4,7 @@ App / transport layer — HTTP + WebSocket entrypoints and request dispatch.
 
 This directory is one **architectural layer** of the `services/` package. It is
 a PEP 420 namespace package (no `__init__.py`) and groups the domain packages
-that share this role. See [CODEBASE-ARCHITECTURE.md](../../CODEBASE-ARCHITECTURE.md)
+that share this role. See [CODEBASE-ARCHITECTURE.md](../../docs/reference/CODEBASE-ARCHITECTURE.md)
 for the full layer map and [CONTRIBUTING.md](../../CONTRIBUTING.md) for the
 import rules enforced by `lint-imports`.
 

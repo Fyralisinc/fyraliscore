@@ -2,8 +2,8 @@
 
 This guide covers the **conventions and guardrails** that keep the codebase
 maintainable at scale. For *what the system does*, read
-[CODEBASE-ARCHITECTURE.md](CODEBASE-ARCHITECTURE.md). For *why the codebase is
-organized the way it is*, read [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md).
+[CODEBASE-ARCHITECTURE.md](docs/reference/CODEBASE-ARCHITECTURE.md). For *why the codebase is
+organized the way it is*, read [CODEBASE-MANAGEMENT.md](docs/reference/CODEBASE-MANAGEMENT.md).
 For local setup, read [README.md](README.md).
 
 ## 1. Repository layout
