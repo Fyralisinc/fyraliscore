@@ -1,0 +1,64 @@
+# Build the MkDocs site and publish it to GitHub Pages.
+# Deploys the built site as a Pages artifact (no gh-pages branch needed), so the
+# repo keeps its main + production only branch policy.
+# Live at: https://fyralisinc.github.io/fyraliscore/
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when something that affects the site changes.
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'docs_hooks.py'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (mkdocs --strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Mirrors the [docs] extra in pyproject.toml (mkdocs-material brings
+      # mkdocs + pymdown-extensions, which the build hook + toc slugify need).
+      - name: Install docs toolchain
+        run: pip install "mkdocs-material>=9.5"
+
+      - name: Build site (strict)
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

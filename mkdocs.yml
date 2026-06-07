@@ -6,6 +6,7 @@ site_name: Fyralis Core — Internal Docs
 site_description: >-
   Internal engineering and AI-agent documentation for Fyralis Core, the
   organizational-intelligence runtime. How the system works and why.
+site_url: https://fyralisinc.github.io/fyraliscore/
 docs_dir: docs
 use_directory_urls: true
 
