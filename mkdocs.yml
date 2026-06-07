@@ -104,6 +104,7 @@ nav:
       - Feature status: status/feature-status.md
       - Wiring gaps: status/wiring-gaps.md
       - Legacy & test-only: status/dead-legacy.md
+      - Inquiry retrieval gap analysis: status/inquiry-retrieval-gap-analysis.md
   - Decisions (ADRs):
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
