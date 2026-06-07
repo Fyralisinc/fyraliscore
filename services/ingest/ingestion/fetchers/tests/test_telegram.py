@@ -79,6 +79,27 @@ async def test_registry_drift_telegram_present():
     assert "telegram" in RECONCILER_DISPATCH
 
 
+async def test_onboarding_and_reconciler_cover_telegram():
+    """Drift guard for the two hardcoded per-source enumerations the all-12 gate
+    caught (both would strand telegram backfill in production):
+
+      1. tenant_onboarding's applicable-source UNION must read telegram_installations
+         (else telegram installs are invisible → no source_onboarding_run).
+      2. the reconciler startup must register telegram's pool provider (else
+         reconcile_telegram raises RuntimeError → the source run fails).
+    """
+    import inspect
+
+    from services.ingest.ingestion.workflows import reconciler as _rec
+    from services.ingest.ingestion.workflows.tenant_onboarding import (
+        _LOAD_ACTIVE_SOURCES_SQL,
+    )
+
+    assert "telegram_installations" in _LOAD_ACTIVE_SOURCES_SQL
+    rec_src = inspect.getsource(_rec)
+    assert "telegram_reconciler_mod.set_pool_provider" in rec_src
+
+
 async def test_backward_paging_full_sweep(monkeypatch):
     fixture = make_telegram(dialogs=1, messages_per_dialog=5, page_size=2, seed="t1")
     _patch_client(monkeypatch, MockTelegramClient(fixture=fixture))

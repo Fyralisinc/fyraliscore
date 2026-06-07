@@ -1,20 +1,20 @@
-# Validation Run 6 — All-11-source concurrent backfill + live overlap
+# Validation Run 6 — All-12-source concurrent backfill + live overlap
 
 **Status:** READY ✅
-**Started:** 2026-06-07T15:29:07.062495+00:00
-**Wall time:** 12.4s
-**Tenants:** 22
+**Started:** 2026-06-07T17:31:47.695267+00:00
+**Wall time:** 11.7s
+**Tenants:** 24
 
 ## Pre-flight (fixture realism — Decision 12)
 
-- gmail: external_id='gmail:6c3e604c-af1a-4aa2-abe6-54' ✅
+- gmail: external_id='gmail:cdd11c4e-9ce1-4c41-b573-68' ✅
 - github: external_id='I_kwDO8x2NYDDUMdgx' ✅
 - slack: external_id='C_9C1302B2C2:1767225600.000000' ✅
 - discord: external_id='discord:402097' ✅
 
 ## State reset (Decision 10)
 
-- recreated 46 topics; cleared 0 stale S3 objects
+- recreated 50 topics; cleared 0 stale S3 objects
 
 ## Per-source observation counts
 
@@ -31,19 +31,20 @@
 | notion | 2 | 12 | 12 | ✅ |
 | quickbooks | 2 | 14 | 14 | ✅ |
 | grafana | 2 | 12 | 12 | ✅ |
+| telegram | 2 | 16 | 16 | ✅ |
 
 ## Live phase (A30)
 
 - tenants_per_source=2; live=3 events/tenant per source
-- peak simultaneous backfill source_onboarding_runs in_progress: 19
+- peak simultaneous backfill source_onboarding_runs in_progress: 24
 - live ingress: 202=webhook Kafka cutover (github/slack/jira/mercury/quickbooks/grafana); 200=gmail pubsub / google push (inline drain) / notion shadow-write; discord=direct dispatch
 
 ## Per-source × per-dimension coverage
 
 | Source | Backfill | Live | Cross-path dedup | Signature gate | Replay idempotency |
 |---|---|---|---|---|---|
-| gmail | ✅ | ✅ [200] | ✅ | — | overlap×1 |
-| github | ✅ | ✅ [202] | ✅ | — | overlap×2 |
+| gmail | ✅ | ✅ [200] | ✅ | — | overlap×2 |
+| github | ✅ | ✅ [202] | ✅ | — | overlap×3 |
 | slack | ✅ | ✅ [202] | ✅ | — | overlap×3 |
 | discord | ✅ | ✅ ['direct'] | ✅ | — | overlap×3 |
 | google_calendar | ✅ | ✅ [200] | ✅ | — | overlap×3 |
@@ -53,14 +54,15 @@
 | notion | ✅ | ✅ [200] | ✅ | ✅ | overlap×3 |
 | quickbooks | ✅ | ✅ [202] | ✅ | ✅ | overlap×3 |
 | grafana | ✅ | ✅ [202] | ✅ | ✅ | overlap×3 |
+| telegram | ✅ | ✅ ['direct'] | ✅ | — | overlap×3 |
 
 ## Assertions
 
-- ✅ `assert_live_during_backfill_overlap(all 11 sources)` — every source received ≥1 live burst while its backfill was in_progress: {'gmail': 1, 'github': 2, 'slack': 3, 'discord': 3, 'google_calendar': 3, 'google_drive': 3, 'jira': 3, 'mercury': 3, 'notion': 3, 'quickbooks': 3, 'grafana': 3}
-- ✅ `assert_all_sources_backfilled_concurrently` — peak simultaneous in_progress source runs = 19 (expected ≥ 11)
+- ✅ `assert_live_during_backfill_overlap(all 12 sources)` — every source received ≥1 live burst while its backfill was in_progress: {'gmail': 2, 'github': 3, 'slack': 3, 'discord': 3, 'google_calendar': 3, 'google_drive': 3, 'jira': 3, 'mercury': 3, 'notion': 3, 'quickbooks': 3, 'grafana': 3, 'telegram': 3}
+- ✅ `assert_all_sources_backfilled_concurrently` — peak simultaneous in_progress source runs = 24 (expected ≥ 12)
 - ✅ `assert_live_routed_through_expected_ingress` — all sources hit their expected live ingress status
 - ✅ `assert_signature_validation_gate_holds` — 5/5 tampered events rejected (no 2xx)
-- ✅ `assert_no_duplicate_observations_under_concurrency` — 156 observations, zero duplicate (source_channel, external_id, occurred_at) groups
+- ✅ `assert_no_duplicate_observations_under_concurrency` — 172 observations, zero duplicate (source_channel, external_id, occurred_at) groups
 
 ## Subprocess exit codes (Decision 11)
 

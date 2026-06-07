@@ -233,6 +233,11 @@ SELECT 'grafana' AS source
   FROM grafana_installations
  WHERE tenant_id = $1
    AND disabled_at IS NULL
+UNION
+SELECT 'telegram' AS source
+  FROM telegram_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
 """
 
 # ON CONFLICT DO NOTHING: defensive against concurrent claims racing
