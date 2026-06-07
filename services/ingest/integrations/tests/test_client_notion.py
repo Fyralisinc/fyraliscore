@@ -5,12 +5,18 @@ token is injected directly).
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import httpx
 import pytest
 import respx
 
 from lib.shared.errors import NotionApiError
-from services.ingest.integrations.notion.client import NotionClient, short_workspace_hash
+from services.ingest.integrations.notion.client import (
+    NotionClient,
+    _api_error_from_response,
+    short_workspace_hash,
+)
 
 
 pytestmark = pytest.mark.asyncio
@@ -119,3 +125,101 @@ async def test_workspace_hash_deterministic_16_hex():
     h = short_workspace_hash("ws-prod")
     assert len(h) == 16 and short_workspace_hash("ws-prod") == h
     assert short_workspace_hash("ws-other") != h
+
+
+# ---------------------------------------------------------------------
+# IN-14 worker-crash hardening: recoverable classification + chokepoint.
+# ---------------------------------------------------------------------
+
+def _resp(status: int) -> httpx.Response:
+    return httpx.Response(status, json={"object": "error", "code": "x"})
+
+
+async def test_recoverable_classification_by_status():
+    # 401 (revoked, chokepoint-disabled), 429, 5xx, transport → park/retry.
+    assert _api_error_from_response(_resp(401), "/p").recoverable is True
+    assert _api_error_from_response(_resp(429), "/p").recoverable is True
+    assert _api_error_from_response(_resp(500), "/p").recoverable is True
+    assert _api_error_from_response(_resp(503), "/p").recoverable is True
+    # 404 (genuine not-found) and other 4xx → fail fast.
+    assert _api_error_from_response(_resp(404), "/p").recoverable is False
+    assert _api_error_from_response(_resp(400), "/p").recoverable is False
+    assert _api_error_from_response(_resp(403), "/p").recoverable is False
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.disabled = False
+
+    def transaction(self):
+        class _Txn:
+            async def __aenter__(self_):
+                return None
+
+            async def __aexit__(self_, *a):
+                return False
+
+        return _Txn()
+
+    async def fetchrow(self, sql, *args):
+        self.disabled = True
+        return {"id": uuid4()}
+
+    async def execute(self, sql, *args):
+        return None
+
+
+class _RecordingPool:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def acquire(self):
+        conn = self._conn
+
+        class _Acq:
+            async def __aenter__(self_):
+                return conn
+
+            async def __aexit__(self_, *a):
+                return False
+
+        return _Acq()
+
+
+async def test_401_fires_revocation_chokepoint_and_is_recoverable():
+    conn = _RecordingConn()
+    client = NotionClient(
+        bot_token="secret-bot-token",
+        http_client=httpx.AsyncClient(),
+        api_base_url="https://api.notion.com",
+        pool=_RecordingPool(conn),
+        tenant_id=uuid4(),
+        workspace_id="ws-revoked",
+    )
+    with respx.mock(base_url="https://api.notion.com") as router:
+        router.post("/v1/search").respond(
+            401, json={"object": "error", "code": "unauthorized"},
+        )
+        with pytest.raises(NotionApiError) as ei:
+            await client.search()
+    # The install was disabled (chokepoint fired) ...
+    assert conn.disabled is True
+    # ... and the raised 401 is recoverable so the shard PARKS (not fail).
+    assert ei.value.code == "notion_api_unauthorized"
+    assert ei.value.recoverable is True
+
+
+async def test_401_without_db_context_skips_chokepoint_no_crash():
+    # No pool/tenant/workspace (spammer mode / OAuth probe): chokepoint is
+    # skipped, but the 401 still raises cleanly (and stays recoverable).
+    client = NotionClient(
+        bot_token="secret-bot-token",
+        http_client=httpx.AsyncClient(),
+        api_base_url="https://api.notion.com",
+    )
+    with respx.mock(base_url="https://api.notion.com") as router:
+        router.post("/v1/search").respond(401, json={"code": "unauthorized"})
+        with pytest.raises(NotionApiError) as ei:
+            await client.search()
+    assert ei.value.code == "notion_api_unauthorized"
+    assert ei.value.recoverable is True

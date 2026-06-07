@@ -166,9 +166,12 @@ class NotionClient:
                     json=json_body, params=params,
                 )
             except httpx.TransportError as exc:
+                # Network blip — transient, so recoverable (backfill parks
+                # + retries rather than terminal-failing the shard).
                 raise NotionApiError(
                     "transport error calling notion",
                     code="notion_api_error",
+                    recoverable=True,
                     context={"error_type": type(exc).__name__, "path": path},
                 ) from exc
 
@@ -186,6 +189,15 @@ class NotionClient:
                         context={"path": path},
                     )
                 return body
+
+            # Revocation chokepoint (R2): a 401 means the integration token
+            # was revoked / the integration removed. Disable the install so
+            # the backfill orphan-scan parks (instead of hammering a dead
+            # token) and inbound webhooks for this workspace stop resolving.
+            # Fired BEFORE raising; the raised 401 is `recoverable` so the
+            # in-flight shard parks rather than terminal-failing the run.
+            if response.status_code == 401:
+                await self._maybe_disable_on_revocation()
 
             raise _api_error_from_response(response, path)
 
@@ -320,6 +332,42 @@ class NotionClient:
         as a connectivity probe."""
         return await self._request("GET", "/v1/users/me")
 
+    # -----------------------------------------------------------------
+    # Revocation chokepoint
+    # -----------------------------------------------------------------
+
+    async def _maybe_disable_on_revocation(self) -> None:
+        """On a 401, disable this workspace's install (R2 chokepoint).
+
+        Requires the DB-backed context `(pool, tenant_id, workspace_id)` —
+        present for the backfill/reconcile/webhook clients but NOT in
+        spammer mode (preset token, no pool) or the OAuth probe. When any
+        is missing we log and skip; a later DB-backed failure fires it.
+        Never raises (the caller is about to surface the original 401).
+        """
+        if (
+            self._pool is None
+            or self._tenant_id is None
+            or self._workspace_id is None
+        ):
+            log.info(
+                "notion_chokepoint_skipped_no_context",
+                has_pool=self._pool is not None,
+                has_tenant=self._tenant_id is not None,
+                has_workspace=self._workspace_id is not None,
+            )
+            return
+        # Imported lazily to avoid a client→uninstall→client import cycle.
+        from services.ingest.integrations.notion.uninstall import (
+            _disable_installation_notion,
+        )
+
+        await _disable_installation_notion(
+            pool=self._pool,
+            tenant_id=self._tenant_id,
+            workspace_id=str(self._workspace_id),
+        )
+
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -358,12 +406,25 @@ def _api_error_from_response(
     status = response.status_code
 
     if status == 401:
+        # Token revoked / integration removed. RECOVERABLE because the
+        # outbound chokepoint (NotionClient._maybe_disable_on_revocation)
+        # disables the install on this same 401 — so the backfill parks the
+        # shard (does not terminal-fail the run) and the orphan-scan then
+        # re-claims it cheaply against the now-disabled install (no further
+        # API calls) until a re-OAuth / re-enable resumes it. (GitHub keeps
+        # 401 non-recoverable because it has an unsuspend webhook + re-plan;
+        # Notion has neither, so parking-until-re-enable is the resilient
+        # path — IN-14 worker-crash hardening.)
         return NotionApiError(
             "notion 401: integration token rejected",
             code="notion_api_unauthorized",
+            recoverable=True,
             context={"http_status": 401, "notion_code": notion_code, "path": path},
         )
     if status == 404:
+        # Genuine not-found (object deleted / un-shared) — not transient.
+        # The fetcher already skips a single-object 404 mid-walk; if a 404
+        # reaches the shard boundary it is a real config fault, fail fast.
         return NotionApiError(
             "notion 404: object not found or not shared with integration",
             code="notion_api_not_found",
@@ -373,15 +434,19 @@ def _api_error_from_response(
         return NotionApiError(
             "notion rate limit (429), retry budget exhausted",
             code="notion_api_rate_limited",
+            recoverable=True,
             context={
                 "http_status": 429,
                 "retry_after": response.headers.get("Retry-After"),
                 "path": path,
             },
         )
+    # Upstream 5xx is transient — recoverable (park + retry). Other 4xx is
+    # a terminal client fault — fail fast.
     return NotionApiError(
         f"notion returned {status}",
         code="notion_api_error",
+        recoverable=status >= 500,
         context={"http_status": status, "notion_code": notion_code, "path": path},
     )
 
