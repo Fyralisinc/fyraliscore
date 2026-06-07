@@ -470,6 +470,16 @@ class NotionApiError(CompanyOSError):
 
     `context` carries `{http_status?, notion_code?, retry_after?}`. No bot
     token is ever placed on context.
+
+    `recoverable` (IN-14 hardening): set True for transient faults — 429,
+    upstream 5xx, transport errors, and a 401 (token revoked) once the
+    outbound chokepoint has disabled the install. The backfill
+    (`services/ingest/ingestion/workflows/shard_fetch.py`) then PARKS the
+    shard (leaves it `in_progress` for the orphan-scan) instead of
+    terminal-failing it. A parked 401 is safe from infinite retry because
+    the chokepoint disables the install, so the orphan-scan re-claim parks
+    cheaply at `_load_install` (no further API calls) until the install
+    is re-enabled.
     """
     default_code = "notion_api_error"
 
@@ -479,6 +489,7 @@ class NotionApiError(CompanyOSError):
         *,
         code: str | None = None,
         context: dict[str, Any] | None = None,
+        recoverable: bool = False,
         **extra: Any,
     ) -> None:
         merged = dict(context or {})
@@ -486,6 +497,7 @@ class NotionApiError(CompanyOSError):
         super().__init__(message, **merged)
         if code is not None:
             self._code = code
+        self._recoverable = recoverable
 
 
 class JiraApiError(CompanyOSError):
