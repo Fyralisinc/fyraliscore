@@ -51,6 +51,10 @@ from services.ingest.synthetic.live_generators.notion_webhook import (
     NotionWebhookGenerator,
     NotionWebhookResult,
 )
+from services.ingest.synthetic.live_generators.telegram_gateway import (
+    TelegramGatewayGenerator,
+    TelegramGatewayResult,
+)
 
 
 __all__ = [
@@ -71,4 +75,6 @@ __all__ = [
     "SimulatedPushResult",
     "SimulatedWebhookResult",
     "SlackWebhookGenerator",
+    "TelegramGatewayGenerator",
+    "TelegramGatewayResult",
 ]

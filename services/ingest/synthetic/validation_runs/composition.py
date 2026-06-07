@@ -50,6 +50,7 @@ from services.ingest.synthetic.fixtures import (
     make_gmail_mailbox,
     make_github_repos,
     make_slack_workspace,
+    make_telegram,
 )
 from services.ingest.synthetic.live_generators import (
     DiscordGatewayGenerator,
@@ -61,6 +62,7 @@ from services.ingest.synthetic.live_generators import (
     HmacWebhookGenerator,
     NotionWebhookGenerator,
     SlackWebhookGenerator,
+    TelegramGatewayGenerator,
 )
 from services.ingest.synthetic.mock_clients import (
     MockDiscordClient,
@@ -156,6 +158,12 @@ class LiveTarget:
     gdrive_watch_token: str | None = None
     # Notion (workspace_id == the seeded provider_installations.installation_id).
     notion_workspace_id: str | None = None
+    # Telegram (gateway-style live; installation_id resolved from the pool by the
+    # generator, so the live external_id matches backfill). The live message is
+    # dispatched "into" the tenant's first backfill dialog.
+    telegram_dialog_id: int | None = None
+    telegram_dialog_kind: str | None = None
+    telegram_dialog_title: str | None = None
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -201,6 +209,18 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
     if source == "notion":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           notion_workspace_id=f"x3-{slug}-notion")
+    if source == "telegram":
+        # The live message targets the tenant's FIRST backfill dialog (same
+        # seed → same deterministic dialog_id the harness seeded), so the live
+        # update is "in" a real dialog. installation_id is resolved by the
+        # generator from telegram_installations at dispatch time.
+        fx = make_telegram(**fixture_params)
+        did = fx["dialog_order"][0]
+        d = fx["dialogs"][str(did)]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          telegram_dialog_id=did,
+                          telegram_dialog_kind=d["dialog_kind"],
+                          telegram_dialog_title=d["title"])
     raise ValueError(f"unknown source {source!r}")
 
 
@@ -221,6 +241,7 @@ class LiveDrivers:
     google_push: Any = None         # GooglePushGenerator (gcal + gdrive)
     notion_webhook: Any = None      # NotionWebhookGenerator
     google_app: FastAPI | None = None
+    telegram_gateway: Any = None     # TelegramGatewayGenerator (gateway-style)
 
 
 async def build_live_drivers(
@@ -421,12 +442,27 @@ async def build_live_drivers(
             GooglePushGenerator(app=google_app, pool=pool),
         )
 
+    # ---- Telegram (gateway-style; no HTTP). Direct dispatch to handle_update
+    # with the SAME M5.3 cutover deps as slack/github, so a live update
+    # shadow-writes to ingestion.raw.telegram and flows through the consumer
+    # chain — like Discord's gateway. installation_id is resolved per tenant
+    # from telegram_installations by the generator. ----
+    telegram_gen = None
+    if "telegram" in present:
+        telegram_gen = await stack.enter_async_context(
+            TelegramGatewayGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+
     return LiveDrivers(
         gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
         slack_webhook=slack_gen, github_webhook=github_gen,
         fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
         hmac=hmac_gens, google_push=google_push_gen,
         notion_webhook=notion_gen, google_app=google_app,
+        telegram_gateway=telegram_gen,
     )
 
 

@@ -68,6 +68,7 @@ from services.ingest.synthetic.fixtures import (
     make_notion,
     make_quickbooks,
     make_slack_workspace,
+    make_telegram,
 )
 
 
@@ -149,6 +150,8 @@ def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
         return make_quickbooks(**params)
     if source == "grafana":
         return make_grafana(**params)
+    if source == "telegram":
+        return make_telegram(**params)
     raise ValueError(f"unknown source: {source!r}")
 
 
@@ -175,7 +178,7 @@ from services.ingest.synthetic.mock_clients import (
     MockDiscordClient, MockGithubClient, MockGmailClient,
     MockGoogleCalendarClient, MockGoogleDriveClient, MockGrafanaClient,
     MockJiraClient, MockMercuryClient, MockNotionClient,
-    MockQuickBooksClient, MockSlackClient,
+    MockQuickBooksClient, MockSlackClient, MockTelegramClient,
 )
 
 
@@ -232,6 +235,8 @@ def _make_mock(source: str, fixture: dict[str, Any],
         return MockQuickBooksClient(fixture=fixture, profile=profile)
     if source == "grafana":
         return MockGrafanaClient(fixture=fixture, profile=profile)
+    if source == "telegram":
+        return MockTelegramClient(fixture=fixture, profile=profile)
     raise ValueError(f"unknown source: {{source!r}}")
 
 
@@ -259,6 +264,8 @@ def _install_factories() -> None:
     from services.ingest.ingestion.reconcilers import grafana as grar
     from services.ingest.ingestion.fetchers import notion as nf
     from services.ingest.ingestion.reconcilers import notion as nr
+    from services.ingest.ingestion.fetchers import telegram as tf
+    from services.ingest.ingestion.reconcilers import telegram as tr
     from services.ingest.ingestion.workflows import source_onboarding as so
 
     def _factory_for(_source):
@@ -289,6 +296,7 @@ def _install_factories() -> None:
         ("quickbooks", (qf, qr)),
         ("grafana", (graf, grar)),
         ("notion", (nf, nr)),
+        ("telegram", (tf, tr)),
     ):
         for mod in modules:
             setattr(mod, f"_open_{{source}}_client", _factory_for(source))
@@ -998,6 +1006,66 @@ class BackfillHarness:
                             id, tenant_id, source, trigger_kind,
                             installation_row_id, payload
                         ) VALUES ($1, $2, 'grafana', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "telegram":
+                    # IN-TELEGRAM: account install + one telegram_dialogs row per
+                    # fixture dialog so the planner's loader aggregates a non-empty
+                    # `dialogs` list → one shard each. The MTProto session refs are
+                    # NULL: the backfill client seam (_open_telegram_client) is
+                    # monkeypatched to the mock, so the real Telethon client is
+                    # never built. offset_id_cursor left NULL → FULL backward
+                    # sweep on first fetch.
+                    fixture = _build_fixture(
+                        "telegram", outcome.scenario.fixture_params,
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO telegram_installations (
+                          id, tenant_id, account_label
+                        ) VALUES ($1, $2, $3)
+                        ON CONFLICT (tenant_id, account_label)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        f"x3-{outcome.scenario.tenant_slug}-telegram",
+                    )
+                    dialogs = fixture.get("dialogs", {})
+                    for did in fixture.get("dialog_order", []):
+                        d = dialogs.get(str(did), {})
+                        await conn.execute(
+                            """
+                            INSERT INTO telegram_dialogs (
+                                id, tenant_id, telegram_installation_id,
+                                dialog_id, dialog_kind, access_hash, title, state
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+                            ON CONFLICT (telegram_installation_id, dialog_id)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id,
+                            int(did), d.get("dialog_kind", "chat"),
+                            d.get("access_hash"), d.get("title"),
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO telegram_update_state (
+                            id, tenant_id, telegram_installation_id
+                        ) VALUES ($1, $2, $3)
+                        ON CONFLICT (telegram_installation_id) DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'telegram', 'install', $3, '{}'::jsonb)
                         ON CONFLICT (tenant_id, source, installation_row_id)
                             WHERE installation_row_id IS NOT NULL
                             DO NOTHING

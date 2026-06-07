@@ -1,14 +1,14 @@
-"""Run 6 — ALL-11-source concurrent backfill + live overlap (the milestone gate).
+"""Run 6 — ALL-12-source concurrent backfill + live overlap (the milestone gate).
 
-The capstone acceptance run: for EVERY one of the 11 ingestion sources, the
+The capstone acceptance run: for EVERY one of the 12 ingestion sources, the
 backfill producer chain is IN PROGRESS while live signals are simultaneously
 received, through the real subprocess + Kafka data plane. This is the binding
 acceptance condition — live events arrive *during* an unfinished backfill, for
 every source, concurrently — not backfill-then-live.
 
 Where Run 4 covers the original four (gmail/slack/github/discord), this run adds
-the seven that came later: google_calendar, google_drive, jira, mercury, notion,
-quickbooks, grafana — each driven through its REAL live ingress:
+the eight that came later: google_calendar, google_drive, jira, mercury, notion,
+quickbooks, grafana, and telegram — each driven through its REAL live ingress:
 
   - HMAC webhook + M5.3 Kafka cutover (HTTP 202): jira, mercury, quickbooks,
     grafana (alongside slack/github).
@@ -70,7 +70,7 @@ _GRAFANA_BASE_MS = 1778803200000
 _EXPECTED: dict[str, int] = {
     "gmail": 5, "github": 6, "slack": 5, "discord": 5, "google_calendar": 3,
     "google_drive": 3, "jira": 3, "mercury": 5, "notion": 3, "quickbooks": 4,
-    "grafana": 3,
+    "grafana": 3, "telegram": 5,
 }
 SOURCES = list(_EXPECTED.keys())
 
@@ -81,6 +81,9 @@ _EXPECTED_LIVE_STATUS: dict[str, set[int]] = {
     "gmail": {200}, "github": {202}, "slack": {202}, "discord": set(),
     "google_calendar": {200}, "google_drive": {200}, "jira": {202},
     "mercury": {202}, "notion": {200}, "quickbooks": {202}, "grafana": {202},
+    # telegram is gateway-style (MTProto persistent connection, no HTTP) — direct
+    # dispatch, like discord: no HTTP status to assert.
+    "telegram": set(),
 }
 _HMAC_SOURCES = ("jira", "mercury", "quickbooks", "grafana")
 
@@ -121,6 +124,10 @@ def _scen_params(source: str, slug: str) -> dict:
                        "rows_per_entity": 1},
         "grafana": {"annotations": 3, "base_ms": _GRAFANA_BASE_MS,
                     "base_url": f"https://{slug}.grafana.net"},
+        # telegram: 1 dialog × 5 messages = 5 backfill obs. seed=slug makes the
+        # dialog ids tenant-distinct (belt-and-suspenders; the external_id is
+        # already install-namespaced so cross-tenant collision is impossible).
+        "telegram": {"dialogs": 1, "messages_per_dialog": 5, "seed": slug},
     }[source]
 
 
@@ -173,6 +180,9 @@ async def _dispatch_one(drivers, t, *, content: str) -> int | None:
     if s == "discord":
         await drivers.discord_gateway.simulate_message_create(
             guild_id=t.guild_id, channel_id=t.channel_id, content=content)
+        return None
+    if s == "telegram":
+        await drivers.telegram_gateway.simulate_message(target=t, content=content)
         return None
     if s in _HMAC_SOURCES:
         r = await drivers.hmac[s].simulate_event(target=t, content=content)
@@ -265,7 +275,7 @@ async def run_all_sources(
     dsn = os.environ["DATABASE_URL"]
     scenarios = all_sources_scenarios(tenants_per_source)
     report = RunReport(
-        run_name="All-11-source concurrent backfill + live overlap",
+        run_name="All-12-source concurrent backfill + live overlap",
         run_number=6, tenant_count=len(scenarios),
         started_at=started, wall_seconds=0.0)
 
@@ -424,7 +434,7 @@ def _assert_all_sources(report, overlap, statuses, gate_rejected, gate_total,
     # 1. Live received WHILE backfill in progress — per source.
     missing = [s for s in SOURCES if overlap.get(s, 0) < 1]
     report.assertions.append(AssertionResult(
-        name="assert_live_during_backfill_overlap(all 11 sources)",
+        name="assert_live_during_backfill_overlap(all 12 sources)",
         passed=not missing,
         detail=("every source received ≥1 live burst while its backfill was "
                 f"in_progress: { {s: overlap.get(s, 0) for s in SOURCES} }"

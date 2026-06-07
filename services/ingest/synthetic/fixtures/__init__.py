@@ -22,6 +22,7 @@ from services.ingest.synthetic.fixtures.slack_dm_generator import (
     make_slack_dm_workspace,
 )
 from services.ingest.synthetic.fixtures.slack_generator import make_slack_workspace
+from services.ingest.synthetic.fixtures.telegram_generator import make_telegram
 
 
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "make_quickbooks",
     "make_slack_dm_workspace",
     "make_slack_workspace",
+    "make_telegram",
 ]

@@ -42,6 +42,7 @@ from services.ingest.synthetic.mock_clients.notion import MockNotionClient
 from services.ingest.synthetic.mock_clients.quickbooks import MockQuickBooksClient
 from services.ingest.synthetic.mock_clients.slack import MockSlackClient
 from services.ingest.synthetic.mock_clients.slack_user import MockSlackUserClient
+from services.ingest.synthetic.mock_clients.telegram import MockTelegramClient
 
 
 __all__ = [
@@ -57,4 +58,5 @@ __all__ = [
     "MockQuickBooksClient",
     "MockSlackClient",
     "MockSlackUserClient",
+    "MockTelegramClient",
 ]
