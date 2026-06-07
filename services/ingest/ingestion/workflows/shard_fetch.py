@@ -258,6 +258,7 @@ from services.ingest.ingestion.workflows.signals import (
 )
 from services.ingest.ingestion.workflows.state import (
     CursorAdvanceFlushFailure,
+    CursorAdvancePublishFailure,
     KafkaMessage,
     WorkflowState,
     advance_cursor_atomic_with_kafka_publish,
@@ -796,8 +797,12 @@ class ShardFetch(LongRunningService):
 
         Exit conditions:
           - end_of_data → mark shard 'done' + emit completion.
-          - CursorAdvanceFlushFailure → exit silently; shard stays
-            in_progress; next tick's orphan scan resumes.
+          - Transient infra fault → exit silently; shard stays in_progress;
+            next tick's orphan scan resumes. Covers: CursorAdvanceFlushFailure
+            (flush timeout), CursorAdvancePublishFailure (produce-enqueue:
+            broker down / unprovisioned topic / queue full), and raw-tier
+            (S3) write failures. These must NOT terminal-fail a shard —
+            doing so silently drops that shard's history with no auto-recovery.
           - NotImplementedError (fetcher stub) → mark shard 'failed'
             + emit completion with failure_reason.
           - Other exception → mark 'failed' + emit with failure_reason.
@@ -825,16 +830,22 @@ class ShardFetch(LongRunningService):
                 self._pool, tenant_id=tenant_id, source=source,
             )
             if install is None:
-                reason = (
-                    f"No active install for tenant {tenant_id} source "
-                    f"{source!r} at shard-fetch time. Install may have "
-                    f"been disabled mid-flight (A14 race)."
+                # Install disabled mid-flight — suspended/revoked via the
+                # lifecycle webhook, or an A14 race. This is RECOVERABLE:
+                # park the shard (leave it in_progress) so the orphan-scan
+                # resumes it once the install is re-enabled (unsuspend),
+                # rather than terminal-failing it (which needs a manual
+                # requeue). A genuinely-deleted install leaves the shard
+                # parked until an operator cleans up the onboarding run —
+                # the retry is one cheap query per lease interval.
+                log.warning(
+                    "shard_fetch.install_unavailable_park",
+                    extra={
+                        "shard_id": str(shard_id), "source": source,
+                        "tenant_id": str(tenant_id),
+                    },
                 )
-                await self._terminate_shard(
-                    shard_id=shard_id, state="failed",
-                    failure_reason=reason,
-                )
-                return
+                return  # stay in_progress; orphan-scan retries on re-enable
 
             # Ensure the N1 home exists before the first advance.
             # Two paths reach this point: (1) signal-driven start
@@ -904,10 +915,19 @@ class ShardFetch(LongRunningService):
                         for rec in result.records
                     ]
                 except Exception as exc:  # noqa: BLE001
-                    raise RuntimeError(
-                        f"S3 raw-tier write failed: "
-                        f"{type(exc).__name__}: {exc}"
-                    ) from exc
+                    # Transient raw-tier (S3) write failure — missing bucket,
+                    # 5xx, network. This is infra, not a poison shard: leave
+                    # the shard in_progress so the orphan-scan retries it,
+                    # rather than terminal-failing (which is unrecoverable and
+                    # silently drops this shard's history). Cursor not advanced.
+                    log.warning(
+                        "shard_fetch.s3_write_failure_exit_loop",
+                        extra={
+                            "shard_id": str(shard_id), "source": source,
+                            "error": f"{type(exc).__name__}: {exc}"[:200],
+                        },
+                    )
+                    return  # shard stays in_progress; orphan-scan retries
 
                 try:
                     await advance_cursor_atomic_with_kafka_publish(
@@ -932,12 +952,19 @@ class ShardFetch(LongRunningService):
                             self._config.flush_timeout_seconds
                         ),
                     )
-                except CursorAdvanceFlushFailure:
+                except (CursorAdvanceFlushFailure, CursorAdvancePublishFailure) as exc:
+                    # Flush timeout OR produce-enqueue failure (broker down,
+                    # unprovisioned topic, queue full). Both are transient infra
+                    # — leave the shard in_progress for the orphan-scan to retry
+                    # rather than terminal-failing on a hiccup. (Previously a
+                    # produce-enqueue KafkaException escaped to the terminal
+                    # boundary below and silently lost the shard's history.)
                     log.warning(
-                        "shard_fetch.flush_failure_exit_loop",
+                        "shard_fetch.publish_failure_exit_loop",
                         extra={
                             "shard_id": str(shard_id),
                             "source": source,
+                            "failure_kind": type(exc).__name__,
                         },
                     )
                     return  # shard stays in_progress; orphan-scan retries
@@ -970,6 +997,20 @@ class ShardFetch(LongRunningService):
             return
 
         except Exception as exc:  # noqa: BLE001 — terminal recovery boundary
+            if getattr(exc, "recoverable", False):
+                # Transient upstream fault (rate limit, 5xx). Park the shard —
+                # leave it in_progress so the orphan-scan retries — rather than
+                # terminal-failing on a recoverable error (which would need a
+                # manual requeue). Same posture as the S3/Kafka transient
+                # handling above.
+                log.warning(
+                    "shard_fetch.recoverable_fetch_error_park",
+                    extra={
+                        "shard_id": str(shard_id), "source": source,
+                        "error": f"{type(exc).__name__}: {exc}"[:200],
+                    },
+                )
+                return  # stay in_progress; orphan-scan retries
             log.exception(
                 "shard_fetch.unexpected_exception",
                 extra={"shard_id": str(shard_id)},

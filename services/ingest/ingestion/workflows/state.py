@@ -69,6 +69,15 @@ class CursorAdvanceFlushFailure(CursorAdvanceError):
     publish from the same state."""
 
 
+class CursorAdvancePublishFailure(CursorAdvanceError):
+    """`kafka_producer.produce()` failed to ENQUEUE a message (e.g. broker
+    unavailable, unknown/unprovisioned topic, local queue full). The state
+    row was NOT advanced. Same RECOVERABLE contract as
+    `CursorAdvanceFlushFailure`: the caller should leave its shard
+    in_progress and let the next tick / orphan-scan retry — a transient
+    infra fault must not terminally fail a shard (silent history loss)."""
+
+
 class CursorAdvanceMissingState(CursorAdvanceError):
     """The state row `(workflow_kind, workflow_id)` does not exist.
     Callers MUST `persist_state` an initial row before calling
@@ -273,10 +282,31 @@ async def advance_cursor_atomic_with_kafka_publish(
     Connection here.
     """
     # ---- Step 1: enqueue every message. ----
-    for msg in kafka_messages:
-        await kafka_producer.produce(
-            topic=msg.topic, value=msg.value, key=msg.key,
+    # An enqueue failure (broker down, unprovisioned topic, local queue full)
+    # is transient infra — wrap it as a RECOVERABLE CursorAdvancePublishFailure
+    # so the caller leaves its shard in_progress for retry, mirroring the
+    # flush-failure contract below (state row is NOT advanced either way).
+    try:
+        for msg in kafka_messages:
+            await kafka_producer.produce(
+                topic=msg.topic, value=msg.value, key=msg.key,
+            )
+    except CursorAdvanceError:
+        raise
+    except Exception as exc:
+        log.warning(
+            "workflow.cursor_advance_publish_failed",
+            extra={
+                "workflow_kind": workflow_kind,
+                "workflow_id": workflow_id,
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+            },
         )
+        raise CursorAdvancePublishFailure(
+            f"Kafka produce/enqueue failed for ({workflow_kind!r}, "
+            f"{workflow_id!r}): {type(exc).__name__}: {exc}. State NOT "
+            f"advanced; caller's next tick will retry publish."
+        ) from exc
 
     # ---- Step 2: flush — broker-ack barrier (A6 precedent). ----
     remaining = await kafka_producer.flush(flush_timeout_seconds)
@@ -315,6 +345,7 @@ async def advance_cursor_atomic_with_kafka_publish(
 __all__ = [
     "CursorAdvanceError",
     "CursorAdvanceFlushFailure",
+    "CursorAdvancePublishFailure",
     "CursorAdvanceMissingState",
     "KafkaMessage",
     "WorkflowState",

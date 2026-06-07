@@ -25,6 +25,18 @@ class CompanyOSError(Exception):
     def code(self) -> str:
         return getattr(self, "_code", self.default_code)
 
+    @property
+    def recoverable(self) -> bool:
+        """True when retrying the same operation later may succeed —
+        rate limits, upstream 5xx, a temporarily-suspended install.
+
+        Backfill (`services/ingestion/workflows/shard_fetch.py`) parks a
+        shard (leaves it `in_progress` for the orphan-scan to retry)
+        instead of terminal-failing it when the raised error is
+        recoverable. Defaults False (fail-fast); subclasses opt in.
+        """
+        return getattr(self, "_recoverable", False)
+
     def to_dict(self) -> dict[str, Any]:
         """
         Serialisable form used by structured loggers, HTTP error
@@ -404,6 +416,7 @@ class GithubApiError(CompanyOSError):
         *,
         code: str | None = None,
         context: dict[str, Any] | None = None,
+        recoverable: bool = False,
         **extra: Any,
     ) -> None:
         merged = dict(context or {})
@@ -411,6 +424,9 @@ class GithubApiError(CompanyOSError):
         super().__init__(message, **merged)
         if code is not None:
             self._code = code
+        # Rate limits / 5xx are transient; the backfill parks the shard
+        # and retries rather than terminal-failing it (IN-13 hardening).
+        self._recoverable = recoverable
 
 
 class NotionOAuthError(CompanyOSError):

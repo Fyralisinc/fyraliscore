@@ -59,21 +59,26 @@ _GH_EVENT_PATH = {
 }
 
 
-def _gh_event_query(event_type: str, *, per_page: int, page: int) -> str:
+def _gh_event_query(
+    event_type: str, *, per_page: int, page: int, direction: str = "asc",
+) -> str:
     """Per-event REST query string. issues/pulls + comments support
     `state`/`sort`/`direction`; the commits collection takes neither
     (it pages by sha/since/page only). Always carries per_page+page.
+
+    `direction` defaults to `asc` (the stable forward scan the backfill
+    uses). The reconciler passes `desc` so page 1 holds the NEWEST records
+    — its gap-confirm must inspect the newest items, not the oldest.
     """
     paging = f"per_page={per_page}&page={page}"
     if event_type == "commits":
         # /commits has no `state`; default ordering is reverse-chronological.
         return paging
     if event_type == "issue_comments":
-        # /issues/comments has no `state`; ascending by update for a stable
-        # forward scan.
-        return f"sort=updated&direction=asc&{paging}"
+        # /issues/comments has no `state`.
+        return f"sort=updated&direction={direction}&{paging}"
     # issues / pull_requests
-    return f"state=all&sort=updated&direction=asc&{paging}"
+    return f"state=all&sort=updated&direction={direction}&{paging}"
 _LINK_NEXT_PATTERN = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="next"')
 
 # Backfill read-path rate-limit retry. Installation requests hit a
@@ -172,14 +177,59 @@ class GithubClient:
         while True:
             attempt += 1
             response = await client.get(url, headers=headers)
-            rate_limited = response.status_code == 429 or (
+            # Secondary (abuse) limit: 429, or 403 carrying Retry-After.
+            # Short (≈seconds–minute); worth a bounded in-call retry.
+            secondary_limited = response.status_code == 429 or (
                 response.status_code == 403
                 and response.headers.get("Retry-After") is not None
             )
-            if not rate_limited or attempt >= max_attempts:
+            # Primary limit (5000/h per installation): 403 with
+            # `X-RateLimit-Remaining: 0`; reset reported via
+            # `X-RateLimit-Reset` (epoch seconds), NOT Retry-After. The reset
+            # can be up to an hour out — do NOT sleep the worker. Return so the
+            # caller raises a *recoverable* rate-limit error and the backfill
+            # parks the shard (in_progress) for a later orphan-scan retry.
+            primary_limited = (
+                response.status_code == 403
+                and response.headers.get("X-RateLimit-Remaining") == "0"
+            )
+            if primary_limited or not secondary_limited or attempt >= max_attempts:
                 return response
             delay = _parse_retry_after(response.headers.get("Retry-After"))
             await asyncio.sleep(min(max_sleep, delay))
+
+    async def _authed_get(
+        self, *, inst: str, url: str, etag: str | None = None,
+    ) -> httpx.Response:
+        """GET an installation-authed URL, re-minting once on a 401.
+
+        The installation-token cache is process-wide and reused across all
+        fetches (so the token is minted ~once per hour, not per fetch). But a
+        cached token can be rejected server-side BEFORE its client-side
+        `expires_at` — e.g. it was revoked, or the upstream re-issued its
+        token namespace. `_is_fresh` can't see that, so without this a stale
+        cached token would wedge every read with `401 Bad credentials`.
+
+        On a 401 we invalidate the cached token and re-mint ONCE. A genuinely
+        revoked install makes the re-mint itself fail (its 404/401 fires the
+        chokepoint), so this never masks a real revocation.
+        """
+        async def _once() -> httpx.Response:
+            token = await self.mint_installation_token(inst)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            if etag:
+                headers["If-None-Match"] = etag
+            return await self._get_with_rl_retry(url, headers)
+
+        response = await _once()
+        if response.status_code == 401:
+            self._installation_tokens.pop(inst, None)
+            response = await _once()
+        return response
 
     # -----------------------------------------------------------------
     # Public surface
@@ -463,6 +513,7 @@ class GithubClient:
         per_page: int = 30,
         etag: str | None = None,
         installation_id: str | None = None,
+        direction: str = "asc",
     ) -> tuple[list[dict[str, Any]], str, int | None]:
         """One page of a repo's events for `event_type`.
 
@@ -474,21 +525,15 @@ class GithubClient:
         `next_page` is parsed from the `Link` header (rel="next"),
         falling back to `page+1` when a full page came back.
         """
-        token = await self.mint_installation_token(
-            self._backfill_inst(installation_id),
-        )
         path = _GH_EVENT_PATH[event_type]
-        query = _gh_event_query(event_type, per_page=per_page, page=page)
+        query = _gh_event_query(
+            event_type, per_page=per_page, page=page, direction=direction,
+        )
         url = f"{self._api_base_url}/repos/{owner}/{repo}/{path}?{query}"
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if etag:
-            headers["If-None-Match"] = etag
         try:
-            response = await self._get_with_rl_retry(url, headers)
+            response = await self._authed_get(
+                inst=self._backfill_inst(installation_id), url=url, etag=etag,
+            )
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error fetching repo events",
@@ -526,23 +571,15 @@ class GithubClient:
         """Conditional fast-path probe for the reconciler. Issues a
         1-record conditional GET; a `304 Not Modified` means nothing
         changed. Returns `(has_changes, current_etag)`."""
-        token = await self.mint_installation_token(
-            self._backfill_inst(installation_id),
-        )
         path = _GH_EVENT_PATH[event_type]
         url = (
             f"{self._api_base_url}/repos/{owner}/{repo}/{path}"
             f"?state=all&sort=updated&direction=desc&per_page=1&page=1"
         )
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if etag:
-            headers["If-None-Match"] = etag
         try:
-            response = await self._get_with_rl_retry(url, headers)
+            response = await self._authed_get(
+                inst=self._backfill_inst(installation_id), url=url, etag=etag,
+            )
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error probing repo events",
@@ -580,22 +617,14 @@ class GithubClient:
     ) -> tuple[list[dict[str, Any]], str, int | None]:
         """One page of reviews for a single PR
         (`GET /repos/{o}/{r}/pulls/{n}/reviews`). Bare list response."""
-        token = await self.mint_installation_token(
-            self._backfill_inst(installation_id),
-        )
         url = (
             f"{self._api_base_url}/repos/{owner}/{repo}/pulls/{pull_number}"
             f"/reviews?per_page={per_page}&page={page}"
         )
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if etag:
-            headers["If-None-Match"] = etag
         try:
-            response = await self._get_with_rl_retry(url, headers)
+            response = await self._authed_get(
+                inst=self._backfill_inst(installation_id), url=url, etag=etag,
+            )
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error fetching pr reviews",
@@ -633,22 +662,14 @@ class GithubClient:
         (`GET /repos/{o}/{r}/commits/{ref}/check-runs`). The response is a
         WRAPPED object `{total_count, check_runs:[...]}`; we unwrap the
         list. Requires the App's `checks: read` permission."""
-        token = await self.mint_installation_token(
-            self._backfill_inst(installation_id),
-        )
         url = (
             f"{self._api_base_url}/repos/{owner}/{repo}/commits/{ref}"
             f"/check-runs?per_page={per_page}&page={page}"
         )
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if etag:
-            headers["If-None-Match"] = etag
         try:
-            response = await self._get_with_rl_retry(url, headers)
+            response = await self._authed_get(
+                inst=self._backfill_inst(installation_id), url=url, etag=etag,
+            )
         except httpx.TransportError as exc:
             raise GithubApiError(
                 "transport error fetching check runs",
@@ -802,14 +823,32 @@ def _api_error_from_response(response: httpx.Response) -> GithubApiError:
         return GithubApiError(
             "github rate limit (429)",
             code="github_api_rate_limited",
+            recoverable=True,
             context={
                 "http_status": 429,
                 "retry_after": response.headers.get("Retry-After"),
             },
         )
+    # Primary rate limit: 403 with the budget exhausted. Recoverable — the
+    # window resets (≤1h) and the backfill should retry, not terminal-fail.
+    if (
+        response.status_code == 403
+        and response.headers.get("X-RateLimit-Remaining") == "0"
+    ):
+        return GithubApiError(
+            "github primary rate limit (403, X-RateLimit-Remaining: 0)",
+            code="github_api_rate_limited",
+            recoverable=True,
+            context={
+                "http_status": 403,
+                "x_ratelimit_reset": response.headers.get("X-RateLimit-Reset"),
+            },
+        )
+    # Upstream 5xx is transient — recoverable.
     return GithubApiError(
         f"github returned {response.status_code}",
         code="github_api_error",
+        recoverable=response.status_code >= 500,
         context={
             "http_status": response.status_code,
             "github_message": github_msg,
