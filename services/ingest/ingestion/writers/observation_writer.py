@@ -797,10 +797,16 @@ def main() -> None:
     async def _run() -> None:
         dsn = os.environ.get("DATABASE_URL")
         source = os.environ.get("INGESTION_SOURCE") or None
+        # WRITER_CONSUMER_GROUP overrides the shared group id — see the
+        # normalizer's NORMALIZER_CONSUMER_GROUP note: a concurrent stack on
+        # the same broker would otherwise split the normalized partitions and
+        # steal a tenant's observations into the wrong DB.
+        group = os.environ.get("WRITER_CONSUMER_GROUP", _WRITER_GROUP)
         config = WriterConfig(
             bootstrap_servers=os.environ.get(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
             ),
+            consumer_group=group,
             source=source,
         )
         if dsn is not None:

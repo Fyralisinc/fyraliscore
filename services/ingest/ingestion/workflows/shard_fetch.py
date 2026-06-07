@@ -440,6 +440,20 @@ SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
  LIMIT 1
 """
 
+# Grafana is a per-tenant service-account install (not in
+# provider_installations). There is ONE shard per install (annotation/alert
+# state is org-wide), so the fetcher does not need a child row — the install
+# row carries base_url + secret_ref the GrafanaClient needs and base_url for
+# the `_instance_of` external_id namespace. Without this dedicated branch a
+# grafana shard would fall through to the provider_installations lookup, find
+# nothing, and park forever — its install never lands in that table.
+_LOAD_GRAFANA_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
+  FROM grafana_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -531,6 +545,8 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
     if source == "quickbooks":
         return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
+    if source == "grafana":
+        return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

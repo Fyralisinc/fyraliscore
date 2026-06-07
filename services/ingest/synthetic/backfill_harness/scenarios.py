@@ -13,8 +13,12 @@ from typing import Any
 from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
 
 
-# Sources the harness supports. Mirrors the M6 dispatch keys.
-_VALID_SOURCES = frozenset(("gmail", "slack", "github", "discord", "google_calendar"))
+# Sources the harness supports. Mirrors the M6 dispatch keys — all 11
+# production ingestion sources (RawEnvelope.SourceLiteral).
+_VALID_SOURCES = frozenset((
+    "gmail", "slack", "github", "discord", "google_calendar",
+    "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
+))
 
 
 @dataclass(frozen=True)

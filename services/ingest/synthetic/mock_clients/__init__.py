@@ -32,6 +32,14 @@ from services.ingest.synthetic.mock_clients.github import MockGithubClient
 from services.ingest.synthetic.mock_clients.google_calendar import (
     MockGoogleCalendarClient,
 )
+from services.ingest.synthetic.mock_clients.google_drive import (
+    MockGoogleDriveClient,
+)
+from services.ingest.synthetic.mock_clients.grafana import MockGrafanaClient
+from services.ingest.synthetic.mock_clients.jira import MockJiraClient
+from services.ingest.synthetic.mock_clients.mercury import MockMercuryClient
+from services.ingest.synthetic.mock_clients.notion import MockNotionClient
+from services.ingest.synthetic.mock_clients.quickbooks import MockQuickBooksClient
 from services.ingest.synthetic.mock_clients.slack import MockSlackClient
 from services.ingest.synthetic.mock_clients.slack_user import MockSlackUserClient
 
@@ -41,6 +49,12 @@ __all__ = [
     "MockGithubClient",
     "MockGmailClient",
     "MockGoogleCalendarClient",
+    "MockGoogleDriveClient",
+    "MockGrafanaClient",
+    "MockJiraClient",
+    "MockMercuryClient",
+    "MockNotionClient",
+    "MockQuickBooksClient",
     "MockSlackClient",
     "MockSlackUserClient",
 ]

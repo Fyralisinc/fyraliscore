@@ -106,7 +106,28 @@ async def publish_progress_events(
     if kafka_producer is None:
         return
     for event in events:
-        await publish_progress_event(kafka_producer, event)
+        try:
+            await publish_progress_event(kafka_producer, event)
+        except Exception as exc:  # noqa: BLE001 — progress is non-load-bearing
+            # Progress events are diagnostic (the Bridge UI's progress
+            # bars), NOT load-bearing: the lifecycle transition that
+            # emitted them has already committed (callers publish
+            # post-commit, per the contract above). A publish failure —
+            # a broker hiccup, or an `onboarding.progress` topic that the
+            # broker hasn't provisioned (auto-create disabled) — MUST drop
+            # the event, never propagate. Previously a KafkaException
+            # (e.g. UNKNOWN_TOPIC) escaped here through `_terminate_shard`
+            # and crashed the worker AFTER the shard's DB row was marked
+            # 'done' but BEFORE the next shard, stranding the rest of the
+            # backfill and preventing tenant completion. Best-effort per
+            # event makes the durable transition the source of truth.
+            log.warning(
+                "progress.publish_failed",
+                extra={
+                    "event_kind": getattr(event, "event_kind", "?"),
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                },
+            )
 
 
 __all__ = [

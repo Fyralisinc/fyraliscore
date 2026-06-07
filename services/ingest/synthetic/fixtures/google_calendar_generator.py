@@ -24,7 +24,14 @@ _BASE = datetime(2026, 6, 1, 9, 0, 0, tzinfo=timezone.utc)
 
 
 def _iso(dt: datetime) -> str:
-    return dt.isoformat().replace("+00:00", "Z")
+    # Real Google Calendar `updated` timestamps are RFC3339 WITH milliseconds
+    # (e.g. "2026-06-01T09:01:00.000Z"). Emit millis so the reconciler's
+    # exclusive-floor probe (`high_water + 1ms`, see reconcilers/google_calendar
+    # `_exclusive_updated_floor`) compares correctly as strings. Without millis
+    # the floor "...00.001Z" sorts BEFORE the event "...00Z" (because '.' < 'Z'),
+    # so `has_updates_since` is spuriously True and the reconciler reshare loops
+    # forever — the tenant never reaches completion.
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _event(

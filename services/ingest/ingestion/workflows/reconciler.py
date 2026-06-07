@@ -148,6 +148,7 @@ from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
     claim_signals,
     emit_signal,
+    process_signal_with_serialization_retry,
 )
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -452,6 +453,15 @@ class Reconciler(LongRunningService):
         await self._persist_scan_state(signals_processed=signals_processed)
 
     async def _process_one_signal(self) -> bool:
+        """Claim + dispatch ONE signal, retrying transient serialization
+        conflicts on the shared `workflow_signals` table (see
+        `process_signal_with_serialization_retry`) so a concurrent-onboarding
+        deadlock on the signal INSERT doesn't crash the reconciler."""
+        return await process_signal_with_serialization_retry(
+            self._process_one_signal_once, label="reconciler",
+        )
+
+    async def _process_one_signal_once(self) -> bool:
         """Claim ONE signal + dispatch to the handler.
 
         Returns True iff a signal was processed. The claim, dispatch,
