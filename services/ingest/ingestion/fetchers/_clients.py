@@ -392,6 +392,38 @@ async def build_quickbooks_client(
     return client
 
 
+async def build_telegram_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Telegram MTProto read-client for BACKFILL. The credential is a persisted
+    Telethon StringSession resolved once from the secret store (or preset in
+    spammer mode). Topology B (ADR-0003): backfill uses the SECOND authorization
+    (`backfill_session_secret_ref`), distinct from the live gateway worker's
+    session, so the two never share one auth_key — falls back to the live session
+    ref only if a dedicated backfill session wasn't minted. Telethon is optional
+    and imported lazily inside the client's connect()."""
+    from services.ingest.integrations.telegram.client import TelegramClient
+
+    spammer = _spammer_mode()
+    backfill_ref = (
+        install["backfill_session_secret_ref"]
+        if "backfill_session_secret_ref" in install else None
+    )
+    live_ref = install["session_secret_ref"] if "session_secret_ref" in install else None
+    client = TelegramClient(
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        api_id=install["api_id"] if "api_id" in install else None,
+        api_hash_secret_ref=(
+            install["api_hash_secret_ref"] if "api_hash_secret_ref" in install else None
+        ),
+        session_secret_ref=(backfill_ref or live_ref),
+        session=("spam-telegram" if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -453,13 +485,19 @@ async def open_grafana_client(install: asyncpg.Record) -> Opener:
     return await build_grafana_client(install), _noop
 
 
+async def open_telegram_client(install: asyncpg.Record) -> Opener:
+    return await build_telegram_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_slack_user_client",
     "build_discord_client",
     "build_notion_client", "build_jira_client",
     "build_mercury_client", "build_quickbooks_client", "build_grafana_client",
+    "build_telegram_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
     "open_mercury_client", "open_quickbooks_client", "open_grafana_client",
+    "open_telegram_client",
 ]

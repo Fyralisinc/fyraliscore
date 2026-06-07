@@ -454,6 +454,20 @@ SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
  LIMIT 1
 """
 
+# IN-TELEGRAM: Telegram is a per-tenant MTProto-session install (not in
+# provider_installations). The fetcher works one dialog at a time via
+# shard_identifier; the install row carries the api credentials + the persisted
+# session refs the TelegramClient needs. Backfill uses the second authorization
+# (backfill_session_secret_ref); without this dedicated branch a telegram shard
+# would fall through to provider_installations, find nothing, and park forever.
+_LOAD_TELEGRAM_INSTALL_SQL = """
+SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
+       session_secret_ref, backfill_session_secret_ref, disabled_at
+  FROM telegram_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -547,6 +561,8 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     if source == "grafana":
         return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
+    if source == "telegram":
+        return await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

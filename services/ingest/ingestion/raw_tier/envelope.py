@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SourceLiteral = Literal[
     "slack", "github", "discord", "gmail", "notion", "google_calendar",
-    "google_drive", "jira", "mercury", "quickbooks", "grafana",
+    "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram",
 ]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT

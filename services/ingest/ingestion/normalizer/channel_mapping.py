@@ -145,6 +145,20 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("grafana", "backfill"): "grafana:annotation",
     ("grafana", "poll"): "grafana:annotation",
     ("grafana", "webhook"): "grafana:alert",
+    # Telegram — gateway (live) + backfill (IN-TELEGRAM). Telegram uses the
+    # MTProto user-account API: backfill pages each dialog's history
+    # (messages.getHistory, cursored on offset_id) under ingress_kind="backfill";
+    # the live path is a PERSISTENT updates connection (no HTTP webhook for
+    # MTProto), so live updateNewMessage events shadow-write under
+    # ingress_kind="gateway" — exactly like Discord. BOTH route to the single
+    # `telegram:message` channel; the handler derives the SAME external_id
+    # (`telegram:{installation_id}:{dialog_id}:{message_id}`, edit-versioned) for
+    # both paths, so a backfilled message and its live gateway twin collapse to
+    # one observation. There is no `webhook`/`poll` ingress (MTProto has no
+    # webhook; gap-recovery is updates.getDifference inside the live worker, not a
+    # poll re-fetch). See ADR-0003.
+    ("telegram", "gateway"): "telegram:message",
+    ("telegram", "backfill"): "telegram:message",
 }
 
 

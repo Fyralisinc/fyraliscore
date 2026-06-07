@@ -7,10 +7,10 @@
 #   infra   : postgres, ollama, kafka (KRaft), minio (S3)
 #   one-shot: migrate, kafka-init (topics), minio-init (bucket)
 #   ingress : gateway (webhooks + Pub/Sub push + OAuth callbacks)
-#   live    : discord_gateway_worker, gmail_watch_scheduler,
-#             gmail_history_poller, google_calendar_live_poller,
-#             google_drive_live_poller, google_calendar_watch_scheduler,
-#             google_drive_watch_scheduler
+#   live    : discord_gateway_worker, telegram_gateway_worker,
+#             gmail_watch_scheduler, gmail_history_poller,
+#             google_calendar_live_poller, google_drive_live_poller,
+#             google_calendar_watch_scheduler, google_drive_watch_scheduler
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
 #   consume : normalizer, observation_writer, dlq_writer, embedding_worker
@@ -331,6 +331,11 @@ services:
     <<: *worker
     container_name: company_os_discord_gateway_worker
     command: python scripts/run_discord_gateway_worker.py
+
+  telegram_gateway_worker:
+    <<: *worker
+    container_name: company_os_telegram_gateway_worker
+    command: python scripts/run_telegram_gateway_worker.py
 
   gmail_watch_scheduler:
     <<: *worker

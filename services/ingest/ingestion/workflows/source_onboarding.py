@@ -199,7 +199,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram")
 
 
 # ---------------------------------------------------------------------
@@ -397,6 +397,33 @@ SELECT gi.id, gi.tenant_id, gi.base_url, gi.org_id, gi.secret_ref,
  LIMIT 1
 """
 
+# IN-TELEGRAM: Telegram mirrors the Jira/Mercury loader (A18.2) — the planner
+# needs the 1-to-N active-dialog list aggregated onto the account install so it
+# can emit one shard per dialog (no DB I/O in the planner). The MTProto session
+# refs + api credentials ride on the install row for the client builder.
+_LOAD_TELEGRAM_INSTALL_SQL = """
+SELECT ti.id, ti.tenant_id, ti.account_label, ti.api_id, ti.api_hash_secret_ref,
+       ti.session_secret_ref, ti.backfill_session_secret_ref, ti.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'dialog_id', td.dialog_id,
+             'dialog_kind', td.dialog_kind,
+             'access_hash', td.access_hash,
+             'title', td.title,
+             'offset_id_cursor', td.offset_id_cursor
+           ) ORDER BY td.dialog_id
+         ) FILTER (WHERE td.id IS NOT NULL),
+         '[]'::json
+       ) AS dialogs
+  FROM telegram_installations ti
+  LEFT JOIN telegram_dialogs td
+    ON td.telegram_installation_id = ti.id AND td.state = 'active'
+ WHERE ti.tenant_id = $1 AND ti.disabled_at IS NULL
+ GROUP BY ti.id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -523,6 +550,8 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     if source == "grafana":
         return await conn.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
+    if source == "telegram":
+        return await conn.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

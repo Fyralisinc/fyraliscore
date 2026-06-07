@@ -132,6 +132,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "mercury": _not_implemented_planner("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_planner("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_planner("grafana", "IN-GRAFANA"),
+    "telegram": _not_implemented_planner("telegram", "IN-TELEGRAM"),
 }
 
 
@@ -158,3 +159,4 @@ from services.ingest.ingestion.planners import jira as _jira  # noqa: E402,F401
 from services.ingest.ingestion.planners import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.planners import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.planners import grafana as _grafana  # noqa: E402,F401
+from services.ingest.ingestion.planners import telegram as _telegram  # noqa: E402,F401

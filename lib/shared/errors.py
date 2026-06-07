@@ -610,6 +610,42 @@ class GrafanaApiError(CompanyOSError):
             self._code = code
 
 
+class TelegramApiError(CompanyOSError):
+    """
+    Outbound Telegram MTProto API call failure (IN-TELEGRAM).
+
+    Telegram uses the MTProto user-account API (not the Bot API): backfill via
+    messages.getHistory, live via a persistent updates connection. There is no
+    HTTP status code at the protocol level — these map MTProto RPC errors.
+
+    Stable `code` values:
+      - telegram_api_flood_wait: FLOOD_WAIT (RPC error 420) — caller must wait
+        the server-returned `seconds` (carried on context["retry_after"]).
+      - telegram_api_unauthorized: AUTH_KEY_* / SESSION_REVOKED — the persisted
+        session was invalidated; the install must re-authenticate.
+      - telegram_api_not_found: peer/dialog not found or inaccessible.
+      - telegram_api_error: other terminal RPC errors / transport failures.
+
+    `context` carries `{retry_after?, peer?, method?}`. The session string /
+    auth_key and api_hash are NEVER placed on context.
+    """
+    default_code = "telegram_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -636,4 +672,5 @@ __all__ = [
     "MercuryApiError",
     "GrafanaApiError",
     "QuickBooksApiError",
+    "TelegramApiError",
 ]

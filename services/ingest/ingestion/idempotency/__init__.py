@@ -171,6 +171,26 @@ def quickbooks_change(
     return f"qbo:{realm_id}:{entity_kind}:{entity_id}:chg:{ver}"
 
 
+# --- Telegram --------------------------------------------------------
+def telegram_message(
+    installation_id: object, dialog_id: object, message_id: object,
+    edit_date: object,
+) -> str:
+    """`telegram:{install}:{dialog}:{message_id}:{edit}` — namespaced by
+    install (so the same dialog/message id seen by two tenants stays distinct,
+    per the global UNIQUE-without-tenant_id rule) and VERSIONED by edit_date.
+
+    A brand-new message has edit_date None → `…:{id}:none`; backfill and the
+    live `updateNewMessage` gateway twin both derive the same key (an unedited
+    message is `none` on both paths), so they collapse to one observation. An
+    edit (updateEditMessage) carries a fresh edit_date → a NEW observation,
+    matching the mutable-source dedup lesson (the edit is a distinct signal)."""
+    return (
+        f"telegram:{installation_id}:{dialog_id}:{message_id}:"
+        f"{edit_date if edit_date else 'none'}"
+    )
+
+
 __all__ = [
     "discord_event",
     "github_push",
@@ -190,4 +210,5 @@ __all__ = [
     "quickbooks_change",
     "quickbooks_entity",
     "slack_message",
+    "telegram_message",
 ]

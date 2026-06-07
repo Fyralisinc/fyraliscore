@@ -178,6 +178,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "mercury": _not_implemented_reconciler("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_reconciler("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_reconciler("grafana", "IN-GRAFANA"),
+    "telegram": _not_implemented_reconciler("telegram", "IN-TELEGRAM"),
 }
 
 
@@ -202,3 +203,4 @@ from services.ingest.ingestion.reconcilers import jira as _jira  # noqa: E402,F4
 from services.ingest.ingestion.reconcilers import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import grafana as _grafana  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import telegram as _telegram  # noqa: E402,F401
