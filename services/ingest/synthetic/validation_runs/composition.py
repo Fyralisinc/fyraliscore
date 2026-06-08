@@ -47,11 +47,16 @@ from fastapi import FastAPI
 
 from services.ingest.synthetic.fixtures import (
     make_discord_guild,
+    make_figma,
     make_gmail_mailbox,
     make_github_repos,
+    make_signal,
     make_slack_workspace,
+    make_telegram,
 )
 from services.ingest.synthetic.live_generators import (
+    AwsPollGenerator,
+    CartaPollGenerator,
     DiscordGatewayGenerator,
     GithubWebhookGenerator,
     GmailPubSubGenerator,
@@ -60,7 +65,9 @@ from services.ingest.synthetic.live_generators import (
     HMAC_PROVIDERS,
     HmacWebhookGenerator,
     NotionWebhookGenerator,
+    SignalGatewayGenerator,
     SlackWebhookGenerator,
+    TelegramGatewayGenerator,
 )
 from services.ingest.synthetic.mock_clients import (
     MockDiscordClient,
@@ -92,6 +99,17 @@ class SigningSecrets:
     mercury: str = "v-mercury-signing-secret"
     quickbooks: str = "v-quickbooks-verifier-token"
     grafana: str = "v-grafana-signing-secret"
+    # IN-FIN2 finance sources (brex/deel = Bearer/Mercury archetype; ramp/gusto
+    # = OAuth/QuickBooks archetype); each resolved via WEBHOOK_SECRET_<PROVIDER>.
+    brex: str = "v-brex-signing-secret"
+    ramp: str = "v-ramp-signing-secret"
+    gusto: str = "v-gusto-signing-secret"
+    deel: str = "v-deel-signing-secret"
+    # Vertical-2 HMAC webhook sources (fireflies/miro/figma = Brex archetype).
+    # signal/aws/carta are direct-dispatch (poll/gateway) → NO webhook secret.
+    fireflies: str = "v-fireflies-signing-secret"
+    miro: str = "v-miro-signing-secret"
+    figma: str = "v-figma-signing-secret"
     # Notion's app-level verification token (NOT a per-tenant secret_ref); the
     # signatures/notion.py verifier keys HMAC on it.
     notion: str = "v-notion-verification-token"
@@ -107,6 +125,13 @@ class SigningSecrets:
         os.environ["WEBHOOK_SECRET_MERCURY"] = self.mercury
         os.environ["WEBHOOK_SECRET_QUICKBOOKS"] = self.quickbooks
         os.environ["WEBHOOK_SECRET_GRAFANA"] = self.grafana
+        os.environ["WEBHOOK_SECRET_BREX"] = self.brex
+        os.environ["WEBHOOK_SECRET_RAMP"] = self.ramp
+        os.environ["WEBHOOK_SECRET_GUSTO"] = self.gusto
+        os.environ["WEBHOOK_SECRET_DEEL"] = self.deel
+        os.environ["WEBHOOK_SECRET_FIREFLIES"] = self.fireflies
+        os.environ["WEBHOOK_SECRET_MIRO"] = self.miro
+        os.environ["WEBHOOK_SECRET_FIGMA"] = self.figma
         os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
@@ -146,6 +171,12 @@ class LiveTarget:
     qbo_realm: str | None = None            # quickbooks: realmId == installation_id
     qbo_entity: str | None = None           # quickbooks: entity name (e.g. Invoice)
     grafana_instance: str | None = None     # grafana: externalURL host == installation_id
+    # IN-FIN2 finance HMAC providers (tenant resolved via provider_installations).
+    brex_org: str | None = None             # brex: organizationId == installation_id
+    brex_account: str | None = None         # brex: transaction.accountId
+    ramp_business: str | None = None        # ramp: business_id == installation_id
+    gusto_company: str | None = None        # gusto: company_uuid == installation_id
+    deel_org: str | None = None             # deel: organizationId == installation_id
     # Google push (watch-row resolved).
     gcal_calendar_id: str | None = None
     gcal_channel_id: str | None = None
@@ -156,6 +187,28 @@ class LiveTarget:
     gdrive_watch_token: str | None = None
     # Notion (workspace_id == the seeded provider_installations.installation_id).
     notion_workspace_id: str | None = None
+    # Telegram (gateway-style live; installation_id resolved from the pool by the
+    # generator, so the live external_id matches backfill). The live message is
+    # dispatched "into" the tenant's first backfill dialog.
+    telegram_dialog_id: int | None = None
+    telegram_dialog_kind: str | None = None
+    telegram_dialog_title: str | None = None
+    # Vertical-2 HMAC webhook providers (tenant resolved via provider_installations;
+    # installation_id == workspace/org/team id seeded for backfill).
+    fireflies_workspace: str | None = None  # fireflies: workspaceId == installation_id
+    miro_org: str | None = None             # miro: organizationId == installation_id
+    miro_board: str | None = None           # miro: boardId (event payload context)
+    figma_team: str | None = None           # figma: team_id == installation_id
+    figma_file: str | None = None           # figma: file_key (event payload context)
+    # Vertical-2 direct-dispatch sources (install resolved from own table by the
+    # generator; no provider_installations row).
+    signal_thread_id: int | None = None     # signal: gateway thread (== backfill)
+    signal_thread_kind: str | None = None
+    signal_thread_title: str | None = None
+    aws_account_id: str | None = None       # aws: poll event namespace (== install)
+    aws_region: str | None = None
+    carta_firm: str | None = None           # carta: firm_id (== install scope)
+    carta_entity_type: str | None = None    # carta: poll change entity kind
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -188,6 +241,19 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
     if source == "grafana":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           grafana_instance=f"{slug}.grafana.net")
+    if source == "brex":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          brex_org=f"live-brex-org-{slug}",
+                          brex_account=f"live-brex-acct-{slug}")
+    if source == "ramp":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          ramp_business=f"live-ramp-biz-{slug}")
+    if source == "gusto":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gusto_company=f"live-gusto-co-{slug}")
+    if source == "deel":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          deel_org=f"live-deel-org-{slug}")
     if source == "google_calendar":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           gcal_calendar_id=f"live-{slug}",
@@ -201,6 +267,60 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
     if source == "notion":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           notion_workspace_id=f"x3-{slug}-notion")
+    if source == "telegram":
+        # The live message targets the tenant's FIRST backfill dialog (same
+        # seed → same deterministic dialog_id the harness seeded), so the live
+        # update is "in" a real dialog. installation_id is resolved by the
+        # generator from telegram_installations at dispatch time.
+        fx = make_telegram(**fixture_params)
+        did = fx["dialog_order"][0]
+        d = fx["dialogs"][str(did)]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          telegram_dialog_id=did,
+                          telegram_dialog_kind=d["dialog_kind"],
+                          telegram_dialog_title=d["title"])
+    if source == "fireflies":
+        # HMAC webhook; installation_id == the fixture's workspace_id (the SAME
+        # value the harness seeds into provider_installations for backfill), so
+        # tenant_resolver._extract_fireflies maps the live payload back.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          fireflies_workspace=fixture_params["workspace_id"])
+    if source == "miro":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          miro_org=fixture_params["org_id"],
+                          miro_board=f"miro-board-{slug}")
+    if source == "figma":
+        # team_id namespaces the external_id; file_key gives the event a real
+        # backfill file (same seed → same deterministic file_key).
+        fx = make_figma(**fixture_params)
+        file_key = fx["file_order"][0]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          figma_team=fixture_params["team_id"],
+                          figma_file=file_key)
+    if source == "signal":
+        # Gateway-style live; the message targets the tenant's FIRST backfill
+        # thread (same seed → same deterministic thread_id the harness seeded).
+        # installation_id is resolved from signal_installations by the generator.
+        fx = make_signal(**fixture_params)
+        tid = fx["thread_order"][0]
+        th = fx["threads"][str(tid)]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          signal_thread_id=tid,
+                          signal_thread_kind=th["thread_kind"],
+                          signal_thread_title=th["title"])
+    if source == "aws":
+        # Poll live edge; (account_id, region) namespace the external_id. The
+        # generator resolves the install from aws_installations by tenant_id;
+        # these mirror the fixture so the live event lands in the same namespace.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          aws_account_id=fixture_params.get("account_id"),
+                          aws_region=fixture_params.get("region", "us-east-1"))
+    if source == "carta":
+        # Poll live edge; firm_id namespaces the external_id. The generator
+        # resolves the install from carta_installations by tenant_id.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          carta_firm=fixture_params.get("firm_id"),
+                          carta_entity_type="OptionGrant")
     raise ValueError(f"unknown source {source!r}")
 
 
@@ -221,6 +341,11 @@ class LiveDrivers:
     google_push: Any = None         # GooglePushGenerator (gcal + gdrive)
     notion_webhook: Any = None      # NotionWebhookGenerator
     google_app: FastAPI | None = None
+    telegram_gateway: Any = None     # TelegramGatewayGenerator (gateway-style)
+    # Vertical-2 direct-dispatch generators (None when no target needs them).
+    signal_gateway: Any = None       # SignalGatewayGenerator (gateway-style)
+    aws_poll: Any = None             # AwsPollGenerator (poll live edge)
+    carta_poll: Any = None           # CartaPollGenerator (poll live edge)
 
 
 async def build_live_drivers(
@@ -388,6 +513,10 @@ async def build_live_drivers(
     _hmac_secret = {
         "jira": secrets.jira, "mercury": secrets.mercury,
         "quickbooks": secrets.quickbooks, "grafana": secrets.grafana,
+        "brex": secrets.brex, "ramp": secrets.ramp,
+        "gusto": secrets.gusto, "deel": secrets.deel,
+        "fireflies": secrets.fireflies, "miro": secrets.miro,
+        "figma": secrets.figma,
     }
     for provider in HMAC_PROVIDERS:
         if provider in present:
@@ -421,12 +550,58 @@ async def build_live_drivers(
             GooglePushGenerator(app=google_app, pool=pool),
         )
 
+    # ---- Telegram (gateway-style; no HTTP). Direct dispatch to handle_update
+    # with the SAME M5.3 cutover deps as slack/github, so a live update
+    # shadow-writes to ingestion.raw.telegram and flows through the consumer
+    # chain — like Discord's gateway. installation_id is resolved per tenant
+    # from telegram_installations by the generator. ----
+    telegram_gen = None
+    if "telegram" in present:
+        telegram_gen = await stack.enter_async_context(
+            TelegramGatewayGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+
+    # ---- Vertical-2 direct-dispatch generators (gateway/poll; no HTTP). Same
+    # M5.3 cutover deps as telegram, so a live event shadow-writes to
+    # ingestion.raw.<source> and flows through the consumer chain. Installs are
+    # resolved per tenant from each source's own install table by the generator,
+    # so the live external_id matches backfill. ----
+    signal_gen = None
+    if "signal" in present:
+        signal_gen = await stack.enter_async_context(
+            SignalGatewayGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+    aws_gen = None
+    if "aws" in present:
+        aws_gen = await stack.enter_async_context(
+            AwsPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+    carta_gen = None
+    if "carta" in present:
+        carta_gen = await stack.enter_async_context(
+            CartaPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+
     return LiveDrivers(
         gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
         slack_webhook=slack_gen, github_webhook=github_gen,
         fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
         hmac=hmac_gens, google_push=google_push_gen,
         notion_webhook=notion_gen, google_app=google_app,
+        telegram_gateway=telegram_gen,
+        signal_gateway=signal_gen, aws_poll=aws_gen, carta_poll=carta_gen,
     )
 
 
@@ -471,7 +646,24 @@ async def seed_live_installs(
                 inst = t.qbo_realm
             elif t.source == "grafana":
                 inst = t.grafana_instance
+            elif t.source == "brex":
+                inst = t.brex_org
+            elif t.source == "ramp":
+                inst = t.ramp_business
+            elif t.source == "gusto":
+                inst = t.gusto_company
+            elif t.source == "deel":
+                inst = t.deel_org
+            elif t.source == "fireflies":
+                inst = t.fireflies_workspace
+            elif t.source == "miro":
+                inst = t.miro_org
+            elif t.source == "figma":
+                inst = t.figma_team
             else:
+                # signal/aws/carta are direct-dispatch (gateway/poll): their live
+                # edge resolves the install from their OWN install table by
+                # tenant_id, so NO provider_installations row is needed.
                 inst = None
             if inst is not None:
                 await conn.execute(
@@ -809,7 +1001,8 @@ async def dispatch_live_concurrent(
                     guild_id=t.guild_id, channel_id=t.channel_id,
                     content=f"live-{t.slug}-{i}",
                 )
-            elif t.source in ("jira", "mercury", "quickbooks", "grafana"):
+            elif t.source in ("jira", "mercury", "quickbooks", "grafana",
+                              "brex", "ramp", "gusto", "deel"):
                 r = await drivers.hmac[t.source].simulate_event(
                     target=t, content=f"live-{t.slug}-{i}",
                 )

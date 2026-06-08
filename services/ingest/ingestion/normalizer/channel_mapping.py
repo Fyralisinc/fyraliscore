@@ -145,6 +145,139 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("grafana", "backfill"): "grafana:annotation",
     ("grafana", "poll"): "grafana:annotation",
     ("grafana", "webhook"): "grafana:alert",
+    # Telegram — gateway (live) + backfill (IN-TELEGRAM). Telegram uses the
+    # MTProto user-account API: backfill pages each dialog's history
+    # (messages.getHistory, cursored on offset_id) under ingress_kind="backfill";
+    # the live path is a PERSISTENT updates connection (no HTTP webhook for
+    # MTProto), so live updateNewMessage events shadow-write under
+    # ingress_kind="gateway" — exactly like Discord. BOTH route to the single
+    # `telegram:message` channel; the handler derives the SAME external_id
+    # (`telegram:{installation_id}:{dialog_id}:{message_id}`, edit-versioned) for
+    # both paths, so a backfilled message and its live gateway twin collapse to
+    # one observation. There is no `webhook`/`poll` ingress (MTProto has no
+    # webhook; gap-recovery is updates.getDifference inside the live worker, not a
+    # poll re-fetch). See ADR-0003.
+    ("telegram", "gateway"): "telegram:message",
+    ("telegram", "backfill"): "telegram:message",
+    # Brex — backfill + poll + webhook (finance, IN-FIN2, Bearer/Mercury
+    # archetype). Brex (cash/card) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (account transactions). Backfill
+    # walks each account once; the incremental driver re-runs the same fetcher
+    # under ingress_kind="poll" using the transaction high-water cursor; the
+    # webhook ingress delivers live transaction events. ALL route to the single
+    # `brex:transaction` channel; external_id parity
+    # (`brex:{account}:txn:{id}:{status}`) collapses a backfilled transaction and
+    # its live twin to one observation.
+    ("brex", "backfill"): "brex:transaction",
+    ("brex", "poll"): "brex:transaction",
+    ("brex", "webhook"): "brex:transaction",
+    # Ramp — backfill + poll + webhook (finance, IN-FIN2, OAuth/QuickBooks
+    # archetype). Ramp (card/spend) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (transactions list). Backfill
+    # walks each business entity once; the incremental driver re-runs under
+    # ingress_kind="poll" using the `updated` high-water; the webhook ingress
+    # delivers live transaction events. ALL route to the single
+    # `ramp:transaction` channel; external_id parity
+    # (`ramp:{business}:txn:{id}:{state}`) collapses a backfilled transaction and
+    # its live twin to one observation.
+    ("ramp", "backfill"): "ramp:transaction",
+    ("ramp", "poll"): "ramp:transaction",
+    ("ramp", "webhook"): "ramp:transaction",
+    # Gusto — backfill + poll + webhook (finance, IN-FIN2, OAuth/QuickBooks
+    # archetype). Gusto (payroll) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (payrolls/employees/contractor
+    # payments). Backfill walks each entity type once; the incremental driver
+    # re-runs under ingress_kind="poll" using the `updated_at` high-water; the
+    # webhook ingress delivers live change events. ALL route to the single
+    # `gusto:object` channel; the handler branches on the reshaped entity type.
+    # external_id parity (`gusto:{company}:{entity}:{id}:{version}`) collapses a
+    # backfilled object and its live twin to one observation.
+    ("gusto", "backfill"): "gusto:object",
+    ("gusto", "poll"): "gusto:object",
+    ("gusto", "webhook"): "gusto:object",
+    # Deel — backfill + poll + webhook (finance, IN-FIN2, Bearer/Mercury
+    # archetype). Deel (contractor payments) has BOTH a live push surface
+    # (HMAC-signed webhooks) AND a historical query surface (contract payments).
+    # Backfill walks each contract once; the incremental driver re-runs under
+    # ingress_kind="poll" using the payment high-water cursor; the webhook
+    # ingress delivers live payment events. ALL route to the single
+    # `deel:payment` channel; external_id parity
+    # (`deel:{contract}:payment:{id}:{status}`) collapses a backfilled payment
+    # and its live twin to one observation.
+    ("deel", "backfill"): "deel:payment",
+    ("deel", "poll"): "deel:payment",
+    ("deel", "webhook"): "deel:payment",
+    # Fireflies — backfill + poll + webhook (IN-VERTICALS, Brex/HMAC archetype).
+    # The AI-notetaker meeting-transcript source has a live push surface
+    # (HMAC-signed webhooks, transcript.completed) AND a historical query surface
+    # (transcripts list). Backfill walks the workspace once; the incremental
+    # driver re-runs the same fetcher under ingress_kind="poll" using the
+    # transcript high-water cursor; the webhook ingress delivers live
+    # transcript-completed events. ALL route to the single `fireflies:transcript`
+    # channel; external_id parity
+    # (`fireflies:{workspace}:transcript:{id}:{version}`) collapses a backfilled
+    # transcript and its live twin to one observation.
+    ("fireflies", "backfill"): "fireflies:transcript",
+    ("fireflies", "poll"): "fireflies:transcript",
+    ("fireflies", "webhook"): "fireflies:transcript",
+    # Miro — backfill + poll + webhook (IN-VERTICALS, Brex/HMAC archetype). The
+    # whiteboard source has a live push surface (HMAC-signed webhooks,
+    # board_item.created/updated/deleted) AND a historical query surface (board
+    # items, opaque-cursor paginated). Backfill walks each board once; the
+    # incremental driver re-runs under ingress_kind="poll" using the item
+    # high-water; the webhook ingress delivers live item events. ALL route to the
+    # single `miro:item` channel; the handler maps a .deleted/.removed suffix to
+    # a state_change. external_id parity (`miro:{org}:item:{id}:{version}`)
+    # collapses a backfilled item and its live twin to one observation.
+    ("miro", "backfill"): "miro:item",
+    ("miro", "poll"): "miro:item",
+    ("miro", "webhook"): "miro:item",
+    # Figma — backfill + poll + webhook (IN-VERTICALS, Brex/HMAC archetype). The
+    # design source is a pure event stream: a live push surface (HMAC-shaped
+    # webhook stand-in for the gate; real Figma uses a body passcode) AND a
+    # historical query surface (file versions + comments merged into an event
+    # stream). Backfill walks each file once; the incremental driver re-runs
+    # under ingress_kind="poll"; the webhook ingress delivers live events. ALL
+    # route to the single `figma:event` channel; external_id parity
+    # (`figma:{team}:event:{id}:{version}`) collapses a backfilled event and its
+    # live twin to one observation.
+    ("figma", "backfill"): "figma:event",
+    ("figma", "poll"): "figma:event",
+    ("figma", "webhook"): "figma:event",
+    # Signal — gateway (live) + backfill (IN-VERTICALS, Telegram/gateway
+    # archetype). Signal uses a linked-device account session: backfill pages
+    # each thread's history (cursored on offset_id) under ingress_kind="backfill";
+    # the live path is a persistent linked-device receive loop (no HTTP webhook),
+    # so live messages shadow-write under ingress_kind="gateway" — exactly like
+    # Telegram/Discord. BOTH route to the single `signal:message` channel; the
+    # handler derives the SAME external_id
+    # (`signal:{install}:{thread}:{message_id}:none`) for both paths, so a
+    # backfilled message and its live gateway twin collapse to one observation.
+    # There is no `webhook`/`poll` ingress (gap-recovery is in the live worker).
+    ("signal", "gateway"): "signal:message",
+    ("signal", "backfill"): "signal:message",
+    # AWS — backfill + poll (IN-VERTICALS, Grafana-backfill / poll-live
+    # archetype). AWS CloudTrail has a historical query surface (LookupEvents)
+    # AND a live edge that is a POLL (no inbound webhook): the live driver
+    # re-runs the fetcher-shaped record build under ingress_kind="poll". Backfill
+    # walks each (account, region) once; the incremental driver re-runs using the
+    # events high-water. BOTH route to the single `aws:event` channel; the handler
+    # branches on the event for signal-vs-state_change. external_id parity
+    # (`aws:{account}:{region}:event:{id}`, immutable) collapses a backfilled
+    # event and its live poll twin to one observation.
+    ("aws", "backfill"): "aws:event",
+    ("aws", "poll"): "aws:event",
+    # Carta — backfill + poll (IN-VERTICALS, Gusto-backfill / poll-live
+    # archetype). The cap-table source has a historical query surface (firm
+    # entities) AND a live edge that is a POLL (no inbound webhook): the live
+    # driver re-runs the cap-table change build under ingress_kind="poll".
+    # Backfill walks each entity type once; the incremental driver re-runs using
+    # the per-entity updated high-water. BOTH route to the single `carta:object`
+    # channel; the handler maps lifecycle states to state_change. external_id
+    # parity (`carta:{firm}:{kind}:{id}:{sync_token}`) collapses a backfilled
+    # entity and its live poll twin to one observation.
+    ("carta", "backfill"): "carta:object",
+    ("carta", "poll"): "carta:object",
 }
 
 

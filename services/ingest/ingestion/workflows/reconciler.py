@@ -766,6 +766,17 @@ async def _run_service() -> None:
         quickbooks as quickbooks_reconciler_mod,
     )
     from services.ingest.ingestion.reconcilers import grafana as grafana_reconciler_mod
+    from services.ingest.ingestion.reconcilers import telegram as telegram_reconciler_mod
+    from services.ingest.ingestion.reconcilers import brex as brex_reconciler_mod
+    from services.ingest.ingestion.reconcilers import ramp as ramp_reconciler_mod
+    from services.ingest.ingestion.reconcilers import gusto as gusto_reconciler_mod
+    from services.ingest.ingestion.reconcilers import deel as deel_reconciler_mod
+    from services.ingest.ingestion.reconcilers import fireflies as fireflies_reconciler_mod
+    from services.ingest.ingestion.reconcilers import signal as signal_reconciler_mod
+    from services.ingest.ingestion.reconcilers import aws as aws_reconciler_mod
+    from services.ingest.ingestion.reconcilers import miro as miro_reconciler_mod
+    from services.ingest.ingestion.reconcilers import figma as figma_reconciler_mod
+    from services.ingest.ingestion.reconcilers import carta as carta_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
@@ -777,6 +788,17 @@ async def _run_service() -> None:
     mercury_reconciler_mod.set_pool_provider(pool)
     quickbooks_reconciler_mod.set_pool_provider(pool)
     grafana_reconciler_mod.set_pool_provider(pool)
+    telegram_reconciler_mod.set_pool_provider(pool)
+    brex_reconciler_mod.set_pool_provider(pool)
+    ramp_reconciler_mod.set_pool_provider(pool)
+    gusto_reconciler_mod.set_pool_provider(pool)
+    deel_reconciler_mod.set_pool_provider(pool)
+    fireflies_reconciler_mod.set_pool_provider(pool)
+    signal_reconciler_mod.set_pool_provider(pool)
+    aws_reconciler_mod.set_pool_provider(pool)
+    miro_reconciler_mod.set_pool_provider(pool)
+    figma_reconciler_mod.set_pool_provider(pool)
+    carta_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

@@ -16,7 +16,19 @@ import json
 
 import pytest
 
-from services.app.webhooks.signatures import jira, mercury, quickbooks, grafana
+from services.app.webhooks.signatures import (
+    brex,
+    deel,
+    figma,
+    fireflies,
+    grafana,
+    gusto,
+    jira,
+    mercury,
+    miro,
+    quickbooks,
+    ramp,
+)
 from services.app.webhooks.tenant_resolver import PROVIDER_EXTRACTORS
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
 from services.ingest.synthetic.live_generators.hmac_webhook import (
@@ -38,11 +50,27 @@ class _T:
         self.qbo_realm = "realm-demo0"
         self.qbo_entity = "Invoice"
         self.grafana_instance = "demo0.grafana.net"
+        # IN-FIN2 finance sources.
+        self.brex_org = "brex-org-demo0"
+        self.brex_account = "brex-acct-demo0"
+        self.ramp_business = "ramp-biz-demo0"
+        self.gusto_company = "gusto-co-demo0"
+        self.deel_org = "deel-org-demo0"
+        # IN-FIN3 HMAC sources.
+        self.fireflies_workspace = "ffw-demo0"
+        self.miro_org = "miro-org-demo0"
+        self.miro_board = "miro-board-demo0"
+        self.figma_team = "figteam-demo0"
+        self.figma_file = "figfile-demo0"
 
 
 _VERIFIERS = {
     "jira": jira.verifier, "mercury": mercury.verifier,
     "quickbooks": quickbooks.verifier, "grafana": grafana.verifier,
+    "brex": brex.verifier, "ramp": ramp.verifier,
+    "gusto": gusto.verifier, "deel": deel.verifier,
+    "fireflies": fireflies.verifier, "miro": miro.verifier,
+    "figma": figma.verifier,
 }
 _SECRET = "unit-secret"
 
@@ -73,7 +101,12 @@ async def test_tampered_signature_rejected(provider: str) -> None:
     gen = _gen(provider)
     payload, _ = gen._build_payload(_T(provider), content="unit")
     body = json.dumps(payload).encode("utf-8")
-    bad = "sha256=" + ("f" * 64) if provider in ("jira", "mercury") else "f" * 64
+    bad = (
+        "sha256=" + ("f" * 64)
+        if provider in ("jira", "mercury", "brex", "deel",
+                        "fireflies", "miro", "figma")
+        else "f" * 64
+    )
     with pytest.raises(WebhookVerificationError):
         await _VERIFIERS[provider].verify(
             body=body, headers={gen._header_name: bad},

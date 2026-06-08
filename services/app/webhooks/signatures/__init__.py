@@ -18,14 +18,21 @@ The Verifier Protocol is in `services/app/webhooks/verifier.py`.
 from __future__ import annotations
 
 from services.app.webhooks.signatures import (
+    brex,
+    deel,
     discord,
+    figma,
+    fireflies,
     github,
     grafana,
+    gusto,
     jira,
     linear,
     mercury,
+    miro,
     notion,
     quickbooks,
+    ramp,
     slack,
     stripe,
 )
@@ -43,6 +50,14 @@ VERIFIERS: dict[str, Verifier] = {
     "mercury": mercury.verifier,
     "quickbooks": quickbooks.verifier,
     "grafana": grafana.verifier,
+    "brex": brex.verifier,
+    "ramp": ramp.verifier,
+    "gusto": gusto.verifier,
+    "deel": deel.verifier,
+    # IN-FF/IN-MIRO/IN-FIGMA: HMAC-signed webhook sources (Brex archetype).
+    "fireflies": fireflies.verifier,
+    "miro": miro.verifier,
+    "figma": figma.verifier,
 }
 
 

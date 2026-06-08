@@ -1,6 +1,8 @@
-"""HmacWebhookGenerator — synthetic HMAC-signed webhooks for the four
-finance/ops providers that share the gateway webhook router + the M5.3 Kafka
-cutover: **jira, mercury, quickbooks, grafana**.
+"""HmacWebhookGenerator — synthetic HMAC-signed webhooks for the finance/ops
+providers that share the gateway webhook router + the M5.3 Kafka cutover:
+**jira, mercury, quickbooks, grafana** plus the IN-FIN2 finance sources
+**brex, ramp, gusto, deel** and the IN-FF/IN-MIRO/IN-FIGMA sources
+**fireflies, miro, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex).
 
 This is the generalisation of `slack_webhook.py` / `github_webhook.py` to the
 providers added after the original 4-source live harness. All four:
@@ -21,12 +23,29 @@ Per-provider signature scheme (verified against signatures/*.py):
   - mercury:    header `Mercury-Signature`          = `sha256=` + hex(HMAC-SHA256(body))
   - quickbooks: header `intuit-signature`           = base64(HMAC-SHA256(body))   (no prefix)
   - grafana:    header `X-Grafana-Alerting-Signature`= hex(HMAC-SHA256(body))     (no prefix, lowercase)
+  - brex:       header `Brex-Signature`             = `sha256=` + hex(HMAC-SHA256(body))
+  - ramp:       header `x-ramp-signature`           = base64(HMAC-SHA256(body))   (no prefix; UNVERIFIED default)
+  - gusto:      header `intuit-signature`           = base64(HMAC-SHA256(body))   (no prefix; UNVERIFIED QBO default)
+  - deel:       header `Deel-Signature`             = `sha256=` + hex(HMAC-SHA256(body))
+  - fireflies:  header `X-Fireflies-Signature`      = `sha256=` + hex(HMAC-SHA256(body))
+  - miro:       header `X-Miro-Signature`           = `sha256=` + hex(HMAC-SHA256(body))
+  - figma:      header `Figma-Signature`            = `sha256=` + hex(HMAC-SHA256(body))
+  (brex/ramp/gusto/deel/fireflies/miro/figma schemes mirror their signatures/*.py
+   module constants, which are UNVERIFIED archetype defaults — see those modules'
+   TODO(human). figma's real scheme is passcode-in-body, not an HMAC header.)
 
 Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - jira:       host of `issue.self`     (== provider_installations.installation_id)
   - mercury:    top-level `organizationId`
   - quickbooks: `eventNotifications[0].realmId`
   - grafana:    host of top-level `externalURL`
+  - brex:       top-level `organizationId`
+  - ramp:       `eventNotifications[0].business_id` (snake) / top-level `business_id`
+  - gusto:      `eventNotifications[0].company_uuid` (snake) / top-level `company_uuid`
+  - deel:       top-level `organizationId`
+  - fireflies:  top-level `workspaceId`
+  - miro:       top-level `organizationId`
+  - figma:      top-level `team_id`
 
 Each `simulate_event` mints a DISTINCT entity (unique id + a current-window
 timestamp) so the live observation is a fresh row, never an accidental
@@ -52,7 +71,11 @@ from fastapi import FastAPI
 
 log = logging.getLogger(__name__)
 
-HMAC_PROVIDERS = ("jira", "mercury", "quickbooks", "grafana")
+HMAC_PROVIDERS = (
+    "jira", "mercury", "quickbooks", "grafana",
+    "brex", "ramp", "gusto", "deel",
+    "fireflies", "miro", "figma",
+)
 
 # Live timestamps land inside the observations partition window (2025-06..
 # 2026-09) and at/after the 90-day backfill floor, distinct from the 2026-01
@@ -113,9 +136,13 @@ class HmacWebhookGenerator:
     # ---- Signing (byte-exact per provider) ----
     def _sign(self, body: bytes) -> str:
         mac = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha256)
-        if self._provider in ("jira", "mercury"):
+        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, miro, figma.
+        if self._provider in (
+            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+        ):
             return "sha256=" + mac.hexdigest()
-        if self._provider == "quickbooks":
+        # base64-no-prefix schemes: quickbooks, ramp, gusto.
+        if self._provider in ("quickbooks", "ramp", "gusto"):
             return base64.b64encode(mac.digest()).decode("ascii")
         return mac.hexdigest()  # grafana: bare lowercase hex
 
@@ -126,6 +153,14 @@ class HmacWebhookGenerator:
             "mercury": "Mercury-Signature",
             "quickbooks": "intuit-signature",
             "grafana": "X-Grafana-Alerting-Signature",
+            "brex": "Brex-Signature",
+            "ramp": "x-ramp-signature",
+            "gusto": "Gusto-Signature",
+            "deel": "Deel-Signature",
+            # Must match each verifier's _HEADER_NAME constant (signatures/<src>.py).
+            "fireflies": "X-Fireflies-Signature",
+            "miro": "X-Miro-Signature",
+            "figma": "Figma-Signature",
         }[self._provider]
 
     def _next_iso(self) -> tuple[str, str]:
@@ -186,6 +221,145 @@ class HmacWebhookGenerator:
                 }],
             }
             return payload, f"qbo:{realm}:{kind.lower()}:{ent_id}:chg:{iso}"
+        if self._provider == "brex":
+            # Brex transaction.created webhook (Bearer/Mercury archetype). Body
+            # matches handlers/brex.py: top-level `type` + `accountId` +
+            # `transaction`. `organizationId` keys tenant_resolver._extract_brex.
+            org, acct = target.brex_org, target.brex_account
+            txn_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "type": "transaction.created",
+                "organizationId": org,
+                "accountId": acct,
+                "transaction": {
+                    "id": txn_id,
+                    "accountId": acct,
+                    "status": "posted",
+                    "amount": -1000.0,
+                    "counterpartyName": content,
+                    "createdAt": iso,
+                },
+            }
+            return payload, f"brex:{acct}:txn:{txn_id}:posted"
+        if self._provider == "ramp":
+            # Ramp eventNotifications webhook (OAuth/QBO archetype). The handler
+            # reads `businessId` (camel) inside the notification; the resolver
+            # reads `business_id` (snake) — send BOTH. The handler emits a thin
+            # change keyed by lastUpdated.
+            biz = target.ramp_business
+            ent_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "business_id": biz,
+                "eventNotifications": [{
+                    "business_id": biz,
+                    "businessId": biz,
+                    "dataChangeEvent": {"entities": [{
+                        "name": "Invoice", "id": ent_id,
+                        "operation": "Update", "lastUpdated": iso,
+                    }]},
+                }],
+            }
+            return payload, f"ramp:{biz}:txn:{ent_id}:chg:{iso}"
+        if self._provider == "gusto":
+            # Gusto eventNotifications webhook (OAuth/QBO archetype). The handler
+            # reads `companyId` (camel); the resolver reads `company_uuid`
+            # (snake) — send BOTH. Thin change keyed by lastUpdated.
+            company = target.gusto_company
+            ent_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "company_uuid": company,
+                "eventNotifications": [{
+                    "company_uuid": company,
+                    "companyId": company,
+                    "dataChangeEvent": {"entities": [{
+                        "name": "Invoice", "id": ent_id,
+                        "operation": "Update", "lastUpdated": iso,
+                    }]},
+                }],
+            }
+            return payload, f"gusto:{company}:invoice:{ent_id}:chg:{iso}"
+        if self._provider == "deel":
+            # Deel payment.created webhook (Bearer/Mercury archetype). Body
+            # matches handlers/deel.py: top-level `type` + `contractId` +
+            # `payment`. `organizationId` keys tenant_resolver._extract_deel.
+            org = target.deel_org
+            ctr = f"ctr-{target.slug}"
+            pay_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "type": "payment.created",
+                "organizationId": org,
+                "contractId": ctr,
+                "payment": {
+                    "id": pay_id,
+                    "contractId": ctr,
+                    "status": "paid",
+                    "amount": -1000.0,
+                    "counterpartyName": content,
+                    "createdAt": iso,
+                },
+            }
+            return payload, f"deel:{ctr}:payment:{pay_id}:paid"
+        if self._provider == "fireflies":
+            # Fireflies transcript.completed webhook (Brex/HMAC archetype). Body
+            # matches handlers/fireflies.py: top-level `type` + `workspaceId` +
+            # `transcript`. `workspaceId` keys tenant_resolver._extract_fireflies.
+            # The handler versions external_id by the transcript `version`; use
+            # the live ISO so it is fresh (never dedups against backfill).
+            ws = target.fireflies_workspace
+            tid = f"live-{target.slug}-{suffix}"
+            payload = {
+                "type": "transcript.completed",
+                "workspaceId": ws,
+                "transcript": {
+                    "id": tid,
+                    "title": content,
+                    "dateTime": iso,
+                    "version": iso,
+                },
+            }
+            return payload, f"fireflies:{ws}:transcript:{tid}:{iso}"
+        if self._provider == "miro":
+            # Miro board_item.created webhook (Brex/HMAC archetype). Body matches
+            # handlers/miro.py: top-level `event` + `organizationId` + `item`.
+            # `organizationId` keys tenant_resolver._extract_miro. The handler
+            # versions external_id by the item `version`; use the live ISO.
+            org = target.miro_org
+            board = target.miro_board
+            item_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "event": "board_item.created",
+                "organizationId": org,
+                "item": {
+                    "id": item_id,
+                    "boardId": board,
+                    "version": iso,
+                    "modifiedAt": iso,
+                    "type": "sticky_note",
+                    "data": {"content": content},
+                },
+            }
+            return payload, f"miro:{org}:item:{item_id}:{iso}"
+        if self._provider == "figma":
+            # Figma file-event webhook (Brex/HMAC archetype for the synthetic
+            # gate; real Figma is passcode-in-body). Body matches
+            # handlers/figma.py: top-level `event_type` + `team_id` + a FLAT
+            # event (id/file_key/version/createdAt inline — the handler wraps it
+            # minus the routing keys). `team_id` keys
+            # tenant_resolver._extract_figma. external_id is versioned by
+            # `version`; use the live ISO.
+            team = target.figma_team
+            file_key = target.figma_file
+            eid = f"live-{target.slug}-{suffix}"
+            payload = {
+                "event_type": "FILE_VERSION_UPDATE",
+                "team_id": team,
+                "id": eid,
+                "file_key": file_key,
+                "version": iso,
+                "label": content,
+                "createdAt": iso,
+            }
+            return payload, f"figma:{team}:event:{eid}:{iso}"
         # grafana alert (the `grafana:alert` channel — distinct from the
         # backfill `grafana:annotation` channel).
         inst = target.grafana_instance
@@ -222,12 +396,17 @@ class HmacWebhookGenerator:
         assert self._client is not None
         payload, external_hint = self._build_payload(target, content)
         body = json.dumps(payload).encode("utf-8")
-        signature = (
-            "sha256=" + ("f" * 64)
-            if tamper_signature and self._provider in ("jira", "mercury")
-            else ("f" * 64) if tamper_signature
-            else self._sign(body)
-        )
+        if not tamper_signature:
+            signature = self._sign(body)
+        elif self._provider in (
+            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+        ):
+            # `sha256=`+hex schemes: keep the prefix so the verifier reaches the
+            # HMAC compare (and rejects on the wrong digest, not the prefix).
+            signature = "sha256=" + ("f" * 64)
+        else:
+            # base64 (quickbooks/ramp/gusto) + bare-hex (grafana): a wrong value.
+            signature = "f" * 64
         response = await self._client.post(
             f"/webhooks/{self._provider}",
             content=body,

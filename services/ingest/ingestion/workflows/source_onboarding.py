@@ -199,7 +199,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta")
 
 
 # ---------------------------------------------------------------------
@@ -397,6 +397,251 @@ SELECT gi.id, gi.tenant_id, gi.base_url, gi.org_id, gi.secret_ref,
  LIMIT 1
 """
 
+# IN-TELEGRAM: Telegram mirrors the Jira/Mercury loader (A18.2) — the planner
+# needs the 1-to-N active-dialog list aggregated onto the account install so it
+# can emit one shard per dialog (no DB I/O in the planner). The MTProto session
+# refs + api credentials ride on the install row for the client builder.
+_LOAD_TELEGRAM_INSTALL_SQL = """
+SELECT ti.id, ti.tenant_id, ti.account_label, ti.api_id, ti.api_hash_secret_ref,
+       ti.session_secret_ref, ti.backfill_session_secret_ref, ti.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'dialog_id', td.dialog_id,
+             'dialog_kind', td.dialog_kind,
+             'access_hash', td.access_hash,
+             'title', td.title,
+             'offset_id_cursor', td.offset_id_cursor
+           ) ORDER BY td.dialog_id
+         ) FILTER (WHERE td.id IS NOT NULL),
+         '[]'::json
+       ) AS dialogs
+  FROM telegram_installations ti
+  LEFT JOIN telegram_dialogs td
+    ON td.telegram_installation_id = ti.id AND td.state = 'active'
+ WHERE ti.tenant_id = $1 AND ti.disabled_at IS NULL
+ GROUP BY ti.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Brex mirrors the Mercury loader (A18.2) — one shard per account. The
+# Bearer api_token lives in encrypted_secrets behind secret_ref; base_url is
+# needed by the client. The 1-to-N active-account list is aggregated onto the
+# install so the planner emits one shard per account (no DB I/O in the planner).
+_LOAD_BREX_INSTALL_SQL = """
+SELECT bi.id, bi.tenant_id, bi.base_url, bi.secret_ref, bi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'account_id', ba.account_id,
+             'account_name', ba.account_name,
+             'account_kind', ba.account_kind,
+             'txn_cursor', ba.txn_cursor
+           ) ORDER BY ba.account_id
+         ) FILTER (WHERE ba.id IS NOT NULL),
+         '[]'::json
+       ) AS accounts
+  FROM brex_installations bi
+  LEFT JOIN brex_accounts ba
+    ON ba.brex_installation_id = bi.id AND ba.state = 'active'
+ WHERE bi.tenant_id = $1 AND bi.disabled_at IS NULL
+ GROUP BY bi.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Ramp mirrors the QuickBooks loader — one shard per (business, entity
+# type). The OAuth access token lives behind secret_ref; business_id (scope id)
+# + base_url + refresh_secret_ref are needed by the client.
+_LOAD_RAMP_INSTALL_SQL = """
+SELECT ri.id, ri.tenant_id, ri.business_id, ri.base_url, ri.secret_ref,
+       ri.refresh_secret_ref, ri.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', re.entity_type,
+             'updated_cursor', re.updated_cursor
+           ) ORDER BY re.entity_type
+         ) FILTER (WHERE re.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM ramp_installations ri
+  LEFT JOIN ramp_entities re
+    ON re.ramp_installation_id = ri.id AND re.state = 'active'
+ WHERE ri.tenant_id = $1 AND ri.disabled_at IS NULL
+ GROUP BY ri.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Gusto mirrors the QuickBooks loader — one shard per (company, entity
+# type). company_uuid is the scope id; access token behind secret_ref +
+# refresh_secret_ref + base_url are needed by the client.
+_LOAD_GUSTO_INSTALL_SQL = """
+SELECT gi.id, gi.tenant_id, gi.company_uuid, gi.base_url, gi.secret_ref,
+       gi.refresh_secret_ref, gi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', ge.entity_type,
+             'updated_cursor', ge.updated_cursor
+           ) ORDER BY ge.entity_type
+         ) FILTER (WHERE ge.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM gusto_installations gi
+  LEFT JOIN gusto_entities ge
+    ON ge.gusto_installation_id = gi.id AND ge.state = 'active'
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ GROUP BY gi.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Deel mirrors the Mercury loader — one shard per contract. The Bearer
+# api_token lives behind secret_ref; base_url is needed by the client. The
+# 1-to-N active-contract list is aggregated onto the install.
+_LOAD_DEEL_INSTALL_SQL = """
+SELECT di.id, di.tenant_id, di.base_url, di.secret_ref, di.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'contract_id', dc.contract_id,
+             'payment_cursor', dc.payment_cursor
+           ) ORDER BY dc.contract_id
+         ) FILTER (WHERE dc.id IS NOT NULL),
+         '[]'::json
+       ) AS contracts
+  FROM deel_installations di
+  LEFT JOIN deel_contracts dc
+    ON dc.deel_installation_id = di.id AND dc.state = 'active'
+ WHERE di.tenant_id = $1 AND di.disabled_at IS NULL
+ GROUP BY di.id
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Fireflies is workspace-scoped with NO child table — the planner
+# emits exactly ONE shard per install. workspace_id + transcript_cursor ride on
+# the install row; the Bearer api_token lives behind secret_ref; base_url is
+# needed by the client.
+_LOAD_FIREFLIES_INSTALL_SQL = """
+SELECT fi.id, fi.tenant_id, fi.base_url, fi.workspace_id,
+       fi.transcript_cursor, fi.secret_ref, fi.disabled_at
+  FROM fireflies_installations fi
+ WHERE fi.tenant_id = $1 AND fi.disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Signal mirrors the Telegram loader — one shard per thread. The
+# planner needs the 1-to-N active-thread list aggregated onto the account
+# install. The linked-device session refs ride on the install row for the client
+# builder; there are NO MTProto app credentials (no api_id / api_hash) and NO
+# access_hash on threads.
+_LOAD_SIGNAL_INSTALL_SQL = """
+SELECT si.id, si.tenant_id, si.account_label, si.session_secret_ref,
+       si.backfill_session_secret_ref, si.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'thread_id', st.thread_id,
+             'thread_kind', st.thread_kind,
+             'title', st.title,
+             'offset_id_cursor', st.offset_id_cursor
+           ) ORDER BY st.thread_id
+         ) FILTER (WHERE st.id IS NOT NULL),
+         '[]'::json
+       ) AS threads
+  FROM signal_installations si
+  LEFT JOIN signal_threads st
+    ON st.signal_installation_id = si.id AND st.state = 'active'
+ WHERE si.tenant_id = $1 AND si.disabled_at IS NULL
+ GROUP BY si.id
+ LIMIT 1
+"""
+
+# IN-VERTICALS: AWS is (account, region)-scoped with NO child table — the planner
+# emits one shard per install. account_id + region + events_cursor_ms (warm-start
+# high-water) ride on the install row; credentials resolve from credential_kind +
+# secret_ref.
+_LOAD_AWS_INSTALL_SQL = """
+SELECT ai.id, ai.tenant_id, ai.account_id, ai.region, ai.credential_kind,
+       ai.secret_ref, ai.events_cursor_ms, ai.disabled_at
+  FROM aws_installations ai
+ WHERE ai.tenant_id = $1 AND ai.disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Miro mirrors the Brex loader — one shard per board. org_id is the
+# namespacing scope on the install row; the 1-to-N active-board list is
+# aggregated onto the install so the planner emits one shard per board.
+_LOAD_MIRO_INSTALL_SQL = """
+SELECT mi.id, mi.tenant_id, mi.base_url, mi.org_id, mi.secret_ref,
+       mi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'board_id', mb.board_id,
+             'board_name', mb.board_name,
+             'board_kind', mb.board_kind,
+             'item_cursor', mb.item_cursor
+           ) ORDER BY mb.board_id
+         ) FILTER (WHERE mb.id IS NOT NULL),
+         '[]'::json
+       ) AS boards
+  FROM miro_installations mi
+  LEFT JOIN miro_boards mb
+    ON mb.miro_installation_id = mi.id AND mb.state = 'active'
+ WHERE mi.tenant_id = $1 AND mi.disabled_at IS NULL
+ GROUP BY mi.id
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Figma mirrors the Brex loader — one shard per file. team_id is the
+# namespacing scope on the install row; the 1-to-N active-file list is aggregated
+# onto the install so the planner emits one shard per file.
+_LOAD_FIGMA_INSTALL_SQL = """
+SELECT fi.id, fi.tenant_id, fi.base_url, fi.team_id, fi.secret_ref,
+       fi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'file_key', ff.file_key,
+             'file_name', ff.file_name,
+             'project_name', ff.project_name,
+             'event_cursor', ff.event_cursor
+           ) ORDER BY ff.file_key
+         ) FILTER (WHERE ff.id IS NOT NULL),
+         '[]'::json
+       ) AS files
+  FROM figma_installations fi
+  LEFT JOIN figma_files ff
+    ON ff.figma_installation_id = fi.id AND ff.state = 'active'
+ WHERE fi.tenant_id = $1 AND fi.disabled_at IS NULL
+ GROUP BY fi.id
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Carta mirrors the Gusto loader — one shard per (firm, entity
+# type). firm_id is the scope id; the OAuth access token lives behind secret_ref +
+# refresh_secret_ref; the 1-to-N active entity-type list is aggregated onto the
+# install.
+_LOAD_CARTA_INSTALL_SQL = """
+SELECT ci.id, ci.tenant_id, ci.firm_id, ci.base_url, ci.secret_ref,
+       ci.refresh_secret_ref, ci.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', ce.entity_type,
+             'updated_cursor', ce.updated_cursor
+           ) ORDER BY ce.entity_type
+         ) FILTER (WHERE ce.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM carta_installations ci
+  LEFT JOIN carta_entities ce
+    ON ce.carta_installation_id = ci.id AND ce.state = 'active'
+ WHERE ci.tenant_id = $1 AND ci.disabled_at IS NULL
+ GROUP BY ci.id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -523,6 +768,28 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     if source == "grafana":
         return await conn.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
+    if source == "telegram":
+        return await conn.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
+    if source == "brex":
+        return await conn.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
+    if source == "ramp":
+        return await conn.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
+    if source == "gusto":
+        return await conn.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
+    if source == "deel":
+        return await conn.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
+    if source == "fireflies":
+        return await conn.fetchrow(_LOAD_FIREFLIES_INSTALL_SQL, tenant_id)
+    if source == "signal":
+        return await conn.fetchrow(_LOAD_SIGNAL_INSTALL_SQL, tenant_id)
+    if source == "aws":
+        return await conn.fetchrow(_LOAD_AWS_INSTALL_SQL, tenant_id)
+    if source == "miro":
+        return await conn.fetchrow(_LOAD_MIRO_INSTALL_SQL, tenant_id)
+    if source == "figma":
+        return await conn.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
+    if source == "carta":
+        return await conn.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -554,6 +821,20 @@ async def _build_source_client(
         return await _clients.build_discord_client(install, pool=pool)
     if source == "notion":
         return await _clients.build_notion_client(install, pool=pool)
+    # IN-FIN2: finance sources (brex/ramp/gusto/deel — like mercury/quickbooks)
+    # shard per resource from child rows the loader aggregates onto the install;
+    # their planners read that DB state, not the API, so no plan-time source
+    # client is needed. Branches kept explicit for parity with _load_install /
+    # the §2.6 client builders (which serve the FETCHER, not the planner).
+    if source in ("brex", "ramp", "gusto", "deel"):
+        return None
+    # IN-VERTICALS: fireflies/signal/aws/miro/figma/carta planners all read DB
+    # state only (workspace_id / threads / install scope / boards / files /
+    # entities pre-aggregated by the loader), so no plan-time source client is
+    # needed. Branch kept explicit for parity with _load_install / the §2.6
+    # FETCHER client builders.
+    if source in ("fireflies", "signal", "aws", "miro", "figma", "carta"):
+        return None
     return None
 
 

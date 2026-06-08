@@ -95,6 +95,15 @@ dev = [
 docs = [
     "mkdocs-material>=9.5",     # Material theme; brings mkdocs + pymdown-extensions
 ]
+# IN-TELEGRAM: Telegram ingestion uses the MTProto user-account API via Telethon
+# (ADR-0003). OPTIONAL — the production backfill client + live gateway worker
+# import telethon lazily (inside connect()/run_forever()), and the synthetic
+# validation harness drives the seams with a mock, so neither the runtime import
+# graph nor the test suite requires telethon. Install only on hosts that run a
+# real Telegram live worker: `pip install 'fyraliscore[telegram]'`.
+telegram = [
+    "telethon>=1.36",          # pure-Python asyncio MTProto client
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

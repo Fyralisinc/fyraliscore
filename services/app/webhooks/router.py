@@ -132,6 +132,17 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     # IN-GRAFANA: Grafana Alerting webhook (HMAC X-Grafana-Alerting-Signature)
     # routes onto the data plane.
     "grafana": "grafana",
+    # IN-FIN2: Brex/Ramp/Gusto/Deel — HMAC-signed finance webhooks route onto
+    # the data plane (Bearer archetype: brex, deel; OAuth archetype: ramp, gusto).
+    "brex": "brex",
+    "ramp": "ramp",
+    "gusto": "gusto",
+    "deel": "deel",
+    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma — HMAC-signed webhooks
+    # (Brex archetype) route onto the data plane.
+    "fireflies": "fireflies",
+    "miro": "miro",
+    "figma": "figma",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -155,6 +166,19 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     "quickbooks": "quickbooks",
     # IN-GRAFANA: Grafana Alerting webhooks fit the 202 cutover contract.
     "grafana": "grafana",
+    # IN-FIN2: Brex/Ramp/Gusto/Deel finance webhooks fit the 202 cutover
+    # contract (no synchronous-response-shape constraint), so they activate the
+    # full pipeline once the tenant's kafka_path_enabled flag is TRUE.
+    "brex": "brex",
+    "ramp": "ramp",
+    "gusto": "gusto",
+    "deel": "deel",
+    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma webhooks fit the 202 cutover
+    # contract, so they activate the full pipeline once the tenant's
+    # kafka_path_enabled flag is TRUE.
+    "fireflies": "fireflies",
+    "miro": "miro",
+    "figma": "figma",
 }
 
 
@@ -417,6 +441,17 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     # IN-GRAFANA: the webhook delivers alert groups -> the `grafana:alert`
     # channel (inline-ingest fallback when kafka_path_enabled is off).
     "grafana": "grafana:alert",
+    # IN-FIN2: finance webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(...).
+    "brex": "brex:transaction",
+    "ramp": "ramp:transaction",
+    "gusto": "gusto:object",
+    "deel": "deel:payment",
+    # IN-FF/IN-MIRO/IN-FIGMA: webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(...).
+    "fireflies": "fireflies:transcript",
+    "miro": "miro:item",
+    "figma": "figma:event",
 }
 
 

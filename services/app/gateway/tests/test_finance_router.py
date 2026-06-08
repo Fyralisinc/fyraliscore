@@ -138,4 +138,4 @@ async def test_sources_listing(app_client):
     r = await client.get("/finance/sources")
     assert r.status_code == 200
     srcs = {s["source"] for s in r.json()["sources"]}
-    assert srcs == {"mercury", "quickbooks"}
+    assert srcs == {"mercury", "quickbooks", "brex", "ramp", "gusto", "deel"}

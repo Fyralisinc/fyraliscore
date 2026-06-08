@@ -195,7 +195,8 @@ async def configure_ceo_view(
             log.warning("google_drive_mount_failed", error=str(exc))
 
     # Debug inspector.
-    if env_name in ("dev", "staging", "test"):
+    from lib.shared.env import env_name
+    if env_name() in ("dev", "staging", "test"):
         try:
             from services.app.gateway.debug_router import build_debug_router
 

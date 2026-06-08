@@ -454,6 +454,135 @@ SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
  LIMIT 1
 """
 
+# IN-TELEGRAM: Telegram is a per-tenant MTProto-session install (not in
+# provider_installations). The fetcher works one dialog at a time via
+# shard_identifier; the install row carries the api credentials + the persisted
+# session refs the TelegramClient needs. Backfill uses the second authorization
+# (backfill_session_secret_ref); without this dedicated branch a telegram shard
+# would fall through to provider_installations, find nothing, and park forever.
+_LOAD_TELEGRAM_INSTALL_SQL = """
+SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
+       session_secret_ref, backfill_session_secret_ref, disabled_at
+  FROM telegram_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Brex is a per-tenant API-token (Bearer) install (Mercury archetype;
+# not in provider_installations). The fetcher works one account at a time via
+# shard_identifier; the install row carries base_url + secret_ref the BrexClient
+# needs. Without this dedicated branch a brex shard would fall through to the
+# provider_installations lookup, find nothing, and park forever.
+_LOAD_BREX_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, secret_ref, disabled_at
+  FROM brex_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Ramp is a per-tenant OAuth install (QuickBooks archetype; not in
+# provider_installations). The fetcher works one entity type at a time via
+# shard_identifier; the install row carries business_id (scope id) + base_url +
+# secret_ref (access token) + refresh_secret_ref the RampClient needs.
+_LOAD_RAMP_INSTALL_SQL = """
+SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM ramp_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Gusto is a per-tenant OAuth install (QuickBooks archetype; not in
+# provider_installations). The install row carries company_uuid (scope id) +
+# base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
+_LOAD_GUSTO_INSTALL_SQL = """
+SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM gusto_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Deel is a per-tenant API-token (Bearer) install (Mercury archetype;
+# not in provider_installations). The install row carries base_url + secret_ref
+# the DeelClient needs.
+_LOAD_DEEL_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, secret_ref, disabled_at
+  FROM deel_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Fireflies is a per-tenant API-token (Bearer) install (Brex
+# archetype; not in provider_installations). The install row carries base_url +
+# workspace_id + secret_ref the FirefliesClient + fetcher need. Without this
+# dedicated branch a fireflies shard would fall through to provider_installations,
+# find nothing, and park forever.
+_LOAD_FIREFLIES_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, workspace_id, transcript_cursor, secret_ref,
+       disabled_at
+  FROM fireflies_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Signal is a per-tenant linked-device-session install (Telegram
+# archetype; not in provider_installations). The fetcher works one thread at a
+# time via shard_identifier; the install row carries account_label + the
+# persisted session refs the SignalClient needs (backfill uses the second
+# session). NO MTProto api credentials.
+_LOAD_SIGNAL_INSTALL_SQL = """
+SELECT id, tenant_id, account_label, session_secret_ref,
+       backfill_session_secret_ref, disabled_at
+  FROM signal_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: AWS is a per-tenant (account, region) install (poll-live edge;
+# not in provider_installations). The install row carries account_id + region +
+# credential_kind + secret_ref the AwsClient needs.
+_LOAD_AWS_INSTALL_SQL = """
+SELECT id, tenant_id, account_id, region, credential_kind, secret_ref,
+       events_cursor_ms, disabled_at
+  FROM aws_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Miro is a per-tenant API-token (Bearer) install (Brex archetype;
+# not in provider_installations). The fetcher works one board at a time via
+# shard_identifier; the install row carries base_url + org_id + secret_ref the
+# MiroClient needs.
+_LOAD_MIRO_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
+  FROM miro_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Figma is a per-tenant API-token (Bearer) install (Brex archetype;
+# not in provider_installations). The fetcher works one file at a time via
+# shard_identifier; the install row carries base_url + team_id + secret_ref the
+# FigmaClient needs.
+_LOAD_FIGMA_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, team_id, secret_ref, disabled_at
+  FROM figma_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-VERTICALS: Carta is a per-tenant OAuth install (Gusto archetype;
+# not in provider_installations). The install row carries firm_id (scope id) +
+# base_url + secret_ref (access token) + refresh_secret_ref the CartaClient needs.
+_LOAD_CARTA_INSTALL_SQL = """
+SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM carta_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -547,6 +676,28 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
     if source == "grafana":
         return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
+    if source == "telegram":
+        return await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
+    if source == "brex":
+        return await pool.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
+    if source == "ramp":
+        return await pool.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
+    if source == "gusto":
+        return await pool.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
+    if source == "deel":
+        return await pool.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
+    if source == "fireflies":
+        return await pool.fetchrow(_LOAD_FIREFLIES_INSTALL_SQL, tenant_id)
+    if source == "signal":
+        return await pool.fetchrow(_LOAD_SIGNAL_INSTALL_SQL, tenant_id)
+    if source == "aws":
+        return await pool.fetchrow(_LOAD_AWS_INSTALL_SQL, tenant_id)
+    if source == "miro":
+        return await pool.fetchrow(_LOAD_MIRO_INSTALL_SQL, tenant_id)
+    if source == "figma":
+        return await pool.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
+    if source == "carta":
+        return await pool.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

@@ -242,6 +242,15 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         singleton=True,
     ),
     _proc(
+        "telegram_gateway_worker",
+        "live-source",
+        ("python", "scripts/run_telegram_gateway_worker.py"),
+        ("production",),
+        "Telegram MTProto gateway session worker.",
+        compose_service="telegram_gateway_worker",
+        singleton=True,
+    ),
+    _proc(
         "gmail_watch_scheduler",
         "live-source",
         ("python", "scripts/run_gmail_watch_scheduler.py"),
