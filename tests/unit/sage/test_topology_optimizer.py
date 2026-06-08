@@ -28,6 +28,7 @@ Hermetic notes:
 """
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -204,6 +205,112 @@ async def test_decays_affordance_after_repeated_retrieved_but_omitted(
     # decay() multiplies utility by DECAY_FACTOR (0.95).
     assert updated.utility_score < baseline_utility
     assert updated.utility_score == pytest.approx(baseline_utility * 0.95)
+
+
+@pytest.mark.asyncio
+async def test_low_value_reader_decision_creates_model_addressable_negative_memory(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    model_id = await _seed_model(gateway_pool, tenant_id=tenant_id)
+    seeded = await _seed_affordance_profile(
+        gateway_pool,
+        tenant_id=tenant_id,
+        model_id=model_id,
+        utility_score=1.0,
+    )
+
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    for rank in range(2):
+        await events.append(
+            session_id,
+            "reader_decision_low_value",
+            {
+                "signal_type": "T1",
+                "entities": ["Acme"],
+                "question_primitive": "CONSTRAINT",
+                "model_id": str(model_id),
+                "attribution_id": str(uuid7()),
+                "question_id": f"Q_LOW_VALUE_{rank}",
+                "selection_rank": rank,
+                "reason": "selected_reader_context_unused_by_valid_noop",
+            },
+        )
+
+    optimizer = TopologyOptimizer(pool=gateway_pool, tenant_id=tenant_id)
+    report = await optimizer.optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert report.negative_memory_inserts == 3
+    assert report.affordance_decays == 1
+    memories = await NegativeMemoryRepo(
+        gateway_pool,
+        tenant_id=tenant_id,
+    ).find_for_signature({"signal_type": "T1", "question_primitive": "CONSTRAINT"})
+    low_value = [m for m in memories if m.memory_type == "low_value_node"]
+    assert len(low_value) == 2
+    assert all(m.rejected_path["model_id"] == str(model_id) for m in low_value)
+    route_memories = await NegativeMemoryRepo(
+        gateway_pool,
+        tenant_id=tenant_id,
+    ).find_for_signature({
+        "signal_type": "T1",
+        "entities": ["Acme"],
+        "question_primitive": "OWNERSHIP",
+    })
+    route_noisy = [
+        m for m in route_memories
+        if m.memory_type == "noisy_path"
+        and m.reason == "selected_reader_context_unused_by_valid_noop_route"
+    ]
+    assert len(route_noisy) == 1
+
+    updated = await AffordanceProfilesRepo(
+        gateway_pool,
+        tenant_id=tenant_id,
+    ).get(model_id)
+    assert updated is not None
+    assert updated.utility_score == pytest.approx(seeded.utility_score * 0.95)
+
+
+@pytest.mark.asyncio
+async def test_packet_budget_omission_does_not_create_negative_memory(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    model_id = await _seed_model(gateway_pool, tenant_id=tenant_id)
+
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    await events.append(
+        session_id,
+        "retrieved_evidence_omitted",
+        {
+            "signal_type": "T1",
+            "entities": ["Acme"],
+            "question_primitive": "DEPENDENCY",
+            "model_id": str(model_id),
+            "source_ref_id": str(model_id),
+            "omission_reason": "budget_exhausted",
+            "retrieval_paths": ["sage_reader"],
+        },
+    )
+
+    report = await TopologyOptimizer(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+    ).optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert report.negative_memory_inserts == 0
+    memories = await NegativeMemoryRepo(
+        gateway_pool,
+        tenant_id=tenant_id,
+    ).find_for_signature({"signal_type": "T1", "question_primitive": "DEPENDENCY"})
+    assert memories == []
 
 
 @pytest.mark.asyncio
@@ -390,6 +497,29 @@ async def test_canonical_merge_candidate_is_produced_but_not_applied(
     assert set(cand["source_model_ids"]) == {str(model_a), str(model_b)}
     assert "evidence_session_ids" in cand
     assert str(session_id) in cand["evidence_session_ids"]
+    assert report.metrics["canonical_validation_enqueued"] == 1.0
+
+    async with gateway_pool.acquire() as conn:
+        queued = await conn.fetchrow(
+            """
+            SELECT candidate_kind, basis, source_model_id, target_model_id,
+                   edge_kind, review_status, source, metadata
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'sage_topology_optimizer'
+            """,
+            tenant_id,
+        )
+    assert queued is not None
+    assert queued["candidate_kind"] == "edge"
+    assert queued["basis"] == "topology_suggested"
+    assert queued["edge_kind"] == "same_issue_as"
+    assert queued["review_status"] == "needs_review"
+    assert {queued["source_model_id"], queued["target_model_id"]} == {
+        model_a,
+        model_b,
+    }
+    assert queued["metadata"]["canonical_op"] == "merge"
 
     # Canonical truth NOT mutated.
     async with gateway_pool.acquire() as conn:
@@ -407,6 +537,110 @@ async def test_canonical_merge_candidate_is_produced_but_not_applied(
     assert after_models == before_models
     assert after_edges == before_edges
     assert after_obs == before_obs
+
+
+@pytest.mark.asyncio
+async def test_promote_candidate_is_persisted_for_validation_review(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    model_ids = [
+        await _seed_model(gateway_pool, tenant_id=tenant_id)
+        for _ in range(8)
+    ]
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    for model_id in model_ids:
+        await events.append(
+            session_id,
+            "node_used_in_valid_diff",
+            {
+                "model_id": str(model_id),
+                "signal_type": "T1",
+                "question_primitive": "DEPENDENCY",
+                "entities": ["Acme", "SSO"],
+            },
+        )
+
+    optimizer = TopologyOptimizer(pool=gateway_pool, tenant_id=tenant_id)
+    report = await optimizer.optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert len(report.canonical_promote_candidates) == 1
+    assert report.metrics["canonical_validation_enqueued"] == 1.0
+
+    async with gateway_pool.acquire() as conn:
+        queued = await conn.fetchrow(
+            """
+            SELECT candidate_kind, basis, member_model_ids, review_status,
+                   source, proposed_proposition, metadata
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'sage_topology_optimizer'
+            """,
+            tenant_id,
+        )
+    assert queued is not None
+    assert queued["candidate_kind"] == "situation"
+    assert queued["basis"] == "topology_suggested"
+    assert queued["review_status"] == "needs_review"
+    assert set(queued["member_model_ids"]) == set(model_ids)
+    assert (
+        queued["metadata"]["canonical_proposed_kind"]
+        == "promote_access_pattern_to_canonical_route"
+    )
+    assert queued["proposed_proposition"]["claim_role"] == "situation"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_promote_validation_queue_dedupes_review_candidate(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    model_ids = [
+        await _seed_model(gateway_pool, tenant_id=tenant_id)
+        for _ in range(8)
+    ]
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    for model_id in model_ids:
+        await events.append(
+            session_id,
+            "node_used_in_valid_diff",
+            {
+                "model_id": str(model_id),
+                "signal_type": "T1",
+                "question_primitive": "DEPENDENCY",
+                "entities": ["Acme", "SSO"],
+            },
+        )
+
+    async def _run_optimizer() -> float:
+        report = await TopologyOptimizer(
+            pool=gateway_pool,
+            tenant_id=tenant_id,
+        ).optimize(
+            inquiry_session_id=session_id,
+            trigger_event="validated_synthesis_diff_applied",
+        )
+        return report.metrics["canonical_validation_enqueued"]
+
+    enqueued = await asyncio.gather(*[_run_optimizer() for _ in range(10)])
+
+    async with gateway_pool.acquire() as conn:
+        queued_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::int
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'sage_topology_optimizer'
+              AND metadata->>'canonical_proposed_kind'
+                  = 'promote_access_pattern_to_canonical_route'
+            """,
+            tenant_id,
+        )
+    assert queued_count == 1
+    assert sum(enqueued) == 1.0
 
 
 @pytest.mark.asyncio
