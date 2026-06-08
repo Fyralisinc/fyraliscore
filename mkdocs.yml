@@ -78,6 +78,7 @@ exclude_docs: |
   history/
   testing/
   mockups/
+  research/
   hardening-backlog.md
 
 nav:
