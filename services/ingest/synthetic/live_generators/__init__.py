@@ -55,9 +55,25 @@ from services.ingest.synthetic.live_generators.telegram_gateway import (
     TelegramGatewayGenerator,
     TelegramGatewayResult,
 )
+from services.ingest.synthetic.live_generators.signal_gateway import (
+    SignalGatewayGenerator,
+    SignalGatewayResult,
+)
+from services.ingest.synthetic.live_generators.aws_poll import (
+    AwsPollGenerator,
+    AwsPollResult,
+)
+from services.ingest.synthetic.live_generators.carta_poll import (
+    CartaPollGenerator,
+    CartaPollResult,
+)
 
 
 __all__ = [
+    "AwsPollGenerator",
+    "AwsPollResult",
+    "CartaPollGenerator",
+    "CartaPollResult",
     "DiscordGatewayGenerator",
     "GithubScenarioResult",
     "GithubWebhookGenerator",
@@ -71,6 +87,8 @@ __all__ = [
     "HmacWebhookResult",
     "NotionWebhookGenerator",
     "NotionWebhookResult",
+    "SignalGatewayGenerator",
+    "SignalGatewayResult",
     "SimulatedEventResult",
     "SimulatedPushResult",
     "SimulatedWebhookResult",

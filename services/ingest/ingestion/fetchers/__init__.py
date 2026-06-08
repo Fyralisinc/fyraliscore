@@ -159,6 +159,12 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "ramp":  _not_implemented_fetcher("ramp",  "IN-FIN2"),
     "gusto": _not_implemented_fetcher("gusto", "IN-FIN2"),
     "deel":  _not_implemented_fetcher("deel",  "IN-FIN2"),
+    "fireflies": _not_implemented_fetcher("fireflies", "IN-VERTICALS"),
+    "signal":    _not_implemented_fetcher("signal",    "IN-VERTICALS"),
+    "aws":       _not_implemented_fetcher("aws",       "IN-VERTICALS"),
+    "miro":      _not_implemented_fetcher("miro",      "IN-VERTICALS"),
+    "figma":     _not_implemented_fetcher("figma",     "IN-VERTICALS"),
+    "carta":     _not_implemented_fetcher("carta",     "IN-VERTICALS"),
 }
 
 
@@ -187,3 +193,9 @@ from services.ingest.ingestion.fetchers import brex as _brex  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import ramp as _ramp  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import gusto as _gusto  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import deel as _deel  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import fireflies as _fireflies  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import signal as _signal  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import aws as _aws  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import miro as _miro  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import figma as _figma  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import carta as _carta  # noqa: E402,F401

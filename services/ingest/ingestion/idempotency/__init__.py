@@ -242,12 +242,81 @@ def deel_contract(contract_id: str, updated: str) -> str:
     return f"deel:{contract_id}:contract:{updated}"
 
 
+# --- Fireflies (Brex/HMAC archetype) ---------------------------------
+def fireflies_transcript(
+    workspace_id: str, transcript_id: str, version: object,
+) -> str:
+    """`fireflies:{workspace}:transcript:{id}:{version}` — namespaced by
+    workspace (the global UNIQUE has no tenant_id) and VERSIONED by the
+    transcript's content version (updatedAt/dateTime) so a re-processed
+    transcript re-observes while identical re-fetches dedup."""
+    return f"fireflies:{workspace_id}:transcript:{transcript_id}:{version}"
+
+
+# --- Miro (Brex/HMAC archetype) --------------------------------------
+def miro_item(org_id: str, item_id: str, version: object) -> str:
+    """`miro:{org}:item:{id}:{version}` — namespaced by org (the global
+    UNIQUE has no tenant_id) and VERSIONED by the item's version/modifiedAt
+    so each board-item change re-observes."""
+    return f"miro:{org_id}:item:{item_id}:{version}"
+
+
+# --- Figma (Brex/HMAC archetype) -------------------------------------
+def figma_event(team_id: str, event_id: str, version: object) -> str:
+    """`figma:{team}:event:{id}:{version}` — namespaced by team (the global
+    UNIQUE has no tenant_id) and VERSIONED by the event version so a
+    re-emitted event at a new version re-observes."""
+    return f"figma:{team_id}:event:{event_id}:{version}"
+
+
+# --- Signal (Telegram/gateway archetype) -----------------------------
+def signal_message(
+    installation_id: object, thread_id: object, message_id: object,
+    edit_date: object,
+) -> str:
+    """`signal:{install}:{thread}:{message_id}:{edit}` — namespaced by
+    install (so the same thread/message id seen by two tenants stays distinct,
+    per the global UNIQUE-without-tenant_id rule) and VERSIONED by edit_date.
+
+    A brand-new message has edit_date None → `…:{id}:none`; backfill and the
+    live gateway twin both derive the same key, so they collapse to one
+    observation. Mirrors `telegram_message`; v1 does not support edits, so the
+    edit slot is always `none`."""
+    return (
+        f"signal:{installation_id}:{thread_id}:{message_id}:"
+        f"{edit_date if edit_date else 'none'}"
+    )
+
+
+# --- AWS (Grafana-backfill / poll-live archetype) --------------------
+def aws_event(account_id: str, region: str, event_id: str) -> str:
+    """`aws:{account}:{region}:event:{id}` — IMMUTABLE (CloudTrail event ids
+    are globally unique + stable); namespaced by (account, region) so the same
+    event id across regions/accounts stays distinct. Backfill and the live
+    poll twin derive the same key, so they collapse to one observation."""
+    return f"aws:{account_id}:{region}:event:{event_id}"
+
+
+# --- Carta (Gusto-backfill / poll-live archetype) --------------------
+def carta_entity(
+    firm_id: str, entity_kind: str, entity_id: str, sync_token: str,
+) -> str:
+    """`carta:{firm}:{kind}:{id}:{sync_token}` — namespaced by firm and
+    discriminated by entity_kind (so multiple cap-table entity kinds sharing
+    an id never collide), VERSIONED by sync_token so each edit re-observes."""
+    return f"carta:{firm_id}:{entity_kind}:{entity_id}:{sync_token}"
+
+
 __all__ = [
+    "aws_event",
     "brex_balance",
     "brex_transaction",
+    "carta_entity",
     "deel_contract",
     "deel_payment",
     "discord_event",
+    "figma_event",
+    "fireflies_transcript",
     "github_push",
     "gmail_message",
     "google_calendar_event",
@@ -263,10 +332,12 @@ __all__ = [
     "jira_transition",
     "mercury_balance",
     "mercury_transaction",
+    "miro_item",
     "notion_object",
     "quickbooks_change",
     "quickbooks_entity",
     "ramp_transaction",
+    "signal_message",
     "slack_message",
     "telegram_message",
 ]

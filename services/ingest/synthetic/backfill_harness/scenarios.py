@@ -19,6 +19,7 @@ _VALID_SOURCES = frozenset((
     "gmail", "slack", "github", "discord", "google_calendar",
     "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
     "telegram", "brex", "ramp", "gusto", "deel",
+    "fireflies", "signal", "aws", "miro", "figma", "carta",
 ))
 
 

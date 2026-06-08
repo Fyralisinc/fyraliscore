@@ -65,6 +65,12 @@ _MIGRATIONS = pathlib.Path("db/migrations")
 # Grafana annotation base inside the 90-day backfill floor AND the observations
 # partition window (≈ 2026-05-15).
 _GRAFANA_BASE_MS = 1778803200000
+# AWS CloudTrail events use the SAME in-window anchor: the aws fetcher floors
+# backfill at now - AWS_BACKFILL_WINDOW_DAYS (default 90d), so the fixture's
+# default 2026-01 base would fall outside the window and yield ZERO records.
+# Reusing the grafana base (≈2026-05-15, ~24d ago) keeps all 3 events inside
+# both the 90-day backfill window and the observations partition coverage.
+_AWS_BASE_MS = _GRAFANA_BASE_MS
 
 # Per-source backfill observation count per tenant (validated by Run 6 backfill).
 _EXPECTED: dict[str, int] = {
@@ -74,6 +80,10 @@ _EXPECTED: dict[str, int] = {
     # IN-FIN2 finance sources. brex/deel = Mercury archetype (1 snapshot +
     # 4 txns/payments = 5); ramp/gusto = QBO archetype (4 entities × 1 row = 4).
     "brex": 5, "ramp": 4, "gusto": 4, "deel": 5,
+    # Vertical-2 sources. fireflies = 4 transcripts (NO snapshot); miro = 1 board
+    # × 4 items; figma = 4 events (pure event stream); carta = 4 cap-table entity
+    # kinds × 1 row; signal = 1 thread × 5 messages; aws = 3 CloudTrail events.
+    "fireflies": 4, "signal": 5, "aws": 3, "miro": 4, "figma": 4, "carta": 4,
 }
 SOURCES = list(_EXPECTED.keys())
 
@@ -89,11 +99,26 @@ _EXPECTED_LIVE_STATUS: dict[str, set[int]] = {
     "telegram": set(),
     # IN-FIN2 finance sources: HMAC webhook + M5.3 Kafka cutover (202).
     "brex": {202}, "ramp": {202}, "gusto": {202}, "deel": {202},
+    # Vertical-2: fireflies/miro/figma are HMAC webhook (202). signal is gateway-
+    # style (no HTTP); aws/carta are poll live edges (direct-dispatch, no HTTP).
+    "fireflies": {202}, "miro": {202}, "figma": {202},
+    "signal": set(), "aws": set(), "carta": set(),
 }
 _HMAC_SOURCES = (
     "jira", "mercury", "quickbooks", "grafana",
     "brex", "ramp", "gusto", "deel",
+    "fireflies", "miro", "figma",
 )
+
+
+def _slug_account_id(slug: str) -> str:
+    """A deterministic, tenant-distinct 12-digit AWS account id derived from the
+    scenario slug. AWS external_ids key on (account_id, region), so a per-tenant
+    account_id keeps the global observations UNIQUE from collapsing two tenants'
+    synthetic event ids."""
+    import hashlib
+    digest = hashlib.sha256(slug.encode()).hexdigest()
+    return str(int(digest[:15], 16))[:12].rjust(12, "0")
 
 
 def _scen_params(source: str, slug: str) -> dict:
@@ -156,6 +181,37 @@ def _scen_params(source: str, slug: str) -> dict:
                   "entities": ["Invoice", "Bill", "BillPayment", "Payment"],
                   "rows_per_entity": 1},
         "deel": {"contracts": 1, "payments_per_contract": 4, "seed": slug},
+        # Vertical-2 sources. Each embeds `slug` into the identifier the
+        # external_id keys on so the global observations UNIQUE never collapses
+        # two tenants' synthetic ids.
+        # fireflies: external_id fireflies:{workspace_id}:transcript:{id}:{ver};
+        # workspace_id namespaces. 4 transcripts → 4 obs (NO snapshot record).
+        "fireflies": {"workspace_id": f"ws-{slug}", "transcripts": 4,
+                      "seed": slug},
+        # signal: external_id signal:{installation_id}:{thread}:{msg}:none; the
+        # install row id (tenant-distinct) namespaces. seed=slug also makes the
+        # thread/message ids tenant-distinct (belt-and-suspenders).
+        # 1 thread × 5 messages = 5 obs.
+        "signal": {"threads": 1, "messages_per_thread": 5, "seed": slug},
+        # aws: external_id aws:{account_id}:{region}:event:{event_id}; account_id
+        # namespaces. A slug-derived 12-digit account_id keeps tenants distinct;
+        # seed=slug salts the event ids too. base_ms anchors inside the fetcher's
+        # 90-day backfill window (the 2026-01 fixture default is out of range).
+        # 3 events → 3 obs.
+        "aws": {"account_id": _slug_account_id(slug), "region": "us-east-1",
+                "events": 3, "base_ms": _AWS_BASE_MS, "seed": slug},
+        # miro: external_id miro:{org_id}:item:{item_id}:{version}; org_id
+        # namespaces. 1 board × 4 items = 4 obs (NO snapshot record).
+        "miro": {"org_id": f"org-{slug}", "boards": 1, "items_per_board": 4,
+                 "seed": slug},
+        # figma: external_id figma:{team_id}:event:{event_id}:{version}; team_id
+        # namespaces. 4 events × 1 file = 4 obs (pure event stream).
+        "figma": {"team_id": f"team-{slug}", "events": 4, "seed": slug},
+        # carta: external_id carta:{firm_id}:{entity_kind}:{entity_id}:{token};
+        # firm_id namespaces. 4 cap-table entity kinds × 1 row = 4 obs (entity
+        # kind discriminates so same-id rows never collide).
+        "carta": {"firm_id": f"firm-{slug}", "rows_per_entity": 1,
+                  "seed": slug},
     }[source]
 
 
@@ -211,6 +267,15 @@ async def _dispatch_one(drivers, t, *, content: str) -> int | None:
         return None
     if s == "telegram":
         await drivers.telegram_gateway.simulate_message(target=t, content=content)
+        return None
+    if s == "signal":
+        await drivers.signal_gateway.simulate_message(target=t, content=content)
+        return None
+    if s == "aws":
+        await drivers.aws_poll.simulate_event(target=t, content=content)
+        return None
+    if s == "carta":
+        await drivers.carta_poll.simulate_event(target=t, content=content)
         return None
     if s in _HMAC_SOURCES:
         r = await drivers.hmac[s].simulate_event(target=t, content=content)
@@ -303,7 +368,7 @@ async def run_all_sources(
     dsn = os.environ["DATABASE_URL"]
     scenarios = all_sources_scenarios(tenants_per_source)
     report = RunReport(
-        run_name="All-12-source concurrent backfill + live overlap",
+        run_name="All-22-source concurrent backfill + live overlap",
         run_number=6, tenant_count=len(scenarios),
         started_at=started, wall_seconds=0.0)
 

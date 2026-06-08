@@ -174,6 +174,12 @@ from services.ingest.ingestion.handlers import brex  # noqa: E402,F401
 from services.ingest.ingestion.handlers import ramp  # noqa: E402,F401
 from services.ingest.ingestion.handlers import gusto  # noqa: E402,F401
 from services.ingest.ingestion.handlers import deel  # noqa: E402,F401
+from services.ingest.ingestion.handlers import fireflies  # noqa: E402,F401
+from services.ingest.ingestion.handlers import signal  # noqa: E402,F401
+from services.ingest.ingestion.handlers import aws  # noqa: E402,F401
+from services.ingest.ingestion.handlers import miro  # noqa: E402,F401
+from services.ingest.ingestion.handlers import figma  # noqa: E402,F401
+from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
 
 
 __all__ = [

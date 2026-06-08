@@ -1,7 +1,8 @@
 """HmacWebhookGenerator — synthetic HMAC-signed webhooks for the finance/ops
 providers that share the gateway webhook router + the M5.3 Kafka cutover:
 **jira, mercury, quickbooks, grafana** plus the IN-FIN2 finance sources
-**brex, ramp, gusto, deel**.
+**brex, ramp, gusto, deel** and the IN-FF/IN-MIRO/IN-FIGMA sources
+**fireflies, miro, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex).
 
 This is the generalisation of `slack_webhook.py` / `github_webhook.py` to the
 providers added after the original 4-source live harness. All four:
@@ -26,8 +27,12 @@ Per-provider signature scheme (verified against signatures/*.py):
   - ramp:       header `x-ramp-signature`           = base64(HMAC-SHA256(body))   (no prefix; UNVERIFIED default)
   - gusto:      header `intuit-signature`           = base64(HMAC-SHA256(body))   (no prefix; UNVERIFIED QBO default)
   - deel:       header `Deel-Signature`             = `sha256=` + hex(HMAC-SHA256(body))
-  (brex/ramp/gusto/deel schemes mirror their signatures/*.py module constants,
-   which are UNVERIFIED archetype defaults — see those modules' TODO(human).)
+  - fireflies:  header `X-Fireflies-Signature`      = `sha256=` + hex(HMAC-SHA256(body))
+  - miro:       header `X-Miro-Signature`           = `sha256=` + hex(HMAC-SHA256(body))
+  - figma:      header `Figma-Signature`            = `sha256=` + hex(HMAC-SHA256(body))
+  (brex/ramp/gusto/deel/fireflies/miro/figma schemes mirror their signatures/*.py
+   module constants, which are UNVERIFIED archetype defaults — see those modules'
+   TODO(human). figma's real scheme is passcode-in-body, not an HMAC header.)
 
 Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - jira:       host of `issue.self`     (== provider_installations.installation_id)
@@ -38,6 +43,9 @@ Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - ramp:       `eventNotifications[0].business_id` (snake) / top-level `business_id`
   - gusto:      `eventNotifications[0].company_uuid` (snake) / top-level `company_uuid`
   - deel:       top-level `organizationId`
+  - fireflies:  top-level `workspaceId`
+  - miro:       top-level `organizationId`
+  - figma:      top-level `team_id`
 
 Each `simulate_event` mints a DISTINCT entity (unique id + a current-window
 timestamp) so the live observation is a fresh row, never an accidental
@@ -66,6 +74,7 @@ log = logging.getLogger(__name__)
 HMAC_PROVIDERS = (
     "jira", "mercury", "quickbooks", "grafana",
     "brex", "ramp", "gusto", "deel",
+    "fireflies", "miro", "figma",
 )
 
 # Live timestamps land inside the observations partition window (2025-06..
@@ -127,8 +136,10 @@ class HmacWebhookGenerator:
     # ---- Signing (byte-exact per provider) ----
     def _sign(self, body: bytes) -> str:
         mac = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha256)
-        # `sha256=`+hex schemes: jira, mercury, brex, deel.
-        if self._provider in ("jira", "mercury", "brex", "deel"):
+        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, miro, figma.
+        if self._provider in (
+            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+        ):
             return "sha256=" + mac.hexdigest()
         # base64-no-prefix schemes: quickbooks, ramp, gusto.
         if self._provider in ("quickbooks", "ramp", "gusto"):
@@ -146,6 +157,10 @@ class HmacWebhookGenerator:
             "ramp": "x-ramp-signature",
             "gusto": "Gusto-Signature",
             "deel": "Deel-Signature",
+            # Must match each verifier's _HEADER_NAME constant (signatures/<src>.py).
+            "fireflies": "X-Fireflies-Signature",
+            "miro": "X-Miro-Signature",
+            "figma": "Figma-Signature",
         }[self._provider]
 
     def _next_iso(self) -> tuple[str, str]:
@@ -284,6 +299,67 @@ class HmacWebhookGenerator:
                 },
             }
             return payload, f"deel:{ctr}:payment:{pay_id}:paid"
+        if self._provider == "fireflies":
+            # Fireflies transcript.completed webhook (Brex/HMAC archetype). Body
+            # matches handlers/fireflies.py: top-level `type` + `workspaceId` +
+            # `transcript`. `workspaceId` keys tenant_resolver._extract_fireflies.
+            # The handler versions external_id by the transcript `version`; use
+            # the live ISO so it is fresh (never dedups against backfill).
+            ws = target.fireflies_workspace
+            tid = f"live-{target.slug}-{suffix}"
+            payload = {
+                "type": "transcript.completed",
+                "workspaceId": ws,
+                "transcript": {
+                    "id": tid,
+                    "title": content,
+                    "dateTime": iso,
+                    "version": iso,
+                },
+            }
+            return payload, f"fireflies:{ws}:transcript:{tid}:{iso}"
+        if self._provider == "miro":
+            # Miro board_item.created webhook (Brex/HMAC archetype). Body matches
+            # handlers/miro.py: top-level `event` + `organizationId` + `item`.
+            # `organizationId` keys tenant_resolver._extract_miro. The handler
+            # versions external_id by the item `version`; use the live ISO.
+            org = target.miro_org
+            board = target.miro_board
+            item_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "event": "board_item.created",
+                "organizationId": org,
+                "item": {
+                    "id": item_id,
+                    "boardId": board,
+                    "version": iso,
+                    "modifiedAt": iso,
+                    "type": "sticky_note",
+                    "data": {"content": content},
+                },
+            }
+            return payload, f"miro:{org}:item:{item_id}:{iso}"
+        if self._provider == "figma":
+            # Figma file-event webhook (Brex/HMAC archetype for the synthetic
+            # gate; real Figma is passcode-in-body). Body matches
+            # handlers/figma.py: top-level `event_type` + `team_id` + a FLAT
+            # event (id/file_key/version/createdAt inline — the handler wraps it
+            # minus the routing keys). `team_id` keys
+            # tenant_resolver._extract_figma. external_id is versioned by
+            # `version`; use the live ISO.
+            team = target.figma_team
+            file_key = target.figma_file
+            eid = f"live-{target.slug}-{suffix}"
+            payload = {
+                "event_type": "FILE_VERSION_UPDATE",
+                "team_id": team,
+                "id": eid,
+                "file_key": file_key,
+                "version": iso,
+                "label": content,
+                "createdAt": iso,
+            }
+            return payload, f"figma:{team}:event:{eid}:{iso}"
         # grafana alert (the `grafana:alert` channel — distinct from the
         # backfill `grafana:annotation` channel).
         inst = target.grafana_instance
@@ -322,7 +398,9 @@ class HmacWebhookGenerator:
         body = json.dumps(payload).encode("utf-8")
         if not tamper_signature:
             signature = self._sign(body)
-        elif self._provider in ("jira", "mercury", "brex", "deel"):
+        elif self._provider in (
+            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+        ):
             # `sha256=`+hex schemes: keep the prefix so the verifier reaches the
             # HMAC compare (and rejects on the wrong digest, not the prefix).
             signature = "sha256=" + ("f" * 64)

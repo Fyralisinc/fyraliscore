@@ -78,6 +78,16 @@ _PROD: dict[str, str] = {
     "gusto_api": "https://api.gusto.com",               # TODO(human): confirm host
     # Finance (IN-FIN2): Deel — Bearer/Mercury archetype.
     "deel_api": "https://api.letsdeel.com",             # TODO(human): confirm host
+    # IN-FIN3 comms: Fireflies.ai — Bearer/token archetype. Real API is GraphQL
+    # at /graphql; this is the host prefix (build_fireflies_client appends paths).
+    "fireflies_api": "https://api.fireflies.ai",        # TODO(human): confirm host
+    # IN-FIN3 design: Miro — Bearer/token archetype (org app).
+    "miro_api": "https://api.miro.com",                 # TODO(human): confirm host
+    # IN-FIN3 design: Figma — Bearer/token archetype (team/org).
+    "figma_api": "https://api.figma.com",               # TODO(human): confirm host
+    # IN-FIN3 cap-table: Carta — OAuth/QuickBooks archetype. Firm-scoped paths
+    # ride per-install base_url in production (poll-only, no webhook).
+    "carta_api": "https://api.carta.com",               # TODO(human): confirm host
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -100,6 +110,10 @@ _ENV: dict[str, str] = {
     "ramp_api": "RAMP_API_BASE_URL",
     "gusto_api": "GUSTO_API_BASE_URL",
     "deel_api": "DEEL_API_BASE_URL",
+    "fireflies_api": "FIREFLIES_API_BASE_URL",
+    "miro_api": "MIRO_API_BASE_URL",
+    "figma_api": "FIGMA_API_BASE_URL",
+    "carta_api": "CARTA_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -123,6 +137,10 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "ramp_api": "/ramp",
     "gusto_api": "/gusto",
     "deel_api": "/deel",
+    "fireflies_api": "/fireflies",
+    "miro_api": "/miro",
+    "figma_api": "/figma",
+    "carta_api": "/carta",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

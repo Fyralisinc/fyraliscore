@@ -73,6 +73,12 @@ from services.ingest.synthetic.fixtures import (
     make_ramp,
     make_gusto,
     make_deel,
+    make_fireflies,
+    make_signal,
+    make_aws,
+    make_miro,
+    make_figma,
+    make_carta,
 )
 
 
@@ -164,6 +170,18 @@ def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
         return make_gusto(**params)
     if source == "deel":
         return make_deel(**params)
+    if source == "fireflies":
+        return make_fireflies(**params)
+    if source == "signal":
+        return make_signal(**params)
+    if source == "aws":
+        return make_aws(**params)
+    if source == "miro":
+        return make_miro(**params)
+    if source == "figma":
+        return make_figma(**params)
+    if source == "carta":
+        return make_carta(**params)
     raise ValueError(f"unknown source: {source!r}")
 
 
@@ -192,6 +210,8 @@ from services.ingest.synthetic.mock_clients import (
     MockJiraClient, MockMercuryClient, MockNotionClient,
     MockQuickBooksClient, MockSlackClient, MockTelegramClient,
     MockBrexClient, MockRampClient, MockGustoClient, MockDeelClient,
+    MockFirefliesClient, MockSignalClient, MockAwsClient,
+    MockMiroClient, MockFigmaClient, MockCartaClient,
 )
 
 
@@ -258,6 +278,18 @@ def _make_mock(source: str, fixture: dict[str, Any],
         return MockGustoClient(fixture=fixture, profile=profile)
     if source == "deel":
         return MockDeelClient(fixture=fixture, profile=profile)
+    if source == "fireflies":
+        return MockFirefliesClient(fixture=fixture, profile=profile)
+    if source == "signal":
+        return MockSignalClient(fixture=fixture, profile=profile)
+    if source == "aws":
+        return MockAwsClient(fixture=fixture, profile=profile)
+    if source == "miro":
+        return MockMiroClient(fixture=fixture, profile=profile)
+    if source == "figma":
+        return MockFigmaClient(fixture=fixture, profile=profile)
+    if source == "carta":
+        return MockCartaClient(fixture=fixture, profile=profile)
     raise ValueError(f"unknown source: {{source!r}}")
 
 
@@ -295,6 +327,18 @@ def _install_factories() -> None:
     from services.ingest.ingestion.reconcilers import gusto as gur
     from services.ingest.ingestion.fetchers import deel as dlf
     from services.ingest.ingestion.reconcilers import deel as dlr
+    from services.ingest.ingestion.fetchers import fireflies as fff
+    from services.ingest.ingestion.reconcilers import fireflies as ffr
+    from services.ingest.ingestion.fetchers import signal as sigf
+    from services.ingest.ingestion.reconcilers import signal as sigr
+    from services.ingest.ingestion.fetchers import aws as awf
+    from services.ingest.ingestion.reconcilers import aws as awr
+    from services.ingest.ingestion.fetchers import miro as mif
+    from services.ingest.ingestion.reconcilers import miro as mir
+    from services.ingest.ingestion.fetchers import figma as fgf
+    from services.ingest.ingestion.reconcilers import figma as fgr
+    from services.ingest.ingestion.fetchers import carta as caf
+    from services.ingest.ingestion.reconcilers import carta as car
     from services.ingest.ingestion.workflows import source_onboarding as so
 
     def _factory_for(_source):
@@ -330,6 +374,12 @@ def _install_factories() -> None:
         ("ramp", (raf, rar)),
         ("gusto", (guf, gur)),
         ("deel", (dlf, dlr)),
+        ("fireflies", (fff, ffr)),
+        ("signal", (sigf, sigr)),
+        ("aws", (awf, awr)),
+        ("miro", (mif, mir)),
+        ("figma", (fgf, fgr)),
+        ("carta", (caf, car)),
     ):
         for mod in modules:
             setattr(mod, f"_open_{{source}}_client", _factory_for(source))
@@ -1278,6 +1328,321 @@ class BackfillHarness:
                             id, tenant_id, source, trigger_kind,
                             installation_row_id, payload
                         ) VALUES ($1, $2, 'gusto', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "fireflies":
+                    # IN-FIN2-style HMAC webhook source (Brex-shaped). SINGLE
+                    # install table — workspace_id lives ON the install row;
+                    # NO child table (planner emits ONE transcript shard). A
+                    # provider_installations row (installation_id=workspace_id)
+                    # is seeded so the webhook tenant_resolver._extract_fireflies
+                    # maps the live HMAC payload back to this tenant.
+                    fixture = _build_fixture(
+                        "fireflies", outcome.scenario.fixture_params,
+                    )
+                    workspace_id = fixture.get(
+                        "workspace_id",
+                        f"x3-{outcome.scenario.tenant_slug}-ws",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO fireflies_installations (
+                          id, tenant_id, base_url, workspace_id
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, base_url)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        "https://api.fireflies.ai",
+                        workspace_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, 'fireflies', $3, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        """,
+                        uuid7(), outcome.tenant_id, workspace_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'fireflies', 'install', $3,
+                                  '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "miro":
+                    # HMAC webhook source (Brex-shaped). org_id lives ON the
+                    # install row; one miro_boards row per fixture board → one
+                    # shard each. provider_installations.installation_id=org_id
+                    # for tenant_resolver._extract_miro.
+                    fixture = _build_fixture(
+                        "miro", outcome.scenario.fixture_params,
+                    )
+                    org_id = fixture.get(
+                        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO miro_installations (
+                          id, tenant_id, base_url, org_id
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, base_url)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        "https://api.miro.com/v2",
+                        org_id,
+                    )
+                    boards = fixture.get("boards", {})
+                    for board_id in fixture.get("board_order", []):
+                        board = boards.get(board_id, {})
+                        await conn.execute(
+                            """
+                            INSERT INTO miro_boards (
+                                id, tenant_id, miro_installation_id,
+                                board_id, board_name, board_kind, state
+                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+                            ON CONFLICT (miro_installation_id, board_id)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id,
+                            board_id, board.get("name"), board.get("type"),
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, 'miro', $3, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        """,
+                        uuid7(), outcome.tenant_id, org_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'miro', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "figma":
+                    # HMAC webhook source (Brex-shaped). team_id lives ON the
+                    # install row; one figma_files row per fixture file → one
+                    # shard each. provider_installations.installation_id=team_id
+                    # for tenant_resolver._extract_figma.
+                    fixture = _build_fixture(
+                        "figma", outcome.scenario.fixture_params,
+                    )
+                    team_id = fixture.get(
+                        "team_id", f"x3-{outcome.scenario.tenant_slug}-team",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO figma_installations (
+                          id, tenant_id, base_url, team_id
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, base_url)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        "https://api.figma.com",
+                        team_id,
+                    )
+                    files = fixture.get("files", {})
+                    for file_key in fixture.get("file_order", []):
+                        f_meta = files.get(file_key, {})
+                        await conn.execute(
+                            """
+                            INSERT INTO figma_files (
+                                id, tenant_id, figma_installation_id,
+                                file_key, file_name, project_name, state
+                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+                            ON CONFLICT (figma_installation_id, file_key)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id,
+                            file_key, f_meta.get("name"),
+                            f_meta.get("project_name"),
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, 'figma', $3, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        """,
+                        uuid7(), outcome.tenant_id, team_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'figma', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "signal":
+                    # Gateway-session source (Telegram-shaped). Direct-dispatch
+                    # live edge → NO provider_installations / webhook secret.
+                    # Install + one signal_threads row per fixture thread → one
+                    # shard each, plus the signal_update_state singleton. The
+                    # linked-device session refs are NULL: _open_signal_client is
+                    # monkeypatched to the mock.
+                    fixture = _build_fixture(
+                        "signal", outcome.scenario.fixture_params,
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO signal_installations (
+                          id, tenant_id, account_label
+                        ) VALUES ($1, $2, $3)
+                        ON CONFLICT (tenant_id, account_label)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id,
+                        f"x3-{outcome.scenario.tenant_slug}-signal",
+                    )
+                    threads = fixture.get("threads", {})
+                    for tid in fixture.get("thread_order", []):
+                        t = threads.get(str(tid), {})
+                        await conn.execute(
+                            """
+                            INSERT INTO signal_threads (
+                                id, tenant_id, signal_installation_id,
+                                thread_id, thread_kind, title, state
+                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+                            ON CONFLICT (signal_installation_id, thread_id)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id,
+                            int(tid), t.get("thread_kind", "direct"),
+                            t.get("title"),
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO signal_update_state (
+                            id, tenant_id, signal_installation_id
+                        ) VALUES ($1, $2, $3)
+                        ON CONFLICT (signal_installation_id) DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'signal', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "aws":
+                    # Poll live-edge source (Grafana backfill shape, direct-
+                    # dispatch live). Direct-dispatch → NO provider_installations
+                    # / webhook secret. SINGLE install table — account_id+region
+                    # ON the install row; planner emits ONE event shard.
+                    fixture = _build_fixture(
+                        "aws", outcome.scenario.fixture_params,
+                    )
+                    account_id = fixture.get("account_id", "123456789012")
+                    region = fixture.get("region", "us-east-1")
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO aws_installations (
+                          id, tenant_id, account_id, region, credential_kind
+                        ) VALUES ($1, $2, $3, $4, 'assume_role')
+                        ON CONFLICT (tenant_id, account_id, region)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, account_id, region,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'aws', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "carta":
+                    # Poll live-edge source (Gusto OAuth backfill shape, direct-
+                    # dispatch live). Direct-dispatch → NO provider_installations
+                    # / webhook secret. firm_id is the scope id; one carta_entities
+                    # row per fixture entity type → one shard each.
+                    fixture = _build_fixture(
+                        "carta", outcome.scenario.fixture_params,
+                    )
+                    firm_id = fixture.get(
+                        "firm_id", "firm_9341452000000001",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO carta_installations (
+                          id, tenant_id, firm_id, base_url
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, firm_id)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, firm_id,
+                        "https://api.carta.com",
+                    )
+                    for entity_type in fixture.get("entities", {}):
+                        await conn.execute(
+                            """
+                            INSERT INTO carta_entities (
+                                id, tenant_id, carta_installation_id,
+                                entity_type, state
+                            ) VALUES ($1, $2, $3, $4, 'active')
+                            ON CONFLICT (carta_installation_id, entity_type)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id, entity_type,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'carta', 'install', $3, '{}'::jsonb)
                         ON CONFLICT (tenant_id, source, installation_row_id)
                             WHERE installation_row_id IS NOT NULL
                             DO NOTHING

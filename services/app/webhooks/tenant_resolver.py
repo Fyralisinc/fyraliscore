@@ -76,6 +76,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
     "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel",
+    "fireflies", "miro", "figma",
 ]
 
 
@@ -430,6 +431,53 @@ def _extract_deel(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str
     return _str_or_none(payload.get("accountId"))
 
 
+def _extract_fireflies(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FF (Brex/HMAC archetype). Fireflies scopes installs by workspace; the
+    # install is registered keyed by the workspace id (provider_installations
+    # provider='fireflies', installation_id=<workspace_id>). The webhook body
+    # carries the workspace id at top level as `workspaceId` (camel); the
+    # onboarding.register_webhook_installation seeds installation_id=workspace_id.
+    # The synthetic harness sends `workspaceId` explicitly. The signing secret is
+    # resolved separately in services/app/webhooks/secrets.py.
+    # TODO(human): confirm fireflies webhook tenant-id field against Fireflies
+    #   webhook docs.
+    ws = _str_or_none(payload.get("workspaceId"))
+    if ws is not None:
+        return ws
+    return _str_or_none(payload.get("workspace_id"))
+
+
+def _extract_miro(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-MIRO (Brex/HMAC archetype). Miro scopes installs by organization; the
+    # install is registered keyed by the org id (provider_installations
+    # provider='miro', installation_id=<org_id>). The webhook body carries the
+    # org id at top level as `organizationId` (camel); the synthetic harness
+    # sends it explicitly. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm miro webhook tenant-id field (organizationId vs orgId)
+    #   against Miro webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("orgId"))
+
+
+def _extract_figma(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIGMA (Brex/HMAC archetype for the synthetic gate; real Figma uses a
+    # passcode-in-body callback). Figma scopes installs by team; the install is
+    # registered keyed by the team id (provider_installations provider='figma',
+    # installation_id=<team_id>). Figma carries no installation_id in the URL
+    # path, so the team id is read from the webhook body's top-level `team_id`
+    # (the synthetic harness sends it explicitly). The signing secret / passcode
+    # is resolved separately in services/app/webhooks/secrets.py.
+    # TODO(human): confirm figma webhook tenant-id field against Figma Webhooks V2
+    #   docs (the body field carrying team_id).
+    team = _str_or_none(payload.get("team_id"))
+    if team is not None:
+        return team
+    return _str_or_none(payload.get("teamId"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -455,6 +503,9 @@ PROVIDER_EXTRACTORS: dict[
     "ramp": _extract_ramp,
     "gusto": _extract_gusto,
     "deel": _extract_deel,
+    "fireflies": _extract_fireflies,
+    "miro": _extract_miro,
+    "figma": _extract_figma,
 }
 
 

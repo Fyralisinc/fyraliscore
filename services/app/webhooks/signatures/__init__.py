@@ -21,12 +21,15 @@ from services.app.webhooks.signatures import (
     brex,
     deel,
     discord,
+    figma,
+    fireflies,
     github,
     grafana,
     gusto,
     jira,
     linear,
     mercury,
+    miro,
     notion,
     quickbooks,
     ramp,
@@ -51,6 +54,10 @@ VERIFIERS: dict[str, Verifier] = {
     "ramp": ramp.verifier,
     "gusto": gusto.verifier,
     "deel": deel.verifier,
+    # IN-FF/IN-MIRO/IN-FIGMA: HMAC-signed webhook sources (Brex archetype).
+    "fireflies": fireflies.verifier,
+    "miro": miro.verifier,
+    "figma": figma.verifier,
 }
 
 

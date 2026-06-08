@@ -36,36 +36,62 @@ from uuid import uuid4
 
 import asyncpg
 
+from services.ingest.ingestion.fetchers import aws as _aws_fetcher
 from services.ingest.ingestion.fetchers import brex as _brex_fetcher
+from services.ingest.ingestion.fetchers import carta as _carta_fetcher
 from services.ingest.ingestion.fetchers import deel as _deel_fetcher
 from services.ingest.ingestion.fetchers import discord as _discord_fetcher
+from services.ingest.ingestion.fetchers import figma as _figma_fetcher
+from services.ingest.ingestion.fetchers import fireflies as _fireflies_fetcher
 from services.ingest.ingestion.fetchers import github as _github_fetcher
 from services.ingest.ingestion.fetchers import gmail as _gmail_fetcher
 from services.ingest.ingestion.fetchers import gusto as _gusto_fetcher
+from services.ingest.ingestion.fetchers import miro as _miro_fetcher
 from services.ingest.ingestion.fetchers import ramp as _ramp_fetcher
+from services.ingest.ingestion.fetchers import signal as _signal_fetcher
 from services.ingest.ingestion.fetchers import slack as _slack_fetcher
 from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingest.synthetic.fixtures import (
+    make_aws,
     make_brex,
+    make_carta,
     make_deel,
     make_discord_guild,
+    make_figma,
+    make_fireflies,
     make_github_repos,
     make_gmail_mailbox,
     make_gusto,
+    make_miro,
     make_ramp,
+    make_signal,
     make_slack_workspace,
 )
 from services.ingest.synthetic.mock_clients import (
+    MockAwsClient,
     MockBrexClient,
+    MockCartaClient,
     MockDeelClient,
     MockDiscordClient,
+    MockFigmaClient,
+    MockFirefliesClient,
     MockGithubClient,
     MockGmailClient,
     MockGustoClient,
+    MockMiroClient,
     MockRampClient,
+    MockSignalClient,
     MockSlackClient,
 )
+
+
+# AWS CloudTrail fixture anchor inside the fetcher's 90-day backfill window AND
+# the observations partition coverage (≈ 2026-05-15). The fixture's default
+# 2026-01 base would fall outside the 90-day floor and yield ZERO records, which
+# the preflight reads as a (spurious) realism failure. Mirrors run_all_sources'
+# _AWS_BASE_MS so preflight and the live run anchor identically.
+_AWS_PREFLIGHT_BASE_MS = 1778803200000
 
 
 class PreflightFailure(AssertionError):
@@ -224,6 +250,114 @@ async def _gusto_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return list(result.records)
 
 
+async def _fireflies_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Fireflies (HMAC / Brex archetype): ONE transcript shard per install; the
+    # fetcher reads `shard_identifier["workspace_id"]` (external_id namespace)
+    # and emits one record per transcript (NO snapshot).
+    client = MockFirefliesClient(fixture=fixture)
+    _patch_client(_fireflies_fetcher, "_open_fireflies_client", client)
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "base_url": "https://api.fireflies.ai"}
+    shard = {"shard_kind": _fireflies_fetcher.SHARD_KIND_TRANSCRIPTS,
+             "workspace_id": fixture["workspace_id"],
+             "installation_id": str(install["id"]),
+             "transcript_cursor": None}
+    result = await _fireflies_fetcher.fetch_page_fireflies(install, shard, None)
+    return list(result.records)
+
+
+async def _signal_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Signal (gateway / Telegram archetype): shard per thread; the fetcher reads
+    # `shard_identifier["thread_id"]` + installation_id (external_id namespace).
+    client = MockSignalClient(fixture=fixture)
+    _patch_client(_signal_fetcher, "_open_signal_client", client)
+    tid = fixture["thread_order"][0]
+    thread = fixture["threads"][str(tid)]
+    install = {"id": uuid4(), "tenant_id": uuid4()}
+    shard = {"shard_kind": _signal_fetcher.SHARD_KIND_THREAD_HISTORY,
+             "thread_id": tid,
+             "thread_kind": thread.get("thread_kind") or "direct",
+             "thread_title": thread.get("title"),
+             "installation_id": str(install["id"]),
+             "offset_id_cursor": None}
+    result = await _signal_fetcher.fetch_page_signal(install, shard, None)
+    return list(result.records)
+
+
+async def _aws_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # AWS (poll / Grafana-backfill archetype): ONE event shard per install; the
+    # fetcher reads (account_id, region) FROM THE INSTALL ROW for the external_id
+    # namespace (aws:{account_id}:{region}:event:{event_id}).
+    client = MockAwsClient(fixture=fixture)
+    _patch_client(_aws_fetcher, "_open_aws_client", client)
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "account_id": fixture["account_id"], "region": fixture["region"],
+               "credential_kind": "assume_role"}
+    shard = {"shard_kind": _aws_fetcher.SHARD_KIND_ACCOUNT_EVENTS,
+             "installation_id": str(install["id"]),
+             "account_id": fixture["account_id"], "region": fixture["region"],
+             "updated_cursor": None}
+    result = await _aws_fetcher.fetch_page_aws(install, shard, None)
+    return list(result.records)
+
+
+async def _miro_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Miro (HMAC / Brex archetype): shard per board; the fetcher reads
+    # `shard_identifier["board_id"]` + org_id (external_id namespace) and emits
+    # one record per item (NO snapshot).
+    client = MockMiroClient(fixture=fixture)
+    _patch_client(_miro_fetcher, "_open_miro_client", client)
+    board_id = fixture["board_order"][0]
+    board = fixture["boards"][board_id]
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "base_url": "https://api.miro.com/v2"}
+    shard = {"shard_kind": _miro_fetcher.SHARD_KIND_BOARD_ITEMS,
+             "board_id": board_id, "board_name": board.get("name"),
+             "org_id": str(fixture["org_id"]),
+             "installation_id": str(install["id"]),
+             "item_cursor": None}
+    result = await _miro_fetcher.fetch_page_miro(install, shard, None)
+    return list(result.records)
+
+
+async def _figma_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Figma (HMAC / Brex archetype): shard per file; the fetcher reads
+    # `shard_identifier["file_key"]` + team_id (external_id namespace) and emits
+    # one record per event (pure event stream, NO snapshot).
+    client = MockFigmaClient(fixture=fixture)
+    _patch_client(_figma_fetcher, "_open_figma_client", client)
+    file_key = fixture["file_order"][0]
+    f_meta = fixture["files"][file_key]
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "team_id": fixture["team_id"],
+               "base_url": "https://api.figma.com"}
+    shard = {"shard_kind": _figma_fetcher.SHARD_KIND_FILE_EVENTS,
+             "file_key": file_key, "file_name": f_meta.get("name"),
+             "team_id": fixture["team_id"],
+             "installation_id": str(install["id"]),
+             "event_cursor": None}
+    result = await _figma_fetcher.fetch_page_figma(install, shard, None)
+    return list(result.records)
+
+
+async def _carta_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Carta (poll / Gusto-backfill archetype): shard per entity_type; the fetcher
+    # reads `shard_identifier["entity_type"]` + install firm_id (external_id
+    # namespace: carta:{firm_id}:{entity_kind}:{entity_id}:{sync_token}).
+    client = MockCartaClient(fixture=fixture)
+    _patch_client(_carta_fetcher, "_open_carta_client", client)
+    entity_type = next(iter(fixture["entities"].keys()))
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "firm_id": fixture["firm_id"],
+               "base_url": "https://api.carta.com"}
+    shard = {"shard_kind": _carta_fetcher.SHARD_KIND_ENTITY,
+             "entity_type": entity_type, "firm_id": fixture["firm_id"],
+             "installation_id": str(install["id"]),
+             "updated_cursor": None}
+    result = await _carta_fetcher.fetch_page_carta(install, shard, None)
+    return list(result.records)
+
+
 _SOURCE_SPECS: dict[str, Any] = {
     "gmail": (lambda: make_gmail_mailbox(email="preflight@example.com",
                                          messages=3), _gmail_records),
@@ -244,6 +378,20 @@ _SOURCE_SPECS: dict[str, Any] = {
                                  rows_per_entity=2), _gusto_records),
     "deel": (lambda: make_deel(contracts=1, payments_per_contract=3,
                                seed="pre"), _deel_records),
+    # Vertical-2 sources (additive — these verticals were not previously covered).
+    "fireflies": (lambda: make_fireflies(workspace_id="ws-pre", transcripts=3,
+                                         seed="pre"), _fireflies_records),
+    "signal": (lambda: make_signal(threads=1, messages_per_thread=3,
+                                   seed="pre"), _signal_records),
+    "aws": (lambda: make_aws(account_id="900000000001", region="us-east-1",
+                             events=3, base_ms=_AWS_PREFLIGHT_BASE_MS,
+                             seed="pre"), _aws_records),
+    "miro": (lambda: make_miro(org_id="org-pre", boards=1, items_per_board=3,
+                               seed="pre"), _miro_records),
+    "figma": (lambda: make_figma(team_id="team-pre", events=3,
+                                 seed="pre"), _figma_records),
+    "carta": (lambda: make_carta(firm_id="firm-pre", rows_per_entity=1,
+                                 seed="pre"), _carta_records),
 }
 
 

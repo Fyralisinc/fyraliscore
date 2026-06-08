@@ -780,6 +780,202 @@ class DeelApiError(CompanyOSError):
             self._code = code
 
 
+class FirefliesApiError(CompanyOSError):
+    """
+    Outbound Fireflies.ai call failure (comms source — Bearer/token archetype).
+
+    Fireflies uses a long-lived API token (`Authorization: Bearer {token}`). The
+    real API is GraphQL; this mirrors the Brex Bearer error shape.
+
+    Stable `code` values:
+      - fireflies_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - fireflies_api_not_found: 404 — transcript/workspace not visible
+      - fireflies_api_rate_limited: 429 with retry budget exhausted
+      - fireflies_api_error: other terminal 4xx/5xx (or a GraphQL error extension)
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "fireflies_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class MiroApiError(CompanyOSError):
+    """
+    Outbound Miro REST call failure (design source — Bearer/token archetype).
+
+    Miro uses an org-app Bearer token. Mirrors BrexApiError.
+
+    Stable `code` values:
+      - miro_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - miro_api_not_found: 404 — board/item not visible to the token
+      - miro_api_rate_limited: 429 with retry budget exhausted
+      - miro_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "miro_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class FigmaApiError(CompanyOSError):
+    """
+    Outbound Figma REST call failure (design source — Bearer/token archetype).
+
+    Figma uses a team/org Bearer token. Mirrors BrexApiError. (Note: Figma's
+    webhook verifier is passcode-in-body, not HMAC — see signatures/figma.py.)
+
+    Stable `code` values:
+      - figma_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - figma_api_not_found: 404 — file/event not visible to the token
+      - figma_api_rate_limited: 429 with retry budget exhausted
+      - figma_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "figma_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class SignalApiError(CompanyOSError):
+    """
+    Signal linked-device session failure (comms source — gateway/session
+    archetype). Mirrors the Telegram gateway error shape; NOT a Bearer/OAuth
+    REST call. Coverage is own/linked-account only.
+
+    Stable `code` values:
+      - signal_api_unauthorized: linked-device session rejected / unlinked
+      - signal_api_not_found: thread/message not visible to the linked device
+      - signal_api_rate_limited: send/receive throttled with retry budget exhausted
+      - signal_api_error: other terminal session/transport failure
+
+    `context` carries `{retry_after?, thread_id?}`. Session keys are NEVER placed
+    on context.
+    """
+    default_code = "signal_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class AwsApiError(CompanyOSError):
+    """
+    Outbound AWS API call failure (infra source — IAM/SigV4 archetype).
+
+    AWS calls are SigV4-signed (CloudTrail/CloudWatch/SQS). Mirrors the generic
+    finance error shape; auth is IAM credentials, not a Bearer token.
+
+    Stable `code` values:
+      - aws_api_unauthorized: 401/403 — credentials rejected / no IAM permission
+      - aws_api_not_found: 404 — account/region/resource not visible
+      - aws_api_rate_limited: 429/Throttling with retry budget exhausted
+      - aws_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, account_id?, region?}`. IAM
+    secret keys are NEVER placed on context.
+    """
+    default_code = "aws_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class CartaApiError(CompanyOSError):
+    """
+    Outbound Carta REST call failure (cap-table source — OAuth/QuickBooks
+    archetype). Carta uses an OAuth2 access token (+ rotating refresh token);
+    scope id is `firm_id`. Mirrors QuickBooksApiError. Poll-only (no webhook).
+
+    Stable `code` values:
+      - carta_api_unauthorized: 401/403 — access token expired / no scope
+        (the caller may need to refresh via the rotating refresh token)
+      - carta_api_not_found: 404 — entity/firm not visible
+      - carta_api_rate_limited: 429 with retry budget exhausted
+      - carta_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "carta_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -811,4 +1007,10 @@ __all__ = [
     "RampApiError",
     "GustoApiError",
     "DeelApiError",
+    "FirefliesApiError",
+    "MiroApiError",
+    "FigmaApiError",
+    "SignalApiError",
+    "AwsApiError",
+    "CartaApiError",
 ]
