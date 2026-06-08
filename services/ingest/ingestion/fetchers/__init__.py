@@ -155,6 +155,10 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "quickbooks": _not_implemented_fetcher("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_fetcher("grafana", "IN-GRAFANA"),
     "telegram": _not_implemented_fetcher("telegram", "IN-TELEGRAM"),
+    "brex":  _not_implemented_fetcher("brex",  "IN-FIN2"),
+    "ramp":  _not_implemented_fetcher("ramp",  "IN-FIN2"),
+    "gusto": _not_implemented_fetcher("gusto", "IN-FIN2"),
+    "deel":  _not_implemented_fetcher("deel",  "IN-FIN2"),
 }
 
 
@@ -179,3 +183,7 @@ from services.ingest.ingestion.fetchers import mercury as _mercury  # noqa: E402
 from services.ingest.ingestion.fetchers import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import grafana as _grafana  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import telegram as _telegram  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import brex as _brex  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import ramp as _ramp  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import gusto as _gusto  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import deel as _deel  # noqa: E402,F401

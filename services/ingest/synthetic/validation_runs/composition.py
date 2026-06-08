@@ -94,6 +94,12 @@ class SigningSecrets:
     mercury: str = "v-mercury-signing-secret"
     quickbooks: str = "v-quickbooks-verifier-token"
     grafana: str = "v-grafana-signing-secret"
+    # IN-FIN2 finance sources (brex/deel = Bearer/Mercury archetype; ramp/gusto
+    # = OAuth/QuickBooks archetype); each resolved via WEBHOOK_SECRET_<PROVIDER>.
+    brex: str = "v-brex-signing-secret"
+    ramp: str = "v-ramp-signing-secret"
+    gusto: str = "v-gusto-signing-secret"
+    deel: str = "v-deel-signing-secret"
     # Notion's app-level verification token (NOT a per-tenant secret_ref); the
     # signatures/notion.py verifier keys HMAC on it.
     notion: str = "v-notion-verification-token"
@@ -109,6 +115,10 @@ class SigningSecrets:
         os.environ["WEBHOOK_SECRET_MERCURY"] = self.mercury
         os.environ["WEBHOOK_SECRET_QUICKBOOKS"] = self.quickbooks
         os.environ["WEBHOOK_SECRET_GRAFANA"] = self.grafana
+        os.environ["WEBHOOK_SECRET_BREX"] = self.brex
+        os.environ["WEBHOOK_SECRET_RAMP"] = self.ramp
+        os.environ["WEBHOOK_SECRET_GUSTO"] = self.gusto
+        os.environ["WEBHOOK_SECRET_DEEL"] = self.deel
         os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
@@ -148,6 +158,12 @@ class LiveTarget:
     qbo_realm: str | None = None            # quickbooks: realmId == installation_id
     qbo_entity: str | None = None           # quickbooks: entity name (e.g. Invoice)
     grafana_instance: str | None = None     # grafana: externalURL host == installation_id
+    # IN-FIN2 finance HMAC providers (tenant resolved via provider_installations).
+    brex_org: str | None = None             # brex: organizationId == installation_id
+    brex_account: str | None = None         # brex: transaction.accountId
+    ramp_business: str | None = None        # ramp: business_id == installation_id
+    gusto_company: str | None = None        # gusto: company_uuid == installation_id
+    deel_org: str | None = None             # deel: organizationId == installation_id
     # Google push (watch-row resolved).
     gcal_calendar_id: str | None = None
     gcal_channel_id: str | None = None
@@ -196,6 +212,19 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
     if source == "grafana":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           grafana_instance=f"{slug}.grafana.net")
+    if source == "brex":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          brex_org=f"live-brex-org-{slug}",
+                          brex_account=f"live-brex-acct-{slug}")
+    if source == "ramp":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          ramp_business=f"live-ramp-biz-{slug}")
+    if source == "gusto":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gusto_company=f"live-gusto-co-{slug}")
+    if source == "deel":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          deel_org=f"live-deel-org-{slug}")
     if source == "google_calendar":
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           gcal_calendar_id=f"live-{slug}",
@@ -409,6 +438,8 @@ async def build_live_drivers(
     _hmac_secret = {
         "jira": secrets.jira, "mercury": secrets.mercury,
         "quickbooks": secrets.quickbooks, "grafana": secrets.grafana,
+        "brex": secrets.brex, "ramp": secrets.ramp,
+        "gusto": secrets.gusto, "deel": secrets.deel,
     }
     for provider in HMAC_PROVIDERS:
         if provider in present:
@@ -507,6 +538,14 @@ async def seed_live_installs(
                 inst = t.qbo_realm
             elif t.source == "grafana":
                 inst = t.grafana_instance
+            elif t.source == "brex":
+                inst = t.brex_org
+            elif t.source == "ramp":
+                inst = t.ramp_business
+            elif t.source == "gusto":
+                inst = t.gusto_company
+            elif t.source == "deel":
+                inst = t.deel_org
             else:
                 inst = None
             if inst is not None:
@@ -845,7 +884,8 @@ async def dispatch_live_concurrent(
                     guild_id=t.guild_id, channel_id=t.channel_id,
                     content=f"live-{t.slug}-{i}",
                 )
-            elif t.source in ("jira", "mercury", "quickbooks", "grafana"):
+            elif t.source in ("jira", "mercury", "quickbooks", "grafana",
+                              "brex", "ramp", "gusto", "deel"):
                 r = await drivers.hmac[t.source].simulate_event(
                     target=t, content=f"live-{t.slug}-{i}",
                 )

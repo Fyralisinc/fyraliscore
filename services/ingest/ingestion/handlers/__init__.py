@@ -170,6 +170,10 @@ from services.ingest.ingestion.handlers import mercury  # noqa: E402,F401
 from services.ingest.ingestion.handlers import quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.handlers import grafana  # noqa: E402,F401
 from services.ingest.ingestion.handlers import telegram  # noqa: E402,F401
+from services.ingest.ingestion.handlers import brex  # noqa: E402,F401
+from services.ingest.ingestion.handlers import ramp  # noqa: E402,F401
+from services.ingest.ingestion.handlers import gusto  # noqa: E402,F401
+from services.ingest.ingestion.handlers import deel  # noqa: E402,F401
 
 
 __all__ = [

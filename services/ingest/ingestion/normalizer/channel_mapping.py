@@ -159,6 +159,54 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # poll re-fetch). See ADR-0003.
     ("telegram", "gateway"): "telegram:message",
     ("telegram", "backfill"): "telegram:message",
+    # Brex — backfill + poll + webhook (finance, IN-FIN2, Bearer/Mercury
+    # archetype). Brex (cash/card) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (account transactions). Backfill
+    # walks each account once; the incremental driver re-runs the same fetcher
+    # under ingress_kind="poll" using the transaction high-water cursor; the
+    # webhook ingress delivers live transaction events. ALL route to the single
+    # `brex:transaction` channel; external_id parity
+    # (`brex:{account}:txn:{id}:{status}`) collapses a backfilled transaction and
+    # its live twin to one observation.
+    ("brex", "backfill"): "brex:transaction",
+    ("brex", "poll"): "brex:transaction",
+    ("brex", "webhook"): "brex:transaction",
+    # Ramp — backfill + poll + webhook (finance, IN-FIN2, OAuth/QuickBooks
+    # archetype). Ramp (card/spend) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (transactions list). Backfill
+    # walks each business entity once; the incremental driver re-runs under
+    # ingress_kind="poll" using the `updated` high-water; the webhook ingress
+    # delivers live transaction events. ALL route to the single
+    # `ramp:transaction` channel; external_id parity
+    # (`ramp:{business}:txn:{id}:{state}`) collapses a backfilled transaction and
+    # its live twin to one observation.
+    ("ramp", "backfill"): "ramp:transaction",
+    ("ramp", "poll"): "ramp:transaction",
+    ("ramp", "webhook"): "ramp:transaction",
+    # Gusto — backfill + poll + webhook (finance, IN-FIN2, OAuth/QuickBooks
+    # archetype). Gusto (payroll) has BOTH a live push surface (HMAC-signed
+    # webhooks) AND a historical query surface (payrolls/employees/contractor
+    # payments). Backfill walks each entity type once; the incremental driver
+    # re-runs under ingress_kind="poll" using the `updated_at` high-water; the
+    # webhook ingress delivers live change events. ALL route to the single
+    # `gusto:object` channel; the handler branches on the reshaped entity type.
+    # external_id parity (`gusto:{company}:{entity}:{id}:{version}`) collapses a
+    # backfilled object and its live twin to one observation.
+    ("gusto", "backfill"): "gusto:object",
+    ("gusto", "poll"): "gusto:object",
+    ("gusto", "webhook"): "gusto:object",
+    # Deel — backfill + poll + webhook (finance, IN-FIN2, Bearer/Mercury
+    # archetype). Deel (contractor payments) has BOTH a live push surface
+    # (HMAC-signed webhooks) AND a historical query surface (contract payments).
+    # Backfill walks each contract once; the incremental driver re-runs under
+    # ingress_kind="poll" using the payment high-water cursor; the webhook
+    # ingress delivers live payment events. ALL route to the single
+    # `deel:payment` channel; external_id parity
+    # (`deel:{contract}:payment:{id}:{status}`) collapses a backfilled payment
+    # and its live twin to one observation.
+    ("deel", "backfill"): "deel:payment",
+    ("deel", "poll"): "deel:payment",
+    ("deel", "webhook"): "deel:payment",
 }
 
 

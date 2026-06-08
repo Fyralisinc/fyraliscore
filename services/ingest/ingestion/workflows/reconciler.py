@@ -767,6 +767,10 @@ async def _run_service() -> None:
     )
     from services.ingest.ingestion.reconcilers import grafana as grafana_reconciler_mod
     from services.ingest.ingestion.reconcilers import telegram as telegram_reconciler_mod
+    from services.ingest.ingestion.reconcilers import brex as brex_reconciler_mod
+    from services.ingest.ingestion.reconcilers import ramp as ramp_reconciler_mod
+    from services.ingest.ingestion.reconcilers import gusto as gusto_reconciler_mod
+    from services.ingest.ingestion.reconcilers import deel as deel_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
@@ -779,6 +783,10 @@ async def _run_service() -> None:
     quickbooks_reconciler_mod.set_pool_provider(pool)
     grafana_reconciler_mod.set_pool_provider(pool)
     telegram_reconciler_mod.set_pool_provider(pool)
+    brex_reconciler_mod.set_pool_provider(pool)
+    ramp_reconciler_mod.set_pool_provider(pool)
+    gusto_reconciler_mod.set_pool_provider(pool)
+    deel_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

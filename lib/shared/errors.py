@@ -646,6 +646,140 @@ class TelegramApiError(CompanyOSError):
             self._code = code
 
 
+class BrexApiError(CompanyOSError):
+    """
+    Outbound Brex REST call failure (finance source — Bearer/Mercury archetype).
+
+    Brex uses a long-lived API token (`Authorization: Bearer {token}`, no
+    refresh). Mirrors MercuryApiError.
+
+    Stable `code` values:
+      - brex_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - brex_api_not_found: 404 — account/resource not visible to the token
+      - brex_api_rate_limited: 429 with retry budget exhausted
+      - brex_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "brex_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class RampApiError(CompanyOSError):
+    """
+    Outbound Ramp REST call failure (finance source — OAuth/QuickBooks archetype).
+
+    Ramp uses an OAuth2 access token (+ rotating refresh token). Mirrors
+    QuickBooksApiError.
+
+    Stable `code` values:
+      - ramp_api_unauthorized: 401/403 — access token expired / no scope
+        (the caller may need to refresh via the rotating refresh token)
+      - ramp_api_not_found: 404 — entity/business not visible
+      - ramp_api_rate_limited: 429 with retry budget exhausted
+      - ramp_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "ramp_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class GustoApiError(CompanyOSError):
+    """
+    Outbound Gusto REST call failure (finance source — OAuth/QuickBooks archetype).
+
+    Gusto uses an OAuth2 access token (+ rotating refresh token); scope id is
+    `company_uuid`. Mirrors QuickBooksApiError.
+
+    Stable `code` values:
+      - gusto_api_unauthorized: 401/403 — access token expired / no scope
+        (the caller may need to refresh via the rotating refresh token)
+      - gusto_api_not_found: 404 — entity/company not visible
+      - gusto_api_rate_limited: 429 with retry budget exhausted
+      - gusto_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "gusto_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class DeelApiError(CompanyOSError):
+    """
+    Outbound Deel REST call failure (finance source — Bearer/Mercury archetype).
+
+    Deel uses a long-lived API token (`Authorization: Bearer {token}`, no
+    refresh). Mirrors MercuryApiError.
+
+    Stable `code` values:
+      - deel_api_unauthorized: 401/403 — token rejected / insufficient scope
+      - deel_api_not_found: 404 — contract/resource not visible to the token
+      - deel_api_rate_limited: 429 with retry budget exhausted
+      - deel_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API token is
+    NEVER placed on context.
+    """
+    default_code = "deel_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -673,4 +807,8 @@ __all__ = [
     "GrafanaApiError",
     "QuickBooksApiError",
     "TelegramApiError",
+    "BrexApiError",
+    "RampApiError",
+    "GustoApiError",
+    "DeelApiError",
 ]

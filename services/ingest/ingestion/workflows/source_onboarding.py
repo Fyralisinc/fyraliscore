@@ -199,7 +199,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel")
 
 
 # ---------------------------------------------------------------------
@@ -424,6 +424,99 @@ SELECT ti.id, ti.tenant_id, ti.account_label, ti.api_id, ti.api_hash_secret_ref,
  LIMIT 1
 """
 
+# IN-FIN2: Brex mirrors the Mercury loader (A18.2) — one shard per account. The
+# Bearer api_token lives in encrypted_secrets behind secret_ref; base_url is
+# needed by the client. The 1-to-N active-account list is aggregated onto the
+# install so the planner emits one shard per account (no DB I/O in the planner).
+_LOAD_BREX_INSTALL_SQL = """
+SELECT bi.id, bi.tenant_id, bi.base_url, bi.secret_ref, bi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'account_id', ba.account_id,
+             'account_name', ba.account_name,
+             'account_kind', ba.account_kind,
+             'txn_cursor', ba.txn_cursor
+           ) ORDER BY ba.account_id
+         ) FILTER (WHERE ba.id IS NOT NULL),
+         '[]'::json
+       ) AS accounts
+  FROM brex_installations bi
+  LEFT JOIN brex_accounts ba
+    ON ba.brex_installation_id = bi.id AND ba.state = 'active'
+ WHERE bi.tenant_id = $1 AND bi.disabled_at IS NULL
+ GROUP BY bi.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Ramp mirrors the QuickBooks loader — one shard per (business, entity
+# type). The OAuth access token lives behind secret_ref; business_id (scope id)
+# + base_url + refresh_secret_ref are needed by the client.
+_LOAD_RAMP_INSTALL_SQL = """
+SELECT ri.id, ri.tenant_id, ri.business_id, ri.base_url, ri.secret_ref,
+       ri.refresh_secret_ref, ri.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', re.entity_type,
+             'updated_cursor', re.updated_cursor
+           ) ORDER BY re.entity_type
+         ) FILTER (WHERE re.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM ramp_installations ri
+  LEFT JOIN ramp_entities re
+    ON re.ramp_installation_id = ri.id AND re.state = 'active'
+ WHERE ri.tenant_id = $1 AND ri.disabled_at IS NULL
+ GROUP BY ri.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Gusto mirrors the QuickBooks loader — one shard per (company, entity
+# type). company_uuid is the scope id; access token behind secret_ref +
+# refresh_secret_ref + base_url are needed by the client.
+_LOAD_GUSTO_INSTALL_SQL = """
+SELECT gi.id, gi.tenant_id, gi.company_uuid, gi.base_url, gi.secret_ref,
+       gi.refresh_secret_ref, gi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', ge.entity_type,
+             'updated_cursor', ge.updated_cursor
+           ) ORDER BY ge.entity_type
+         ) FILTER (WHERE ge.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM gusto_installations gi
+  LEFT JOIN gusto_entities ge
+    ON ge.gusto_installation_id = gi.id AND ge.state = 'active'
+ WHERE gi.tenant_id = $1 AND gi.disabled_at IS NULL
+ GROUP BY gi.id
+ LIMIT 1
+"""
+
+# IN-FIN2: Deel mirrors the Mercury loader — one shard per contract. The Bearer
+# api_token lives behind secret_ref; base_url is needed by the client. The
+# 1-to-N active-contract list is aggregated onto the install.
+_LOAD_DEEL_INSTALL_SQL = """
+SELECT di.id, di.tenant_id, di.base_url, di.secret_ref, di.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'contract_id', dc.contract_id,
+             'payment_cursor', dc.payment_cursor
+           ) ORDER BY dc.contract_id
+         ) FILTER (WHERE dc.id IS NOT NULL),
+         '[]'::json
+       ) AS contracts
+  FROM deel_installations di
+  LEFT JOIN deel_contracts dc
+    ON dc.deel_installation_id = di.id AND dc.state = 'active'
+ WHERE di.tenant_id = $1 AND di.disabled_at IS NULL
+ GROUP BY di.id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -552,6 +645,14 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
     if source == "telegram":
         return await conn.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
+    if source == "brex":
+        return await conn.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
+    if source == "ramp":
+        return await conn.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
+    if source == "gusto":
+        return await conn.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
+    if source == "deel":
+        return await conn.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -583,6 +684,13 @@ async def _build_source_client(
         return await _clients.build_discord_client(install, pool=pool)
     if source == "notion":
         return await _clients.build_notion_client(install, pool=pool)
+    # IN-FIN2: finance sources (brex/ramp/gusto/deel — like mercury/quickbooks)
+    # shard per resource from child rows the loader aggregates onto the install;
+    # their planners read that DB state, not the API, so no plan-time source
+    # client is needed. Branches kept explicit for parity with _load_install /
+    # the §2.6 client builders (which serve the FETCHER, not the planner).
+    if source in ("brex", "ramp", "gusto", "deel"):
+        return None
     return None
 
 

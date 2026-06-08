@@ -75,7 +75,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
-    "mercury", "quickbooks", "grafana",
+    "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel",
 ]
 
 
@@ -354,6 +354,82 @@ def _extract_grafana(payload: Mapping[str, Any], headers: Mapping[str, str]) -> 
     return _host_from_self(payload.get("externalURL"))
 
 
+def _extract_brex(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (Bearer / Mercury archetype). A Brex webhook body carries the
+    # affected resource; the install is registered keyed by the Brex
+    # organization id (provider_installations provider='brex',
+    # installation_id=<organizationId>). The body's top-level `organizationId`
+    # (or the legacy/account-scoped `accountId`) identifies the tenant's
+    # install; the synthetic finance harness sends `organizationId` explicitly.
+    # The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm brex webhook tenant-id field (organizationId vs
+    #   accountId vs an event-envelope path) against Brex webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("accountId"))
+
+
+def _extract_ramp(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (OAuth / QuickBooks archetype). Ramp scopes installs by
+    # `business_id`; the install is registered keyed by business_id
+    # (provider_installations provider='ramp', installation_id=<business_id>).
+    # Ramp event deliveries may wrap the body in an `eventNotifications`-style
+    # array (QBO shape) or carry a top-level `business_id`; check both, mirroring
+    # _extract_quickbooks. The synthetic finance harness sends a top-level
+    # `business_id`. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm ramp webhook tenant-id field (business_id vs an
+    #   event-envelope path) against Ramp webhook docs.
+    notifications = payload.get("eventNotifications")
+    if isinstance(notifications, list) and notifications:
+        first = notifications[0]
+        if isinstance(first, Mapping):
+            biz = _str_or_none(first.get("business_id"))
+            if biz is not None:
+                return biz
+    return _str_or_none(payload.get("business_id"))
+
+
+def _extract_gusto(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (OAuth / QuickBooks archetype). Gusto scopes installs by
+    # `company_uuid`; the install is registered keyed by company_uuid
+    # (provider_installations provider='gusto', installation_id=<company_uuid>).
+    # Gusto event deliveries may wrap the body in an `eventNotifications`-style
+    # array (QBO shape) or carry a top-level `company_uuid`; check both,
+    # mirroring _extract_quickbooks. The synthetic finance harness sends a
+    # top-level `company_uuid`. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm gusto webhook tenant-id field (company_uuid vs an
+    #   event-envelope path) against Gusto webhook docs.
+    notifications = payload.get("eventNotifications")
+    if isinstance(notifications, list) and notifications:
+        first = notifications[0]
+        if isinstance(first, Mapping):
+            company = _str_or_none(first.get("company_uuid"))
+            if company is not None:
+                return company
+    return _str_or_none(payload.get("company_uuid"))
+
+
+def _extract_deel(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (Bearer / Mercury archetype). A Deel webhook body carries the
+    # affected resource; the install is registered keyed by the Deel
+    # organization id (provider_installations provider='deel',
+    # installation_id=<organizationId>). The body's top-level `organizationId`
+    # (or the legacy/account-scoped `accountId`) identifies the tenant's
+    # install; the synthetic finance harness sends `organizationId` explicitly.
+    # The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm deel webhook tenant-id field (organizationId vs
+    #   accountId vs an event-envelope path) against Deel webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("accountId"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -375,6 +451,10 @@ PROVIDER_EXTRACTORS: dict[
     "mercury": _extract_mercury,
     "quickbooks": _extract_quickbooks,
     "grafana": _extract_grafana,
+    "brex": _extract_brex,
+    "ramp": _extract_ramp,
+    "gusto": _extract_gusto,
+    "deel": _extract_deel,
 }
 
 

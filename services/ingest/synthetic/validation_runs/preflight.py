@@ -36,22 +36,34 @@ from uuid import uuid4
 
 import asyncpg
 
+from services.ingest.ingestion.fetchers import brex as _brex_fetcher
+from services.ingest.ingestion.fetchers import deel as _deel_fetcher
 from services.ingest.ingestion.fetchers import discord as _discord_fetcher
 from services.ingest.ingestion.fetchers import github as _github_fetcher
 from services.ingest.ingestion.fetchers import gmail as _gmail_fetcher
+from services.ingest.ingestion.fetchers import gusto as _gusto_fetcher
+from services.ingest.ingestion.fetchers import ramp as _ramp_fetcher
 from services.ingest.ingestion.fetchers import slack as _slack_fetcher
 from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingest.synthetic.fixtures import (
+    make_brex,
+    make_deel,
     make_discord_guild,
     make_github_repos,
     make_gmail_mailbox,
+    make_gusto,
+    make_ramp,
     make_slack_workspace,
 )
 from services.ingest.synthetic.mock_clients import (
+    MockBrexClient,
+    MockDeelClient,
     MockDiscordClient,
     MockGithubClient,
     MockGmailClient,
+    MockGustoClient,
+    MockRampClient,
     MockSlackClient,
 )
 
@@ -156,6 +168,62 @@ async def _discord_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return list(result.records)
 
 
+async def _brex_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Brex (Bearer / Mercury archetype): shard per account; the fetcher reads
+    # `shard_identifier["account_id"]` and emits an account snapshot + txns.
+    client = MockBrexClient(fixture=fixture)
+    _patch_client(_brex_fetcher, "_open_brex_client", client)
+    account_id = fixture["account_order"][0]
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "base_url": "https://platform.brexapis.com"}
+    shard = {"shard_kind": _brex_fetcher.SHARD_KIND_ACCOUNT_TXNS,
+             "account_id": account_id}
+    result = await _brex_fetcher.fetch_page_brex(install, shard, None)
+    return list(result.records)
+
+
+async def _deel_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Deel (Bearer / Mercury archetype): shard per contract; the fetcher reads
+    # `shard_identifier["contract_id"]` and emits a contract snapshot + payments.
+    client = MockDeelClient(fixture=fixture)
+    _patch_client(_deel_fetcher, "_open_deel_client", client)
+    contract_id = fixture["contract_order"][0]
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "base_url": "https://api.letsdeel.com"}
+    shard = {"shard_kind": _deel_fetcher.SHARD_KIND_CONTRACT_PAYMENTS,
+             "contract_id": contract_id}
+    result = await _deel_fetcher.fetch_page_deel(install, shard, None)
+    return list(result.records)
+
+
+async def _ramp_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Ramp (OAuth / QuickBooks archetype): shard per entity_type.
+    client = MockRampClient(fixture=fixture)
+    _patch_client(_ramp_fetcher, "_open_ramp_client", client)
+    entity_type = next(iter(fixture["entities"].keys()))
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "business_id": fixture["business_id"],
+               "base_url": "https://api.ramp.com/developer/v1"}
+    shard = {"shard_kind": _ramp_fetcher.SHARD_KIND_ENTITY,
+             "entity_type": entity_type}
+    result = await _ramp_fetcher.fetch_page_ramp(install, shard, None)
+    return list(result.records)
+
+
+async def _gusto_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    # Gusto (OAuth / QuickBooks archetype): shard per entity_type.
+    client = MockGustoClient(fixture=fixture)
+    _patch_client(_gusto_fetcher, "_open_gusto_client", client)
+    entity_type = next(iter(fixture["entities"].keys()))
+    install = {"id": uuid4(), "tenant_id": uuid4(),
+               "company_uuid": fixture["company_uuid"],
+               "base_url": "https://api.gusto.com"}
+    shard = {"shard_kind": _gusto_fetcher.SHARD_KIND_ENTITY,
+             "entity_type": entity_type}
+    result = await _gusto_fetcher.fetch_page_gusto(install, shard, None)
+    return list(result.records)
+
+
 _SOURCE_SPECS: dict[str, Any] = {
     "gmail": (lambda: make_gmail_mailbox(email="preflight@example.com",
                                          messages=3), _gmail_records),
@@ -167,6 +235,15 @@ _SOURCE_SPECS: dict[str, Any] = {
     "discord": (lambda: make_discord_guild(guild_id="G_PRE", channels=1,
                                            messages_per_channel=3),
                 _discord_records),
+    # IN-FIN2 finance sources (additive — finance was not previously covered).
+    "brex": (lambda: make_brex(accounts=1, transactions_per_account=3,
+                               seed="pre"), _brex_records),
+    "ramp": (lambda: make_ramp(business_id="r-pre", entities=["Invoice"],
+                               rows_per_entity=2), _ramp_records),
+    "gusto": (lambda: make_gusto(company_uuid="c-pre", entities=["Invoice"],
+                                 rows_per_entity=2), _gusto_records),
+    "deel": (lambda: make_deel(contracts=1, payments_per_contract=3,
+                               seed="pre"), _deel_records),
 }
 
 

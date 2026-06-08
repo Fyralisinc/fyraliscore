@@ -191,7 +191,62 @@ def telegram_message(
     )
 
 
+# --- Brex (Bearer / Mercury archetype) -------------------------------
+def brex_transaction(account_id: str, txn_id: str, status: str) -> str:
+    """`brex:{account}:txn:{id}:{status}` — VERSIONED by status so a
+    pending→posted/declined transition lands a new observation."""
+    return f"brex:{account_id}:txn:{txn_id}:{status}"
+
+
+def brex_balance(account_id: str, as_of_date: str) -> str:
+    """`brex:{account}:balance:{YYYY-MM-DD}` — one balance snapshot per
+    account per day."""
+    return f"brex:{account_id}:balance:{as_of_date}"
+
+
+# --- Ramp (OAuth / QuickBooks archetype) -----------------------------
+def ramp_transaction(business_id: str, txn_id: str, state: str) -> str:
+    """`ramp:{business}:txn:{id}:{state}` — VERSIONED by state so a
+    declined/disputed transition lands a new observation."""
+    return f"ramp:{business_id}:txn:{txn_id}:{state}"
+
+
+# --- Gusto (OAuth / QuickBooks archetype) ----------------------------
+def gusto_entity(
+    company_uuid: str, entity_kind: str, entity_id: str, version: str,
+) -> str:
+    """`gusto:{company}:{kind}:{id}:{version}` — VERSIONED by version/
+    updated_at so each edit re-observes."""
+    return f"gusto:{company_uuid}:{entity_kind}:{entity_id}:{version}"
+
+
+def gusto_change(
+    company_uuid: str, entity_kind: str, entity_id: str, ver: str,
+) -> str:
+    """`gusto:{company}:{kind}:{id}:chg:{ver}` — the thin webhook change
+    event (id-only); VERSIONED so each notification is distinct until the
+    next poll re-fetches the authoritative body."""
+    return f"gusto:{company_uuid}:{entity_kind}:{entity_id}:chg:{ver}"
+
+
+# --- Deel (Bearer / Mercury archetype) -------------------------------
+def deel_payment(contract_id: str, payment_id: str, status: str) -> str:
+    """`deel:{contract}:payment:{id}:{status}` — VERSIONED by status so a
+    failed/rejected transition lands a new observation."""
+    return f"deel:{contract_id}:payment:{payment_id}:{status}"
+
+
+def deel_contract(contract_id: str, updated: str) -> str:
+    """`deel:{contract}:contract:{updated}` — VERSIONED by the contract's
+    updated timestamp so each contract-state change re-observes."""
+    return f"deel:{contract_id}:contract:{updated}"
+
+
 __all__ = [
+    "brex_balance",
+    "brex_transaction",
+    "deel_contract",
+    "deel_payment",
     "discord_event",
     "github_push",
     "gmail_message",
@@ -201,6 +256,8 @@ __all__ = [
     "google_drive_revision",
     "grafana_alert",
     "grafana_annotation",
+    "gusto_change",
+    "gusto_entity",
     "jira_comment",
     "jira_issue",
     "jira_transition",
@@ -209,6 +266,7 @@ __all__ = [
     "notion_object",
     "quickbooks_change",
     "quickbooks_entity",
+    "ramp_transaction",
     "slack_message",
     "telegram_message",
 ]

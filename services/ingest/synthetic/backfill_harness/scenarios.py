@@ -18,7 +18,7 @@ from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
 _VALID_SOURCES = frozenset((
     "gmail", "slack", "github", "discord", "google_calendar",
     "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
-    "telegram",
+    "telegram", "brex", "ramp", "gusto", "deel",
 ))
 
 

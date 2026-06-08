@@ -424,6 +424,122 @@ async def build_telegram_client(
     return client
 
 
+async def build_brex_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Brex read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/brex` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.brex.client import BrexClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = BrexClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-brex" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /brex; prod uses the
+        # canonical Brex API host (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("brex_api") if spammer else None),
+    )
+    return client
+
+
+async def build_ramp_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Ramp read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The scope id `business_id` (realm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/ramp` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.ramp.client import RampClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    business_id = str(install["business_id"]) if "business_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = RampClient(
+        base_url=base_url,
+        business_id=business_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-ramp" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("ramp_api") if spammer else None),
+    )
+    return client
+
+
+async def build_gusto_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Gusto read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The scope id `company_uuid` (realm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/gusto` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.gusto.client import GustoClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    company_uuid = str(install["company_uuid"]) if "company_uuid" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = GustoClient(
+        base_url=base_url,
+        company_uuid=company_uuid,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-gusto" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("gusto_api") if spammer else None),
+    )
+    return client
+
+
+async def build_deel_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Deel read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/deel` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.deel.client import DeelClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = DeelClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-deel" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /deel; prod uses the
+        # canonical Deel API host (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("deel_api") if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -489,15 +605,33 @@ async def open_telegram_client(install: asyncpg.Record) -> Opener:
     return await build_telegram_client(install), _noop
 
 
+async def open_brex_client(install: asyncpg.Record) -> Opener:
+    return await build_brex_client(install), _noop
+
+
+async def open_ramp_client(install: asyncpg.Record) -> Opener:
+    return await build_ramp_client(install), _noop
+
+
+async def open_gusto_client(install: asyncpg.Record) -> Opener:
+    return await build_gusto_client(install), _noop
+
+
+async def open_deel_client(install: asyncpg.Record) -> Opener:
+    return await build_deel_client(install), _noop
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_slack_user_client",
     "build_discord_client",
     "build_notion_client", "build_jira_client",
     "build_mercury_client", "build_quickbooks_client", "build_grafana_client",
     "build_telegram_client",
+    "build_brex_client", "build_ramp_client", "build_gusto_client", "build_deel_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
     "open_mercury_client", "open_quickbooks_client", "open_grafana_client",
     "open_telegram_client",
+    "open_brex_client", "open_ramp_client", "open_gusto_client", "open_deel_client",
 ]

@@ -468,6 +468,51 @@ SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
  LIMIT 1
 """
 
+# IN-FIN2: Brex is a per-tenant API-token (Bearer) install (Mercury archetype;
+# not in provider_installations). The fetcher works one account at a time via
+# shard_identifier; the install row carries base_url + secret_ref the BrexClient
+# needs. Without this dedicated branch a brex shard would fall through to the
+# provider_installations lookup, find nothing, and park forever.
+_LOAD_BREX_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, secret_ref, disabled_at
+  FROM brex_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Ramp is a per-tenant OAuth install (QuickBooks archetype; not in
+# provider_installations). The fetcher works one entity type at a time via
+# shard_identifier; the install row carries business_id (scope id) + base_url +
+# secret_ref (access token) + refresh_secret_ref the RampClient needs.
+_LOAD_RAMP_INSTALL_SQL = """
+SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM ramp_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Gusto is a per-tenant OAuth install (QuickBooks archetype; not in
+# provider_installations). The install row carries company_uuid (scope id) +
+# base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
+_LOAD_GUSTO_INSTALL_SQL = """
+SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
+       disabled_at
+  FROM gusto_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-FIN2: Deel is a per-tenant API-token (Bearer) install (Mercury archetype;
+# not in provider_installations). The install row carries base_url + secret_ref
+# the DeelClient needs.
+_LOAD_DEEL_INSTALL_SQL = """
+SELECT id, tenant_id, base_url, secret_ref, disabled_at
+  FROM deel_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -563,6 +608,14 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
     if source == "telegram":
         return await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
+    if source == "brex":
+        return await pool.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
+    if source == "ramp":
+        return await pool.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
+    if source == "gusto":
+        return await pool.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
+    if source == "deel":
+        return await pool.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

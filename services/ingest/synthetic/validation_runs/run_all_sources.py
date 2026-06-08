@@ -71,6 +71,9 @@ _EXPECTED: dict[str, int] = {
     "gmail": 5, "github": 6, "slack": 5, "discord": 5, "google_calendar": 3,
     "google_drive": 3, "jira": 3, "mercury": 5, "notion": 3, "quickbooks": 4,
     "grafana": 3, "telegram": 5,
+    # IN-FIN2 finance sources. brex/deel = Mercury archetype (1 snapshot +
+    # 4 txns/payments = 5); ramp/gusto = QBO archetype (4 entities × 1 row = 4).
+    "brex": 5, "ramp": 4, "gusto": 4, "deel": 5,
 }
 SOURCES = list(_EXPECTED.keys())
 
@@ -84,8 +87,13 @@ _EXPECTED_LIVE_STATUS: dict[str, set[int]] = {
     # telegram is gateway-style (MTProto persistent connection, no HTTP) — direct
     # dispatch, like discord: no HTTP status to assert.
     "telegram": set(),
+    # IN-FIN2 finance sources: HMAC webhook + M5.3 Kafka cutover (202).
+    "brex": {202}, "ramp": {202}, "gusto": {202}, "deel": {202},
 }
-_HMAC_SOURCES = ("jira", "mercury", "quickbooks", "grafana")
+_HMAC_SOURCES = (
+    "jira", "mercury", "quickbooks", "grafana",
+    "brex", "ramp", "gusto", "deel",
+)
 
 
 def _scen_params(source: str, slug: str) -> dict:
@@ -128,6 +136,26 @@ def _scen_params(source: str, slug: str) -> dict:
         # dialog ids tenant-distinct (belt-and-suspenders; the external_id is
         # already install-namespaced so cross-tenant collision is impossible).
         "telegram": {"dialogs": 1, "messages_per_dialog": 5, "seed": slug},
+        # IN-FIN2 finance sources. brex/deel (Mercury archetype): 1 account/
+        # contract → 1 snapshot + 4 txns/payments = 5. seed=slug makes the
+        # synthetic account_id/contract_id (which the external_id keys on)
+        # tenant-distinct, so the global observations UNIQUE never collapses two
+        # tenants' ids. ramp/gusto (QBO archetype): scope id embeds the slug so
+        # the realm-equivalent + entity external_ids are tenant-distinct;
+        # 4 entities × 1 row = 4.
+        "brex": {"accounts": 1, "transactions_per_account": 4, "seed": slug},
+        # Ramp's handler is transaction-shaped — external_id ramp:{biz}:txn:{id}:{state}
+        # carries NO entity_kind (unlike gusto:object's {entity}:{id} key). Four
+        # same-id QBO entity types therefore collapse onto txn:1000:{state}. Use one
+        # entity stream × 4 rows so the four txns get DISTINCT ids (1000..1003) → 4
+        # backfill observations/tenant, matching _EXPECTED["ramp"]=4.
+        "ramp": {"business_id": f"r-{slug}",
+                 "entities": ["Invoice"],
+                 "rows_per_entity": 4},
+        "gusto": {"company_uuid": f"c-{slug}",
+                  "entities": ["Invoice", "Bill", "BillPayment", "Payment"],
+                  "rows_per_entity": 1},
+        "deel": {"contracts": 1, "payments_per_contract": 4, "seed": slug},
     }[source]
 
 
@@ -434,7 +462,7 @@ def _assert_all_sources(report, overlap, statuses, gate_rejected, gate_total,
     # 1. Live received WHILE backfill in progress — per source.
     missing = [s for s in SOURCES if overlap.get(s, 0) < 1]
     report.assertions.append(AssertionResult(
-        name="assert_live_during_backfill_overlap(all 12 sources)",
+        name=f"assert_live_during_backfill_overlap(all {len(SOURCES)} sources)",
         passed=not missing,
         detail=("every source received ≥1 live burst while its backfill was "
                 f"in_progress: { {s: overlap.get(s, 0) for s in SOURCES} }"

@@ -133,6 +133,10 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "quickbooks": _not_implemented_planner("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_planner("grafana", "IN-GRAFANA"),
     "telegram": _not_implemented_planner("telegram", "IN-TELEGRAM"),
+    "brex":  _not_implemented_planner("brex",  "IN-FIN2"),
+    "ramp":  _not_implemented_planner("ramp",  "IN-FIN2"),
+    "gusto": _not_implemented_planner("gusto", "IN-FIN2"),
+    "deel":  _not_implemented_planner("deel",  "IN-FIN2"),
 }
 
 
@@ -160,3 +164,7 @@ from services.ingest.ingestion.planners import mercury as _mercury  # noqa: E402
 from services.ingest.ingestion.planners import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.planners import grafana as _grafana  # noqa: E402,F401
 from services.ingest.ingestion.planners import telegram as _telegram  # noqa: E402,F401
+from services.ingest.ingestion.planners import brex as _brex  # noqa: E402,F401
+from services.ingest.ingestion.planners import ramp as _ramp  # noqa: E402,F401
+from services.ingest.ingestion.planners import gusto as _gusto  # noqa: E402,F401
+from services.ingest.ingestion.planners import deel as _deel  # noqa: E402,F401

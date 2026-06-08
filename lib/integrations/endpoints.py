@@ -67,6 +67,17 @@ _PROD: dict[str, str] = {
     # uniformly; the prod default is intentionally empty (build_grafana_client
     # passes the per-install base_url instead).
     "grafana_api": "",
+    # Finance (IN-FIN2): Brex — Bearer/Mercury archetype. Single global host
+    # (per-install base_url still wins via build_brex_client when present).
+    "brex_api": "https://platform.brexapis.com",       # TODO(human): confirm host
+    # Finance (IN-FIN2): Ramp — OAuth/QuickBooks archetype. Business-scoped
+    # paths ride per-install base_url in production.
+    "ramp_api": "https://api.ramp.com/developer/v1",    # TODO(human): confirm host
+    # Finance (IN-FIN2): Gusto — OAuth/QuickBooks archetype. Company-scoped
+    # paths ride per-install base_url in production.
+    "gusto_api": "https://api.gusto.com",               # TODO(human): confirm host
+    # Finance (IN-FIN2): Deel — Bearer/Mercury archetype.
+    "deel_api": "https://api.letsdeel.com",             # TODO(human): confirm host
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -85,6 +96,10 @@ _ENV: dict[str, str] = {
     "mercury_api": "MERCURY_API_BASE_URL",
     "quickbooks_api": "QUICKBOOKS_API_BASE_URL",
     "grafana_api": "GRAFANA_API_BASE_URL",
+    "brex_api": "BREX_API_BASE_URL",
+    "ramp_api": "RAMP_API_BASE_URL",
+    "gusto_api": "GUSTO_API_BASE_URL",
+    "deel_api": "DEEL_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -104,6 +119,10 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "mercury_api": "/mercury",
     "quickbooks_api": "/quickbooks",
     "grafana_api": "/grafana",
+    "brex_api": "/brex",
+    "ramp_api": "/ramp",
+    "gusto_api": "/gusto",
+    "deel_api": "/deel",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"
