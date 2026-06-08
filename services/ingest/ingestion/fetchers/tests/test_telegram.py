@@ -8,7 +8,6 @@ and the empty-dialog terminal case.
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 
