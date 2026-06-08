@@ -143,6 +143,10 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     "fireflies": "fireflies",
     "miro": "miro",
     "figma": "figma",
+    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby — HMAC-signed webhooks route onto
+    # the data plane. (LinkedIn is poll-only — no webhook — so it is absent.)
+    "hibob": "hibob",
+    "ashby": "ashby",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -179,6 +183,11 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     "fireflies": "fireflies",
     "miro": "miro",
     "figma": "figma",
+    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby webhooks fit the 202 cutover
+    # contract, so they activate the full pipeline once the tenant's
+    # kafka_path_enabled flag is TRUE. (LinkedIn is poll-only — absent here.)
+    "hibob": "hibob",
+    "ashby": "ashby",
 }
 
 
@@ -452,6 +461,12 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     "fireflies": "fireflies:transcript",
     "miro": "miro:item",
     "figma": "figma:event",
+    # IN-PEOPLE/IN-RECRUITING: webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(_CHANNEL):
+    # handlers/hibob.py _CHANNEL="hibob:object", handlers/ashby.py
+    # _CHANNEL="ashby:object". (LinkedIn is poll-only — no inline webhook channel.)
+    "hibob": "hibob:object",
+    "ashby": "ashby:object",
 }
 
 

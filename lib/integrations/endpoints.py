@@ -95,6 +95,21 @@ _PROD: dict[str, str] = {
     # approval. Mock host for dev: https://mock-api.carta.com. TODO(human): set the
     # approved prod host once the partner agreement is in place.
     "carta_api": "https://api.carta.com",
+    # IN-PEOPLE: HiBob (People/HR) — Gusto-structure / Brex-auth (service-user
+    # HTTP Basic, NOT OAuth). CONFIRMED host https://api.hibob.com. Single global
+    # host (per-install base_url still wins via build_hibob_client when present).
+    "hibob_api": "https://api.hibob.com",
+    # IN-PEOPLE: Ashby (Recruiting ATS) — Gusto-structure; auth = API key as Basic
+    # username + empty password. CONFIRMED host https://api.ashbyhq.com (RPC POST
+    # /CATEGORY.list|.info on this host).
+    "ashby_api": "https://api.ashbyhq.com",
+    # IN-PEOPLE: LinkedIn (Recruiting) — Carta-structure (OAuth2, poll-only, no
+    # webhook). CONFIRMED host https://api.linkedin.com. NOTE: LinkedIn
+    # recruitment APIs are PARTNER-GATED / invite-only — production access
+    # requires an approved LinkedIn Marketing/Talent partner entitlement.
+    # TODO(human): confirm the exact partner entitlement + OAuth scopes once the
+    # LinkedIn partner agreement is in place.
+    "linkedin_api": "https://api.linkedin.com",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -121,6 +136,9 @@ _ENV: dict[str, str] = {
     "miro_api": "MIRO_API_BASE_URL",
     "figma_api": "FIGMA_API_BASE_URL",
     "carta_api": "CARTA_API_BASE_URL",
+    "hibob_api": "HIBOB_API_BASE_URL",
+    "ashby_api": "ASHBY_API_BASE_URL",
+    "linkedin_api": "LINKEDIN_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -148,6 +166,9 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "miro_api": "/miro",
     "figma_api": "/figma",
     "carta_api": "/carta",
+    "hibob_api": "/hibob",
+    "ashby_api": "/ashby",
+    "linkedin_api": "/linkedin",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

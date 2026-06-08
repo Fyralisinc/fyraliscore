@@ -1,6 +1,6 @@
-"""Run 6 — ALL-12-source concurrent backfill + live overlap (the milestone gate).
+"""Run 6 — ALL-25-source concurrent backfill + live overlap (the milestone gate).
 
-The capstone acceptance run: for EVERY one of the 12 ingestion sources, the
+The capstone acceptance run: for EVERY one of the 25 ingestion sources, the
 backfill producer chain is IN PROGRESS while live signals are simultaneously
 received, through the real subprocess + Kafka data plane. This is the binding
 acceptance condition — live events arrive *during* an unfinished backfill, for
@@ -84,6 +84,11 @@ _EXPECTED: dict[str, int] = {
     # × 4 items; figma = 4 events (pure event stream); carta = 4 cap-table entity
     # kinds × 1 row; signal = 1 thread × 5 messages; aws = 3 CloudTrail events.
     "fireflies": 4, "signal": 5, "aws": 3, "miro": 4, "figma": 4, "carta": 4,
+    # People/recruiting sources (IN-PEOPLE). hibob = 4 People/HR entity kinds ×
+    # 1 row; ashby = 5 recruiting entity kinds × 1 row; linkedin = 3 org entity
+    # kinds × 1 row. All entity-model (entity_kind discriminates the external_id,
+    # so same-id rows never collide).
+    "hibob": 4, "ashby": 5, "linkedin": 3,
 }
 SOURCES = list(_EXPECTED.keys())
 
@@ -103,11 +108,15 @@ _EXPECTED_LIVE_STATUS: dict[str, set[int]] = {
     # style (no HTTP); aws/carta are poll live edges (direct-dispatch, no HTTP).
     "fireflies": {202}, "miro": {202}, "figma": {202},
     "signal": set(), "aws": set(), "carta": set(),
+    # People/recruiting: hibob/ashby are HMAC webhook (202). linkedin is a poll
+    # live edge (direct-dispatch, no HTTP status).
+    "hibob": {202}, "ashby": {202}, "linkedin": set(),
 }
 _HMAC_SOURCES = (
     "jira", "mercury", "quickbooks", "grafana",
     "brex", "ramp", "gusto", "deel",
     "fireflies", "miro", "figma",
+    "hibob", "ashby",
 )
 
 
@@ -212,6 +221,27 @@ def _scen_params(source: str, slug: str) -> dict:
         # kind discriminates so same-id rows never collide).
         "carta": {"firm_id": f"firm-{slug}", "rows_per_entity": 1,
                   "seed": slug},
+        # People/recruiting sources (IN-PEOPLE). Each embeds `slug` into the scope
+        # id the external_id namespaces on so the global observations UNIQUE never
+        # collapses two tenants' synthetic ids; seed=slug salts the per-row ids
+        # (belt-and-suspenders — the entity_kind discriminator already keeps
+        # same-id rows distinct WITHIN a tenant).
+        # hibob: external_id hibob:{company}:{entity}:{id}:{ver}; company_id
+        # namespaces. 4 entity kinds × 1 row = 4 obs.
+        "hibob": {"company_id": f"hibob-co-{slug}",
+                  "entities": ["employee", "lifecycle", "timeoff", "payroll"],
+                  "rows_per_entity": 1, "seed": slug},
+        # ashby: external_id ashby:{org}:{entity}:{id}; org_id namespaces.
+        # 5 entity kinds × 1 row = 5 obs.
+        "ashby": {"org_id": f"ashby-org-{slug}",
+                  "entities": ["candidate", "application", "job", "interview",
+                               "offer"],
+                  "rows_per_entity": 1, "seed": slug},
+        # linkedin: external_id linkedin:{org}:{kind}:{id}; organization_urn
+        # namespaces. 3 entity kinds × 1 row = 3 obs.
+        "linkedin": {"organization_urn": f"li-org-{slug}",
+                     "entities": ["share", "social_action", "follower_stat"],
+                     "rows_per_entity": 1, "seed": slug},
     }[source]
 
 
@@ -276,6 +306,9 @@ async def _dispatch_one(drivers, t, *, content: str) -> int | None:
         return None
     if s == "carta":
         await drivers.carta_poll.simulate_event(target=t, content=content)
+        return None
+    if s == "linkedin":
+        await drivers.linkedin_poll.simulate_event(target=t, content=content)
         return None
     if s in _HMAC_SOURCES:
         r = await drivers.hmac[s].simulate_event(target=t, content=content)
@@ -368,7 +401,7 @@ async def run_all_sources(
     dsn = os.environ["DATABASE_URL"]
     scenarios = all_sources_scenarios(tenants_per_source)
     report = RunReport(
-        run_name="All-22-source concurrent backfill + live overlap",
+        run_name="All-25-source concurrent backfill + live overlap",
         run_number=6, tenant_count=len(scenarios),
         started_at=started, wall_seconds=0.0)
 

@@ -189,6 +189,9 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "miro":      _not_implemented_reconciler("miro",      "IN-VERTICALS"),
     "figma":     _not_implemented_reconciler("figma",     "IN-VERTICALS"),
     "carta":     _not_implemented_reconciler("carta",     "IN-VERTICALS"),
+    "hibob":     _not_implemented_reconciler("hibob",     "IN-PEOPLE"),
+    "ashby":     _not_implemented_reconciler("ashby",     "IN-PEOPLE"),
+    "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
 }
 
 
@@ -224,3 +227,6 @@ from services.ingest.ingestion.reconcilers import aws as _aws  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import miro as _miro  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import figma as _figma  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import carta as _carta  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401

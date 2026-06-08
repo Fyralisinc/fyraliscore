@@ -67,6 +67,10 @@ from services.ingest.synthetic.live_generators.carta_poll import (
     CartaPollGenerator,
     CartaPollResult,
 )
+from services.ingest.synthetic.live_generators.linkedin_poll import (
+    LinkedinPollGenerator,
+    LinkedinPollResult,
+)
 
 
 __all__ = [
@@ -85,6 +89,8 @@ __all__ = [
     "HMAC_PROVIDERS",
     "HmacWebhookGenerator",
     "HmacWebhookResult",
+    "LinkedinPollGenerator",
+    "LinkedinPollResult",
     "NotionWebhookGenerator",
     "NotionWebhookResult",
     "SignalGatewayGenerator",

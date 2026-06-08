@@ -1,8 +1,11 @@
 """HmacWebhookGenerator — synthetic HMAC-signed webhooks for the finance/ops
 providers that share the gateway webhook router + the M5.3 Kafka cutover:
 **jira, mercury, quickbooks, grafana** plus the IN-FIN2 finance sources
-**brex, ramp, gusto, deel** and the IN-FF/IN-MIRO/IN-FIGMA sources
-**fireflies, miro, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex).
+**brex, ramp, gusto, deel**, the IN-FF/IN-MIRO/IN-FIGMA sources
+**fireflies, miro, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex), and the
+IN-PEOPLE/IN-RECRUITING sources **hibob, ashby** (hibob = HMAC-SHA512/base64/
+no-prefix; ashby = HMAC-SHA256/`sha256=`+hex like brex). (LinkedIn is poll-only —
+NOT an HMAC webhook source — so it is driven by LinkedinPollGenerator, not here.)
 
 This is the generalisation of `slack_webhook.py` / `github_webhook.py` to the
 providers added after the original 4-source live harness. All four:
@@ -30,9 +33,13 @@ Per-provider signature scheme (verified against signatures/*.py):
   - fireflies:  header `X-Fireflies-Signature`      = `sha256=` + hex(HMAC-SHA256(body))
   - miro:       header `X-Miro-Signature`           = `sha256=` + hex(HMAC-SHA256(body))
   - figma:      header `Figma-Signature`            = `sha256=` + hex(HMAC-SHA256(body))
+  - hibob:      header `Bob-Signature`              = base64(HMAC-SHA512(body))   (NO prefix; CONFIRMED)
+  - ashby:      header `Ashby-Signature`            = `sha256=` + hex(HMAC-SHA256(body))  (CONFIRMED, brex-shaped)
   (brex/ramp/gusto/deel/fireflies/miro/figma schemes mirror their signatures/*.py
    module constants, which are UNVERIFIED archetype defaults — see those modules'
-   TODO(human). figma's real scheme is passcode-in-body, not an HMAC header.)
+   TODO(human). figma's real scheme is passcode-in-body, not an HMAC header.
+   hibob's SHA512+base64 and ashby's SHA256+hex schemes are CONFIRMED from each
+   vendor's first-party webhook docs.)
 
 Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - jira:       host of `issue.self`     (== provider_installations.installation_id)
@@ -46,6 +53,8 @@ Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - fireflies:  top-level `workspaceId`
   - miro:       top-level `organizationId`
   - figma:      top-level `team_id`
+  - hibob:      top-level `companyId`
+  - ashby:      top-level `organizationId`
 
 Each `simulate_event` mints a DISTINCT entity (unique id + a current-window
 timestamp) so the live observation is a fresh row, never an accidental
@@ -75,6 +84,7 @@ HMAC_PROVIDERS = (
     "jira", "mercury", "quickbooks", "grafana",
     "brex", "ramp", "gusto", "deel",
     "fireflies", "miro", "figma",
+    "hibob", "ashby",
 )
 
 # Live timestamps land inside the observations partition window (2025-06..
@@ -135,10 +145,19 @@ class HmacWebhookGenerator:
 
     # ---- Signing (byte-exact per provider) ----
     def _sign(self, body: bytes) -> str:
+        # hibob is the ONE non-SHA256 scheme: HMAC-SHA512, base64, NO prefix
+        # (CONFIRMED; matches signatures/hibob.py _HASH=sha512 + _DIGEST_ENCODING
+        # ="base64" + _PREFIX=""). Branch first so the sha256 MAC below is never
+        # built for it.
+        if self._provider == "hibob":
+            mac512 = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha512)
+            return base64.b64encode(mac512.digest()).decode("ascii")
         mac = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha256)
-        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, miro, figma.
+        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, miro, figma,
+        # ashby (ashby is brex-shaped: sha256= + hex, CONFIRMED).
         if self._provider in (
             "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+            "ashby",
         ):
             return "sha256=" + mac.hexdigest()
         # base64-no-prefix schemes: quickbooks, ramp, gusto.
@@ -161,6 +180,8 @@ class HmacWebhookGenerator:
             "fireflies": "x-hub-signature",  # CONFIRMED (docs.fireflies.ai)
             "miro": "X-Miro-Signature",
             "figma": "Figma-Signature",
+            "hibob": "Bob-Signature",      # CONFIRMED (signatures/hibob.py)
+            "ashby": "Ashby-Signature",    # CONFIRMED (signatures/ashby.py)
         }[self._provider]
 
     def _next_iso(self) -> tuple[str, str]:
@@ -359,6 +380,51 @@ class HmacWebhookGenerator:
                 "createdAt": iso,
             }
             return payload, f"figma:{team}:event:{eid}:{iso}"
+        if self._provider == "hibob":
+            # HiBob employee.updated webhook (gusto-structure / Basic-service-user
+            # archetype). Body matches handlers/hibob.py LIVE WEBHOOK path:
+            # top-level `companyId` + `type` (`<kind>.<event>`) + a full `entity`
+            # body. `companyId` keys tenant_resolver._extract_hibob. external_id is
+            # versioned by the entity's `modified` field — use the live ISO so it
+            # is fresh (never dedups against backfill).
+            company = target.hibob_company
+            emp_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "companyId": company,
+                "type": "employee.updated",
+                "entity": {
+                    "id": emp_id,
+                    "displayName": content,
+                    "status": "active",
+                    "modified": iso,
+                },
+            }
+            # entity_kind="employee"; external_id = hibob:{co}:employee:{id}:{ver}.
+            return payload, f"hibob:{company}:employee:{emp_id}:{iso}"
+        if self._provider == "ashby":
+            # Ashby applicationUpdate webhook (gusto-structure / API-key-as-Basic
+            # archetype). Body matches handlers/ashby.py LIVE WEBHOOK path:
+            # top-level `action` + `organizationId` + a `data` entity body.
+            # `organizationId` keys tenant_resolver._extract_ashby. The entity's
+            # `resourceType` resolves entity_kind; external_id is NOT versioned
+            # (ashby:{org}:{kind}:{id}) — the live ISO `updatedAt` only sets
+            # occurred_at, keeping the live row a fresh observation via its
+            # globally-unique id.
+            org = target.ashby_org
+            app_id = f"live-{target.slug}-{suffix}"
+            payload = {
+                "action": "applicationUpdate",
+                "organizationId": org,
+                "data": {
+                    "id": app_id,
+                    "resourceType": "application",
+                    "name": content,
+                    "status": "active",
+                    "updatedAt": iso,
+                },
+            }
+            # entity_kind="application"; external_id = ashby:{org}:application:{id}.
+            return payload, f"ashby:{org}:application:{app_id}"
         # grafana alert (the `grafana:alert` channel — distinct from the
         # backfill `grafana:annotation` channel).
         inst = target.grafana_instance
@@ -401,11 +467,19 @@ class HmacWebhookGenerator:
         body = json.dumps(payload).encode("utf-8")
         if not tamper_signature:
             signature = self._sign(body)
+        elif self._provider == "hibob":
+            # hibob's header value is a RAW base64 digest (no "sha256="/"sha512="
+            # prefix), so the tamper probe is a wrong base64 value — NOT an
+            # "sha256=fff…" string. The verifier (_PREFIX="") skips the prefix
+            # check and rejects on the HMAC compare.
+            signature = base64.b64encode(b"wrong-hibob-signature-tamper").decode("ascii")
         elif self._provider in (
             "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+            "ashby",
         ):
-            # `sha256=`+hex schemes: keep the prefix so the verifier reaches the
-            # HMAC compare (and rejects on the wrong digest, not the prefix).
+            # `sha256=`+hex schemes (incl. ashby, brex-shaped): keep the prefix so
+            # the verifier reaches the HMAC compare (and rejects on the wrong
+            # digest, not the prefix).
             signature = "sha256=" + ("f" * 64)
         else:
             # base64 (quickbooks/ramp/gusto) + bare-hex (grafana): a wrong value.

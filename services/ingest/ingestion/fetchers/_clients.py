@@ -710,6 +710,105 @@ async def build_aws_client(
     return client
 
 
+async def build_hibob_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """HiBob read-client (IN-PEOPLE, Gusto-structure / Brex-auth archetype).
+    HiBob authenticates with a SERVICE USER — HTTP Basic
+    `base64(service_user_id:token)`, NOT OAuth (no refresh). The `service_user_id`
+    is the public half (carried on the install row); the secret half (`token`) is
+    resolved once from the secret store via `install['secret_ref']` (or preset in
+    spammer mode). The scope id `company_id` is per-install; in spammer mode the
+    base URL is overridden via the endpoint resolver so backfill points at the
+    local spammer's `/hibob` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.hibob.client import HibobClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    company_id = str(install["company_id"]) if "company_id" in install else ""
+    service_user_id = (
+        str(install["service_user_id"]) if "service_user_id" in install else ""
+    )
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = HibobClient(
+        base_url=base_url,
+        company_id=company_id,
+        service_user_id=service_user_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        token=("spam-hibob" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("hibob_api") if spammer else None),
+    )
+    return client
+
+
+async def build_ashby_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Ashby read-client (IN-PEOPLE, Gusto-structure archetype). Ashby
+    authenticates with an API KEY presented as the Basic username + empty
+    password (`base64("KEY:")`); the key is resolved once from the secret store
+    via `install['secret_ref']` (or preset in spammer mode). The scope id `org_id`
+    is per-install; in spammer mode the base URL is overridden via the endpoint
+    resolver so backfill points at the local spammer's `/ashby` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.ashby.client import AshbyClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    org_id = str(install["org_id"]) if "org_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = AshbyClient(
+        base_url=base_url,
+        org_id=org_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_key=("spam-ashby" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("ashby_api") if spammer else None),
+    )
+    return client
+
+
+async def build_linkedin_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """LinkedIn read-client (IN-PEOPLE, Carta-structure archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']` (or
+    preset in spammer mode). The scope id `organization_urn` (firm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/linkedin` sub-path. Poll-only live edge (no webhook); the
+    recruitment APIs are partner-gated in production."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.linkedin.client import LinkedinClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    organization_urn = (
+        str(install["organization_urn"]) if "organization_urn" in install else ""
+    )
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = LinkedinClient(
+        base_url=base_url,
+        organization_urn=organization_urn,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-linkedin" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("linkedin_api") if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -807,6 +906,18 @@ async def open_carta_client(install: asyncpg.Record) -> Opener:
     return await build_carta_client(install), _noop
 
 
+async def open_hibob_client(install: asyncpg.Record) -> Opener:
+    return await build_hibob_client(install), _noop
+
+
+async def open_ashby_client(install: asyncpg.Record) -> Opener:
+    return await build_ashby_client(install), _noop
+
+
+async def open_linkedin_client(install: asyncpg.Record) -> Opener:
+    return await build_linkedin_client(install), _noop
+
+
 async def open_signal_client(install: asyncpg.Record) -> Opener:
     return await build_signal_client(install), _noop
 
@@ -832,6 +943,7 @@ __all__ = [
     "build_brex_client", "build_ramp_client", "build_gusto_client", "build_deel_client",
     "build_fireflies_client", "build_miro_client", "build_figma_client",
     "build_carta_client", "build_signal_client", "build_aws_client",
+    "build_hibob_client", "build_ashby_client", "build_linkedin_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
@@ -840,4 +952,5 @@ __all__ = [
     "open_brex_client", "open_ramp_client", "open_gusto_client", "open_deel_client",
     "open_fireflies_client", "open_miro_client", "open_figma_client",
     "open_carta_client", "open_signal_client", "open_aws_client",
+    "open_hibob_client", "open_ashby_client", "open_linkedin_client",
 ]

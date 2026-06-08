@@ -278,6 +278,44 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # entity and its live poll twin to one observation.
     ("carta", "backfill"): "carta:object",
     ("carta", "poll"): "carta:object",
+    # HiBob — backfill + poll + webhook (IN-PEOPLE, Gusto-structure / Brex-auth
+    # archetype). The People/HR source has BOTH a live push surface (HMAC-SHA512,
+    # base64 digest, Bob-Signature header) AND a historical query surface (per
+    # entity_type: employee/lifecycle/timeoff/payroll). Backfill walks each
+    # entity type once; the incremental driver re-runs the same fetcher under
+    # ingress_kind="poll" using the per-entity `modified` high-water; the webhook
+    # ingress delivers live change events. ALL route to the single `hibob:object`
+    # channel; the handler branches on the reshaped entity type. external_id
+    # parity (`hibob:{company}:{entity}:{id}:{ver}`) collapses a backfilled object
+    # and its live twin to one observation.
+    ("hibob", "backfill"): "hibob:object",
+    ("hibob", "poll"): "hibob:object",
+    ("hibob", "webhook"): "hibob:object",
+    # Ashby — backfill + poll + webhook (IN-PEOPLE, Gusto-structure archetype).
+    # The recruiting ATS source has BOTH a live push surface (HMAC-SHA256, hex
+    # digest, Ashby-Signature `sha256=<hex>`, verified over the RAW body) AND a
+    # historical query surface (RPC POST /CATEGORY.list, cursor-paginated, per
+    # entity_type: candidate/application/job/interview/offer). Backfill walks each
+    # entity type once; the incremental driver re-runs under ingress_kind="poll"
+    # using the persisted syncToken; the webhook ingress delivers live events. ALL
+    # route to the single `ashby:object` channel; the handler branches on the
+    # reshaped entity type. external_id parity (`ashby:{org}:{entity}:{id}`)
+    # collapses a backfilled object and its live twin to one observation.
+    ("ashby", "backfill"): "ashby:object",
+    ("ashby", "poll"): "ashby:object",
+    ("ashby", "webhook"): "ashby:object",
+    # LinkedIn — backfill + poll (IN-PEOPLE, Carta-structure archetype). The
+    # recruiting source has a historical query surface (per entity_type:
+    # share/social_action/follower_stat) AND a live edge that is a POLL (no
+    # inbound webhook): the live driver re-runs the change build under
+    # ingress_kind="poll". Backfill walks each entity type once; the incremental
+    # driver re-runs using the per-entity updated high-water. BOTH route to the
+    # single `linkedin:object` channel; the handler branches on the reshaped kind.
+    # external_id parity (`linkedin:{org}:{kind}:{id}`) collapses a backfilled
+    # entity and its live poll twin to one observation. The recruitment APIs are
+    # partner-gated in production (no webhook entitlement → poll-only live edge).
+    ("linkedin", "backfill"): "linkedin:object",
+    ("linkedin", "poll"): "linkedin:object",
 }
 
 

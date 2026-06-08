@@ -143,6 +143,9 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "miro":      _not_implemented_planner("miro",      "IN-VERTICALS"),
     "figma":     _not_implemented_planner("figma",     "IN-VERTICALS"),
     "carta":     _not_implemented_planner("carta",     "IN-VERTICALS"),
+    "hibob":     _not_implemented_planner("hibob",     "IN-PEOPLE"),
+    "ashby":     _not_implemented_planner("ashby",     "IN-PEOPLE"),
+    "linkedin":  _not_implemented_planner("linkedin",  "IN-PEOPLE"),
 }
 
 
@@ -180,3 +183,6 @@ from services.ingest.ingestion.planners import aws as _aws  # noqa: E402,F401
 from services.ingest.ingestion.planners import miro as _miro  # noqa: E402,F401
 from services.ingest.ingestion.planners import figma as _figma  # noqa: E402,F401
 from services.ingest.ingestion.planners import carta as _carta  # noqa: E402,F401
+from services.ingest.ingestion.planners import hibob as _hibob  # noqa: E402,F401
+from services.ingest.ingestion.planners import ashby as _ashby  # noqa: E402,F401
+from services.ingest.ingestion.planners import linkedin as _linkedin  # noqa: E402,F401

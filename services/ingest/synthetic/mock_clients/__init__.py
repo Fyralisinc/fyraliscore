@@ -26,6 +26,7 @@ Wiring at test time:
         return client, close
     monkeypatch.setattr(gmail_fetcher_mod, "_open_gmail_client", _open)
 """
+from services.ingest.synthetic.mock_clients.ashby import MockAshbyClient
 from services.ingest.synthetic.mock_clients.aws import MockAwsClient
 from services.ingest.synthetic.mock_clients.brex import MockBrexClient
 from services.ingest.synthetic.mock_clients.carta import MockCartaClient
@@ -43,7 +44,9 @@ from services.ingest.synthetic.mock_clients.google_drive import (
     MockGoogleDriveClient,
 )
 from services.ingest.synthetic.mock_clients.grafana import MockGrafanaClient
+from services.ingest.synthetic.mock_clients.hibob import MockHibobClient
 from services.ingest.synthetic.mock_clients.jira import MockJiraClient
+from services.ingest.synthetic.mock_clients.linkedin import MockLinkedinClient
 from services.ingest.synthetic.mock_clients.mercury import MockMercuryClient
 from services.ingest.synthetic.mock_clients.miro import MockMiroClient
 from services.ingest.synthetic.mock_clients.notion import MockNotionClient
@@ -56,6 +59,7 @@ from services.ingest.synthetic.mock_clients.telegram import MockTelegramClient
 
 
 __all__ = [
+    "MockAshbyClient",
     "MockAwsClient",
     "MockBrexClient",
     "MockCartaClient",
@@ -69,7 +73,9 @@ __all__ = [
     "MockGoogleDriveClient",
     "MockGrafanaClient",
     "MockGustoClient",
+    "MockHibobClient",
     "MockJiraClient",
+    "MockLinkedinClient",
     "MockMercuryClient",
     "MockMiroClient",
     "MockNotionClient",

@@ -60,6 +60,12 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "regulatory:api": "authoritative_external",
     "analyst:report": "reputable",
     "ui:contestation": "authoritative",
+    # IN-PEOPLE (sources 23-25): HiBob (HR), Ashby (ATS), LinkedIn (recruiting).
+    # First-party source-of-record systems → authoritative, mirroring the other
+    # entity-model sources (gusto/carta).
+    "hibob:object": "authoritative",
+    "ashby:object": "authoritative",
+    "linkedin:object": "authoritative",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -180,6 +186,9 @@ from services.ingest.ingestion.handlers import aws  # noqa: E402,F401
 from services.ingest.ingestion.handlers import miro  # noqa: E402,F401
 from services.ingest.ingestion.handlers import figma  # noqa: E402,F401
 from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
+from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
+from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
+from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
 
 
 __all__ = [

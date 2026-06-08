@@ -583,6 +583,40 @@ SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
  LIMIT 1
 """
 
+# IN-PEOPLE: HiBob is a per-tenant service-user Basic-auth install (Gusto/Brex
+# archetype; not in provider_installations). The fetcher works one entity type
+# at a time via shard_identifier; the install row carries company_id (scope) +
+# service_user_id (Basic public half) + base_url + secret_ref (token half).
+_LOAD_HIBOB_INSTALL_SQL = """
+SELECT id, tenant_id, company_id, service_user_id, base_url, secret_ref,
+       disabled_at
+  FROM hibob_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-PEOPLE: Ashby is a per-tenant API-key Basic-auth install (Brex/Jira
+# archetype; not in provider_installations). The install row carries org_id
+# (scope) + base_url + secret_ref (the API key Basic username).
+_LOAD_ASHBY_INSTALL_SQL = """
+SELECT id, tenant_id, org_id, base_url, secret_ref, disabled_at
+  FROM ashby_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
+# IN-PEOPLE: LinkedIn is a per-tenant OAuth install (Carta archetype; partner-
+# gated, poll-only; not in provider_installations). The install row carries
+# organization_urn (scope) + base_url + secret_ref (access token) +
+# refresh_secret_ref the LinkedinClient needs.
+_LOAD_LINKEDIN_INSTALL_SQL = """
+SELECT id, tenant_id, organization_urn, base_url, secret_ref,
+       refresh_secret_ref, disabled_at
+  FROM linkedin_installations
+ WHERE tenant_id = $1 AND disabled_at IS NULL
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -698,6 +732,12 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
     if source == "carta":
         return await pool.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
+    if source == "hibob":
+        return await pool.fetchrow(_LOAD_HIBOB_INSTALL_SQL, tenant_id)
+    if source == "ashby":
+        return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
+    if source == "linkedin":
+        return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 

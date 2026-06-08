@@ -976,6 +976,106 @@ class CartaApiError(CompanyOSError):
             self._code = code
 
 
+class HibobApiError(CompanyOSError):
+    """
+    Outbound HiBob (People/HR) REST call failure (IN-PEOPLE, Gusto-structure /
+    Brex-auth archetype). HiBob authenticates with a service user: HTTP Basic
+    `base64(service_user_id:token)` — NOT OAuth, no refresh. Mirrors BrexApiError.
+
+    Stable `code` values:
+      - hibob_api_unauthorized: 401/403 — service-user credential rejected /
+        insufficient scope
+      - hibob_api_not_found: 404 — employee/entity not visible to the credential
+      - hibob_api_rate_limited: 429 with retry budget exhausted
+      - hibob_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The service-user
+    token and the Basic-auth header are NEVER placed on context.
+    """
+    default_code = "hibob_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class AshbyApiError(CompanyOSError):
+    """
+    Outbound Ashby (Recruiting ATS) RPC call failure (IN-PEOPLE, Gusto-structure
+    archetype). Ashby authenticates with an API key as the Basic username + empty
+    password (`base64("KEY:")`); RPC POST `/CATEGORY.list|.info`. Mirrors
+    BrexApiError.
+
+    Stable `code` values:
+      - ashby_api_unauthorized: 401/403 — API key rejected / insufficient scope
+      - ashby_api_not_found: 404 — entity not visible to the key
+      - ashby_api_rate_limited: 429 with retry budget exhausted
+      - ashby_api_error: other terminal 4xx/5xx (or an RPC `errors` extension)
+
+    `context` carries `{http_status?, retry_after?, path?}`. The API key and the
+    Basic-auth header are NEVER placed on context.
+    """
+    default_code = "ashby_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
+class LinkedinApiError(CompanyOSError):
+    """
+    Outbound LinkedIn (Recruiting) REST call failure (IN-PEOPLE, Carta-structure
+    archetype). LinkedIn uses OAuth2; the organization-scoped recruitment APIs are
+    PARTNER-GATED (invite-only). Poll-only live edge (no webhook). Mirrors
+    CartaApiError.
+
+    Stable `code` values:
+      - linkedin_api_unauthorized: 401/403 — access token expired / no scope /
+        partner entitlement not granted
+      - linkedin_api_not_found: 404 — organization/entity not visible
+      - linkedin_api_rate_limited: 429 with retry budget exhausted
+      - linkedin_api_error: other terminal 4xx/5xx
+
+    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
+    tokens are NEVER placed on context.
+    """
+    default_code = "linkedin_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -1013,4 +1113,7 @@ __all__ = [
     "SignalApiError",
     "AwsApiError",
     "CartaApiError",
+    "HibobApiError",
+    "AshbyApiError",
+    "LinkedinApiError",
 ]

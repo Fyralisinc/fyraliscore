@@ -171,7 +171,7 @@ BRIDGE_INBOX_ID = "bridge"
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin")
 
 # Coarse, NON-BINDING per-source estimate for the `tenant.onboarding.started`
 # event's `eta_minutes`. The event model documents this field as a
@@ -286,6 +286,21 @@ SELECT 'figma' AS source
 UNION
 SELECT 'carta' AS source
   FROM carta_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'hibob' AS source
+  FROM hibob_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'ashby' AS source
+  FROM ashby_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'linkedin' AS source
+  FROM linkedin_installations
  WHERE tenant_id = $1
    AND disabled_at IS NULL
 """

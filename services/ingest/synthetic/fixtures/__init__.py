@@ -4,6 +4,7 @@ Each generator produces a deterministic fixture for the same input
 parameters (seeded RNG for any randomness). Tests pass these into the
 mock client constructors.
 """
+from services.ingest.synthetic.fixtures.ashby_generator import make_ashby
 from services.ingest.synthetic.fixtures.aws_generator import make_aws
 from services.ingest.synthetic.fixtures.brex_generator import make_brex
 from services.ingest.synthetic.fixtures.carta_generator import make_carta
@@ -21,7 +22,9 @@ from services.ingest.synthetic.fixtures.google_drive_generator import (
     make_google_drive,
 )
 from services.ingest.synthetic.fixtures.grafana_generator import make_grafana
+from services.ingest.synthetic.fixtures.hibob_generator import make_hibob
 from services.ingest.synthetic.fixtures.jira_generator import make_jira
+from services.ingest.synthetic.fixtures.linkedin_generator import make_linkedin
 from services.ingest.synthetic.fixtures.mercury_generator import make_mercury
 from services.ingest.synthetic.fixtures.miro_generator import make_miro
 from services.ingest.synthetic.fixtures.notion_generator import make_notion
@@ -36,6 +39,7 @@ from services.ingest.synthetic.fixtures.telegram_generator import make_telegram
 
 
 __all__ = [
+    "make_ashby",
     "make_aws",
     "make_brex",
     "make_carta",
@@ -49,7 +53,9 @@ __all__ = [
     "make_google_drive",
     "make_grafana",
     "make_gusto",
+    "make_hibob",
     "make_jira",
+    "make_linkedin",
     "make_mercury",
     "make_miro",
     "make_notion",

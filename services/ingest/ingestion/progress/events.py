@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # sources, and an omitted member (previously 'grafana') makes Pydantic raise a
 # literal_error that propagates out of the orchestrator tick and crashes the
 # worker — so onboarding a grafana tenant never completes.
-Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta"]
+Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin"]
 
 
 class ProgressEventBase(BaseModel):

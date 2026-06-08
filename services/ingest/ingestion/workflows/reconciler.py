@@ -777,6 +777,9 @@ async def _run_service() -> None:
     from services.ingest.ingestion.reconcilers import miro as miro_reconciler_mod
     from services.ingest.ingestion.reconcilers import figma as figma_reconciler_mod
     from services.ingest.ingestion.reconcilers import carta as carta_reconciler_mod
+    from services.ingest.ingestion.reconcilers import hibob as hibob_reconciler_mod
+    from services.ingest.ingestion.reconcilers import ashby as ashby_reconciler_mod
+    from services.ingest.ingestion.reconcilers import linkedin as linkedin_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
@@ -799,6 +802,9 @@ async def _run_service() -> None:
     miro_reconciler_mod.set_pool_provider(pool)
     figma_reconciler_mod.set_pool_provider(pool)
     carta_reconciler_mod.set_pool_provider(pool)
+    hibob_reconciler_mod.set_pool_provider(pool)
+    ashby_reconciler_mod.set_pool_provider(pool)
+    linkedin_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

@@ -199,7 +199,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin")
 
 
 # ---------------------------------------------------------------------
@@ -642,6 +642,79 @@ SELECT ci.id, ci.tenant_id, ci.firm_id, ci.base_url, ci.secret_ref,
  LIMIT 1
 """
 
+# IN-PEOPLE: HiBob mirrors the Gusto loader — one shard per (company, entity
+# type). company_id is the scope id; the service-user Basic credential lives
+# behind secret_ref (service_user_id is the public half); base_url is needed by
+# the client. The 1-to-N active entity-type list is aggregated onto the install.
+_LOAD_HIBOB_INSTALL_SQL = """
+SELECT hi.id, hi.tenant_id, hi.company_id, hi.service_user_id, hi.base_url,
+       hi.secret_ref, hi.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', he.entity_type,
+             'updated_cursor', he.updated_cursor
+           ) ORDER BY he.entity_type
+         ) FILTER (WHERE he.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM hibob_installations hi
+  LEFT JOIN hibob_entities he
+    ON he.hibob_installation_id = hi.id AND he.state = 'active'
+ WHERE hi.tenant_id = $1 AND hi.disabled_at IS NULL
+ GROUP BY hi.id
+ LIMIT 1
+"""
+
+# IN-PEOPLE: Ashby mirrors the Gusto loader — one shard per (org, entity type).
+# org_id is the scope id; the API key (Basic username) lives behind secret_ref;
+# base_url is needed by the client. The incremental primitive is the persisted
+# Ashby syncToken (`sync_cursor`), NOT a timestamp.
+_LOAD_ASHBY_INSTALL_SQL = """
+SELECT ai.id, ai.tenant_id, ai.org_id, ai.base_url, ai.secret_ref,
+       ai.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', ae.entity_type,
+             'sync_cursor', ae.sync_cursor
+           ) ORDER BY ae.entity_type
+         ) FILTER (WHERE ae.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM ashby_installations ai
+  LEFT JOIN ashby_entities ae
+    ON ae.ashby_installation_id = ai.id AND ae.state = 'active'
+ WHERE ai.tenant_id = $1 AND ai.disabled_at IS NULL
+ GROUP BY ai.id
+ LIMIT 1
+"""
+
+# IN-PEOPLE: LinkedIn mirrors the Carta loader — one shard per (org, entity
+# type). organization_urn is the scope id; the OAuth access token lives behind
+# secret_ref + refresh_secret_ref; base_url is needed by the client. Partner-
+# gated (poll-only); the 1-to-N active entity-type list is aggregated onto the
+# install.
+_LOAD_LINKEDIN_INSTALL_SQL = """
+SELECT li.id, li.tenant_id, li.organization_urn, li.base_url, li.secret_ref,
+       li.refresh_secret_ref, li.disabled_at,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'entity_type', le.entity_type,
+             'updated_cursor', le.updated_cursor
+           ) ORDER BY le.entity_type
+         ) FILTER (WHERE le.id IS NOT NULL),
+         '[]'::json
+       ) AS entities
+  FROM linkedin_installations li
+  LEFT JOIN linkedin_entities le
+    ON le.linkedin_installation_id = li.id AND le.state = 'active'
+ WHERE li.tenant_id = $1 AND li.disabled_at IS NULL
+ GROUP BY li.id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -790,6 +863,12 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
     if source == "carta":
         return await conn.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
+    if source == "hibob":
+        return await conn.fetchrow(_LOAD_HIBOB_INSTALL_SQL, tenant_id)
+    if source == "ashby":
+        return await conn.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
+    if source == "linkedin":
+        return await conn.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -834,6 +913,11 @@ async def _build_source_client(
     # needed. Branch kept explicit for parity with _load_install / the §2.6
     # FETCHER client builders.
     if source in ("fireflies", "signal", "aws", "miro", "figma", "carta"):
+        return None
+    # IN-PEOPLE: hibob/ashby/linkedin planners read DB state only (entity-type
+    # list pre-aggregated by the loader, like gusto/carta), so no plan-time
+    # source client is needed.
+    if source in ("hibob", "ashby", "linkedin"):
         return None
     return None
 

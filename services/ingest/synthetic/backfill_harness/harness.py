@@ -79,6 +79,9 @@ from services.ingest.synthetic.fixtures import (
     make_miro,
     make_figma,
     make_carta,
+    make_hibob,
+    make_ashby,
+    make_linkedin,
 )
 
 
@@ -182,6 +185,12 @@ def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
         return make_figma(**params)
     if source == "carta":
         return make_carta(**params)
+    if source == "hibob":
+        return make_hibob(**params)
+    if source == "ashby":
+        return make_ashby(**params)
+    if source == "linkedin":
+        return make_linkedin(**params)
     raise ValueError(f"unknown source: {source!r}")
 
 
@@ -212,6 +221,7 @@ from services.ingest.synthetic.mock_clients import (
     MockBrexClient, MockRampClient, MockGustoClient, MockDeelClient,
     MockFirefliesClient, MockSignalClient, MockAwsClient,
     MockMiroClient, MockFigmaClient, MockCartaClient,
+    MockHibobClient, MockAshbyClient, MockLinkedinClient,
 )
 
 
@@ -290,6 +300,12 @@ def _make_mock(source: str, fixture: dict[str, Any],
         return MockFigmaClient(fixture=fixture, profile=profile)
     if source == "carta":
         return MockCartaClient(fixture=fixture, profile=profile)
+    if source == "hibob":
+        return MockHibobClient(fixture=fixture, profile=profile)
+    if source == "ashby":
+        return MockAshbyClient(fixture=fixture, profile=profile)
+    if source == "linkedin":
+        return MockLinkedinClient(fixture=fixture, profile=profile)
     raise ValueError(f"unknown source: {{source!r}}")
 
 
@@ -339,6 +355,12 @@ def _install_factories() -> None:
     from services.ingest.ingestion.reconcilers import figma as fgr
     from services.ingest.ingestion.fetchers import carta as caf
     from services.ingest.ingestion.reconcilers import carta as car
+    from services.ingest.ingestion.fetchers import hibob as hbf
+    from services.ingest.ingestion.reconcilers import hibob as hbr
+    from services.ingest.ingestion.fetchers import ashby as asf
+    from services.ingest.ingestion.reconcilers import ashby as asr
+    from services.ingest.ingestion.fetchers import linkedin as lif
+    from services.ingest.ingestion.reconcilers import linkedin as lir
     from services.ingest.ingestion.workflows import source_onboarding as so
 
     def _factory_for(_source):
@@ -380,6 +402,9 @@ def _install_factories() -> None:
         ("miro", (mif, mir)),
         ("figma", (fgf, fgr)),
         ("carta", (caf, car)),
+        ("hibob", (hbf, hbr)),
+        ("ashby", (asf, asr)),
+        ("linkedin", (lif, lir)),
     ):
         for mod in modules:
             setattr(mod, f"_open_{{source}}_client", _factory_for(source))
@@ -1643,6 +1668,176 @@ class BackfillHarness:
                             id, tenant_id, source, trigger_kind,
                             installation_row_id, payload
                         ) VALUES ($1, $2, 'carta', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "hibob":
+                    # People/HR source: Gusto entity-model STRUCTURE (one
+                    # hibob_entities row per entity_type → one shard each) +
+                    # Figma-shaped HMAC webhook live edge. company_id is the
+                    # scope-id; provider_installations.installation_id=company_id
+                    # for tenant_resolver._extract_hibob (payload "companyId").
+                    fixture = _build_fixture(
+                        "hibob", outcome.scenario.fixture_params,
+                    )
+                    company_id = fixture.get(
+                        "company_id",
+                        f"x3-{outcome.scenario.tenant_slug}-co",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO hibob_installations (
+                          id, tenant_id, company_id, service_user_id, base_url
+                        ) VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (tenant_id, company_id)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, company_id,
+                        f"svc-{outcome.scenario.tenant_slug}",
+                        "https://api.hibob.com",
+                    )
+                    for entity_type in fixture.get("entities", {}):
+                        await conn.execute(
+                            """
+                            INSERT INTO hibob_entities (
+                                id, tenant_id, hibob_installation_id,
+                                entity_type, state
+                            ) VALUES ($1, $2, $3, $4, 'active')
+                            ON CONFLICT (hibob_installation_id, entity_type)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id, entity_type,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, 'hibob', $3, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        """,
+                        uuid7(), outcome.tenant_id, company_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'hibob', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "ashby":
+                    # Recruiting-ATS source: Gusto entity-model STRUCTURE (one
+                    # ashby_entities row per entity_type → one shard each) +
+                    # Figma-shaped HMAC webhook live edge. org_id is the scope-id;
+                    # provider_installations.installation_id=org_id for
+                    # tenant_resolver._extract_ashby (payload "organizationId").
+                    fixture = _build_fixture(
+                        "ashby", outcome.scenario.fixture_params,
+                    )
+                    org_id = fixture.get(
+                        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO ashby_installations (
+                          id, tenant_id, org_id, base_url
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, org_id)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, org_id,
+                        "https://api.ashbyhq.com",
+                    )
+                    for entity_type in fixture.get("entities", {}):
+                        await conn.execute(
+                            """
+                            INSERT INTO ashby_entities (
+                                id, tenant_id, ashby_installation_id,
+                                entity_type, state
+                            ) VALUES ($1, $2, $3, $4, 'active')
+                            ON CONFLICT (ashby_installation_id, entity_type)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id, entity_type,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                            (id, tenant_id, provider, installation_id,
+                             secret_ref, enabled)
+                        VALUES ($1, $2, 'ashby', $3, NULL, TRUE)
+                        ON CONFLICT (provider, installation_id) DO UPDATE
+                            SET enabled = TRUE
+                        """,
+                        uuid7(), outcome.tenant_id, org_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'ashby', 'install', $3, '{}'::jsonb)
+                        ON CONFLICT (tenant_id, source, installation_row_id)
+                            WHERE installation_row_id IS NOT NULL
+                            DO NOTHING
+                        """,
+                        uuid7(), outcome.tenant_id, install_id,
+                    )
+                elif source == "linkedin":
+                    # Recruiting source (partner-gated): Carta OAuth backfill
+                    # shape, direct-dispatch POLL live edge. Direct-dispatch →
+                    # NO provider_installations / webhook secret. organization_urn
+                    # is the scope-id; one linkedin_entities row per fixture entity
+                    # type → one shard each.
+                    fixture = _build_fixture(
+                        "linkedin", outcome.scenario.fixture_params,
+                    )
+                    organization_urn = fixture.get(
+                        "organization_urn",
+                        f"x3-{outcome.scenario.tenant_slug}-org",
+                    )
+                    install_id = await conn.fetchval(
+                        """
+                        INSERT INTO linkedin_installations (
+                          id, tenant_id, organization_urn, base_url
+                        ) VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (tenant_id, organization_urn)
+                            DO UPDATE SET disabled_at = NULL
+                        RETURNING id
+                        """,
+                        uuid7(), outcome.tenant_id, organization_urn,
+                        "https://api.linkedin.com",
+                    )
+                    for entity_type in fixture.get("entities", {}):
+                        await conn.execute(
+                            """
+                            INSERT INTO linkedin_entities (
+                                id, tenant_id, linkedin_installation_id,
+                                entity_type, state
+                            ) VALUES ($1, $2, $3, $4, 'active')
+                            ON CONFLICT (linkedin_installation_id, entity_type)
+                                DO NOTHING
+                            """,
+                            uuid7(), outcome.tenant_id, install_id, entity_type,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        ) VALUES ($1, $2, 'linkedin', 'install', $3,
+                                  '{}'::jsonb)
                         ON CONFLICT (tenant_id, source, installation_row_id)
                             WHERE installation_row_id IS NOT NULL
                             DO NOTHING

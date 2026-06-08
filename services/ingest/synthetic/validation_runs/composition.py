@@ -64,6 +64,7 @@ from services.ingest.synthetic.live_generators import (
     GuildBinding,
     HMAC_PROVIDERS,
     HmacWebhookGenerator,
+    LinkedinPollGenerator,
     NotionWebhookGenerator,
     SignalGatewayGenerator,
     SlackWebhookGenerator,
@@ -110,6 +111,11 @@ class SigningSecrets:
     fireflies: str = "v-fireflies-signing-secret"
     miro: str = "v-miro-signing-secret"
     figma: str = "v-figma-signing-secret"
+    # People/recruiting HMAC webhook sources (hibob = HMAC-SHA512/base64,
+    # Bob-Signature; ashby = HMAC-SHA256/hex, Ashby-Signature). linkedin is
+    # poll-only (no webhook edge) → NO signing secret.
+    hibob: str = "v-hibob-signing-secret"
+    ashby: str = "v-ashby-signing-secret"
     # Notion's app-level verification token (NOT a per-tenant secret_ref); the
     # signatures/notion.py verifier keys HMAC on it.
     notion: str = "v-notion-verification-token"
@@ -132,6 +138,8 @@ class SigningSecrets:
         os.environ["WEBHOOK_SECRET_FIREFLIES"] = self.fireflies
         os.environ["WEBHOOK_SECRET_MIRO"] = self.miro
         os.environ["WEBHOOK_SECRET_FIGMA"] = self.figma
+        os.environ["WEBHOOK_SECRET_HIBOB"] = self.hibob
+        os.environ["WEBHOOK_SECRET_ASHBY"] = self.ashby
         os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
@@ -209,6 +217,15 @@ class LiveTarget:
     aws_region: str | None = None
     carta_firm: str | None = None           # carta: firm_id (== install scope)
     carta_entity_type: str | None = None    # carta: poll change entity kind
+    # People/recruiting sources (IN-PEOPLE).
+    # hibob/ashby: HMAC webhook (tenant resolved via provider_installations;
+    # installation_id == company_id/org_id seeded for backfill).
+    hibob_company: str | None = None         # hibob: companyId == installation_id
+    ashby_org: str | None = None             # ashby: organizationId == installation_id
+    # linkedin: poll live edge (install resolved from linkedin_installations by
+    # tenant_id; NO provider_installations row).
+    linkedin_org: str | None = None          # linkedin: organization_urn (== install scope)
+    linkedin_entity_type: str | None = None  # linkedin: poll change entity kind
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -321,6 +338,24 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           carta_firm=fixture_params.get("firm_id"),
                           carta_entity_type="OptionGrant")
+    if source == "hibob":
+        # HMAC webhook; installation_id == the fixture's company_id (the SAME
+        # value the harness seeds into provider_installations for backfill), so
+        # tenant_resolver._extract_hibob maps the live payload back ("companyId").
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          hibob_company=fixture_params["company_id"])
+    if source == "ashby":
+        # HMAC webhook; installation_id == the fixture's org_id, so
+        # tenant_resolver._extract_ashby maps the live payload back
+        # ("organizationId").
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          ashby_org=fixture_params["org_id"])
+    if source == "linkedin":
+        # Poll live edge; organization_urn namespaces the external_id. The
+        # generator resolves the install from linkedin_installations by tenant_id.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          linkedin_org=fixture_params["organization_urn"],
+                          linkedin_entity_type="share")
     raise ValueError(f"unknown source {source!r}")
 
 
@@ -346,6 +381,7 @@ class LiveDrivers:
     signal_gateway: Any = None       # SignalGatewayGenerator (gateway-style)
     aws_poll: Any = None             # AwsPollGenerator (poll live edge)
     carta_poll: Any = None           # CartaPollGenerator (poll live edge)
+    linkedin_poll: Any = None        # LinkedinPollGenerator (poll live edge)
 
 
 async def build_live_drivers(
@@ -517,6 +553,7 @@ async def build_live_drivers(
         "gusto": secrets.gusto, "deel": secrets.deel,
         "fireflies": secrets.fireflies, "miro": secrets.miro,
         "figma": secrets.figma,
+        "hibob": secrets.hibob, "ashby": secrets.ashby,
     }
     for provider in HMAC_PROVIDERS:
         if provider in present:
@@ -593,6 +630,14 @@ async def build_live_drivers(
                 s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
             ),
         )
+    linkedin_gen = None
+    if "linkedin" in present:
+        linkedin_gen = await stack.enter_async_context(
+            LinkedinPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
 
     return LiveDrivers(
         gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
@@ -602,6 +647,7 @@ async def build_live_drivers(
         notion_webhook=notion_gen, google_app=google_app,
         telegram_gateway=telegram_gen,
         signal_gateway=signal_gen, aws_poll=aws_gen, carta_poll=carta_gen,
+        linkedin_poll=linkedin_gen,
     )
 
 
@@ -660,10 +706,14 @@ async def seed_live_installs(
                 inst = t.miro_org
             elif t.source == "figma":
                 inst = t.figma_team
+            elif t.source == "hibob":
+                inst = t.hibob_company
+            elif t.source == "ashby":
+                inst = t.ashby_org
             else:
-                # signal/aws/carta are direct-dispatch (gateway/poll): their live
-                # edge resolves the install from their OWN install table by
-                # tenant_id, so NO provider_installations row is needed.
+                # signal/aws/carta/linkedin are direct-dispatch (gateway/poll):
+                # their live edge resolves the install from their OWN install
+                # table by tenant_id, so NO provider_installations row is needed.
                 inst = None
             if inst is not None:
                 await conn.execute(

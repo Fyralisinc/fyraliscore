@@ -76,7 +76,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
     "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel",
-    "fireflies", "miro", "figma",
+    "fireflies", "miro", "figma", "hibob", "ashby",
 ]
 
 
@@ -478,6 +478,36 @@ def _extract_figma(payload: Mapping[str, Any], headers: Mapping[str, str]) -> st
     return _str_or_none(payload.get("teamId"))
 
 
+def _extract_hibob(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-PEOPLE (gusto-structure / Basic-service-user archetype). HiBob scopes
+    # installs by company; the install is registered keyed by the HiBob company
+    # id (provider_installations provider='hibob', installation_id=<company_id>).
+    # The synthetic harness sends the company id at top level as `companyId`
+    # (camel). The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): in production HiBob does NOT carry the company id in the
+    #   webhook body — the tenant is resolved by the per-install endpoint/secret
+    #   (each install registers a distinct webhook URL + secret). The `companyId`
+    #   body field here is the synthetic-gate stand-in; confirm the real
+    #   per-endpoint resolution against HiBob webhook docs before production.
+    return _str_or_none(payload.get("companyId"))
+
+
+def _extract_ashby(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-RECRUITING (gusto-structure / API-key-as-Basic-username archetype). Ashby
+    # scopes installs by organization; the install is registered keyed by the
+    # Ashby org id (provider_installations provider='ashby',
+    # installation_id=<org_id>). The synthetic harness sends the org id at top
+    # level as `organizationId` (camel). The signing secret is resolved
+    # separately in services/app/webhooks/secrets.py.
+    # TODO(human): in production Ashby does NOT carry the org id in the webhook
+    #   body — the tenant is resolved by the per-install endpoint/secret. The
+    #   `organizationId` body field here is the synthetic-gate stand-in; confirm
+    #   the real per-endpoint resolution against Ashby webhook docs before
+    #   production.
+    return _str_or_none(payload.get("organizationId"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -506,6 +536,8 @@ PROVIDER_EXTRACTORS: dict[
     "fireflies": _extract_fireflies,
     "miro": _extract_miro,
     "figma": _extract_figma,
+    "hibob": _extract_hibob,
+    "ashby": _extract_ashby,
 }
 
 

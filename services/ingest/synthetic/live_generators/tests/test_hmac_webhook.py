@@ -17,12 +17,14 @@ import json
 import pytest
 
 from services.app.webhooks.signatures import (
+    ashby,
     brex,
     deel,
     figma,
     fireflies,
     grafana,
     gusto,
+    hibob,
     jira,
     mercury,
     miro,
@@ -62,6 +64,9 @@ class _T:
         self.miro_board = "miro-board-demo0"
         self.figma_team = "figteam-demo0"
         self.figma_file = "figfile-demo0"
+        # IN-PEOPLE/IN-RECRUITING HMAC sources (linkedin is poll-only — absent).
+        self.hibob_company = "hibob-co-demo0"
+        self.ashby_org = "ashby-org-demo0"
 
 
 _VERIFIERS = {
@@ -71,6 +76,7 @@ _VERIFIERS = {
     "gusto": gusto.verifier, "deel": deel.verifier,
     "fireflies": fireflies.verifier, "miro": miro.verifier,
     "figma": figma.verifier,
+    "hibob": hibob.verifier, "ashby": ashby.verifier,
 }
 _SECRET = "unit-secret"
 
@@ -104,12 +110,19 @@ async def test_tampered_signature_rejected(provider: str) -> None:
         # Figma verifies a body passcode (no HMAC header) — tamper the passcode.
         payload = {**payload, "passcode": "wrong-passcode-tamper"}
     body = json.dumps(payload).encode("utf-8")
-    bad = (
-        "sha256=" + ("f" * 64)
-        if provider in ("jira", "mercury", "brex", "deel",
-                        "fireflies", "miro", "figma")
-        else "f" * 64
-    )
+    if provider == "hibob":
+        # hibob's header value is a RAW base64 digest (no "sha256=" prefix), so a
+        # wrong base64 value is the tamper probe — NOT an "sha256=fff…" string.
+        import base64
+        bad = base64.b64encode(b"wrong-hibob-signature-tamper").decode("ascii")
+    elif provider in ("jira", "mercury", "brex", "deel",
+                      "fireflies", "miro", "figma", "ashby"):
+        # `sha256=`+hex schemes (incl. ashby, brex-shaped): keep the prefix so the
+        # verifier reaches the HMAC compare and rejects on the wrong digest.
+        bad = "sha256=" + ("f" * 64)
+    else:
+        # base64 (quickbooks/ramp/gusto) + bare-hex (grafana): a wrong value.
+        bad = "f" * 64
     with pytest.raises(WebhookVerificationError):
         await _VERIFIERS[provider].verify(
             body=body, headers={gen._header_name: bad},

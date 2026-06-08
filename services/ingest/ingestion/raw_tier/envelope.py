@@ -26,6 +26,7 @@ SourceLiteral = Literal[
     "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram",
     "brex", "ramp", "gusto", "deel",
     "fireflies", "signal", "aws", "miro", "figma", "carta",
+    "hibob", "ashby", "linkedin",
 ]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT

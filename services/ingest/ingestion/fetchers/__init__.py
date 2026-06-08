@@ -165,6 +165,9 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "miro":      _not_implemented_fetcher("miro",      "IN-VERTICALS"),
     "figma":     _not_implemented_fetcher("figma",     "IN-VERTICALS"),
     "carta":     _not_implemented_fetcher("carta",     "IN-VERTICALS"),
+    "hibob":     _not_implemented_fetcher("hibob",     "IN-PEOPLE"),
+    "ashby":     _not_implemented_fetcher("ashby",     "IN-PEOPLE"),
+    "linkedin":  _not_implemented_fetcher("linkedin",  "IN-PEOPLE"),
 }
 
 
@@ -199,3 +202,6 @@ from services.ingest.ingestion.fetchers import aws as _aws  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import miro as _miro  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import figma as _figma  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import carta as _carta  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import hibob as _hibob  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import ashby as _ashby  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import linkedin as _linkedin  # noqa: E402,F401
