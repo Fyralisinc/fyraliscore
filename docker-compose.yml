@@ -407,6 +407,35 @@ services:
       CODE_INTEL_MAX_BLAST_HOPS: ${CODE_INTEL_MAX_BLAST_HOPS:-3}
       GITHUB_INTEL_TENANTS: ${GITHUB_INTEL_TENANTS:-${COMPANY_OS_TENANT_ID:-00000000-0000-0000-0000-000000000001}}
 
+  # ---- retrieval/memory feature workers (ported from dev) -----------
+  sage_structural_features_worker:
+    <<: *worker
+    container_name: company_os_sage_structural_features_worker
+    command: python scripts/run_sage_structural_features_worker.py
+    environment:
+      <<: *app-env
+      SAGE_STRUCTURAL_FEATURES_INTERVAL_S: "3600"
+
+  sage_topology_optimizer_worker:
+    <<: *worker
+    container_name: company_os_sage_topology_optimizer_worker
+    command: python scripts/run_sage_topology_optimizer_worker.py
+    environment:
+      <<: *app-env
+      SAGE_TOPOLOGY_OPTIMIZER_INTERVAL_S: "60"
+      SAGE_TOPOLOGY_OPTIMIZER_LOOKBACK_HOURS: "24"
+      SAGE_TOPOLOGY_OPTIMIZER_LIMIT: "50"
+
+  relationship_ontology_proposals_worker:
+    <<: *worker
+    container_name: company_os_relationship_ontology_proposals_worker
+    command: python scripts/run_relationship_ontology_proposals_worker.py
+    environment:
+      <<: *app-env
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_INTERVAL_S: "900"
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_MIN_EXAMPLES: "3"
+      RELATIONSHIP_ONTOLOGY_PROPOSALS_LIMIT_PER_TENANT: "500"
+
   # The UI + TLS edge (nginx-proxy / acme-companion) and the demo domain
   # (demo.fyralis.xyz) live in the demo overlay repo's docker-compose.demo.yml.
   # Core ships the backend gateway (exposed on :8000) + workers + data plane.

@@ -211,6 +211,33 @@ async def test_get_delta_returns_spec_shape(
             "why_this_matters": (
                 "Three anchor customers are reporting recurring sync failures."
             ),
+            "resolution_thread": {
+                "id": "rt-acme-deal-reality",
+                "title": "Restore Acme Expansion to a supportable late-stage path",
+                "status": "active",
+                "current_state": "Commit forecast is unsupported.",
+                "target_state": "Security review scheduled.",
+                "owner": "AE + RevOps",
+                "steps": [
+                    {
+                        "id": "step-security-owner",
+                        "label": "Assign internal security owner",
+                        "owner": "VP Sales Ops",
+                        "status": "waiting",
+                        "proof_needed": "Named owner appears in Slack.",
+                    }
+                ],
+                "watched_signals": [
+                    {
+                        "id": "watch-calendar",
+                        "label": "Buyer alignment meeting",
+                        "source_type": "Calendar",
+                        "expected": "CFO + security call appears this week.",
+                        "status": "missing",
+                    }
+                ],
+                "escalation_triggers": ["No buyer alignment meeting scheduled."],
+            },
         },
         consequence_preview={
             "creates": [],
@@ -253,6 +280,9 @@ async def test_get_delta_returns_spec_shape(
     assert any("signal" in m for m in metric_labels)
     assert any("confidence" in m for m in metric_labels)
     assert body["evidenceSummary"]["totalSignals"] == 3
+    assert body["resolutionThread"]["id"] == "rt-acme-deal-reality"
+    assert body["resolutionThread"]["steps"][0]["proofNeeded"] == "Named owner appears in Slack."
+    assert body["resolutionThread"]["watchedSignals"][0]["status"] == "missing"
     qualities = {g["sourceType"]: g["quality"] for g in body["evidenceSummary"]["groups"]}
     assert qualities["support"] == "strong"
     assert qualities["crm"] == "strong"
