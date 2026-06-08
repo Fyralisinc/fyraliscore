@@ -19,10 +19,13 @@ import pytest
 from services.app.webhooks.signatures import (
     brex,
     deel,
+    figma,
+    fireflies,
     grafana,
     gusto,
     jira,
     mercury,
+    miro,
     quickbooks,
     ramp,
 )
@@ -53,6 +56,12 @@ class _T:
         self.ramp_business = "ramp-biz-demo0"
         self.gusto_company = "gusto-co-demo0"
         self.deel_org = "deel-org-demo0"
+        # IN-FIN3 HMAC sources.
+        self.fireflies_workspace = "ffw-demo0"
+        self.miro_org = "miro-org-demo0"
+        self.miro_board = "miro-board-demo0"
+        self.figma_team = "figteam-demo0"
+        self.figma_file = "figfile-demo0"
 
 
 _VERIFIERS = {
@@ -60,6 +69,8 @@ _VERIFIERS = {
     "quickbooks": quickbooks.verifier, "grafana": grafana.verifier,
     "brex": brex.verifier, "ramp": ramp.verifier,
     "gusto": gusto.verifier, "deel": deel.verifier,
+    "fireflies": fireflies.verifier, "miro": miro.verifier,
+    "figma": figma.verifier,
 }
 _SECRET = "unit-secret"
 
@@ -92,7 +103,8 @@ async def test_tampered_signature_rejected(provider: str) -> None:
     body = json.dumps(payload).encode("utf-8")
     bad = (
         "sha256=" + ("f" * 64)
-        if provider in ("jira", "mercury", "brex", "deel")
+        if provider in ("jira", "mercury", "brex", "deel",
+                        "fireflies", "miro", "figma")
         else "f" * 64
     )
     with pytest.raises(WebhookVerificationError):
