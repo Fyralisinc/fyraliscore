@@ -7,6 +7,7 @@ ModelRows, and get coverage/miss diagnostics without invoking Think.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -104,7 +105,7 @@ async def run_topology_eval(
     rows = await conn.fetch(
         """
         SELECT id, candidate_kind, source_model_id, target_model_id,
-               edge_kind, member_model_ids
+               edge_kind, member_model_ids, proposed_proposition
         FROM relationship_candidates
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
@@ -145,18 +146,39 @@ def _find_pair_hit(
 ) -> UUID | None:
     wanted = {expected.left_model_id, expected.right_model_id}
     for row in rows:
-        if row["candidate_kind"] != "edge":
+        if row["candidate_kind"] not in {"edge", "edge_type"}:
             continue
-        actual = {row["source_model_id"], row["target_model_id"]}
+        actual = (
+            {row["source_model_id"], row["target_model_id"]}
+            if row["candidate_kind"] == "edge"
+            else set(row["member_model_ids"] or [])
+        )
         if actual != wanted:
             continue
+        edge_kind = row["edge_kind"]
+        if row["candidate_kind"] == "edge_type":
+            proposal = _decode_json(row["proposed_proposition"]) or {}
+            edge_kind = (
+                proposal.get("proposed_edge_kind")
+                if isinstance(proposal, dict)
+                else None
+            )
         if (
             expected.allowed_edge_kinds
-            and row["edge_kind"] not in expected.allowed_edge_kinds
+            and edge_kind not in expected.allowed_edge_kinds
         ):
             continue
         return row["id"]
     return None
+
+
+def _decode_json(value: object) -> object:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
 
 
 def _find_situation_hit(

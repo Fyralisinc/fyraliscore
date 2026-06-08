@@ -398,7 +398,7 @@ _EDGE_OP = {
         "op": {"type": "string", "enum": ["add", "retire"]},
         "source_model_id": _UUID_STR,
         "target_model_id": _UUID_STR,
-        "edge_kind": {"type": "string", "enum": _EDGE_KIND_ENUM},
+        "edge_kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
         "weight": {"anyOf": [{"type": "number"}, {"type": "null"}]},
         "confidence": {"type": "number"},
         "evidence_event_ids": {"type": "array", "items": _UUID_STR},
@@ -413,6 +413,59 @@ _EDGE_OP = {
 }
 
 
+_ONTOLOGY_GAP_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "source_model_id",
+        "target_model_id",
+        "proposed_edge_kind",
+        "description",
+        "relationship_summary",
+        "parent_kind",
+        "nearest_existing_kind",
+        "directionality",
+        "inverse_label",
+        "dropped_dimensions",
+        "evidence_event_ids",
+        "evidence_model_ids",
+        "confidence",
+        "impact",
+        "actionability",
+        "urgency",
+        "uncertainty",
+        "authority_required",
+        "novelty",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["propose_edge_type"]},
+        "source_model_id": _UUID_STR,
+        "target_model_id": _UUID_STR,
+        "proposed_edge_kind": {"type": "string"},
+        "description": {"type": "string"},
+        "relationship_summary": {"type": "string"},
+        "parent_kind": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "nearest_existing_kind": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "directionality": {
+            "type": "string",
+            "enum": ["directed", "symmetric", "unknown"],
+        },
+        "inverse_label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "dropped_dimensions": {"type": "array", "items": {"type": "string"}},
+        "evidence_event_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_model_ids": {"type": "array", "items": _UUID_STR},
+        "confidence": {"type": "number"},
+        "impact": {"type": "number"},
+        "actionability": {"type": "number"},
+        "urgency": {"type": "number"},
+        "uncertainty": {"type": "number"},
+        "authority_required": {"type": "number"},
+        "novelty": {"type": "number"},
+    },
+}
+
+
 RAW_DIFF_STRICT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
@@ -421,6 +474,7 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "tenant_id",
         "claim_ops",
         "edge_ops",
+        "ontology_gap_ops",
         "reasoning_trace",
     ],
     "properties": {
@@ -428,6 +482,7 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "tenant_id": _UUID_STR,
         "claim_ops": {"type": "array", "items": _CLAIM_OP_INSERT},
         "edge_ops": {"type": "array", "items": _EDGE_OP},
+        "ontology_gap_ops": {"type": "array", "items": _ONTOLOGY_GAP_OP},
         "reasoning_trace": {"type": "string"},
     },
 }

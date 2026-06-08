@@ -17,8 +17,15 @@ from services.reasoning.think.applier import (
     AlreadyAppliedError, apply_diff, hash_diff,
 )
 from services.reasoning.think.diff_schema import (
-    ActOp, ClaimOp, EdgeOp, ValidatedDiff,
+    ActOp,
+    ClaimOp,
+    EdgeOp,
+    OntologyGapOp,
+    ResourceOp,
+    ValidatedDiff,
 )
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.sage.reader import SynthesisReader
 from services.reasoning.think.text_embedding import deterministic_text_embedding
 
 
@@ -1619,6 +1626,320 @@ async def test_apply_edge_ops_add_and_retire(fresh_db, tenant, tenant_cleanup):
         assert {r["status_reason"] for r in statuses} == {
             "operator resolved the contradiction"
         }
+
+
+async def test_apply_ontology_gap_op_persists_candidate_and_feeds_sage(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Beacon launch is waiting on executive approval.",
+            external_id=f"ontology-gap-op-{uuid7()}",
+        )
+        blocker = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Beacon launch is blocked by security exception approval",
+        )
+        decision = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Executive sign off decision for the security exception is waiting",
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=blocker,
+                    target_model_id=decision,
+                    proposed_edge_kind="gated_by_decision",
+                    description="Progress depends on an explicit approval decision.",
+                    relationship_summary=(
+                        "Beacon launch cannot progress until executive sign off happens."
+                    ),
+                    parent_kind="blocks",
+                    nearest_existing_kind="blocks",
+                    directionality="directed",
+                    dropped_dimensions=[
+                        "authority surface",
+                        "approval state",
+                    ],
+                    evidence_event_ids=[oid],
+                    confidence=0.8,
+                    impact=0.9,
+                    actionability=0.8,
+                    authority_required=0.9,
+                )
+            ],
+        )
+        async with conn.transaction():
+            apply_result = await apply_diff(diff, conn, "T1", oid)
+
+        assert len(apply_result["ontology_gap_ops"]) == 1
+        candidate_id = apply_result["ontology_gap_ops"][0][
+            "relationship_candidate_id"
+        ]
+        row = await conn.fetchrow(
+            """
+            SELECT candidate_kind, basis, member_model_ids, proposed_proposition,
+                   metadata, source
+            FROM relationship_candidates
+            WHERE id = $1
+              AND tenant_id = $2
+            """,
+            UUID(candidate_id),
+            tenant,
+        )
+        assert row is not None
+        proposed = (
+            json.loads(row["proposed_proposition"])
+            if isinstance(row["proposed_proposition"], str)
+            else row["proposed_proposition"]
+        )
+        metadata = (
+            json.loads(row["metadata"])
+            if isinstance(row["metadata"], str)
+            else row["metadata"]
+        )
+        assert row["candidate_kind"] == "edge_type"
+        assert row["basis"] == "ontology_gap"
+        assert row["member_model_ids"] == [blocker, decision]
+        assert proposed["proposed_edge_kind"] == "gated_by_decision"
+        assert metadata["ontology_gap"]["retrieval_fallback_kind"] == (
+            "blocks"
+        )
+        assert row["source"] == "think_ontology_gap_op"
+
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant,
+            trigger=TriggerContext(
+                kind="T1",
+                tenant_id=tenant,
+                observation_id=oid,
+                seed_natural_text="What is blocking Beacon launch?",
+                member_model_ids=[blocker],
+                precomputed_seed_vector=[0.0] * 768,
+            ),
+            question_id="Q_DEPENDENCY",
+            question="What is blocking Beacon launch?",
+            question_primitive="DEPENDENCY",
+            hypotheses=(),
+        )
+
+    assert decision in {model.id for model in result.models}
+    trace = next(trace for trace in result.activations if trace.model_id == decision)
+    assert any("propagated:blocks" in reason for reason in trace.activation_reasons)
+
+
+async def test_apply_diverse_ontology_gap_matrix_persists_and_feeds_sage(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    shapes = [
+        {
+            "kind": "gated_by_decision",
+            "fallback": "blocks",
+            "primitive": "DEPENDENCY",
+            "question": "What is blocking Atlas launch?",
+            "source": "Atlas launch is blocked by a pricing exception gate",
+            "target": "Finance approval decision for the Atlas exception is waiting",
+            "description": "Progress depends on a specific approval decision.",
+            "summary": "Atlas launch cannot progress until finance approval happens.",
+            "dropped": ["authority surface", "approval state"],
+        },
+        {
+            "kind": "depends_on_assumption",
+            "fallback": "supports",
+            "primitive": "DEPENDENCY",
+            "question": "Which assumptions does the Atlas plan depend on?",
+            "source": "Atlas rollout plan assumes partner onboarding will finish by Friday",
+            "target": "Partner onboarding completion by Friday is still unproven",
+            "description": "The plan rests on an assumption that may later fail.",
+            "summary": "The target assumption underpins whether the source plan remains valid.",
+            "dropped": ["assumption dependency", "future fragility"],
+        },
+        {
+            "kind": "transfers_risk_to",
+            "fallback": "early_warning_for",
+            "primitive": "CONSTRAINT",
+            "question": "Where does the Atlas mitigation move risk?",
+            "source": "Atlas support defers migration work to reduce release risk",
+            "target": "Deferred migration creates renewal risk for enterprise accounts",
+            "description": "One mitigation reduces local risk by moving it elsewhere.",
+            "summary": "The source action creates an early warning on the target risk surface.",
+            "dropped": ["risk recipient", "second order consequence"],
+        },
+        {
+            "kind": "competes_for_priority_with",
+            "fallback": "blocks",
+            "primitive": "CONSTRAINT",
+            "question": "Which work competes with the Atlas priority?",
+            "source": "Atlas security review needs the same architecture review slot",
+            "target": "Helios reliability review is already using the review slot",
+            "description": "Two initiatives draw from the same finite decision capacity.",
+            "summary": "The source can delay the target because both compete for priority.",
+            "dropped": ["shared priority budget", "capacity conflict"],
+        },
+        {
+            "kind": "accountable_for",
+            "fallback": "explains",
+            "primitive": "OWNERSHIP",
+            "question": "Who is accountable for the Atlas handoff?",
+            "source": "Atlas customer handoff outcome lacks an accountable owner",
+            "target": "Mira owns the Atlas customer handoff outcome this week",
+            "description": "One model names the owner accountable for another outcome.",
+            "summary": "The target explains who is accountable for the source outcome.",
+            "dropped": ["ownership", "accountability surface"],
+        },
+        {
+            "kind": "proxy_for",
+            "fallback": "predicts",
+            "primitive": "PATTERN",
+            "question": "Which signal is a proxy for Atlas customer confidence?",
+            "source": "Atlas weekly admin-login drop is a measurable confidence signal",
+            "target": "Atlas customer confidence is weakening before renewal",
+            "description": "A measurable signal stands in for a harder-to-measure state.",
+            "summary": "Movement in the source signal predicts the target latent state.",
+            "dropped": ["latent variable", "measurement proxy"],
+        },
+    ]
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Atlas ontology-gap matrix evidence.",
+            external_id=f"ontology-gap-matrix-{uuid7()}",
+        )
+        pairs = []
+        for shape in shapes:
+            source = await _insert_applier_model(
+                conn,
+                tenant,
+                oid,
+                shape["source"],
+            )
+            target = await _insert_applier_model(
+                conn,
+                tenant,
+                oid,
+                shape["target"],
+            )
+            pairs.append((source, target))
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            ontology_gap_ops=[
+                OntologyGapOp(
+                    source_model_id=source,
+                    target_model_id=target,
+                    proposed_edge_kind=shape["kind"],
+                    description=shape["description"],
+                    relationship_summary=shape["summary"],
+                    parent_kind=shape["fallback"],
+                    nearest_existing_kind=shape["fallback"],
+                    directionality="directed",
+                    dropped_dimensions=shape["dropped"],
+                    evidence_event_ids=[oid],
+                    confidence=0.78,
+                    impact=0.86,
+                    actionability=0.73,
+                    urgency=0.64,
+                    uncertainty=0.58,
+                    authority_required=0.42,
+                    novelty=0.92,
+                )
+                for shape, (source, target) in zip(shapes, pairs, strict=True)
+            ],
+        )
+        async with conn.transaction():
+            apply_result = await apply_diff(diff, conn, "T1", oid)
+
+        assert len(apply_result["ontology_gap_ops"]) == len(shapes)
+        rows = await conn.fetch(
+            """
+            SELECT id, candidate_kind, basis, member_model_ids,
+                   proposed_proposition, metadata, source
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+            """,
+            tenant,
+            [
+                UUID(summary["relationship_candidate_id"])
+                for summary in apply_result["ontology_gap_ops"]
+            ],
+        )
+        rows_by_kind = {}
+        for row in rows:
+            proposed = (
+                json.loads(row["proposed_proposition"])
+                if isinstance(row["proposed_proposition"], str)
+                else row["proposed_proposition"]
+            )
+            rows_by_kind[proposed["proposed_edge_kind"]] = row
+
+        for shape, (source, target) in zip(shapes, pairs, strict=True):
+            row = rows_by_kind[shape["kind"]]
+            proposed = (
+                json.loads(row["proposed_proposition"])
+                if isinstance(row["proposed_proposition"], str)
+                else row["proposed_proposition"]
+            )
+            metadata = (
+                json.loads(row["metadata"])
+                if isinstance(row["metadata"], str)
+                else row["metadata"]
+            )
+            assert row["candidate_kind"] == "edge_type"
+            assert row["basis"] == "ontology_gap"
+            assert row["source"] == "think_ontology_gap_op"
+            assert row["member_model_ids"] == [source, target]
+            assert proposed["proposed_edge_kind"] == shape["kind"]
+            assert proposed["parent_kind"] == shape["fallback"]
+            assert metadata["ontology_gap"]["retrieval_fallback_kind"] == (
+                shape["fallback"]
+            )
+
+            result = await SynthesisReader().read(
+                conn=conn,
+                tenant_id=tenant,
+                trigger=TriggerContext(
+                    kind="T1",
+                    tenant_id=tenant,
+                    observation_id=oid,
+                    seed_natural_text=shape["question"],
+                    member_model_ids=[source],
+                    precomputed_seed_vector=[0.0] * 768,
+                ),
+                question_id=f"Q_{shape['kind'].upper()}",
+                question=shape["question"],
+                question_primitive=shape["primitive"],
+                hypotheses=(),
+            )
+            assert target in {model.id for model in result.models}
+            trace = next(
+                trace for trace in result.activations if trace.model_id == target
+            )
+            assert trace.selected is True
+            assert any(
+                f"propagated:{shape['fallback']}" in reason
+                for reason in trace.activation_reasons
+            )
 
 
 async def test_apply_edge_cycle_is_dropped_not_transaction_fatal(

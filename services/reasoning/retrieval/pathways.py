@@ -1183,6 +1183,7 @@ async def pathway_c_temporal(
     scope_actors: Sequence[UUID] | None = None,
     scope_entities: Sequence[dict[str, Any]] | None = None,
     max_observations: int = _TEMPORAL_MAX_OBSERVATIONS,
+    max_models: int = 200,
     include_entity_mentions: bool = True,
 ) -> PathwayResult:
     """
@@ -1212,6 +1213,8 @@ async def pathway_c_temporal(
         "end": end.isoformat(),
         "scope_actors_count": len(scope_actors or []),
         "scope_entities_count": len(scope_entities or []),
+        "max_observations": int(max_observations),
+        "max_models": int(max_models),
         "include_entity_mentions": include_entity_mentions,
     }
     entity_list: list[dict[str, str]] = []
@@ -1279,7 +1282,10 @@ async def pathway_c_temporal(
         model_scope_clauses.append(f"scope_entities @> ${len(model_params)}::jsonb")
     if model_scope_clauses:
         model_sql += " AND (" + " OR ".join(model_scope_clauses) + ")"
-    model_sql += " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT 200"
+    model_sql += (
+        " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT "
+        + str(max(1, int(max_models)))
+    )
     model_rows = await conn.fetch(model_sql, *model_params)
     models = _hydrate_many(model_rows, _hydrate_model, notes, "models")
 

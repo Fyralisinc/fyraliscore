@@ -1,5 +1,5 @@
 """
-Context assembler tests — access control stub, size bounds, bridge
+Context assembler tests — access control stub, size bounds, customer
 context.
 """
 from __future__ import annotations
@@ -153,7 +153,7 @@ async def test_assembler_access_redacts_private_model_for_outside_actor(
         assert private_model_id in {m.id for m in bundle_hero.models}
 
 
-async def test_assembler_bridge_context_populated_when_counterparty_present(
+async def test_assembler_customer_context_populated_when_counterparty_present(
     tx_conn, fresh_db, tenant
 ):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
@@ -165,14 +165,14 @@ async def test_assembler_bridge_context_populated_when_counterparty_present(
         AccessContext(tenant_id=tenant, requestor_actor_id=None),
         tx_conn,
     )
-    # Bridge context should be populated if hero_commitment has a
+    # Customer context should be populated if hero_commitment has a
     # counterparty (i=0 → yes, i%5==0).
-    assert bundle.bridge_context is not None or True  # may not be in top-10 slice
-    if bundle.bridge_context is not None:
-        assert "customers" in bundle.bridge_context
+    assert bundle.customer_context is not None or True  # may not be in top-10 slice
+    if bundle.customer_context is not None:
+        assert "customers" in bundle.customer_context
 
 
-async def test_assembler_bridge_context_none_without_counterparty(
+async def test_assembler_customer_context_none_without_counterparty(
     tx_conn, fresh_db, tenant
 ):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
@@ -186,7 +186,7 @@ async def test_assembler_bridge_context_none_without_counterparty(
     )
     # Because we seed on c1 and its goal-siblings may include c0 with
     # counterparty, we only assert that if no commit in the summary
-    # has a counterparty, bridge_context is None.
+    # has a counterparty, customer_context is None.
     have_ref = any(
         c.external_counterparty_ref is not None
         for c in bundle.acts_summary["commitments"]
@@ -203,10 +203,10 @@ async def test_assembler_bridge_context_none_without_counterparty(
     has_linkage = len(linked_rows) > 0
 
     if not have_ref and not has_linkage:
-        assert bundle.bridge_context is None
+        assert bundle.customer_context is None
     else:
-        # If any commit is linked, bridge context should populate.
-        assert bundle.bridge_context is not None
+        # If any commit is linked, customer context should populate.
+        assert bundle.customer_context is not None
 
 
 async def test_assembler_tenant_filter_drops_foreign_items(

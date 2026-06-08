@@ -78,15 +78,15 @@ import asyncpg
 from lib.shared.edge_registry import (
     EdgeKindSpec,
     EdgeRegistryError,
-    assert_writable,
     cycle_scope_for,
-    get_spec,
-    is_symmetric,
-    validate_weight,
 )
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import EdgeDetectedBy
+from services.reasoning.relationships.ontology_runtime import (
+    resolve_edge_kind_spec,
+    validate_weight_for_spec,
+)
 
 
 # Legacy accepted-memory topology used to recompute positional graph
@@ -122,6 +122,7 @@ _SELECT_COLS_SQL = (
 )
 
 _ALLOWED_DETECTED_BY = set(get_args(EdgeDetectedBy))
+_MISSING_CYCLE_SCOPE = object()
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
@@ -204,9 +205,9 @@ class EdgesRepo:
             rule violation, mutually-exclusive violation
           - ValidationError: self-edge attempt, missing tenant_id
         """
-        # Registry validation (does this kind exist + is it writable?).
-        spec = assert_writable(kind)
-        validate_weight(kind, weight)
+        # Registry validation (static kind or accepted ontology proposal).
+        spec = await resolve_edge_kind_spec(conn, tenant_id=tenant_id, kind=kind)
+        validate_weight_for_spec(spec, weight)
         confidence = _validate_confidence(confidence)
         event_evidence = _unique_uuid_list(evidence_event_ids)
         model_evidence = _unique_uuid_list(evidence_model_ids)
@@ -243,7 +244,7 @@ class EdgesRepo:
             target=target,
             tenant_id=tenant_id,
         )
-        if is_symmetric(kind):
+        if not spec.is_directed:
             await self._check_mutual_exclusion(
                 conn,
                 spec=spec,
@@ -254,7 +255,7 @@ class EdgesRepo:
             )
 
         # DAG cycle check across the kind's cycle_scope.
-        scope = cycle_scope_for(kind)
+        scope = spec.cycle_scope
         if scope is not None:
             await self.check_no_cycle(
                 conn,
@@ -262,6 +263,7 @@ class EdgesRepo:
                 source=source,
                 targets=[target],
                 tenant_id=tenant_id,
+                cycle_scope=scope,
             )
 
         # Insert one or two rows.
@@ -283,7 +285,7 @@ class EdgesRepo:
             decay_after=decay_after,
             expires_at=expires_at,
         )
-        if is_symmetric(kind):
+        if not spec.is_directed:
             mirror_ids = await self._insert_one(
                 conn,
                 source=target,  # swap
@@ -492,9 +494,9 @@ class EdgesRepo:
         # Note: we don't check writable here — unlinking a reserved
         # kind is fine (it just won't find anything since you couldn't
         # have written it). But invalid kind names should still error.
-        get_spec(kind)  # raises if unknown
+        spec = await resolve_edge_kind_spec(conn, tenant_id=tenant_id, kind=kind)
 
-        if is_symmetric(kind):
+        if not spec.is_directed:
             count = await conn.fetchval(
                 """
                 WITH d AS (
@@ -563,8 +565,8 @@ class EdgesRepo:
         Unlike unlink(), this marks the edge inert and sets
         review_status='retired'. Symmetric kinds retire both mirror rows.
         """
-        get_spec(kind)  # raises if unknown
-        if is_symmetric(kind):
+        spec = await resolve_edge_kind_spec(conn, tenant_id=tenant_id, kind=kind)
+        if not spec.is_directed:
             rows = await conn.fetch(
                 f"""
                 UPDATE model_edges
@@ -745,6 +747,7 @@ class EdgesRepo:
         source: UUID,
         targets: Iterable[UUID],
         tenant_id: UUID,
+        cycle_scope: frozenset[str] | None | object = _MISSING_CYCLE_SCOPE,
     ) -> None:
         """Reject (source, t) edges for t in `targets` if any would
         create a cycle in the kind's cycle_scope. The scope is a SET
@@ -762,7 +765,18 @@ class EdgesRepo:
         For the empty-scope case (kind not DAG-required), this is a
         no-op.
         """
-        scope = cycle_scope_for(kind)
+        if cycle_scope is _MISSING_CYCLE_SCOPE:
+            try:
+                scope = cycle_scope_for(kind)
+            except EdgeRegistryError:
+                spec = await resolve_edge_kind_spec(
+                    conn,
+                    tenant_id=tenant_id,
+                    kind=kind,
+                )
+                scope = spec.cycle_scope
+        else:
+            scope = cycle_scope
         if scope is None:
             return
         target_list = [t for t in targets if t != source]

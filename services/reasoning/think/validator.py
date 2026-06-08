@@ -43,12 +43,13 @@ commitments table to verify the ref exists.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, get_args
 from uuid import UUID
 
 import asyncpg
 
-from lib.shared.edge_registry import EdgeRegistryError
+from lib.shared.edge_registry import EDGE_REGISTRY, EdgeRegistryError
 from lib.shared.errors import (
     CompanyOSError,
     FalsifierInadequateError,
@@ -70,7 +71,15 @@ from services.domain.models.falsifier import is_adequate_falsifier
 from services.domain.models.propositions import validate_proposition
 from services.domain.resources.transactions import VALID_TRANSACTION_TYPES
 
-from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
+from .diff_schema import (
+    ActOp,
+    ClaimOp,
+    EdgeOp,
+    OntologyGapOp,
+    RawDiff,
+    ResourceOp,
+    ValidatedDiff,
+)
 from .observability import log_dropped_op
 from .thresholds import compute_threshold
 
@@ -207,6 +216,23 @@ def _classify_edge_drop_reason(exc: Exception) -> str:
         return "cycle_prevention"
     if "explanation" in msg:
         return "missing_explanation"
+    return "unclassified"
+
+
+def _classify_ontology_gap_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "already exists" in msg:
+        return "edge_kind_already_registered"
+    if "fallback" in msg or "parent" in msg or "nearest" in msg:
+        return "invalid_fallback_kind"
+    if "not found" in msg or "missing model" in msg:
+        return "missing_model_reference"
+    if "active model endpoints" in msg:
+        return "inactive_model_reference"
+    if "self-edge" in msg or "requires" in msg or "snake_case" in msg:
+        return "invalid_shape"
+    if "score" in msg or "confidence" in msg:
+        return "invalid_score"
     return "unclassified"
 
 
@@ -409,6 +435,15 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
             if _coerce_uuid(model_id) in pending_model_event_ids:
                 continue
             out.append(("model", str(model_id)))
+    for op in diff.ontology_gap_ops:
+        for model_id in (op.source_model_id, op.target_model_id):
+            if _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
+        for model_id in op.evidence_model_ids:
+            if _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
     for op in diff.act_ops:
         ent = op.entity or {}
         if op.op in (
@@ -561,6 +596,7 @@ async def validate(
     total_ops = (
         len(diff.claim_ops)
         + len(diff.edge_ops)
+        + len(diff.ontology_gap_ops)
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
@@ -580,6 +616,7 @@ async def validate(
 
     validated_claim_ops: list[ClaimOp] = []
     validated_edge_ops: list[EdgeOp] = []
+    validated_ontology_gap_ops: list[OntologyGapOp] = []
     validated_act_ops: list[ActOp] = []
     validated_resource_ops: list[ResourceOp] = []
     neutralized_op_count = 0
@@ -683,6 +720,36 @@ async def validate(
             continue
         validated_edge_ops.append(v_op)
 
+    # --- ontology_gap_ops -----------------------------------------
+    for op in diff.ontology_gap_ops:
+        try:
+            v_op = await _validate_ontology_gap_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                pending_model_event_ids=set(pending_claim_basis_confidence),
+            )
+        except (ValidationError, EdgeRegistryError) as e:
+            reason = _classify_ontology_gap_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"ontology_gap_op {op.op}: {msg}")
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="ontology_gap",
+                failure_reason=reason,
+                original_op=op,
+            )
+            await _emit_validation_drop_event(
+                op_type="ontology_gap",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+            )
+            continue
+        validated_ontology_gap_ops.append(v_op)
+
     # --- act_ops ---------------------------------------------------
     for op in diff.act_ops:
         try:
@@ -751,6 +818,7 @@ async def validate(
     any_survived = bool(
         validated_claim_ops
         or validated_edge_ops
+        or validated_ontology_gap_ops
         or validated_act_ops
         or validated_resource_ops
     )
@@ -767,6 +835,7 @@ async def validate(
         tenant_id=diff.tenant_id,
         claim_ops=validated_claim_ops,
         edge_ops=validated_edge_ops,
+        ontology_gap_ops=validated_ontology_gap_ops,
         act_ops=validated_act_ops,
         resource_ops=validated_resource_ops,
         new_predictions=[op for op in diff.new_predictions if op.op == "insert"],
@@ -1082,15 +1151,22 @@ async def _validate_edge_op(
     pending_model_event_ids: set[UUID] | None = None,
     pending_edge_ops: list[EdgeOp] | None = None,
 ) -> EdgeOp | None:
-    from lib.shared.edge_registry import assert_writable, validate_weight
+    from services.reasoning.relationships.ontology_runtime import (
+        resolve_edge_kind_spec,
+        validate_weight_for_spec,
+    )
 
     if op.source_model_id == op.target_model_id:
         raise ValidationError(
             "edge_op self-edge not allowed",
             model_id=str(op.source_model_id),
         )
-    spec = assert_writable(op.edge_kind)
-    validate_weight(op.edge_kind, op.weight)
+    spec = await resolve_edge_kind_spec(
+        conn,
+        tenant_id=tenant_id,
+        kind=op.edge_kind,
+    )
+    validate_weight_for_spec(spec, op.weight)
     if not (0.0 <= float(op.confidence) <= 1.0):
         raise ValidationError(
             "edge_op confidence must be in [0, 1]",
@@ -1170,6 +1246,114 @@ async def _validate_edge_op(
     return op
 
 
+_PROPOSED_EDGE_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+
+
+async def _validate_ontology_gap_op(
+    op: OntologyGapOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID] | None = None,
+) -> OntologyGapOp:
+    if op.source_model_id == op.target_model_id:
+        raise ValidationError(
+            "ontology_gap_op self-edge example not allowed",
+            model_id=str(op.source_model_id),
+        )
+    proposed = (op.proposed_edge_kind or "").strip()
+    if not _PROPOSED_EDGE_KIND_RE.match(proposed):
+        raise ValidationError(
+            "ontology_gap_op proposed_edge_kind must be snake_case",
+            proposed_edge_kind=op.proposed_edge_kind,
+        )
+    from services.reasoning.relationships.ontology_runtime import is_edge_kind_writable
+
+    if await is_edge_kind_writable(conn, tenant_id=tenant_id, kind=proposed):
+        raise ValidationError(
+            "ontology_gap_op proposed_edge_kind already exists; use edge_ops",
+            proposed_edge_kind=proposed,
+        )
+    if len((op.description or "").strip()) < 12:
+        raise ValidationError("ontology_gap_op requires a description")
+    if len((op.relationship_summary or "").strip()) < 12:
+        raise ValidationError("ontology_gap_op requires relationship_summary")
+    dropped = [str(item).strip() for item in op.dropped_dimensions if str(item).strip()]
+    if not dropped:
+        raise ValidationError(
+            "ontology_gap_op requires dropped_dimensions explaining semantic loss"
+        )
+
+    for label, kind in (
+        ("parent_kind", op.parent_kind),
+        ("nearest_existing_kind", op.nearest_existing_kind),
+    ):
+        if kind is None:
+            continue
+        if str(kind).strip() not in EDGE_REGISTRY:
+            raise ValidationError(
+                f"ontology_gap_op {label} fallback edge kind is not registered",
+                **{label: kind},
+            )
+
+    for label, value in (
+        ("confidence", op.confidence),
+        ("impact", op.impact),
+        ("actionability", op.actionability),
+        ("urgency", op.urgency),
+        ("uncertainty", op.uncertainty),
+        ("authority_required", op.authority_required),
+        ("novelty", op.novelty),
+    ):
+        if not (0.0 <= float(value) <= 1.0):
+            raise ValidationError(
+                f"ontology_gap_op {label} score must be in [0, 1]",
+                score=value,
+            )
+
+    model_ids = [op.source_model_id, op.target_model_id, *op.evidence_model_ids]
+    rows = await conn.fetch(
+        """
+        SELECT id, status FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(dict.fromkeys(model_ids)),
+    )
+    found = {r["id"]: r["status"] for r in rows}
+    pending_model_event_ids = pending_model_event_ids or set()
+    missing = [
+        str(mid)
+        for mid in model_ids
+        if mid not in found and mid not in pending_model_event_ids
+    ]
+    if missing:
+        raise ValidationError(
+            f"ontology_gap_op references {len(missing)} missing model(s)",
+            missing=missing,
+        )
+    inactive = [
+        str(mid)
+        for mid in (op.source_model_id, op.target_model_id)
+        if mid in found and found[mid] != "active"
+    ]
+    if inactive:
+        raise ValidationError(
+            "ontology_gap_op requires active model endpoints",
+            inactive=inactive,
+        )
+
+    return op.model_copy(
+        update={
+            "proposed_edge_kind": proposed,
+            "description": op.description.strip(),
+            "relationship_summary": op.relationship_summary.strip(),
+            "dropped_dimensions": dropped,
+        }
+    )
+
+
 async def _edge_would_create_cycle(
     op: EdgeOp,
     conn: asyncpg.Connection,
@@ -1177,9 +1361,14 @@ async def _edge_would_create_cycle(
     tenant_id: UUID,
     pending_edge_ops: list[EdgeOp] | None = None,
 ) -> bool:
-    from lib.shared.edge_registry import cycle_scope_for
+    from services.reasoning.relationships.ontology_runtime import resolve_edge_kind_spec
 
-    scope = cycle_scope_for(op.edge_kind)
+    spec = await resolve_edge_kind_spec(
+        conn,
+        tenant_id=tenant_id,
+        kind=op.edge_kind,
+    )
+    scope = spec.cycle_scope
     if scope is None:
         return False
 

@@ -13,6 +13,7 @@ from services.reasoning.relationships import (
     candidate_id_from_trigger,
     load_candidate_for_trigger,
     make_edge_candidate,
+    make_edge_type_candidate,
     make_situation_candidate,
 )
 from services.reasoning.retrieval.primary import TriggerContext
@@ -111,6 +112,68 @@ async def test_adjudication_accepts_candidate_when_edge_applied(
     assert row["accepted_edge_ids"] == [edge_id]
     assert row["metadata"]["latest_adjudication"]["reason"] == (
         "think_promoted_candidate_to_durable_memory"
+    )
+
+
+async def test_adjudication_does_not_promote_edge_type_as_normal_edge(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    left = uuid7()
+    right = uuid7()
+    edge_id = uuid7()
+    repo = RelationshipCandidatesRepo()
+    candidate = make_edge_type_candidate(
+        tenant_id=tenant_id,
+        proposed_edge_kind="gated_by_decision",
+        description="Progress depends on an explicit decision gate.",
+        relationship_summary="The edge type needs ontology promotion first.",
+        nearest_existing_kind="blocks",
+        parent_kind="blocks",
+        example_source_model_id=left,
+        example_target_model_id=right,
+        scores=JudgmentScores(impact=0.9, actionability=0.8, confidence=0.6),
+    )
+
+    async with fresh_db.acquire() as conn:
+        await repo.insert(conn, candidate)
+        result = await adjudicate_candidate_for_trigger(
+            conn,
+            trigger=_trigger(tenant_id, candidate.id, [left, right]),
+            diff=_diff(
+                tenant_id,
+                edge_ops=[
+                    EdgeOp(
+                        op="add",
+                        source_model_id=left,
+                        target_model_id=right,
+                        edge_kind="blocks",
+                    )
+                ],
+            ),
+            applied={
+                "edge_ops": [
+                    {
+                        "op": "add",
+                        "edge_kind": "blocks",
+                        "source_model_id": str(left),
+                        "target_model_id": str(right),
+                        "edge_ids": [str(edge_id)],
+                        "review_status": "accepted",
+                    }
+                ],
+            },
+        )
+        row = await repo.get(conn, candidate_id=candidate.id, tenant_id=tenant_id)
+
+    assert result is not None
+    assert result.review_status == "needs_review"
+    assert result.accepted_edge_ids == ()
+    assert row is not None
+    assert row["review_status"] == "needs_review"
+    assert row["accepted_edge_ids"] == []
+    assert row["metadata"]["latest_adjudication"]["reason"] == (
+        "edge_type_candidate_requires_ontology_promotion"
     )
 
 

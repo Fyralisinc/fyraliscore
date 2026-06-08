@@ -46,7 +46,15 @@ from services.domain.resources import repo as resources_repo
 from services.domain.resources.transactions import record_transaction
 from services.domain.resources.deployments import release as release_deployment
 
-from .diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff, ResourceOp, ValidatedDiff
+from .diff_schema import (
+    ActOp,
+    ClaimOp,
+    EdgeOp,
+    OntologyGapOp,
+    RawDiff,
+    ResourceOp,
+    ValidatedDiff,
+)
 from .observability import log_dropped_op
 from .quality_gate import QualityContext, QualityVerdict, apply_verdict, score_quality
 from .splitter import split_compound_claim_op
@@ -79,6 +87,9 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
         "tenant_id": str(diff.tenant_id),
         "claim_ops": [op.model_dump(mode="json") for op in diff.claim_ops],
         "edge_ops": [op.model_dump(mode="json") for op in diff.edge_ops],
+        "ontology_gap_ops": [
+            op.model_dump(mode="json") for op in diff.ontology_gap_ops
+        ],
         "act_ops": [op.model_dump(mode="json") for op in diff.act_ops],
         "resource_ops": [op.model_dump(mode="json") for op in diff.resource_ops],
     }
@@ -180,6 +191,7 @@ async def apply_diff(
     ops_summary: dict[str, Any] = {
         "claim_ops": [],
         "edge_ops": [],
+        "ontology_gap_ops": [],
         "act_ops": [],
         "resource_ops": [],
         "synthesis_decisions": summarize_synthesis_decisions(diff),
@@ -487,7 +499,53 @@ async def apply_diff(
             continue
         ops_summary["edge_ops"].append(result["summary"])
 
-    # --- 3. act_ops -----------------------------------------------
+    # --- 3. ontology_gap_ops --------------------------------------
+    for op in diff.ontology_gap_ops:
+        op = _resolve_pending_ontology_gap_model_refs(
+            op,
+            pending_model_ids_by_event_id,
+        )
+        if op.source_model_id == op.target_model_id:
+            ops_summary["ontology_gap_ops"].append({
+                "op": "skip",
+                "proposed_edge_kind": op.proposed_edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "reason": "resolved_to_same_model_after_reconciliation",
+            })
+            continue
+        try:
+            result = await _apply_ontology_gap_op(
+                op,
+                conn,
+                diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except ValidationError as exc:
+            reason = _classify_apply_ontology_gap_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="ontology_gap",
+                failure_reason=reason,
+                original_op=op,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["ontology_gap_ops"].append({
+                "op": "skip",
+                "proposed_edge_kind": op.proposed_edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "reason": reason,
+                "message": message,
+            })
+            continue
+        ops_summary["ontology_gap_ops"].append(result["summary"])
+
+    # --- 4. act_ops -----------------------------------------------
     for op in diff.act_ops:
         if op.confidence_basis in pending_model_ids_by_event_id:
             op = op.model_copy(
@@ -525,7 +583,7 @@ async def apply_diff(
         ops_summary["act_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
 
-    # --- 4. resource_ops ------------------------------------------
+    # --- 5. resource_ops ------------------------------------------
     for op in diff.resource_ops:
         try:
             result = await _apply_resource_op(
@@ -659,6 +717,14 @@ async def _emit_valid_diff_outcome_events(
             node_ids.add(op.source_model_id)
         if isinstance(getattr(op, "target_model_id", None), UUID):
             node_ids.add(op.target_model_id)
+    for op in diff.ontology_gap_ops:
+        if isinstance(getattr(op, "source_model_id", None), UUID):
+            node_ids.add(op.source_model_id)
+        if isinstance(getattr(op, "target_model_id", None), UUID):
+            node_ids.add(op.target_model_id)
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
     for op in diff.act_ops:
         basis = getattr(op, "confidence_basis", None)
         if isinstance(basis, UUID):
@@ -801,6 +867,32 @@ def _resolve_pending_edge_model_refs(
     return op.model_copy(update=updates) if updates else op
 
 
+def _resolve_pending_ontology_gap_model_refs(
+    op: OntologyGapOp,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> OntologyGapOp:
+    updates: dict[str, Any] = {}
+    source_model_id = pending_model_ids_by_event_id.get(
+        op.source_model_id,
+        op.source_model_id,
+    )
+    target_model_id = pending_model_ids_by_event_id.get(
+        op.target_model_id,
+        op.target_model_id,
+    )
+    if source_model_id != op.source_model_id:
+        updates["source_model_id"] = source_model_id
+    if target_model_id != op.target_model_id:
+        updates["target_model_id"] = target_model_id
+    evidence_model_ids = [
+        pending_model_ids_by_event_id.get(model_id, model_id)
+        for model_id in op.evidence_model_ids
+    ]
+    if evidence_model_ids != op.evidence_model_ids:
+        updates["evidence_model_ids"] = evidence_model_ids
+    return op.model_copy(update=updates) if updates else op
+
+
 def _audit_jsonable(v: Any) -> Any:
     """Coerce a Python value into something JSON/JSONB can store."""
     if isinstance(v, (str, int, float, bool)) or v is None:
@@ -849,6 +941,15 @@ def _classify_apply_edge_drop_reason(exc: Exception) -> str:
         return "invalid_confidence"
     if "detected_by" in msg or "review_status" in msg:
         return "invalid_shape"
+    return "unclassified"
+
+
+def _classify_apply_ontology_gap_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "self-edge" in msg:
+        return "invalid_shape"
+    if "constraint" in msg or "candidate" in msg:
+        return "candidate_persistence_failed"
     return "unclassified"
 
 
@@ -1577,6 +1678,7 @@ def _summarize_memory_aggregation(
         "near_duplicate_absorptions": len(near_duplicate_absorptions),
         "skipped_claim_writes": len(skipped),
         "edge_ops": len(ops_summary.get("edge_ops") or []),
+        "ontology_gap_ops": len(ops_summary.get("ontology_gap_ops") or []),
         "act_ops": len(ops_summary.get("act_ops") or []),
         "resource_ops": len(ops_summary.get("resource_ops") or []),
         "new_model_pressure": (
@@ -2320,6 +2422,81 @@ async def _apply_edge_op(
             "state_changes": 0,
         }
     raise ValidationError(f"unknown edge_op: {op.op!r}")
+
+
+async def _apply_ontology_gap_op(
+    op: OntologyGapOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any]:
+    from services.reasoning.relationships import (
+        JudgmentScores,
+        RelationshipCandidatesRepo,
+        make_edge_type_candidate,
+    )
+
+    evidence_model_ids = tuple(
+        dict.fromkeys([
+            op.source_model_id,
+            op.target_model_id,
+            *op.evidence_model_ids,
+        ])
+    )
+    evidence_event_ids = tuple(dict.fromkeys([
+        *(op.evidence_event_ids or []),
+        *([cause_event_id] if cause_event_id is not None else []),
+    ]))
+    candidate = make_edge_type_candidate(
+        tenant_id=tenant_id,
+        proposed_edge_kind=op.proposed_edge_kind,
+        description=op.description,
+        relationship_summary=op.relationship_summary,
+        parent_kind=op.parent_kind,
+        nearest_existing_kind=op.nearest_existing_kind,
+        directionality=op.directionality,
+        inverse_label=op.inverse_label,
+        dropped_dimensions=tuple(op.dropped_dimensions),
+        evidence_model_ids=evidence_model_ids,
+        evidence_event_ids=evidence_event_ids,
+        example_source_model_id=op.source_model_id,
+        example_target_model_id=op.target_model_id,
+        scores=JudgmentScores(
+            impact=op.impact,
+            uncertainty=op.uncertainty,
+            urgency=op.urgency,
+            actionability=op.actionability,
+            authority_required=op.authority_required,
+            novelty=op.novelty,
+            confidence=op.confidence,
+        ),
+        source="think_ontology_gap_op",
+        metadata={
+            "think": {
+                "op": op.op,
+                "cause_event_id": str(cause_event_id) if cause_event_id else None,
+            }
+        },
+    )
+    row = await RelationshipCandidatesRepo().insert(conn, candidate)
+    proposed = row["proposed_proposition"]["proposed_edge_kind"]
+    fallback = row["metadata"].get("ontology_gap", {}).get(
+        "retrieval_fallback_kind"
+    )
+    return {
+        "summary": {
+            "op": op.op,
+            "candidate_kind": "edge_type",
+            "relationship_candidate_id": str(row["id"]),
+            "proposed_edge_kind": proposed,
+            "source_model_id": str(op.source_model_id),
+            "target_model_id": str(op.target_model_id),
+            "retrieval_fallback_kind": fallback,
+            "review_status": row["review_status"],
+        },
+        "state_changes": 0,
+    }
 
 
 async def _apply_act_op(

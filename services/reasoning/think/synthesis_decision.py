@@ -60,6 +60,18 @@ def summarize_synthesis_decisions(diff: ValidatedDiff) -> list[dict[str, Any]]:
             "target_model_id": str(op.target_model_id),
         })
 
+    for index, op in enumerate(diff.ontology_gap_ops):
+        decisions.append({
+            "bucket": "ontology_gap_ops",
+            "index": index,
+            "decision": "propose_edge_type_candidate",
+            "proposed_edge_kind": op.proposed_edge_kind,
+            "parent_kind": op.parent_kind,
+            "nearest_existing_kind": op.nearest_existing_kind,
+            "source_model_id": str(op.source_model_id),
+            "target_model_id": str(op.target_model_id),
+        })
+
     for index, op in enumerate(diff.act_ops):
         decisions.append({
             "bucket": "act_ops",

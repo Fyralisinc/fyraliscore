@@ -10,8 +10,8 @@ Public surface (import these from callers):
     by tests.
   * TriggerContext — the common trigger payload.
   * ThinkRunOutcome — the return shape from think().
-  * ValidatedDiff / ClaimOp / EdgeOp / ActOp / ResourceOp — the validated diff
-    schema. LLM is asked to produce this exact shape.
+  * ValidatedDiff / ClaimOp / EdgeOp / OntologyGapOp / ActOp / ResourceOp —
+    the validated diff schema. LLM is asked to produce this exact shape.
   * region_lock_key — pure function producing (tenant_hash, entity_hash)
     integers for pg_advisory_xact_lock.
   * ReasoningFrame — the trigger-normalized question/focus object.
@@ -38,6 +38,7 @@ from .diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    OntologyGapOp,
     ResourceOp,
     ValidatedDiff,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "ActOp",
     "ClaimOp",
     "EdgeOp",
+    "OntologyGapOp",
     "ResourceOp",
     "ValidatedDiff",
     "ThinkRunOutcome",

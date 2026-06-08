@@ -63,6 +63,8 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from services.reasoning.synthesis.operational_facets import compile_operational_facets
+
 from .diff_schema import ClaimOp
 
 
@@ -191,6 +193,18 @@ _PRESSURE_HEURISTICS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "vendor", "license", "quota",
     )),
 )
+
+_OPERATIONAL_SPLIT_SUBROLES: frozenset[str] = frozenset({
+    "choice_price_delta",
+    "choice_state",
+    "field_value",
+    "list_option_order",
+    "list_bottom_option",
+    "stage_chain",
+    "observed_count",
+    "related_action",
+    "explicit_absence",
+})
 
 
 # ---------------------------------------------------------------------
@@ -377,6 +391,301 @@ def _is_unsplittable_proposition(prop: Any) -> bool:
     )
 
 
+def _operational_source_text(entry: dict[str, Any]) -> str:
+    """Text source for evidence-backed operational splitting."""
+    natural = entry.get("natural")
+    if isinstance(natural, str) and natural.strip():
+        return natural.strip()
+    return _claim_text(entry)
+
+
+def _operational_facet_groups(entry: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Return independent operational fact groups found in the entry.
+
+    The grouping rule is product-level, not domain-level: each group is
+    one explicit evidence span that should be independently confirmable
+    and retrievable as a Model. Closely coupled facets from the same
+    evidence span, such as an option's price delta and checked state, stay
+    together as one atomic belief.
+    """
+    source = _operational_source_text(entry)
+    if not source:
+        return []
+
+    facets = [
+        dict(facet)
+        for facet in compile_operational_facets(source, limit=128)
+        if isinstance(facet, dict)
+    ]
+    if len(facets) < 2:
+        return []
+
+    price_evidence = {
+        str(facet.get("evidence_text") or "")
+        for facet in facets
+        if facet.get("subrole") == "choice_price_delta"
+        and facet.get("evidence_text")
+    }
+    list_order_evidence = {
+        str(facet.get("evidence_text") or "")
+        for facet in facets
+        if facet.get("subrole") == "list_option_order"
+        and facet.get("evidence_text")
+    }
+
+    groups_by_key: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for facet in facets:
+        subrole = str(facet.get("subrole") or "")
+        if subrole not in _OPERATIONAL_SPLIT_SUBROLES:
+            continue
+        if _is_noisy_operational_facet(facet):
+            continue
+        evidence = str(facet.get("evidence_text") or "")
+
+        # A priced option also compiles into a state facet. Keep that
+        # state facet in the same option group instead of creating a
+        # second Model for the same evidence.
+        if subrole == "choice_state" and evidence in price_evidence:
+            key = _operational_group_key({
+                **facet,
+                "subrole": "choice_price_delta",
+            })
+        # Bottom-option is a property of the observed list order. Keep
+        # it with the list order when the same evidence span is present.
+        elif subrole == "list_bottom_option" and evidence in list_order_evidence:
+            key = _operational_group_key({
+                **facet,
+                "subrole": "list_option_order",
+            })
+        else:
+            key = _operational_group_key(facet)
+        groups_by_key.setdefault(key, []).append(facet)
+
+    groups = list(groups_by_key.values())
+    groups = [group for group in groups if _operational_group_text(group)]
+    if len(groups) < 2:
+        return []
+    return groups
+
+
+def _is_noisy_operational_facet(facet: dict[str, Any]) -> bool:
+    """Filter parser artifacts that are not standalone beliefs."""
+    if facet.get("subrole") != "field_value":
+        return False
+    prop = str(facet.get("property") or "").strip().casefold()
+    evidence = str(facet.get("evidence_text") or "").strip().casefold()
+    if prop in {"checked", "selected", "value"}:
+        return True
+    if prop.endswith(" checked") or prop.endswith(" selected"):
+        return True
+    return evidence.startswith("value=")
+
+
+def _operational_group_key(facet: dict[str, Any]) -> tuple[str, str, str, str]:
+    subrole = str(facet.get("subrole") or "")
+    evidence = str(facet.get("evidence_text") or "")
+    if subrole in {"choice_price_delta", "choice_state"}:
+        identity = evidence.casefold() or str(facet.get("value") or "").casefold()
+        return (
+            "choice",
+            identity,
+            "",
+            str((facet.get("attributes") or {}).get("control") or "").casefold()
+            if isinstance(facet.get("attributes"), dict)
+            else "",
+        )
+    if subrole in {"list_option_order", "list_bottom_option"}:
+        return (
+            "list",
+            evidence.casefold(),
+            str(facet.get("subject") or "").casefold(),
+            str(facet.get("property") or "").casefold(),
+        )
+    if subrole == "related_action":
+        return (
+            subrole,
+            str(facet.get("value") or "").casefold(),
+            evidence.casefold(),
+            "",
+        )
+    return (
+        subrole,
+        str(facet.get("subject") or "").casefold(),
+        str(facet.get("property") or "").casefold(),
+        str(facet.get("value") or evidence).casefold(),
+    )
+
+
+def _operational_group_text(group: list[dict[str, Any]]) -> str:
+    for facet in group:
+        evidence = str(facet.get("evidence_text") or "").strip()
+        if evidence:
+            return evidence
+    return ""
+
+
+def _operational_group_subject(
+    group: list[dict[str, Any]],
+    original_prop: Any,
+) -> str:
+    for facet in group:
+        for key in ("subject", "property", "value"):
+            value = facet.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(original_prop, dict):
+        for key in ("subject", "about", "signature"):
+            value = original_prop.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "operational fact"
+
+
+def _operational_atomic_natural(group: list[dict[str, Any]]) -> str:
+    """Human-readable natural text for one operational atomic fact."""
+    primary = group[0]
+    subrole = str(primary.get("subrole") or "")
+    evidence = _operational_group_text(group)
+    attrs = (
+        primary.get("attributes")
+        if isinstance(primary.get("attributes"), dict)
+        else {}
+    )
+
+    if subrole == "choice_price_delta":
+        label = str(primary.get("value") or "option").strip()
+        amount = attrs.get("amount")
+        unit = str(attrs.get("unit") or "USD").strip() or "USD"
+        state = str(primary.get("state") or "").strip()
+        detail = f"{label} adds {amount} {unit}" if amount is not None else label
+        if state:
+            detail += f" and is {state}"
+        return _operational_sentence(detail, evidence)
+
+    if subrole == "choice_state":
+        label = str(primary.get("value") or "option").strip()
+        state = str(primary.get("state") or "observed").strip()
+        control = str(attrs.get("control") or "option").strip()
+        return _operational_sentence(f"{control} {label} is {state}", evidence)
+
+    if subrole == "field_value":
+        prop = str(primary.get("property") or "field").strip()
+        value = str(primary.get("value") or "").strip()
+        return _operational_sentence(f"{prop} value is {value!r}", evidence)
+
+    if subrole == "list_option_order":
+        subject = str(primary.get("subject") or "list").strip()
+        bottom = ""
+        for facet in group:
+            if facet.get("subrole") == "list_bottom_option" and facet.get("value"):
+                bottom = f"; bottom option is {facet['value']}"
+                break
+        return _operational_sentence(
+            f"{subject} option order is observed{bottom}",
+            evidence,
+        )
+
+    if subrole == "list_bottom_option":
+        subject = str(primary.get("subject") or "list").strip()
+        value = str(primary.get("value") or "unknown").strip()
+        return _operational_sentence(f"{subject} bottom option is {value}", evidence)
+
+    if subrole == "stage_chain":
+        return _operational_sentence("workflow stage chain is observed", evidence)
+
+    if subrole == "observed_count":
+        prop = str(primary.get("property") or "count").strip()
+        value = str(primary.get("value") or "").strip()
+        return _operational_sentence(f"{prop} is {value}", evidence)
+
+    if subrole == "related_action":
+        value = str(primary.get("value") or "related action").strip()
+        return _operational_sentence(f"related action {value} is visible", evidence)
+
+    if subrole == "explicit_absence":
+        return _operational_sentence("explicit absence is observed", evidence)
+
+    return _operational_sentence(evidence or "operational fact is observed", evidence)
+
+
+def _operational_sentence(summary: str, evidence: str) -> str:
+    summary = summary.strip().rstrip(".")
+    evidence = evidence.strip().rstrip(".")
+    if evidence and evidence.casefold() not in summary.casefold():
+        return f"{summary}. Evidence: {evidence}."
+    return f"{summary}."
+
+
+def _operational_atomic_proposition(
+    group: list[dict[str, Any]],
+    original_prop: Any,
+) -> dict[str, Any]:
+    natural = _operational_atomic_natural(group)
+    subject = _operational_group_subject(group, original_prop)
+    return {
+        "kind": "belief",
+        "claim_role": "fact",
+        "abstraction_level": "atomic",
+        "time_mode": "current",
+        "modality": "observed",
+        "polarity": "neutral",
+        "subject": subject,
+        "assertion": natural.rstrip("."),
+        "operational_split_source": "universal_facets",
+    }
+
+
+def _split_operational_claim_op(entry: dict[str, Any]) -> list[ClaimOp]:
+    groups = _operational_facet_groups(entry)
+    if len(groups) < 2:
+        return []
+
+    base_entry = deepcopy(entry)
+    base_entry.pop("embedding", None)
+    split_ops: list[ClaimOp] = []
+    for group in groups:
+        atomic_entry = deepcopy(base_entry)
+        natural = _operational_atomic_natural(group)
+        atomic_entry["natural"] = natural
+        atomic_entry["proposition"] = _operational_atomic_proposition(
+            group,
+            base_entry.get("proposition"),
+        )
+        atomic_entry.pop("embedding", None)
+        split_ops.append(ClaimOp(op="insert", entry=atomic_entry))
+
+    text = _claim_text(entry)
+    pressure_type = _infer_pressure_type(text) or "execution"
+    trimmed = _trim(text, 200)
+    situation_entry = deepcopy(base_entry)
+    situation_entry.pop("embedding", None)
+    situation_entry["proposition"] = {
+        "kind": "belief",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "time_mode": "current",
+        "modality": "observed",
+        "polarity": "mixed",
+        "situation": trimmed,
+        "summary": trimmed,
+        "member_model_ids": [],
+        "relationship_summary": (
+            "Atomic operational facts split from one structured Model entry; "
+            "they are jointly true in the same observed context."
+        ),
+        "status": "forming",
+        "shared_mechanism": trimmed,
+        "pressure_type": pressure_type,
+    }
+    situation_entry["natural"] = f"Composite operational situation: {trimmed}"
+    situation_entry["member_model_pending"] = True
+    situation_entry["split_reasons"] = [
+        f"multi_operational_facts:{len(groups)}",
+    ]
+    split_ops.append(ClaimOp(op="insert", entry=situation_entry))
+    return split_ops
+
+
 # ---------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------
@@ -395,6 +704,8 @@ def is_compound(entry: dict[str, Any]) -> tuple[bool, list[str]]:
       * "multi_kind:<comma-joined-kinds>" — >= 2 distinct
         proposition-kind signals in the text.
       * "multi_entity:<N>" — >= 3 distinct entities in scope.
+      * "multi_operational_facts:<N>" — N >= 2 evidence-backed
+        universal operational facts in one proposed Model.
     """
     if not isinstance(entry, dict):
         return False, []
@@ -403,6 +714,14 @@ def is_compound(entry: dict[str, Any]) -> tuple[bool, list[str]]:
         return False, []
 
     reasons: list[str] = []
+
+    # Operational-facet bundle heuristic. This catches structured
+    # evidence such as UI/form/catalog/table snapshots where the text is
+    # not grammatically compound but still contains several independent
+    # beliefs that should be addressable as separate Models.
+    operational_groups = _operational_facet_groups(entry)
+    if len(operational_groups) >= 2:
+        reasons.append(f"multi_operational_facts:{len(operational_groups)}")
 
     # Conjunction heuristic.
     conjuncts = _split_top_level(text)
@@ -415,10 +734,18 @@ def is_compound(entry: dict[str, Any]) -> tuple[bool, list[str]]:
     if len(kinds) >= 2:
         reasons.append("multi_kind:" + ",".join(sorted(kinds)))
 
-    # Compound-entity heuristic.
-    entities = _distinct_entities(entry)
-    if len(entities) >= 3:
-        reasons.append(f"multi_entity:{len(entities)}")
+    # Compound-entity heuristic. Splitter-produced operational atoms can
+    # legitimately contain several capitalized label tokens in one field
+    # value; do not reinterpret that as a multi-entity belief.
+    prop = entry.get("proposition")
+    is_split_operational_atom = (
+        isinstance(prop, dict)
+        and prop.get("operational_split_source") == "universal_facets"
+    )
+    if not is_split_operational_atom:
+        entities = _distinct_entities(entry)
+        if len(entities) >= 3:
+            reasons.append(f"multi_entity:{len(entities)}")
 
     return (bool(reasons), reasons)
 
@@ -461,6 +788,10 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
     entry = op.entry
     if _is_unsplittable_proposition(entry.get("proposition")):
         return [op]
+
+    operational_splits = _split_operational_claim_op(entry)
+    if operational_splits:
+        return operational_splits
 
     compound, reasons = is_compound(entry)
     if not compound:

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,7 @@ from lib.shared.types import (
     ObservationRow,
     ResourceRow,
 )
+from services.domain.models.address import belief_address_from_model_like
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.pathways import (
     PathwayResult,
@@ -43,6 +45,7 @@ from services.reasoning.retrieval.pathways import (
     pathway_g_model_edges,
 )
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext, primary_retrieve
+from services.reasoning.synthesis.state_contract import StateSource, compile_state_contract
 
 from .contracts import SignalRoute
 
@@ -64,6 +67,53 @@ RetrievalActionPath = Literal[
     "model_edge",
     "sage_reader",
 ]
+
+_BROAD_DISCOVERY_ACTION_PATHS = frozenset({"semantic", "temporal", "pattern"})
+_READER_ATTRIBUTION_NONSELECTED_LIMIT_DEFAULT = 16
+_READER_ATTRIBUTION_NONSELECTED_MIN_SCORE_DEFAULT = 0.55
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        return default
+
+
+def _reader_attribution_nonselected_limit() -> int:
+    """Operational cap for trace pressure.
+
+    Selected reader decisions are always persisted because the evaluator uses
+    them for positive and negative credit. Non-selected high-score decisions are
+    useful diagnostics, but at company scale they can dominate storage without
+    improving the feedback loop, so deployments can tune this without a code
+    deploy.
+    """
+
+    return _env_int(
+        "SAGE_READER_ATTRIBUTION_NONSELECTED_LIMIT",
+        _READER_ATTRIBUTION_NONSELECTED_LIMIT_DEFAULT,
+    )
+
+
+def _reader_attribution_nonselected_min_score() -> float:
+    return _env_float(
+        "SAGE_READER_ATTRIBUTION_NONSELECTED_MIN_SCORE",
+        _READER_ATTRIBUTION_NONSELECTED_MIN_SCORE_DEFAULT,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,14 +421,24 @@ async def run_inquiry_retrieval(
     effective_top_n = min(candidate_top_n, max(1, int(cfg.result_model_limit)))
     signal_class = _signal_class_for_trigger(trigger)
     weak_signal = signal_class == "weak"
+    cold_weak_noop_gate = _cold_weak_noop_gate(trigger, signal_class)
     baseline_top_n = _adaptive_baseline_top_n(candidate_top_n, signal_class)
 
-    baseline = await primary_retrieve(
-        trigger,
-        conn,
-        embedder=embedder,
-        top_n=baseline_top_n,
-    )
+    if cold_weak_noop_gate["used"]:
+        baseline = _merge_results(
+            trigger,
+            [],
+            top_n=0,
+            note_prefix="cold_weak_noop",
+            config=cfg,
+        )
+    else:
+        baseline = await primary_retrieve(
+            trigger,
+            conn,
+            embedder=embedder,
+            top_n=baseline_top_n,
+        )
     hypotheses = tuple(_generate_hypotheses(trigger, baseline))
     evidence_by_key: dict[tuple[str, str], EvidenceCard] = {}
     _add_result_to_reservoir(
@@ -391,6 +451,14 @@ async def run_inquiry_retrieval(
 
     all_questions: list[InquiryQuestion] = []
     all_actions: list[RetrievalAction] = []
+    action_cache: dict[tuple[Any, ...], PathwayResult] = {}
+    baseline_action_cache_notes = _seed_action_cache_from_baseline(
+        action_cache,
+        baseline,
+        trigger,
+        cfg,
+    )
+    action_timing_notes: list[dict[str, Any]] = []
     answers: list[QuestionAnswer] = []
     retrieval_results = [baseline]
     unknowns: set[str] = set(_initial_unknowns(trigger, baseline))
@@ -410,7 +478,11 @@ async def run_inquiry_retrieval(
     }
     max_rounds = (
         0
-        if mode == "fast" or route in {"FAST_PATH", "HUMAN_VALIDATION_PATH"}
+        if (
+            cold_weak_noop_gate["used"]
+            or mode == "fast"
+            or route in {"FAST_PATH", "HUMAN_VALIDATION_PATH"}
+        )
         else cfg.max_rounds
     )
     if weak_signal and max_rounds > 1:
@@ -466,22 +538,7 @@ async def run_inquiry_retrieval(
                 cfg,
                 policy_signal=policy_signal,
             )
-            all_actions.extend(actions)
             action_results: list[RetrievalResult] = []
-            for action in actions:
-                path_result = await _execute_action(action, trigger, conn, embedder, cfg)
-                if path_result is None:
-                    continue
-                rr = _result_from_pathway(trigger, path_result, action)
-                action_results.append(rr)
-                _add_result_to_reservoir(
-                    evidence_by_key,
-                    rr,
-                    path=action.path,
-                    question_id=question.question_id,
-                    hypotheses=hypotheses,
-                    score_hint=max(0.0, question.score),
-                )
             sage_result = await _execute_sage_reader_action(
                 question,
                 trigger,
@@ -489,7 +546,29 @@ async def run_inquiry_retrieval(
                 cfg,
                 hypotheses=hypotheses,
             )
+            action_gate_scope: str | None = None
+            action_gate_reason: str | None = None
             if sage_result is not None:
+                action_timing_notes.append({
+                    "question_id": question.question_id,
+                    "path": "sage_reader",
+                    "target": "synthesis_reader",
+                    "elapsed_ms": _sage_reader_total_ms(sage_result),
+                    "cache_hit": False,
+                    "returned": True,
+                    "models": len(sage_result.models),
+                    "observations": len(sage_result.observations),
+                    "resources": len(sage_result.resources),
+                    "source_pathway": "SAGE",
+                })
+                sage_action = RetrievalAction(
+                    question.question_id,
+                    "sage_reader",
+                    "synthesis_reader",
+                    query=question.question,
+                    budget=cfg.result_model_limit,
+                )
+                all_actions.append(sage_action)
                 action_results.append(sage_result)
                 _add_result_to_reservoir(
                     evidence_by_key,
@@ -501,6 +580,77 @@ async def run_inquiry_retrieval(
                 )
                 _record_sage_reader_notes(
                     sage_reader_notes, question, sage_result,
+                )
+                action_gate_scope, action_gate_reason = _sage_reader_action_gate(
+                    sage_result
+                )
+
+            actions_to_run: list[RetrievalAction] = []
+            for action in actions:
+                skip_reason: str | None = None
+                if action_gate_scope == "all":
+                    skip_reason = action_gate_reason or "sage_reader_abstained"
+                elif (
+                    action_gate_scope == "broad"
+                    and action.path in _BROAD_DISCOVERY_ACTION_PATHS
+                ):
+                    skip_reason = action_gate_reason or "sage_reader_focused_route"
+                if skip_reason is not None:
+                    action_timing_notes.append({
+                        "question_id": question.question_id,
+                        "path": action.path,
+                        "target": action.target,
+                        "elapsed_ms": 0,
+                        "cache_hit": False,
+                        "returned": False,
+                        "skipped": True,
+                        "skip_reason": skip_reason,
+                    })
+                    continue
+                actions_to_run.append(action)
+
+            all_actions.extend(actions_to_run)
+            for action in actions_to_run:
+                cache_key = _retrieval_action_cache_key(action, trigger, cfg)
+                path_result = action_cache.get(cache_key)
+                cache_hit = path_result is not None
+                action_started = time.perf_counter()
+                if path_result is None:
+                    path_result = await _execute_action(action, trigger, conn, embedder, cfg)
+                    if path_result is not None:
+                        action_cache[cache_key] = path_result
+                elapsed_ms = int((time.perf_counter() - action_started) * 1000)
+                if path_result is None:
+                    action_timing_notes.append({
+                        "question_id": question.question_id,
+                        "path": action.path,
+                        "target": action.target,
+                        "elapsed_ms": elapsed_ms,
+                        "cache_hit": cache_hit,
+                        "returned": False,
+                    })
+                    continue
+                action_timing_notes.append({
+                    "question_id": question.question_id,
+                    "path": action.path,
+                    "target": action.target,
+                    "elapsed_ms": elapsed_ms,
+                    "cache_hit": cache_hit,
+                    "returned": True,
+                    "models": len(path_result.models),
+                    "observations": len(path_result.observations),
+                    "resources": len(path_result.resources),
+                    "source_pathway": path_result.source_pathway,
+                })
+                rr = _result_from_pathway(trigger, path_result, action)
+                action_results.append(rr)
+                _add_result_to_reservoir(
+                    evidence_by_key,
+                    rr,
+                    path=action.path,
+                    question_id=question.question_id,
+                    hypotheses=hypotheses,
+                    score_hint=max(0.0, question.score),
                 )
             if action_results:
                 merged_for_question = _merge_results(
@@ -519,6 +669,19 @@ async def run_inquiry_retrieval(
             answers.append(answer)
             unknowns.difference_update(_resolved_unknowns_for_answer(question, answer))
             unknowns.update(answer.new_uncertainties)
+            interim_verdict = _sufficiency_gate(
+                route,
+                hypotheses,
+                list(evidence_by_key.values()),
+                answers,
+                round_index=round_index,
+                max_rounds=max_rounds,
+                unknowns=unknowns,
+            )
+            if interim_verdict.status == "sufficient_for_reasoning":
+                stop_status = interim_verdict.status
+                stop_reason = interim_verdict.reason
+                break
 
         verdict = _sufficiency_gate(
             route,
@@ -535,16 +698,23 @@ async def run_inquiry_retrieval(
             break
 
     evidence_before_rank = len(evidence_by_key)
+    sage_controller_notes = _sage_reader_controller_summary(
+        sage_reader_notes,
+        trigger=trigger,
+    )
     evidence_limit = _adaptive_evidence_limit(
         cfg,
         route=route,
         mode=mode,
         signal_class=signal_class,
     )
-    ranked_evidence_cards = _rank_evidence(
-        list(evidence_by_key.values()),
-        limit=evidence_limit,
-    )
+    if cold_weak_noop_gate["used"] or sage_controller_notes["global_negative_route_gate"]:
+        ranked_evidence_cards = []
+    else:
+        ranked_evidence_cards = _rank_evidence(
+            list(evidence_by_key.values()),
+            limit=evidence_limit,
+        )
     if max_rounds == 0:
         verdict = _sufficiency_gate(
             route,
@@ -554,6 +724,25 @@ async def run_inquiry_retrieval(
             round_index=0,
             max_rounds=0,
             unknowns=unknowns,
+        )
+    elif cold_weak_noop_gate["used"]:
+        verdict = SufficiencyVerdict(
+            status="no_update_needed",
+            reason=str(cold_weak_noop_gate["reason"]),
+            evidence_count=0,
+            answered_questions=0,
+            remaining_unknowns=(),
+        )
+    elif sage_controller_notes["global_negative_route_gate"]:
+        verdict = SufficiencyVerdict(
+            status="no_update_needed",
+            reason=(
+                "sage reader learned this route as negative and every "
+                "selected question abstained"
+            ),
+            evidence_count=0,
+            answered_questions=0,
+            remaining_unknowns=tuple(sorted(unknowns)[:10]),
         )
     else:
         verdict = SufficiencyVerdict(
@@ -580,9 +769,18 @@ async def run_inquiry_retrieval(
         remaining_unknowns=verdict.remaining_unknowns,
     )
 
+    retrieval_results_for_merge = (
+        []
+        if cold_weak_noop_gate["used"]
+        else (
+            _sage_only_retrieval_results(retrieval_results)
+            if sage_controller_notes["global_negative_route_gate"]
+            else retrieval_results
+        )
+    )
     combined = _merge_results(
         trigger,
-        retrieval_results,
+        retrieval_results_for_merge,
         top_n=effective_top_n,
         note_prefix="inquiry",
         config=cfg,
@@ -618,7 +816,12 @@ async def run_inquiry_retrieval(
         "action_observation_budget_limit": cfg.action_observation_budget_limit,
         "llm_question_planning_enabled": cfg.llm_question_planning_enabled,
         "question_planning": question_planning_notes,
+        "cold_weak_noop_gate": cold_weak_noop_gate,
+        "retrieval_action_timings": action_timing_notes,
+        "retrieval_action_cache": _action_cache_summary(action_timing_notes),
+        "retrieval_action_cache_seeded_from_baseline": baseline_action_cache_notes,
         "sage_reader": sage_reader_notes,
+        "sage_reader_controller": sage_controller_notes,
         "evidence_count": len(evidence_cards),
         "evidence_before_rank": evidence_before_rank,
         "evidence_after_rank": len(ranked_evidence_cards),
@@ -660,11 +863,61 @@ def _route_for_trigger(trigger: TriggerContext) -> SignalRoute:
 
 def _signal_class_for_trigger(trigger: TriggerContext) -> str:
     lower = _trigger_text(trigger).casefold()
+    if trigger.kind == "T1" and _declares_no_material_update(lower):
+        return "weak"
     if _has_broad_signal_language(lower):
         return "broad"
     if trigger.kind == "T1" and not _signal_has_material_update_intent(lower):
         return "weak"
     return "material"
+
+
+def _cold_weak_noop_gate(
+    trigger: TriggerContext,
+    signal_class: str,
+) -> dict[str, Any]:
+    if signal_class != "weak":
+        return {"used": False, "reason": "not_weak_signal"}
+    lower = _trigger_text(trigger).casefold()
+    if not _declares_no_material_update(lower):
+        return {"used": False, "reason": "weak_signal_needs_disambiguation"}
+    return {
+        "used": True,
+        "reason": (
+            "weak signal is non-actionable workspace chatter or explicitly "
+            "declares no material update"
+        ),
+    }
+
+
+def _declares_no_material_update(lower: str) -> bool:
+    grouped_no_update_phrases = (
+        "no blocker, owner change, decision, customer risk, or commitment update",
+        "no blocker, no owner change, no decision, no customer risk, or no commitment update",
+    )
+    no_update_phrases = (
+        "no blocker",
+        "no owner change",
+        "no decision",
+        "no customer risk",
+        "no commitment update",
+        "no risk",
+        "no action",
+        "no actionable",
+    )
+    weak_chatter_phrases = (
+        "workspace chatter",
+        "weak workspace noise",
+        "lunch notes",
+        "travel plans",
+        "general team coordination",
+    )
+    no_update_count = sum(1 for phrase in no_update_phrases if phrase in lower)
+    chatter_count = sum(1 for phrase in weak_chatter_phrases if phrase in lower)
+    grouped_declared = any(phrase in lower for phrase in grouped_no_update_phrases)
+    if chatter_count >= 3:
+        return True
+    return (grouped_declared or no_update_count >= 2) and chatter_count >= 1
 
 
 def _adaptive_baseline_top_n(candidate_top_n: int, signal_class: str) -> int:
@@ -946,6 +1199,9 @@ _DEFAULT_STOP_BY_PRIMITIVE = {
     "GOAL_IMPACT": "goal/customer/resource impact identified",
     "RECURRENCE": "pattern support or absence established",
 }
+
+_QUESTION_MARGINAL_MIN_SCORE = 0.52
+_QUESTION_PRIORITY_MARGINAL_MIN_SCORE = 0.46
 
 
 async def _candidate_questions_for_round(
@@ -1238,6 +1494,90 @@ def _clamp_float(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, float(value)))
 
 
+def _question_marginal_score(
+    question: InquiryQuestion,
+    selected: list[InquiryQuestion],
+) -> float:
+    score = float(question.score)
+    if not selected:
+        return round(score, 4)
+
+    selected_hypotheses = {
+        hypothesis
+        for prior in selected
+        for hypothesis in prior.tests_hypotheses
+    }
+    shared_hypotheses = set(question.tests_hypotheses) & selected_hypotheses
+    if shared_hypotheses:
+        score -= min(0.16, 0.07 * len(shared_hypotheses))
+
+    selected_facets = {
+        facet
+        for prior in selected
+        for facet in _question_information_facets(prior)
+    }
+    shared_facets = _question_information_facets(question) & selected_facets
+    if shared_facets:
+        score -= min(0.18, 0.08 * len(shared_facets))
+
+    target_overlap = _question_target_overlap(question, selected)
+    if target_overlap >= 0.50:
+        score -= 0.12
+    elif target_overlap >= 0.25:
+        score -= 0.06
+
+    score -= min(0.12, max(0.0, question.expected_cost - 0.22) * 0.35)
+    if question.primitive == "COUNTEREVIDENCE":
+        score += 0.06
+    return round(score, 4)
+
+
+def _question_information_facets(question: InquiryQuestion) -> set[str]:
+    primitive = question.primitive
+    if primitive == "DEPENDENCY":
+        return {"critical_path", "dependency"}
+    if primitive == "COMMITMENT":
+        return {"commitment", "promise"}
+    if primitive == "CONSTRAINT":
+        return {"constraint", "resource", "dependency"}
+    if primitive == "COUNTEREVIDENCE":
+        return {"counterevidence", "falsification"}
+    if primitive == "OWNERSHIP":
+        return {"ownership", "actor"}
+    if primitive == "GOAL_IMPACT":
+        return {"goal", "impact", "customer"}
+    if primitive == "RECURRENCE":
+        return {"recurrence", "pattern"}
+    return {primitive.casefold()}
+
+
+def _question_target_overlap(
+    question: InquiryQuestion,
+    selected: list[InquiryQuestion],
+) -> float:
+    tokens = _question_target_tokens(question)
+    if not tokens:
+        return 0.0
+    max_overlap = 0.0
+    for prior in selected:
+        prior_tokens = _question_target_tokens(prior)
+        if not prior_tokens:
+            continue
+        overlap = len(tokens & prior_tokens) / max(len(tokens), 1)
+        max_overlap = max(max_overlap, overlap)
+    return max_overlap
+
+
+def _question_target_tokens(question: InquiryQuestion) -> set[str]:
+    text = f"{question.retrieval_target} {question.stop_condition}".casefold()
+    return {
+        token
+        for token in re.findall(r"[a-z0-9_]+", text)
+        if len(token) > 2
+        and token not in {"and", "the", "for", "with", "found", "ruled"}
+    }
+
+
 def _truncate_text(text: str, limit: int) -> str:
     clean = " ".join((text or "").split())
     if len(clean) <= limit:
@@ -1320,10 +1660,16 @@ def _apply_question_policy(
 
 
 def _question_policy_score_boost(signal: QuestionPolicySignal) -> float:
-    success_rate = signal.successes / max(signal.attempts, 1)
+    success_rate = _question_policy_success_rate(signal)
     utility = float(signal.utility_score)
     raw = 0.16 * utility + 0.20 * (success_rate - 0.35)
     return _clamp_float(raw, -0.24, 0.34)
+
+
+def _question_policy_success_rate(signal: QuestionPolicySignal) -> float:
+    # `successes` is credited at reader-decision grain, so it can exceed
+    # question attempts. Cap to a probability before using it for policy.
+    return _clamp_float(signal.successes / max(signal.attempts, 1), 0.0, 1.0)
 
 
 def _question_policy_budget_multiplier(
@@ -1331,9 +1677,14 @@ def _question_policy_budget_multiplier(
 ) -> float:
     if signal is None or signal.attempts <= 0:
         return 1.0
-    success_rate = signal.successes / max(signal.attempts, 1)
-    raw = 1.0 + 0.22 * float(signal.utility_score) + 0.20 * (success_rate - 0.35)
-    return _clamp_float(raw, 0.60, 1.65)
+    success_rate = _question_policy_success_rate(signal)
+    utility = float(signal.utility_score)
+    if utility > 0.0 and success_rate >= 0.55:
+        compaction = min(0.35, 0.06 * utility + 0.18 * (success_rate - 0.55))
+        return _clamp_float(1.0 - compaction, 0.65, 1.0)
+    if utility < -0.25 or success_rate < 0.20:
+        return 0.75
+    return 1.0
 
 
 def _policy_budget(
@@ -1353,11 +1704,20 @@ def _select_questions(
     selected: list[InquiryQuestion] = []
     seen_targets: set[str] = set()
 
-    def add(question: InquiryQuestion) -> bool:
+    def add(question: InquiryQuestion, *, priority: bool = False) -> bool:
         if question.primitive in already_asked:
             return False
         if question.retrieval_target in seen_targets:
             return False
+        if selected:
+            marginal_score = _question_marginal_score(question, selected)
+            floor = (
+                _QUESTION_PRIORITY_MARGINAL_MIN_SCORE
+                if priority
+                else _QUESTION_MARGINAL_MIN_SCORE
+            )
+            if marginal_score < floor:
+                return False
         selected.append(replace(question, round_index=round_index))
         seen_targets.add(question.retrieval_target)
         return True
@@ -1412,7 +1772,7 @@ def _select_questions(
         question = by_id.get(question_id)
         if question is None:
             continue
-        add(question)
+        add(question, priority=True)
         if len(selected) >= questions_per_round:
             return selected
 
@@ -1582,6 +1942,302 @@ def _compile_retrieval_plan(
     ]
 
 
+def _seed_action_cache_from_baseline(
+    action_cache: dict[tuple[Any, ...], PathwayResult],
+    baseline: RetrievalResult,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+) -> dict[str, Any]:
+    """Reuse baseline graph reads for question actions when the scope matches."""
+    notes: dict[str, Any] = {
+        "seeded": 0,
+        "paths": [],
+        "skipped": [],
+    }
+    by_source = {result.source_pathway: result for result in baseline.pathway_results}
+
+    if int(getattr(trigger, "max_hops", 0) or 0) == int(cfg.structural_max_hops):
+        source = by_source.get("A")
+        if source is not None:
+            action = RetrievalAction("Q0", "structural", "baseline_structural")
+            key = _retrieval_action_cache_key(action, trigger, cfg)
+            action_cache[key] = _clone_pathway_result(
+                source,
+                model_limit=min(action.budget, cfg.action_model_budget_limit),
+                cap_models_by_activation=True,
+                note="baseline_A",
+            )
+            notes["seeded"] += 1
+            notes["paths"].append("structural:A")
+    else:
+        notes["skipped"].append("structural_hop_mismatch")
+
+    g_hops = min(max(int(getattr(trigger, "max_hops", 0) or 0), 0), 3)
+    if g_hops == int(cfg.model_edge_max_hops):
+        source = by_source.get("G")
+        if source is not None:
+            action = RetrievalAction(
+                "Q0",
+                "model_edge",
+                "baseline_model_edges",
+                budget=cfg.action_model_budget_limit,
+            )
+            key = _retrieval_action_cache_key(action, trigger, cfg)
+            action_cache[key] = _clone_pathway_result(
+                source,
+                model_limit=cfg.action_model_budget_limit,
+                note="baseline_G",
+            )
+            notes["seeded"] += 1
+            notes["paths"].append("model_edge:G")
+    else:
+        notes["skipped"].append("model_edge_hop_mismatch")
+
+    return notes
+
+
+def _clone_pathway_result(
+    result: PathwayResult,
+    *,
+    model_limit: int | None = None,
+    observation_limit: int | None = None,
+    cap_models_by_activation: bool = False,
+    note: str,
+) -> PathwayResult:
+    models = list(result.models)
+    if model_limit is not None:
+        limit = max(0, int(model_limit))
+        if cap_models_by_activation:
+            models = sorted(
+                models,
+                key=lambda model: (
+                    -float(getattr(model, "activation", 0.0) or 0.0),
+                    str(getattr(model, "id", "")),
+                ),
+            )
+        models = models[:limit]
+    observations = list(result.observations)
+    if observation_limit is not None:
+        observations = observations[: max(0, int(observation_limit))]
+    notes = dict(result.notes or {})
+    notes["cache_seeded_from"] = note
+    notes["models_after_cache_seed_cap"] = len(models)
+    if observation_limit is not None:
+        notes["observations_after_cache_seed_cap"] = len(observations)
+    return PathwayResult(
+        models=models,
+        observations=observations,
+        acts={key: list(value) for key, value in (result.acts or {}).items()},
+        resources=list(result.resources),
+        source_pathway=result.source_pathway,
+        notes=notes,
+    )
+
+
+def _retrieval_action_cache_key(
+    action: RetrievalAction,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+) -> tuple[Any, ...]:
+    model_budget = min(max(1, int(action.budget)), max(1, int(cfg.action_model_budget_limit)))
+    observation_budget = min(
+        max(1, int(action.budget)),
+        max(1, int(cfg.action_observation_budget_limit)),
+    )
+    scope_actors = tuple(sorted(str(actor) for actor in (trigger.scope_actors or [])))
+    scope_entities = _stable_cache_value(trigger.seed_entity_ids or [])
+    if action.path == "structural":
+        return (
+            "structural",
+            cfg.structural_max_hops,
+            model_budget,
+            scope_actors,
+            scope_entities,
+        )
+    if action.path == "temporal":
+        return (
+            "temporal",
+            str(trigger.seed_occurred_at),
+            int(action.filters.get("window_days") or cfg.temporal_window_days),
+            model_budget,
+            observation_budget,
+            scope_actors,
+            scope_entities,
+        )
+    if action.path == "model_edge":
+        return (
+            "model_edge",
+            cfg.model_edge_max_hops,
+            model_budget,
+            str(trigger.model_id or ""),
+            scope_actors,
+            scope_entities,
+        )
+    if action.path == "pattern":
+        return (
+            "pattern",
+            model_budget,
+            _stable_cache_value(trigger.seed_signature or {}),
+        )
+    return (
+        action.path,
+        action.target,
+        action.query or _trigger_text(trigger),
+        model_budget,
+        observation_budget,
+        scope_actors,
+        scope_entities,
+    )
+
+
+def _stable_cache_value(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _sage_reader_total_ms(result: RetrievalResult) -> int | None:
+    read_note = (result.notes or {}).get("sage_reader") or {}
+    if not isinstance(read_note, dict):
+        return None
+    debug = read_note.get("debug") or {}
+    if not isinstance(debug, dict):
+        return None
+    timings = debug.get("stage_timings_ms") or {}
+    if not isinstance(timings, dict):
+        return None
+    try:
+        return int(timings.get("reader_total_ms"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sage_reader_action_gate(
+    result: RetrievalResult,
+) -> tuple[Literal["all", "broad"] | None, str | None]:
+    plan = _sage_reader_plan_from_result(result)
+    if not plan:
+        return None, None
+    mode = str(plan.get("mode") or "")
+    if _sage_reader_plan_hard_abstained(plan):
+        return "all", "sage_reader_negative_memory_abstain"
+    if bool(plan.get("skip_broad_discovery")) and mode in {
+        "focused",
+        "guarded_negative_memory",
+    }:
+        return "broad", f"sage_reader_{mode}_broad_gate"
+    return None, None
+
+
+def _sage_reader_controller_summary(
+    notes: dict[str, Any],
+    *,
+    trigger: TriggerContext,
+) -> dict[str, Any]:
+    raw_questions = notes.get("questions")
+    questions = raw_questions if isinstance(raw_questions, dict) else {}
+    question_summaries: dict[str, dict[str, Any]] = {}
+    hard_abstain_count = 0
+    skipped_broad_count = 0
+    selected_model_count = 0
+    for qid, read_note in questions.items():
+        if not isinstance(read_note, dict):
+            continue
+        plan = _sage_reader_plan_from_read_note(read_note)
+        selected_ids = read_note.get("selected_model_ids") or []
+        selected_count = len(selected_ids) if isinstance(selected_ids, list) else 0
+        selected_model_count += selected_count
+        hard_abstained = _sage_reader_plan_hard_abstained(plan)
+        if hard_abstained:
+            hard_abstain_count += 1
+        if bool(plan.get("skip_broad_discovery")):
+            skipped_broad_count += 1
+        question_summaries[str(qid)] = {
+            "mode": plan.get("mode"),
+            "confidence": plan.get("confidence"),
+            "abstain_early": bool(plan.get("abstain_early")),
+            "skip_broad_discovery": bool(plan.get("skip_broad_discovery")),
+            "selected_model_count": selected_count,
+            "hard_abstained": hard_abstained,
+        }
+
+    question_count = len(question_summaries)
+    explicit_anchor = _trigger_has_explicit_model_anchor(trigger)
+    global_negative_route_gate = (
+        question_count > 0
+        and hard_abstain_count == question_count
+        and selected_model_count == 0
+        and not explicit_anchor
+    )
+    return {
+        "used": question_count > 0,
+        "question_count": question_count,
+        "hard_abstain_count": hard_abstain_count,
+        "skipped_broad_count": skipped_broad_count,
+        "selected_model_count": selected_model_count,
+        "explicit_model_anchor": explicit_anchor,
+        "global_negative_route_gate": global_negative_route_gate,
+        "questions": question_summaries,
+    }
+
+
+def _sage_reader_plan_from_result(result: RetrievalResult) -> dict[str, Any]:
+    read_note = (result.notes or {}).get("sage_reader") or {}
+    if not isinstance(read_note, dict):
+        return {}
+    return _sage_reader_plan_from_read_note(read_note)
+
+
+def _sage_reader_plan_from_read_note(read_note: dict[str, Any]) -> dict[str, Any]:
+    debug = read_note.get("debug") or {}
+    if not isinstance(debug, dict):
+        return {}
+    plan = debug.get("learned_read_plan") or {}
+    return plan if isinstance(plan, dict) else {}
+
+
+def _sage_reader_plan_hard_abstained(plan: dict[str, Any]) -> bool:
+    return str(plan.get("mode") or "") == "abstain" and bool(
+        plan.get("abstain_early")
+    )
+
+
+def _trigger_has_explicit_model_anchor(trigger: TriggerContext) -> bool:
+    return trigger.model_id is not None or bool(trigger.member_model_ids)
+
+
+def _sage_only_retrieval_results(
+    results: list[RetrievalResult],
+) -> list[RetrievalResult]:
+    return [
+        result
+        for result in results
+        if "sage_reader" in set(result.notes.get("pathways_run", []) or [])
+        or any(pr.source_pathway == "SAGE" for pr in result.pathway_results)
+    ]
+
+
+def _action_cache_summary(action_timings: list[dict[str, Any]]) -> dict[str, Any]:
+    hits = sum(1 for note in action_timings if note.get("cache_hit"))
+    misses = sum(
+        1
+        for note in action_timings
+        if not note.get("cache_hit") and note.get("path") != "sage_reader"
+    )
+    elapsed_by_path: Counter[str] = Counter()
+    cached_by_path: Counter[str] = Counter()
+    for note in action_timings:
+        path = str(note.get("path") or "")
+        if path:
+            elapsed_by_path[path] += int(note.get("elapsed_ms") or 0)
+            if note.get("cache_hit"):
+                cached_by_path[path] += 1
+    return {
+        "hits": hits,
+        "misses": misses,
+        "elapsed_ms_by_path": dict(sorted(elapsed_by_path.items())),
+        "cache_hits_by_path": dict(sorted(cached_by_path.items())),
+    }
+
+
 async def _execute_action(
     action: RetrievalAction,
     trigger: TriggerContext,
@@ -1659,6 +2315,7 @@ async def _execute_action(
                 scope_actors=trigger.scope_actors,
                 scope_entities=trigger.seed_entity_ids,
                 max_observations=capped_observation_budget(action.budget),
+                max_models=capped_budget(action.budget),
             )
         if action.path == "pattern":
             return await pathway_d_pattern(
@@ -2042,6 +2699,12 @@ def _select_relevant_models(
         if material_signal or broad_signal
         else 0
     )
+    diversity_candidate_cap = _relevance_diversity_candidate_cap(
+        len(scored),
+        top_n,
+        weak_signal=weak_signal,
+        broad_signal=broad_signal,
+    )
     selected_pairs: list[tuple[ModelRow, ModelRelevance]] = []
     dropped_below_threshold = 0
     cutoff_reason = "candidate list exhausted"
@@ -2061,12 +2724,17 @@ def _select_relevant_models(
             and prev_score - score >= float(config.relevance_score_cliff)
         ):
             cutoff_reason = "score cliff detected"
-            dropped_below_threshold += len(scored) - idx
-            break
+            if weak_signal or len(selected_pairs) >= diversity_candidate_cap:
+                dropped_below_threshold += len(scored) - idx
+                break
         selected_pairs.append(pair)
         prev_score = score
-        if len(selected_pairs) >= top_n:
-            cutoff_reason = "top_n cap reached after relevance gate"
+        if len(selected_pairs) >= diversity_candidate_cap:
+            cutoff_reason = (
+                "top_n cap reached after relevance gate"
+                if diversity_candidate_cap == top_n
+                else "diversity reservoir cap reached after relevance gate"
+            )
             break
 
     selected_pairs_before_compaction = len(selected_pairs)
@@ -2080,6 +2748,17 @@ def _select_relevant_models(
         model_pathways=model_pathways,
         model_questions=model_questions,
     )
+    selected_pairs, closure_notes = _append_structural_closure(
+        selected_pairs,
+        scored,
+        top_n=top_n,
+        weak_signal=weak_signal,
+        broad_signal=broad_signal,
+        threshold=threshold,
+        model_pathways=model_pathways,
+        model_questions=model_questions,
+    )
+    selected_pairs, packing_notes = _pack_structural_links(selected_pairs)
     selected = [model for model, _ in selected_pairs]
     notes = {
         "used": True,
@@ -2094,7 +2773,10 @@ def _select_relevant_models(
         "dropped_redundant": duplicate_drops,
         "cutoff_reason": cutoff_reason,
         "selected_before_compaction": selected_pairs_before_compaction,
+        "diversity_candidate_cap": diversity_candidate_cap,
         "coverage_compaction": compaction_notes,
+        "structural_closure": closure_notes,
+        "structural_packing": packing_notes,
         "top_scores": [
             _jsonable(
                 {
@@ -2115,6 +2797,269 @@ def _select_relevant_models(
         "selected_model_ids": [str(model.id) for model in selected],
     }
     return selected, notes
+
+
+def _pack_structural_links(
+    selected_pairs: list[tuple[ModelRow, ModelRelevance]],
+) -> tuple[list[tuple[ModelRow, ModelRelevance]], dict[str, Any]]:
+    """Place explanatory relation/counterevidence models next to their anchor."""
+    notes: dict[str, Any] = {
+        "used": True,
+        "moved": 0,
+        "moved_model_ids": [],
+    }
+    if len(selected_pairs) < 3:
+        return selected_pairs, notes
+
+    positions = {model.id: idx for idx, (model, _rel) in enumerate(selected_pairs)}
+    selected_by_id = {model.id: model for model, _rel in selected_pairs}
+    dependents_by_anchor: dict[UUID, list[tuple[ModelRow, ModelRelevance]]] = {}
+    moved_ids: set[UUID] = set()
+
+    for model, rel in selected_pairs:
+        if not _is_structural_detail_model(model):
+            continue
+        anchors = [
+            anchor_id
+            for anchor_id in _linked_anchor_ids(model, selected_by_id)
+            if anchor_id in positions and anchor_id != model.id
+        ]
+        if not anchors:
+            continue
+        anchor_id = min(anchors, key=lambda mid: positions[mid])
+        if positions[anchor_id] + 1 == positions[model.id]:
+            continue
+        dependents_by_anchor.setdefault(anchor_id, []).append((model, rel))
+        moved_ids.add(model.id)
+
+    if not moved_ids:
+        return selected_pairs, notes
+
+    repacked: list[tuple[ModelRow, ModelRelevance]] = []
+    emitted: set[UUID] = set()
+    for pair in selected_pairs:
+        model, _rel = pair
+        if model.id in moved_ids:
+            continue
+        repacked.append(pair)
+        emitted.add(model.id)
+        for dependent_pair in sorted(
+            dependents_by_anchor.get(model.id, []),
+            key=lambda item: positions[item[0].id],
+        ):
+            dependent = dependent_pair[0]
+            if dependent.id in emitted:
+                continue
+            repacked.append(dependent_pair)
+            emitted.add(dependent.id)
+
+    # Preserve any model whose anchor was itself moved behind another anchor.
+    for pair in selected_pairs:
+        if pair[0].id not in emitted:
+            repacked.append(pair)
+            emitted.add(pair[0].id)
+
+    notes["moved"] = len(moved_ids)
+    notes["moved_model_ids"] = [str(mid) for mid in sorted(moved_ids, key=str)]
+    return repacked, notes
+
+
+def _is_structural_detail_model(model: ModelRow) -> bool:
+    role = str(getattr(model, "claim_role", "") or "").casefold()
+    level = str(getattr(model, "abstraction_level", "") or "").casefold()
+    polarity = str(getattr(model, "polarity", "") or "").casefold()
+    text = " ".join(
+        str(part)
+        for part in (
+            getattr(model, "natural", "") or "",
+            json.dumps(getattr(model, "proposition", {}) or {}, default=str),
+        )
+    ).casefold()
+    return (
+        role == "relation"
+        or level in {"relationship", "composite"}
+        or polarity == "mixed"
+        or bool(_model_member_ids(model))
+        or _has_counterevidence_qualifier_language(text)
+    )
+
+
+def _linked_anchor_ids(model: ModelRow, selected_by_id: dict[UUID, ModelRow]) -> set[UUID]:
+    anchors: set[UUID] = set()
+    for raw in getattr(model, "supporting_model_ids", []) or ():
+        try:
+            anchors.add(UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    anchors.update(_model_member_ids(model))
+    for selected_id, selected_model in selected_by_id.items():
+        if model.id in set(getattr(selected_model, "supporting_model_ids", []) or []):
+            anchors.add(selected_id)
+        if model.id in _model_member_ids(selected_model):
+            anchors.add(selected_id)
+    return anchors
+
+
+def _relevance_diversity_candidate_cap(
+    scored_count: int,
+    top_n: int,
+    *,
+    weak_signal: bool,
+    broad_signal: bool,
+) -> int:
+    if top_n <= 0:
+        return 0
+    if weak_signal:
+        return min(scored_count, top_n)
+    multiplier = 3 if broad_signal else 2
+    additive_floor = 48 if broad_signal else 32
+    return min(scored_count, max(top_n, min(top_n * multiplier, top_n + additive_floor)))
+
+
+def _append_structural_closure(
+    selected_pairs: list[tuple[ModelRow, ModelRelevance]],
+    candidate_pairs: list[tuple[ModelRow, ModelRelevance]],
+    *,
+    top_n: int,
+    weak_signal: bool,
+    broad_signal: bool,
+    threshold: float,
+    model_pathways: dict[UUID, set[str]] | None = None,
+    model_questions: dict[UUID, set[str]] | None = None,
+) -> tuple[list[tuple[ModelRow, ModelRelevance]], dict[str, Any]]:
+    """Keep structurally necessary belief siblings in the final model list.
+
+    The relevance scorer is intentionally conservative: a graph-only relation
+    or counterevidence model may have weak surface text even when it explains
+    or qualifies a selected belief. This pass is a small closure over already
+    retrieved candidates, not an expansion query.
+    """
+    notes: dict[str, Any] = {
+        "used": True,
+        "added": 0,
+        "added_model_ids": [],
+        "reasons": {},
+    }
+    if weak_signal or not selected_pairs or top_n <= len(selected_pairs):
+        return selected_pairs, notes
+
+    model_pathways = model_pathways or {}
+    model_questions = model_questions or {}
+    selected_by_id = {model.id: (model, rel) for model, rel in selected_pairs}
+    candidate_by_id = {model.id: (model, rel) for model, rel in candidate_pairs}
+    max_added = 2 if broad_signal else 4
+
+    for model, rel in candidate_pairs:
+        if model.id in selected_by_id:
+            continue
+        if len(selected_by_id) >= top_n or notes["added"] >= max_added:
+            break
+        reason = _structural_closure_reason(
+            model,
+            rel,
+            selected_by_id,
+            model_pathways=model_pathways.get(model.id, set()),
+            model_questions=model_questions.get(model.id, set()),
+            threshold=threshold,
+        )
+        if reason is None:
+            continue
+        selected_pairs.append(candidate_by_id[model.id])
+        selected_by_id[model.id] = candidate_by_id[model.id]
+        mid = str(model.id)
+        notes["added"] += 1
+        notes["added_model_ids"].append(mid)
+        notes["reasons"][mid] = reason
+
+    return selected_pairs, notes
+
+
+def _structural_closure_reason(
+    model: ModelRow,
+    rel: ModelRelevance,
+    selected_by_id: dict[UUID, tuple[ModelRow, ModelRelevance]],
+    *,
+    model_pathways: set[str],
+    model_questions: set[str],
+    threshold: float,
+) -> str | None:
+    if not _has_selected_model_link(model, selected_by_id):
+        return None
+
+    focused_graph_path = bool(model_pathways & {"G", "model_edge", "sage_reader"})
+    text = " ".join(
+        str(part)
+        for part in (
+            getattr(model, "natural", "") or "",
+            json.dumps(getattr(model, "proposition", {}) or {}, default=str),
+        )
+    ).casefold()
+    role = str(getattr(model, "claim_role", "") or "").casefold()
+    level = str(getattr(model, "abstraction_level", "") or "").casefold()
+    polarity = str(getattr(model, "polarity", "") or "").casefold()
+    is_relation = (
+        role == "relation"
+        or level in {"relationship", "composite"}
+        or bool(_model_member_ids(model))
+    )
+    if is_relation and focused_graph_path:
+        return "linked_relation"
+
+    is_counter = (
+        "Q_COUNTEREVIDENCE" in model_questions
+        or polarity == "mixed"
+        or _has_counterevidence_qualifier_language(text)
+    )
+    if is_counter and (focused_graph_path or rel.final_score >= max(0.20, threshold * 0.75)):
+        return "linked_counterevidence"
+
+    return None
+
+
+def _has_selected_model_link(
+    model: ModelRow,
+    selected_by_id: dict[UUID, tuple[ModelRow, ModelRelevance]],
+) -> bool:
+    selected_ids = set(selected_by_id)
+    if set(getattr(model, "supporting_model_ids", []) or []) & selected_ids:
+        return True
+    candidate_members = _model_member_ids(model)
+    if candidate_members & selected_ids:
+        return True
+    for selected_model, _rel in selected_by_id.values():
+        if model.id in set(getattr(selected_model, "supporting_model_ids", []) or []):
+            return True
+        if model.id in _model_member_ids(selected_model):
+            return True
+    return False
+
+
+def _model_member_ids(model: ModelRow) -> set[UUID]:
+    prop = getattr(model, "proposition", {}) or {}
+    if not isinstance(prop, dict):
+        return set()
+    out: set[UUID] = set()
+    for raw in prop.get("member_model_ids") or ():
+        try:
+            out.add(UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _has_counterevidence_qualifier_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b("
+            r"counterevidence|mitigation\s+exists|mitigated\s+but|"
+            r"does\s+not\s+remove|doesn't\s+remove|should\s+not\s+erase|"
+            r"risk\s+remains|blocker\s+remains|alternate\s+explanation|"
+            r"weaken(?:s|ed)?|contradict(?:s|ed)?|premise\s+(?:is\s+)?"
+            r"(?:stale|incomplete|unsupported)"
+            r")\b",
+            lower,
+        )
+    )
 
 
 def _score_model_relevance(
@@ -2347,11 +3292,19 @@ def _apply_relevance_diversity(
             "selected_after": 0,
         }
 
-    target_limit = min(top_n, _coverage_compaction_target(len(selected_pairs), top_n, weak_signal, broad_signal))
+    target_limit = min(
+        top_n,
+        _coverage_compaction_target(len(selected_pairs), top_n, weak_signal, broad_signal),
+    )
     floor = min(target_limit, max(1, int(min_keep or 0)))
+    if broad_signal:
+        # Broad portfolio questions need representative breadth before
+        # redundancy pruning. A same-cluster set can still describe many
+        # independent customers, constraints, or instances of a trend.
+        floor = min(target_limit, max(floor, min(20, len(selected_pairs))))
     model_pathways = model_pathways or {}
     model_questions = model_questions or {}
-    remaining = list(selected_pairs[:top_n])
+    remaining = list(selected_pairs)
     out: list[tuple[ModelRow, ModelRelevance]] = []
     covered: Counter[str] = Counter()
     cluster_counts: Counter[tuple[Any, ...]] = Counter()
@@ -2396,14 +3349,20 @@ def _apply_relevance_diversity(
             len(out) >= floor
             and len(out) >= 8
             and best_utility < max(0.20, threshold + (0.03 if broad_signal else 0.05))
+            and not _has_uncovered_answer_obligation(
+                remaining[best_idx][0],
+                covered,
+                model_questions=model_questions.get(remaining[best_idx][0].id, set()),
+            )
         ):
             break
         add_pair(remaining.pop(best_idx))
 
-    dropped = max(0, len(selected_pairs[:top_n]) - len(out))
+    dropped = max(0, len(selected_pairs) - len(out))
     notes = {
         "strategy": "coverage_aware",
         "target_limit": target_limit,
+        "floor": floor,
         "selected_before": len(selected_pairs),
         "selected_after": len(out),
         "dropped": dropped,
@@ -2422,9 +3381,9 @@ def _coverage_compaction_target(
     if weak_signal:
         return min(top_n, 8)
     if broad_signal:
-        return min(top_n, max(24, min(48, selected_count)))
-    if selected_count >= max(32, int(top_n * 0.75)):
-        return min(top_n, 36)
+        return min(top_n, max(20, min(32, selected_count)))
+    if selected_count >= 32:
+        return min(top_n, 18)
     return min(top_n, selected_count)
 
 
@@ -2442,6 +3401,11 @@ def _coverage_selection_utility(
     features = _model_coverage_features(model, model_pathways, model_questions)
     novelty = sum(weight / (1 + covered[feature]) for feature, weight in features)
     cluster_count = cluster_counts[_model_relevance_cluster_key(model)]
+    answer_novelty = _has_uncovered_answer_obligation(
+        model,
+        covered,
+        model_questions=model_questions,
+    )
     redundancy_penalty = 0.0
     if cluster_count:
         redundancy_penalty += 0.07 * cluster_count
@@ -2450,10 +3414,105 @@ def _coverage_selection_utility(
     entity_pressure = _entity_coverage_pressure(model, covered)
     role_pressure = _role_coverage_pressure(model, covered)
     if entity_pressure:
-        redundancy_penalty += 0.04 * entity_pressure
-    if role_pressure and not broad_signal:
+        redundancy_penalty += (0.012 if answer_novelty else 0.04) * entity_pressure
+    if role_pressure and not broad_signal and not answer_novelty:
         redundancy_penalty += 0.03 * role_pressure
     return rel.final_score + min(0.28, novelty) - redundancy_penalty
+
+
+def _has_uncovered_answer_obligation(
+    model: ModelRow,
+    covered: Counter[str],
+    *,
+    model_questions: set[str] | None = None,
+) -> bool:
+    for feature in _model_answer_obligation_features(model, model_questions or set()):
+        if covered[feature] <= 0:
+            return True
+    return False
+
+
+def _model_answer_obligation_features(
+    model: ModelRow,
+    model_questions: set[str],
+) -> tuple[str, ...]:
+    """Coarse answer slots a Model can satisfy for coverage-aware stopping."""
+    features: list[str] = []
+
+    def add(value: str) -> None:
+        clean = value.strip()
+        if clean and clean not in features:
+            features.append(clean)
+
+    belief_address = belief_address_from_model_like(model)
+    role = str(
+        getattr(model, "claim_role", "") or belief_address.get("claim_role") or ""
+    ).casefold()
+    level = str(
+        getattr(model, "abstraction_level", "") or belief_address.get("abstraction_level") or ""
+    ).casefold()
+    polarity = str(
+        getattr(model, "polarity", "") or belief_address.get("polarity") or ""
+    ).casefold()
+    primitives = tuple(
+        str(primitive).upper()
+        for primitive in (belief_address.get("answerable_primitives") or ())
+    )
+
+    for primitive in primitives[:6]:
+        add(f"answer_slot:primitive:{primitive}")
+        if role:
+            add(f"answer_slot:role_primitive:{role}:{primitive}")
+    if role:
+        add(f"answer_slot:role:{role}")
+    if level in {"relationship", "composite"}:
+        add(f"answer_slot:level:{level}")
+    for entity_type, entity_id in sorted(
+        _canonical_entity_pairs(getattr(model, "scope_entities", []) or [])
+    )[:8]:
+        add(f"answer_slot:entity:{entity_type}:{entity_id}")
+    for question in sorted(str(question) for question in model_questions)[:6]:
+        add(f"answer_slot:question:{question}")
+    for key in tuple(belief_address.get("obligation_keys") or ())[:12]:
+        key_text = str(key)
+        if key_text.startswith(("spo:", "qualifier:")):
+            add(f"answer_slot:object_obligation:{key_text[:140]}")
+
+    structural = _is_structural_detail_model(model)
+    link_tokens: set[str] = set()
+    for raw in getattr(model, "supporting_model_ids", []) or ():
+        try:
+            link_tokens.add(str(UUID(str(raw))))
+        except (TypeError, ValueError):
+            continue
+    link_tokens.update(str(mid) for mid in _model_member_ids(model))
+    if structural:
+        add("answer_slot:structural_detail")
+        for linked_id in sorted(link_tokens)[:4]:
+            add(f"answer_slot:structural_link:{linked_id}")
+
+    text = " ".join(
+        str(part)
+        for part in (
+            getattr(model, "natural", "") or "",
+            json.dumps(getattr(model, "proposition", {}) or {}, default=str),
+        )
+    ).casefold()
+    if polarity == "mixed" or _has_counterevidence_qualifier_language(text):
+        subject = str(belief_address.get("subject") or "").strip().casefold()
+        add(f"answer_slot:counterevidence:{subject[:96] or 'linked'}")
+
+    subject = str(belief_address.get("subject") or "").strip().casefold()
+    predicate = str(belief_address.get("predicate") or "").strip().casefold()
+    if subject and (
+        structural
+        or not getattr(model, "scope_entities", None)
+        or role in {"pattern", "prediction", "recommendation", "capability", "situation"}
+    ):
+        add(f"answer_slot:subject:{subject[:96]}")
+        if predicate:
+            add(f"answer_slot:subject_predicate:{subject[:96]}:{predicate[:64]}")
+    return tuple(features)
 
 
 def _model_coverage_features(
@@ -2462,6 +3521,16 @@ def _model_coverage_features(
     model_questions: set[str],
 ) -> list[tuple[str, float]]:
     features: list[tuple[str, float]] = []
+    belief_address = belief_address_from_model_like(model)
+    fingerprint = str(belief_address.get("fingerprint") or "").strip()
+    if fingerprint:
+        features.append((f"belief_fingerprint:{fingerprint}", 0.055))
+    for key in tuple(belief_address.get("obligation_keys") or ())[:12]:
+        features.append((f"belief_obligation:{key}", 0.095))
+    for primitive in tuple(belief_address.get("answerable_primitives") or ())[:6]:
+        features.append((f"answerable:{primitive}", 0.045))
+    for feature in _model_answer_obligation_features(model, model_questions):
+        features.append((feature, 0.075))
     kind = getattr(model, "proposition_kind", None)
     if kind:
         features.append((f"kind:{kind}", 0.035))
@@ -2514,6 +3583,14 @@ def _role_coverage_pressure(model: ModelRow, covered: Counter[str]) -> int:
 
 def _model_relevance_cluster_key(model: ModelRow) -> tuple[Any, ...]:
     entities = sorted(_canonical_entity_pairs(getattr(model, "scope_entities", []) or []))[:3]
+    belief_address = belief_address_from_model_like(model)
+    fingerprint = str(belief_address.get("fingerprint") or "").strip()
+    if fingerprint:
+        return (
+            getattr(model, "proposition_kind", None),
+            tuple(entities),
+            fingerprint,
+        )
     text_tokens = sorted(_relevance_tokens(getattr(model, "natural", "") or ""))[:4]
     return (
         getattr(model, "proposition_kind", None),
@@ -2537,7 +3614,7 @@ def _has_broad_signal_language(lower: str) -> bool:
     broad_terms = bool(
         re.search(
             r"\b(all|portfolio|company-wide|team-wide|board|exec|"
-            r"customers|renewals|pipeline|fleet|global)\b",
+            r"customers|renewals|fleet|global)\b",
             scrubbed,
         )
     )
@@ -2729,8 +3806,45 @@ def _classify_hypothesis_links(
     ):
         contradicts.add("H1")
         supports.add("H0")
+    if related_to_trigger and _has_premise_challenge_language(lower):
+        weakens.add("H1")
+    if related_to_trigger and _has_missing_owner_language(lower):
+        weakens.add("H2")
     known_ids = {h.id for h in hypotheses}
     return supports & known_ids, weakens & known_ids, contradicts & known_ids
+
+
+def _has_premise_challenge_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b("
+            r"not\s+the\s+only\s+blocker|one\s+blocker\s*,?\s*but|"
+            r"also\s+(?:active|blocking|a\s+blocker|at\s+risk)|"
+            r"additional\s+blocker|another\s+blocker|"
+            r"premise\s+(?:is\s+)?(?:wrong|stale|incomplete|unsupported)|"
+            r"assumption\s+(?:is\s+)?(?:wrong|stale|incomplete|unsupported)|"
+            r"does\s+not\s+support|not\s+supported\s+by|unsupported\s+by|"
+            r"evidence\s+(?:does\s+not|doesn't)\s+support|"
+            r"marked\s+commit\s+but|crm\s+says\s+commit\s+but|"
+            r"stale\s+(?:premise|assumption|status|stage|model)|"
+            r"superseded\s+by|no\s+longer\s+(?:true|current|active)"
+            r")\b",
+            lower,
+        )
+    )
+
+
+def _has_missing_owner_language(lower: str) -> bool:
+    return bool(
+        re.search(
+            r"\b("
+            r"no\s+(?:explicit|recorded|accountable)\s+owner|"
+            r"owner\s+(?:is\s+)?(?:missing|unassigned|unknown|unclear|unresolved)|"
+            r"missing\s+owner|unassigned\s+owner"
+            r")\b",
+            lower,
+        )
+    )
 
 
 def _answer_question(
@@ -3172,14 +4286,14 @@ def _minimal_evidence_target(
         c.source_type in {"commitment", "goal", "decision", "resource"}
         for c in cards
     ) else 0
-    base = 8 if mode == "fast" or route == "FAST_PATH" else 12
+    base = 8 if mode == "fast" or route == "FAST_PATH" else 9
     target = base + question_count * 2 + supported + counter_bonus + action_bonus
     if route == "BACKGROUND_PATH":
         target = min(target, 16)
     if mode == "fast" or route == "FAST_PATH":
         target = min(target, 14)
     else:
-        target = min(target, 28)
+        target = min(target, 22)
     return min(max(1, int(evidence_limit)), max(1, target), len(cards))
 
 
@@ -3286,6 +4400,45 @@ def _evidence_value(card: EvidenceCard) -> float:
     return usefulness - penalty
 
 
+def _state_contract_for_context_packet(
+    trigger: TriggerContext,
+    evidence: list[EvidenceCard],
+) -> dict[str, Any]:
+    sources = [
+        StateSource(
+            source_kind=card.source_type,
+            source_ref=card.raw_content_ref or f"{card.source_type}:{card.source_ref}",
+            text=card.summary,
+            occurred_at=card.timestamp,
+            confidence=_evidence_card_confidence(card),
+            metadata={
+                "evidence_id": str(card.evidence_id),
+                "retrieval_paths": sorted(card.retrieval_paths),
+                "supports_hypotheses": sorted(card.supports_hypotheses),
+                "weakens_hypotheses": sorted(card.weakens_hypotheses),
+                "contradicts_hypotheses": sorted(card.contradicts_hypotheses),
+                "trust_tier": card.trust_tier,
+            },
+        )
+        for card in evidence
+    ]
+    return compile_state_contract(_trigger_text(trigger), sources).to_dict()
+
+
+def _evidence_card_confidence(card: EvidenceCard) -> float:
+    base = {
+        "authoritative": 0.92,
+        "reputable": 0.78,
+        "model": 0.62,
+        "low": 0.38,
+    }.get(str(card.trust_tier or "").casefold(), 0.55)
+    if card.contradicts_hypotheses or card.weakens_hypotheses:
+        base += 0.06
+    if card.supports_hypotheses:
+        base += 0.04
+    return round(max(0.05, min(0.99, base)), 2)
+
+
 def _compile_context_packet(
     trigger: TriggerContext,
     route: SignalRoute,
@@ -3311,6 +4464,9 @@ def _compile_context_packet(
         ) and len(decisive) < 30:
             decisive.append(item)
             used_tokens += cost
+            if card.supports_hypotheses:
+                key = ",".join(sorted(card.supports_hypotheses))
+                supporting_groups.setdefault(key, []).append(card)
         else:
             if _is_low_value_model_noise(card):
                 omitted.append(
@@ -3373,6 +4529,17 @@ def _compile_context_packet(
                     "expand_if": "debugging retrieval pathway breadth",
                 }
             )
+    state_contract = _state_contract_for_context_packet(trigger, evidence)
+    important_unknowns = _dedupe_unknowns(
+        [
+            *list(sufficiency.remaining_unknowns),
+            *[
+                slot
+                for slot in state_contract.get("missing_slots", [])
+                if slot != "premise_challenge"
+            ],
+        ]
+    )
     return {
         "signal_summary": _compact(_trigger_text(trigger), 1000),
         "source_metadata": {
@@ -3387,7 +4554,14 @@ def _compile_context_packet(
         "question_answers": [_jsonable(asdict(a)) for a in answers],
         "sufficiency_verdict": _jsonable(asdict(sufficiency)),
         "candidate_state_changes": _candidate_state_changes(hypotheses, evidence, sufficiency),
-        "important_unknowns": list(sufficiency.remaining_unknowns),
+        "important_unknowns": important_unknowns,
+        "state_contract": state_contract,
+        "answer_obligations": {
+            "required_slots": state_contract.get("required_slots", []),
+            "covered_slots": state_contract.get("covered_slots", []),
+            "missing_slots": state_contract.get("missing_slots", []),
+            "premise_status": state_contract.get("premise_check", {}).get("status"),
+        },
         "tiers": {
             "decisive_evidence": decisive,
             "supporting_evidence_groups": supporting,
@@ -3433,6 +4607,19 @@ def _candidate_state_changes(
             }
         )
     return changes[:5]
+
+
+def _dedupe_unknowns(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        clean = str(value or "").strip()
+        key = clean.casefold()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
 
 
 def _background_summaries(evidence: list[EvidenceCard]) -> list[dict[str, Any]]:
@@ -3694,6 +4881,8 @@ async def _persist_sage_reader_decision_attributions(
     evidence_by_question = _packet_evidence_refs_by_question(result.evidence_cards)
     entities = _jsonable(trigger.seed_entity_ids)
     params: list[tuple[Any, ...]] = []
+    nonselected_limit = _reader_attribution_nonselected_limit()
+    nonselected_min_score = _reader_attribution_nonselected_min_score()
 
     for qid, qnote in questions.items():
         if not isinstance(qnote, dict):
@@ -3702,6 +4891,7 @@ async def _persist_sage_reader_decision_attributions(
         if question is None:
             continue
         evidence_refs = evidence_by_question.get(str(qid), [])
+        nonselected_kept = 0
         for raw_trace in qnote.get("activations", []) or []:
             if not isinstance(raw_trace, dict):
                 continue
@@ -3719,6 +4909,13 @@ async def _persist_sage_reader_decision_attributions(
                 source_breakdown = dict(raw_trace.get("source_breakdown") or {})
             except (KeyError, TypeError, ValueError):
                 continue
+            if not selected:
+                if (
+                    activation_score < nonselected_min_score
+                    or nonselected_kept >= nonselected_limit
+                ):
+                    continue
+                nonselected_kept += 1
             model_evidence_refs = [
                 ref for ref in evidence_refs
                 if ref.get("source_ref_id") == str(model_id)

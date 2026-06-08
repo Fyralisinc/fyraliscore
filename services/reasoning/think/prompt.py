@@ -12,7 +12,7 @@ Structure:
              <acts>
              <resources>
              <actor_context>
-             <bridge_context>
+             <customer_context>
            </retrieved_context>
            <operating_instructions>
 
@@ -84,6 +84,7 @@ Diff schema (you produce EXACTLY this JSON shape):
   "tenant_id": "<uuid echoed from triggering_event>",
   "claim_ops": [],
   "edge_ops": [],
+  "ontology_gap_ops": [],
   "act_ops": [],
   "resource_ops": [],
   "new_predictions": [],
@@ -199,7 +200,7 @@ Model Scope:
   write capability/constraint/support claims only when the signal directly says
   so or the retrieved actor context shows a repeated pattern.
 - scope_entities: {"type":"customer|commitment|goal|decision|resource",
-  "id":"<uuid>"} from <acts>, <resources>, or bridge_context. Resolve PR/ticket
+  "id":"<uuid>"} from <acts>, <resources>, or customer_context. Resolve PR/ticket
   handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
   names resolve to relational resources. Customer-specific commitment signals
   should usually include both customer and commitment entities.
@@ -295,6 +296,33 @@ edge_ops:
   blocks/enables/same_issue_as/co_occurs_with/analogous_to/alternative_to/
   early_warning_for may set weight. instance_of/contributes_to_resolution/
   superseded_by must set weight null.
+
+ontology_gap_ops:
+{ "op":"propose_edge_type", "source_model_id":"<uuid>",
+  "target_model_id":"<uuid>", "proposed_edge_kind":"snake_case_new_kind",
+  "description":"<what this relation means>",
+  "relationship_summary":"<why this pair has that relation>",
+  "parent_kind":"<nearest registered edge_kind or null>",
+  "nearest_existing_kind":"<nearest registered edge_kind or null>",
+  "directionality":"directed|symmetric|unknown",
+  "inverse_label":"<optional inverse label or null>",
+  "dropped_dimensions":["<semantic loss if coerced>", "..."],
+  "evidence_event_ids":["<observation uuid>",...],
+  "evidence_model_ids":["<model uuid>",...],
+  "confidence":0.0-1.0, "impact":0.0-1.0, "actionability":0.0-1.0,
+  "urgency":0.0-1.0, "uncertainty":0.0-1.0,
+  "authority_required":0.0-1.0, "novelty":0.0-1.0 }
+- Use ontology_gap_ops when the relationship between two Models is valuable
+  and grounded, but no registered edge_kind preserves its decision-relevant
+  semantics. This writes a pre-truth edge-type candidate, not an accepted edge.
+- Do NOT use ontology_gap_ops for registered edge kinds. If `supports`,
+  `blocks`, `contradicts`, etc. is precise enough, use edge_ops.
+- Good examples: `gated_by_decision`, `depends_on_assumption`,
+  `trades_off_with`, `competes_for_priority_with`, `transfers_risk_to`,
+  `obscures`, `proxy_for`, `lags`, `accountable_for`, `reinforces`.
+- `parent_kind` / `nearest_existing_kind` must be a registered edge_kind when
+  provided. It is the retrieval fallback; `dropped_dimensions` must explain
+  what that fallback would lose.
 
 Return only well-formed JSON, no prose outside the JSON object.
 """
@@ -395,7 +423,7 @@ Scope:
   commitment owner, or <actors_in_context>. External senders usually use [].
 - Actor claims must be directly evidenced or supported by repeated actor
   context; do not infer motives or hidden psychology from one message.
-- scope_entities comes from <acts>, <resources>, or bridge_context. Resolve PR
+- scope_entities comes from <acts>, <resources>, or customer_context. Resolve PR
   numbers and ticket IDs to matching commitment UUIDs in <acts>; customer names
   to relational resources; goal phrases to goals. Never invent UUIDs.
 - Customer-specific commitment signals should usually include both customer and
@@ -935,15 +963,15 @@ def _build_context_section(
         lines.append("    [no actor context provided]")
     lines.append("  </actor_context>")
 
-    # Bridge context
-    lines.append("  <bridge_context>")
-    if bundle.bridge_context:
+    # Customer context
+    lines.append("  <customer_context>")
+    if bundle.customer_context:
         lines.append(
-            f"    {_trunc(json.dumps(bundle.bridge_context, default=str), 1000)}"
+            f"    {_trunc(json.dumps(bundle.customer_context, default=str), 1000)}"
         )
     else:
         lines.append("    [no customer counterparty touched]")
-    lines.append("  </bridge_context>")
+    lines.append("  </customer_context>")
 
     # Legacy accepted-memory topology context. Active topology now
     # reaches this prompt through relationship_candidates carried in
@@ -1500,6 +1528,8 @@ def _build_instructions(trigger: TriggerContext) -> str:
                 "knowledge:\n"
                 "  - emit an edge_op or edge candidate when a precise "
                 "pairwise relation is real;\n"
+                "  - emit an ontology_gap_op when the pairwise relation is "
+                "real and useful but no registered edge_kind captures it;\n"
                 "  - emit a `situation` Model when the members are symptoms "
                 "of one operational condition;\n"
                 "  - update/archive only when an existing Model is clearly "
@@ -1571,7 +1601,7 @@ def _build_instructions(trigger: TriggerContext) -> str:
         "Reminder before you emit each claim_ops.insert entry: populate "
         "scope_actors and scope_entities by pulling UUIDs from the context "
         "sections above (observations' actor_id, acts, resources, "
-        "bridge_context, actors_in_context). If the signal names a PR or "
+        "customer_context, actors_in_context). If the signal names a PR or "
         "ticket (e.g., 'PR #847', 'ENG-501'), resolve the handle to the "
         "commitment in <acts> and include that commitment's UUID in "
         "scope_entities. Do NOT invent UUIDs."

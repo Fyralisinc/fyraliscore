@@ -601,8 +601,8 @@ async def _run_once(
             first,
             trigger,
             sparse_threshold=RETRIEVAL_CONFIG.second_pass_sparse_threshold,
-            bridge_confidence_threshold=(
-                RETRIEVAL_CONFIG.second_pass_bridge_confidence_threshold
+            customer_confidence_threshold=(
+                RETRIEVAL_CONFIG.second_pass_customer_confidence_threshold
             ),
             t2_has_authoritative_handler=(
                 trigger.kind == "T2" and is_authoritative(trigger)
@@ -1070,6 +1070,7 @@ async def _run_once(
          run_id=str(record.id),
          claim_ops=len(validated.claim_ops),
          edge_ops=len(validated.edge_ops),
+         ontology_gap_ops=len(validated.ontology_gap_ops),
          act_ops=len(validated.act_ops),
          resource_ops=len(validated.resource_ops),
          dropped_ops=validated.dropped_op_count)
@@ -1154,6 +1155,7 @@ async def _run_once(
          ops_applied=(
              len(applied["claim_ops"])
              + len(applied["edge_ops"])
+             + len(applied.get("ontology_gap_ops", []))
              + len(applied["act_ops"])
              + len(applied["resource_ops"])
          ),
@@ -1173,6 +1175,10 @@ async def _run_once(
         METRICS.inc_op(f"claim_{summary.get('op')}")
     for summary in applied.get("edge_ops", []):
         METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
+    for summary in applied.get("ontology_gap_ops", []):
+        METRICS.inc_op(
+            f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
+        )
     for summary in applied.get("act_ops", []):
         METRICS.inc_op(summary.get("op", "act_unknown"))
     for summary in applied.get("resource_ops", []):
@@ -1289,6 +1295,7 @@ async def _run_once(
         ops_applied_count=(
             len(applied["claim_ops"])
             + len(applied["edge_ops"])
+            + len(applied.get("ontology_gap_ops", []))
             + len(applied["act_ops"])
             + len(applied["resource_ops"])
         ),
