@@ -2,11 +2,12 @@
 
 Single outbound surface for the CloudTrail management-events backfill +
 poll-incremental + the reconciler's gap probe. AWS authenticates with IAM
-credentials and SIGNS every request with SigV4 (botocore). The synthetic gate
-drives the REAL fetcher against a MOCK client (`mock_clients/aws.py`), so the
-production signing here is intentionally a thin TODO-stubbed seam — the method
-SURFACE the pipeline depends on is real and stable; only the wire-level signing
-is left to confirm against the vendor SDK.
+credentials and SIGNS every request with SigV4. We use the `aioboto3`/botocore
+service clients (`cloudtrail`, `sts`), which perform SigV4 signing, endpoint
+resolution, and throttle-retry internally — rather than hand-rolling a SigV4Auth
+signer. The synthetic gate drives the REAL fetcher against a MOCK client
+(`mock_clients/aws.py`), so this production path is not exercised in CI;
+integration-testing it against moto/localstack is the remaining operator step.
 
 ============================================================
 API shape (load-bearing for the fetcher's time-window walk)
@@ -25,20 +26,23 @@ The backfill walks the window newest-first in pages, advancing `cursor` until th
 page returns no continuation token (end-of-data).
 
 ============================================================
-NOVEL — SigV4 (TODO seam)
+SigV4 signing
 ============================================================
-Real AWS auth is IAM SigV4 over the per-region CloudTrail endpoint. In production
-`_signed_request` must sign with botocore's SigV4Auth (or call boto3's
-`cloudtrail` client). Until that is wired, `_signed_request` raises so it can
-never silently issue an UNSIGNED request; the mock client replaces the whole
-surface in the synthetic gate.
+Real AWS auth is IAM SigV4 over the per-region service endpoints. The aioboto3
+service clients sign internally from the resolved `AwsCredentials` (static keys
+or AssumeRole STS creds — see `credentials.py`); a botocore `Config` owns
+throttle-retry (exponential backoff w/ jitter). `endpoint_override` points the
+clients at moto/localstack for tests. CloudTrail LookupEvents is capped at 50
+results/page and a 90-DAY lookback; STS GetCallerIdentity is the connectivity
+probe.
 
-Logging redaction: IAM credentials (access key / secret / session token) and the
-Authorization header are NEVER logged. The account id is hashed before logging.
+Logging redaction: IAM credentials (access key / secret / session token) are
+NEVER logged. The account id is hashed before logging.
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import os
 from typing import Any
@@ -46,7 +50,7 @@ from uuid import UUID
 
 import structlog
 
-from lib.shared.errors import CompanyOSError
+from lib.shared.errors import AwsApiError
 
 
 log = structlog.get_logger("integrations.aws.client")
@@ -56,50 +60,20 @@ _DEFAULT_TIMEOUT_S = 30.0
 # CloudTrail LookupEvents caps `MaxResults` at 50; keep parity.
 _DEFAULT_PAGE_SIZE = 50
 
-# TODO(human): confirm the CloudTrail regional endpoint host template against
-# vendor docs (e.g. https://cloudtrail.{region}.amazonaws.com) and the
-# LookupEvents action/version. Exposed as a constant so the real client can be
-# wired without touching call sites.
+# CONFIRMED (docs.aws.amazon.com): CloudTrail's regional endpoint is
+# https://cloudtrail.{region}.amazonaws.com. aioboto3 resolves it from
+# region_name automatically; this constant is only used for logging + as the
+# moto/localstack override seam (endpoint_url).
 CLOUDTRAIL_ENDPOINT_TEMPLATE = os.environ.get(
     "AWS_CLOUDTRAIL_ENDPOINT_TEMPLATE",
     "https://cloudtrail.{region}.amazonaws.com",
 )
 
 
-class AwsApiError(CompanyOSError):
-    """Outbound AWS API call failure (IN-AWS).
-
-    Defined locally (not in lib/shared/errors.py) so this Phase-1 source does not
-    edit the shared errors registry; the wiring phase may promote it. The mock
-    client raises with the SAME stable `code` values so the fetcher branches
-    identically against mock and real clients.
-
-    Stable `code` values:
-      - aws_api_throttled:      Throttling / RequestLimitExceeded (HTTP 400/429)
-      - aws_api_unauthorized:   AccessDenied / UnrecognizedClient / Signature
-                                does not match (403)
-      - aws_api_not_found:      account/region/trail not found or not visible
-      - aws_api_error:          other terminal errors / transport failures
-
-    `context` carries `{http_status?, retry_after?, region?, account_id?}`. IAM
-    credentials and the Authorization header are NEVER placed on context.
-    """
-
-    default_code = "aws_api_error"
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str | None = None,
-        context: dict[str, Any] | None = None,
-        **extra: Any,
-    ) -> None:
-        merged = dict(context or {})
-        merged.update(extra)
-        super().__init__(message, **merged)
-        if code is not None:
-            self._code = code
+# AwsApiError is the canonical class in lib/shared/errors.py (promoted from this
+# module during the all-22 merge). Re-exported below for callers that import it
+# from here. Stable `code` values: aws_api_throttled / aws_api_unauthorized /
+# aws_api_not_found / aws_api_error.
 
 
 def short_account_hash(account_id: str) -> str:
@@ -147,12 +121,13 @@ class AwsClient:
         self._secret_ref = secret_ref
         self._creds_lock = asyncio.Lock()
         self._creds: Any | None = None
-        # Production endpoint is per-region; a spammer/test override wins so
-        # backfill points at the mock.
+        # Production endpoint is resolved per-region by the aioboto3 client; a
+        # spammer/test override (moto/localstack) is passed as `endpoint_url`.
+        self._endpoint_override = endpoint_override.rstrip("/") if endpoint_override else None
         self._endpoint = (
-            endpoint_override
+            self._endpoint_override
             or CLOUDTRAIL_ENDPOINT_TEMPLATE.format(region=region)
-        ).rstrip("/")
+        )
         self._http = http_client
 
     async def aclose(self) -> None:
@@ -160,16 +135,17 @@ class AwsClient:
         return None
 
     async def _credentials(self) -> Any:
-        """Resolve IAM credentials once (assume-role / static keys).
-
-        TODO(human): resolve real IAM credentials via credentials.py
-        (AssumeRole with the install's role ARN, or static keys from the secret
-        store) and cache them with expiry-aware refresh.
+        """Resolve IAM credentials (assume-role / static keys), refreshing
+        AssumeRole creds before expiry. Static keys never expire → resolved once.
         """
-        if self._creds is not None:
+        import time
+
+        now_ms = int(time.time() * 1000)
+        if self._creds is not None and not self._creds.expires_soon(now_ms):
             return self._creds
         async with self._creds_lock:
-            if self._creds is not None:
+            now_ms = int(time.time() * 1000)
+            if self._creds is not None and not self._creds.expires_soon(now_ms):
                 return self._creds
             from services.ingest.integrations.aws.credentials import (
                 resolve_credentials,
@@ -180,31 +156,46 @@ class AwsClient:
                 tenant_id=self._tenant_id,
                 credential_kind=self._credential_kind,
                 secret_ref=self._secret_ref,
+                region=self._region,
             )
             return self._creds
 
-    async def _signed_request(
-        self,
-        action: str,
-        body: dict[str, Any],
-    ) -> Any:
-        """One SigV4-signed CloudTrail API call with bounded throttle retry.
+    def _retry_config(self) -> Any:
+        """botocore Config owning SigV4 throttle-retry (exp backoff + jitter)."""
+        from botocore.config import Config
 
-        TODO(human): sign with botocore SigV4Auth / use a boto3 `cloudtrail`
-        client. This MUST NEVER issue an unsigned request — until signing is
-        wired it raises so the gap is loud. The synthetic gate replaces the whole
-        client with `MockAwsClient`, so this stub never executes there.
-        """
-        creds = await self._credentials()  # noqa: F841 — wired with signing
-        max_attempts = int(os.environ.get("AWS_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("AWS_RL_MAX_SLEEP_SEC", "30"))
-        _ = (max_attempts, max_sleep, action, body, self._endpoint)
-        raise AwsApiError(
-            "aws client SigV4 signing is not wired "
-            "(TODO: sign with botocore SigV4Auth / boto3 cloudtrail client)",
-            code="aws_api_error",
-            context={"region": self._region},
+        return Config(
+            retries={
+                "max_attempts": int(os.environ.get("AWS_RL_MAX_ATTEMPTS", "4")),
+                "mode": "standard",
+            },
+            read_timeout=_DEFAULT_TIMEOUT_S,
         )
+
+    async def _service_client(self, service: str) -> Any:
+        """An aioboto3 service client (`cloudtrail` / `sts`) signed from the
+        resolved credentials. Returns the async-context-manager the caller enters.
+        aioboto3 is an OPTIONAL dependency, imported lazily here so importing this
+        module never requires it (the synthetic gate uses MockAwsClient)."""
+        try:
+            import aioboto3
+        except ImportError as exc:  # pragma: no cover
+            raise AwsApiError(
+                "aioboto3 not installed for AWS API calls",
+                code="aws_api_error",
+                context={"region": self._region},
+            ) from exc
+        creds = await self._credentials()
+        kwargs: dict[str, Any] = {
+            "region_name": self._region,
+            "aws_access_key_id": creds.access_key_id,
+            "aws_secret_access_key": creds.secret_access_key,
+            "aws_session_token": creds.session_token,
+            "config": self._retry_config(),
+        }
+        if self._endpoint_override:
+            kwargs["endpoint_url"] = self._endpoint_override
+        return aioboto3.Session().client(service, **kwargs)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -229,16 +220,30 @@ class AwsClient:
         newest-first. Mirrors the mock client's contract so the fetcher's
         window walk terminates correctly.
         """
-        body: dict[str, Any] = {
+        # CloudTrail's LookupEvents takes tz-aware datetimes (NOT epoch ms) and
+        # caps the lookback at 90 days; the fetcher clamps the window floor.
+        kwargs: dict[str, Any] = {
             "MaxResults": min(int(limit or _DEFAULT_PAGE_SIZE), _DEFAULT_PAGE_SIZE),
         }
         if from_ms is not None:
-            body["StartTime"] = int(from_ms)
+            kwargs["StartTime"] = dt.datetime.fromtimestamp(
+                from_ms / 1000, tz=dt.timezone.utc)
         if to_ms is not None:
-            body["EndTime"] = int(to_ms)
+            kwargs["EndTime"] = dt.datetime.fromtimestamp(
+                to_ms / 1000, tz=dt.timezone.utc)
         if cursor:
-            body["NextToken"] = cursor
-        resp = await self._signed_request("LookupEvents", body)
+            kwargs["NextToken"] = cursor
+        try:
+            client_cm = await self._service_client("cloudtrail")
+            async with client_cm as ct:
+                resp = await ct.lookup_events(**kwargs)
+        except AwsApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — map botocore ClientError.
+            from services.ingest.integrations.aws.credentials import (
+                _map_botocore_error,
+            )
+            raise _map_botocore_error(exc, region=region) from exc
         events = resp.get("Events") if isinstance(resp, dict) else None
         events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
         next_cursor = resp.get("NextToken") if isinstance(resp, dict) else None
@@ -259,17 +264,25 @@ class AwsClient:
         return len(page.get("events") or []) > 0
 
     async def describe_account(self) -> dict[str, Any]:
-        """A cheap connectivity + credential probe used by the seed script
-        (e.g. STS GetCallerIdentity).
-
-        TODO(human): implement against STS GetCallerIdentity to verify the
-        resolved credentials reach the target account/region.
-        """
-        raise AwsApiError(
-            "aws describe_account probe is not wired (TODO: STS GetCallerIdentity)",
-            code="aws_api_error",
-            context={"region": self._region},
-        )
+        """A cheap connectivity + credential probe (STS GetCallerIdentity — a
+        zero-permission call) used by the seed script to verify the resolved
+        credentials reach the expected account."""
+        try:
+            client_cm = await self._service_client("sts")
+            async with client_cm as sts:
+                ident = await sts.get_caller_identity()
+        except AwsApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — map botocore ClientError.
+            from services.ingest.integrations.aws.credentials import (
+                _map_botocore_error,
+            )
+            raise _map_botocore_error(exc, region=self._region) from exc
+        return {
+            "account_id": ident.get("Account") if isinstance(ident, dict) else None,
+            "arn": ident.get("Arn") if isinstance(ident, dict) else None,
+            "user_id": ident.get("UserId") if isinstance(ident, dict) else None,
+        }
 
 
 __all__ = ["AwsClient", "AwsApiError", "short_account_hash", "CLOUDTRAIL_ENDPOINT_TEMPLATE"]

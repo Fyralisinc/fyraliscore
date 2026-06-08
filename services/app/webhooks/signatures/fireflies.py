@@ -1,12 +1,12 @@
 """services/app/webhooks/signatures/fireflies.py — Fireflies HMAC webhook verifier.
 
-TODO(human): confirm Fireflies webhook signature scheme (HMAC algorithm, digest
-encoding hex-vs-base64, header name, and signature prefix). This is UNVERIFIED.
-The SAFE default below clones the Brex contract: HMAC-SHA256 over the raw request
-body, presented as `sha256=<hex>` in an `X-Fireflies-Signature` header
-(GitHub-style). The three unverified knobs are exposed as the module constants
-`_HEADER_NAME`, `_PREFIX`, and `_DIGEST_ENCODING` so that confirming the real
-scheme is a one-line edit per knob, not a rewrite.
+CONFIRMED (docs.fireflies.ai/graphql-api/webhooks): Fireflies signs the webhook
+payload with HMAC-SHA256 and presents it in the `x-hub-signature` header (NOT a
+Fireflies-branded header). The digest ENCODING (hex vs base64) and whether the
+value carries a `sha256=` prefix are NOT spelled out in the docs, so those two
+knobs (`_PREFIX`, `_DIGEST_ENCODING`) keep the GitHub-style default
+(`sha256=`+hex) and remain TODO(human) to confirm empirically against a real
+delivery. The header name is confirmed.
 
 The per-tenant signing secret(s) are resolved by
 `services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
@@ -35,11 +35,11 @@ from services.app.webhooks.verifier import (
 )
 
 
-# --- UNVERIFIED scheme knobs — default to Brex's (GitHub-style) scheme. ---
-# TODO(human): confirm each against Fireflies webhook docs.
-_HEADER_NAME = "X-Fireflies-Signature"  # header carrying the signature
-_PREFIX = "sha256="                     # prefix on the header value ("" if none)
-_DIGEST_ENCODING = "hex"                # "hex" or "base64"
+# Header name CONFIRMED (x-hub-signature); prefix + digest encoding stay
+# TODO(human) to confirm empirically (the docs don't specify them).
+_HEADER_NAME = "x-hub-signature"        # CONFIRMED header carrying the signature
+_PREFIX = "sha256="                     # TODO(human): confirm prefix ("" if none)
+_DIGEST_ENCODING = "hex"                # TODO(human): confirm "hex" vs "base64"
 
 
 def _encode_digest(mac: "hmac.HMAC") -> str:

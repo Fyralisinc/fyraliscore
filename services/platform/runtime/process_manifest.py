@@ -251,6 +251,15 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         singleton=True,
     ),
     _proc(
+        "signal_gateway_worker",
+        "live-source",
+        ("python", "scripts/run_signal_gateway_worker.py"),
+        ("production",),
+        "Signal linked-device (signal-cli JSON-RPC) gateway session worker.",
+        compose_service="signal_gateway_worker",
+        singleton=True,
+    ),
+    _proc(
         "gmail_watch_scheduler",
         "live-source",
         ("python", "scripts/run_gmail_watch_scheduler.py"),

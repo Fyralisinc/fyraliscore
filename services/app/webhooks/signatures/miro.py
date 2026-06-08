@@ -1,21 +1,25 @@
-"""services/app/webhooks/signatures/miro.py — Miro HMAC webhook verifier.
+"""services/app/webhooks/signatures/miro.py — Miro webhook verifier (LEGACY).
 
-TODO(human): confirm Miro webhook signature scheme (HMAC algorithm, digest
-encoding hex-vs-base64, header name, and signature prefix). This is UNVERIFIED.
-The SAFE default below clones the Brex contract: HMAC-SHA256 over the raw request
-body, presented as `sha256=<hex>` in an `X-Miro-Signature` header (GitHub-style).
-The three unverified knobs are exposed as the module constants `_HEADER_NAME`,
-`_PREFIX`, and `_DIGEST_ENCODING` so that confirming the real scheme is a
-one-line edit per knob, not a rewrite.
+============================================================================
+CONFIRMED (developers.miro.com/changelog/removed-experimental-webhooks-support):
+Miro DISCONTINUED its experimental webhooks on 2025-12-05 — event transmission
+stopped, the subscription endpoints were removed, and there is NO replacement.
+Miro's webhooks NEVER had an HMAC signature scheme; the only authenticity check
+was a challenge-response handshake (echo the `challenge` body field) over HTTPS.
+So the HMAC-SHA256 verifier below is a SYNTHETIC-GATE stand-in only — it does not
+correspond to any real Miro scheme.
+
+PRODUCTION (TODO/architectural follow-up): Miro must be a POLL-ONLY source (like
+Carta) — re-list boards (`GET /v2/boards`, offset pagination) and board items
+(`GET /v2/boards/{id}/items`, cursor pagination) on a cadence; there is no live
+webhook edge to verify. Until that conversion lands, this verifier keeps the gate
+green by exercising the webhook→202→handler plumbing with an HMAC stand-in.
+============================================================================
 
 The per-tenant signing secret(s) are resolved by
 `services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
-row (provider='miro') the seed/onboarding step registers. The verifier loops over
-ALL active secrets so a rotation (two valid secrets in flight) verifies.
-
-Like GitHub/Brex, the digest is over the body alone (no timestamp envelope), so
-there is no replay window here; idempotency is enforced at the ingestion layer
-via the versioned `external_id`.
+row (provider='miro'). The verifier loops over ALL active secrets so a rotation
+(two valid secrets in flight) verifies.
 """
 from __future__ import annotations
 
@@ -34,11 +38,12 @@ from services.app.webhooks.verifier import (
 )
 
 
-# --- UNVERIFIED scheme knobs — default to Brex's scheme. ---
-# TODO(human): confirm each against Miro webhook docs.
-_HEADER_NAME = "X-Miro-Signature"   # header carrying the signature
-_PREFIX = "sha256="                 # prefix on the header value ("" if none)
-_DIGEST_ENCODING = "hex"            # "hex" or "base64"
+# --- Synthetic-gate HMAC stand-in (Miro has NO real webhook/HMAC scheme; see
+# the module header — webhooks were discontinued 2025-12-05). Retained only so
+# the gate can drive miro's webhook→202→handler plumbing. ---
+_HEADER_NAME = "X-Miro-Signature"   # synthetic-only header
+_PREFIX = "sha256="                 # synthetic-only prefix
+_DIGEST_ENCODING = "hex"            # synthetic-only encoding
 
 
 def _encode_digest(mac: "hmac.HMAC") -> str:

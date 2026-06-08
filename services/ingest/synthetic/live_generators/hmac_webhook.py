@@ -158,7 +158,7 @@ class HmacWebhookGenerator:
             "gusto": "Gusto-Signature",
             "deel": "Deel-Signature",
             # Must match each verifier's _HEADER_NAME constant (signatures/<src>.py).
-            "fireflies": "X-Fireflies-Signature",
+            "fireflies": "x-hub-signature",  # CONFIRMED (docs.fireflies.ai)
             "miro": "X-Miro-Signature",
             "figma": "Figma-Signature",
         }[self._provider]
@@ -340,18 +340,17 @@ class HmacWebhookGenerator:
             }
             return payload, f"miro:{org}:item:{item_id}:{iso}"
         if self._provider == "figma":
-            # Figma file-event webhook (Brex/HMAC archetype for the synthetic
-            # gate; real Figma is passcode-in-body). Body matches
-            # handlers/figma.py: top-level `event_type` + `team_id` + a FLAT
-            # event (id/file_key/version/createdAt inline — the handler wraps it
-            # minus the routing keys). `team_id` keys
-            # tenant_resolver._extract_figma. external_id is versioned by
-            # `version`; use the live ISO.
+            # Figma Webhooks V2 — PASSCODE-IN-BODY (no HMAC, no signature header;
+            # CONFIRMED). The body echoes the shared `passcode` (== signing
+            # secret); the verifier compares it. Body matches handlers/figma.py:
+            # top-level `event_type` + `team_id` + a FLAT event. `team_id` keys
+            # tenant_resolver._extract_figma. external_id is versioned by `version`.
             team = target.figma_team
             file_key = target.figma_file
             eid = f"live-{target.slug}-{suffix}"
             payload = {
                 "event_type": "FILE_VERSION_UPDATE",
+                "passcode": self._secret,
                 "team_id": team,
                 "id": eid,
                 "file_key": file_key,
@@ -395,6 +394,10 @@ class HmacWebhookGenerator:
         gate must reject it (401/403) with no observation written."""
         assert self._client is not None
         payload, external_hint = self._build_payload(target, content)
+        if self._provider == "figma" and tamper_signature:
+            # Figma verifies a body passcode (no HMAC header), so its tamper probe
+            # corrupts the passcode rather than a signature header.
+            payload = {**payload, "passcode": "wrong-passcode-tamper"}
         body = json.dumps(payload).encode("utf-8")
         if not tamper_signature:
             signature = self._sign(body)

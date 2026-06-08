@@ -1,13 +1,13 @@
-# Validation Run 6 — All-12-source concurrent backfill + live overlap
+# Validation Run 6 — All-22-source concurrent backfill + live overlap
 
 **Status:** READY ✅
-**Started:** 2026-06-08T07:13:36.888805+00:00
-**Wall time:** 18.8s
+**Started:** 2026-06-08T08:59:29.309233+00:00
+**Wall time:** 20.7s
 **Tenants:** 44
 
 ## Pre-flight (fixture realism — Decision 12)
 
-- gmail: external_id='gmail:f01be525-5bb0-48eb-9724-f1' ✅
+- gmail: external_id='gmail:1841dc20-0551-4a8b-8c58-d7' ✅
 - github: external_id='I_kwDO8x2NYDDUMdgx' ✅
 - slack: external_id='C_9C1302B2C2:1767225600.000000' ✅
 - discord: external_id='discord:402097' ✅
@@ -16,7 +16,7 @@
 - gusto: external_id='gusto:c-pre:invoice:1001:1' ✅
 - deel: external_id='deel:con_63349d041ea22e18:paymen' ✅
 - fireflies: external_id='fireflies:ws-pre:transcript:ts_d' ✅
-- signal: external_id='signal:eba7cd68-5f0c-4c4b-9016-6' ✅
+- signal: external_id='signal:0f9b0a25-5ab3-42e7-9caa-f' ✅
 - aws: external_id='aws:900000000001:us-east-1:event' ✅
 - miro: external_id='miro:org-pre:item:item_60af6af84' ✅
 - figma: external_id='figma:team-pre:event:evt_83d65a9' ✅
@@ -63,7 +63,7 @@
 
 | Source | Backfill | Live | Cross-path dedup | Signature gate | Replay idempotency |
 |---|---|---|---|---|---|
-| gmail | ✅ | ✅ [200] | ✅ | — | overlap×2 |
+| gmail | ✅ | ✅ [200] | ✅ | — | overlap×3 |
 | github | ✅ | ✅ [202] | ✅ | — | overlap×3 |
 | slack | ✅ | ✅ [202] | ✅ | — | overlap×3 |
 | discord | ✅ | ✅ ['direct'] | ✅ | — | overlap×3 |
@@ -88,7 +88,7 @@
 
 ## Assertions
 
-- ✅ `assert_live_during_backfill_overlap(all 22 sources)` — every source received ≥1 live burst while its backfill was in_progress: {'gmail': 2, 'github': 3, 'slack': 3, 'discord': 3, 'google_calendar': 3, 'google_drive': 3, 'jira': 3, 'mercury': 3, 'notion': 3, 'quickbooks': 3, 'grafana': 3, 'telegram': 3, 'brex': 3, 'ramp': 3, 'gusto': 3, 'deel': 3, 'fireflies': 3, 'signal': 3, 'aws': 3, 'miro': 3, 'figma': 3, 'carta': 3}
+- ✅ `assert_live_during_backfill_overlap(all 22 sources)` — every source received ≥1 live burst while its backfill was in_progress: {'gmail': 3, 'github': 3, 'slack': 3, 'discord': 3, 'google_calendar': 3, 'google_drive': 3, 'jira': 3, 'mercury': 3, 'notion': 3, 'quickbooks': 3, 'grafana': 3, 'telegram': 3, 'brex': 3, 'ramp': 3, 'gusto': 3, 'deel': 3, 'fireflies': 3, 'signal': 3, 'aws': 3, 'miro': 3, 'figma': 3, 'carta': 3}
 - ✅ `assert_all_sources_backfilled_concurrently` — peak simultaneous in_progress source runs = 44 (expected ≥ 22)
 - ✅ `assert_live_routed_through_expected_ingress` — all sources hit their expected live ingress status
 - ✅ `assert_signature_validation_gate_holds` — 12/12 tampered events rejected (no 2xx)

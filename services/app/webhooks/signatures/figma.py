@@ -1,19 +1,17 @@
 """services/app/webhooks/signatures/figma.py — Figma webhook verifier.
 
 ============================================================================
-IMPORTANT DIVERGENCE — real Figma uses a PASSCODE-IN-BODY scheme, NOT an HMAC
-header. This module implements an HMAC-SHA256 HEADER verifier (Brex-shaped) so
-the synthetic gate's shared ``HmacWebhookGenerator`` can drive it and its
-tamper-rejection probe passes uniformly with every other HMAC provider.
-
-# TODO(human): real Figma uses a passcode-in-body verifier, not an HMAC header —
-# reconcile before production. Figma Webhooks V2 authenticate the callback by
-# embedding a shared PASSCODE (set at webhook-creation time) inside the request
-# JSON body (`body["passcode"]`); there is NO signature header. The production
-# verifier must JSON-parse the body, constant-time-compare `body["passcode"]`
-# against the per-tenant secret, and ignore the header entirely. Flip
-# `_USE_PASSCODE_IN_BODY` to True (and implement the body branch below) once the
-# real scheme is wired; the HMAC-header path stays for the synthetic gate.
+Figma Webhooks V2 authenticate the callback with a PASSCODE-IN-BODY scheme (NOT
+an HMAC signature header), CONFIRMED against developers.figma.com/docs/rest-api/
+webhooks-security: a shared `passcode` (set at webhook-creation time, max 100
+chars) is echoed as a top-level JSON field in every delivered event, and the
+receiver verifies by constant-time-comparing `body["passcode"]` to the stored
+secret (respond 400 on mismatch). There is NO signature header — the third-party
+`figma-signature`/HMAC schemes some blogs describe do NOT exist in the official
+docs. `_USE_PASSCODE_IN_BODY = True` selects this real scheme; the legacy
+HMAC-header branch is retained only as a fallback for the synthetic gate's older
+shape. The synthetic `HmacWebhookGenerator` drives figma by embedding the
+passcode in the body (a wrong passcode is its tamper-rejection probe).
 ============================================================================
 
 The per-tenant secret(s) are resolved by
@@ -30,6 +28,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 from typing import Mapping, Sequence
 
 from services.app.webhooks.verifier import (
@@ -42,17 +41,18 @@ from services.app.webhooks.verifier import (
 )
 
 
-# --- Synthetic-gate HMAC scheme knobs (Brex archetype defaults). ---
-# TODO(human): these only apply to the HMAC-header stand-in; the real scheme is
-# passcode-in-body (see the module header).
+# The real Figma scheme: a plaintext `passcode` echoed in the JSON body. The body
+# field name is CONFIRMED (developers.figma.com).
+_PASSCODE_FIELD = "passcode"
+
+# --- Legacy HMAC-header knobs (fallback only; not Figma's real scheme). ---
 _HEADER_NAME = "Figma-Signature"   # header carrying the signature
 _PREFIX = "sha256="                # prefix on the header value ("" if none)
 _DIGEST_ENCODING = "hex"           # "hex" or "base64"
 
-# Configurable switch for the real scheme. Default False keeps the HMAC-header
-# path the synthetic gate drives; set True once the passcode-in-body branch is
-# implemented and wired against live Figma payloads.
-_USE_PASSCODE_IN_BODY = False
+# True = the real passcode-in-body scheme (CONFIRMED). False falls back to the
+# legacy HMAC-header path retained for the synthetic gate's older shape.
+_USE_PASSCODE_IN_BODY = True
 
 
 def _encode_digest(mac: "hmac.HMAC") -> str:
@@ -74,10 +74,47 @@ class FigmaVerifier:
     ) -> VerifiedContext:
         require_secrets(secrets, provider=self.provider)
 
-        # TODO(human): real Figma path — when _USE_PASSCODE_IN_BODY is True,
-        # JSON-parse `body`, read `body["passcode"]`, and constant-time-compare
-        # against each secret value (no header). Not implemented yet so the
-        # synthetic gate's HMAC-header tamper probe stays the source of truth.
+        # Real Figma scheme: a plaintext passcode echoed in the JSON body; no
+        # signature header. Constant-time-compare against each active secret
+        # (rotation-safe), respond 400-class (WebhookVerificationError) on
+        # mismatch — mirrors developers.figma.com's recommended verification.
+        if _USE_PASSCODE_IN_BODY:
+            try:
+                parsed = json.loads(body or b"{}")
+            except (ValueError, TypeError) as exc:
+                raise WebhookVerificationError(
+                    "malformed_body",
+                    "figma webhook body is not valid JSON",
+                    provider=self.provider,
+                ) from exc
+            presented = (
+                parsed.get(_PASSCODE_FIELD) if isinstance(parsed, dict) else None
+            )
+            if not isinstance(presented, str) or not presented:
+                raise WebhookVerificationError(
+                    "missing_passcode",
+                    f"figma webhook body missing '{_PASSCODE_FIELD}'",
+                    provider=self.provider,
+                )
+            matched_pc: Secret | None = None
+            for secret in secrets:
+                if constant_time_str_eq(secret.value, presented):
+                    matched_pc = secret
+                    break
+            if matched_pc is None:
+                raise WebhookVerificationError(
+                    "passcode_mismatch",
+                    "figma passcode does not match any active secret",
+                    provider=self.provider,
+                )
+            return VerifiedContext(
+                provider=self.provider,
+                body=body,
+                secret_label=matched_pc.label,
+                signed_timestamp=None,
+            )
+
+        # Legacy HMAC-header fallback (NOT Figma's real scheme).
         signature = require_header(
             headers, _HEADER_NAME, provider=self.provider
         )

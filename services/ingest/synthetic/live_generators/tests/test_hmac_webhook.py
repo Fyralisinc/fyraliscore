@@ -100,6 +100,9 @@ async def test_signature_verifies_against_production_verifier(provider: str) -> 
 async def test_tampered_signature_rejected(provider: str) -> None:
     gen = _gen(provider)
     payload, _ = gen._build_payload(_T(provider), content="unit")
+    if provider == "figma":
+        # Figma verifies a body passcode (no HMAC header) — tamper the passcode.
+        payload = {**payload, "passcode": "wrong-passcode-tamper"}
     body = json.dumps(payload).encode("utf-8")
     bad = (
         "sha256=" + ("f" * 64)

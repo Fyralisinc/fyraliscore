@@ -21,15 +21,29 @@ All read methods return RAW message dicts of the shape
 `integrations/signal/records.build_message_record` consumes, so the backfill
 fetcher and the live worker share one record contract.
 
-NOTE: the real Signal client surface (signal-cli JSON-RPC vs. libsignal direct,
-the exact pagination cursor, the linked-device auth handshake, rate-limit
-semantics) is NOT verified against vendor docs. The concrete transport calls are
-left as TODO(human) markers; the synthetic gate drives MockSignalClient, so this
-stub only needs the method signatures to be correct.
+CONFIRMED (signal.org/docs; github.com/AsamK/signal-cli): Signal has NO official
+server API and NO maintained pure-Python client (freedomofpress/signal-protocol
+is archived + protocol-only). The only sound integration is **signal-cli in
+JSON-RPC daemon mode** — link signal-cli as a secondary device to a real number
+(`signal-cli link`), run `signal-cli -a <number> daemon --tcp HOST:PORT` (or
+`--socket PATH`), and talk JSON-RPC to it. So the "transport" is not a Python
+import but a socket connection to that daemon (SIGNAL_JSONRPC_ENDPOINT).
+
+HISTORY LIMITATION (CONFIRMED): a linked device cannot fetch arbitrary thread
+history — signal-cli surfaces messages going FORWARD (the `receive` JSON-RPC
+notification) plus what syncs at link time. So `get_history` backfill is
+inherently shallow (own/linked-account, recent sync only); deep history is not
+obtainable. This matches the research's "narrow coverage" finding for Signal.
+
+The remaining TODO(human) is OPERATOR setup, not code shape: a linked number + a
+running signal-cli daemon reachable at SIGNAL_JSONRPC_ENDPOINT. The synthetic
+gate drives MockSignalClient and never connects, so the JSON-RPC socket client
+below is a documented shell whose method signatures match the daemon's methods.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 from uuid import UUID
 
@@ -40,11 +54,16 @@ from lib.shared.errors import SignalApiError
 
 log = structlog.get_logger("integrations.signal.client")
 
-_DEFAULT_PAGE_SIZE = 100  # TODO(human): confirm Signal history page cap vs. vendor docs.
+# signal-cli's `receive`/history surface has no documented page cap (a linked
+# device replays its local store); 100 is a sane self-imposed batch size.
+_DEFAULT_PAGE_SIZE = 100
 
-# TODO(human): confirm the real Signal client transport (signal-cli JSON-RPC
-# daemon vs. an in-process libsignal binding) and the import path below.
-_SIGNAL_TRANSPORT_IMPORT = "signalcli"  # placeholder module name; not verified.
+# CONFIRMED: the transport is a signal-cli JSON-RPC DAEMON reached over a socket
+# (TCP `--tcp HOST:PORT` or UNIX `--socket PATH`), NOT a Python library import.
+# Point the worker/client at it via SIGNAL_JSONRPC_ENDPOINT. The relevant daemon
+# methods are `listGroups` (threads), `subscribeReceive`/`receive` (live), and
+# there is NO history-fetch method (see HISTORY LIMITATION above).
+_SIGNAL_JSONRPC_ENDPOINT = os.environ.get("SIGNAL_JSONRPC_ENDPOINT", "")
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -124,14 +143,22 @@ class SignalClient:
                     "signal client missing linked-device session",
                     code="signal_api_unauthorized",
                 )
-            # TODO(human): instantiate + connect the real Signal transport here
-            # (signal-cli JSON-RPC daemon attach, or libsignal store load), and
-            # verify the linked device is still authorized (not unlinked). The
-            # synthetic path never reaches this method (it patches the opener
-            # seam), so this stays a TODO shell.
+            # OPERATOR STEP (not a code TODO): open a JSON-RPC connection to the
+            # signal-cli daemon at SIGNAL_JSONRPC_ENDPOINT holding this account's
+            # linked-device identity, and verify the device is still authorized
+            # (not unlinked). Raises until an endpoint is configured + reachable;
+            # the synthetic path patches the opener seam and never reaches here.
+            if not _SIGNAL_JSONRPC_ENDPOINT:
+                raise SignalApiError(
+                    "signal transport unavailable: SIGNAL_JSONRPC_ENDPOINT unset "
+                    "(run a signal-cli daemon for this linked account — see the "
+                    "module docstring)",
+                    code="signal_api_unauthorized",
+                )
             raise SignalApiError(
-                "signal integration transport is not configured "
-                "(real signal-cli/libsignal wiring is a TODO)",
+                "signal-cli JSON-RPC client connection is not implemented "
+                f"(endpoint={_SIGNAL_JSONRPC_ENDPOINT!r}); operator-provided daemon "
+                "required",
                 code="signal_api_error",
             )
 
