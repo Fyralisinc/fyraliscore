@@ -78,16 +78,23 @@ _PROD: dict[str, str] = {
     "gusto_api": "https://api.gusto.com",               # TODO(human): confirm host
     # Finance (IN-FIN2): Deel — Bearer/Mercury archetype.
     "deel_api": "https://api.letsdeel.com",             # TODO(human): confirm host
-    # IN-FIN3 comms: Fireflies.ai — Bearer/token archetype. Real API is GraphQL
-    # at /graphql; this is the host prefix (build_fireflies_client appends paths).
-    "fireflies_api": "https://api.fireflies.ai",        # TODO(human): confirm host
-    # IN-FIN3 design: Miro — Bearer/token archetype (org app).
-    "miro_api": "https://api.miro.com",                 # TODO(human): confirm host
-    # IN-FIN3 design: Figma — Bearer/token archetype (team/org).
-    "figma_api": "https://api.figma.com",               # TODO(human): confirm host
-    # IN-FIN3 cap-table: Carta — OAuth/QuickBooks archetype. Firm-scoped paths
-    # ride per-install base_url in production (poll-only, no webhook).
-    "carta_api": "https://api.carta.com",               # TODO(human): confirm host
+    # IN-FIN3 comms: Fireflies.ai — Bearer/token archetype. CONFIRMED: the API is
+    # GraphQL at https://api.fireflies.ai/graphql (docs.fireflies.ai/fundamentals/
+    # authorization); this is the host prefix (build_fireflies_client posts /graphql).
+    "fireflies_api": "https://api.fireflies.ai",
+    # IN-FIN3 design: Miro — OAuth Bearer. CONFIRMED REST base https://api.miro.com/v2
+    # (developers.miro.com); OAuth token endpoint is on /v1 (see integrations/miro/
+    # oauth.py). NOTE: Miro discontinued webhooks 2025-12-05 → poll-only.
+    "miro_api": "https://api.miro.com/v2",
+    # IN-FIN3 design: Figma — PAT (X-Figma-Token) or OAuth Bearer. CONFIRMED host
+    # https://api.figma.com (base /v1; webhooks mgmt /v2) — developers.figma.com.
+    "figma_api": "https://api.figma.com/v1",
+    # IN-FIN3 cap-table: Carta — OAuth2 (auth_code / client_credentials; NO refresh
+    # grant — re-mint hourly). API is v1alpha1, poll-only (no webhook). ACCESS IS
+    # PARTNER-GATED (invite-only + SOC 2 since 2025); the prod host is issued on
+    # approval. Mock host for dev: https://mock-api.carta.com. TODO(human): set the
+    # approved prod host once the partner agreement is in place.
+    "carta_api": "https://api.carta.com",
 }
 
 # name -> explicit per-source env var (highest precedence).

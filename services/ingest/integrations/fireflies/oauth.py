@@ -53,8 +53,10 @@ log = structlog.get_logger("integrations.fireflies.oauth")
 # Default Fireflies API host for the connect-wizard UI fallback only (an operator
 # may override per-install via the `base_url` field). The canonical default + env
 # override live in `lib/integrations/endpoints.py` (`fireflies_api`).
-# TODO(human): confirm Fireflies API host — this is UNVERIFIED; the real API is
-# a GraphQL endpoint at "https://api.fireflies.ai/graphql".
+# CONFIRMED (docs.fireflies.ai): the API is GraphQL — a single POST endpoint at
+# https://api.fireflies.ai/graphql. Auth is `Authorization: Bearer <api_key>`
+# (the key is issued in the Fireflies app's Integrations → Developer settings;
+# there is NO OAuth bounce — the connect wizard takes the API key directly).
 _DEFAULT_BASE_URL = "https://api.fireflies.ai"
 
 

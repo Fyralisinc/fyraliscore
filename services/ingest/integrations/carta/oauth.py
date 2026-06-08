@@ -9,12 +9,20 @@ surface is operator-mediated credential submission: the operator pastes the
 Carta OAuth app, and the router verifies them against the REAL Carta API before
 seeding the install.
 
-TODO(human): implement Carta OAuth token refresh — NONE exists yet (the
-    documented-but-unbuilt seam, exactly as the Gusto / QuickBooks archetype
-    ships). `finalize` already persists `refresh_secret_ref` + (optionally)
-    `token_expires_at`; wire a refresh loop (refresh-on-401 in the client OR an
-    oauth_poller) so short-lived access tokens are rotated. Do NOT assume tokens
-    never expire.
+CONFIRMED (docs.carta.com/api-platform): Carta OAuth2 supports only
+    AUTHORIZATION_CODE and CLIENT_CREDENTIALS grants — there is NO refresh_token
+    grant. Access tokens live ~1 hour; you RE-MINT (re-run client_credentials, or
+    re-exchange a fresh 60-second auth code) rather than refresh. The API is
+    versioned `v1alpha1` (alpha — expect breaking changes), poll-only (no
+    webhook), and freshness is bounded by Carta's batch cadence (most tables
+    update ~daily by noon ET; benchmark/cap-table datasets quarterly).
+TODO(human): (1) ACCESS IS PARTNER-GATED — invite-only + SOC 2 Type 2 since 2025;
+    obtain the partner agreement (or direct-customer own-data access) and the
+    approved prod host/scopes before real traffic; dev against
+    https://mock-api.carta.com. (2) wire a re-mint-on-401 loop in the client
+    (client_credentials) since access tokens expire hourly — `finalize` persists
+    refresh_secret_ref/token_expires_at but Carta has no refresh grant, so treat
+    refresh_secret_ref as the client-credentials material, not an OAuth refresh token.
 
 Carta is POLL-ONLY: there is NO webhook, so this wizard does NOT accept a webhook
 verifier token and never registers a provider_installations row. The live edge is

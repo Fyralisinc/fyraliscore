@@ -53,8 +53,10 @@ log = structlog.get_logger("integrations.miro.oauth")
 # Default Miro API host for the connect-wizard UI fallback only (an operator may
 # override per-install via the `base_url` field). The canonical default + env
 # override live in `lib/integrations/endpoints.py` (`miro_api`).
-# TODO(human): confirm Miro API host — this is UNVERIFIED; Miro's REST host is
-# expected to be "https://api.miro.com/v2".
+# CONFIRMED (developers.miro.com): REST base https://api.miro.com/v2. OAuth2
+# Bearer — authorize https://miro.com/oauth/authorize; token (NOTE: /v1)
+# https://api.miro.com/v1/oauth/token; grants authorization_code + refresh_token
+# (access 60 min, refresh 60 days); read scope `boards:read` (covers board items).
 _DEFAULT_BASE_URL = "https://api.miro.com/v2"
 
 

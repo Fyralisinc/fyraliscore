@@ -31,12 +31,13 @@ its live-webhook twin to one observation. Because a transcript can be
 re-processed (a richer summary lands later), its external_id is versioned by a
 content `version` (updated_at / processing version).
 
-TODO(human): confirm Fireflies transcripts API pagination (offset vs cursor) +
-created/updated filter. This fetcher clones the Brex offset/limit + `start=`
-date-filter contract (UNVERIFIED for Fireflies). The real GraphQL `transcripts`
-query is `skip`/`limit` based (maps onto offset/limit) and filters by
-`fromDate`/`toDate`; if confirmed, swap the offset bookkeeping in
-`FirefliesCursor` accordingly and replace `start=` with `fromDate`. Page size is
+CONFIRMED (docs.fireflies.ai/graphql-api/query/transcripts): the GraphQL
+`transcripts` query is OFFSET-based — `skip` (offset) + `limit` (page size, MAX
+50) — and filters by `fromDate`/`toDate` (ISO-8601). The offset/limit cursor
+bookkeeping in `FirefliesCursor` maps directly onto `skip`/`limit`; the `start=`
+date filter maps onto `fromDate`. Rate-limit signal is HTTP 429 / `too_many_requests`.
+TODO(human): the GraphQL query wiring (vs. the cloned REST `_request`) + the exact
+digest encoding of the webhook signature still need empirical confirmation. Page size is
 overridable via `FIREFLIES_BACKFILL_PAGE_SIZE`.
 """
 from __future__ import annotations

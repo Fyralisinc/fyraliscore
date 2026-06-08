@@ -337,6 +337,11 @@ services:
     container_name: company_os_telegram_gateway_worker
     command: python scripts/run_telegram_gateway_worker.py
 
+  signal_gateway_worker:
+    <<: *worker
+    container_name: company_os_signal_gateway_worker
+    command: python scripts/run_signal_gateway_worker.py
+
   gmail_watch_scheduler:
     <<: *worker
     container_name: company_os_gmail_watch_scheduler

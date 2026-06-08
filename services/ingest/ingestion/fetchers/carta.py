@@ -26,16 +26,18 @@ The `carta:object` handler builds ONE observation per record. Because cap-table
 objects MUTATE (a SAFE converts, an option grant vests), the external_id is
 versioned by `SyncToken` so a state change lands as a NEW observation.
 
-TODO(human): confirm Carta pagination (page/cursor params) + per-entity
-    updated-since filter. This module clones the Gusto/QuickBooks
-    offset/STARTPOSITION archetype; Carta's real REST surface is page/cursor
-    based (and an `updated_since` style filter), so `client.query(...)` + the
-    WHERE clause below are a placeholder. Page size is env-overridable via
-    CARTA_BACKFILL_PAGE_SIZE.
-TODO(human): confirm Carta's incremental "updated since" filter field name. The
-    cursor freezes whatever monotonic timestamp the API exposes into
-    `incremental_floor`; if no such filter exists, fall back to a full re-walk
-    (idempotent via the versioned external_id).
+CONFIRMED (docs.carta.com/api-platform): Carta's API is `v1alpha1` (alpha —
+expect breaking changes) and uses Google-AIP-style TOKEN pagination — `pageSize`
+(int) + `pageToken` (string; response returns the next page token), NOT the
+offset/STARTPOSITION the Gusto clone uses. Swap `client.query(...)`'s offset
+bookkeeping to `pageSize`/`pageToken`. Rate-limit signal: 429 (burst 10/s,
+sustained 300/min). Page size is env-overridable via CARTA_BACKFILL_PAGE_SIZE.
+TODO(human): (1) ACCESS IS PARTNER-GATED (invite-only + SOC 2) — wire against the
+    approved prod host (dev via https://mock-api.carta.com) once entitled.
+    (2) confirm the per-entity "updated since" filter field name; Carta is
+    poll-only (no webhook) and most tables refresh ~daily, so a full re-walk
+    (idempotent via the versioned external_id) is an acceptable fallback if no
+    incremental filter exists.
 """
 from __future__ import annotations
 

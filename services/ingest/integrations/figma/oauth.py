@@ -54,8 +54,11 @@ log = structlog.get_logger("integrations.figma.oauth")
 # Default Figma API host for the connect-wizard UI fallback only (an operator may
 # override per-install via the `base_url` field). The canonical default + env
 # override live in `lib/integrations/endpoints.py` (`figma_api`).
-# TODO(human): confirm Figma API host — this is the documented host
-# "https://api.figma.com".
+# CONFIRMED (developers.figma.com): REST host https://api.figma.com (base /v1).
+# Auth is a personal access token via the `X-Figma-Token` header, OR OAuth2 Bearer
+# (authorize https://www.figma.com/oauth; token https://api.figma.com/v1/oauth/token;
+# refresh https://api.figma.com/v1/oauth/refresh; read scopes file_content:read,
+# file_metadata:read, file_versions:read).
 _DEFAULT_BASE_URL = "https://api.figma.com"
 
 

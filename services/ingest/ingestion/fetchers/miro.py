@@ -28,12 +28,14 @@ on. external_id parity (set by the handler) collapses a backfilled record and
 its live-webhook twin to one observation. Because an item MUTATES (a sticky
 note's text/position is edited), its external_id is versioned by `version`.
 
-TODO(human): confirm Miro board-items API pagination (opaque cursor) + the
-modified/created filter for incremental polls. This fetcher uses Miro's opaque
-`cursor` page token (UNVERIFIED for Miro — Miro v2 returns a `cursor` in the
-list response and accepts it as the `cursor` query param). The incremental
-"modified since" filter is NOT yet wired through the list call; the warm-start
-high-water is carried on the cursor for the reconciler's gap reference. Page
+CONFIRMED (developers.miro.com): `GET /v2/boards/{id}/items` is CURSOR-paginated
+(`limit` 10-50 + `cursor`; the response returns the next `cursor`) — this
+fetcher's opaque-cursor handling is correct. NOTE: the parent `GET /v2/boards`
+listing is OFFSET-paginated (`limit`/`offset`), a different paginator. Miro has
+NO "modified since" filter on items, so the warm-start high-water rides the
+cursor for the reconciler's gap reference; rate-limit signal is 429 +
+`X-RateLimit-*` headers. (Miro webhooks were discontinued 2025-12-05 → live edge
+must become poll-only; see signatures/miro.py.) Page
 size is overridable via `MIRO_BACKFILL_PAGE_SIZE`.
 """
 from __future__ import annotations
