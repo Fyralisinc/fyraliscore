@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "provider": "quickbooks",
+    "kind": "oauth_token",
+    "description": "Intuit QuickBooks Online OAuth 2.0 refresh-token exchange. POST to the bearer token endpoint with HTTP Basic auth (base64(client_id:client_secret)) and a form body grant_type=refresh_token + refresh_token. Intuit ROTATES the refresh token on every exchange — the returned refresh_token MUST be persisted or the next refresh 400s with invalid_grant. access_token lives ~3600s; the refresh token lives x_refresh_token_expires_in (~101 days). Doc-derived; tokens are placeholders.",
+    "source": "doc:https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization/oauth-2.0 (POST oauth2/v1/tokens/bearer, Basic client auth, grant_type=refresh_token; response access_token/refresh_token(rotated)/expires_in/x_refresh_token_expires_in)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+    "method": "POST",
+    "auth": "basic",
+    "headers": {
+      "Authorization": "Basic <base64(client_id:client_secret)>",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json"
+    },
+    "form": {
+      "grant_type": "refresh_token",
+      "refresh_token": "AB11111111111111111111-old-refresh-placeholder"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "token_type": "bearer",
+      "access_token": "eyJlbmMiOiJ-NEW-ACCESS-placeholder",
+      "expires_in": 3600,
+      "refresh_token": "AB22222222222222222222-rotated-refresh-placeholder",
+      "x_refresh_token_expires_in": 8726400
+    }
+  }
+}

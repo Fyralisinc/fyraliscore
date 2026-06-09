@@ -100,6 +100,7 @@ nav:
       - Architecture & module map: reference/CODEBASE-ARCHITECTURE.md
       - Codebase management (the why): reference/CODEBASE-MANAGEMENT.md
       - Comprehensive reference: reference/FYRALIS.md
+      - Data ingestion — system reference: reference/data-ingestion.md
       - Memory & model layer: memory-layer.md
   - Codebase status:
       - Overview: status/index.md

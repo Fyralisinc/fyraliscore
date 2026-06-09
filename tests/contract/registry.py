@@ -129,24 +129,33 @@ REGISTRY: list[ContractNeed] = [
     # --- E. OAuth lifecycle (official docs acceptable) ----------------------
     ContractNeed(
         "quickbooks", "oauth_token", "refresh", "#24",
-        "no refresh-token exchange implemented",
-        "Intuit refresh: POST oauth2/v1/tokens/bearer request + response "
-        "(access_token, refresh_token, expires_in, x_refresh_token_expires_in)",
+        "RESOLVED (Phase 3): oauth_refresh.refresh_access_token does the Basic-"
+        "auth grant_type=refresh_token exchange + persists the ROTATED refresh "
+        "token; clients re-mint reactively on 401",
+        "covered by tests/contract/test_oauth_refresh_contract.py against the "
+        "doc-sourced Intuit refresh fixture (request + rotated-token response)",
     ),
     ContractNeed(
         "ramp", "oauth_token", "refresh", "#26",
-        "no refresh-token exchange implemented",
-        "Ramp token refresh request + response shape (grant_type=refresh_token)",
+        "RESOLVED (Phase 3): Basic-auth grant_type=refresh_token exchange + "
+        "persist; reactive 401 re-mint in RampClient",
+        "covered by tests/contract/test_oauth_refresh_contract.py against the "
+        "doc-sourced Ramp refresh fixture",
     ),
     ContractNeed(
         "gusto", "oauth_token", "refresh", "#38",
-        "no refresh-token exchange implemented",
-        "Gusto token refresh request + response shape",
+        "RESOLVED (Phase 3): body-cred grant_type=refresh_token exchange + "
+        "persist; reactive 401 re-mint in GustoClient",
+        "covered by tests/contract/test_oauth_refresh_contract.py against the "
+        "doc-sourced Gusto refresh fixture",
     ),
     ContractNeed(
         "carta", "oauth_token", "client_credentials", "#40",
-        "no token re-mint implemented",
-        "Carta client_credentials token request + response (expires_in) for 401 re-mint",
+        "RESOLVED (Phase 3): Carta has NO refresh grant — oauth_refresh re-mints "
+        "via grant_type=client_credentials (client secret from the per-install "
+        "refresh_secret_ref); reactive 401 re-mint in CartaClient",
+        "covered by tests/contract/test_oauth_refresh_contract.py against the "
+        "doc-sourced Carta client_credentials fixture",
     ),
 ]
 

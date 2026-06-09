@@ -388,6 +388,12 @@ async def build_quickbooks_client(
         access_token=("spam-quickbooks" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("quickbooks_api") if spammer else None),
+        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode — the
+        # preset token + no secret_store mean refresh_on_unauthorized no-ops).
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=(
+            install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
     )
     return client
 
@@ -478,6 +484,10 @@ async def build_ramp_client(
         access_token=("spam-ramp" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("ramp_api") if spammer else None),
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=(
+            install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
     )
     return client
 
@@ -508,6 +518,10 @@ async def build_gusto_client(
         access_token=("spam-gusto" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("gusto_api") if spammer else None),
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=(
+            install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
     )
     return client
 
@@ -645,6 +659,10 @@ async def build_carta_client(
         access_token=("spam-carta" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("carta_api") if spammer else None),
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=(
+            install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
     )
     return client
 

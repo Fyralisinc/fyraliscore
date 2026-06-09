@@ -79,12 +79,17 @@ class RampClient:
         access_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        install_row_id: Any | None = None,
+        refresh_secret_ref: str | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._business_id = business_id
+        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
+        self._install_row_id = install_row_id
+        self._refresh_secret_ref = refresh_secret_ref
         self._access_token: str | None = access_token
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical RAMP host; a spammer/test
@@ -132,20 +137,24 @@ class RampClient:
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from services.ingest.integrations.ramp import metrics
+        from services.ingest.integrations.oauth_refresh import (
+            refresh_on_unauthorized,
+        )
 
-        token = await self._token()
         url = f"{self._api_base_url}{path}"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        }
         max_attempts = int(os.environ.get("RAMP_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("RAMP_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
         attempt = 0
+        reminted = False
         while True:
             attempt += 1
+            token = await self._token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
@@ -177,8 +186,21 @@ class RampClient:
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
-            else:
-                metrics.record_request("error")
+                if not reminted:
+                    reminted = True
+                    new_token = await refresh_on_unauthorized(
+                        provider="ramp", pool=self._pool,
+                        secret_store=self._secret_store, http=client,
+                        tenant_id=self._tenant_id,
+                        install_row_id=self._install_row_id,
+                        current_access_ref=self._secret_ref,
+                        refresh_secret_ref=self._refresh_secret_ref,
+                    )
+                    if new_token is not None:
+                        self._access_token = new_token
+                        continue
+                raise _api_error_from_response(response, path)
+            metrics.record_request("error")
             raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------

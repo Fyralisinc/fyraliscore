@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "provider": "gusto",
+    "kind": "oauth_token",
+    "description": "Gusto OAuth 2.0 refresh-token exchange. POST to the Gusto token endpoint with client credentials in the FORM BODY (client_id + client_secret, NOT Basic) plus grant_type=refresh_token + refresh_token. Returns a new access_token (expires_in ~7200s) and a rotated refresh_token. Doc-derived; tokens are placeholders.",
+    "source": "doc:https://docs.gusto.com/app-integrations/docs/oauth2 (POST /oauth/token, client_id/client_secret in body, grant_type=refresh_token; response access_token/refresh_token/expires_in/token_type/created_at)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://api.gusto.com/oauth/token",
+    "method": "POST",
+    "auth": "body",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json"
+    },
+    "form": {
+      "grant_type": "refresh_token",
+      "refresh_token": "gusto_rt_old_placeholder_0000",
+      "client_id": "gusto_client_id_placeholder",
+      "client_secret": "gusto_client_secret_placeholder"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "access_token": "gusto_at_new_placeholder_1111",
+      "token_type": "Bearer",
+      "expires_in": 7200,
+      "refresh_token": "gusto_rt_rotated_placeholder_2222",
+      "created_at": 1768000000
+    }
+  }
+}
