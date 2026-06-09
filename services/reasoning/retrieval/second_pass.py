@@ -33,7 +33,8 @@ Invariants:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -66,7 +67,7 @@ _SUPPORTED_DIMENSIONS = {
 # services/reasoning/retrieval/config.py (RA-5) can override them via
 # RetrievalConfig without touching this module's signatures.
 SECOND_PASS_SPARSE_THRESHOLD = 5
-SECOND_PASS_BRIDGE_CONFIDENCE_THRESHOLD = 0.7
+SECOND_PASS_CUSTOMER_CONFIDENCE_THRESHOLD = 0.7
 
 _log = structlog.get_logger(__name__)
 
@@ -123,7 +124,7 @@ def should_run_second_pass(
     trigger: Any | None = None,
     *,
     sparse_threshold: int = SECOND_PASS_SPARSE_THRESHOLD,
-    bridge_confidence_threshold: float = SECOND_PASS_BRIDGE_CONFIDENCE_THRESHOLD,
+    customer_confidence_threshold: float = SECOND_PASS_CUSTOMER_CONFIDENCE_THRESHOLD,
     t2_has_authoritative_handler: bool | None = None,
 ) -> SecondPassDecision:
     """
@@ -144,8 +145,8 @@ def should_run_second_pass(
       - High-confidence commitments with counterparty ref: at least one
         commitment in primary.acts.commitments has
         `external_counterparty_ref` set AND some bound Model's
-        confidence >= bridge_confidence_threshold. Suggests
-        `dependency_context` (Bridge spine expansion is valuable).
+        confidence >= customer_confidence_threshold. Suggests
+        `dependency_context` (customer-link expansion is valuable).
       - Anomaly-flagged items: any observation in primary has
         `kind == "anomaly_flagged"`. Suggests `supporting_evidence`.
 
@@ -188,7 +189,7 @@ def should_run_second_pass(
             reason_detail=notes,
         )
 
-    # Bridge-worthy (commitment with counterparty + high-confidence Model).
+    # Customer-linked commitment with high-confidence Model.
     commits = primary_result.acts.get("commitments", []) if primary_result.acts else []
     commits_with_ref: list[UUID] = []
     for c in commits:
@@ -198,9 +199,9 @@ def should_run_second_pass(
 
     if commits_with_ref:
         # Look for a scoped Model with high confidence.
-        high_conf_on_bridge = 0
+        high_conf_customer_models = 0
         for m in primary_result.models:
-            if m.confidence is None or float(m.confidence) < bridge_confidence_threshold:
+            if m.confidence is None or float(m.confidence) < customer_confidence_threshold:
                 continue
             # Model scope overlaps at least one commitment with ref?
             scope = m.scope_entities or []
@@ -210,13 +211,13 @@ def should_run_second_pass(
                 if e.get("type") in ("commitment",):
                     try:
                         if UUID(str(e.get("id"))) in commits_with_ref:
-                            high_conf_on_bridge += 1
+                            high_conf_customer_models += 1
                             break
                     except (ValueError, TypeError):
                         continue
-        notes["high_confidence_bridge_models"] = high_conf_on_bridge
-        notes["bridge_confidence_threshold"] = bridge_confidence_threshold
-        if high_conf_on_bridge >= 1:
+        notes["high_confidence_customer_models"] = high_conf_customer_models
+        notes["customer_confidence_threshold"] = customer_confidence_threshold
+        if high_conf_customer_models >= 1:
             return SecondPassDecision(
                 run=True,
                 trigger_condition="high_confidence_commitment_with_counterparty",
@@ -371,6 +372,14 @@ async def second_pass_expand(
     ]
     merged_acts = dict(first_result.acts)
     merged_acts["commitments"] = merged_commits
+    merged_scores = dict(first_result.model_scores)
+    scored_new_model_ids = [
+        mid for mid in new_models.keys() if mid not in original_model_ids
+    ]
+    score_base = max(merged_scores.values(), default=0.05)
+    for rank, mid in enumerate(scored_new_model_ids, start=1):
+        score = _second_pass_expansion_score(score_base, rank)
+        merged_scores[mid] = max(float(merged_scores.get(mid, 0.0)), score)
 
     expansion_notes = {
         **first_result.notes,
@@ -379,6 +388,8 @@ async def second_pass_expand(
         "second_pass_new_models": len(new_models),
         "second_pass_new_observations": len(new_observations),
         "second_pass_new_commitments": len(new_commitments),
+        "second_pass_scored_new_models": len(scored_new_model_ids),
+        "second_pass_score_base": score_base,
     }
 
     return RetrievalResult(
@@ -389,8 +400,21 @@ async def second_pass_expand(
         resources=list(first_result.resources),
         pathway_results=list(first_result.pathway_results),
         notes=expansion_notes,
-        model_scores=dict(first_result.model_scores),
+        model_scores=merged_scores,
     )
+
+
+def _second_pass_expansion_score(first_pass_max_score: float, rank: int) -> float:
+    """Give missing-context expansions enough score to survive assembly.
+
+    Second pass only runs when the primary result is sparse or missing a
+    requested dimension, so its first few discoveries are prompt anchors,
+    not ordinary tail candidates. Rank decay prevents broad expansions
+    from dominating the primary result.
+    """
+    rank = max(1, int(rank))
+    base = max(0.05, float(first_pass_max_score or 0.0))
+    return base * 1.02 / (1.0 + math.log1p(rank - 1))
 
 
 # ---------------------------------------------------------------------
@@ -643,5 +667,5 @@ __all__ = [
     "log_second_pass_decision",
     "SecondPassDecision",
     "SECOND_PASS_SPARSE_THRESHOLD",
-    "SECOND_PASS_BRIDGE_CONFIDENCE_THRESHOLD",
+    "SECOND_PASS_CUSTOMER_CONFIDENCE_THRESHOLD",
 ]

@@ -23,17 +23,42 @@ import aioboto3
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import UnknownTopicOrPartitionError
 
+from services.ingest.ingestion.kafka.topics import all_data_plane_topics
+from services.ingest.ingestion.progress.publisher import (
+    TOPIC_ONBOARDING_PROGRESS,
+)
+
 
 log = logging.getLogger(__name__)
 
-# The four ingestion topics the chain uses. Recreated with the same
-# shape the dev broker provisions (4 partitions, zstd, 7-day retention).
-INGESTION_TOPICS = (
-    "ingestion.raw",
-    "ingestion.normalized",
-    "ingestion.embedding",
-    "ingestion.dlq",
+# Control-plane + progress topics the chain produces to but which are NOT
+# per-source data-plane lanes (they carry per-tenant signals). The
+# `onboarding.progress` topic in particular MUST exist: shard_fetch's
+# `_terminate_shard` publishes a progress event when it marks a shard
+# 'done', and on a broker with auto-create disabled a missing topic raises
+# UNKNOWN_TOPIC. (The producer side is now best-effort — see
+# progress/publisher.py — so a missing topic no longer crashes the worker,
+# but recreating it here keeps the validation harness exercising the real
+# progress path end-to-end.)
+_CONTROL_PLANE_TOPICS = (
+    "ingestion.tenant_traffic_signal",
+    TOPIC_ONBOARDING_PROGRESS,
 )
+
+# The ingestion topics the chain uses. Per source-isolation
+# (`kafka/topics.py`), the data plane is split per source —
+# `ingestion.{stage}.{source}` — NOT the four base names. The producers
+# (shard_fetch, the live cutover) publish to `ingestion.raw.{source}` and
+# the consumers (normalizer, observation_writer) subscribe to every
+# per-source lane, so the reset MUST delete+recreate the full per-source
+# set (44 = 11 sources × 4 stages) or a run's observations never
+# materialize. The registry (`all_data_plane_topics()`) is the single
+# source of truth — add a source to `RawEnvelope.SourceLiteral` and its
+# four lanes appear here automatically. Recreated with the same shape the
+# dev broker provisions (4 partitions, zstd, 7-day retention). The
+# control-plane + progress topics are appended so the reset leaves a broker
+# state that matches what the provisioner creates plus the progress lane.
+INGESTION_TOPICS = tuple(all_data_plane_topics()) + _CONTROL_PLANE_TOPICS
 _PARTITIONS = 4
 _REPLICATION = 1
 _TOPIC_CONFIGS = {

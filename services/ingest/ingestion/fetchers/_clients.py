@@ -392,6 +392,423 @@ async def build_quickbooks_client(
     return client
 
 
+async def build_telegram_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Telegram MTProto read-client for BACKFILL. The credential is a persisted
+    Telethon StringSession resolved once from the secret store (or preset in
+    spammer mode). Topology B (ADR-0003): backfill uses the SECOND authorization
+    (`backfill_session_secret_ref`), distinct from the live gateway worker's
+    session, so the two never share one auth_key — falls back to the live session
+    ref only if a dedicated backfill session wasn't minted. Telethon is optional
+    and imported lazily inside the client's connect()."""
+    from services.ingest.integrations.telegram.client import TelegramClient
+
+    spammer = _spammer_mode()
+    backfill_ref = (
+        install["backfill_session_secret_ref"]
+        if "backfill_session_secret_ref" in install else None
+    )
+    live_ref = install["session_secret_ref"] if "session_secret_ref" in install else None
+    client = TelegramClient(
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        api_id=install["api_id"] if "api_id" in install else None,
+        api_hash_secret_ref=(
+            install["api_hash_secret_ref"] if "api_hash_secret_ref" in install else None
+        ),
+        session_secret_ref=(backfill_ref or live_ref),
+        session=("spam-telegram" if spammer else None),
+    )
+    return client
+
+
+async def build_brex_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Brex read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/brex` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.brex.client import BrexClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = BrexClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-brex" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /brex; prod uses the
+        # canonical Brex API host (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("brex_api") if spammer else None),
+    )
+    return client
+
+
+async def build_ramp_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Ramp read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The scope id `business_id` (realm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/ramp` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.ramp.client import RampClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    business_id = str(install["business_id"]) if "business_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = RampClient(
+        base_url=base_url,
+        business_id=business_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-ramp" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("ramp_api") if spammer else None),
+    )
+    return client
+
+
+async def build_gusto_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Gusto read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The scope id `company_uuid` (realm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/gusto` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.gusto.client import GustoClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    company_uuid = str(install["company_uuid"]) if "company_uuid" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = GustoClient(
+        base_url=base_url,
+        company_uuid=company_uuid,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-gusto" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("gusto_api") if spammer else None),
+    )
+    return client
+
+
+async def build_deel_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Deel read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/deel` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.deel.client import DeelClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = DeelClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-deel" if spammer else None),
+        http_client=await _get_http(),
+        # Spammer routes to the one mock host under /deel; prod uses the
+        # canonical Deel API host (api_base_url=None → base_url is used).
+        api_base_url=(endpoint("deel_api") if spammer else None),
+    )
+    return client
+
+
+async def build_fireflies_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Fireflies read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/fireflies`
+    sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.fireflies.client import FirefliesClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = FirefliesClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-fireflies" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("fireflies_api") if spammer else None),
+    )
+    return client
+
+
+async def build_miro_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Miro read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/miro` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.miro.client import MiroClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = MiroClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-miro" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("miro_api") if spammer else None),
+    )
+    return client
+
+
+async def build_figma_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Figma read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
+    long-lived: resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local spammer's `/figma` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.figma.client import FigmaClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = FigmaClient(
+        base_url=base_url,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_token=("spam-figma" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("figma_api") if spammer else None),
+    )
+    return client
+
+
+async def build_carta_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Carta read-client (IN-VERTICALS, Gusto/OAuth archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']`
+    (or preset in spammer mode). The scope id `firm_id` (realm_id-equivalent) is
+    per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/carta` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.carta.client import CartaClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    firm_id = str(install["firm_id"]) if "firm_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = CartaClient(
+        base_url=base_url,
+        firm_id=firm_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-carta" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("carta_api") if spammer else None),
+    )
+    return client
+
+
+async def build_signal_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Signal linked-device read-client for BACKFILL (IN-VERTICALS,
+    Telegram/gateway archetype). The credential is a persisted linked-device
+    session resolved once from the secret store (or preset in spammer mode).
+    Topology B: backfill uses the SECOND linked-device session
+    (`backfill_session_secret_ref`), distinct from the live gateway worker's
+    session — falls back to the live session ref only if a dedicated backfill
+    session wasn't minted. Unlike Telegram there are NO MTProto app credentials
+    (no api_id / api_hash)."""
+    from services.ingest.integrations.signal.client import SignalClient
+
+    spammer = _spammer_mode()
+    backfill_ref = (
+        install["backfill_session_secret_ref"]
+        if "backfill_session_secret_ref" in install else None
+    )
+    live_ref = (
+        install["session_secret_ref"] if "session_secret_ref" in install else None
+    )
+    account_label = (
+        install["account_label"] if "account_label" in install else None
+    )
+    client = SignalClient(
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        account_label=account_label,
+        session_secret_ref=(backfill_ref or live_ref),
+        session=("spam-signal" if spammer else None),
+    )
+    return client
+
+
+async def build_aws_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """AWS CloudTrail read-client for BACKFILL (IN-VERTICALS, poll-live edge).
+    Credentials are resolved from the install's `credential_kind` (assume_role /
+    static_keys) + `secret_ref`; `account_id` + `region` scope every
+    LookupEvents call. There is no spammer base-URL override (the synthetic
+    harness rebinds the fetcher's `_open_aws_client` seam to a MockAwsClient),
+    so this builds a real client against the install's auth."""
+    from services.ingest.integrations.aws.client import AwsClient
+
+    spammer = _spammer_mode()
+    client = AwsClient(
+        account_id=str(install["account_id"]) if "account_id" in install else "",
+        region=str(install["region"]) if "region" in install else "us-east-1",
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"] if "tenant_id" in install else None,
+        credential_kind=(
+            install["credential_kind"] if "credential_kind" in install else None
+        ),
+        secret_ref=install["secret_ref"] if "secret_ref" in install else None,
+    )
+    return client
+
+
+async def build_hibob_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """HiBob read-client (IN-PEOPLE, Gusto-structure / Brex-auth archetype).
+    HiBob authenticates with a SERVICE USER — HTTP Basic
+    `base64(service_user_id:token)`, NOT OAuth (no refresh). The `service_user_id`
+    is the public half (carried on the install row); the secret half (`token`) is
+    resolved once from the secret store via `install['secret_ref']` (or preset in
+    spammer mode). The scope id `company_id` is per-install; in spammer mode the
+    base URL is overridden via the endpoint resolver so backfill points at the
+    local spammer's `/hibob` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.hibob.client import HibobClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    company_id = str(install["company_id"]) if "company_id" in install else ""
+    service_user_id = (
+        str(install["service_user_id"]) if "service_user_id" in install else ""
+    )
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = HibobClient(
+        base_url=base_url,
+        company_id=company_id,
+        service_user_id=service_user_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        token=("spam-hibob" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("hibob_api") if spammer else None),
+    )
+    return client
+
+
+async def build_ashby_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Ashby read-client (IN-PEOPLE, Gusto-structure archetype). Ashby
+    authenticates with an API KEY presented as the Basic username + empty
+    password (`base64("KEY:")`); the key is resolved once from the secret store
+    via `install['secret_ref']` (or preset in spammer mode). The scope id `org_id`
+    is per-install; in spammer mode the base URL is overridden via the endpoint
+    resolver so backfill points at the local spammer's `/ashby` sub-path."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.ashby.client import AshbyClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    org_id = str(install["org_id"]) if "org_id" in install else ""
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = AshbyClient(
+        base_url=base_url,
+        org_id=org_id,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        api_key=("spam-ashby" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("ashby_api") if spammer else None),
+    )
+    return client
+
+
+async def build_linkedin_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """LinkedIn read-client (IN-PEOPLE, Carta-structure archetype). OAuth access
+    token is resolved once from the secret store via `install['secret_ref']` (or
+    preset in spammer mode). The scope id `organization_urn` (firm_id-equivalent)
+    is per-install and scopes every request; in spammer mode the base URL is
+    overridden via the endpoint resolver so backfill points at the local
+    spammer's `/linkedin` sub-path. Poll-only live edge (no webhook); the
+    recruitment APIs are partner-gated in production."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.linkedin.client import LinkedinClient
+
+    spammer = _spammer_mode()
+    base_url = str(install["base_url"]) if "base_url" in install else ""
+    organization_urn = (
+        str(install["organization_urn"]) if "organization_urn" in install else ""
+    )
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    client = LinkedinClient(
+        base_url=base_url,
+        organization_urn=organization_urn,
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=secret_ref,
+        access_token=("spam-linkedin" if spammer else None),
+        http_client=await _get_http(),
+        api_base_url=(endpoint("linkedin_api") if spammer else None),
+    )
+    return client
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -453,13 +870,87 @@ async def open_grafana_client(install: asyncpg.Record) -> Opener:
     return await build_grafana_client(install), _noop
 
 
+async def open_telegram_client(install: asyncpg.Record) -> Opener:
+    return await build_telegram_client(install), _noop
+
+
+async def open_brex_client(install: asyncpg.Record) -> Opener:
+    return await build_brex_client(install), _noop
+
+
+async def open_ramp_client(install: asyncpg.Record) -> Opener:
+    return await build_ramp_client(install), _noop
+
+
+async def open_gusto_client(install: asyncpg.Record) -> Opener:
+    return await build_gusto_client(install), _noop
+
+
+async def open_deel_client(install: asyncpg.Record) -> Opener:
+    return await build_deel_client(install), _noop
+
+
+async def open_fireflies_client(install: asyncpg.Record) -> Opener:
+    return await build_fireflies_client(install), _noop
+
+
+async def open_miro_client(install: asyncpg.Record) -> Opener:
+    return await build_miro_client(install), _noop
+
+
+async def open_figma_client(install: asyncpg.Record) -> Opener:
+    return await build_figma_client(install), _noop
+
+
+async def open_carta_client(install: asyncpg.Record) -> Opener:
+    return await build_carta_client(install), _noop
+
+
+async def open_hibob_client(install: asyncpg.Record) -> Opener:
+    return await build_hibob_client(install), _noop
+
+
+async def open_ashby_client(install: asyncpg.Record) -> Opener:
+    return await build_ashby_client(install), _noop
+
+
+async def open_linkedin_client(install: asyncpg.Record) -> Opener:
+    return await build_linkedin_client(install), _noop
+
+
+async def open_signal_client(install: asyncpg.Record) -> Opener:
+    return await build_signal_client(install), _noop
+
+
+async def open_aws_client(install: asyncpg.Record) -> Opener:
+    """AWS opener. Unlike the httpx sources, the AwsClient does NOT share the
+    process-wide `_get_http` keep-alive pool, so its own transport is closed per
+    fetch via `aclose()` (matches the fetcher's inline `_open_aws_client` seam)."""
+    client = await build_aws_client(install)
+
+    async def _close() -> None:
+        await client.aclose()
+
+    return client, _close
+
+
 __all__ = [
     "build_github_client", "build_slack_client", "build_slack_user_client",
     "build_discord_client",
     "build_notion_client", "build_jira_client",
     "build_mercury_client", "build_quickbooks_client", "build_grafana_client",
+    "build_telegram_client",
+    "build_brex_client", "build_ramp_client", "build_gusto_client", "build_deel_client",
+    "build_fireflies_client", "build_miro_client", "build_figma_client",
+    "build_carta_client", "build_signal_client", "build_aws_client",
+    "build_hibob_client", "build_ashby_client", "build_linkedin_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
     "open_mercury_client", "open_quickbooks_client", "open_grafana_client",
+    "open_telegram_client",
+    "open_brex_client", "open_ramp_client", "open_gusto_client", "open_deel_client",
+    "open_fireflies_client", "open_miro_client", "open_figma_client",
+    "open_carta_client", "open_signal_client", "open_aws_client",
+    "open_hibob_client", "open_ashby_client", "open_linkedin_client",
 ]

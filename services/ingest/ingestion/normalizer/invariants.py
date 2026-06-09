@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 
 
@@ -56,11 +57,18 @@ _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # Canonical key shape per LLD §5.1:
 #   {env}/{source}/{tenant_id}/{yyyy-mm}/{hash[:2]}/{hash}.json[.zst]
-# `env` is lowercase identifier (dev/stage/prod/...). `source` is
-# pinned to the four canonical sources. `tenant_id` is a v4/v7 UUID.
+# `env` is lowercase identifier (dev/stage/prod/...). `tenant_id` is a v4/v7
+# UUID. The `source` alternation is derived from INGESTION_SOURCES (the single
+# registry, == RawEnvelope.SourceLiteral) so it can NEVER drift behind a newly
+# added source. Previously this was a hardcoded list that omitted mercury,
+# quickbooks and grafana — every backfill envelope for those three sources
+# failed this invariant and was silently DLQ'd, producing zero observations
+# despite a healthy fetch. Sourcing the alternation from the registry makes
+# "add a source to SourceLiteral" sufficient.
+_SOURCE_ALT = "|".join(re.escape(s) for s in INGESTION_SOURCES)
 _S3_KEY_RE = re.compile(
     r"^[a-z0-9_-]+"                              # env
-    r"/(slack|github|discord|gmail|notion|google_calendar|google_drive|jira)"  # source
+    rf"/(?:{_SOURCE_ALT})"                       # source (from registry)
     r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # tenant
     r"/[0-9]{4}-[0-9]{2}"                        # yyyy-mm
     r"/[0-9a-f]{2}"                              # hash prefix

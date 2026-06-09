@@ -31,6 +31,7 @@ way it is, not just *what* it is.
 |-----|-------|--------|------|
 | [0001](0001-kafka-first-ingestion-default.md) | Kafka full pipeline is the default ingestion path; inline ingest is the fallback | Accepted | 2026-06-02 |
 | [0002](0002-main-is-the-single-integration-trunk.md) | Main is the single integration trunk | Accepted | 2026-06-03 |
+| [0003](0003-telegram-mtproto-user-account-ingestion.md) | Telegram ingestion uses the MTProto user-account API, with a two-session backfill+live topology | Proposed | 2026-06-07 |
 
 ## Related: existing decision records
 

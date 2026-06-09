@@ -30,14 +30,18 @@ from uuid import UUID
 import orjson
 
 from services.ingest.ingestion.dlq.models import DLQEnvelope, WireFailureKind
-from services.ingest.ingestion.kafka.topics import topic_for
+from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES, topic_for
 
 
 log = logging.getLogger(__name__)
 
 
 _DLQ_TOPIC = "ingestion.dlq"
-_VALID_SOURCES = frozenset({"slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks"})
+# Derived from the canonical source registry (== RawEnvelope.SourceLiteral) so a
+# newly added source can never be silently rejected here. Previously a hardcoded
+# set that omitted 'grafana', so grafana DLQ envelopes had no valid per-source
+# lane. Add a source to SourceLiteral and it is accepted automatically.
+_VALID_SOURCES = frozenset(INGESTION_SOURCES)
 
 
 def extract_dlq_fields_best_effort(

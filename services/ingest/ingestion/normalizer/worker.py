@@ -575,6 +575,15 @@ def main() -> None:
         bootstrap_servers=os.environ.get(
             "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
         ),
+        # NORMALIZER_CONSUMER_GROUP overrides the shared group id. A
+        # validation/soak run on the same broker as a live stack MUST set a
+        # unique group, or the two processes join the same group, Kafka
+        # splits the per-source partitions between them, and each drains only
+        # a subset — so a tenant's observations silently land in whichever
+        # process's DB won that partition. Defaults to the shared group.
+        consumer_group=os.environ.get(
+            "NORMALIZER_CONSUMER_GROUP", _CONSUMER_GROUP,
+        ),
         s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         s3_bucket=os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
         s3_region_name=os.environ.get("S3_REGION_NAME", "auto"),

@@ -63,12 +63,18 @@ def mount_gateway_routes(
     from services.product.forecasts import build_router as build_forecasts_router
     from services.product.history.router import router as history_router
     from services.product.model_trace.router import router as model_trace_router
+    from services.product.resolution_threads.router import (
+        build_router as build_resolution_threads_router,
+    )
 
     app.include_router(build_decision_deltas_router())
     app.include_router(build_forecasts_router())
     app.include_router(model_trace_router)
     app.include_router(history_router)
     app.include_router(build_webhooks_router())
+    # Resolution Threads (ported retrieval/memory feature). The router reads
+    # the pool from app.state.deps per-request, so it mounts lifespan-free.
+    app.include_router(build_resolution_threads_router())
 
     register_spec_routes(app)
     register_model_page_routes(app)

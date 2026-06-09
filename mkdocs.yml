@@ -78,6 +78,7 @@ exclude_docs: |
   history/
   testing/
   mockups/
+  research/
   hardening-backlog.md
 
 nav:
@@ -110,6 +111,8 @@ nav:
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
       - 0001 · Kafka-first ingestion default: adr/0001-kafka-first-ingestion-default.md
+      - 0002 · Main is the single integration trunk: adr/0002-main-is-the-single-integration-trunk.md
+      - 0003 · Telegram MTProto ingestion: adr/0003-telegram-mtproto-user-account-ingestion.md
   - Subsystem deep-dives:
       - About these docs: deep-dives.md
       - Ingestion:
@@ -128,6 +131,8 @@ nav:
               - Google Calendar: ingestion/sources/google-calendar.md
               - Google Drive: ingestion/sources/google-drive.md
               - Jira: ingestion/sources/jira.md
+              - Grafana: ingestion/sources/grafana.md
+              - Telegram (MTProto): ingestion/sources/telegram.md
       - GitHub Intelligence:
           - Spec & plan: github-intelligence/plan.md
           - Implementation status: github-intelligence/IMPLEMENTATION.md

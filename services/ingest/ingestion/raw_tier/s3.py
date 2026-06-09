@@ -26,13 +26,23 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 from uuid import UUID
+
+from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
 
 if TYPE_CHECKING:
     # aioboto3 client types only matter for static checking; runtime
     # avoids importing the module to keep test-time import light.
     pass
+
+# The set of sources whose raw blobs may be keyed. Derived from the single
+# source-of-truth `SourceLiteral` (same package) rather than re-listed inline:
+# a hardcoded copy silently drifts when a source is added (the symptom was a
+# `grafana` shard whose blob raised `unknown source` here, miscategorised by
+# the fetch loop as a transient S3 write failure, so the shard parked and
+# re-fetched forever and the tenant never completed onboarding).
+_VALID_SOURCES: frozenset[str] = frozenset(get_args(SourceLiteral))
 
 
 def compute_content_hash(body: bytes) -> str:
@@ -69,7 +79,7 @@ def build_raw_s3_key(
     """
     if not env:
         raise ValueError("env is required")
-    if source not in ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks"):
+    if source not in _VALID_SOURCES:
         raise ValueError(f"unknown source {source!r}")
     if not content_hash:
         raise ValueError("content_hash is required")

@@ -8,14 +8,14 @@ never called").
 Covers:
   Unit tests (per-path, hermetic — no DB):
     - sparse primary activates
-    - bridge + high-confidence model activates
+    - customer-linked commitment + high-confidence model activates
     - anomaly_flagged observation activates
     - T2 authoritative handler non-activation
     - token-budget saturation non-activation
     - no-rule-matched non-activation
   Integration tests (real DB):
     - signal with sparse primary → decision.run=True
-    - signal with rich primary (no bridge/anomaly) → decision.run=False
+    - signal with rich primary (no customer link/anomaly) → decision.run=False
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def test_ra2_unit_sparse_primary_activates():
     assert "dependency_context" in d.suggested_dimensions
 
 
-def test_ra2_unit_bridge_with_high_confidence_activates():
+def test_ra2_unit_customer_counterparty_with_high_confidence_activates():
     r = _empty_result()
     commit = _make_commit_stub(ref={"type": "customer_resource", "id": str(uuid7())})
     # Enough models to defeat sparse trigger (>= 5).
@@ -113,10 +113,10 @@ def test_ra2_unit_bridge_with_high_confidence_activates():
     assert d.run is True
     assert d.trigger_condition == "high_confidence_commitment_with_counterparty"
     assert d.reason_detail["commits_with_counterparty_ref"] == 1
-    assert d.reason_detail["high_confidence_bridge_models"] == 1
+    assert d.reason_detail["high_confidence_customer_models"] == 1
 
 
-def test_ra2_unit_bridge_without_high_confidence_does_not_activate_via_bridge():
+def test_ra2_unit_customer_counterparty_without_high_confidence_does_not_activate():
     r = _empty_result()
     commit = _make_commit_stub(ref={"type": "customer_resource", "id": str(uuid7())})
     # 6 models — above sparse threshold, all low confidence.
@@ -163,7 +163,7 @@ def test_ra2_unit_token_budget_saturation_blocks_activation():
 def test_ra2_unit_no_activation_on_rich_uneventful_primary():
     r = _empty_result()
     r.models = [_make_model_stub() for _ in range(20)]
-    # No bridge, no anomaly.
+    # No customer link, no anomaly.
     d = should_run_second_pass(r)
     assert d.run is False
     assert d.trigger_condition == "no_activation_rule_matched"
@@ -232,7 +232,7 @@ async def test_ra2_integration_sparse_primary_activates(
 async def test_ra2_integration_rich_primary_no_signals_no_activation(
     tx_conn, fresh_db, tenant
 ):
-    """Primary with >= threshold models and no anomaly/bridge
+    """Primary with >= threshold models and no anomaly/customer-link
     signatures → no activation."""
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
     # Seed on commit that is NOT the counterparty hero (commit 0 has
@@ -249,7 +249,7 @@ async def test_ra2_integration_rich_primary_no_signals_no_activation(
     # We might still pick up commit 0 via goal-sibling edges; filter
     # only to the case where no commits-with-ref are present.
     d = should_run_second_pass(result)
-    # assert it either did not fire, or fired for bridge/anomaly (which
+    # assert it either did not fire, or fired for customer-link/anomaly (which
     # is legitimate given the corpus). What we specifically assert is
     # NOT sparse when models >= threshold.
     if len(result.models) >= SECOND_PASS_SPARSE_THRESHOLD:

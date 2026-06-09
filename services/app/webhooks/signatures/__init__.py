@@ -18,14 +18,23 @@ The Verifier Protocol is in `services/app/webhooks/verifier.py`.
 from __future__ import annotations
 
 from services.app.webhooks.signatures import (
+    ashby,
+    brex,
+    deel,
     discord,
+    figma,
+    fireflies,
     github,
     grafana,
+    gusto,
+    hibob,
     jira,
     linear,
     mercury,
+    miro,
     notion,
     quickbooks,
+    ramp,
     slack,
     stripe,
 )
@@ -43,6 +52,19 @@ VERIFIERS: dict[str, Verifier] = {
     "mercury": mercury.verifier,
     "quickbooks": quickbooks.verifier,
     "grafana": grafana.verifier,
+    "brex": brex.verifier,
+    "ramp": ramp.verifier,
+    "gusto": gusto.verifier,
+    "deel": deel.verifier,
+    # IN-FF/IN-MIRO/IN-FIGMA: HMAC-signed webhook sources (Brex archetype).
+    "fireflies": fireflies.verifier,
+    "miro": miro.verifier,
+    "figma": figma.verifier,
+    # People/Recruiting: HiBob (HMAC-SHA512/base64/Bob-Signature) + Ashby
+    # (HMAC-SHA256/hex/Ashby-Signature, sha256= prefix). LinkedIn is poll-only
+    # (no webhook) so it has NO verifier here.
+    "hibob": hibob.verifier,
+    "ashby": ashby.verifier,
 }
 
 

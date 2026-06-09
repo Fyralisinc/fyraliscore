@@ -71,6 +71,7 @@ def _augment_noop_trace_context(
         return context
     total_ops = (
         _as_int(context.get("edge_ops_count"))
+        + _as_int(context.get("ontology_gap_ops_count"))
         + _as_int(context.get("claim_ops_count"))
         + _as_int(context.get("act_ops_count"))
         + _as_int(context.get("resource_ops_count"))
@@ -209,6 +210,7 @@ def _run_summary(row: asyncpg.Record, context: dict[str, Any]) -> dict[str, Any]
             context.get("graph_selected_model_count")
         ),
         "edge_ops_count": _as_int(context.get("edge_ops_count")),
+        "ontology_gap_ops_count": _as_int(context.get("ontology_gap_ops_count")),
         "claim_ops_count": _as_int(context.get("claim_ops_count")),
         "act_ops_count": _as_int(context.get("act_ops_count")),
         "retrieval_model_count": row["retrieval_model_count"],
@@ -239,10 +241,11 @@ def _flags_for_context(
     )
     graph_selected = _as_int(context.get("graph_selected_model_count"))
     edge_ops = _as_int(context.get("edge_ops_count"))
+    ontology_gap_ops = _as_int(context.get("ontology_gap_ops_count"))
     claim_ops = _as_int(context.get("claim_ops_count"))
     act_ops = _as_int(context.get("act_ops_count"))
     resource_ops = _as_int(context.get("resource_ops_count"))
-    total_ops = edge_ops + claim_ops + act_ops + resource_ops
+    total_ops = edge_ops + ontology_gap_ops + claim_ops + act_ops + resource_ops
     selected_count = _as_int(context.get("selected_context_count"))
     graph_used = bool(context.get("graph_context_used"))
     trace_used = bool(context.get("reasoning_trace_context_used"))
@@ -254,7 +257,13 @@ def _flags_for_context(
         flags.append("unused_selected_context")
     if graph_selected > 0 and not graph_used and total_ops > 0:
         flags.append("graph_context_ignored")
-    if graph_selected > 0 and edge_ops == 0 and total_ops > 0 and not graph_used:
+    if (
+        graph_selected > 0
+        and edge_ops == 0
+        and ontology_gap_ops == 0
+        and total_ops > 0
+        and not graph_used
+    ):
         flags.append("graph_context_without_edge_ops")
     if (
         selected_count >= 5

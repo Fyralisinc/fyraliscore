@@ -46,8 +46,8 @@ self-heal and retry once.
 decorator self-registers handlers at import; `CHANNEL_TRUST_MAP` is the
 authoritative channel→trust-tier table (handlers may override per event). The
 registered channels span Slack, internal, GitHub, Linear, Stripe, Discord,
-Gmail/email, Notion, Google Calendar/Drive, calendar sync, Jira, Mercury, and
-QuickBooks.
+Gmail/email, Notion, Google Calendar/Drive, calendar sync, Jira, Mercury,
+QuickBooks, Grafana, and Telegram.
 
 **Raw-tier publish** (`shadow_write_raw`): hashes the raw body, `PutIfAbsent`
 to S3 (`s3://fyralis-raw`), builds a `RawEnvelope`, and publishes to
@@ -109,11 +109,16 @@ graph TD
 
 ## Integration sources
 
-The handler registry / `RawEnvelope.SourceLiteral` define **ten source families**:
-Slack, GitHub, Discord, Gmail, Notion, Google Calendar, Google Drive, Jira,
-Mercury, QuickBooks (plus internal/system channels, and Linear/Stripe handlers
-registered in code). Each lives under `services/ingest/integrations/<source>/`
-(OAuth, client, onboarding) with pipeline glue in `services/ingest/ingestion/`.
+The handler registry / `RawEnvelope.SourceLiteral` define **twelve source
+families**: Slack, GitHub, Discord, Gmail, Notion, Google Calendar, Google Drive,
+Jira, Mercury, QuickBooks, Grafana, and Telegram (plus internal/system channels,
+and Linear/Stripe handlers registered in code). Each lives under
+`services/ingest/integrations/<source>/` (OAuth, client, onboarding) with pipeline
+glue in `services/ingest/ingestion/`. **Telegram** is gateway-style — the MTProto
+user-account API, a persistent updates connection with no HTTP webhook (backfill
+on `messages.getHistory`/`offset_id`, live on `pts/qts/seq/date`/`getDifference`);
+see [ADR-0003](../adr/0003-telegram-mtproto-user-account-ingestion.md) and the
+[Telegram source spec](../ingestion/sources/telegram.md).
 
 !!! note "Doc-vs-code discrepancies (verified)"
     - `CODEBASE-ARCHITECTURE.md` §6 (steps 9–11) describes a routing decision via
@@ -142,6 +147,7 @@ registered in code). Each lives under `services/ingest/integrations/<source>/`
 | GitHub intel | `services/ingest/github_intel/worker.py`, `api.py` | Per-repo FSM + enrichment worker; read-only `/github-intel/*` router. |
 | Integrations OAuth | `services/ingest/integrations/router.py` | `/integrations/{provider}/{install,callback}` (Slack/Discord/GitHub/Notion). |
 | Discord gateway worker (HA) | `scripts/run_discord_gateway_worker.py`, `services/ingest/integrations/discord/gateway/{worker,lifecycle,leader_lock,session_state}.py` | The single live WSS consumer for Discord. A bot token may be connected by exactly **one** gateway session — two replicas double-deliver every frame. The launcher composes `lifecycle.py`: it acquires the `gateway:discord:leader_lock` Redis lease (M4.1, 30s TTL / 10s refresh) **before** connecting and refreshes it alongside the WS loop, standing down (not fighting) when another pod takes over. `REDIS_URL` is **mandatory** — without the lease there is no double-delivery guard, so a missing DSN fails loud (exit 2). For crash-RESUME (M4.2) it loads the persisted `gateway_session_state` on startup (so a restart RESUMEs and Discord replays buffered frames instead of re-IDENTIFYing) and passes an `on_dispatched` save hook that persists the session cursor after every dispatched frame (keyed by `DISCORD_CLIENT_ID`; RESUME degrades off, lease stays, when it's unset). Lease-acquire timeout / mid-run loss exit `3` (transient → orchestrator restarts to stand by). |
+| Telegram gateway worker (HA) | `scripts/run_telegram_gateway_worker.py`, `services/ingest/integrations/telegram/gateway/{worker,dispatch,client,session_state}.py` | The single live MTProto updates connection for Telegram — the Discord-gateway analog. A Telegram authorization may be driven by only one live connection at a time, so the launcher acquires the `gateway:telegram:leader_lock` Redis lease (`REDIS_URL` mandatory) **before** connecting. Holds the persistent updates connection on the **live session**, advances the `pts/qts/seq/date` update-state (`telegram_update_state`) using `updates.getDifference`/`getChannelDifference` as the native reconciler, and shadow-writes each update to `ingestion.raw.telegram` (`ingress_kind=gateway`) for the kafka-first path (inline `core.ingest` fallback). Backfill runs on a **separate** authorization (the backfill session) so the two never share one `auth_key` — see [ADR-0003](../adr/0003-telegram-mtproto-user-account-ingestion.md). |
 | Google DWD connect | `services/ingest/integrations/{gmail,google_calendar,google_drive}/oauth.py` | `POST /integrations/{gmail,google_calendar,google_drive}/connect/{preflight,finalize}` — first-party Domain-Wide-Delegation connect wizard (no OAuth bounce): `preflight` enumerates the Workspace domain for the selector UI (or returns the exact client_id + scopes to grant if the DWD grant is missing); `finalize` resolves the inclusion_spec → per-user mailbox/calendar/My-Drive targets (Drive also enumerates org Shared Drives) and writes the install + per-resource rows + an `onboarding_triggers` row in one transaction so the M6 backfill chain fires. All three mount in the gateway behind the `GMAIL_SERVICE_ACCOUNT_JSON*` gate (Calendar + Drive reuse Gmail's service account). Gmail additionally provisions Pub/Sub watches out-of-band; Calendar + Drive are poll-only (no async provisioning). Gmail's router also carries the install-lifecycle management endpoints — `GET …/gmail/status` (watch counts by state + last push/poll + errored mailboxes + recent audit, from `gmail/status_api.py`) and `POST …/gmail/{uninstall,mailbox/stop}` (full teardown / per-mailbox pause, from `gmail/uninstall.py`; idempotent, RLS-scoped to the tenant). |
 | Jira connect | `services/ingest/integrations/jira/oauth.py` | `POST /integrations/jira/connect/{preflight,finalize}` — Bearer-authed admin connect wizard for the API-token source: `preflight` verifies the token (`JiraClient.myself()`) + enumerates projects for the selector; `finalize` re-verifies creds before any write, persists the API token + optional webhook HMAC secret in the gateway `secret_store` (opaque refs only — plaintext never hits the DB), then calls `finalize_install` (jira_installations + jira_projects + `onboarding_triggers`) and `register_webhook_installation` (the `provider_installations` row the webhook edge keys on by site host). Mounts unconditionally next to the integrations router — a genuine prod surface, not the synthetic `finance_router` panel. |
 | Calendar/Drive live | `services/ingest/integrations/{google_calendar,google_drive}/{live_poller,watch}.py`, `services/ingest/integrations/_google_{live,watch}.py`, `services/app/webhooks/google_push.py` | Near-real-time live ingestion for Calendar + Drive, mirroring `gmail_watch`+`gmail_history`. `live_poller` (compose: `google_{calendar,drive}_live_poller`) leases active, cursor-seeded resources via the `last_live_poll_at` claim slot and drains the delta through the shared `drain_live` (existing fetcher + `ingest()`, dedups at `observations.UNIQUE`). `watch` (compose: `google_{calendar,drive}_watch_scheduler`) registers/renews native `events.watch`/`changes.watch` push channels; the always-mounted `/webhooks/google_{calendar,drive}/push` ingress constant-time-verifies `X-Goog-Channel-Token` and drains via the same path. Push needs `GOOGLE_PUSH_WEBHOOK_BASE` (a domain-verified HTTPS endpoint); the poller guarantees liveness when it's unset. |

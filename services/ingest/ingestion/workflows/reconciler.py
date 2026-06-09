@@ -148,6 +148,7 @@ from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
     claim_signals,
     emit_signal,
+    process_signal_with_serialization_retry,
 )
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -452,6 +453,15 @@ class Reconciler(LongRunningService):
         await self._persist_scan_state(signals_processed=signals_processed)
 
     async def _process_one_signal(self) -> bool:
+        """Claim + dispatch ONE signal, retrying transient serialization
+        conflicts on the shared `workflow_signals` table (see
+        `process_signal_with_serialization_retry`) so a concurrent-onboarding
+        deadlock on the signal INSERT doesn't crash the reconciler."""
+        return await process_signal_with_serialization_retry(
+            self._process_one_signal_once, label="reconciler",
+        )
+
+    async def _process_one_signal_once(self) -> bool:
         """Claim ONE signal + dispatch to the handler.
 
         Returns True iff a signal was processed. The claim, dispatch,
@@ -756,6 +766,20 @@ async def _run_service() -> None:
         quickbooks as quickbooks_reconciler_mod,
     )
     from services.ingest.ingestion.reconcilers import grafana as grafana_reconciler_mod
+    from services.ingest.ingestion.reconcilers import telegram as telegram_reconciler_mod
+    from services.ingest.ingestion.reconcilers import brex as brex_reconciler_mod
+    from services.ingest.ingestion.reconcilers import ramp as ramp_reconciler_mod
+    from services.ingest.ingestion.reconcilers import gusto as gusto_reconciler_mod
+    from services.ingest.ingestion.reconcilers import deel as deel_reconciler_mod
+    from services.ingest.ingestion.reconcilers import fireflies as fireflies_reconciler_mod
+    from services.ingest.ingestion.reconcilers import signal as signal_reconciler_mod
+    from services.ingest.ingestion.reconcilers import aws as aws_reconciler_mod
+    from services.ingest.ingestion.reconcilers import miro as miro_reconciler_mod
+    from services.ingest.ingestion.reconcilers import figma as figma_reconciler_mod
+    from services.ingest.ingestion.reconcilers import carta as carta_reconciler_mod
+    from services.ingest.ingestion.reconcilers import hibob as hibob_reconciler_mod
+    from services.ingest.ingestion.reconcilers import ashby as ashby_reconciler_mod
+    from services.ingest.ingestion.reconcilers import linkedin as linkedin_reconciler_mod
     gmail_reconciler_mod.set_pool_provider(pool)
     github_reconciler_mod.set_pool_provider(pool)
     slack_reconciler_mod.set_pool_provider(pool)
@@ -767,6 +791,20 @@ async def _run_service() -> None:
     mercury_reconciler_mod.set_pool_provider(pool)
     quickbooks_reconciler_mod.set_pool_provider(pool)
     grafana_reconciler_mod.set_pool_provider(pool)
+    telegram_reconciler_mod.set_pool_provider(pool)
+    brex_reconciler_mod.set_pool_provider(pool)
+    ramp_reconciler_mod.set_pool_provider(pool)
+    gusto_reconciler_mod.set_pool_provider(pool)
+    deel_reconciler_mod.set_pool_provider(pool)
+    fireflies_reconciler_mod.set_pool_provider(pool)
+    signal_reconciler_mod.set_pool_provider(pool)
+    aws_reconciler_mod.set_pool_provider(pool)
+    miro_reconciler_mod.set_pool_provider(pool)
+    figma_reconciler_mod.set_pool_provider(pool)
+    carta_reconciler_mod.set_pool_provider(pool)
+    hibob_reconciler_mod.set_pool_provider(pool)
+    ashby_reconciler_mod.set_pool_provider(pool)
+    linkedin_reconciler_mod.set_pool_provider(pool)
 
     config = ReconcilerConfig(
         tick_interval_seconds=float(

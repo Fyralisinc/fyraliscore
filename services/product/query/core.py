@@ -403,7 +403,7 @@ def _bundle_to_dict(b: ContextBundle) -> dict[str, Any]:
             for k, v in b.acts_summary.items()
         },
         "resources_summary": [_model_dump(r) for r in b.resources_summary],
-        "bridge_context": b.bridge_context,
+        "customer_context": b.customer_context,
         "access_redactions": b.access_redactions,
         "notes": b.notes,
     }

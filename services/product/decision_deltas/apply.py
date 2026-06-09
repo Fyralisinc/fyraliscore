@@ -78,11 +78,22 @@ async def apply_acceptance(
             delta_id=str(delta_id),
         )
     if current.status == "accepted":
+        from services.product.resolution_threads import repo as resolution_repo
+
+        existing_thread = await resolution_repo.get_thread_by_source_delta(
+            conn,
+            tenant_id=tenant_id,
+            source_decision_delta_id=delta_id,
+        )
         # Idempotent accept: short-circuit but report nothing fired.
         return current, {
             "target_updated": False,
             "target_event_id": None,
             "notifications_dispatched": 0,
+            "resolution_thread_id": (
+                str(existing_thread.id) if existing_thread is not None else None
+            ),
+            "resolution_thread_created": False,
             "notes": ["already_accepted"],
         }
     if not dd_repo._is_allowed_transition(current.status, "accepted"):
@@ -156,6 +167,28 @@ async def apply_acceptance(
                 # Notify failure is non-fatal for v1 — log and continue.
                 notes.append(f"notify_failed:{e}")
 
+    # --- 5. Resolution Thread instantiation ---------------------------
+    resolution_thread_id: str | None = None
+    resolution_thread_created = False
+    try:
+        from services.product.resolution_threads import repo as resolution_repo
+
+        thread, created = await resolution_repo.ensure_thread_for_delta(
+            conn,
+            tenant_id=tenant_id,
+            delta_view=current,
+            actor_id=user_id,
+        )
+        if thread is not None:
+            resolution_thread_id = str(thread.id)
+            resolution_thread_created = created
+    except Exception as e:  # noqa: BLE001 — acceptance itself remains valid
+        logger.warning(
+            "resolution_thread_create_failed delta_id=%s err=%s",
+            delta_id, e,
+        )
+        notes.append(f"resolution_thread_failed:{e}")
+
     refreshed = await dd_repo.get_delta(
         conn, tenant_id=tenant_id, delta_id=delta_id,
     )
@@ -170,6 +203,8 @@ async def apply_acceptance(
             str(target_event_id) if target_event_id else None
         ),
         "notifications_dispatched": dispatched,
+        "resolution_thread_id": resolution_thread_id,
+        "resolution_thread_created": resolution_thread_created,
         "notes": notes,
     }
 

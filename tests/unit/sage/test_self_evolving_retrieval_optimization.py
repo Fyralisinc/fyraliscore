@@ -17,7 +17,9 @@ from services.platform.execution.inquiry import (
     _select_minimal_sufficient_evidence,
     _candidate_questions,
     _compile_retrieval_plan,
+    _question_policy_budget_multiplier,
     _apply_question_policy,
+    _question_marginal_score,
     _select_questions,
     QuestionPolicySignal,
 )
@@ -25,9 +27,15 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
 from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
 from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
-from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
+from services.reasoning.sage.inquiry_traces.types import OutcomeEventRow
+from services.reasoning.sage.reader import (
+    ReaderBudget,
+    SynthesisReader,
+    _LearnedReadPlan,
+    _projection_budget_for,
+)
 from services.reasoning.sage.topology_optimizer import TopologyOptimizer
-from ._seed import ZERO_EMBEDDING, seed_model, seed_observation
+from tests.unit.sage._seed import ZERO_EMBEDDING, seed_model, seed_observation
 
 
 pytestmark = pytest.mark.integration
@@ -127,6 +135,140 @@ def test_question_planner_treats_cadence_as_recurrence_not_broad_portfolio(
     assert selected[0].primitive == "RECURRENCE"
 
 
+def test_question_selection_stops_when_broad_followup_has_low_marginal_value(
+    tenant_id: UUID,
+):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text=(
+            "Company-wide portfolio renewals mention a customer impact, but "
+            "the signal only names the AcmeAtlas account."
+        ),
+        seed_entity_ids=[
+            {"type": "customer", "id": "AcmeAtlas"},
+        ],
+    )
+    candidates = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"affected commitment", "affected goal", "counterevidence"},
+    )
+
+    selected = _select_questions(
+        candidates,
+        questions_per_round=3,
+        round_index=0,
+        already_asked=set(),
+    )
+
+    assert [q.primitive for q in selected] == ["GOAL_IMPACT", "COMMITMENT"]
+
+
+def test_question_selection_keeps_counterevidence_for_material_risk(
+    tenant_id: UUID,
+):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text=(
+            "AcmeAtlas launch is blocked by review capacity and the customer "
+            "commitment is now at risk."
+        ),
+        seed_entity_ids=[
+            {"type": "customer", "id": "AcmeAtlas"},
+        ],
+    )
+    candidates = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"blocking constraint", "counterevidence"},
+    )
+
+    selected = _select_questions(
+        candidates,
+        questions_per_round=3,
+        round_index=0,
+        already_asked=set(),
+    )
+
+    assert "COUNTEREVIDENCE" in {q.primitive for q in selected}
+    assert selected[0].primitive == "CONSTRAINT"
+
+
+def test_question_marginal_score_penalizes_redundant_followups() -> None:
+    selected = [
+        InquiryQuestion(
+            question_id="Q_GOAL_IMPACT",
+            question="Which goal is affected?",
+            primitive="GOAL_IMPACT",
+            tests_hypotheses=("H1",),
+            expected_value=0.94,
+            expected_cost=0.20,
+            retrieval_target="goal_resource_bridge",
+            stop_condition="goal/customer/resource impact identified",
+            score=0.89,
+        )
+    ]
+    redundant = InquiryQuestion(
+        question_id="Q_MORE_GOAL",
+        question="Which customer goal is affected?",
+        primitive="GOAL_IMPACT",
+        tests_hypotheses=("H1",),
+        expected_value=0.82,
+        expected_cost=0.24,
+        retrieval_target="goal_customer_resource_evidence",
+        stop_condition="goal/customer/resource impact identified",
+        score=0.73,
+    )
+    distinct = InquiryQuestion(
+        question_id="Q_OWNER",
+        question="Who owns the affected commitment?",
+        primitive="OWNERSHIP",
+        tests_hypotheses=("H2",),
+        expected_value=0.72,
+        expected_cost=0.22,
+        retrieval_target="commitment_owners+actor_scope",
+        stop_condition="owner identified or human validation required",
+        score=0.65,
+    )
+
+    assert _question_marginal_score(redundant, selected) < _question_marginal_score(
+        distinct, selected
+    )
+
+
+def test_reader_projection_budget_caps_broad_primitives_by_sufficiency() -> None:
+    budget = ReaderBudget(
+        max_nodes=80,
+        max_edges=160,
+        max_evidence_items=260,
+        focused_max_nodes=24,
+    )
+
+    default_ownership = _projection_budget_for(
+        budget,
+        primitive="OWNERSHIP",
+        learned_plan=_LearnedReadPlan(mode="default"),
+    )
+    focused_ownership = _projection_budget_for(
+        budget,
+        primitive="OWNERSHIP",
+        learned_plan=_LearnedReadPlan(mode="focused", max_nodes=24),
+    )
+    recurrence = _projection_budget_for(
+        budget,
+        primitive="RECURRENCE",
+        learned_plan=_LearnedReadPlan(mode="default"),
+    )
+
+    assert default_ownership.max_projected_items == 48
+    assert focused_ownership.max_projected_items == 24
+    assert recurrence.max_projected_items == 40
+
+
 def test_learned_policy_overrides_static_question_order_when_utility_is_clear(
     tenant_id: UUID,
 ):
@@ -177,7 +319,82 @@ def test_learned_policy_overrides_static_question_order_when_utility_is_clear(
     )
 
 
-def test_policy_scales_retrieval_budgets_without_changing_plan_shape(
+def test_optimizer_promotes_repeated_useful_access_pattern_without_benchmark_label(
+    tenant_id: UUID,
+):
+    session_id = uuid7()
+    model_ids = [uuid7() for _ in range(8)]
+    signature = {
+        "signal_type": "T1",
+        "question_primitive": "DEPENDENCY",
+        "entities": ["Acme", "SSO"],
+    }
+    events = [
+        OutcomeEventRow(
+            inquiry_session_id=session_id,
+            event_type="node_used_in_valid_diff",
+            payload={**signature, "model_id": str(model_id)},
+        )
+        for model_id in model_ids
+    ]
+
+    candidates = TopologyOptimizer(
+        pool=None,
+        tenant_id=tenant_id,
+    )._propose_promotes(
+        events=[],
+        useful_nodes=events,
+        useful_paths=[],
+        session_id=session_id,
+    )
+
+    assert candidates
+    candidate = candidates[0]
+    assert candidate["op"] == "promote"
+    assert candidate["proposed_kind"] == "promote_access_pattern_to_canonical_route"
+    assert set(candidate["source_model_ids"]) == {str(model_id) for model_id in model_ids}
+    assert candidate["signature"]["question_primitive"] == "DEPENDENCY"
+
+
+def test_optimizer_promote_candidate_preserves_large_group_cardinality(
+    tenant_id: UUID,
+):
+    session_id = uuid7()
+    model_ids = [uuid7() for _ in range(80)]
+    signature = {
+        "signal_type": "T1",
+        "question_primitive": "DEPENDENCY",
+        "entities": ["Acme", "SSO", "Security"],
+    }
+    events = [
+        OutcomeEventRow(
+            inquiry_session_id=session_id,
+            event_type="node_used_in_valid_diff",
+            payload={**signature, "model_id": str(model_id)},
+        )
+        for model_id in model_ids
+    ]
+
+    candidates = TopologyOptimizer(
+        pool=None,
+        tenant_id=tenant_id,
+    )._propose_promotes(
+        events=[],
+        useful_nodes=events,
+        useful_paths=[],
+        session_id=session_id,
+    )
+
+    candidate = candidates[0]
+    assert candidate["source_model_count"] == 80
+    assert candidate["source_model_id_limit"] == 64
+    assert len(candidate["source_model_ids"]) == 64
+    assert set(candidate["source_model_ids"]).issubset(
+        {str(model_id) for model_id in model_ids}
+    )
+
+
+def test_policy_compacts_retrieval_budgets_without_changing_plan_shape(
     tenant_id: UUID,
 ):
     trigger = TriggerContext(
@@ -215,9 +432,25 @@ def test_policy_scales_retrieval_budgets_without_changing_plan_shape(
     hot_targets = [action.target for action in hot_plan]
 
     assert hot_targets == cold_targets
-    assert sum(action.budget for action in hot_plan) > sum(
+    assert sum(action.budget for action in hot_plan) < sum(
         action.budget for action in cold_plan
     )
+
+
+def test_policy_budget_compaction_caps_reader_decision_success_rate() -> None:
+    signal = QuestionPolicySignal(
+        signal_type="T1",
+        question_primitive="DEPENDENCY",
+        attempts=10,
+        successes=100,
+        utility_score=4.0,
+        total_credit=100.0,
+        total_cost=5.0,
+    )
+
+    multiplier = _question_policy_budget_multiplier(signal)
+
+    assert 0.65 <= multiplier < 1.0
 
 
 def test_minimal_packet_preserves_value_while_dropping_redundant_evidence(
@@ -322,7 +555,7 @@ async def test_reader_writer_feedback_lifts_useful_node_into_next_read(
         gateway_pool,
         tenant_id=tenant_id,
         born_from_event_id=obs_id,
-        natural="Hidden relay record maps the release dependency to reviewer capacity",
+        natural="Hidden relay record maps reviewer capacity pressure",
         supporting_event_ids=[obs_id],
         signal_readings=[{"kind": "observe", "event_id": str(obs_id), "weight": 1.0}],
     )
@@ -331,7 +564,7 @@ async def test_reader_writer_feedback_lifts_useful_node_into_next_read(
             gateway_pool,
             tenant_id=tenant_id,
             born_from_event_id=obs_id,
-            natural=f"Decoy dependency profile {idx} for generic release tracking",
+            natural=f"Decoy profile {idx} for generic tracking",
             supporting_event_ids=[obs_id],
         )
         for idx in range(12)

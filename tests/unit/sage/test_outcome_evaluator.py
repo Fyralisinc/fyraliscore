@@ -31,6 +31,7 @@ from services.reasoning.sage.outcome_evaluator import (
     OutcomeEvaluator,
 )
 from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
+from tests.unit.sage._seed import seed_model
 
 pytestmark = pytest.mark.integration
 
@@ -169,6 +170,49 @@ async def _seed_edge(
             target_model_id,
             edge_kind,
         )
+
+
+async def _seed_reader_decision_attribution(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    session_id: UUID,
+    model_id: UUID,
+    primitive: str = "CONSTRAINT",
+    selected: bool = True,
+) -> UUID:
+    attr_id = uuid7()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO sage_reader_decision_attributions (
+              id, tenant_id, inquiry_session_id,
+              question_id, question_primitive, question,
+              question_score, expected_value, expected_cost,
+              signal_type, entities, model_id,
+              selected, selection_rank, activation_score,
+              activation_reasons, source_breakdown, retrieval_actions,
+              projected_evidence_refs, evidence_in_packet_count
+            ) VALUES (
+              $1, $2, $3,
+              'Q_LOW_VALUE', $4, 'Which memory is relevant?',
+              0.75, 0.80, 0.25,
+              'T1', '["Acme"]'::jsonb, $5,
+              $6, 0, 0.72,
+              '["lexical:acme"]'::jsonb,
+              '{"lexical": 0.72}'::jsonb,
+              '[{"path": "sage_reader"}]'::jsonb,
+              '[]'::jsonb, 2
+            )
+            """,
+            attr_id,
+            tenant_id,
+            session_id,
+            primitive,
+            model_id,
+            selected,
+        )
+    return attr_id
 
 
 # ---------------------------------------------------------------------
@@ -398,6 +442,261 @@ async def test_reward_features_contain_all_expected_keys_within_range(
     assert summary.reward_features["diff_deducibility"] == 1.0
     assert summary.reward_features["evidence_coverage"] == 1.0
     assert summary.reward_features["token_cost"] == pytest.approx(9000 / 30000)
+    assert summary.events_by_type.get("outcome_quality_assessed") == 1
+    assert summary.quality_signal.primary_bottleneck == "none"
+    assert summary.quality_signal.objective_alignment_score > 0.80
+
+
+@pytest.mark.asyncio
+async def test_quality_signal_flags_missing_evidence_as_primary_bottleneck(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="failed",
+        error="Validation rejected: missing evidence for new relationship",
+        ops_applied={},
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet={},
+        think_run_id=run_id,
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.quality_signal.primary_bottleneck == "missing_evidence"
+    assert "missing_evidence" in summary.quality_signal.failure_modes
+    assert "no_valid_diff" in summary.quality_signal.failure_modes
+    assert summary.quality_signal.objective_alignment_score < 0.40
+
+
+@pytest.mark.asyncio
+async def test_quality_signal_separates_counterevidence_dropped_from_success(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    packet = {"tiers": {"supporting_evidence_groups": [
+        {"source_ref": "obs:support"},
+    ]}}
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={"claim_ops": [], "edge_ops": [], "act_ops": []},
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    await _seed_evidence(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        source_ref="obs:support",
+    )
+    await _seed_evidence(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        source_ref="obs:falsifier",
+        contradicts=["hypothesis-A"],
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.reward_features["diff_deducibility"] == 1.0
+    assert summary.quality_signal.primary_bottleneck == "counterevidence_dropped"
+    assert "counterevidence_dropped" in summary.quality_signal.failure_modes
+    assert summary.quality_signal.quality_axes["counterevidence_retention"] == 0.0
+    assert summary.quality_signal.objective_alignment_score <= 0.75
+
+
+@pytest.mark.asyncio
+async def test_quality_signal_detects_low_value_leak_without_writer_failure(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    packet = {
+        "tiers": {"supporting_evidence_groups": [{"source_ref": "obs:kept"}]},
+        "budget": {"estimated_tokens_used": 30000},
+    }
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={"claim_ops": [], "edge_ops": [], "act_ops": []},
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    await _seed_evidence(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        source_ref="obs:kept",
+    )
+    for i in range(6):
+        await _seed_evidence(
+            gateway_pool,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_ref=f"obs:omitted-{i}",
+        )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.reward_features["diff_deducibility"] == 1.0
+    assert "low_evidence_coverage" in summary.quality_signal.failure_modes
+    assert "packet_bloat" in summary.quality_signal.failure_modes
+    assert summary.quality_signal.quality_axes["low_value_leak"] > 0.10
+
+
+@pytest.mark.asyncio
+async def test_successful_noop_emits_low_value_reader_decision_when_context_unused(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    model_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        natural="Decoy operational memory",
+    )
+    packet = {
+        "source_metadata": {"trigger_kind": "T1"},
+        "resolved_entities": [{"id": "Acme"}],
+        "question_path": [
+            {"primitive": "COUNTEREVIDENCE"},
+            {"primitive": "DEPENDENCY"},
+        ],
+        "tiers": {
+            "supporting_evidence_groups": [
+                {"source_ref": "obs:kept-1"},
+                {"source_ref": "obs:kept-2"},
+                {"source_ref": "obs:kept-3"},
+            ],
+        },
+    }
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={"claim_ops": [], "edge_ops": [], "act_ops": []},
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    for i in range(1, 4):
+        await _seed_evidence(
+            gateway_pool,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_ref=f"obs:kept-{i}",
+        )
+    attr_id = await _seed_reader_decision_attribution(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        model_id=model_id,
+        primitive="DEPENDENCY",
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.events_by_type.get("reader_decision_low_value") == 1
+    assert "unused_selected_context" in summary.quality_signal.failure_modes
+    events = await OutcomeEventsRepo(
+        gateway_pool, tenant_id=tenant_id,
+    ).list_for_session(session_id)
+    low_value = next(
+        ev for ev in events if ev.event_type == "reader_decision_low_value"
+    )
+    assert low_value.payload["attribution_id"] == str(attr_id)
+    assert low_value.payload["model_id"] == str(model_id)
+    assert low_value.payload["signature"] == {
+        "signal_type": "T1",
+        "entities": ["Acme"],
+        "question_primitive": "DEPENDENCY",
+    }
+
+
+@pytest.mark.asyncio
+async def test_successful_noop_does_not_punish_justified_context_use(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    model_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        natural="Useful context-only memory",
+    )
+    packet = {
+        "source_metadata": {"trigger_kind": "T1"},
+        "resolved_entities": [{"id": "Acme"}],
+        "question_path": [{"primitive": "CONSTRAINT"}],
+        "tiers": {
+            "supporting_evidence_groups": [
+                {"source_ref": "obs:kept-1"},
+                {"source_ref": "obs:kept-2"},
+                {"source_ref": "obs:kept-3"},
+            ],
+        },
+    }
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={
+            "claim_ops": [],
+            "edge_ops": [],
+            "act_ops": [],
+            "context_use": {
+                "selected_context_used": True,
+                "context_use_grade": "justified_noop_context_used",
+            },
+        },
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    for i in range(1, 4):
+        await _seed_evidence(
+            gateway_pool,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_ref=f"obs:kept-{i}",
+        )
+    await _seed_reader_decision_attribution(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        model_id=model_id,
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.events_by_type.get("reader_decision_low_value", 0) == 0
+    assert "unused_selected_context" not in summary.quality_signal.failure_modes
+    assert summary.quality_signal.primary_bottleneck == "none"
 
 
 @pytest.mark.asyncio

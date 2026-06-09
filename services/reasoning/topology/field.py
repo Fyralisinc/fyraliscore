@@ -26,6 +26,7 @@ from services.reasoning.relationships.candidates import (
     TOPOLOGY_EMITTABLE_EDGE_KINDS,
     RelationshipCandidate,
     make_edge_candidate,
+    make_edge_type_candidate,
     make_situation_candidate,
     rank_candidates,
 )
@@ -122,6 +123,17 @@ _PAIR_EDGE_KIND_BY_PRESSURE: dict[str, str] = {
     "decay": "early_warning_for",
     "deadline": "early_warning_for",
 }
+
+
+@dataclass(frozen=True)
+class OntologyGapSpec:
+    proposed_edge_kind: str
+    description: str
+    relationship_summary: str
+    parent_kind: str | None
+    nearest_existing_kind: str | None
+    directionality: str
+    dropped_dimensions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -599,6 +611,43 @@ class LatentTopologyService:
             )
             if score.total < self.min_insert_score:
                 continue
+            ontology_gap = _ontology_gap_for_interaction(
+                left=model,
+                right=neighbor.row,
+                left_sig=seed_sig,
+                right_sig=other_sig,
+                score=score,
+            )
+            if ontology_gap is not None:
+                metadata = {
+                    "topology": {
+                        "kind": "latent_relationship_field",
+                        "object_type": "edge_type_candidate",
+                        "selection_sources": list(neighbor.sources),
+                        "score_components": score.as_dict(),
+                        "impact_signatures": [
+                            seed_sig.as_dict(),
+                            other_sig.as_dict(),
+                        ],
+                    }
+                }
+                candidate = make_edge_type_candidate(
+                    tenant_id=model.tenant_id,
+                    proposed_edge_kind=ontology_gap.proposed_edge_kind,
+                    description=ontology_gap.description,
+                    relationship_summary=ontology_gap.relationship_summary,
+                    parent_kind=ontology_gap.parent_kind,
+                    nearest_existing_kind=ontology_gap.nearest_existing_kind,
+                    directionality=ontology_gap.directionality,  # type: ignore[arg-type]
+                    dropped_dimensions=ontology_gap.dropped_dimensions,
+                    example_source_model_id=model.id,
+                    example_target_model_id=neighbor.row["id"],
+                    scores=_judgment_from_topology(score),
+                    source="latent_topology",
+                    metadata=metadata,
+                )
+                candidates.append(candidate)
+                continue
             edge_kind = _edge_kind_for_interaction(seed_sig, other_sig)
             if edge_kind not in TOPOLOGY_EMITTABLE_EDGE_KINDS:
                 # Topology never fabricates LLM-only kinds.
@@ -739,6 +788,28 @@ class LatentTopologyService:
                 candidate.source_model_id,
                 candidate.target_model_id,
                 candidate.edge_kind,
+            )
+            return row is not None
+        if candidate.candidate_kind == "edge_type":
+            proposed = (candidate.proposed_proposition or {}).get(
+                "proposed_edge_kind"
+            )
+            row = await conn.fetchval(
+                """
+                SELECT 1
+                FROM relationship_candidates
+                WHERE tenant_id = $1
+                  AND candidate_kind = 'edge_type'
+                  AND proposed_proposition->>'proposed_edge_kind' = $2
+                  AND member_model_ids @> $3::uuid[]
+                  AND $3::uuid[] @> member_model_ids
+                  AND review_status IN ('candidate', 'needs_review', 'accepted')
+                  AND created_at > now() - interval '14 days'
+                LIMIT 1
+                """,
+                candidate.tenant_id,
+                proposed,
+                list(candidate.member_model_ids),
             )
             return row is not None
         row = await conn.fetchval(
@@ -936,6 +1007,201 @@ def _judgment_from_topology(score: TopologyScore) -> JudgmentScores:
             + 0.20 * score.evidence_quality
         ),
     )
+
+
+def _ontology_gap_for_interaction(
+    *,
+    left: ModelRow,
+    right: dict[str, Any],
+    left_sig: ImpactSignature,
+    right_sig: ImpactSignature,
+    score: TopologyScore,
+) -> OntologyGapSpec | None:
+    """Return a richer proposed edge type when a generic edge would lose value."""
+    if score.total < 0.40:
+        return None
+    text = " ".join([
+        str(left.natural or ""),
+        str(right.get("natural") or ""),
+        json.dumps(left.proposition or {}, sort_keys=True, default=str),
+        json.dumps(right.get("proposition") or {}, sort_keys=True, default=str),
+    ]).lower()
+    flows = set(left_sig.flows + right_sig.flows)
+    pressures = set(left_sig.pressures + right_sig.pressures)
+
+    def spec(
+        proposed: str,
+        description: str,
+        summary: str,
+        *,
+        parent: str | None,
+        directionality: str = "directed",
+        dropped: tuple[str, ...],
+    ) -> OntologyGapSpec:
+        return OntologyGapSpec(
+            proposed_edge_kind=proposed,
+            description=description,
+            relationship_summary=summary,
+            parent_kind=parent,
+            nearest_existing_kind=parent,
+            directionality=directionality,
+            dropped_dimensions=dropped,
+        )
+
+    if _has_any(text, ("obscure", "obscures", "hides", "hidden", "masked", "shadow")) and _has_any(
+        text, ("attention", "focus", "urgent", "loud", "noisy", "dashboard")
+    ):
+        return spec(
+            "obscures",
+            "One salient Model makes a quieter high-value Model less likely to be noticed.",
+            "Topology found an attention-shadow relation; a generic edge would lose salience distortion semantics.",
+            parent=None,
+            dropped=("attention competition", "salience distortion", "visibility risk"),
+        )
+
+    if (
+        ("decision" in flows or _has_any(text, ("approval", "approve", "sign off", "decision", "decide")))
+        and ({"blocker", "dependency"} & pressures or _has_any(text, ("waiting on", "cannot", "blocked", "requires")))
+    ):
+        return spec(
+            "gated_by_decision",
+            "A Model cannot progress until a specific decision or approval is made.",
+            "Topology found a decision gate; `blocks` would lose authority and approval-state semantics.",
+            parent="blocks",
+            dropped=("authority surface", "decision dependency", "approval state"),
+        )
+
+    if _has_any(text, ("assumption", "premise", "if ", "unless", "only holds", "conditional")) and _has_any(
+        text, ("forecast", "plan", "depends", "requires", "expected")
+    ):
+        return spec(
+            "depends_on_assumption",
+            "A forecast or plan only holds if another uncertain premise holds.",
+            "Topology found assumption dependency; `supports` would hide conditional truth and fragility.",
+            parent="supports",
+            dropped=("assumption status", "conditional truth", "fragility"),
+        )
+
+    if _has_any(text, ("tradeoff", "trade-off", "frontier", "worsens", "at the cost", "cost of")) or (
+        "decision" in flows and "contradiction" in pressures and _has_any(text, ("both", "valid", "true"))
+    ):
+        return spec(
+            "trades_off_with",
+            "Improving one Model predictably worsens another without making either false.",
+            "Topology found a tradeoff; `contradicts` would incorrectly imply mutual falsity.",
+            parent="contradicts",
+            directionality="symmetric",
+            dropped=("both can be true", "optimization frontier", "choice cost"),
+        )
+
+    if _has_any(text, ("priority", "prioritize", "compete", "capacity", "bandwidth", "focus")) and _has_any(
+        text, ("queue", "backlog", "attention", "limited", "same team", "same owner")
+    ):
+        return spec(
+            "competes_for_priority_with",
+            "Two valid Models compete for the same limited attention or capacity.",
+            "Topology found priority contention; `alternative_to` would lose shared-resource pressure.",
+            parent="alternative_to",
+            directionality="symmetric",
+            dropped=("resource contention", "capacity limit", "both valid"),
+        )
+
+    if _has_any(text, ("mitigation", "mitigate", "reduces", "offset", "dampen", "dampens", "relieve")):
+        return spec(
+            "dampens",
+            "One intervention reduces another pressure without falsifying it.",
+            "Topology found a mitigation relation; `weakens` would confuse residual truth with counterevidence.",
+            parent="weakens",
+            dropped=("operational mitigation", "residual truth", "intervention surface"),
+        )
+
+    if _has_any(text, ("transfer", "transfers", "shift", "moves", "pushes")) and "risk" in flows:
+        return spec(
+            "transfers_risk_to",
+            "Resolving one risk moves exposure to another owner or scope.",
+            "Topology found risk transfer; `causes` would lose recipient-scope and second-order cost semantics.",
+            parent="causes",
+            dropped=("risk movement", "recipient scope", "second-order cost"),
+        )
+
+    if _has_any(text, ("proxy", "proxy for", "indicator", "weak signal", "indirect evidence", "measurement")):
+        return spec(
+            "proxy_for",
+            "One weak signal is a proxy for a harder-to-observe state.",
+            "Topology found proxy evidence; `early_warning_for` would overstate temporal lead-time.",
+            parent="early_warning_for",
+            dropped=("proxy validity", "measurement gap", "not necessarily future"),
+        )
+
+    if _has_any(text, ("lag", "lags", "lagging", "after", "delay", "delayed response", "leading")) and _has_any(
+        text, ("metric", "indicator", "responds", "signal", "state")
+    ):
+        return spec(
+            "lags",
+            "One metric or state responds after another with a predictable delay.",
+            "Topology found lag structure; `predicts` would lose temporal-offset semantics.",
+            parent="predicts",
+            dropped=("delay shape", "lagging indicator", "temporal offset"),
+        )
+
+    if _has_any(text, ("leverage", "amplify", "amplifies", "multiplier", "sequence")) and (
+        "opportunity" in pressures or "opportunity" in text or "unlock" in text
+    ):
+        return spec(
+            "amplifies_leverage_of",
+            "One Model makes an intervention on another much more valuable.",
+            "Topology found leverage amplification; `enables` would lose marginal-value and sequencing semantics.",
+            parent="enables",
+            dropped=("marginal value", "sequence leverage", "intervention ordering"),
+        )
+
+    if _has_any(text, ("precedent", "policy", "similar future", "future cases", "reuse")):
+        return spec(
+            "sets_precedent_for",
+            "A specific case should shape future treatment of similar cases.",
+            "Topology found precedent; `analogous_to` would lose normative reuse and scope-of-policy semantics.",
+            parent="analogous_to",
+            dropped=("normative precedent", "future policy", "scope of reuse"),
+        )
+
+    if _has_any(text, ("portfolio", "roll up", "rollup", "contains", "broader", "narrower", "account-level", "local issue")):
+        return spec(
+            "contains_scope",
+            "A broader situation contains a narrower local issue.",
+            "Topology found scope containment; `same_issue_as` would lose hierarchy and roll-up semantics.",
+            parent="same_issue_as",
+            dropped=("hierarchy", "containment", "roll-up semantics"),
+        )
+
+    if (
+        {"overload", "decay", "acceleration"} & pressures
+        and len(flows & {"money", "trust", "risk", "capacity"}) >= 2
+    ):
+        return spec(
+            "reinforces",
+            "Two pressures amplify each other as a compounding loop.",
+            "Topology found mutual reinforcement; `causes` would lose loop and amplification semantics.",
+            parent="causes",
+            directionality="symmetric",
+            dropped=("loop directionality", "mutual amplification", "runaway dynamic"),
+        )
+
+    if _has_any(text, ("owner", "accountable", "responsible", "no clear owner", "ownership", "escalation")) and (
+        {"blocker", "dependency", "overload"} & pressures
+    ):
+        return spec(
+            "accountable_for",
+            "A Model says an actor or team is accountable for resolving another Model.",
+            "Topology found accountability structure; `supports` would lose owner and escalation semantics.",
+            parent="supports",
+            dropped=("actor accountability", "ownership status", "escalation route"),
+        )
+
+    return None
+
+
+def _has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
 
 
 def _edge_kind_for_interaction(

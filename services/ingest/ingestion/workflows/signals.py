@@ -146,6 +146,7 @@ EMIT / CLAIM CONTRACT
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -159,6 +160,57 @@ from lib.shared.ids import uuid7
 
 
 log = logging.getLogger(__name__)
+
+
+# Bounded retry for transient serialization conflicts on the shared
+# `workflow_signals` table. Under concurrent onboarding all of
+# tenant_onboarding / source_onboarding / reconciler / shard_fetch INSERT
+# signals into shared inboxes; Postgres can pick any of them as a
+# deadlock/serialization victim. These errors are TRANSIENT — the competing
+# transaction commits in between — so a bounded retry of the whole claim+dispatch
+# transaction resolves them. Without it the rolled-back `DeadlockDetectedError`
+# propagated out of `tick()` and CRASHED the worker (rc=1), stranding in-flight
+# tenants (no completion signal ever fired). This is the SINGLE place all the
+# orchestrators share for that resilience.
+_SIGNAL_TXN_MAX_ATTEMPTS = 5
+_SIGNAL_TXN_BACKOFF_SEC = 0.05
+
+
+async def process_signal_with_serialization_retry(
+    once: "Any",  # Callable[[], Awaitable[bool]]
+    *,
+    label: str,
+    max_attempts: int = _SIGNAL_TXN_MAX_ATTEMPTS,
+    backoff_sec: float = _SIGNAL_TXN_BACKOFF_SEC,
+) -> bool:
+    """Run a worker's single-signal claim+dispatch coroutine, retrying transient
+    serialization conflicts (deadlock / serialization failure).
+
+    `once` is an argument-less coroutine factory that performs ONE
+    `async with conn.transaction(): claim_signals(...) -> dispatch` and returns
+    True iff a signal was processed (False == empty inbox). On a transient
+    serialization conflict the whole transaction is retried with linear backoff;
+    if the bounded retries are exhausted this returns False so the caller's tick
+    yields and the next tick re-claims the rolled-back signal (the workflows'
+    "Rule 3": failure -> rollback -> next tick re-claims).
+    """
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await once()
+        except (
+            asyncpg.exceptions.DeadlockDetectedError,
+            asyncpg.exceptions.SerializationError,
+        ) as exc:
+            log.warning(
+                "%s.signal_txn_serialization_conflict",
+                label,
+                extra={"attempt": attempts, "error": str(exc)[:160]},
+            )
+            if attempts >= max_attempts:
+                return False
+            await asyncio.sleep(backoff_sec * attempts)
 
 
 # ---------------------------------------------------------------------
@@ -514,5 +566,6 @@ __all__ = [
     "claim_signals",
     "emit_signal",
     "poll_signals",
+    "process_signal_with_serialization_retry",
     "signal_count",
 ]

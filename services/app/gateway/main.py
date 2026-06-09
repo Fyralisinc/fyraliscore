@@ -343,6 +343,39 @@ async def _start_gateway_deps(
         )
 
     startup_status.ok("deps", required=True)
+
+    # ---- Ask Fyralis overlay (ported retrieval/memory feature) ----------
+    # Needs the live pool at construction, so it wires here in lifespan once
+    # the pool is available. Optional — a failure degrades but never blocks.
+    try:
+        import os
+        from uuid import UUID as _AskUUID
+
+        from services.product.ask.api import build_router as build_ask_router
+        from services.product.ask.orchestrator import AskOrchestrator
+        from services.product.ask.store import PostgresAskStore
+        from services.reasoning.sage.reader import SynthesisReader
+
+        _default_actor = os.environ.get("DEFAULT_ACTOR_ID")
+        _default_tenant = os.environ.get("DEFAULT_TENANT_ID")
+        ask_orchestrator = AskOrchestrator(
+            store=PostgresAskStore(runtime_pool),
+            conn_provider=runtime_pool.acquire,
+            reader=SynthesisReader(pool=runtime_pool),
+        )
+        app_.include_router(
+            build_ask_router(
+                ask_orchestrator,
+                default_tenant_id=_AskUUID(_default_tenant) if _default_tenant else None,
+                default_viewer_id=_AskUUID(_default_actor) if _default_actor else None,
+            )
+        )
+        app_.state.ask_orchestrator = ask_orchestrator
+        startup_status.ok("ask_overlay", required=False)
+    except Exception as exc:  # noqa: BLE001 - optional feature, never block startup
+        startup_status.degraded("ask_overlay", required=False, exc=exc)
+        log.exception("ask_overlay_mount_failed")
+
     runtime = _GatewayRuntime(pool=runtime_pool, deps=deps)
     app_.state.gateway_runtime = runtime
     return runtime

@@ -47,16 +47,28 @@ from fastapi import FastAPI
 
 from services.ingest.synthetic.fixtures import (
     make_discord_guild,
+    make_figma,
     make_gmail_mailbox,
     make_github_repos,
+    make_signal,
     make_slack_workspace,
+    make_telegram,
 )
 from services.ingest.synthetic.live_generators import (
+    AwsPollGenerator,
+    CartaPollGenerator,
     DiscordGatewayGenerator,
     GithubWebhookGenerator,
     GmailPubSubGenerator,
+    GooglePushGenerator,
     GuildBinding,
+    HMAC_PROVIDERS,
+    HmacWebhookGenerator,
+    LinkedinPollGenerator,
+    NotionWebhookGenerator,
+    SignalGatewayGenerator,
     SlackWebhookGenerator,
+    TelegramGatewayGenerator,
 )
 from services.ingest.synthetic.mock_clients import (
     MockDiscordClient,
@@ -81,14 +93,54 @@ REPLAY_SOURCES = ("gmail", "slack", "github")  # Discord has no replay (A24)
 class SigningSecrets:
     slack: str = "v-slack-signing-secret"
     github: str = "v-github-signing-secret"
+    # The four HMAC providers added after the original 4-source harness; each
+    # resolved via the `WEBHOOK_SECRET_<PROVIDER>` env fallback (gated by
+    # WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1) the same way slack/github are.
+    jira: str = "v-jira-signing-secret"
+    mercury: str = "v-mercury-signing-secret"
+    quickbooks: str = "v-quickbooks-verifier-token"
+    grafana: str = "v-grafana-signing-secret"
+    # IN-FIN2 finance sources (brex/deel = Bearer/Mercury archetype; ramp/gusto
+    # = OAuth/QuickBooks archetype); each resolved via WEBHOOK_SECRET_<PROVIDER>.
+    brex: str = "v-brex-signing-secret"
+    ramp: str = "v-ramp-signing-secret"
+    gusto: str = "v-gusto-signing-secret"
+    deel: str = "v-deel-signing-secret"
+    # Vertical-2 HMAC webhook sources (fireflies/miro/figma = Brex archetype).
+    # signal/aws/carta are direct-dispatch (poll/gateway) → NO webhook secret.
+    fireflies: str = "v-fireflies-signing-secret"
+    miro: str = "v-miro-signing-secret"
+    figma: str = "v-figma-signing-secret"
+    # People/recruiting HMAC webhook sources (hibob = HMAC-SHA512/base64,
+    # Bob-Signature; ashby = HMAC-SHA256/hex, Ashby-Signature). linkedin is
+    # poll-only (no webhook edge) → NO signing secret.
+    hibob: str = "v-hibob-signing-secret"
+    ashby: str = "v-ashby-signing-secret"
+    # Notion's app-level verification token (NOT a per-tenant secret_ref); the
+    # signatures/notion.py verifier keys HMAC on it.
+    notion: str = "v-notion-verification-token"
     # A symmetric AES key the secret-store factory needs in `test` env.
     master_kek: str = "KuT6Cixjs4991zhixcpj1QAFbiQj3b9N8meZV2AJJyw="
 
     def apply_to_env(self) -> None:
         import os
-        os.environ["WEBHOOK_SECRET_SLACK"] = self.slack
         os.environ["WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW"] = "1"
+        os.environ["WEBHOOK_SECRET_SLACK"] = self.slack
         os.environ["WEBHOOK_SECRET_GITHUB"] = self.github
+        os.environ["WEBHOOK_SECRET_JIRA"] = self.jira
+        os.environ["WEBHOOK_SECRET_MERCURY"] = self.mercury
+        os.environ["WEBHOOK_SECRET_QUICKBOOKS"] = self.quickbooks
+        os.environ["WEBHOOK_SECRET_GRAFANA"] = self.grafana
+        os.environ["WEBHOOK_SECRET_BREX"] = self.brex
+        os.environ["WEBHOOK_SECRET_RAMP"] = self.ramp
+        os.environ["WEBHOOK_SECRET_GUSTO"] = self.gusto
+        os.environ["WEBHOOK_SECRET_DEEL"] = self.deel
+        os.environ["WEBHOOK_SECRET_FIREFLIES"] = self.fireflies
+        os.environ["WEBHOOK_SECRET_MIRO"] = self.miro
+        os.environ["WEBHOOK_SECRET_FIGMA"] = self.figma
+        os.environ["WEBHOOK_SECRET_HIBOB"] = self.hibob
+        os.environ["WEBHOOK_SECRET_ASHBY"] = self.ashby
+        os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
         # by the generator, but the values must be present).
@@ -120,6 +172,60 @@ class LiveTarget:
     installation_id: str | None = None  # github
     channel_id: str | None = None       # slack/discord
     repo_full_name: str | None = None   # github
+    # HMAC-webhook providers (tenant resolved via provider_installations).
+    jira_site: str | None = None            # jira: issue.self host == installation_id
+    mercury_org: str | None = None          # mercury: organizationId == installation_id
+    mercury_account: str | None = None      # mercury: transaction.accountId
+    qbo_realm: str | None = None            # quickbooks: realmId == installation_id
+    qbo_entity: str | None = None           # quickbooks: entity name (e.g. Invoice)
+    grafana_instance: str | None = None     # grafana: externalURL host == installation_id
+    # IN-FIN2 finance HMAC providers (tenant resolved via provider_installations).
+    brex_org: str | None = None             # brex: organizationId == installation_id
+    brex_account: str | None = None         # brex: transaction.accountId
+    ramp_business: str | None = None        # ramp: business_id == installation_id
+    gusto_company: str | None = None        # gusto: company_uuid == installation_id
+    deel_org: str | None = None             # deel: organizationId == installation_id
+    # Google push (watch-row resolved).
+    gcal_calendar_id: str | None = None
+    gcal_channel_id: str | None = None
+    gcal_watch_token: str | None = None
+    gdrive_drive_id: str | None = None
+    gdrive_kind: str | None = None
+    gdrive_channel_id: str | None = None
+    gdrive_watch_token: str | None = None
+    # Notion (workspace_id == the seeded provider_installations.installation_id).
+    notion_workspace_id: str | None = None
+    # Telegram (gateway-style live; installation_id resolved from the pool by the
+    # generator, so the live external_id matches backfill). The live message is
+    # dispatched "into" the tenant's first backfill dialog.
+    telegram_dialog_id: int | None = None
+    telegram_dialog_kind: str | None = None
+    telegram_dialog_title: str | None = None
+    # Vertical-2 HMAC webhook providers (tenant resolved via provider_installations;
+    # installation_id == workspace/org/team id seeded for backfill).
+    fireflies_workspace: str | None = None  # fireflies: workspaceId == installation_id
+    miro_org: str | None = None             # miro: organizationId == installation_id
+    miro_board: str | None = None           # miro: boardId (event payload context)
+    figma_team: str | None = None           # figma: team_id == installation_id
+    figma_file: str | None = None           # figma: file_key (event payload context)
+    # Vertical-2 direct-dispatch sources (install resolved from own table by the
+    # generator; no provider_installations row).
+    signal_thread_id: int | None = None     # signal: gateway thread (== backfill)
+    signal_thread_kind: str | None = None
+    signal_thread_title: str | None = None
+    aws_account_id: str | None = None       # aws: poll event namespace (== install)
+    aws_region: str | None = None
+    carta_firm: str | None = None           # carta: firm_id (== install scope)
+    carta_entity_type: str | None = None    # carta: poll change entity kind
+    # People/recruiting sources (IN-PEOPLE).
+    # hibob/ashby: HMAC webhook (tenant resolved via provider_installations;
+    # installation_id == company_id/org_id seeded for backfill).
+    hibob_company: str | None = None         # hibob: companyId == installation_id
+    ashby_org: str | None = None             # ashby: organizationId == installation_id
+    # linkedin: poll live edge (install resolved from linkedin_installations by
+    # tenant_id; NO provider_installations row).
+    linkedin_org: str | None = None          # linkedin: organization_urn (== install scope)
+    linkedin_entity_type: str | None = None  # linkedin: poll change entity kind
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -139,6 +245,117 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           installation_id=f"x3-{slug}-github",
                           repo_full_name=f"{fixture_params.get('org_or_user', slug)}/live-{slug}")
+    if source == "jira":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          jira_site=f"{slug}.atlassian.net")
+    if source == "mercury":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          mercury_org=f"live-org-{slug}",
+                          mercury_account=f"live-acct-{slug}")
+    if source == "quickbooks":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          qbo_realm=f"live-realm-{slug}", qbo_entity="Invoice")
+    if source == "grafana":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          grafana_instance=f"{slug}.grafana.net")
+    if source == "brex":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          brex_org=f"live-brex-org-{slug}",
+                          brex_account=f"live-brex-acct-{slug}")
+    if source == "ramp":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          ramp_business=f"live-ramp-biz-{slug}")
+    if source == "gusto":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gusto_company=f"live-gusto-co-{slug}")
+    if source == "deel":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          deel_org=f"live-deel-org-{slug}")
+    if source == "google_calendar":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gcal_calendar_id=f"live-{slug}",
+                          gcal_channel_id=f"chan-gcal-{slug}",
+                          gcal_watch_token=f"tok-gcal-{slug}")
+    if source == "google_drive":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          gdrive_drive_id=f"live-{slug}", gdrive_kind="my_drive",
+                          gdrive_channel_id=f"chan-gdrive-{slug}",
+                          gdrive_watch_token=f"tok-gdrive-{slug}")
+    if source == "notion":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          notion_workspace_id=f"x3-{slug}-notion")
+    if source == "telegram":
+        # The live message targets the tenant's FIRST backfill dialog (same
+        # seed → same deterministic dialog_id the harness seeded), so the live
+        # update is "in" a real dialog. installation_id is resolved by the
+        # generator from telegram_installations at dispatch time.
+        fx = make_telegram(**fixture_params)
+        did = fx["dialog_order"][0]
+        d = fx["dialogs"][str(did)]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          telegram_dialog_id=did,
+                          telegram_dialog_kind=d["dialog_kind"],
+                          telegram_dialog_title=d["title"])
+    if source == "fireflies":
+        # HMAC webhook; installation_id == the fixture's workspace_id (the SAME
+        # value the harness seeds into provider_installations for backfill), so
+        # tenant_resolver._extract_fireflies maps the live payload back.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          fireflies_workspace=fixture_params["workspace_id"])
+    if source == "miro":
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          miro_org=fixture_params["org_id"],
+                          miro_board=f"miro-board-{slug}")
+    if source == "figma":
+        # team_id namespaces the external_id; file_key gives the event a real
+        # backfill file (same seed → same deterministic file_key).
+        fx = make_figma(**fixture_params)
+        file_key = fx["file_order"][0]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          figma_team=fixture_params["team_id"],
+                          figma_file=file_key)
+    if source == "signal":
+        # Gateway-style live; the message targets the tenant's FIRST backfill
+        # thread (same seed → same deterministic thread_id the harness seeded).
+        # installation_id is resolved from signal_installations by the generator.
+        fx = make_signal(**fixture_params)
+        tid = fx["thread_order"][0]
+        th = fx["threads"][str(tid)]
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          signal_thread_id=tid,
+                          signal_thread_kind=th["thread_kind"],
+                          signal_thread_title=th["title"])
+    if source == "aws":
+        # Poll live edge; (account_id, region) namespace the external_id. The
+        # generator resolves the install from aws_installations by tenant_id;
+        # these mirror the fixture so the live event lands in the same namespace.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          aws_account_id=fixture_params.get("account_id"),
+                          aws_region=fixture_params.get("region", "us-east-1"))
+    if source == "carta":
+        # Poll live edge; firm_id namespaces the external_id. The generator
+        # resolves the install from carta_installations by tenant_id.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          carta_firm=fixture_params.get("firm_id"),
+                          carta_entity_type="OptionGrant")
+    if source == "hibob":
+        # HMAC webhook; installation_id == the fixture's company_id (the SAME
+        # value the harness seeds into provider_installations for backfill), so
+        # tenant_resolver._extract_hibob maps the live payload back ("companyId").
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          hibob_company=fixture_params["company_id"])
+    if source == "ashby":
+        # HMAC webhook; installation_id == the fixture's org_id, so
+        # tenant_resolver._extract_ashby maps the live payload back
+        # ("organizationId").
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          ashby_org=fixture_params["org_id"])
+    if source == "linkedin":
+        # Poll live edge; organization_urn namespaces the external_id. The
+        # generator resolves the install from linkedin_installations by tenant_id.
+        return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          linkedin_org=fixture_params["organization_urn"],
+                          linkedin_entity_type="share")
     raise ValueError(f"unknown source {source!r}")
 
 
@@ -151,9 +368,20 @@ class LiveDrivers:
     discord_gateway: DiscordGatewayGenerator
     slack_webhook: SlackWebhookGenerator
     github_webhook: GithubWebhookGenerator
-    fastapi_app: FastAPI            # shared by slack + github
+    fastapi_app: FastAPI            # shared by slack + github + the 4 HMAC + notion
     gmail_app: FastAPI              # gmail's own minimal app
     _exit_stack: Any = None
+    # Sources added after the original 4 (None when no target needs them).
+    hmac: dict[str, Any] = field(default_factory=dict)  # provider -> HmacWebhookGenerator
+    google_push: Any = None         # GooglePushGenerator (gcal + gdrive)
+    notion_webhook: Any = None      # NotionWebhookGenerator
+    google_app: FastAPI | None = None
+    telegram_gateway: Any = None     # TelegramGatewayGenerator (gateway-style)
+    # Vertical-2 direct-dispatch generators (None when no target needs them).
+    signal_gateway: Any = None       # SignalGatewayGenerator (gateway-style)
+    aws_poll: Any = None             # AwsPollGenerator (poll live edge)
+    carta_poll: Any = None           # CartaPollGenerator (poll live edge)
+    linkedin_poll: Any = None        # LinkedinPollGenerator (poll live edge)
 
 
 async def build_live_drivers(
@@ -313,16 +541,246 @@ async def build_live_drivers(
         ),
     )
 
+    # ---- HMAC providers added after the original 4 (jira/mercury/quickbooks/
+    # grafana). Same shared app + same M5.3 cutover deps as slack/github; only
+    # built when a target needs them. ----
+    present = {t.source for t in targets}
+    hmac_gens: dict[str, Any] = {}
+    _hmac_secret = {
+        "jira": secrets.jira, "mercury": secrets.mercury,
+        "quickbooks": secrets.quickbooks, "grafana": secrets.grafana,
+        "brex": secrets.brex, "ramp": secrets.ramp,
+        "gusto": secrets.gusto, "deel": secrets.deel,
+        "fireflies": secrets.fireflies, "miro": secrets.miro,
+        "figma": secrets.figma,
+        "hibob": secrets.hibob, "ashby": secrets.ashby,
+    }
+    for provider in HMAC_PROVIDERS:
+        if provider in present:
+            hmac_gens[provider] = await stack.enter_async_context(
+                HmacWebhookGenerator(
+                    app=shared_app, provider=provider,
+                    signing_secret=_hmac_secret[provider],
+                ),
+            )
+
+    # ---- Notion (shared app; shadow-write to ingestion.raw.notion). ----
+    notion_gen = None
+    if "notion" in present:
+        notion_gen = await stack.enter_async_context(
+            NotionWebhookGenerator(
+                app=shared_app, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, verification_token=secrets.notion,
+            ),
+        )
+
+    # ---- Google push (gcal + gdrive) on a dedicated app (the push router is
+    # not mounted by build_app). Inline drain → core.ingest. ----
+    google_app: FastAPI | None = None
+    google_push_gen = None
+    if "google_calendar" in present or "google_drive" in present:
+        from services.app.webhooks.google_push import router as google_push_router
+        google_app = FastAPI()
+        google_app.include_router(google_push_router)
+        google_app.state.pool = pool
+        google_push_gen = await stack.enter_async_context(
+            GooglePushGenerator(app=google_app, pool=pool),
+        )
+
+    # ---- Telegram (gateway-style; no HTTP). Direct dispatch to handle_update
+    # with the SAME M5.3 cutover deps as slack/github, so a live update
+    # shadow-writes to ingestion.raw.telegram and flows through the consumer
+    # chain — like Discord's gateway. installation_id is resolved per tenant
+    # from telegram_installations by the generator. ----
+    telegram_gen = None
+    if "telegram" in present:
+        telegram_gen = await stack.enter_async_context(
+            TelegramGatewayGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+
+    # ---- Vertical-2 direct-dispatch generators (gateway/poll; no HTTP). Same
+    # M5.3 cutover deps as telegram, so a live event shadow-writes to
+    # ingestion.raw.<source> and flows through the consumer chain. Installs are
+    # resolved per tenant from each source's own install table by the generator,
+    # so the live external_id matches backfill. ----
+    signal_gen = None
+    if "signal" in present:
+        signal_gen = await stack.enter_async_context(
+            SignalGatewayGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+    aws_gen = None
+    if "aws" in present:
+        aws_gen = await stack.enter_async_context(
+            AwsPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+    carta_gen = None
+    if "carta" in present:
+        carta_gen = await stack.enter_async_context(
+            CartaPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+    linkedin_gen = None
+    if "linkedin" in present:
+        linkedin_gen = await stack.enter_async_context(
+            LinkedinPollGenerator(
+                pool=pool, kafka_producer=kafka_producer,
+                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
+            ),
+        )
+
     return LiveDrivers(
         gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
         slack_webhook=slack_gen, github_webhook=github_gen,
         fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
+        hmac=hmac_gens, google_push=google_push_gen,
+        notion_webhook=notion_gen, google_app=google_app,
+        telegram_gateway=telegram_gen,
+        signal_gateway=signal_gen, aws_poll=aws_gen, carta_poll=carta_gen,
+        linkedin_poll=linkedin_gen,
     )
 
 
 async def teardown_live_drivers(drivers: LiveDrivers) -> None:
     if drivers._exit_stack is not None:
         await drivers._exit_stack.aclose()
+
+
+# =====================================================================
+# Live-only install/watch seeding (for the sources added after the 4).
+# =====================================================================
+async def seed_live_installs(
+    pool: asyncpg.Pool, targets: list[LiveTarget],
+) -> None:
+    """Seed the rows the NEW sources' live ingress resolves against, on top of
+    the dedicated backfill install tables the X3 harness already wrote:
+
+      - jira/mercury/quickbooks/grafana: a `provider_installations`
+        (provider, installation_id) row — the webhook tenant_resolver keys on
+        it (the dedicated jira_installations/… tables drive backfill only).
+        secret_ref is NULL: the signing secret comes from the
+        `WEBHOOK_SECRET_<PROVIDER>` env fallback the runner exported.
+      - google_calendar/google_drive: a DEDICATED watched resource row
+        (calendar / drive target) with a warm cursor + watch_channel_id +
+        watch_token, distinct from backfill's rows so the live delta never
+        perturbs backfill's corpus. The warm cursor puts the fetcher in
+        INCREMENTAL mode so a push drains exactly the live delta.
+
+    notion needs no seeding here — its live webhook resolves via the SAME
+    provider_installations row (installation_id = `x3-{slug}-notion`) the
+    harness seeded for backfill.
+    """
+    from lib.shared.ids import uuid7
+
+    async with pool.acquire() as conn:
+        for t in targets:
+            if t.source == "jira":
+                inst = t.jira_site
+            elif t.source == "mercury":
+                inst = t.mercury_org
+            elif t.source == "quickbooks":
+                inst = t.qbo_realm
+            elif t.source == "grafana":
+                inst = t.grafana_instance
+            elif t.source == "brex":
+                inst = t.brex_org
+            elif t.source == "ramp":
+                inst = t.ramp_business
+            elif t.source == "gusto":
+                inst = t.gusto_company
+            elif t.source == "deel":
+                inst = t.deel_org
+            elif t.source == "fireflies":
+                inst = t.fireflies_workspace
+            elif t.source == "miro":
+                inst = t.miro_org
+            elif t.source == "figma":
+                inst = t.figma_team
+            elif t.source == "hibob":
+                inst = t.hibob_company
+            elif t.source == "ashby":
+                inst = t.ashby_org
+            else:
+                # signal/aws/carta/linkedin are direct-dispatch (gateway/poll):
+                # their live edge resolves the install from their OWN install
+                # table by tenant_id, so NO provider_installations row is needed.
+                inst = None
+            if inst is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO provider_installations
+                      (id, tenant_id, provider, installation_id, secret_ref, enabled)
+                    VALUES ($1, $2, $3, $4, NULL, TRUE)
+                    ON CONFLICT (provider, installation_id)
+                        DO UPDATE SET tenant_id = EXCLUDED.tenant_id, enabled = TRUE
+                    """,
+                    uuid7(), t.tenant_id, t.source, inst,
+                )
+                continue
+
+            if t.source == "google_calendar":
+                install_id = await conn.fetchval(
+                    "SELECT id FROM google_calendar_installations "
+                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    t.tenant_id,
+                )
+                if install_id is None:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO google_calendar_calendars (
+                        id, tenant_id, google_calendar_installation_id,
+                        calendar_id, owner_email, sync_token, state,
+                        watch_channel_id, watch_token, watch_state
+                    ) VALUES ($1, $2, $3, $4, $5, 'sync-warm', 'active',
+                              $6, $7, 'active')
+                    ON CONFLICT (google_calendar_installation_id, calendar_id)
+                        DO UPDATE SET sync_token = 'sync-warm',
+                            watch_channel_id = EXCLUDED.watch_channel_id,
+                            watch_token = EXCLUDED.watch_token,
+                            watch_state = 'active'
+                    """,
+                    uuid7(), t.tenant_id, install_id,
+                    t.gcal_calendar_id, t.gcal_calendar_id,
+                    t.gcal_channel_id, t.gcal_watch_token,
+                )
+            elif t.source == "google_drive":
+                install_id = await conn.fetchval(
+                    "SELECT id FROM google_drive_installations "
+                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    t.tenant_id,
+                )
+                if install_id is None:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO google_drive_targets (
+                        id, tenant_id, google_drive_installation_id,
+                        drive_kind, drive_id, owner_email, start_page_token,
+                        state, watch_channel_id, watch_token, watch_state
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'live-start', 'active',
+                              $7, $8, 'active')
+                    ON CONFLICT (google_drive_installation_id, drive_kind,
+                                 drive_id, owner_email)
+                        DO UPDATE SET start_page_token = 'live-start',
+                            watch_channel_id = EXCLUDED.watch_channel_id,
+                            watch_token = EXCLUDED.watch_token,
+                            watch_state = 'active'
+                    """,
+                    uuid7(), t.tenant_id, install_id,
+                    t.gdrive_kind, t.gdrive_drive_id, t.gdrive_drive_id,
+                    t.gdrive_channel_id, t.gdrive_watch_token,
+                )
 
 
 # =====================================================================
@@ -593,6 +1051,18 @@ async def dispatch_live_concurrent(
                     guild_id=t.guild_id, channel_id=t.channel_id,
                     content=f"live-{t.slug}-{i}",
                 )
+            elif t.source in ("jira", "mercury", "quickbooks", "grafana",
+                              "brex", "ramp", "gusto", "deel"):
+                r = await drivers.hmac[t.source].simulate_event(
+                    target=t, content=f"live-{t.slug}-{i}",
+                )
+                status = getattr(r, "http_status", None)
+            elif t.source in ("google_calendar", "google_drive"):
+                r = await drivers.google_push.simulate_push(target=t)
+                status = getattr(r, "http_status", None)
+            elif t.source == "notion":
+                r = await drivers.notion_webhook.simulate_event(target=t)
+                status = getattr(r, "http_status", None)
             await _record_status(t.source, status)
         async with lock:
             result.dispatched_by_tenant[t.tenant_id] = events_per_tenant

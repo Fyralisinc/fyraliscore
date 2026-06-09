@@ -16,9 +16,10 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
 from services.reasoning.sage.affordances.types import RetrievalAffordanceProfile
 from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
 from services.reasoning.sage.discovery.types import NegativeMemory
 from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
-from ._seed import (
+from tests.unit.sage._seed import (
     ZERO_EMBEDDING,
     seed_model,
     seed_observation,
@@ -213,6 +214,400 @@ async def test_reader_negative_memory_suppresses_known_low_value_node(
 
 
 @pytest.mark.asyncio
+async def test_reader_repeated_negative_memory_can_abstain_before_broad_search(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    signature = {"signal_type": "T1", "question_primitive": "DEPENDENCY"}
+    for idx in range(3):
+        await repo.insert(
+            NegativeMemory(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                memory_type="noisy_path",
+                signature=signature,
+                rejected_path={"path_key": f"empty-{idx}"},
+                reason="Repeatedly retrieved no useful evidence.",
+                confidence=0.8,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            )
+        )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=None,
+        seed_natural_text="???",
+        seed_entity_ids=[],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_EMPTY_NEGATIVE",
+            question="???",
+            question_primitive="DEPENDENCY",
+        )
+
+    assert result.models == ()
+    assert result.activations == ()
+    plan = result.debug["learned_read_plan"]
+    assert plan["mode"] == "abstain"
+    assert plan["abstain_early"] is True
+    timings = result.debug["stage_timings_ms"]
+    assert timings["lexical_activation_ms"] == 0
+    assert timings["belief_address_activation_ms"] == 0
+    assert timings["evidence_projection_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reader_overlapping_cue_negative_memory_abstains_without_exact_signature(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    stored_signature = {
+        "signal_type": "T1",
+        "question_primitive": "DEPENDENCY",
+        "entities": ["Acme", "LegacyCheckout"],
+    }
+    for _ in range(8):
+        await repo.insert(
+            NegativeMemory(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                memory_type="low_value_node",
+                signature=stored_signature,
+                rejected_path={"model_id": str(uuid7())},
+                reason="Repeatedly selected but did not support a valid answer.",
+                confidence=0.88,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            )
+        )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=None,
+        seed_natural_text="Acme CheckoutV2 launch noise has no concrete blocker.",
+        seed_entity_ids=[
+            {"type": "customer", "id": "Acme"},
+            {"type": "system", "id": "CheckoutV2"},
+        ],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_OVERLAP_NEGATIVE",
+            question="What dependency blocks Acme CheckoutV2?",
+            question_primitive="DEPENDENCY",
+        )
+
+    assert result.models == ()
+    plan = result.debug["learned_read_plan"]
+    assert plan["mode"] == "abstain"
+    assert plan["abstain_early"] is True
+    assert "negative_memory_count=8" in plan["reasons"]
+    timings = result.debug["stage_timings_ms"]
+    assert timings["lexical_activation_ms"] == 0
+    assert timings["belief_address_activation_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reader_route_negative_memory_abstains_across_question_primitives(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    route_signature = {
+        "signal_type": "T1",
+        "entities": ["Acme"],
+    }
+    for _ in range(4):
+        await repo.insert(
+            NegativeMemory(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                memory_type="noisy_path",
+                signature=route_signature,
+                rejected_path={"route": "selected_reader_context_unused"},
+                reason="selected_reader_context_unused_by_valid_noop_route",
+                confidence=0.86,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            )
+        )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=None,
+        seed_natural_text="Acme workspace chatter asks for a new owner.",
+        seed_entity_ids=[{"type": "customer", "id": "Acme"}],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_ROUTE_NEGATIVE_OWNER",
+            question="Who owns the next action for Acme?",
+            question_primitive="OWNERSHIP",
+        )
+
+    assert result.models == ()
+    plan = result.debug["learned_read_plan"]
+    assert plan["mode"] == "abstain"
+    assert plan["abstain_early"] is True
+    assert "negative_memory_count=4" in plan["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_inquiry_sage_negative_route_controls_fallback_retrieval(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    obs_id = await seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="Acme workspace chatter repeats a generic ownership question.",
+    )
+    decoy_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="Acme workspace chatter asks for a new owner but has no concrete blocker",
+        supporting_event_ids=[obs_id],
+    )
+    repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    for _ in range(4):
+        await repo.insert(
+            NegativeMemory(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                memory_type="noisy_path",
+                signature={
+                    "signal_type": "T1",
+                    "entities": ["Acme"],
+                },
+                rejected_path={"route": "selected_reader_context_unused"},
+                reason="selected_reader_context_unused_by_valid_noop_route",
+                confidence=0.86,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            )
+        )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text="Acme workspace chatter asks for a new owner.",
+        seed_entity_ids=[{"type": "customer", "id": "Acme"}],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await run_inquiry_retrieval(
+            trigger,
+            conn,
+            embedder=None,
+            llm_provider=None,
+            mode="deep",
+            top_n=24,
+            config=InquiryConfig(
+                max_rounds=1,
+                questions_per_round=2,
+                llm_question_planning_enabled=False,
+                sage_reader_enabled=True,
+                persist=False,
+                candidate_model_limit=48,
+                result_model_limit=24,
+                evidence_reservoir_limit=48,
+            ),
+        )
+
+    controller = result.notes["sage_reader_controller"]
+    assert controller["global_negative_route_gate"] is True
+    assert controller["hard_abstain_count"] == controller["question_count"]
+    assert result.sufficiency.status == "no_update_needed"
+    assert result.evidence_cards == ()
+    assert decoy_id not in {model.id for model in result.retrieval_result.models}
+    skipped = [
+        note for note in result.notes["retrieval_action_timings"]
+        if note.get("path") != "sage_reader"
+    ]
+    assert skipped
+    assert all(note.get("skipped") is True for note in skipped)
+
+
+@pytest.mark.asyncio
+async def test_reader_strong_positive_route_survives_overlapping_negative_memory(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    obs_id = await seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="Acme SSO launch is actually blocked by security review.",
+    )
+    target_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="Acme SSO launch depends on security review capacity",
+        supporting_event_ids=[obs_id],
+    )
+    negative_repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    for _ in range(8):
+        await negative_repo.insert(
+            NegativeMemory(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                memory_type="low_value_node",
+                signature={
+                    "signal_type": "T1",
+                    "question_primitive": "DEPENDENCY",
+                    "entities": ["Acme", "LegacyCheckout"],
+                },
+                rejected_path={"model_id": str(uuid7())},
+                reason="A different Acme route had repeatedly useless context.",
+                confidence=0.82,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            )
+        )
+
+    signature = {
+        "signal_type": "T1",
+        "question_primitive": "DEPENDENCY",
+        "entities": ["Acme", "SSO"],
+    }
+    await AffordanceProfilesRepo(gateway_pool, tenant_id=tenant_id).upsert(
+        RetrievalAffordanceProfile(
+            model_id=target_id,
+            tenant_id=tenant_id,
+            answers_question_primitives=["DEPENDENCY"],
+            action_affordances=["map.critical_path"],
+            activation_signatures={"entities": ["Acme", "SSO"]},
+            utility_score=5.0,
+        )
+    )
+    await DiscoveryShortcutsRepo(gateway_pool, tenant_id=tenant_id).upsert_from_outcome(
+        signature,
+        to_model_id=target_id,
+        delta_utility=3.0,
+    )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text="Acme SSO launch is blocked.",
+        seed_entity_ids=[
+            {"type": "customer", "id": "Acme"},
+            {"type": "system", "id": "SSO"},
+        ],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_POSITIVE_WITH_OVERLAP_NEGATIVE",
+            question="What blocks Acme SSO launch?",
+            question_primitive="DEPENDENCY",
+        )
+
+    assert target_id in {model.id for model in result.models}
+    plan = result.debug["learned_read_plan"]
+    assert plan["mode"] == "focused"
+    assert plan["abstain_early"] is False
+    assert any(reason.startswith("positive_hit_count=") for reason in plan["reasons"])
+
+
+@pytest.mark.asyncio
+async def test_reader_confident_learned_route_skips_broad_discovery(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    obs_id = await seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="Acme SSO launch remains blocked by security review.",
+    )
+    target_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="Acme SSO dependency is security review capacity",
+        supporting_event_ids=[obs_id],
+    )
+    signature = {
+        "signal_type": "T1",
+        "question_primitive": "DEPENDENCY",
+        "entities": ["Acme", "SSO"],
+    }
+    await AffordanceProfilesRepo(gateway_pool, tenant_id=tenant_id).upsert(
+        RetrievalAffordanceProfile(
+            model_id=target_id,
+            tenant_id=tenant_id,
+            answers_question_primitives=["DEPENDENCY"],
+            action_affordances=["map.critical_path"],
+            activation_signatures={"entities": ["Acme", "SSO"]},
+            utility_score=5.0,
+        )
+    )
+    await DiscoveryShortcutsRepo(gateway_pool, tenant_id=tenant_id).upsert_from_outcome(
+        signature,
+        to_model_id=target_id,
+        delta_utility=3.0,
+    )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text="Acme SSO launch is blocked.",
+        seed_entity_ids=[
+            {"type": "customer", "id": "Acme"},
+            {"type": "system", "id": "SSO"},
+        ],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+
+    async with gateway_pool.acquire() as conn:
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_LEARNED_ROUTE",
+            question="What blocks Acme SSO launch?",
+            question_primitive="DEPENDENCY",
+        )
+
+    assert target_id in {model.id for model in result.models}
+    plan = result.debug["learned_read_plan"]
+    assert plan["mode"] == "focused"
+    assert plan["skip_broad_discovery"] is True
+    timings = result.debug["stage_timings_ms"]
+    assert timings["belief_address_activation_ms"] == 0
+    assert timings["operational_facet_activation_ms"] == 0
+    trace = next(trace for trace in result.activations if trace.model_id == target_id)
+    assert trace.source_breakdown.get("shortcut", 0) > 0
+    assert trace.source_breakdown.get("affordance", 0) > 0
+
+
+@pytest.mark.asyncio
 async def test_reader_preserves_bridge_node_and_summarizes_generic_hub(
     gateway_pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -377,6 +772,15 @@ async def test_large_model_e2e_sage_reader_retrieves_target_under_load(
         scenario.expected_token in card.summary.casefold()
         for card in result.evidence_cards
     )
+    assert any(
+        card.contradicts_hypotheses or card.weakens_hypotheses
+        for card in result.evidence_cards
+    ), "fresh falsifier/counterevidence should survive the writer packet"
+    assert any(
+        "not blocked" in card.summary.casefold()
+        or "resolved" in card.summary.casefold()
+        for card in result.evidence_cards
+    )
     assert elapsed < 8.0
 
 
@@ -389,7 +793,13 @@ async def _seed_large_corpus(
 ) -> dict[str, UUID]:
     now = datetime.now(timezone.utc)
     target_observation_id = uuid7()
+    falsifier_observation_id = uuid7()
     noise_observation_id = uuid7()
+    scope_entities = json.dumps([
+        {"type": "customer", "id": scenario.customer},
+        {"type": "system", "id": scenario.system},
+    ])
+    falsifier_claim = _falsifier_claim(scenario)
     await conn.executemany(
         """
         INSERT INTO observations (
@@ -420,6 +830,15 @@ async def _seed_large_corpus(
                 ]),
             ),
             (
+                falsifier_observation_id,
+                tenant_id,
+                now,
+                json.dumps({"content_text": falsifier_claim}),
+                falsifier_claim,
+                f"falsifier-{falsifier_observation_id}",
+                scope_entities,
+            ),
+            (
                 noise_observation_id,
                 tenant_id,
                 now,
@@ -434,10 +853,6 @@ async def _seed_large_corpus(
     target_model_id = uuid7()
     bridge_model_id = uuid7()
     hub_model_id = uuid7()
-    scope_entities = json.dumps([
-        {"type": "customer", "id": scenario.customer},
-        {"type": "system", "id": scenario.system},
-    ])
     scope_temporal = json.dumps({"valid_from": now.isoformat(), "valid_until": None})
     model_rows = [
         _model_row(
@@ -447,8 +862,25 @@ async def _seed_large_corpus(
             scenario.target_claim,
             scope_entities,
             scope_temporal,
-            [target_observation_id],
+            [target_observation_id, falsifier_observation_id],
             confidence=0.91,
+            signal_readings=[
+                {
+                    "kind": "observe",
+                    "event_id": str(target_observation_id),
+                    "weight": 1.0,
+                },
+                {
+                    "kind": "contradiction",
+                    "event_id": str(falsifier_observation_id),
+                    "weight": -0.95,
+                    "reason": "fresh adversarial falsifier",
+                },
+            ],
+            falsifier={
+                "kind": "observation_pattern",
+                "pattern": "not blocked",
+            },
         ),
         _model_row(
             bridge_model_id,
@@ -515,7 +947,7 @@ async def _seed_large_corpus(
             $4::jsonb, $5, $6,
             '{}'::uuid[], $7::jsonb, $8::jsonb,
             $9, $9, 1.0,
-            NULL, $10::jsonb,
+            $12::jsonb, $10::jsonb,
             $11::uuid[], '{}'::uuid[],
             'active'
         )
@@ -560,10 +992,18 @@ async def _seed_large_corpus(
         )
     return {
         "target_observation_id": target_observation_id,
+        "falsifier_observation_id": falsifier_observation_id,
         "target_model_id": target_model_id,
         "bridge_model_id": bridge_model_id,
         "hub_model_id": hub_model_id,
     }
+
+
+def _falsifier_claim(scenario: LargeScenario) -> str:
+    return (
+        f"{scenario.customer} {scenario.system} is not blocked; "
+        f"the prior risk is resolved by {scenario.expected_token}."
+    )
 
 
 def _model_row(
@@ -576,7 +1016,16 @@ def _model_row(
     supporting_event_ids: list[UUID],
     *,
     confidence: float,
+    signal_readings: list[dict] | None = None,
+    falsifier: dict | None = None,
 ) -> tuple:
+    readings = signal_readings or [
+        {
+            "kind": "observe",
+            "event_id": str(supporting_event_ids[0]),
+            "weight": 1.0,
+        }
+    ]
     return (
         model_id,
         tenant_id,
@@ -587,14 +1036,9 @@ def _model_row(
         scope_entities,
         scope_temporal,
         float(confidence),
-        json.dumps([
-            {
-                "kind": "observe",
-                "event_id": str(supporting_event_ids[0]),
-                "weight": 1.0,
-            }
-        ]),
+        json.dumps(readings),
         supporting_event_ids,
+        json.dumps(falsifier) if falsifier is not None else None,
     )
 
 

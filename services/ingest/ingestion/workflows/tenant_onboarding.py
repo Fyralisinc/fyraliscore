@@ -140,6 +140,7 @@ from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
     claim_signals,
     emit_signal,
+    process_signal_with_serialization_retry,
 )
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -170,7 +171,7 @@ BRIDGE_INBOX_ID = "bridge"
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin")
 
 # Coarse, NON-BINDING per-source estimate for the `tenant.onboarding.started`
 # event's `eta_minutes`. The event model documents this field as a
@@ -225,6 +226,81 @@ SELECT 'mercury' AS source
 UNION
 SELECT 'quickbooks' AS source
   FROM quickbooks_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'grafana' AS source
+  FROM grafana_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'telegram' AS source
+  FROM telegram_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'brex' AS source
+  FROM brex_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'ramp' AS source
+  FROM ramp_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'gusto' AS source
+  FROM gusto_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'deel' AS source
+  FROM deel_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'fireflies' AS source
+  FROM fireflies_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'signal' AS source
+  FROM signal_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'aws' AS source
+  FROM aws_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'miro' AS source
+  FROM miro_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'figma' AS source
+  FROM figma_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'carta' AS source
+  FROM carta_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'hibob' AS source
+  FROM hibob_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'ashby' AS source
+  FROM ashby_installations
+ WHERE tenant_id = $1
+   AND disabled_at IS NULL
+UNION
+SELECT 'linkedin' AS source
+  FROM linkedin_installations
  WHERE tenant_id = $1
    AND disabled_at IS NULL
 """
@@ -454,6 +530,17 @@ class TenantOnboardingOrchestrator(LongRunningService):
         await self._persist_scan_state(signals_processed=signals_processed)
 
     async def _process_one_signal(self) -> bool:
+        """Claim + dispatch ONE signal, retrying transient serialization
+        conflicts on the shared `workflow_signals` table (see
+        `process_signal_with_serialization_retry`). Previously an unhandled
+        `DeadlockDetectedError` from the signal INSERT crashed the worker
+        (rc=1), so NO `tenant_onboarding_completed` signal fired for ANY
+        in-flight tenant under concurrent multi-source onboarding."""
+        return await process_signal_with_serialization_retry(
+            self._process_one_signal_once, label="tenant_onboarding",
+        )
+
+    async def _process_one_signal_once(self) -> bool:
         """Claim ONE signal under the load-bearing A12 + A13 +
         SKIP LOCKED contract, dispatch by kind, commit on success.
 

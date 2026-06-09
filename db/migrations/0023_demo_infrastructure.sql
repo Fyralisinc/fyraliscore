@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS demo_configs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Re-run safety: 0093_drop_demo_scaffolding drops this column (the `tenants`
+-- table itself survives), so on a full re-apply the `CREATE TABLE IF NOT EXISTS
+-- tenants` above is a no-op and the column is NOT restored. Restore it
+-- explicitly before the FK so re-application (test fixtures, harness, the
+-- synthetic gate on a non-fresh DB) does not fail with "column demo_config_id
+-- referenced in foreign key constraint does not exist". No-op on a fresh apply.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS demo_config_id UUID;
+
 -- FK back to tenants.demo_config_id once both tables exist.
 DO $$
 BEGIN

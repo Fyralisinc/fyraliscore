@@ -67,6 +67,49 @@ _PROD: dict[str, str] = {
     # uniformly; the prod default is intentionally empty (build_grafana_client
     # passes the per-install base_url instead).
     "grafana_api": "",
+    # Finance (IN-FIN2): Brex — Bearer/Mercury archetype. Single global host
+    # (per-install base_url still wins via build_brex_client when present).
+    "brex_api": "https://platform.brexapis.com",       # TODO(human): confirm host
+    # Finance (IN-FIN2): Ramp — OAuth/QuickBooks archetype. Business-scoped
+    # paths ride per-install base_url in production.
+    "ramp_api": "https://api.ramp.com/developer/v1",    # TODO(human): confirm host
+    # Finance (IN-FIN2): Gusto — OAuth/QuickBooks archetype. Company-scoped
+    # paths ride per-install base_url in production.
+    "gusto_api": "https://api.gusto.com",               # TODO(human): confirm host
+    # Finance (IN-FIN2): Deel — Bearer/Mercury archetype.
+    "deel_api": "https://api.letsdeel.com",             # TODO(human): confirm host
+    # IN-FIN3 comms: Fireflies.ai — Bearer/token archetype. CONFIRMED: the API is
+    # GraphQL at https://api.fireflies.ai/graphql (docs.fireflies.ai/fundamentals/
+    # authorization); this is the host prefix (build_fireflies_client posts /graphql).
+    "fireflies_api": "https://api.fireflies.ai",
+    # IN-FIN3 design: Miro — OAuth Bearer. CONFIRMED REST base https://api.miro.com/v2
+    # (developers.miro.com); OAuth token endpoint is on /v1 (see integrations/miro/
+    # oauth.py). NOTE: Miro discontinued webhooks 2025-12-05 → poll-only.
+    "miro_api": "https://api.miro.com/v2",
+    # IN-FIN3 design: Figma — PAT (X-Figma-Token) or OAuth Bearer. CONFIRMED host
+    # https://api.figma.com (base /v1; webhooks mgmt /v2) — developers.figma.com.
+    "figma_api": "https://api.figma.com/v1",
+    # IN-FIN3 cap-table: Carta — OAuth2 (auth_code / client_credentials; NO refresh
+    # grant — re-mint hourly). API is v1alpha1, poll-only (no webhook). ACCESS IS
+    # PARTNER-GATED (invite-only + SOC 2 since 2025); the prod host is issued on
+    # approval. Mock host for dev: https://mock-api.carta.com. TODO(human): set the
+    # approved prod host once the partner agreement is in place.
+    "carta_api": "https://api.carta.com",
+    # IN-PEOPLE: HiBob (People/HR) — Gusto-structure / Brex-auth (service-user
+    # HTTP Basic, NOT OAuth). CONFIRMED host https://api.hibob.com. Single global
+    # host (per-install base_url still wins via build_hibob_client when present).
+    "hibob_api": "https://api.hibob.com",
+    # IN-PEOPLE: Ashby (Recruiting ATS) — Gusto-structure; auth = API key as Basic
+    # username + empty password. CONFIRMED host https://api.ashbyhq.com (RPC POST
+    # /CATEGORY.list|.info on this host).
+    "ashby_api": "https://api.ashbyhq.com",
+    # IN-PEOPLE: LinkedIn (Recruiting) — Carta-structure (OAuth2, poll-only, no
+    # webhook). CONFIRMED host https://api.linkedin.com. NOTE: LinkedIn
+    # recruitment APIs are PARTNER-GATED / invite-only — production access
+    # requires an approved LinkedIn Marketing/Talent partner entitlement.
+    # TODO(human): confirm the exact partner entitlement + OAuth scopes once the
+    # LinkedIn partner agreement is in place.
+    "linkedin_api": "https://api.linkedin.com",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -85,6 +128,17 @@ _ENV: dict[str, str] = {
     "mercury_api": "MERCURY_API_BASE_URL",
     "quickbooks_api": "QUICKBOOKS_API_BASE_URL",
     "grafana_api": "GRAFANA_API_BASE_URL",
+    "brex_api": "BREX_API_BASE_URL",
+    "ramp_api": "RAMP_API_BASE_URL",
+    "gusto_api": "GUSTO_API_BASE_URL",
+    "deel_api": "DEEL_API_BASE_URL",
+    "fireflies_api": "FIREFLIES_API_BASE_URL",
+    "miro_api": "MIRO_API_BASE_URL",
+    "figma_api": "FIGMA_API_BASE_URL",
+    "carta_api": "CARTA_API_BASE_URL",
+    "hibob_api": "HIBOB_API_BASE_URL",
+    "ashby_api": "ASHBY_API_BASE_URL",
+    "linkedin_api": "LINKEDIN_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -104,6 +158,17 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "mercury_api": "/mercury",
     "quickbooks_api": "/quickbooks",
     "grafana_api": "/grafana",
+    "brex_api": "/brex",
+    "ramp_api": "/ramp",
+    "gusto_api": "/gusto",
+    "deel_api": "/deel",
+    "fireflies_api": "/fireflies",
+    "miro_api": "/miro",
+    "figma_api": "/figma",
+    "carta_api": "/carta",
+    "hibob_api": "/hibob",
+    "ashby_api": "/ashby",
+    "linkedin_api": "/linkedin",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

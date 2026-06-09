@@ -154,6 +154,20 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "mercury": _not_implemented_fetcher("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_fetcher("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_fetcher("grafana", "IN-GRAFANA"),
+    "telegram": _not_implemented_fetcher("telegram", "IN-TELEGRAM"),
+    "brex":  _not_implemented_fetcher("brex",  "IN-FIN2"),
+    "ramp":  _not_implemented_fetcher("ramp",  "IN-FIN2"),
+    "gusto": _not_implemented_fetcher("gusto", "IN-FIN2"),
+    "deel":  _not_implemented_fetcher("deel",  "IN-FIN2"),
+    "fireflies": _not_implemented_fetcher("fireflies", "IN-VERTICALS"),
+    "signal":    _not_implemented_fetcher("signal",    "IN-VERTICALS"),
+    "aws":       _not_implemented_fetcher("aws",       "IN-VERTICALS"),
+    "miro":      _not_implemented_fetcher("miro",      "IN-VERTICALS"),
+    "figma":     _not_implemented_fetcher("figma",     "IN-VERTICALS"),
+    "carta":     _not_implemented_fetcher("carta",     "IN-VERTICALS"),
+    "hibob":     _not_implemented_fetcher("hibob",     "IN-PEOPLE"),
+    "ashby":     _not_implemented_fetcher("ashby",     "IN-PEOPLE"),
+    "linkedin":  _not_implemented_fetcher("linkedin",  "IN-PEOPLE"),
 }
 
 
@@ -177,3 +191,17 @@ from services.ingest.ingestion.fetchers import jira as _jira  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import grafana as _grafana  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import telegram as _telegram  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import brex as _brex  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import ramp as _ramp  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import gusto as _gusto  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import deel as _deel  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import fireflies as _fireflies  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import signal as _signal  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import aws as _aws  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import miro as _miro  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import figma as _figma  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import carta as _carta  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import hibob as _hibob  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import ashby as _ashby  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import linkedin as _linkedin  # noqa: E402,F401

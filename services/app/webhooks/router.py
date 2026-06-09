@@ -132,6 +132,21 @@ _PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
     # IN-GRAFANA: Grafana Alerting webhook (HMAC X-Grafana-Alerting-Signature)
     # routes onto the data plane.
     "grafana": "grafana",
+    # IN-FIN2: Brex/Ramp/Gusto/Deel — HMAC-signed finance webhooks route onto
+    # the data plane (Bearer archetype: brex, deel; OAuth archetype: ramp, gusto).
+    "brex": "brex",
+    "ramp": "ramp",
+    "gusto": "gusto",
+    "deel": "deel",
+    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma — HMAC-signed webhooks
+    # (Brex archetype) route onto the data plane.
+    "fireflies": "fireflies",
+    "miro": "miro",
+    "figma": "figma",
+    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby — HMAC-signed webhooks route onto
+    # the data plane. (LinkedIn is poll-only — no webhook — so it is absent.)
+    "hibob": "hibob",
+    "ashby": "ashby",
 }
 
 # M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
@@ -155,6 +170,24 @@ _CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
     "quickbooks": "quickbooks",
     # IN-GRAFANA: Grafana Alerting webhooks fit the 202 cutover contract.
     "grafana": "grafana",
+    # IN-FIN2: Brex/Ramp/Gusto/Deel finance webhooks fit the 202 cutover
+    # contract (no synchronous-response-shape constraint), so they activate the
+    # full pipeline once the tenant's kafka_path_enabled flag is TRUE.
+    "brex": "brex",
+    "ramp": "ramp",
+    "gusto": "gusto",
+    "deel": "deel",
+    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma webhooks fit the 202 cutover
+    # contract, so they activate the full pipeline once the tenant's
+    # kafka_path_enabled flag is TRUE.
+    "fireflies": "fireflies",
+    "miro": "miro",
+    "figma": "figma",
+    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby webhooks fit the 202 cutover
+    # contract, so they activate the full pipeline once the tenant's
+    # kafka_path_enabled flag is TRUE. (LinkedIn is poll-only — absent here.)
+    "hibob": "hibob",
+    "ashby": "ashby",
 }
 
 
@@ -417,6 +450,23 @@ _PROVIDER_CHANNEL: dict[str, str] = {
     # IN-GRAFANA: the webhook delivers alert groups -> the `grafana:alert`
     # channel (inline-ingest fallback when kafka_path_enabled is off).
     "grafana": "grafana:alert",
+    # IN-FIN2: finance webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(...).
+    "brex": "brex:transaction",
+    "ramp": "ramp:transaction",
+    "gusto": "gusto:object",
+    "deel": "deel:payment",
+    # IN-FF/IN-MIRO/IN-FIGMA: webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(...).
+    "fireflies": "fireflies:transcript",
+    "miro": "miro:item",
+    "figma": "figma:event",
+    # IN-PEOPLE/IN-RECRUITING: webhook channels (inline-ingest fallback when
+    # kafka_path_enabled is off). Must match each handler's @register(_CHANNEL):
+    # handlers/hibob.py _CHANNEL="hibob:object", handlers/ashby.py
+    # _CHANNEL="ashby:object". (LinkedIn is poll-only — no inline webhook channel.)
+    "hibob": "hibob:object",
+    "ashby": "ashby:object",
 }
 
 

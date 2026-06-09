@@ -317,6 +317,30 @@ async def test_negative_memory_insert_and_find(
 
 
 @pytest.mark.asyncio
+async def test_negative_memory_find_matches_later_probe_with_extra_entities(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    repo = NegativeMemoryRepo(gateway_pool, tenant_id=tenant_id)
+    inserted = await repo.insert(_negmem(
+        tenant_id=tenant_id,
+        memory_type="low_value_node",
+        signature={
+            "signal_type": "T1",
+            "entities": ["account:acme"],
+            "question_primitive": "DEPENDENCY",
+        },
+    ))
+
+    found = await repo.find_for_signature({
+        "signal_type": "T1",
+        "entities": ["account:acme", "SSO", "renewal"],
+        "question_primitive": "DEPENDENCY",
+    })
+
+    assert any(r.id == inserted.id for r in found)
+
+
+@pytest.mark.asyncio
 async def test_negative_memory_find_filters_by_memory_type(
     gateway_pool: asyncpg.Pool, tenant_id: UUID,
 ):

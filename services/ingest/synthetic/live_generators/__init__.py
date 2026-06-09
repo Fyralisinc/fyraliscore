@@ -38,17 +38,67 @@ from services.ingest.synthetic.live_generators.slack_webhook import (
     SimulatedWebhookResult,
     SlackWebhookGenerator,
 )
+from services.ingest.synthetic.live_generators.hmac_webhook import (
+    HMAC_PROVIDERS,
+    HmacWebhookGenerator,
+    HmacWebhookResult,
+)
+from services.ingest.synthetic.live_generators.google_push import (
+    GooglePushGenerator,
+    GooglePushResult,
+)
+from services.ingest.synthetic.live_generators.notion_webhook import (
+    NotionWebhookGenerator,
+    NotionWebhookResult,
+)
+from services.ingest.synthetic.live_generators.telegram_gateway import (
+    TelegramGatewayGenerator,
+    TelegramGatewayResult,
+)
+from services.ingest.synthetic.live_generators.signal_gateway import (
+    SignalGatewayGenerator,
+    SignalGatewayResult,
+)
+from services.ingest.synthetic.live_generators.aws_poll import (
+    AwsPollGenerator,
+    AwsPollResult,
+)
+from services.ingest.synthetic.live_generators.carta_poll import (
+    CartaPollGenerator,
+    CartaPollResult,
+)
+from services.ingest.synthetic.live_generators.linkedin_poll import (
+    LinkedinPollGenerator,
+    LinkedinPollResult,
+)
 
 
 __all__ = [
+    "AwsPollGenerator",
+    "AwsPollResult",
+    "CartaPollGenerator",
+    "CartaPollResult",
     "DiscordGatewayGenerator",
     "GithubScenarioResult",
     "GithubWebhookGenerator",
     "GithubWebhookResult",
     "GmailPubSubGenerator",
+    "GooglePushGenerator",
+    "GooglePushResult",
     "GuildBinding",
+    "HMAC_PROVIDERS",
+    "HmacWebhookGenerator",
+    "HmacWebhookResult",
+    "LinkedinPollGenerator",
+    "LinkedinPollResult",
+    "NotionWebhookGenerator",
+    "NotionWebhookResult",
+    "SignalGatewayGenerator",
+    "SignalGatewayResult",
     "SimulatedEventResult",
     "SimulatedPushResult",
     "SimulatedWebhookResult",
     "SlackWebhookGenerator",
+    "TelegramGatewayGenerator",
+    "TelegramGatewayResult",
 ]

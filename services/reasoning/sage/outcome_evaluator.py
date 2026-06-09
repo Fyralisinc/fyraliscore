@@ -22,6 +22,12 @@ associated `think_runs` row + the validated diff captured on
      in [0.0, 2.0]; the few features that have no v1 signal are placed
      at a documented sentinel value (0.0) with a TODO.
 
+  3. A persisted `outcome_quality_assessed` event plus a returned
+     `OutcomeQualitySignal`. This is the anti-proxy layer: it separates
+     writer failure, missing evidence, dropped counterevidence, packet
+     bloat, and low-value leakage so later optimizers reinforce the
+     actual bottleneck rather than a vague success/failure scalar.
+
 The evaluator is read-mostly: it never writes to the canonical truth
 layer (models / model_edges / acts / resources). Its only writes are
 INSERTs into `inquiry_outcome_events`. The Topology Optimizer (the
@@ -75,6 +81,22 @@ class OutcomeEvaluatorError(CompanyOSError):
 
 
 @dataclass(frozen=True, slots=True)
+class OutcomeQualitySignal:
+    """Dense quality diagnosis for one inquiry/writer outcome.
+
+    `objective_alignment_score` is deliberately not a truth score. It is
+    a utility-layer estimate of whether this run produced the kind of
+    outcome the reader/writer flywheel should reinforce.
+    """
+
+    objective_alignment_score: float
+    primary_bottleneck: str
+    failure_modes: tuple[str, ...]
+    quality_axes: dict[str, float]
+    evidence_counts: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class InquiryOutcomeSummary:
     """Summary returned by `OutcomeEvaluator.evaluate()`.
 
@@ -92,6 +114,7 @@ class InquiryOutcomeSummary:
     noisy_path_signatures: tuple[dict, ...]
     missing_anchor_signatures: tuple[dict, ...]
     reward_features: dict[str, float]
+    quality_signal: OutcomeQualitySignal
 
 
 # ---------------------------------------------------------------------
@@ -120,6 +143,15 @@ _BAD_REFERENCE_TOKENS = (
     "model not found",
     "edge not found",
 )
+
+LOW_VALUE_READER_DECISION_LIMIT = 12
+
+_CONTEXT_USED_GRADES = frozenset({
+    "graph_context_used",
+    "model_context_used",
+    "observation_context_used",
+    "justified_noop_context_used",
+})
 
 
 def _coerce_obj(value: Any) -> dict[str, Any]:
@@ -238,6 +270,51 @@ def _signature_context_from_packet(
         "entities": entities[:12],
         "question_primitive": primitive,
         "signature": signature,
+    }
+
+
+def _selected_context_was_used(context_use: dict[str, Any]) -> bool:
+    """Return whether Think says selected reader context contributed."""
+    if context_use.get("selected_context_used") is True:
+        return True
+    grade = str(context_use.get("context_use_grade") or "").strip()
+    return grade in _CONTEXT_USED_GRADES
+
+
+def _entity_texts(value: Any) -> list[str]:
+    entities: list[str] = []
+    for raw in _coerce_list(value):
+        if isinstance(raw, dict):
+            item = raw.get("id") or raw.get("name") or raw.get("type")
+        else:
+            item = raw
+        text = str(item).strip() if item is not None else ""
+        if text and text not in entities:
+            entities.append(text)
+    return entities
+
+
+def _signature_from_reader_attribution(
+    attribution: asyncpg.Record,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    signal_type = str(
+        attribution["signal_type"] or fallback.get("signal_type") or ""
+    ).strip()
+    primitive = str(
+        attribution["question_primitive"]
+        or fallback.get("question_primitive")
+        or ""
+    ).strip().upper()
+    entities = _entity_texts(attribution["entities"])
+    if not entities:
+        entities = _entity_texts(fallback.get("entities"))
+    return {
+        k: v for k, v in {
+            "signal_type": signal_type or None,
+            "entities": entities[:12],
+            "question_primitive": primitive or None,
+        }.items() if v
     }
 
 
@@ -380,6 +457,8 @@ class OutcomeEvaluator:
             else None
         )
         ops_applied = _coerce_obj(think_run["ops_applied"]) if think_run else {}
+        context_use = _coerce_obj(ops_applied.get("context_use"))
+        selected_context_used = _selected_context_was_used(context_use)
         run_status = (think_run or {}).get("status") or ""
         run_error = ((think_run or {}).get("error") or "").lower()
 
@@ -521,6 +600,10 @@ class OutcomeEvaluator:
                 for attribution in attributions_by_model.get(mid, []):
                     attr_id = attribution["id"]
                     credit_score = _reader_decision_credit_score(attribution)
+                    attribution_signature = _signature_from_reader_attribution(
+                        attribution,
+                        signature_context,
+                    )
                     decision_key = (
                         "reader_decision_used_in_valid_diff",
                         str(attr_id),
@@ -528,13 +611,18 @@ class OutcomeEvaluator:
                     if decision_key not in existing_keys:
                         payload = {
                             **signature_context,
+                            "signature": attribution_signature,
                             "attribution_id": str(attr_id),
                             "model_id": str(mid),
                             "think_run_id": str(think_run["id"]),
                             "question_id": attribution["question_id"],
-                            "question_primitive": attribution["question_primitive"],
-                            "signal_type": attribution["signal_type"],
-                            "entities": _coerce_list(attribution["entities"]),
+                            "question_primitive": attribution_signature.get(
+                                "question_primitive"
+                            ) or attribution["question_primitive"],
+                            "signal_type": attribution_signature.get("signal_type")
+                            or attribution["signal_type"],
+                            "entities": attribution_signature.get("entities")
+                            or _coerce_list(attribution["entities"]),
                             "selected": bool(attribution["selected"]),
                             "selection_rank": attribution["selection_rank"],
                             "activation_score": float(
@@ -603,6 +691,83 @@ class OutcomeEvaluator:
                         )
                         existing_keys.add(key)
                         events_emitted += 1
+
+        # A successful no-op is valuable only when Think can show that
+        # selected context was actually used. If the reader selected and
+        # packetized evidence but the writer neither changed nor referenced
+        # any Model, emit negative credit at the same attribution grain as
+        # positive reader-decision credit. This is what lets future reads
+        # learn to abstain from irrelevant no-answer routes.
+        low_value_selected_reader = (
+            think_run is not None
+            and diff_is_valid
+            and not diff_model_ids
+            and len(evidence_items) >= 3
+            and not selected_context_used
+        )
+        if low_value_selected_reader:
+            attribution_rows = await self._load_reader_decision_attributions(
+                conn,
+                inquiry_session_id,
+                None,
+                selected_only=True,
+            )
+            for attribution in attribution_rows[:LOW_VALUE_READER_DECISION_LIMIT]:
+                attr_id = attribution["id"]
+                decision_key = ("reader_decision_low_value", str(attr_id))
+                if decision_key in existing_keys:
+                    continue
+                attribution_signature = _signature_from_reader_attribution(
+                    attribution,
+                    signature_context,
+                )
+                payload = {
+                    **signature_context,
+                    "signature": attribution_signature,
+                    "attribution_id": str(attr_id),
+                    "model_id": str(attribution["model_id"]),
+                    "think_run_id": str(think_run["id"]),
+                    "question_id": attribution["question_id"],
+                    "question_primitive": attribution_signature.get(
+                        "question_primitive"
+                    ) or attribution["question_primitive"],
+                    "signal_type": attribution_signature.get("signal_type")
+                    or attribution["signal_type"],
+                    "entities": attribution_signature.get("entities")
+                    or _coerce_list(attribution["entities"]),
+                    "selected": bool(attribution["selected"]),
+                    "selection_rank": attribution["selection_rank"],
+                    "activation_score": float(
+                        attribution["activation_score"] or 0.0
+                    ),
+                    "activation_reasons": _coerce_list(
+                        attribution["activation_reasons"]
+                    ),
+                    "source_breakdown": _coerce_obj(
+                        attribution["source_breakdown"]
+                    ),
+                    "retrieval_actions": _coerce_list(
+                        attribution["retrieval_actions"]
+                    ),
+                    "projected_evidence_refs": _coerce_list(
+                        attribution["projected_evidence_refs"]
+                    ),
+                    "evidence_in_packet_count": int(
+                        attribution["evidence_in_packet_count"] or 0
+                    ),
+                    "reason": "selected_reader_context_unused_by_valid_noop",
+                    "retrieved_evidence_count": len(evidence_items),
+                    "used_evidence_count": len(used_evidence_ids),
+                    "context_use_grade": context_use.get("context_use_grade"),
+                }
+                await self._events_repo.append(
+                    inquiry_session_id,
+                    "reader_decision_low_value",
+                    payload,
+                    conn=conn,
+                )
+                existing_keys.add(decision_key)
+                events_emitted += 1
 
         # ------------------------------------------------------------------
         # validation_failed_due_to_missing_evidence
@@ -725,6 +890,36 @@ class OutcomeEvaluator:
             "permission_risk": 0.0,  # TODO Phase 14+
         }
 
+        quality_signal = _build_quality_signal(
+            session_stop_status=str(session.get("stop_status") or ""),
+            think_run_present=think_run is not None,
+            run_status=run_status,
+            run_error=run_error,
+            reward_features=reward_features,
+            retrieved_count=retrieved_count,
+            used_count=used_count,
+            omitted_count=len(omitted_evidence_ids),
+            packet_node_count=packet_node_count,
+            counterevidence_retrieved=counterevidence_retrieved,
+            counterevidence_in_packet=counterevidence_in_packet,
+            duplicate_evidence=duplicate_evidence,
+            noisy_path_count=noisy_path_count,
+            used_path_count=used_path_count,
+            selected_context_used=selected_context_used,
+            applied_acts=applied_acts,
+            proposed_acts=proposed_acts,
+        )
+        quality_key = ("outcome_quality_assessed", "quality")
+        if quality_key not in existing_keys:
+            await self._events_repo.append(
+                inquiry_session_id,
+                "outcome_quality_assessed",
+                _quality_signal_payload(quality_signal),
+                conn=conn,
+            )
+            existing_keys.add(quality_key)
+            events_emitted += 1
+
         # Final per-type aggregation (post-emit) so callers don't need to
         # re-query. Cheap because we already have the existing_events.
         events_by_type = await self._events_repo.aggregate_by_type(
@@ -748,6 +943,7 @@ class OutcomeEvaluator:
             noisy_path_signatures=tuple(noisy_paths),
             missing_anchor_signatures=tuple(missing_anchors),
             reward_features=reward_features,
+            quality_signal=quality_signal,
         )
 
     # -----------------------------------------------------------------
@@ -788,17 +984,29 @@ class OutcomeEvaluator:
         self,
         conn: asyncpg.Connection,
         session_id: UUID,
-        model_ids: list[UUID],
+        model_ids: list[UUID] | None,
+        *,
+        selected_only: bool = False,
     ) -> list[asyncpg.Record]:
-        if not model_ids:
+        if model_ids is not None and not model_ids:
             return []
         table_name = await conn.fetchval(
             "SELECT to_regclass('public.sage_reader_decision_attributions')"
         )
         if table_name is None:
             return []
+        filters = [
+            "tenant_id = $1",
+            "inquiry_session_id = $2",
+        ]
+        params: list[Any] = [self.tenant_id, session_id]
+        if model_ids is not None:
+            params.append(model_ids)
+            filters.append(f"model_id = ANY(${len(params)}::uuid[])")
+        if selected_only:
+            filters.append("selected = TRUE")
         return list(await conn.fetch(
-            """
+            f"""
             SELECT id, tenant_id, inquiry_session_id,
                    question_id, question_primitive, question,
                    question_score, expected_value, expected_cost,
@@ -807,14 +1015,10 @@ class OutcomeEvaluator:
                    activation_reasons, source_breakdown, retrieval_actions,
                    projected_evidence_refs, evidence_in_packet_count
             FROM sage_reader_decision_attributions
-            WHERE tenant_id = $1
-              AND inquiry_session_id = $2
-              AND model_id = ANY($3::uuid[])
+            WHERE {' AND '.join(filters)}
             ORDER BY selected DESC, activation_score DESC, created_at ASC
             """,
-            self.tenant_id,
-            session_id,
-            model_ids,
+            *params,
         ))
 
     async def _credit_reader_decision_attribution(
@@ -973,6 +1177,12 @@ def _build_existing_keys(events: list[asyncpg.Record]) -> set[tuple[str, str]]:
             attr_id = payload.get("attribution_id")
             if attr_id:
                 keys.add((etype, str(attr_id)))
+        elif etype == "reader_decision_low_value":
+            attr_id = payload.get("attribution_id")
+            if attr_id:
+                keys.add((etype, str(attr_id)))
+        elif etype == "outcome_quality_assessed":
+            keys.add((etype, "quality"))
         elif etype in (
             "validation_failed_due_to_missing_evidence",
             "validation_failed_due_to_bad_reference",
@@ -1000,8 +1210,191 @@ def _reader_decision_credit_score(row: asyncpg.Record) -> float:
     return _clamp(credit, 0.05, 2.0)
 
 
+def _answerability_score(stop_status: str) -> float:
+    status = stop_status.strip().lower()
+    if status == "sufficient_for_reasoning":
+        return 1.0
+    if status in {"completed", "success"}:
+        return 0.8
+    if status in {"budget_exhausted", "max_questions_reached"}:
+        return 0.45
+    if status in {"insufficient_evidence", "no_evidence", "failed"}:
+        return 0.2
+    return 0.6 if status else 0.5
+
+
+def _has_token(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(tok in text for tok in tokens)
+
+
+def _build_quality_signal(
+    *,
+    session_stop_status: str,
+    think_run_present: bool,
+    run_status: str,
+    run_error: str,
+    reward_features: dict[str, float],
+    retrieved_count: int,
+    used_count: int,
+    omitted_count: int,
+    packet_node_count: int,
+    counterevidence_retrieved: int,
+    counterevidence_in_packet: int,
+    duplicate_evidence: int,
+    noisy_path_count: int,
+    used_path_count: int,
+    selected_context_used: bool,
+    applied_acts: int,
+    proposed_acts: int,
+) -> OutcomeQualitySignal:
+    """Classify the dominant quality bottleneck for one SAGE run.
+
+    This deliberately composes multiple axes instead of turning every
+    success into positive credit. A valid diff with no counterevidence
+    preservation or a bloated low-density packet should not teach the
+    reader/writer loop that the retrieval policy was globally good.
+    """
+    evidence_coverage = reward_features["evidence_coverage"]
+    diff_deducibility = reward_features["diff_deducibility"]
+    redundancy = reward_features["redundancy"]
+    token_cost = reward_features["token_cost"]
+    action_value = reward_features["action_value"]
+    graph_bloat = max(0.0, reward_features["graph_bloat"])
+    noise = reward_features["noise_introduced"]
+
+    if counterevidence_retrieved > 0:
+        counter_retention = _clamp(
+            counterevidence_in_packet / counterevidence_retrieved,
+            0.0,
+            1.0,
+        )
+    else:
+        # Neutral: absence of retrieved counterevidence is not, by
+        # itself, proof the reader failed to seek falsifiers.
+        counter_retention = 1.0
+
+    low_value_leak = _clamp(
+        (0.42 * redundancy)
+        + (0.22 * _clamp(noise / 2.0, 0.0, 1.0))
+        + (0.22 * _clamp(token_cost / 2.0, 0.0, 1.0))
+        + (0.14 * _clamp(graph_bloat / 10.0, 0.0, 1.0)),
+        0.0,
+        1.0,
+    )
+    packet_value_density = 1.0 - low_value_leak
+    reference_integrity = (
+        0.0 if _has_token(run_error, _BAD_REFERENCE_TOKENS) else 1.0
+    )
+    answerability = _answerability_score(session_stop_status)
+
+    axes = {
+        "diff_deducibility": _clamp(diff_deducibility, 0.0, 1.0),
+        "evidence_coverage": _clamp(evidence_coverage, 0.0, 1.0),
+        "counterevidence_retention": counter_retention,
+        "reference_integrity": reference_integrity,
+        "packet_value_density": packet_value_density,
+        "answerability": answerability,
+        "selected_context_used": 1.0 if selected_context_used else 0.0,
+        "low_value_leak": low_value_leak,
+    }
+
+    failure_modes: list[str] = []
+    if not think_run_present:
+        failure_modes.append("no_writer_outcome")
+    if run_status and run_status != "success":
+        failure_modes.append("no_valid_diff")
+    if _has_token(run_error, _MISSING_EVIDENCE_TOKENS):
+        failure_modes.append("missing_evidence")
+    if reference_integrity < 1.0:
+        failure_modes.append("bad_reference")
+    if counterevidence_retrieved > 0 and counter_retention < 0.5:
+        failure_modes.append("counterevidence_dropped")
+    if retrieved_count >= 3 and evidence_coverage < 0.35:
+        failure_modes.append("low_evidence_coverage")
+    if (
+        run_status == "success"
+        and retrieved_count >= 3
+        and used_path_count == 0
+        and not selected_context_used
+    ):
+        failure_modes.append("unused_selected_context")
+    if redundancy >= 0.20:
+        failure_modes.append("duplicate_low_value_evidence")
+    if token_cost >= 0.70 and evidence_coverage < 0.50:
+        failure_modes.append("packet_bloat")
+    if used_path_count > 0 and noisy_path_count > used_path_count:
+        failure_modes.append("noisy_path_overselection")
+    if proposed_acts > 0 and applied_acts == 0 and action_value < 0.5:
+        failure_modes.append("writer_action_drop")
+
+    score = (
+        (0.32 * axes["diff_deducibility"])
+        + (0.18 * axes["evidence_coverage"])
+        + (0.16 * axes["counterevidence_retention"])
+        + (0.13 * axes["reference_integrity"])
+        + (0.11 * axes["packet_value_density"])
+        + (0.10 * axes["answerability"])
+    )
+    if "missing_evidence" in failure_modes:
+        score *= 0.65
+    if "bad_reference" in failure_modes:
+        score *= 0.55
+    if "no_writer_outcome" in failure_modes:
+        score *= 0.45
+    if "unused_selected_context" in failure_modes:
+        score *= 0.72
+    score = _clamp(score, 0.0, 1.0)
+
+    priority = (
+        "bad_reference",
+        "missing_evidence",
+        "counterevidence_dropped",
+        "no_valid_diff",
+        "low_evidence_coverage",
+        "unused_selected_context",
+        "packet_bloat",
+        "duplicate_low_value_evidence",
+        "noisy_path_overselection",
+        "writer_action_drop",
+        "no_writer_outcome",
+    )
+    primary = "none"
+    for mode in priority:
+        if mode in failure_modes:
+            primary = mode
+            break
+
+    return OutcomeQualitySignal(
+        objective_alignment_score=score,
+        primary_bottleneck=primary,
+        failure_modes=tuple(failure_modes),
+        quality_axes=axes,
+        evidence_counts={
+            "retrieved": retrieved_count,
+            "used": used_count,
+            "omitted": omitted_count,
+            "packet_nodes": packet_node_count,
+            "counterevidence_retrieved": counterevidence_retrieved,
+            "counterevidence_in_packet": counterevidence_in_packet,
+            "duplicate_evidence": duplicate_evidence,
+            "noisy_paths": noisy_path_count,
+        },
+    )
+
+
+def _quality_signal_payload(signal: OutcomeQualitySignal) -> dict[str, Any]:
+    return {
+        "objective_alignment_score": signal.objective_alignment_score,
+        "primary_bottleneck": signal.primary_bottleneck,
+        "failure_modes": list(signal.failure_modes),
+        "quality_axes": signal.quality_axes,
+        "evidence_counts": signal.evidence_counts,
+    }
+
+
 __all__ = [
     "InquiryOutcomeSummary",
+    "OutcomeQualitySignal",
     "OutcomeEvaluator",
     "OutcomeEvaluatorError",
 ]

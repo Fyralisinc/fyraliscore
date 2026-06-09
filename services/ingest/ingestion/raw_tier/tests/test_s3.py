@@ -15,6 +15,9 @@ from uuid import UUID
 
 import pytest
 
+from typing import get_args
+
+from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
 from services.ingest.ingestion.raw_tier.s3 import (
     S3Client,
     build_raw_s3_key,
@@ -55,7 +58,12 @@ def test_build_raw_s3_key_rejects_unknown_source() -> None:
         )
 
 
-@pytest.mark.parametrize("source", ["slack", "github", "discord", "gmail"])
+# Derive from the single source-of-truth `SourceLiteral` so a newly-added
+# source is exercised automatically. A hardcoded subset here is exactly how
+# the allowlist in `build_raw_s3_key` silently drifted: it omitted `grafana`,
+# so a grafana backfill blob raised `unknown source` mid-fetch, the shard
+# parked, and the tenant never completed onboarding.
+@pytest.mark.parametrize("source", sorted(get_args(SourceLiteral)))
 def test_build_raw_s3_key_accepts_all_known_sources(source: str) -> None:
     key = build_raw_s3_key(
         env="prod",

@@ -159,10 +159,18 @@ def evaluate_promoted_case(doc: dict[str, Any]) -> dict[str, Any]:
         ):
             failures.append("graph_context_not_used")
         edge_ops = int(context.get("edge_ops_count", run.get("edge_ops_count", 0)) or 0)
+        ontology_gap_ops = int(
+            context.get(
+                "ontology_gap_ops_count",
+                run.get("ontology_gap_ops_count", 0),
+            )
+            or 0
+        )
         if (
             expectation.get("require_edge_ops_when_graph_selected", False)
             and graph_selected > 0
             and edge_ops == 0
+            and ontology_gap_ops == 0
         ):
             failures.append("graph_selected_without_edge_ops")
     else:

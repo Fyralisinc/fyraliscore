@@ -132,6 +132,20 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "mercury": _not_implemented_planner("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_planner("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_planner("grafana", "IN-GRAFANA"),
+    "telegram": _not_implemented_planner("telegram", "IN-TELEGRAM"),
+    "brex":  _not_implemented_planner("brex",  "IN-FIN2"),
+    "ramp":  _not_implemented_planner("ramp",  "IN-FIN2"),
+    "gusto": _not_implemented_planner("gusto", "IN-FIN2"),
+    "deel":  _not_implemented_planner("deel",  "IN-FIN2"),
+    "fireflies": _not_implemented_planner("fireflies", "IN-VERTICALS"),
+    "signal":    _not_implemented_planner("signal",    "IN-VERTICALS"),
+    "aws":       _not_implemented_planner("aws",       "IN-VERTICALS"),
+    "miro":      _not_implemented_planner("miro",      "IN-VERTICALS"),
+    "figma":     _not_implemented_planner("figma",     "IN-VERTICALS"),
+    "carta":     _not_implemented_planner("carta",     "IN-VERTICALS"),
+    "hibob":     _not_implemented_planner("hibob",     "IN-PEOPLE"),
+    "ashby":     _not_implemented_planner("ashby",     "IN-PEOPLE"),
+    "linkedin":  _not_implemented_planner("linkedin",  "IN-PEOPLE"),
 }
 
 
@@ -158,3 +172,17 @@ from services.ingest.ingestion.planners import jira as _jira  # noqa: E402,F401
 from services.ingest.ingestion.planners import mercury as _mercury  # noqa: E402,F401
 from services.ingest.ingestion.planners import quickbooks as _quickbooks  # noqa: E402,F401
 from services.ingest.ingestion.planners import grafana as _grafana  # noqa: E402,F401
+from services.ingest.ingestion.planners import telegram as _telegram  # noqa: E402,F401
+from services.ingest.ingestion.planners import brex as _brex  # noqa: E402,F401
+from services.ingest.ingestion.planners import ramp as _ramp  # noqa: E402,F401
+from services.ingest.ingestion.planners import gusto as _gusto  # noqa: E402,F401
+from services.ingest.ingestion.planners import deel as _deel  # noqa: E402,F401
+from services.ingest.ingestion.planners import fireflies as _fireflies  # noqa: E402,F401
+from services.ingest.ingestion.planners import signal as _signal  # noqa: E402,F401
+from services.ingest.ingestion.planners import aws as _aws  # noqa: E402,F401
+from services.ingest.ingestion.planners import miro as _miro  # noqa: E402,F401
+from services.ingest.ingestion.planners import figma as _figma  # noqa: E402,F401
+from services.ingest.ingestion.planners import carta as _carta  # noqa: E402,F401
+from services.ingest.ingestion.planners import hibob as _hibob  # noqa: E402,F401
+from services.ingest.ingestion.planners import ashby as _ashby  # noqa: E402,F401
+from services.ingest.ingestion.planners import linkedin as _linkedin  # noqa: E402,F401

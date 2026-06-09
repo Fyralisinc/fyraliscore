@@ -53,7 +53,7 @@ def test_ra5_config_defaults_match_spec():
     assert cfg.assembler_budget_resources == 5
     assert cfg.mmr_lambda_diversity == 0.5
     assert cfg.second_pass_sparse_threshold == 5
-    assert cfg.second_pass_bridge_confidence_threshold == 0.7
+    assert cfg.second_pass_customer_confidence_threshold == 0.7
 
 
 def test_ra5_config_env_overrides_int(monkeypatch):
@@ -77,10 +77,10 @@ def test_ra5_config_env_overrides_bool(monkeypatch):
 
 def test_ra5_config_env_overrides_float(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_MMR_LAMBDA_DIVERSITY", "0.7")
-    monkeypatch.setenv("RETRIEVAL_SECOND_PASS_BRIDGE_CONFIDENCE_THRESHOLD", "0.85")
+    monkeypatch.setenv("RETRIEVAL_SECOND_PASS_CUSTOMER_CONFIDENCE_THRESHOLD", "0.85")
     cfg = RetrievalConfig.from_env()
     assert abs(cfg.mmr_lambda_diversity - 0.7) < 1e-9
-    assert abs(cfg.second_pass_bridge_confidence_threshold - 0.85) < 1e-9
+    assert abs(cfg.second_pass_customer_confidence_threshold - 0.85) < 1e-9
 
 
 def test_ra5_config_invalid_env_falls_back_to_default(monkeypatch):

@@ -646,19 +646,26 @@ async def test_shard_fetch_skips_already_completed_shard(
 
 
 # =====================================================================
-# 6. Missing install at fetch time → shard 'failed' before fetcher.
+# 6. Missing install at fetch time → shard PARKED (recoverable), not failed.
 # =====================================================================
 
 async def test_shard_fetch_handles_missing_install(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Install row was deleted between SourceOnboarding's shard
-    creation and ShardFetch's pickup (A14 race). Assert shard marked
-    'failed' before any fetcher dispatch attempt — the per-install
-    fetcher call would otherwise NPE on `None`.
+    """Install row absent at pickup (deleted/suspended between
+    SourceOnboarding's shard creation and ShardFetch's pickup — an A14
+    race, or a lifecycle suspend/revoke mid-flight).
 
-    Test fetcher is monkeypatched to raise if called — proof we
-    bailed out BEFORE the dispatch."""
+    The install-unavailable path is RECOVERABLE, not terminal: the shard
+    is PARKED (left `in_progress`) so the orphan-scan resumes it once the
+    install is re-enabled, rather than terminal-failing it (which would
+    need a manual requeue). See `shard_fetch._fetch_shard`'s
+    `install_unavailable_park` branch. We must still bail BEFORE the
+    fetcher dispatch — the per-install fetcher call would NPE on `None` —
+    so the fetcher is monkeypatched to raise if reached.
+
+    (Prior to the recoverability change this asserted state=='failed';
+    parking is the deliberate current contract.)"""
 
     async def _should_not_be_called(*args, **kwargs):
         raise AssertionError("Fetcher should not have been called.")
@@ -682,8 +689,9 @@ async def test_shard_fetch_handles_missing_install(
         "SELECT state, last_error FROM onboarding_shards WHERE id = $1",
         shard_id,
     )
-    assert row["state"] == "failed"
-    assert "No active install" in (row["last_error"] or "")
+    # Parked for orphan-scan resume — NOT terminal-failed.
+    assert row["state"] == "in_progress"
+    assert row["last_error"] is None
 
 
 # =====================================================================

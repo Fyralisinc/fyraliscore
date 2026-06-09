@@ -305,7 +305,67 @@ def test_synthesized_situation_defaults_pressure_type_to_execution():
 
 
 # ---------------------------------------------------------------------
-# 6. is_compound returns (False, []) for atomic, (True, [reasons]) for
+# 6. Structured operational bundles split into addressable Models
+# ---------------------------------------------------------------------
+
+
+def test_operational_facet_bundle_splits_into_atomic_models_plus_situation():
+    natural = (
+        "Form controls visible: radio 500 GB [add $300.00] checked=false; "
+        "radio Windows 8 [add $100.00] checked=false; radio Ubuntu checked=true; "
+        "'Quantity' value='2'; 'Catalog item' value='Development Laptop (PC)'"
+    )
+    op = _make_op(natural=natural, prop_kind="state")
+
+    flag, reasons = is_compound(op.entry or {})
+    assert flag is True
+    assert any(r == "multi_operational_facts:5" for r in reasons)
+
+    out = split_compound_claim_op(op)
+
+    assert len(out) == 6
+    atomics = out[:-1]
+    situation = out[-1]
+    assert [atomic.entry["natural"] for atomic in atomics] == [
+        "500 GB adds 300 USD and is unchecked. "
+        "Evidence: radio 500 GB [add $300.00] checked=false.",
+        "Windows 8 adds 100 USD and is unchecked. "
+        "Evidence: radio Windows 8 [add $100.00] checked=false.",
+        "radio Ubuntu is checked. Evidence: radio Ubuntu checked=true.",
+        "Quantity value is '2'. Evidence: 'Quantity' value='2'.",
+        "Catalog item value is 'Development Laptop (PC)'. "
+        "Evidence: 'Catalog item' value='Development Laptop (PC)'.",
+    ]
+    for atomic in atomics:
+        prop = atomic.entry["proposition"]
+        assert prop["kind"] == "belief"
+        assert prop["claim_role"] == "fact"
+        assert prop["abstraction_level"] == "atomic"
+        assert prop["operational_split_source"] == "universal_facets"
+        assert atomic.entry.get("born_from_event_id") == op.entry["born_from_event_id"]
+        assert "embedding" not in atomic.entry
+        atomic_flag, atomic_reasons = is_compound(atomic.entry)
+        assert atomic_flag is False
+        assert atomic_reasons == []
+    assert situation.entry["proposition"]["claim_role"] == "situation"
+    assert situation.entry.get("member_model_pending") is True
+    assert situation.entry.get("split_reasons") == ["multi_operational_facts:5"]
+
+
+def test_single_operational_fact_passes_through_unchanged():
+    op = _make_op(
+        natural="Form controls visible: radio Ubuntu checked=true",
+        prop_kind="state",
+    )
+
+    out = split_compound_claim_op(op)
+
+    assert out == [op]
+    assert is_compound(op.entry or {}) == (False, [])
+
+
+# ---------------------------------------------------------------------
+# 7. is_compound returns (False, []) for atomic, (True, [reasons]) for
 #    compound
 # ---------------------------------------------------------------------
 

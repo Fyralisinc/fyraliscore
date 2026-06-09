@@ -75,7 +75,8 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 
 ResolverProvider = Literal[
     "slack", "github", "linear", "stripe", "discord", "notion", "jira",
-    "mercury", "quickbooks", "grafana",
+    "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel",
+    "fireflies", "miro", "figma", "hibob", "ashby",
 ]
 
 
@@ -354,6 +355,159 @@ def _extract_grafana(payload: Mapping[str, Any], headers: Mapping[str, str]) -> 
     return _host_from_self(payload.get("externalURL"))
 
 
+def _extract_brex(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (Bearer / Mercury archetype). A Brex webhook body carries the
+    # affected resource; the install is registered keyed by the Brex
+    # organization id (provider_installations provider='brex',
+    # installation_id=<organizationId>). The body's top-level `organizationId`
+    # (or the legacy/account-scoped `accountId`) identifies the tenant's
+    # install; the synthetic finance harness sends `organizationId` explicitly.
+    # The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm brex webhook tenant-id field (organizationId vs
+    #   accountId vs an event-envelope path) against Brex webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("accountId"))
+
+
+def _extract_ramp(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (OAuth / QuickBooks archetype). Ramp scopes installs by
+    # `business_id`; the install is registered keyed by business_id
+    # (provider_installations provider='ramp', installation_id=<business_id>).
+    # Ramp event deliveries may wrap the body in an `eventNotifications`-style
+    # array (QBO shape) or carry a top-level `business_id`; check both, mirroring
+    # _extract_quickbooks. The synthetic finance harness sends a top-level
+    # `business_id`. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm ramp webhook tenant-id field (business_id vs an
+    #   event-envelope path) against Ramp webhook docs.
+    notifications = payload.get("eventNotifications")
+    if isinstance(notifications, list) and notifications:
+        first = notifications[0]
+        if isinstance(first, Mapping):
+            biz = _str_or_none(first.get("business_id"))
+            if biz is not None:
+                return biz
+    return _str_or_none(payload.get("business_id"))
+
+
+def _extract_gusto(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (OAuth / QuickBooks archetype). Gusto scopes installs by
+    # `company_uuid`; the install is registered keyed by company_uuid
+    # (provider_installations provider='gusto', installation_id=<company_uuid>).
+    # Gusto event deliveries may wrap the body in an `eventNotifications`-style
+    # array (QBO shape) or carry a top-level `company_uuid`; check both,
+    # mirroring _extract_quickbooks. The synthetic finance harness sends a
+    # top-level `company_uuid`. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm gusto webhook tenant-id field (company_uuid vs an
+    #   event-envelope path) against Gusto webhook docs.
+    notifications = payload.get("eventNotifications")
+    if isinstance(notifications, list) and notifications:
+        first = notifications[0]
+        if isinstance(first, Mapping):
+            company = _str_or_none(first.get("company_uuid"))
+            if company is not None:
+                return company
+    return _str_or_none(payload.get("company_uuid"))
+
+
+def _extract_deel(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIN2 (Bearer / Mercury archetype). A Deel webhook body carries the
+    # affected resource; the install is registered keyed by the Deel
+    # organization id (provider_installations provider='deel',
+    # installation_id=<organizationId>). The body's top-level `organizationId`
+    # (or the legacy/account-scoped `accountId`) identifies the tenant's
+    # install; the synthetic finance harness sends `organizationId` explicitly.
+    # The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm deel webhook tenant-id field (organizationId vs
+    #   accountId vs an event-envelope path) against Deel webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("accountId"))
+
+
+def _extract_fireflies(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FF (Brex/HMAC archetype). Fireflies scopes installs by workspace; the
+    # install is registered keyed by the workspace id (provider_installations
+    # provider='fireflies', installation_id=<workspace_id>). The webhook body
+    # carries the workspace id at top level as `workspaceId` (camel); the
+    # onboarding.register_webhook_installation seeds installation_id=workspace_id.
+    # The synthetic harness sends `workspaceId` explicitly. The signing secret is
+    # resolved separately in services/app/webhooks/secrets.py.
+    # TODO(human): confirm fireflies webhook tenant-id field against Fireflies
+    #   webhook docs.
+    ws = _str_or_none(payload.get("workspaceId"))
+    if ws is not None:
+        return ws
+    return _str_or_none(payload.get("workspace_id"))
+
+
+def _extract_miro(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-MIRO (Brex/HMAC archetype). Miro scopes installs by organization; the
+    # install is registered keyed by the org id (provider_installations
+    # provider='miro', installation_id=<org_id>). The webhook body carries the
+    # org id at top level as `organizationId` (camel); the synthetic harness
+    # sends it explicitly. The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): confirm miro webhook tenant-id field (organizationId vs orgId)
+    #   against Miro webhook docs.
+    org = _str_or_none(payload.get("organizationId"))
+    if org is not None:
+        return org
+    return _str_or_none(payload.get("orgId"))
+
+
+def _extract_figma(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-FIGMA (Brex/HMAC archetype for the synthetic gate; real Figma uses a
+    # passcode-in-body callback). Figma scopes installs by team; the install is
+    # registered keyed by the team id (provider_installations provider='figma',
+    # installation_id=<team_id>). Figma carries no installation_id in the URL
+    # path, so the team id is read from the webhook body's top-level `team_id`
+    # (the synthetic harness sends it explicitly). The signing secret / passcode
+    # is resolved separately in services/app/webhooks/secrets.py.
+    # TODO(human): confirm figma webhook tenant-id field against Figma Webhooks V2
+    #   docs (the body field carrying team_id).
+    team = _str_or_none(payload.get("team_id"))
+    if team is not None:
+        return team
+    return _str_or_none(payload.get("teamId"))
+
+
+def _extract_hibob(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-PEOPLE (gusto-structure / Basic-service-user archetype). HiBob scopes
+    # installs by company; the install is registered keyed by the HiBob company
+    # id (provider_installations provider='hibob', installation_id=<company_id>).
+    # The synthetic harness sends the company id at top level as `companyId`
+    # (camel). The signing secret is resolved separately in
+    # services/app/webhooks/secrets.py.
+    # TODO(human): in production HiBob does NOT carry the company id in the
+    #   webhook body — the tenant is resolved by the per-install endpoint/secret
+    #   (each install registers a distinct webhook URL + secret). The `companyId`
+    #   body field here is the synthetic-gate stand-in; confirm the real
+    #   per-endpoint resolution against HiBob webhook docs before production.
+    return _str_or_none(payload.get("companyId"))
+
+
+def _extract_ashby(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
+    # IN-RECRUITING (gusto-structure / API-key-as-Basic-username archetype). Ashby
+    # scopes installs by organization; the install is registered keyed by the
+    # Ashby org id (provider_installations provider='ashby',
+    # installation_id=<org_id>). The synthetic harness sends the org id at top
+    # level as `organizationId` (camel). The signing secret is resolved
+    # separately in services/app/webhooks/secrets.py.
+    # TODO(human): in production Ashby does NOT carry the org id in the webhook
+    #   body — the tenant is resolved by the per-install endpoint/secret. The
+    #   `organizationId` body field here is the synthetic-gate stand-in; confirm
+    #   the real per-endpoint resolution against Ashby webhook docs before
+    #   production.
+    return _str_or_none(payload.get("organizationId"))
+
+
 def _host_from_self(self_url: Any) -> str | None:
     if not isinstance(self_url, str) or "://" not in self_url:
         return None
@@ -375,6 +529,15 @@ PROVIDER_EXTRACTORS: dict[
     "mercury": _extract_mercury,
     "quickbooks": _extract_quickbooks,
     "grafana": _extract_grafana,
+    "brex": _extract_brex,
+    "ramp": _extract_ramp,
+    "gusto": _extract_gusto,
+    "deel": _extract_deel,
+    "fireflies": _extract_fireflies,
+    "miro": _extract_miro,
+    "figma": _extract_figma,
+    "hibob": _extract_hibob,
+    "ashby": _extract_ashby,
 }
 
 

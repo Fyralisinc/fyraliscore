@@ -26,21 +26,63 @@ Wiring at test time:
         return client, close
     monkeypatch.setattr(gmail_fetcher_mod, "_open_gmail_client", _open)
 """
+from services.ingest.synthetic.mock_clients.ashby import MockAshbyClient
+from services.ingest.synthetic.mock_clients.aws import MockAwsClient
+from services.ingest.synthetic.mock_clients.brex import MockBrexClient
+from services.ingest.synthetic.mock_clients.carta import MockCartaClient
+from services.ingest.synthetic.mock_clients.deel import MockDeelClient
 from services.ingest.synthetic.mock_clients.discord import MockDiscordClient
+from services.ingest.synthetic.mock_clients.figma import MockFigmaClient
+from services.ingest.synthetic.mock_clients.fireflies import MockFirefliesClient
 from services.ingest.synthetic.mock_clients.gmail import MockGmailClient
 from services.ingest.synthetic.mock_clients.github import MockGithubClient
+from services.ingest.synthetic.mock_clients.gusto import MockGustoClient
 from services.ingest.synthetic.mock_clients.google_calendar import (
     MockGoogleCalendarClient,
 )
+from services.ingest.synthetic.mock_clients.google_drive import (
+    MockGoogleDriveClient,
+)
+from services.ingest.synthetic.mock_clients.grafana import MockGrafanaClient
+from services.ingest.synthetic.mock_clients.hibob import MockHibobClient
+from services.ingest.synthetic.mock_clients.jira import MockJiraClient
+from services.ingest.synthetic.mock_clients.linkedin import MockLinkedinClient
+from services.ingest.synthetic.mock_clients.mercury import MockMercuryClient
+from services.ingest.synthetic.mock_clients.miro import MockMiroClient
+from services.ingest.synthetic.mock_clients.notion import MockNotionClient
+from services.ingest.synthetic.mock_clients.quickbooks import MockQuickBooksClient
+from services.ingest.synthetic.mock_clients.ramp import MockRampClient
+from services.ingest.synthetic.mock_clients.signal import MockSignalClient
 from services.ingest.synthetic.mock_clients.slack import MockSlackClient
 from services.ingest.synthetic.mock_clients.slack_user import MockSlackUserClient
+from services.ingest.synthetic.mock_clients.telegram import MockTelegramClient
 
 
 __all__ = [
+    "MockAshbyClient",
+    "MockAwsClient",
+    "MockBrexClient",
+    "MockCartaClient",
+    "MockDeelClient",
     "MockDiscordClient",
+    "MockFigmaClient",
+    "MockFirefliesClient",
     "MockGithubClient",
     "MockGmailClient",
     "MockGoogleCalendarClient",
+    "MockGoogleDriveClient",
+    "MockGrafanaClient",
+    "MockGustoClient",
+    "MockHibobClient",
+    "MockJiraClient",
+    "MockLinkedinClient",
+    "MockMercuryClient",
+    "MockMiroClient",
+    "MockNotionClient",
+    "MockQuickBooksClient",
+    "MockRampClient",
+    "MockSignalClient",
     "MockSlackClient",
     "MockSlackUserClient",
+    "MockTelegramClient",
 ]

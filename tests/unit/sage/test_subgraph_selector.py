@@ -89,20 +89,28 @@ def selector() -> SubgraphSelector:
 
 
 # ---------------------------------------------------------------------
-# 1) Generic hub: summarized for DEPENDENCY, kept for CONSTRAINT.
+# 1) Generic hub: summarized unless it fills the constraint role.
 # ---------------------------------------------------------------------
 
 
-def test_generic_hub_summarized_for_dependency_but_kept_for_constraint(
+def test_generic_hub_summarized_unless_role_filling_constraint(
     selector: SubgraphSelector,
 ) -> None:
     hub_id = uuid4()
+    constraint_hub_id = uuid4()
     hub = _node(
         model_id=hub_id,
         activation_score=0.9,
         hub_score=0.85,           # >= 0.70 floor
         bridge_score=0.0,
         reasons=("matches:platform",),
+    )
+    constraint_hub = _node(
+        model_id=constraint_hub_id,
+        activation_score=0.9,
+        hub_score=0.85,
+        bridge_score=0.0,
+        reasons=("role:blocker",),
     )
 
     # No incident edges => can't be saved by a high-gate bridge edge.
@@ -123,8 +131,16 @@ def test_generic_hub_summarized_for_dependency_but_kept_for_constraint(
         candidate_edges=[],
         question_primitive="CONSTRAINT",
     )
-    assert hub_id in cons.selected_nodes
-    assert hub_id not in cons.summarized_hubs
+    assert hub_id not in cons.selected_nodes
+    assert hub_id in cons.summarized_hubs
+
+    role_filling_cons = selector.select(
+        activated_nodes=[constraint_hub],
+        candidate_edges=[],
+        question_primitive="CONSTRAINT",
+    )
+    assert constraint_hub_id in role_filling_cons.selected_nodes
+    assert constraint_hub_id not in role_filling_cons.summarized_hubs
 
 
 # ---------------------------------------------------------------------
@@ -269,6 +285,43 @@ def test_edge_cap_respects_max_edges() -> None:
         question_primitive="DEPENDENCY",
     )
     assert len(out.selected_edges) == 2
+
+
+# ---------------------------------------------------------------------
+# 6b) Selected nodes preserve relevance order for evidence projection.
+# ---------------------------------------------------------------------
+
+
+def test_selected_nodes_preserve_activation_order_for_projection(
+    selector: SubgraphSelector,
+) -> None:
+    a, b, c = uuid4(), uuid4(), uuid4()
+    out = selector.select(
+        activated_nodes=[
+            _node(model_id=b, activation_score=0.70),
+            _node(model_id=c, activation_score=0.60),
+            _node(model_id=a, activation_score=0.90),
+        ],
+        candidate_edges=[],
+        question_primitive="DEPENDENCY",
+    )
+    assert out.selected_nodes == (a, b, c)
+
+
+def test_selected_node_ties_preserve_input_order(
+    selector: SubgraphSelector,
+) -> None:
+    a, b, c = uuid4(), uuid4(), uuid4()
+    out = selector.select(
+        activated_nodes=[
+            _node(model_id=b, activation_score=0.80),
+            _node(model_id=a, activation_score=0.80),
+            _node(model_id=c, activation_score=0.70),
+        ],
+        candidate_edges=[],
+        question_primitive="DEPENDENCY",
+    )
+    assert out.selected_nodes == (b, a, c)
 
 
 # ---------------------------------------------------------------------
@@ -443,6 +496,45 @@ def test_redundant_local_confirmations_are_summarized(
         ex.model_id == b
         and ex.reason == "redundant_local_confirmation"
         and ex.summarized
+        for ex in out.excluded
+    )
+
+
+def test_propagated_only_node_is_not_treated_as_redundant(
+    selector: SubgraphSelector,
+) -> None:
+    source, hidden = uuid4(), uuid4()
+    edge_id = uuid4()
+    nodes = [
+        _node(
+            model_id=source,
+            activation_score=0.9,
+            reasons=("lexical:beacon,launch", "propagated:blocks"),
+        ),
+        _node(
+            model_id=hidden,
+            activation_score=0.1,
+            reasons=("propagated:blocks",),
+        ),
+    ]
+    out = selector.select(
+        activated_nodes=nodes,
+        candidate_edges=[
+            CandidateEdge(
+                edge_id=edge_id,
+                source_model_id=source,
+                target_model_id=hidden,
+                edge_type="blocks",
+                gate_score=1.0,
+            ),
+        ],
+        question_primitive="DEPENDENCY",
+    )
+
+    assert hidden in out.selected_nodes
+    assert edge_id in out.selected_edges
+    assert not any(
+        ex.model_id == hidden and ex.reason == "redundant_local_confirmation"
         for ex in out.excluded
     )
 
