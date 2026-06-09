@@ -11,11 +11,17 @@ the OAuth bot-token path):
   All in one tenant-scoped transaction.
 
   register_webhook_installation() — register the LIVE-path row in
-  provider_installations (provider='figma', installation_id=team_id,
+  provider_installations (provider='figma', installation_id=webhook_id,
   secret_ref=webhook secret) so the webhook edge resolves the tenant + loads the
   signing secret via the existing machinery. Backfill uses figma_installations;
   live uses provider_installations — the two are seeded together but stay
   independent.
+
+  R2 — install key: REAL Figma Webhooks V2 deliveries carry the Figma-assigned
+  `webhook_id` (returned by `POST /v2/webhooks` at registration) and NO
+  `team_id` in the event body, so the live row is keyed by `webhook_id` to match
+  `tenant_resolver._extract_figma`. The caller captures the webhook_id from the
+  webhook-creation response; `team_id` is retained as backfill context only.
 
   NOTE (webhook auth divergence): real Figma webhooks carry a PASSCODE in the
   request body rather than an HMAC header (see signatures/figma.py). The
@@ -135,12 +141,17 @@ async def register_webhook_installation(
     pool: asyncpg.Pool,
     *,
     tenant_id: UUID,
-    team_id: str,
+    webhook_id: str,
     webhook_secret_ref: str | None,
+    team_id: str | None = None,
 ) -> None:
     """Register / refresh the provider_installations row the webhook edge uses to
-    resolve the tenant + load the signing secret. installation_id is the Figma
-    team id (matches tenant_resolver._extract_figma)."""
+    resolve the tenant + load the signing secret.
+
+    R2: installation_id is the Figma-assigned `webhook_id` (from the
+    `POST /v2/webhooks` response) — the real Figma V2 delivery body carries no
+    team_id, so webhook_id is the only durable install scope and matches
+    tenant_resolver._extract_figma. `team_id` is logged for traceability."""
     await pool.execute(
         """
         INSERT INTO provider_installations
@@ -151,9 +162,12 @@ async def register_webhook_installation(
                 secret_ref = EXCLUDED.secret_ref,
                 enabled = TRUE
         """,
-        uuid7(), tenant_id, team_id, webhook_secret_ref,
+        uuid7(), tenant_id, webhook_id, webhook_secret_ref,
     )
-    log.info("figma_webhook_installation_registered", team_id=team_id)
+    log.info(
+        "figma_webhook_installation_registered",
+        webhook_id=webhook_id, team_id=team_id,
+    )
 
 
 __all__ = ["finalize_install", "register_webhook_installation"]

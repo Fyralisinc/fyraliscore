@@ -1,0 +1,26 @@
+{
+  "_meta": {
+    "provider": "ramp",
+    "kind": "webhook",
+    "description": "Real Ramp (corporate-card / spend mgmt; api.ramp.com) webhook delivery. Flat event object: root-level business_id is the tenant key, `type` is dot.notation, `object.id` is the affected resource, `id` is the stable event id (constant across retries). NO eventNotifications wrapper. Doc-derived; values are placeholders. NOTE: X-Ramp-Signature is HMAC-SHA256 over the raw body, but hex-vs-base64 is NOT documented upstream (our base64 assumption is unverified — confirm against a real delivery).",
+    "source": "doc:https://docs.ramp.com/developer-api/v1/guides/webhooks (root business_id; X-Ramp-Signature = HMAC-SHA256 of raw body; payload id/type/created_at/business_id/object)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/ramp",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Ramp-Signature": "<HMAC-SHA256 of the raw body keyed by the per-subscription secret; encoding hex-or-base64 UNCONFIRMED upstream; the contract test recomputes it base64 to match the current verifier>"
+    },
+    "body": {
+      "id": "evt_2b8f1c0a-7d3e-4a91-bc44-9f0e2a1d6c33",
+      "type": "transactions.cleared",
+      "created_at": "2026-01-15T15:05:00Z",
+      "business_id": "bus_9c1302b2-c2f1-4a3b-8e77-0d6a4f2e1b90",
+      "object": {
+        "id": "txn_142a7e90-3b21-4c8d-9f55-1a2b3c4d5e6f"
+      }
+    }
+  }
+}

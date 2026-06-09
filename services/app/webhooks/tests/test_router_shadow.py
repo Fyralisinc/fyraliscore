@@ -45,7 +45,7 @@ _SECRET = "router-shadow-test-slack"
 
 
 class _StubResolver:
-    async def resolve(self, provider, payload, headers):
+    async def resolve(self, provider, payload, headers, *, subpath=None):
         return Resolved(
             tenant_id=_TENANT,
             installation_row_id=_INSTALLATION_ROW_ID,

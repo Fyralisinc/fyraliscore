@@ -66,6 +66,54 @@ async def test_dispatch_wired():
     assert FETCHER_DISPATCH["aws"] is fetch_page_aws
 
 
+async def test_open_seam_passes_real_secret_store(monkeypatch):
+    """Finding #6 regression: the fetcher's `_open_aws_client` seam must hand the
+    AwsClient the REAL process-wide secret_store (via the shared `_clients`
+    opener), NOT a hardcoded None — otherwise resolve_credentials raises before
+    the first LookupEvents call on any real install. No DB: the `_clients`
+    secret-store / pool builders are stubbed and AwsClient is captured."""
+    from services.ingest.ingestion.fetchers import _clients
+
+    captured: dict[str, object] = {}
+    sentinel_store = object()
+
+    class _CapturedAwsClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def aclose(self):
+            return None
+
+    # Stub the shared opener's lazy DB-backed builders so no pool/secret store
+    # is actually constructed; the opener wires whatever they return.
+    async def _fake_secret_store():
+        return sentinel_store
+
+    async def _fake_effective_pool(provided, *, spammer):
+        return None
+
+    import services.ingest.integrations.aws.client as aws_client_mod
+
+    monkeypatch.setattr(_clients, "_get_secret_store", _fake_secret_store)
+    monkeypatch.setattr(_clients, "_effective_pool", _fake_effective_pool)
+    monkeypatch.setattr(_clients, "_spammer_mode", lambda: False)
+    # build_aws_client lazily imports AwsClient from its source module, so patch
+    # the symbol there (the lazy import resolves the live module attribute).
+    monkeypatch.setattr(aws_client_mod, "AwsClient", _CapturedAwsClient)
+
+    # Call the fetcher seam (delegates to _clients.open_aws_client).
+    client, close = await af._open_aws_client(_FakeInst())
+    try:
+        # The credential-resolution path is reachable: secret_store is non-None
+        # (the real store), not the old hardcoded None.
+        assert captured["secret_store"] is sentinel_store
+        assert captured["secret_store"] is not None
+        assert captured["account_id"] == "123456789012"
+        assert captured["region"] == "us-east-1"
+    finally:
+        await close()
+
+
 async def test_full_backfill_pages_by_token_and_tracks_high_water(monkeypatch):
     monkeypatch.setenv("AWS_BACKFILL_WINDOW_DAYS", "0")  # all-time floor=None
     monkeypatch.setattr(af, "_page_size", lambda: 2)

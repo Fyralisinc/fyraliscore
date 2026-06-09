@@ -9,8 +9,10 @@ from services.app.webhooks.secrets import load_secrets
 
 
 class _FakePool:
-    async def fetchrow(self, sql, provider, tenant_id):
-        return {"secret_ref": "secret/ref"}
+    async def fetch(self, sql, provider, tenant_id):
+        # _load_from_db now fetches ALL active secret_refs (rotation overlap),
+        # not a single LIMIT-1 row — return a one-row list.
+        return [{"secret_ref": "secret/ref"}]
 
 
 class _FakeSecretStore:

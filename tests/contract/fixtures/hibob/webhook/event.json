@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "provider": "hibob",
+    "kind": "webhook",
+    "description": "Real HiBob (Bob) Webhooks V2 delivery. Top-level companyId (a JSON NUMBER) is present on every delivery across all event types and is the tenant key. Signed HMAC-SHA512/base64 in Bob-Signature over the raw body. Confirms Phase-1 finding #20 was a FALSE POSITIVE for HiBob (the code reads companyId correctly). Doc-derived shape; values are placeholders.",
+    "source": "doc:https://apidocs.hibob.com/docs/webhooks (Bob Webhooks V2; companyId in-band; Bob-Signature = base64 HMAC-SHA512 over raw body)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/hibob",
+    "headers": {
+      "Content-Type": "application/json",
+      "Bob-Signature": "<base64 HMAC-SHA512 of the raw body keyed by the per-webhook secret; the contract test recomputes this>",
+      "User-Agent": "Bob-Webhook"
+    },
+    "body": {
+      "companyId": 636192,
+      "type": "timeoff.request.requested",
+      "triggeredBy": "3419283646526259215",
+      "triggeredAt": "2024-10-03T09:29:00.831502",
+      "version": "v2",
+      "data": {
+        "timeoffRequestId": 32832853,
+        "employeeId": "3373576791477190995"
+      }
+    }
+  }
+}

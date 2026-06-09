@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "provider": "quickbooks",
+    "kind": "webhook",
+    "description": "Real Intuit QuickBooks Online webhook delivery. A single POST batches MULTIPLE eventNotifications[], EACH carrying its OWN realmId (a connected company = a distinct Fyralis tenant), and within each notification dataChangeEvent.entities[] lists MULTIPLE changed entities. Here: realm A (Invoice + Bill) and realm B (Payment) → 3 (realm,entity) fan-out units across 2 tenants. The intuit-signature header is base64(HMAC-SHA256(raw_body)) keyed by the APP-LEVEL verifier token (one per app, shared across realms), so a single verification authenticates the whole batch. Doc-derived; ids/timestamps are placeholders.",
+    "source": "doc:https://developer.intuit.com/app/developer/qbo/docs/develop/webhooks (eventNotifications[].realmId + dataChangeEvent.entities[] with name/id/operation/lastUpdated; intuit-signature = base64 HMAC-SHA256 of the raw body keyed by the app verifier token)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/quickbooks",
+    "headers": {
+      "Content-Type": "application/json",
+      "intuit-signature": "<base64(HMAC-SHA256(raw_body)) keyed by the app verifier token; the contract test recomputes it>"
+    },
+    "body": {
+      "eventNotifications": [
+        {
+          "realmId": "1111111111111111111",
+          "dataChangeEvent": {
+            "entities": [
+              {
+                "name": "Invoice",
+                "id": "146",
+                "operation": "Update",
+                "lastUpdated": "2026-01-15T14:30:00.000-0700"
+              },
+              {
+                "name": "Bill",
+                "id": "207",
+                "operation": "Create",
+                "lastUpdated": "2026-01-15T14:31:05.000-0700"
+              }
+            ]
+          }
+        },
+        {
+          "realmId": "2222222222222222222",
+          "dataChangeEvent": {
+            "entities": [
+              {
+                "name": "Payment",
+                "id": "55",
+                "operation": "Update",
+                "lastUpdated": "2026-01-15T14:32:10.000-0700"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

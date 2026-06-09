@@ -762,3 +762,241 @@ async def test_breaker_trips_on_worst_source_lane(
     assert alerts[0][1]["source"] == "slack"
     assert alerts[0][1]["lag_seconds"] == 120.0
     assert alerts[0][1]["active_lanes"] == 2
+
+
+# =====================================================================
+# 11. Hardening regressions (ingestion-hardening program).
+# =====================================================================
+
+# --- #14: blocking Kafka probes must not run on the event loop. --------
+
+async def test_lag_probe_offloaded_to_worker_thread(monkeypatch: Any) -> None:
+    """#14 regression. `_measure_kafka_lag_default` is awaited directly from
+    the breaker tick that also runs the heartbeat ticker; its body is blocking
+    confluent_kafka C-calls. It MUST offload to a worker thread (asyncio.
+    to_thread) so a slow broker can't wedge the event loop (and thus the
+    /healthz heartbeat). We assert the sync body executes off the main thread.
+    """
+    import threading
+    from services.ingest.ingestion.feature_flags import circuit_breaker as cb
+
+    main_thread = threading.current_thread()
+    seen: dict[str, Any] = {}
+
+    def _fake_sync(*, bootstrap: str, normalizer_group_base: str):
+        seen["thread"] = threading.current_thread()
+        seen["args"] = (bootstrap, normalizer_group_base)
+        return {"slack": {0: 1.5}}
+
+    monkeypatch.setattr(cb, "_measure_kafka_lag_sync", _fake_sync)
+    result = await cb._measure_kafka_lag_default(
+        bootstrap="b", normalizer_group_base="normalizer",
+    )
+    assert result == {"slack": {0: 1.5}}
+    assert seen["args"] == ("b", "normalizer")
+    assert seen["thread"] is not main_thread, (
+        "Kafka lag probe ran on the event-loop thread — blocking confluent "
+        "calls would stall the breaker heartbeat (#14)."
+    )
+
+
+async def test_active_sampler_offloaded_to_worker_thread(monkeypatch: Any) -> None:
+    """#14 regression for the active-tenant sampler — same rationale."""
+    import threading
+    from services.ingest.ingestion.feature_flags import circuit_breaker as cb
+
+    main_thread = threading.current_thread()
+    seen: dict[str, Any] = {}
+
+    def _fake_sync(*, bootstrap: str, signal_topic: str, lookback_sec: int):
+        seen["thread"] = threading.current_thread()
+        return {}
+
+    monkeypatch.setattr(cb, "_sample_active_tenants_sync", _fake_sync)
+    result = await cb._sample_active_tenants_default(
+        bootstrap="b", signal_topic="t", lookback_sec=90,
+    )
+    assert result == {}
+    assert seen["thread"] is not main_thread, (
+        "Active-tenant sampler ran on the event-loop thread (#14)."
+    )
+
+
+# --- #13: sampler must drain the read budget, not break on first empty poll.
+
+def test_active_sampler_keeps_polling_past_empty_poll(monkeypatch: Any) -> None:
+    """#13 regression. `confluent Consumer.poll()` returning None means "no
+    message delivered in this poll window", NOT "end of partition". Breaking
+    on the first None silently dropped tenants that emitted earlier in the
+    lookback window. The sampler must keep polling until its deadline. We feed
+    a poll sequence [msg_A, None, msg_B, None, None] and assert BOTH tenants
+    are captured (the old `break` would have stopped after msg_A).
+    """
+    pytest.importorskip("confluent_kafka")
+    from services.ingest.ingestion.feature_flags.circuit_breaker import (
+        _sample_active_tenants_sync,
+    )
+
+    tenant_a, tenant_b = uuid4(), uuid4()
+
+    class _FakeMsg:
+        def __init__(self, tenant_id: UUID, source: str, raw_partition: int):
+            self._payload = json.dumps({
+                "tenant_id": str(tenant_id),
+                "source": source,
+                "raw_partition": raw_partition,
+            }).encode()
+
+        def error(self):  # noqa: ANN202
+            return None
+
+        def timestamp(self):  # noqa: ANN202
+            return (1, 950_000)  # > cutoff_ms below, so not skipped
+
+        def value(self):  # noqa: ANN202
+            return self._payload
+
+    poll_seq = iter([
+        _FakeMsg(tenant_a, "slack", 0),
+        None,
+        _FakeMsg(tenant_b, "github", 1),
+        None,
+        None,
+    ])
+
+    class _FakePartMeta:  # noqa: D401
+        pass
+
+    class _FakeTopicMeta:
+        def __init__(self) -> None:
+            self.error = None
+            self.partitions = {0: _FakePartMeta()}
+
+    class _FakeClusterMeta:
+        def __init__(self, topic: str) -> None:
+            self.topics = {topic: _FakeTopicMeta()}
+
+    class _FakeTP:
+        def __init__(self, topic: str, partition: int, offset: int = 0):
+            self.topic = topic
+            self.partition = partition
+            self.offset = offset
+
+    class _FakeConsumer:
+        def __init__(self, _conf: dict) -> None:
+            pass
+
+        def list_topics(self, topic: str, timeout: float = 0.0):  # noqa: ANN202
+            return _FakeClusterMeta(topic)
+
+        def offsets_for_times(self, tps, timeout: float = 0.0):  # noqa: ANN202
+            return [_FakeTP(tp.topic, tp.partition, 0) for tp in tps]
+
+        def assign(self, _tps) -> None:
+            pass
+
+        def poll(self, timeout: float = 0.0):  # noqa: ANN202
+            return next(poll_seq)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("confluent_kafka.Consumer", _FakeConsumer, raising=False)
+    monkeypatch.setattr("confluent_kafka.TopicPartition", _FakeTP, raising=False)
+    # Deterministic, fast clock: fix wall time (cutoff) and step the monotonic
+    # deadline clock so the 5s read budget yields exactly 5 polls then exits.
+    monkeypatch.setattr("time.time", lambda: 1000.0)
+    _mono = iter([100.0, 100.0, 101.0, 102.0, 103.0, 104.0, 106.0])
+    monkeypatch.setattr("time.monotonic", lambda: next(_mono))
+
+    out = _sample_active_tenants_sync(
+        bootstrap="b", signal_topic="ingestion.tenant_traffic_signal",
+        lookback_sec=90,
+    )
+
+    assert out == {tenant_a: {"slack": 0}, tenant_b: {"github": 1}}, (
+        "Sampler dropped a tenant that emitted after an empty poll — the "
+        "break-on-None truncation (#13) has regressed."
+    )
+
+
+# --- #18: a failed flag flip must be retried, not self-reset to "re-enabled".
+
+class _FlipFailingFlags(TenantFlags):
+    """TenantFlags whose breaker auto-flip (value=False, set_by=auto:...)
+    raises for the first `fail_times` attempts — simulating a Postgres /
+    TenantFlags outage during the trip."""
+
+    def __init__(self, pool: asyncpg.Pool, *, fail_times: int) -> None:
+        super().__init__(pool)
+        self._fail_times = fail_times
+        self.flip_attempts = 0
+
+    async def set_bool(  # type: ignore[override]
+        self, tenant_id: UUID, flag_name: str, value: bool, *,
+        set_by: str, note: str | None = None,
+    ) -> None:
+        if value is False and set_by == "auto:circuit_breaker":
+            self.flip_attempts += 1
+            if self.flip_attempts <= self._fail_times:
+                raise RuntimeError("simulated TenantFlags outage during flip")
+        return await super().set_bool(
+            tenant_id, flag_name, value, set_by=set_by, note=note,
+        )
+
+
+async def test_breaker_retries_flip_after_flag_flip_failure(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """#18 regression. If `set_bool` fails on the trip (DB outage), the breaker
+    must NOT mark the tenant tripped — otherwise the next tick sees flag=TRUE
+    (flip never happened) + tripped=TRUE and misreads it as an *operator
+    re-enable*, resetting the breach counter and letting the lagging tenant
+    evade the breaker for the entire outage. The fix flips first and only
+    records tripped on success, leaving the counter pinned so the next tick
+    RETRIES the flip. This test would fail on the pre-fix code (flag never
+    flips because the counter is reset every tick).
+    """
+    tenant_a = await _seed_tenant(fresh_db, "tenant-flip-fail")
+    flags = _FlipFailingFlags(fresh_db, fail_times=1)
+    alerts, alert_fn = _make_alert_recorder()
+    config = _config()
+    state: dict[UUID, _TenantBreachState] = {}
+
+    breach_fn = _make_lag_fn({0: 120.0})
+    active_fn = _make_active_fn({tenant_a: 0})
+
+    # ---- 5 breached ticks → window reached on tick 5; the flip raises. ----
+    for _ in range(5):
+        await _process_tick(
+            config=config, pool=fresh_db, tenant_flags=flags,
+            state=state, measure_lag_fn=breach_fn,
+            active_tenants_fn=active_fn, alert_fn=alert_fn,
+        )
+
+    assert flags.flip_attempts == 1
+    # Flip failed → no flag row written, NOT marked tripped, counter pinned.
+    assert await _read_flag(fresh_db, tenant_a) is None
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_a].tripped is False
+    assert loaded[tenant_a].consecutive_breach_ticks >= config.breach_window_ticks
+    assert get_metrics()["breaker.flag_flip_failures"] == 1
+    assert get_metrics()["breaker.trips"] == 0
+    assert len(alerts) == 0  # no successful trip → no alert yet
+
+    # ---- One more breached tick: flip now succeeds → tenant trips. ----
+    await _process_tick(
+        config=config, pool=fresh_db, tenant_flags=flags,
+        state=state, measure_lag_fn=breach_fn,
+        active_tenants_fn=active_fn, alert_fn=alert_fn,
+    )
+
+    assert flags.flip_attempts == 2, "breaker did not retry the failed flip"
+    assert await _read_flag(fresh_db, tenant_a) is False, (
+        "Breaker never flipped the flag after a transient flip failure — the "
+        "flip-failure evasion bug (#18) has regressed."
+    )
+    loaded = await _load_state(fresh_db, _INSTANCE)
+    assert loaded[tenant_a].tripped is True
+    assert get_metrics()["breaker.trips"] == 1
+    assert len(alerts) == 1

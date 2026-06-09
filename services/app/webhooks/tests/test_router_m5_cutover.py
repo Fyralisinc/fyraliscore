@@ -63,7 +63,7 @@ class _StubResolver:
     def __init__(self, tenant_id: UUID = _TENANT) -> None:
         self._tenant_id = tenant_id
 
-    async def resolve(self, provider, payload, headers):
+    async def resolve(self, provider, payload, headers, *, subpath=None):
         return Resolved(
             tenant_id=self._tenant_id,
             installation_row_id=_INSTALLATION_ROW_ID,

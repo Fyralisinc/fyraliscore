@@ -170,6 +170,37 @@ async def test_load_secrets_no_app_state_uses_env(
     assert secrets[0].value == "legacy-env"
 
 
+async def test_load_secrets_returns_all_active_secrets_for_overlap(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """FR-010 regression: during a zero-downtime secret rotation BOTH the old
+    and new secret_ref are enabled at once (and a tenant may also have several
+    installations of one provider). `load_secrets` must return EVERY active
+    secret so the verifier can accept either — a prior `LIMIT 1` returned only
+    the newest, dropping old-secret-signed deliveries with a 401 for the whole
+    overlap window.
+    """
+    app_state = _make_app_state(fresh_db)
+    tenant = await _seed_tenant(fresh_db)
+    old_ref = await app_state.secret_store.put(
+        b"old-rotation-secret", label="slack_signing_secret:old", tenant_id=tenant,
+    )
+    new_ref = await app_state.secret_store.put(
+        b"new-rotation-secret", label="slack_signing_secret:new", tenant_id=tenant,
+    )
+    await _seed_installation(fresh_db, tenant, "slack", secret_ref=old_ref)
+    await _seed_installation(fresh_db, tenant, "slack", secret_ref=new_ref)
+
+    secrets = await load_secrets("slack", tenant, app_state=app_state)
+
+    assert {s.value for s in secrets} == {
+        "old-rotation-secret", "new-rotation-secret",
+    }, (
+        "load_secrets dropped an active rotation-overlap secret — DB-backed "
+        "zero-downtime rotation (LIMIT 1) regression."
+    )
+
+
 async def test_load_secrets_disabled_installation_returns_empty(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

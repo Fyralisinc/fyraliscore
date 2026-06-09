@@ -160,10 +160,12 @@ class HmacWebhookGenerator:
             "ashby",
         ):
             return "sha256=" + mac.hexdigest()
-        # base64-no-prefix schemes: quickbooks, ramp, gusto.
-        if self._provider in ("quickbooks", "ramp", "gusto"):
+        # base64-no-prefix schemes: quickbooks, ramp.
+        if self._provider in ("quickbooks", "ramp"):
             return base64.b64encode(mac.digest()).decode("ascii")
-        return mac.hexdigest()  # grafana: bare lowercase hex
+        # bare lowercase hex (no prefix): grafana, gusto (gusto CONFIRMED hex —
+        # docs.gusto.com / Gusto/gusto.github.io Ruby OpenSSL::HMAC.hexdigest).
+        return mac.hexdigest()
 
     @property
     def _header_name(self) -> str:
@@ -174,7 +176,7 @@ class HmacWebhookGenerator:
             "grafana": "X-Grafana-Alerting-Signature",
             "brex": "Brex-Signature",
             "ramp": "x-ramp-signature",
-            "gusto": "Gusto-Signature",
+            "gusto": "X-Gusto-Signature",  # CONFIRMED (signatures/gusto.py)
             "deel": "Deel-Signature",
             # Must match each verifier's _HEADER_NAME constant (signatures/<src>.py).
             "fireflies": "x-hub-signature",  # CONFIRMED (docs.fireflies.ai)
@@ -263,42 +265,47 @@ class HmacWebhookGenerator:
             }
             return payload, f"brex:{acct}:txn:{txn_id}:posted"
         if self._provider == "ramp":
-            # Ramp eventNotifications webhook (OAuth/QBO archetype). The handler
-            # reads `businessId` (camel) inside the notification; the resolver
-            # reads `business_id` (snake) — send BOTH. The handler emits a thin
-            # change keyed by lastUpdated.
+            # REAL Ramp flat event (VERIFIED against docs.ramp.com): root-level
+            # business_id is the tenant; `type` is dot.notation; `object.id` is
+            # the affected resource; `id` is the stable event id (dedup key). No
+            # eventNotifications wrapper. Signature header x-ramp-signature,
+            # HMAC-SHA256 base64 (encoding still UNCONFIRMED upstream — see
+            # signatures/ramp.py; generator+verifier stay in lockstep).
             biz = target.ramp_business
             ent_id = f"live-{target.slug}-{suffix}"
+            event_id = f"evt-{target.slug}-{suffix}"
             payload = {
+                "id": event_id,
+                "type": "transactions.cleared",
+                "created_at": iso,
                 "business_id": biz,
-                "eventNotifications": [{
-                    "business_id": biz,
-                    "businessId": biz,
-                    "dataChangeEvent": {"entities": [{
-                        "name": "Invoice", "id": ent_id,
-                        "operation": "Update", "lastUpdated": iso,
-                    }]},
-                }],
+                "object": {"id": ent_id},
             }
-            return payload, f"ramp:{biz}:txn:{ent_id}:chg:{iso}"
+            return payload, f"ramp:{biz}:txn:{ent_id}:chg:{event_id}"
         if self._provider == "gusto":
-            # Gusto eventNotifications webhook (OAuth/QBO archetype). The handler
-            # reads `companyId` (camel); the resolver reads `company_uuid`
-            # (snake) — send BOTH. Thin change keyed by lastUpdated.
+            # REAL Gusto thin notification (flat snake_case, VERIFIED against
+            # docs.gusto.com): resource_uuid is ALWAYS the company; entity_*
+            # names the changed resource; the body has no entity payload (poll
+            # re-fetch fills it). Signed as bare lowercase hex HMAC-SHA256 over
+            # the raw body in X-Gusto-Signature; versioned by the delivery uuid.
+            import datetime as _dt
+
             company = target.gusto_company
             ent_id = f"live-{target.slug}-{suffix}"
+            event_uuid = f"evt-{target.slug}-{suffix}"
+            ts_epoch = int(
+                _dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+            )
             payload = {
-                "company_uuid": company,
-                "eventNotifications": [{
-                    "company_uuid": company,
-                    "companyId": company,
-                    "dataChangeEvent": {"entities": [{
-                        "name": "Invoice", "id": ent_id,
-                        "operation": "Update", "lastUpdated": iso,
-                    }]},
-                }],
+                "uuid": event_uuid,
+                "event_type": "employee.updated",
+                "resource_type": "Company",
+                "resource_uuid": company,
+                "entity_type": "Employee",
+                "entity_uuid": ent_id,
+                "timestamp": ts_epoch,
             }
-            return payload, f"gusto:{company}:invoice:{ent_id}:chg:{iso}"
+            return payload, f"gusto:{company}:employee:{ent_id}:chg:{event_uuid}"
         if self._provider == "deel":
             # Deel payment.created webhook (Bearer/Mercury archetype). Body
             # matches handlers/deel.py: top-level `type` + `contractId` +
@@ -361,25 +368,25 @@ class HmacWebhookGenerator:
             }
             return payload, f"miro:{org}:item:{item_id}:{iso}"
         if self._provider == "figma":
-            # Figma Webhooks V2 — PASSCODE-IN-BODY (no HMAC, no signature header;
-            # CONFIRMED). The body echoes the shared `passcode` (== signing
-            # secret); the verifier compares it. Body matches handlers/figma.py:
-            # top-level `event_type` + `team_id` + a FLAT event. `team_id` keys
-            # tenant_resolver._extract_figma. external_id is versioned by `version`.
-            team = target.figma_team
+            # REAL Figma Webhooks V2 (VERIFIED against figma.com developers docs,
+            # R2): PASSCODE-IN-BODY (no HMAC, no signature header) — the body
+            # echoes the shared `passcode` (== signing secret) which the verifier
+            # compares. The delivery carries a Figma-assigned `webhook_id` (the
+            # install scope — keys tenant_resolver._extract_figma + the seeded
+            # provider_installations row) and NO `team_id`, and has NO stable
+            # event id, so the handler discriminates by (file_key, timestamp).
+            webhook_id = target.figma_webhook_id
             file_key = target.figma_file
-            eid = f"live-{target.slug}-{suffix}"
             payload = {
                 "event_type": "FILE_VERSION_UPDATE",
                 "passcode": self._secret,
-                "team_id": team,
-                "id": eid,
+                "webhook_id": webhook_id,
                 "file_key": file_key,
-                "version": iso,
-                "label": content,
-                "createdAt": iso,
+                "file_name": content,
+                "timestamp": iso,
+                "triggered_by": {"id": f"user-{target.slug}", "handle": content},
             }
-            return payload, f"figma:{team}:event:{eid}:{iso}"
+            return payload, f"figma:{webhook_id}:event:{file_key}:{iso}"
         if self._provider == "hibob":
             # HiBob employee.updated webhook (gusto-structure / Basic-service-user
             # archetype). Body matches handlers/hibob.py LIVE WEBHOOK path:
@@ -484,8 +491,16 @@ class HmacWebhookGenerator:
         else:
             # base64 (quickbooks/ramp/gusto) + bare-hex (grafana): a wrong value.
             signature = "f" * 64
+        # R3: Ashby resolves the tenant from a PER-INSTALL ENDPOINT URL
+        # (`/webhooks/ashby/{installId}`), not a body field. Post to the
+        # per-install path (installId == the seeded provider_installations id)
+        # so the gate exercises the real path-based resolution. Other providers
+        # post to the bare `/webhooks/{provider}` endpoint.
+        post_path = f"/webhooks/{self._provider}"
+        if self._provider == "ashby":
+            post_path = f"/webhooks/ashby/{target.ashby_org}"
         response = await self._client.post(
-            f"/webhooks/{self._provider}",
+            post_path,
             content=body,
             headers={
                 "Content-Type": "application/json",

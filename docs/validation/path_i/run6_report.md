@@ -1,13 +1,13 @@
 # Validation Run 6 — All-25-source concurrent backfill + live overlap
 
 **Status:** READY ✅
-**Started:** 2026-06-08T12:03:20.307461+00:00
-**Wall time:** 20.4s
+**Started:** 2026-06-09T13:47:51.562363+00:00
+**Wall time:** 19.7s
 **Tenants:** 50
 
 ## Pre-flight (fixture realism — Decision 12)
 
-- gmail: external_id='gmail:ca103a1a-7f03-41a3-a1ea-58' ✅
+- gmail: external_id='gmail:fe09ff63-6a66-4d37-8929-d3' ✅
 - github: external_id='I_kwDO8x2NYDDUMdgx' ✅
 - slack: external_id='C_9C1302B2C2:1767225600.000000' ✅
 - discord: external_id='discord:402097' ✅
@@ -16,7 +16,7 @@
 - gusto: external_id='gusto:c-pre:invoice:1001:1' ✅
 - deel: external_id='deel:con_63349d041ea22e18:paymen' ✅
 - fireflies: external_id='fireflies:ws-pre:transcript:ts_d' ✅
-- signal: external_id='signal:b70b29f7-37c4-451a-ac91-f' ✅
+- signal: external_id='signal:7098bdac-1261-4d9d-90d8-7' ✅
 - aws: external_id='aws:900000000001:us-east-1:event' ✅
 - miro: external_id='miro:org-pre:item:item_60af6af84' ✅
 - figma: external_id='figma:team-pre:event:evt_83d65a9' ✅
@@ -59,7 +59,7 @@
 ## Live phase (A30)
 
 - tenants_per_source=2; live=3 events/tenant per source
-- peak simultaneous backfill source_onboarding_runs in_progress: 50
+- peak simultaneous backfill source_onboarding_runs in_progress: 49
 - live ingress: 202=webhook Kafka cutover (github/slack/jira/mercury/quickbooks/grafana); 200=gmail pubsub / google push (inline drain) / notion shadow-write; discord=direct dispatch
 
 ## Per-source × per-dimension coverage
@@ -95,7 +95,7 @@
 ## Assertions
 
 - ✅ `assert_live_during_backfill_overlap(all 25 sources)` — every source received ≥1 live burst while its backfill was in_progress: {'gmail': 2, 'github': 3, 'slack': 3, 'discord': 3, 'google_calendar': 3, 'google_drive': 3, 'jira': 3, 'mercury': 3, 'notion': 3, 'quickbooks': 3, 'grafana': 3, 'telegram': 3, 'brex': 3, 'ramp': 3, 'gusto': 3, 'deel': 3, 'fireflies': 3, 'signal': 3, 'aws': 3, 'miro': 3, 'figma': 3, 'carta': 3, 'hibob': 3, 'ashby': 3, 'linkedin': 3}
-- ✅ `assert_all_sources_backfilled_concurrently` — peak simultaneous in_progress source runs = 50 (expected ≥ 25)
+- ✅ `assert_all_sources_backfilled_concurrently` — peak simultaneous in_progress source runs = 49 (expected ≥ 25)
 - ✅ `assert_live_routed_through_expected_ingress` — all sources hit their expected live ingress status
 - ✅ `assert_signature_validation_gate_holds` — 14/14 tampered events rejected (no 2xx)
 - ✅ `assert_no_duplicate_observations_under_concurrency` — 358 observations, zero duplicate (source_channel, external_id, occurred_at) groups

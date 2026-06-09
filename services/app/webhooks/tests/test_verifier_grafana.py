@@ -90,5 +90,40 @@ async def test_timestamp_mode(monkeypatch):
         body=body,
         headers={_HEADER: signed, "X-Grafana-Alerting-Timestamp": ts},
         secrets=[Secret("grafana", _SECRET)],
+        now=float(ts) + 5,  # within the 300s replay window
     )
-    assert ctx.signed_timestamp == ts
+    assert ctx.signed_timestamp == int(ts)
+
+
+@pytest.mark.asyncio
+async def test_timestamp_mode_rejects_replay(monkeypatch):
+    """#41 regression: a captured valid delivery replayed outside the 300s
+    window must be rejected (timestamp-mode previously had no age check)."""
+    monkeypatch.setenv("GRAFANA_WEBHOOK_TIMESTAMP_HEADER", "X-Grafana-Alerting-Timestamp")
+    body = b'{"status":"firing"}'
+    ts = "1717322400"
+    signed = hmac.new(_SECRET.encode(), f"{ts}:".encode() + body, hashlib.sha256).hexdigest()
+    with pytest.raises(WebhookVerificationError) as exc:
+        await verifier.verify(
+            body=body,
+            headers={_HEADER: signed, "X-Grafana-Alerting-Timestamp": ts},
+            secrets=[Secret("grafana", _SECRET)],
+            now=float(ts) + 3600,  # 1h later — outside the replay window
+        )
+    assert exc.value.reason == "expired_timestamp"
+
+
+@pytest.mark.asyncio
+async def test_timestamp_mode_malformed_header(monkeypatch):
+    """#41: a non-integer timestamp header is a structured verification error,
+    not an unhandled ValueError crash."""
+    monkeypatch.setenv("GRAFANA_WEBHOOK_TIMESTAMP_HEADER", "X-Grafana-Alerting-Timestamp")
+    body = b'{"status":"firing"}'
+    signed = hmac.new(_SECRET.encode(), b"not-a-ts:" + body, hashlib.sha256).hexdigest()
+    with pytest.raises(WebhookVerificationError) as exc:
+        await verifier.verify(
+            body=body,
+            headers={_HEADER: signed, "X-Grafana-Alerting-Timestamp": "not-a-ts"},
+            secrets=[Secret("grafana", _SECRET)],
+        )
+    assert exc.value.reason == "malformed_signature_header"

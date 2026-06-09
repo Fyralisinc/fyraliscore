@@ -175,7 +175,14 @@ async def _load_from_db(
     if pool is None or secret_store is None:
         return []
 
-    row = await pool.fetchrow(
+    # Return EVERY active secret_ref for (provider, tenant), newest first —
+    # NOT just one. Zero-downtime webhook-secret rotation (FR-010) overlaps the
+    # old and new secret for a window; the sender keeps signing with the old
+    # secret until it picks up the new one. The verifier tries each secret and
+    # accepts the first match, so it must be handed the whole overlap set. A
+    # prior `LIMIT 1` here silently dropped old-secret-signed deliveries with a
+    # 401 during every rotation, gapping the observation stream.
+    rows = await pool.fetch(
         """
         SELECT secret_ref
           FROM provider_installations
@@ -184,36 +191,37 @@ async def _load_from_db(
            AND enabled = TRUE
            AND secret_ref IS NOT NULL
          ORDER BY installed_at DESC
-         LIMIT 1
         """,
         provider,
         tenant_id,
     )
-    if row is None:
-        return []
-    ref = row["secret_ref"]
-
-    try:
-        plaintext = await secret_store.get(ref, tenant_id=tenant_id)
-    except SecretNotFoundError:
-        # Dangling ref — installation row points at a deleted secret.
-        # Treat as "no secret configured" so the verifier emits the
-        # standard secret_not_configured / signature_mismatch error.
-        return []
-    except SecretStoreError:
-        # Backend trouble. Surfacing as "no secret" is conservative —
-        # the caller will return 401, which is safer than 500 for
-        # transient backend hiccups.
+    if not rows:
         return []
 
-    return [
-        Secret(
-            provider=provider,
-            value=plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray)) else str(plaintext),
-            tenant_id=str(tenant_id),
-            label=f"installation:{ref}",
+    secrets: list[Secret] = []
+    for row in rows:
+        ref = row["secret_ref"]
+        try:
+            plaintext = await secret_store.get(ref, tenant_id=tenant_id)
+        except SecretNotFoundError:
+            # Dangling ref — installation row points at a deleted secret. Skip
+            # it; a sibling active ref may still verify. (If none resolve we
+            # return [] and the verifier emits the standard
+            # secret_not_configured / signature_mismatch error.)
+            continue
+        except SecretStoreError:
+            # Transient backend trouble for this ref. Skip and try the rest;
+            # if all fail we return [] → 401, safer than 500 for a hiccup.
+            continue
+        secrets.append(
+            Secret(
+                provider=provider,
+                value=plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray)) else str(plaintext),
+                tenant_id=str(tenant_id),
+                label=f"installation:{ref}",
+            )
         )
-    ]
+    return secrets
 
 
 # ---------------------------------------------------------------------

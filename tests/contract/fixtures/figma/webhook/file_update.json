@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "provider": "figma",
+    "kind": "webhook",
+    "description": "Real Figma Webhooks V2 delivery (FILE_VERSION_UPDATE). The body echoes the shared `passcode` (set at webhook creation; the receiver constant-time-compares it — there is NO HMAC header), carries the Figma-assigned `webhook_id` (the install scope — Figma's POST /v2/webhooks returns it; the delivery body does NOT carry team_id), a `timestamp`, and the event fields (file_key, file_name, triggered_by). There is NO stable per-event id, so the handler discriminates by (file_key, timestamp). Doc-derived; passcode/ids are placeholders.",
+    "source": "doc:https://www.figma.com/developers/api#webhooks_v2 (passcode-in-body verification, no HMAC header; payload carries event_type/passcode/webhook_id/timestamp/file_key/file_name/triggered_by; no team_id and no event id in the delivery)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/figma",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "event_type": "FILE_VERSION_UPDATE",
+      "passcode": "<the shared passcode set at POST /v2/webhooks; the contract test substitutes the active secret>",
+      "webhook_id": "2843917465",
+      "timestamp": "2026-01-15T22:14:07Z",
+      "file_key": "aBcD1234EfGh5678IjKl",
+      "file_name": "Design System / Core",
+      "triggered_by": {
+        "id": "9988776655",
+        "handle": "designer-placeholder"
+      }
+    }
+  }
+}

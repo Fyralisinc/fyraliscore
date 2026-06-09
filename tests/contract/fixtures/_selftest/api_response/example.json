@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "provider": "_selftest",
+    "kind": "api_response",
+    "description": "Framework self-test fixture — NOT a real provider payload. Proves the loader/validator work end-to-end with zero provider data committed.",
+    "source": "framework self-test",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": { "ok": true }
+  }
+}

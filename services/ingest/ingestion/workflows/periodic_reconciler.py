@@ -323,23 +323,21 @@ async def _run_service() -> None:
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
-    # Per-source reconcilers need pool access for auxiliary reads
-    # (shard cursors, installation rows). Same registration the
-    # at-completion Reconciler does at startup.
-    from services.ingest.ingestion.reconcilers import gmail as gmail_mod
-    from services.ingest.ingestion.reconcilers import github as github_mod
-    from services.ingest.ingestion.reconcilers import slack as slack_mod
-    from services.ingest.ingestion.reconcilers import discord as discord_mod
-    from services.ingest.ingestion.reconcilers import notion as notion_mod
-    from services.ingest.ingestion.reconcilers import google_calendar as google_calendar_mod
-    from services.ingest.ingestion.reconcilers import google_drive as google_drive_mod
-    gmail_mod.set_pool_provider(pool)
-    github_mod.set_pool_provider(pool)
-    slack_mod.set_pool_provider(pool)
-    discord_mod.set_pool_provider(pool)
-    notion_mod.set_pool_provider(pool)
-    google_calendar_mod.set_pool_provider(pool)
-    google_drive_mod.set_pool_provider(pool)
+    # Per-source reconcilers need pool access for auxiliary reads (shard
+    # cursors, installation rows) and raise if their pool isn't registered.
+    # Register ALL sources (derived from RECONCILER_DISPATCH) — the same
+    # registration the at-completion Reconciler does. This block previously
+    # listed only 7 of 25 sources by hand, so every steady-state gap re-check
+    # of the other 18 raised RuntimeError (silently swallowed as a dispatch
+    # exception) — permanently disabling periodic gap detection for them. The
+    # shared helper keeps the two services in lockstep so the drift can't recur.
+    from services.ingest.ingestion.reconcilers import register_pool_provider
+
+    registered = register_pool_provider(pool)
+    log.info(
+        "periodic_reconciler.pool_providers_registered",
+        extra={"source_count": len(registered)},
+    )
 
     config = PeriodicReconcilerConfig(
         tick_interval_seconds=float(

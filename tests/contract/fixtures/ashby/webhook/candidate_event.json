@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "provider": "ashby",
+    "kind": "webhook",
+    "description": "Real Ashby webhook delivery. The body carries NO organization/tenant id — only `action`, the affected resource under `data`, and a delivery id. The tenant is identified by the PER-INSTALL ENDPOINT URL the delivery is POSTed to (`/webhooks/ashby/{installId}`); each tenant's Ashby webhook is configured with a distinct URL + Ashby-Signature secret in Ashby's admin. Verification: `Ashby-Signature: sha256=<hex>` HMAC-SHA256 over the raw body. Doc-derived; ids are placeholders.",
+    "source": "doc:https://developers.ashbyhq.com/docs/webhooks (delivery body = {action, data, ...} with NO org id; tenant resolved by the per-install receiving endpoint URL + signing secret; Ashby-Signature = sha256=<hex HMAC-SHA256 of the raw body>)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/ashby/inst-7f3a9c21",
+    "install_id": "inst-7f3a9c21",
+    "headers": {
+      "Content-Type": "application/json",
+      "Ashby-Signature": "sha256=<hex HMAC-SHA256 of the raw body keyed by this install's signing secret; the contract test recomputes it>"
+    },
+    "body": {
+      "action": "applicationUpdate",
+      "data": {
+        "application": {
+          "id": "a1b2c3d4-5e6f-7081-9234-56789abcdef0",
+          "status": "Active",
+          "updatedAt": "2026-01-15T18:42:11.000Z"
+        }
+      }
+    }
+  }
+}

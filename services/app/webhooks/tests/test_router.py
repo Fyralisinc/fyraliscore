@@ -51,7 +51,7 @@ class _StubResolver:
     def __init__(self, force_outcome=None) -> None:
         self._force = force_outcome
 
-    async def resolve(self, provider, payload, headers):
+    async def resolve(self, provider, payload, headers, *, subpath=None):
         if self._force is not None:
             return self._force
         team_id = (payload or {}).get("team_id") if isinstance(payload, dict) else None
@@ -141,7 +141,7 @@ async def test_integration_runtime_resolver_preferred_over_legacy_alias(
     from services.app.webhooks.router import build_webhooks_router
 
     class _ExplodingLegacyResolver:
-        async def resolve(self, provider, payload, headers):
+        async def resolve(self, provider, payload, headers, *, subpath=None):
             raise AssertionError("legacy tenant_resolver alias was used")
 
     app = FastAPI()

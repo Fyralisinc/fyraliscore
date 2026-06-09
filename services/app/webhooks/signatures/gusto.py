@@ -1,16 +1,19 @@
 """services/app/webhooks/signatures/gusto.py — Gusto HMAC verifier.
 
-Gusto signs webhook deliveries with an HMAC over the raw request body using a
-per-subscription signing secret. The digest is presented in a signature header.
+Gusto signs webhook deliveries with an HMAC-SHA256 over the raw request body,
+keyed by the per-subscription `verification_token`, and presents the digest as a
+lowercase **hex** string in the **`X-Gusto-Signature`** header.
 
-TODO(human): confirm Gusto webhook signature scheme — the exact header NAME,
-    the HMAC digest algorithm, and the digest ENCODING (base64 vs hex, and any
-    `sha256=` prefix). UNVERIFIED. This verifier defaults to the QuickBooks/Intuit
-    archetype (HMAC-SHA256 over the raw body, base64-encoded, in the
-    `intuit-signature` header). All three knobs are module constants below
-    (`_SIGNATURE_HEADER`, `_DIGEST_ENCODING`, `_SIGNATURE_PREFIX`) so confirming
-    the real scheme is a one-line change. The verifier loops over ALL active
-    secrets to support per-subscription secret rotation.
+VERIFIED against official Gusto docs (Phase-2 contract research): the
+`Gusto/gusto.github.io` developer doc states the signature is a "hex digest of
+HMAC-SHA256 computed from the payload and the secret key" and ships an official
+Ruby `OpenSSL::HMAC.hexdigest` verification sample with a 64-char hex
+`X-Gusto-Signature` example; the current docs.gusto.com/embedded-payroll/docs/
+webhooks page describes the same algorithm. There is NO `sha256=` prefix and NO
+timestamp/replay envelope (the body `timestamp` is informational only). The
+three knobs are module constants; per the docs hex is compared
+case-insensitively for robustness. The verifier loops over ALL active secrets to
+support per-subscription secret rotation.
 
 The per-tenant signing secret is resolved by
 `services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
@@ -36,12 +39,10 @@ from services.app.webhooks.verifier import (
 )
 
 
-# --- Configurable signature scheme (see TODO atop module — UNVERIFIED) ---
-# Defaults clone the QuickBooks/Intuit archetype. Change these three constants
-# once the real Gusto scheme is confirmed.
-_SIGNATURE_HEADER = "Gusto-Signature"    # TODO(human): confirm Gusto webhook header name
-_DIGEST_ENCODING = "base64"              # "base64" | "hex"
-_SIGNATURE_PREFIX = ""                   # e.g. "sha256=" for the GitHub/Jira scheme
+# --- Signature scheme (VERIFIED from official Gusto docs) ---
+_SIGNATURE_HEADER = "X-Gusto-Signature"  # verbatim per docs.gusto.com webhooks
+_DIGEST_ENCODING = "hex"                 # lowercase hex digest (Ruby OpenSSL::HMAC.hexdigest)
+_SIGNATURE_PREFIX = ""                   # no prefix
 
 
 def _encode_digest(mac: "hmac.HMAC") -> str:
@@ -62,14 +63,16 @@ class GustoVerifier:
         now: float | None = None,
     ) -> VerifiedContext:
         require_secrets(secrets, provider=self.provider)
+        # Hex is case-insensitive; normalise to lowercase so an upper/mixed-case
+        # digest still verifies (this verifier is Gusto-only and always hex).
         signature = require_header(
             headers, _SIGNATURE_HEADER, provider=self.provider
-        )
+        ).strip().lower()
 
         matched: Secret | None = None
         for secret in secrets:
             mac = hmac.new(secret.value.encode("utf-8"), body, hashlib.sha256)
-            expected = _encode_digest(mac)
+            expected = _encode_digest(mac).lower()
             if constant_time_str_eq(expected, signature):
                 matched = secret
                 break

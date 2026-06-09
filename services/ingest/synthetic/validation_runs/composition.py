@@ -206,7 +206,12 @@ class LiveTarget:
     fireflies_workspace: str | None = None  # fireflies: workspaceId == installation_id
     miro_org: str | None = None             # miro: organizationId == installation_id
     miro_board: str | None = None           # miro: boardId (event payload context)
-    figma_team: str | None = None           # figma: team_id == installation_id
+    # figma: REAL Figma Webhooks V2 (R2) key the install by the Figma-assigned
+    # `webhook_id` (the body carries no team_id and no event id). webhook_id ==
+    # the seeded provider_installations.installation_id; team_id is backfill
+    # context only; file_key + timestamp discriminate the event.
+    figma_webhook_id: str | None = None     # figma: webhook_id == installation_id
+    figma_team: str | None = None           # figma: team_id (backfill context)
     figma_file: str | None = None           # figma: file_key (event payload context)
     # Vertical-2 direct-dispatch sources (install resolved from own table by the
     # generator; no provider_installations row).
@@ -307,11 +312,13 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
                           miro_org=fixture_params["org_id"],
                           miro_board=f"miro-board-{slug}")
     if source == "figma":
-        # team_id namespaces the external_id; file_key gives the event a real
-        # backfill file (same seed → same deterministic file_key).
+        # R2: webhook_id is the install scope (keys provider_installations +
+        # namespaces the live external_id); team_id is backfill context; file_key
+        # gives the event a real backfill file (same seed → same file_key).
         fx = make_figma(**fixture_params)
         file_key = fx["file_order"][0]
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
+                          figma_webhook_id=f"figwh-{slug}",
                           figma_team=fixture_params["team_id"],
                           figma_file=file_key)
     if source == "signal":
@@ -705,7 +712,10 @@ async def seed_live_installs(
             elif t.source == "miro":
                 inst = t.miro_org
             elif t.source == "figma":
-                inst = t.figma_team
+                # R2: live tenant resolution is by webhook_id (the real Figma V2
+                # body carries no team_id), so the provider_installations row is
+                # keyed by webhook_id — matching tenant_resolver._extract_figma.
+                inst = t.figma_webhook_id
             elif t.source == "hibob":
                 inst = t.hibob_company
             elif t.source == "ashby":

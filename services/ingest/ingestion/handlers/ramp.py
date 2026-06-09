@@ -402,18 +402,23 @@ def _entity_draft(
 def _thin_change_draft(
     entity_kind: str, entity_id: str, business_id: str, *,
     operation: str | None, last_updated: str | None,
+    version: str | None = None,
 ) -> ObservationDraft:
     """A webhook notification with no full entity body (body-less webhooks carry
     only id + operation). Emit a thin change observation; the next backfill/poll
     re-fetch fills the full body (and dedups by SyncToken if unchanged).
-    TODO(human): confirm Ramp webhook payload shape (body-less vs full entity)."""
+
+    `version` overrides the dedup discriminator (the real Ramp delivery carries a
+    stable event `id`, constant across retries — a stronger key than the
+    timestamp); when absent the change is versioned by LastUpdatedTime."""
     if not business_id or not entity_id:
         raise ValidationError(
             "ramp change missing business_id/id", channel=_CHANNEL,
         )
-    # The webhook lacks a SyncToken; version by LastUpdatedTime to keep each
-    # change event distinct (the poll re-fetch carries the authoritative body).
-    ver = last_updated or _utcnow().isoformat()
+    # Version by the explicit `version` (event id) when given, else by
+    # LastUpdatedTime, to keep each change event distinct (the poll re-fetch
+    # carries the authoritative body).
+    ver = version or last_updated or _utcnow().isoformat()
     external_id = _change_external_id(business_id, entity_id, ver)
     occurred = _parse_iso(last_updated) or _utcnow()
     op = operation or "Update"
@@ -458,7 +463,32 @@ async def handle_ramp_transaction(
     if not isinstance(payload, dict):
         raise ValidationError("ramp payload must be a JSON object", channel=_CHANNEL)
 
-    # --- LIVE WEBHOOK path (cloned eventNotifications envelope shape) ---
+    # --- LIVE WEBHOOK path (REAL Ramp: flat event) ---
+    # Real Ramp deliveries are flat: {"id","type","created_at","business_id",
+    # "object":{"id":...}}. `business_id` (root) is the tenant; `type` is
+    # dot.notation (e.g. "transactions.cleared"); `object.id` is the affected
+    # resource; `id` is the STABLE event id (constant across retries -> the
+    # dedup discriminator). No entity body (thin notification — the poll
+    # re-fetch fills it). Verified against docs.ramp.com webhooks. There is no
+    # `eventNotifications` wrapper (that was a QuickBooks-clone artifact).
+    if payload.get("business_id") and isinstance(payload.get("object"), dict):
+        business_id = str(payload.get("business_id") or "")
+        ev_type = str(payload.get("type") or "")
+        resource = ev_type.split(".", 1)[0] if ev_type else "object"
+        action = ev_type.rsplit(".", 1)[-1] if "." in ev_type else "update"
+        obj = payload.get("object") or {}
+        entity_id = str(obj.get("id") or "")
+        created = payload.get("created_at")
+        return _thin_change_draft(
+            (resource.rstrip("s") or "object"),
+            entity_id,
+            business_id,
+            operation=action,
+            last_updated=created if isinstance(created, str) else None,
+            version=str(payload.get("id") or "") or None,
+        )
+
+    # --- LIVE WEBHOOK path (legacy cloned eventNotifications envelope shape) ---
     # Shape: {"eventNotifications":[{"businessId":"...","dataChangeEvent":
     #   {"entities":[{"name":"Invoice","id":"1","operation":"Update",
     #   "lastUpdated":"..."}]}}]}. The finance harness may also send a single

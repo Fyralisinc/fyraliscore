@@ -726,6 +726,231 @@ def _safe_json_loads(raw: bytes) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# =====================================================================
+# QuickBooks multi-tenant fan-out (R1, CRITICAL #7)
+# =====================================================================
+#
+# A single Intuit webhook delivery batches `eventNotifications[]`, and EACH
+# notification carries its OWN `realmId` — a realm is a connected QuickBooks
+# company, and each company maps to a DIFFERENT Fyralis tenant. Within a
+# notification, `dataChangeEvent.entities[]` lists MULTIPLE changed entities.
+#
+# The generic single-resolve→single-ingest tail resolves one tenant (from
+# `eventNotifications[0].realmId`) and runs the handler once, so every
+# notification past the first realm — and every entity past the first — is
+# silently dropped. This fans the delivery out into one ingest per
+# `(realmId, entity)` unit, each resolved to ITS realm's tenant.
+#
+# Security: `intuit-signature` is an APP-level secret (one verifier token per
+# Intuit app, shared across every connected realm), so the single up-front
+# signature verification in `receive` already authenticates the whole batch —
+# no per-unit re-verification is needed. (Spec R1: "intuit-signature already
+# verifies multi-realm".)
+#
+# Safety / gate-invariance: each unit is re-serialised as a FLAT single-entity
+# payload `{realmId, name, id, operation, lastUpdated}` — the exact shape the
+# QBO handler's "flattened webhook" branch already accepts, producing a draft
+# BYTE-IDENTICAL to today's `eventNotifications[0]` path. So a single-realm/
+# single-entity delivery (what the all-25 gate sends) fans out to exactly one
+# unit and yields the same observation + the same 202 cutover status as before.
+
+
+def _qbo_fanout_units(
+    payload: Mapping[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Split a QuickBooks `eventNotifications` delivery into
+    `(realm_id, flat_single_entity_payload)` units.
+
+    Returns one unit per (notification realm × changed entity). Drops
+    notifications/entities that carry no realmId or are malformed. Returns
+    `[]` when nothing resolvable is present (caller surfaces a 400).
+    """
+    notifications = payload.get("eventNotifications")
+    if not isinstance(notifications, list):
+        return []
+    units: list[tuple[str, dict[str, Any]]] = []
+    for notif in notifications:
+        if not isinstance(notif, dict):
+            continue
+        realm_id = str(notif.get("realmId") or "")
+        if not realm_id:
+            continue
+        dce = notif.get("dataChangeEvent")
+        ents = dce.get("entities") if isinstance(dce, dict) else None
+        if not isinstance(ents, list):
+            continue
+        for ent in ents:
+            if not isinstance(ent, dict):
+                continue
+            units.append(
+                (
+                    realm_id,
+                    {
+                        "realmId": realm_id,
+                        "name": ent.get("name"),
+                        "id": ent.get("id"),
+                        "operation": ent.get("operation"),
+                        "lastUpdated": ent.get("lastUpdated"),
+                    },
+                )
+            )
+    return units
+
+
+async def _process_qbo_unit(
+    request: Request,
+    *,
+    runtime: WebhookRuntime,
+    tenant_id: Any,
+    unit_payload: dict[str, Any],
+) -> int:
+    """Process ONE resolved (realm, entity) QuickBooks unit through the same
+    cutover-or-inline decision the generic tail uses for a single delivery.
+
+    Returns the HTTP status the unit produced (202 = Kafka cutover, 200 =
+    inline). Raises `ValidationError` / `CompanyOSError` on an inline ingest
+    rejection (the caller logs + skips the offending unit).
+    """
+    unit_raw = json.dumps(unit_payload, separators=(",", ":")).encode("utf-8")
+
+    flag_enabled = False
+    tenant_flags = runtime.tenant_flags
+    if tenant_flags is not None:
+        flag_enabled = await tenant_flags.kafka_path_enabled(tenant_id)
+
+    if flag_enabled:
+        succeeded = await _attempt_kafka_path(
+            request,
+            runtime=runtime,
+            provider="quickbooks",
+            source="quickbooks",
+            tenant_id=tenant_id,
+            raw_body=unit_raw,
+            payload=unit_payload,
+        )
+        if succeeded:
+            metrics.record_kafka_path_outcome("quickbooks", "success")
+            return 202
+        metrics.record_kafka_path_outcome("quickbooks", "fallback")
+        log.warning(
+            "router.kafka_path_fallback_to_inline",
+            provider="quickbooks",
+            tenant_id=str(tenant_id),
+        )
+
+    deps = _deps(request)
+    await ingest(
+        "quickbooks:object",
+        unit_payload,
+        pool=deps.pool,
+        tenant_id=tenant_id,
+        actor_repo=deps.actor_repo,
+        alias_repo=deps.alias_repo,
+        embedder=deps.embedder,
+        request_headers=dict(request.headers),
+    )
+    # Mirror the generic tail: shadow-write only when NOT on the cutover path.
+    if not flag_enabled:
+        await _maybe_shadow_write_webhook(
+            request,
+            runtime=runtime,
+            provider="quickbooks",
+            tenant_id=tenant_id,
+            raw_body=unit_raw,
+            payload=unit_payload,
+        )
+    return 200
+
+
+async def _ingest_quickbooks_fanout(
+    request: Request,
+    *,
+    runtime: WebhookRuntime,
+    payload: Mapping[str, Any],
+    secret_label: str | None,
+) -> JSONResponse:
+    """Fan a verified QuickBooks `eventNotifications` delivery out into one
+    ingest per `(realmId, entity)`, each resolved to its realm's tenant.
+
+    Caller guarantees: signature already verified (app-level intuit-signature).
+    """
+    units = _qbo_fanout_units(payload)
+    if not units:
+        return JSONResponse(
+            {
+                "code": "validation_error",
+                "message": "quickbooks webhook carried no (realm, entity) units",
+                "context": {"provider": "quickbooks"},
+            },
+            status_code=400,
+        )
+
+    resolver = runtime.tenant_resolver
+    headers = dict(request.headers)
+    statuses: set[int] = set()
+    ingested = 0
+    unknown_realms = 0
+    realm_tenant: dict[str, Any] = {}
+
+    for realm_id, unit_payload in units:
+        tenant_id = realm_tenant.get(realm_id)
+        if tenant_id is None:
+            # Resolve THIS realm to its own tenant. `_extract_quickbooks`
+            # reads a top-level `realmId`, so a minimal `{realmId}` resolves.
+            outcome = await resolver.resolve(
+                "quickbooks", {"realmId": realm_id}, headers,
+            )
+            if not isinstance(outcome, Resolved):
+                unknown_realms += 1
+                # Never log the realmId verbatim (resolver FR-015 posture).
+                log.warning("qbo_fanout_unknown_realm", provider="quickbooks")
+                continue
+            tenant_id = outcome.tenant_id
+            realm_tenant[realm_id] = tenant_id
+        try:
+            status = await _process_qbo_unit(
+                request,
+                runtime=runtime,
+                tenant_id=tenant_id,
+                unit_payload=unit_payload,
+            )
+        except (ValidationError, CompanyOSError) as exc:
+            # One malformed entity must not sink the rest of the batch.
+            log.warning(
+                "qbo_fanout_unit_rejected",
+                provider="quickbooks",
+                code=getattr(exc, "code", "error"),
+            )
+            continue
+        statuses.add(status)
+        ingested += 1
+
+    if ingested == 0:
+        # Every realm unknown/disabled (or every unit rejected) — surface as
+        # an auth failure so the provider retries + ops notices, matching the
+        # generic UnknownInstallation mapping.
+        err = WebhookVerificationError(
+            "unknown_installation",
+            "no enabled installation matched any realm in the delivery",
+            provider="quickbooks",
+        )
+        return _err_response(err, status_code=401)
+
+    # 202 if any unit took the Kafka cutover path (the gate asserts {202} for
+    # QBO when kafka_path_enabled is TRUE); otherwise 200 (inline).
+    status_code = 202 if 202 in statuses else 200
+    return JSONResponse(
+        {
+            "status": "accepted",
+            "units": ingested,
+            "unknown_realms": unknown_realms,
+            "secret_label": secret_label,
+        },
+        status_code=status_code,
+        headers={"X-Secret-Label": secret_label or ""},
+    )
+
+
 def build_webhooks_router() -> APIRouter:
     """Create the FastAPI router. Mounted at the app root by the
     gateway so paths read as `/webhooks/{provider}/{subpath:path}`.
@@ -816,8 +1041,11 @@ def build_webhooks_router() -> APIRouter:
                 },
                 status_code=503,
             )
+        # R3: pass the URL subpath so per-install-endpoint providers (Ashby)
+        # can resolve the tenant from `/webhooks/{provider}/{installId}` — their
+        # real deliveries carry no tenant id in the body.
         outcome = await tenant_resolver.resolve(
-            provider, payload or {}, dict(request.headers),
+            provider, payload or {}, dict(request.headers), subpath=subpath,
         )
         tenant_id_uuid = (
             outcome.tenant_id if isinstance(outcome, Resolved) else None
@@ -1022,6 +1250,26 @@ def build_webhooks_router() -> APIRouter:
                     return JSONResponse(
                         {"handled": "filtered_repo"}, status_code=200,
                     )
+
+        # ---- QuickBooks multi-tenant fan-out (R1, CRITICAL #7) ----
+        # A QBO `eventNotifications` delivery may batch multiple realms (each a
+        # distinct tenant) × multiple entities. The generic single-tenant tail
+        # below would drop all but the first. Intercept here — AFTER signature
+        # verification (intuit-signature is app-level, so the one verification
+        # covers the whole batch) and AFTER outcome enforcement (a Resolved
+        # first-realm proves at least one install exists) — and fan out into
+        # per-(realm, entity) ingests, each re-resolved to its own tenant.
+        # A single-realm/single-entity delivery yields exactly one unit, so the
+        # observation + 202 cutover status are identical to the prior path.
+        if provider == "quickbooks" and isinstance(
+            (payload or {}).get("eventNotifications"), list
+        ):
+            return await _ingest_quickbooks_fanout(
+                request,
+                runtime=runtime,
+                payload=payload or {},
+                secret_label=ctx.secret_label,
+            )
 
         # ---- Kafka-first cutover branch --------------------------
         # Inverted default (kafka-first): the resolved tenant is on the full

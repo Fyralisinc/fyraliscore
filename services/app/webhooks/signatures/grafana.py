@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import time
 from typing import Mapping, Sequence
 
 from services.app.webhooks.verifier import (
@@ -41,6 +42,12 @@ from services.app.webhooks.verifier import (
 
 
 _SIGNATURE_HEADER = "X-Grafana-Alerting-Signature"
+
+# Replay window for timestamp-in-signature mode — parity with Slack/Discord
+# (300s). Only enforced when the contact point is configured with a timestamp
+# header (GRAFANA_WEBHOOK_TIMESTAMP_HEADER); default body-only mode is
+# unaffected.
+_DEFAULT_MAX_AGE_S = int(os.environ.get("GRAFANA_MAX_TIMESTAMP_AGE_S", "300"))
 
 
 def _timestamp_header_name() -> str | None:
@@ -66,13 +73,38 @@ class GrafanaVerifier:
 
         # Optional timestamp-in-signature mode (contact-point configurable).
         ts_header = _timestamp_header_name()
-        signed_ts: str | None = None
+        signed_ts: int | None = None
         signed_bytes = body
         if ts_header is not None:
             ts_value = headers.get(ts_header) or headers.get(ts_header.lower())
             if ts_value:
-                signed_ts = str(ts_value).strip()
-                signed_bytes = f"{signed_ts}:".encode("utf-8") + body
+                raw_ts = str(ts_value).strip()
+                try:
+                    signed_ts = int(raw_ts)
+                except ValueError:
+                    raise WebhookVerificationError(
+                        "malformed_signature_header",
+                        f"{ts_header} not integer: {raw_ts!r}",
+                        provider=self.provider,
+                    )
+                # Replay-window check (parity with Slack/Discord/Stripe). A
+                # captured valid delivery must not be accepted arbitrarily
+                # later: grafana:alert external_ids are versioned by
+                # (status, representative-ts), so a replay with a tampered
+                # startsAt would otherwise mint fresh observations that bypass
+                # the dedup layer and flood the alert-state history.
+                now_s = int(now if now is not None else time.time())
+                if abs(now_s - signed_ts) > _DEFAULT_MAX_AGE_S:
+                    raise WebhookVerificationError(
+                        "expired_timestamp",
+                        "grafana signature timestamp outside replay window",
+                        provider=self.provider,
+                        max_age_s=_DEFAULT_MAX_AGE_S,
+                    )
+                # Sign over the EXACT timestamp string Grafana sent (not the
+                # re-stringified int) so byte-equality with the provider's HMAC
+                # input is preserved.
+                signed_bytes = f"{raw_ts}:".encode("utf-8") + body
 
         matched: Secret | None = None
         for secret in secrets:

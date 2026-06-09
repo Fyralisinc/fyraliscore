@@ -378,32 +378,42 @@ def _extract_ramp(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str
     # (provider_installations provider='ramp', installation_id=<business_id>).
     # Ramp event deliveries may wrap the body in an `eventNotifications`-style
     # array (QBO shape) or carry a top-level `business_id`; check both, mirroring
-    # _extract_quickbooks. The synthetic finance harness sends a top-level
-    # `business_id`. The signing secret is resolved separately in
+    # _extract_quickbooks. The signing secret is resolved separately in
     # services/app/webhooks/secrets.py.
-    # TODO(human): confirm ramp webhook tenant-id field (business_id vs an
-    #   event-envelope path) against Ramp webhook docs.
+    #
+    # VERIFIED against docs.ramp.com webhooks: a real Ramp delivery is a flat
+    # event object with a ROOT-level `business_id` (snake_case) — "The webhook
+    # payload always includes a business_id". There is NO `eventNotifications`
+    # wrapper (that was a QuickBooks-clone artifact); the prior
+    # `eventNotifications[0].business_id` read always missed, so live Ramp
+    # tenant resolution failed. Read the root field first.
+    biz = _str_or_none(payload.get("business_id"))
+    if biz is not None:
+        return biz
+    # Legacy/synthetic fallback (pre-real-shape harness payloads).
     notifications = payload.get("eventNotifications")
     if isinstance(notifications, list) and notifications:
         first = notifications[0]
         if isinstance(first, Mapping):
-            biz = _str_or_none(first.get("business_id"))
-            if biz is not None:
-                return biz
-    return _str_or_none(payload.get("business_id"))
+            return _str_or_none(first.get("business_id"))
+    return None
 
 
 def _extract_gusto(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
-    # IN-FIN2 (OAuth / QuickBooks archetype). Gusto scopes installs by
-    # `company_uuid`; the install is registered keyed by company_uuid
-    # (provider_installations provider='gusto', installation_id=<company_uuid>).
-    # Gusto event deliveries may wrap the body in an `eventNotifications`-style
-    # array (QBO shape) or carry a top-level `company_uuid`; check both,
-    # mirroring _extract_quickbooks. The synthetic finance harness sends a
-    # top-level `company_uuid`. The signing secret is resolved separately in
+    # The install is keyed by the Gusto company UUID (provider_installations
+    # provider='gusto', installation_id=<company_uuid>). VERIFIED against
+    # docs.gusto.com webhooks: real Gusto deliveries are flat snake_case and the
+    # company UUID is ALWAYS carried in `resource_uuid` (resource_type is always
+    # "Company"; entity_type/entity_uuid name the changed resource). There is no
+    # `company_uuid`/`companyId` body key and no `eventNotifications` wrapper —
+    # those were a QuickBooks-clone artifact. Subscriptions are partner-level
+    # with a shared endpoint, so the company is derived from the body, not a
+    # per-install URL. The signing secret is resolved separately in
     # services/app/webhooks/secrets.py.
-    # TODO(human): confirm gusto webhook tenant-id field (company_uuid vs an
-    #   event-envelope path) against Gusto webhook docs.
+    resource_uuid = _str_or_none(payload.get("resource_uuid"))
+    if resource_uuid is not None:
+        return resource_uuid
+    # Legacy/synthetic fallbacks (pre-real-shape harness payloads).
     notifications = payload.get("eventNotifications")
     if isinstance(notifications, list) and notifications:
         first = notifications[0]
@@ -463,15 +473,23 @@ def _extract_miro(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str
 
 
 def _extract_figma(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
-    # IN-FIGMA (Brex/HMAC archetype for the synthetic gate; real Figma uses a
-    # passcode-in-body callback). Figma scopes installs by team; the install is
-    # registered keyed by the team id (provider_installations provider='figma',
-    # installation_id=<team_id>). Figma carries no installation_id in the URL
-    # path, so the team id is read from the webhook body's top-level `team_id`
-    # (the synthetic harness sends it explicitly). The signing secret / passcode
-    # is resolved separately in services/app/webhooks/secrets.py.
-    # TODO(human): confirm figma webhook tenant-id field against Figma Webhooks V2
-    #   docs (the body field carrying team_id).
+    # IN-FIGMA. VERIFIED against Figma Webhooks V2 docs (R2): a real Figma
+    # delivery carries a Figma-assigned `webhook_id` and NO `team_id` in the
+    # body (the webhook is created scoped to a team/project/file, but the
+    # delivered event identifies itself only by webhook_id). So the install is
+    # keyed by webhook_id — provider_installations(provider='figma',
+    # installation_id=<webhook_id>), captured at registration from the
+    # POST /v2/webhooks response (see integrations/figma/onboarding.py). Read
+    # the real `webhook_id` first; fall back to the legacy synthetic `team_id`
+    # so pre-R2 harness payloads still resolve during cutover. Figma carries no
+    # installation_id in the URL path. The passcode-in-body secret is resolved
+    # separately in services/app/webhooks/secrets.py (no HMAC header).
+    webhook_id = _str_or_none(payload.get("webhook_id")) or _str_or_none(
+        payload.get("webhookId")
+    )
+    if webhook_id is not None:
+        return webhook_id
+    # Legacy/synthetic fallback (pre-real-shape harness payloads).
     team = _str_or_none(payload.get("team_id"))
     if team is not None:
         return team
@@ -494,17 +512,16 @@ def _extract_hibob(payload: Mapping[str, Any], headers: Mapping[str, str]) -> st
 
 
 def _extract_ashby(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
-    # IN-RECRUITING (gusto-structure / API-key-as-Basic-username archetype). Ashby
-    # scopes installs by organization; the install is registered keyed by the
-    # Ashby org id (provider_installations provider='ashby',
-    # installation_id=<org_id>). The synthetic harness sends the org id at top
-    # level as `organizationId` (camel). The signing secret is resolved
-    # separately in services/app/webhooks/secrets.py.
-    # TODO(human): in production Ashby does NOT carry the org id in the webhook
-    #   body — the tenant is resolved by the per-install endpoint/secret. The
-    #   `organizationId` body field here is the synthetic-gate stand-in; confirm
-    #   the real per-endpoint resolution against Ashby webhook docs before
-    #   production.
+    # IN-RECRUITING. VERIFIED (R3): real Ashby webhook deliveries carry NO org id
+    # in the body (`{webhookActionId, action, data}`) — the tenant is named by
+    # the PER-INSTALL ENDPOINT URL (`/webhooks/ashby/{installId}`), each install
+    # configured with a distinct URL + Ashby-Signature secret. So the resolver
+    # resolves Ashby from the URL path FIRST (see `_PATH_RESOLVED_PROVIDERS` +
+    # `TenantResolver._resolve`); this body extractor is now only the FALLBACK
+    # for legacy/synthetic (org-in-body) payloads posted to the bare endpoint.
+    # The install is registered keyed by the path segment / org id
+    # (provider_installations provider='ashby', installation_id=<installId>); the
+    # signing secret is resolved separately in services/app/webhooks/secrets.py.
     return _str_or_none(payload.get("organizationId"))
 
 
@@ -513,6 +530,24 @@ def _host_from_self(self_url: Any) -> str | None:
         return None
     host = self_url.split("://", 1)[1].split("/", 1)[0].strip()
     return host or None
+
+
+# R3 — providers that register a PER-INSTALL ENDPOINT and resolve the tenant from
+# the URL path (`/webhooks/{provider}/{installId}`) rather than a body field.
+# Ashby real deliveries carry NO org id in the body (`{webhookActionId, action,
+# data}`); the tenant is named by the receiving endpoint URL (each install is
+# configured with a distinct webhook URL + signing secret in Ashby's admin). The
+# body extractor stays as a legacy/synthetic fallback.
+_PATH_RESOLVED_PROVIDERS: frozenset[str] = frozenset({"ashby"})
+
+
+def _first_path_segment(subpath: str | None) -> str | None:
+    """The first segment of a webhook subpath (`installId` from
+    `/webhooks/{provider}/{installId}[/...]`). None when empty."""
+    if not subpath:
+        return None
+    seg = subpath.strip("/").split("/", 1)[0].strip()
+    return seg or None
 
 
 PROVIDER_EXTRACTORS: dict[
@@ -607,10 +642,12 @@ class TenantResolver:
         provider: ResolverProvider,
         payload: Mapping[str, Any],
         headers: Mapping[str, str],
+        *,
+        subpath: str | None = None,
     ) -> ResolverOutcome:
         start = self._clock()
         try:
-            return await self._resolve(provider, payload, headers)
+            return await self._resolve(provider, payload, headers, subpath)
         finally:
             self._metrics.observe_duration(provider, self._clock() - start)
 
@@ -619,6 +656,7 @@ class TenantResolver:
         provider: ResolverProvider,
         payload: Mapping[str, Any],
         headers: Mapping[str, str],
+        subpath: str | None = None,
     ) -> ResolverOutcome:
         # Step 1: extract the provider-native installation identifier.
         extractor = PROVIDER_EXTRACTORS.get(provider)
@@ -628,7 +666,15 @@ class TenantResolver:
             # introducing a separate outcome (Constitution §X).
             self._metrics.record_outcome(provider, "payload_missing")
             return PayloadMissing(provider=provider)
-        installation_id = extractor(payload, headers)
+        # R3: per-install-endpoint providers (Ashby) resolve the tenant from the
+        # URL path segment (`/webhooks/ashby/{installId}`) — real deliveries
+        # carry no org id in the body. Prefer the path; fall back to the body
+        # extractor so legacy/synthetic (org-in-body) payloads still resolve.
+        installation_id: str | None = None
+        if provider in _PATH_RESOLVED_PROVIDERS:
+            installation_id = _first_path_segment(subpath)
+        if installation_id is None:
+            installation_id = extractor(payload, headers)
         if installation_id is None:
             self._metrics.record_outcome(provider, "payload_missing")
             return PayloadMissing(provider=provider)

@@ -117,28 +117,14 @@ def _encode_cursor(c: AwsCursor) -> dict[str, Any]:
 
 
 # Test seam — production opens a real AwsClient against the install's auth;
-# the mock harness / tests rebind this symbol to inject a fake. NOTE: unlike the
-# Grafana seam this builds the client INLINE (the shared fetchers/_clients.py
-# `open_aws_client` opener is owned by the wiring phase); see notes.
+# the mock harness / tests rebind this symbol to inject a fake. Delegates to the
+# shared fetchers/_clients.py `open_aws_client` opener (matching every other
+# fetcher's seam), which resolves the REAL process-wide secret_store + pool —
+# the prior inline build hardcoded secret_store=None, so resolve_credentials
+# raised before the first LookupEvents call on any real install.
 async def _open_aws_client(install: asyncpg.Record):  # noqa: ANN202
-    from services.ingest.integrations.aws.client import AwsClient
-
-    client = AwsClient(
-        account_id=str(install["account_id"]) if "account_id" in install else "",
-        region=str(install["region"]) if "region" in install else "us-east-1",
-        pool=None,
-        secret_store=None,
-        tenant_id=install["tenant_id"] if "tenant_id" in install else None,
-        credential_kind=(
-            install["credential_kind"] if "credential_kind" in install else None
-        ),
-        secret_ref=install["secret_ref"] if "secret_ref" in install else None,
-    )
-
-    async def _close() -> None:
-        await client.aclose()
-
-    return client, _close
+    from services.ingest.ingestion.fetchers._clients import open_aws_client
+    return await open_aws_client(install)
 
 
 def _account_of(install: asyncpg.Record) -> str:

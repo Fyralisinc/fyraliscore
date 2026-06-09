@@ -168,6 +168,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
     if requested_keys is not None and not isinstance(requested_keys, list):
         raise HTTPException(status_code=400, detail="file_keys must be a list")
     team_id = (body.get("team_id") or "").strip() or None
+    # R2: the connect wizard captures the Figma-assigned webhook_id from the
+    # POST /v2/webhooks response and supplies it here; it keys the live
+    # provider_installations row (the real Figma V2 body carries no team_id).
+    webhook_id = (body.get("webhook_id") or "").strip() or None
     webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
     # 1. Verify creds + resolve the file set — before any write.
@@ -206,15 +210,16 @@ async def connect_finalize(request: Request) -> JSONResponse:
         webhook_secret_ref=webhook_secret_ref,
     )
 
-    # 4. Live webhook edge — needs both the team id (the webhook installation_id)
-    #    and a signing secret/passcode.
+    # 4. Live webhook edge (R2) — keyed by the Figma-assigned webhook_id (the
+    #    real V2 delivery carries no team_id), plus a signing secret/passcode.
     webhook_registered = False
-    if webhook_secret_ref and team_id:
+    if webhook_secret_ref and webhook_id:
         await register_webhook_installation(
             pool,
             tenant_id=tenant_id,
-            team_id=team_id,
+            webhook_id=webhook_id,
             webhook_secret_ref=webhook_secret_ref,
+            team_id=team_id,
         )
         webhook_registered = True
 

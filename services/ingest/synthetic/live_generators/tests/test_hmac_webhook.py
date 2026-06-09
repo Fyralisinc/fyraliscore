@@ -62,6 +62,7 @@ class _T:
         self.fireflies_workspace = "ffw-demo0"
         self.miro_org = "miro-org-demo0"
         self.miro_board = "miro-board-demo0"
+        self.figma_webhook_id = "figwh-demo0"
         self.figma_team = "figteam-demo0"
         self.figma_file = "figfile-demo0"
         # IN-PEOPLE/IN-RECRUITING HMAC sources (linkedin is poll-only — absent).

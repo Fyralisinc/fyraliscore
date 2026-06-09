@@ -128,6 +128,7 @@ _metrics: dict[str, float] = {
     "breaker.bookkeeping_reset_on_operator_reenable": 0.0,
     "breaker.lag_measurement_failures": 0.0,
     "breaker.signal_read_failures":   0.0,
+    "breaker.flag_flip_failures":     0.0,
 }
 
 
@@ -291,7 +292,32 @@ async def _measure_kafka_lag_default(
     from the data plane's actual lane set: add a source to the envelope
     literal and a new lane is measured automatically. A single AdminClient +
     probe Consumer are reused across all lanes. Tests rebind this with a mock.
+
+    The body runs entirely with **synchronous** confluent_kafka C-extension
+    calls (`.result(timeout=…)`, `get_watermark_offsets`, `poll`), so it is
+    offloaded to a worker thread via `asyncio.to_thread`. Running it directly
+    on the event loop would block the loop — and thus the heartbeat ticker —
+    for up to ``len(INGESTION_SOURCES) × timeout`` seconds when the broker is
+    slow, which is exactly the degraded-broker incident the breaker exists to
+    handle (the blocking probe would otherwise *be* the wedge `/healthz`
+    detects). The probe Consumer/AdminClient are created, used, and closed
+    entirely inside the thread, so no confluent handle crosses the boundary.
     """
+    return await asyncio.to_thread(
+        _measure_kafka_lag_sync,
+        bootstrap=bootstrap,
+        normalizer_group_base=normalizer_group_base,
+    )
+
+
+def _measure_kafka_lag_sync(
+    *,
+    bootstrap: str,
+    normalizer_group_base: str,
+) -> dict[str, dict[int, float]]:
+    """Synchronous body of :func:`_measure_kafka_lag_default` — runs in a
+    worker thread (see that function's docstring). All confluent_kafka calls
+    here are blocking C-extension calls."""
     # Lazy import — confluent_kafka is a heavy dep; not all callers need it.
     from confluent_kafka.admin import AdminClient
     from confluent_kafka import Consumer
@@ -405,7 +431,27 @@ async def _sample_active_tenants_default(
     on, so the breaker can take the worst-case lag across them.
     `traffic_signal.py` produces these signals with `key=tenant_id_bytes`
     and a JSON value carrying `source` + `raw_partition`.
+
+    Offloaded to a worker thread (see :func:`_measure_kafka_lag_default`) —
+    the body is blocking confluent_kafka C-extension calls and must not run
+    on the breaker's event loop.
     """
+    return await asyncio.to_thread(
+        _sample_active_tenants_sync,
+        bootstrap=bootstrap,
+        signal_topic=signal_topic,
+        lookback_sec=lookback_sec,
+    )
+
+
+def _sample_active_tenants_sync(
+    *,
+    bootstrap: str,
+    signal_topic: str,
+    lookback_sec: int,
+) -> dict[UUID, dict[str, int]]:
+    """Synchronous body of :func:`_sample_active_tenants_default` — runs in a
+    worker thread. Blocking confluent_kafka calls only."""
     from confluent_kafka import Consumer, TopicPartition
     import json
     import time as _time
@@ -443,7 +489,14 @@ async def _sample_active_tenants_default(
         while _time.monotonic() < deadline:
             msg = consumer.poll(timeout=0.5)
             if msg is None:
-                break
+                # `None` means "no message delivered in this 0.5s poll", NOT
+                # "end of partition" — confluent returns it on any empty poll
+                # window. Breaking here truncated the read at the first gap,
+                # silently dropping tenants that emitted earlier in the
+                # lookback window (freezing their breach counter and delaying
+                # a trip). Keep polling until the 5s deadline drains the
+                # assigned offsets.
+                continue
             if msg.error():
                 continue
             ts_kind, ts_ms = msg.timestamp()
@@ -646,14 +699,16 @@ async def _process_tick(
 
         # Step 5: trip if window reached.
         if entry.consecutive_breach_ticks >= config.breach_window_ticks:
-            entry.tripped = True
-            entry.tripped_at = now
-            # Order: persist breach state FIRST (so a crash between
-            # the trip-record and the flag flip doesn't leave the
-            # flag flipped without an audit trail), then flip the
-            # flag, then alert. The flag flip is the user-visible
-            # change; the state row is the audit record.
-            await _persist_state(pool, config.instance_name, entry)
+            # Order: flip the flag FIRST, then record tripped=TRUE only on
+            # success. The flag flip is the load-bearing safety action; the
+            # state row is its audit record. If we marked tripped=TRUE before
+            # the flip and the flip then failed (e.g. a Postgres/TenantFlags
+            # outage), the NEXT tick would observe flag=TRUE + tripped=TRUE and
+            # misread it as an operator re-enable (the branch above), resetting
+            # the breach counter — letting a lagging tenant evade the breaker
+            # indefinitely for the duration of the outage. Flipping first and
+            # leaving the counter PINNED at the window on failure makes the
+            # next tick re-enter this branch and RETRY the flip instead.
             try:
                 await tenant_flags.set_bool(
                     tenant_id,
@@ -669,16 +724,21 @@ async def _process_tick(
                     ),
                 )
             except Exception:  # noqa: BLE001
-                # Flag flip failed — we already persisted the
-                # tripped state, so the next tick will see this
-                # tenant as tripped (and skip it). The flag flip
-                # will be retried by... no, it won't. This is a
-                # gap. Log loudly so operators can flip manually.
+                # Flag flip failed. Do NOT mark tripped — keep the counter
+                # pinned at the window so the next tick retries the flip.
+                # Persist the (un-tripped, pinned-counter) state so a restart
+                # mid-outage resumes at the threshold rather than from zero.
+                _bump("breaker.flag_flip_failures")
                 log.exception(
                     "circuit_breaker.flag_flip_failed",
                     extra={"tenant_id": str(tenant_id)},
                 )
+                await _persist_state(pool, config.instance_name, entry)
                 continue
+            # Flip succeeded — record the trip (audit) and persist.
+            entry.tripped = True
+            entry.tripped_at = now
+            await _persist_state(pool, config.instance_name, entry)
             _bump("breaker.trips")
             try:
                 await alert_fn(tenant_id, {

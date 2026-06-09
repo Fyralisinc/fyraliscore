@@ -353,17 +353,23 @@ def _entity_draft(
 def _thin_change_draft(
     entity_kind: str, entity_id: str, company_uuid: str, *,
     operation: str | None, last_updated: str | None,
+    version: str | None = None,
 ) -> ObservationDraft:
-    """A webhook notification with no full entity body (Intuit webhooks carry
+    """A webhook notification with no full entity body (thin notifications carry
     only id + operation). Emit a thin change observation; the next backfill/poll
-    re-fetch fills the full body (and dedups by SyncToken if unchanged)."""
+    re-fetch fills the full body (and dedups by SyncToken if unchanged).
+
+    `version` overrides the dedup discriminator (the real Gusto delivery carries
+    its own event `uuid`, a stronger key than the timestamp); when absent the
+    change is versioned by LastUpdatedTime, as the Intuit-shaped path does."""
     if not company_uuid or not entity_id:
         raise ValidationError(
             "gusto change missing company_uuid/id", channel=_CHANNEL,
         )
-    # The webhook lacks a SyncToken; version by LastUpdatedTime to keep each
-    # change event distinct (the poll re-fetch carries the authoritative body).
-    ver = last_updated or _utcnow().isoformat()
+    # Version by the explicit `version` (event uuid) when given, else by
+    # LastUpdatedTime, to keep each change event distinct (the poll re-fetch
+    # carries the authoritative body).
+    ver = version or last_updated or _utcnow().isoformat()
     external_id = idempotency.gusto_change(
         company_uuid, entity_kind, entity_id, ver,
     )
@@ -410,7 +416,45 @@ async def handle_gusto_object(
     if not isinstance(payload, dict):
         raise ValidationError("gusto payload must be a JSON object", channel=_CHANNEL)
 
-    # --- LIVE WEBHOOK path (Intuit eventNotifications) ---
+    # --- LIVE WEBHOOK path (REAL Gusto: flat thin notification) ---
+    # Real Gusto deliveries are flat snake_case:
+    #   {"uuid","event_type","resource_type":"Company","resource_uuid":<company>,
+    #    "entity_type","entity_uuid","timestamp"}
+    # `resource_uuid` is ALWAYS the company (resource_type is always "Company");
+    # `entity_type`/`entity_uuid` name the changed resource; the body carries no
+    # entity body (thin notification — the poll re-fetch fills it). Versioned by
+    # the delivery's own `uuid` so re-deliveries dedup and distinct events stay
+    # distinct. Verified against docs.gusto.com {webhooks,company-,employee-,
+    # notification-events}.
+    if payload.get("resource_type") is not None and payload.get("resource_uuid"):
+        company_uuid = str(payload.get("resource_uuid") or "")
+        entity_type = str(
+            payload.get("entity_type") or payload.get("resource_type") or "object"
+        )
+        entity_uuid = str(
+            payload.get("entity_uuid") or payload.get("resource_uuid") or ""
+        )
+        event_type = str(payload.get("event_type") or "")
+        action = event_type.rsplit(".", 1)[-1] if event_type else "update"
+        ts = payload.get("timestamp")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            last_updated_iso: str | None = datetime.fromtimestamp(
+                int(ts), tz=timezone.utc
+            ).isoformat()
+        elif isinstance(ts, str) and ts:
+            last_updated_iso = ts
+        else:
+            last_updated_iso = None
+        return _thin_change_draft(
+            entity_type.strip().lower() or "object",
+            entity_uuid,
+            company_uuid,
+            operation=action,
+            last_updated=last_updated_iso,
+            version=str(payload.get("uuid") or "") or None,
+        )
+
+    # --- LIVE WEBHOOK path (legacy Intuit eventNotifications / harness) ---
     # Shape: {"eventNotifications":[{"companyId":"...","dataChangeEvent":
     #   {"entities":[{"name":"Invoice","id":"1","operation":"Update",
     #   "lastUpdated":"..."}]}}]}. The finance harness may also send a single

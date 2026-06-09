@@ -123,15 +123,48 @@ def _is_state_change(event_type: str, event: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------
 
 def _event_draft(
-    event: dict[str, Any], team_id: str, file_key: str, event_type: str,
+    event: dict[str, Any], scope_id: str, team_id: str, file_key: str,
+    event_type: str,
 ) -> ObservationDraft:
-    event_id = str(event.get("id") or event.get("event_id") or "")
-    if not team_id or not event_id:
+    """Build the observation draft.
+
+    `scope_id` is the value that namespaces the external_id — the Figma
+    `webhook_id` for a REAL live delivery (R2), or the `team_id` for a
+    backfill/legacy record. It MUST be non-empty (the global UNIQUE has no
+    tenant_id, so an un-namespaced key would let two tenants collide).
+
+    external_id discriminator:
+      - event carries an id (backfill / legacy synthetic webhook) ->
+        `figma:{scope}:event:{event_id}:{version}` (VERSIONED, unchanged).
+      - REAL Figma V2 webhook (no stable event id) -> `(file_key, timestamp)`
+        is the only durable discriminator the delivery offers, so
+        `figma:{scope}:event:{file_key}:{timestamp}`.
+    """
+    if not scope_id:
         raise ValidationError(
-            "figma event missing team_id/id", channel=_CHANNEL,
+            "figma event missing scope id (webhook_id/team_id)",
+            channel=_CHANNEL,
         )
-    version = _event_version(event)
-    external_id = _figma_event_external_id(team_id, event_id, version)
+    event_id = str(event.get("id") or event.get("event_id") or "")
+    if event_id:
+        version = _event_version(event)
+        external_id = _figma_event_external_id(scope_id, event_id, version)
+    else:
+        # Real Figma Webhooks V2 carry NO event id — the durable discriminator
+        # is (file_key, timestamp). `_figma_event_external_id` is the same
+        # f-string, so this stays one shape: figma:{scope}:event:{file_key}:{ts}.
+        ts = str(
+            event.get("timestamp")
+            or event.get("createdAt")
+            or event.get("created_at")
+            or ""
+        )
+        if not file_key or not ts:
+            raise ValidationError(
+                "figma webhook missing file_key/timestamp", channel=_CHANNEL,
+            )
+        version = ts
+        external_id = _figma_event_external_id(scope_id, file_key, ts)
 
     occurred = (
         _parse_iso(event.get("createdAt"))
@@ -160,18 +193,23 @@ def _event_draft(
     if isinstance(actor, str) and actor:
         content_text = f"{content_text} · by {actor}"
 
+    webhook_id = str(event.get("webhook_id") or "")
     entities: list[dict[str, Any]] = [
         {"type": "figma_file", "id": file_key},
-        {"type": "figma_team", "id": team_id},
     ]
+    if team_id:
+        entities.append({"type": "figma_team", "id": team_id})
+    if webhook_id:
+        entities.append({"type": "figma_webhook", "id": webhook_id})
     if isinstance(actor, str) and actor:
         entities.append({"type": "person", "id": actor, "role": "actor"})
 
     content: dict[str, Any] = {
         "object_type": "event",
         "event_type": event_type or event.get("event_type"),
-        "event_id": event_id,
-        "team_id": team_id,
+        "event_id": event_id or None,
+        "team_id": team_id or None,
+        "webhook_id": webhook_id or None,
         "file_key": file_key or event.get("file_key"),
         "version": version,
         "label": label,
@@ -219,6 +257,25 @@ def _file_key_of(payload: dict[str, Any], event: dict[str, Any] | None) -> str:
     return ""
 
 
+def _scope_id_of(payload: dict[str, Any], event: dict[str, Any] | None) -> str:
+    """The value that namespaces the external_id (R2).
+
+    REAL Figma Webhooks V2 carry a Figma-assigned `webhook_id` and NO `team_id`
+    in the body, so the webhook_id is the durable install scope. Prefer it
+    (live `webhook_id` / backfill `_fyralis_webhook_id`); fall back to the
+    team id for legacy synthetic webhooks and backfill records that predate
+    the webhook_id model. Mirrors the install key:
+    `provider_installations(provider='figma', installation_id=<webhook_id>)`.
+    """
+    for src in (payload, event if isinstance(event, dict) else {}):
+        for key in ("webhook_id", "_fyralis_webhook_id", "webhookId"):
+            v = src.get(key)
+            if isinstance(v, str) and v:
+                return v
+    # Legacy fallback: team id (the pre-R2 namespace).
+    return _team_id_of(payload, event)
+
+
 # ---------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------
@@ -248,6 +305,7 @@ async def handle_figma_event(
             }
         return _event_draft(
             event,
+            _scope_id_of(payload, event),
             _team_id_of(payload, event),
             _file_key_of(payload, event),
             event_type,
@@ -262,6 +320,7 @@ async def handle_figma_event(
         et = str(event.get("event_type") or event.get("type") or "FILE_UPDATE")
         return _event_draft(
             event,
+            _scope_id_of(payload, event),
             _team_id_of(payload, event),
             _file_key_of(payload, event),
             et,

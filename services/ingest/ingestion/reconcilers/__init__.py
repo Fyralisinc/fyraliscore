@@ -195,11 +195,45 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
 }
 
 
+def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
+    """Register `pool` with every per-source reconciler module that needs it.
+
+    Per-source reconcilers (M6.3+) read auxiliary state (shard cursors,
+    installation rows) through a module-level pool provider and raise an
+    explicit ``RuntimeError`` if it isn't set when the reconciler is called.
+    BOTH the at-completion ``Reconciler`` service and the
+    ``PeriodicReconciler`` must register the pool at startup.
+
+    Historically each service kept its own hand-listed block of
+    ``set_pool_provider`` calls, and the periodic service drifted to only 7 of
+    25 sources — silently disabling steady-state gap detection for the other 18
+    (every periodic re-check of those sources raised ``RuntimeError`` and was
+    swallowed as a dispatch exception). Deriving the registration set from
+    ``RECONCILER_DISPATCH`` keeps the two services in lockstep: a new source
+    wired into the dispatch map is wired into both services automatically, so
+    this class of drift cannot recur.
+
+    Returns the list of sources actually registered (those whose module exposes
+    ``set_pool_provider``) for diagnostics/logging.
+    """
+    import importlib
+
+    registered: list[str] = []
+    for source in RECONCILER_DISPATCH:
+        module = importlib.import_module(f"{__name__}.{source}")
+        setter = getattr(module, "set_pool_provider", None)
+        if setter is not None:
+            setter(pool)
+            registered.append(source)
+    return registered
+
+
 __all__ = [
     "RECONCILER_DISPATCH",
     "Reconciler",
     "ReconciliationDecision",
     "ResharedShard",
+    "register_pool_provider",
 ]
 
 

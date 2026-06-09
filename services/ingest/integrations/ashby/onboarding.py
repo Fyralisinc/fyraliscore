@@ -123,15 +123,15 @@ async def register_webhook_installation(
     webhook_secret_ref: str | None,
 ) -> None:
     """Register / refresh the provider_installations row the webhook edge uses to
-    resolve the tenant + load the HMAC signing secret. installation_id is the
-    Ashby org_id (matches tenant_resolver._extract_ashby).
+    resolve the tenant + load the HMAC signing secret.
 
-    TODO(human): in production Ashby webhook tenant-resolution is by the receiving
-        endpoint/secret, NOT a body field — the per-tenant webhook is configured
-        with a distinct URL + signing secret in Ashby's admin, so the secret that
-        verifies is what binds the delivery to a tenant. The body
-        `organizationId` used by `_extract_ashby` is the gate stand-in; wire the
-        real endpoint/secret-scoped resolution when entitled."""
+    R3: installation_id is the per-install ENDPOINT segment — the tenant's Ashby
+    webhook is configured with a distinct URL `/webhooks/ashby/{org_id}` (+ its
+    own Ashby-Signature secret), and the resolver resolves the tenant from that
+    URL path (real Ashby deliveries carry no org id in the body; see
+    `tenant_resolver._PATH_RESOLVED_PROVIDERS`). `org_id` is the path segment;
+    the body `organizationId` read by `_extract_ashby` is now only a
+    legacy/synthetic fallback for posts to the bare endpoint."""
     await pool.execute(
         """
         INSERT INTO provider_installations
