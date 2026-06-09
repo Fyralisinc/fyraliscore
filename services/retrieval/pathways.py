@@ -28,7 +28,9 @@ connection so pre-commit state is visible.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Sequence
@@ -58,6 +60,8 @@ _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
 _DEFAULT_STRUCTURAL_MAX_HOPS = 2
 _STRUCTURAL_MAX_MODELS = 200
+_STRUCTURAL_MODELS_PER_SCOPE_ENTITY = 32
+_STRUCTURAL_MODELS_PER_SCOPE_ACTOR = 48
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
 _DEFAULT_EDGE_MAX_HOPS = 2
@@ -84,6 +88,26 @@ _EDGE_TRAVERSAL_KINDS = (
 
 class RetrievalPathwayError(CompanyOSError):
     default_code = "retrieval_pathway_error"
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _append_timing(
+    notes: dict[str, Any],
+    stage: str,
+    started: float,
+    **extra: Any,
+) -> None:
+    timing = {
+        "stage": stage,
+        "elapsed_ms": _elapsed_ms(started),
+    }
+    for key, value in extra.items():
+        if value is not None:
+            timing[key] = value
+    notes.setdefault("timings", []).append(timing)
 
 
 # ModelRow SELECT columns must match models/repo.py._SELECT_COLS exactly
@@ -375,12 +399,275 @@ def _canonical_seed_type(raw_type: Any) -> str | None:
     return None
 
 
+def _chunked(values: Sequence[Any], size: int) -> list[list[Any]]:
+    chunk_size = max(1, int(size))
+    return [list(values[i:i + chunk_size]) for i in range(0, len(values), chunk_size)]
+
+
+def _record_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return default
+
+
+def _rank_sidecar_records(
+    rows: Sequence[asyncpg.Record],
+    *,
+    limit: int,
+) -> list[asyncpg.Record]:
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            int(_record_value(row, "_seed_priority", 1) or 1),
+            int(_record_value(row, "_local_rank", 0) or 0),
+            int(_record_value(row, "_seed_order", 0) or 0),
+            -float(_record_value(row, "activation", 0.0) or 0.0),
+            str(_record_value(row, "id", "") or ""),
+        ),
+    )
+    return ranked[:max(1, int(limit))]
+
+
+async def _fetch_pathway_a_entity_sidecar_rows(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    entity_types: Sequence[str],
+    entity_ids: Sequence[UUID],
+    entity_orders: Sequence[int],
+    entity_priorities: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+) -> list[asyncpg.Record]:
+    if not entity_ids:
+        return []
+    rows = await conn.fetch(
+        f"""
+        WITH seeded_entities AS (
+          SELECT * FROM unnest($2::text[], $3::uuid[], $4::int[], $5::int[])
+            AS e(entity_type, entity_id, seed_order, seed_priority)
+        ),
+        candidate_ids AS (
+          SELECT
+            se.seed_priority,
+            se.seed_order,
+            scoped.local_rank,
+            scoped.model_id
+          FROM seeded_entities se
+          CROSS JOIN LATERAL (
+            SELECT
+              mse.model_id,
+              ROW_NUMBER() OVER (
+                ORDER BY m.activation DESC, m.created_at DESC
+              ) AS local_rank
+            FROM model_scope_entities mse
+            JOIN models m ON m.id = mse.model_id
+            WHERE mse.tenant_id = $1
+              AND mse.entity_type = se.entity_type
+              AND mse.entity_id = se.entity_id
+              AND m.tenant_id = $1
+              AND m.status = 'active'
+            ORDER BY m.activation DESC, m.created_at DESC
+            LIMIT $6
+          ) scoped
+        ),
+        scoped_models AS (
+          SELECT
+            model_id,
+            MIN(seed_priority) AS seed_priority,
+            MIN(seed_order) AS seed_order,
+            MIN(local_rank) AS local_rank
+          FROM candidate_ids
+          GROUP BY model_id
+        )
+        SELECT sm.seed_priority AS _seed_priority,
+               sm.seed_order AS _seed_order,
+               sm.local_rank AS _local_rank,
+               {_MODEL_SELECT_SQL}
+        FROM models m
+        JOIN scoped_models sm ON sm.model_id = m.id
+        WHERE m.tenant_id = $1
+          AND m.status = 'active'
+        ORDER BY sm.seed_priority ASC, sm.local_rank ASC, sm.seed_order ASC,
+                 m.activation DESC, m.created_at DESC
+        LIMIT $7
+        """,
+        tenant_id,
+        list(entity_types),
+        list(entity_ids),
+        list(entity_orders),
+        list(entity_priorities),
+        max(1, int(per_seed_limit)),
+        max(1, int(global_limit)),
+    )
+    return list(rows)
+
+
+async def _fetch_pathway_a_actor_sidecar_rows(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    actor_ids: Sequence[UUID],
+    actor_orders: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+) -> list[asyncpg.Record]:
+    if not actor_ids:
+        return []
+    rows = await conn.fetch(
+        f"""
+        WITH seeded_actors AS (
+          SELECT * FROM unnest($2::uuid[], $3::int[])
+            AS a(actor_id, seed_order)
+        ),
+        candidate_ids AS (
+          SELECT
+            sa.seed_order,
+            scoped.local_rank,
+            scoped.model_id
+          FROM seeded_actors sa
+          CROSS JOIN LATERAL (
+            SELECT
+              msa.model_id,
+              ROW_NUMBER() OVER (
+                ORDER BY m.activation DESC, m.created_at DESC
+              ) AS local_rank
+            FROM model_scope_actors msa
+            JOIN models m ON m.id = msa.model_id
+            WHERE msa.tenant_id = $1
+              AND msa.actor_id = sa.actor_id
+              AND m.tenant_id = $1
+              AND m.status = 'active'
+            ORDER BY m.activation DESC, m.created_at DESC
+            LIMIT $4
+          ) scoped
+        ),
+        scoped_models AS (
+          SELECT
+            model_id,
+            MIN(seed_order) AS seed_order,
+            MIN(local_rank) AS local_rank
+          FROM candidate_ids
+          GROUP BY model_id
+        )
+        SELECT sm.seed_order AS _seed_order,
+               sm.local_rank AS _local_rank,
+               {_MODEL_SELECT_SQL}
+        FROM models m
+        JOIN scoped_models sm ON sm.model_id = m.id
+        WHERE m.tenant_id = $1
+          AND m.status = 'active'
+        ORDER BY sm.local_rank ASC, sm.seed_order ASC,
+                 m.activation DESC, m.created_at DESC
+        LIMIT $5
+        """,
+        tenant_id,
+        list(actor_ids),
+        list(actor_orders),
+        max(1, int(per_seed_limit)),
+        max(1, int(global_limit)),
+    )
+    return list(rows)
+
+
+async def _fetch_pathway_a_entity_sidecar_rows_fanout(
+    read_pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    entity_types: Sequence[str],
+    entity_ids: Sequence[UUID],
+    entity_orders: Sequence[int],
+    entity_priorities: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+    chunk_size: int,
+) -> list[asyncpg.Record]:
+    type_chunks = _chunked(entity_types, chunk_size)
+    id_chunks = _chunked(entity_ids, chunk_size)
+    order_chunks = _chunked(entity_orders, chunk_size)
+    priority_chunks = _chunked(entity_priorities, chunk_size)
+
+    async def fetch_chunk(
+        types: list[str],
+        ids: list[UUID],
+        orders: list[int],
+        priorities: list[int],
+    ) -> list[asyncpg.Record]:
+        async with read_pool.acquire() as fanout_conn:
+            return await _fetch_pathway_a_entity_sidecar_rows(
+                fanout_conn,
+                tenant_id=tenant_id,
+                entity_types=types,
+                entity_ids=ids,
+                entity_orders=orders,
+                entity_priorities=priorities,
+                per_seed_limit=per_seed_limit,
+                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            )
+
+    chunks = await asyncio.gather(*[
+        fetch_chunk(types, ids, orders, priorities)
+        for types, ids, orders, priorities in zip(
+            type_chunks,
+            id_chunks,
+            order_chunks,
+            priority_chunks,
+        )
+    ])
+    return _rank_sidecar_records(
+        [row for chunk in chunks for row in chunk],
+        limit=global_limit,
+    )
+
+
+async def _fetch_pathway_a_actor_sidecar_rows_fanout(
+    read_pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    actor_ids: Sequence[UUID],
+    actor_orders: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+    chunk_size: int,
+) -> list[asyncpg.Record]:
+    id_chunks = _chunked(actor_ids, chunk_size)
+    order_chunks = _chunked(actor_orders, chunk_size)
+
+    async def fetch_chunk(
+        ids: list[UUID],
+        orders: list[int],
+    ) -> list[asyncpg.Record]:
+        async with read_pool.acquire() as fanout_conn:
+            return await _fetch_pathway_a_actor_sidecar_rows(
+                fanout_conn,
+                tenant_id=tenant_id,
+                actor_ids=ids,
+                actor_orders=orders,
+                per_seed_limit=per_seed_limit,
+                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            )
+
+    chunks = await asyncio.gather(*[
+        fetch_chunk(ids, orders)
+        for ids, orders in zip(id_chunks, order_chunks)
+    ])
+    return _rank_sidecar_records(
+        [row for chunk in chunks for row in chunk],
+        limit=global_limit,
+    )
+
+
 async def pathway_a_structural(
     seed_entity_ids: Sequence[dict[str, Any]],
     tenant_id: UUID,
     conn: asyncpg.Connection,
     *,
     max_hops: int = _DEFAULT_STRUCTURAL_MAX_HOPS,
+    read_pool: asyncpg.Pool | None = None,
+    read_fanout_enabled: bool = False,
+    read_fanout_min_seeds: int = 16,
+    read_fanout_chunk_size: int = 8,
 ) -> PathwayResult:
     """
     Walk the Acts graph (contributes_to / depends_on / constrained_by /
@@ -405,6 +692,7 @@ async def pathway_a_structural(
         "hops_executed": 0,
         "entities_touched": {},
         "seeds_accepted": 0,
+        "timings": [],
     }
     if not seed_entity_ids:
         return PathwayResult(source_pathway="A", notes={**notes, "reason": "empty_seed"})
@@ -430,6 +718,14 @@ async def pathway_a_structural(
     notes["seeds_accepted"] = sum(len(v) for v in seeds.values())
     if notes["seeds_accepted"] == 0:
         return PathwayResult(source_pathway="A", notes={**notes, "reason": "no_valid_seed"})
+    direct_seed_entity_pairs: set[tuple[str, UUID]] = set()
+    for direct_type in ("commitment", "goal", "decision", "resource"):
+        for direct_id in seeds[direct_type]:
+            direct_seed_entity_pairs.add((direct_type, direct_id))
+    for direct_id in seeds["customer_resource"]:
+        direct_seed_entity_pairs.add(("customer", direct_id))
+        direct_seed_entity_pairs.add(("customer_resource", direct_id))
+        direct_seed_entity_pairs.add(("resource", direct_id))
 
     # Visited sets per type. Start from the seeds themselves (hop 0).
     visited_commits: set[UUID] = set(seeds["commitment"])
@@ -447,6 +743,7 @@ async def pathway_a_structural(
     frontier_customers: set[UUID] = set(seeds["customer_resource"])
     frontier_actors: set[UUID] = set(seeds["actor"])
 
+    stage_started = time.perf_counter()
     for hop in range(max_hops):
         new_commits: set[UUID] = set()
         new_goals: set[UUID] = set()
@@ -635,8 +932,20 @@ async def pathway_a_structural(
             or frontier_customers
         ):
             break
+    _append_timing(
+        notes,
+        "graph_walk",
+        stage_started,
+        commitments=len(visited_commits),
+        goals=len(visited_goals),
+        decisions=len(visited_decisions),
+        customers=len(visited_customers),
+        actors=len(visited_actors),
+        hops=notes["hops_executed"],
+    )
 
     # Fetch full rows for the touched entities (tenant-filtered).
+    stage_started = time.perf_counter()
     goals_out: list[GoalRow] = []
     if visited_goals:
         grs = await conn.fetch(
@@ -673,9 +982,19 @@ async def pathway_a_structural(
             tenant_id,
         )
         resources_out = _hydrate_many(rrs, _hydrate_resource, notes, "resources")
+    _append_timing(
+        notes,
+        "act_row_fetch",
+        stage_started,
+        goals=len(goals_out),
+        commitments=len(commitments_out),
+        decisions=len(decisions_out),
+        resources=len(resources_out),
+    )
 
     # Scoped Model search — union of (scope_entities @> any touched
     # entity) and (scope_actors && visited actors).
+    stage_started = time.perf_counter()
     scope_entity_filters: list[dict[str, Any]] = []
     for cid in visited_commits:
         scope_entity_filters.append({"type": "commitment", "id": str(cid)})
@@ -778,95 +1097,198 @@ async def pathway_a_structural(
             seen_scope_filters.add(key)
             deduped_scope_filters.append(entry)
         scope_entity_filters = deduped_scope_filters
+    _append_timing(
+        notes,
+        "scope_filter_expand",
+        stage_started,
+        filters=len(scope_entity_filters),
+        actors=len(visited_actors),
+    )
 
     models_out: list[ModelRow] = []
     if scope_entity_filters or visited_actors:
-        # Build: (scope_entities @> '[...]' matches ANY) OR scope_actors && {}
-        # We generate one UNION query per batch to leverage the GIN
-        # index on scope_entities and the GIN index on scope_actors.
+        sidecar_entity_types: list[str] = []
+        sidecar_entity_ids: list[UUID] = []
+        sidecar_entity_orders: list[int] = []
+        sidecar_entity_priorities: list[int] = []
+        for f in scope_entity_filters:
+            try:
+                entity_type = str(f["type"])
+                entity_id = UUID(str(f["id"]))
+                sidecar_entity_types.append(entity_type)
+                sidecar_entity_ids.append(entity_id)
+                sidecar_entity_orders.append(len(sidecar_entity_orders))
+                sidecar_entity_priorities.append(
+                    0
+                    if (entity_type, entity_id) in direct_seed_entity_pairs
+                    else 1
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        seen_ids: set[UUID] = set()
+        entity_sidecar_rows: list[asyncpg.Record] = []
+        actor_sidecar_rows: list[asyncpg.Record] = []
+        stage_started = time.perf_counter()
+        if sidecar_entity_ids:
+            if (
+                read_pool is not None
+                and read_fanout_enabled
+                and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
+            ):
+                entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows_fanout(
+                    read_pool,
+                    tenant_id=tenant_id,
+                    entity_types=sidecar_entity_types,
+                    entity_ids=sidecar_entity_ids,
+                    entity_orders=sidecar_entity_orders,
+                    entity_priorities=sidecar_entity_priorities,
+                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+                    global_limit=_STRUCTURAL_MAX_MODELS,
+                    chunk_size=read_fanout_chunk_size,
+                )
+            else:
+                entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows(
+                    conn,
+                    tenant_id=tenant_id,
+                    entity_types=sidecar_entity_types,
+                    entity_ids=sidecar_entity_ids,
+                    entity_orders=sidecar_entity_orders,
+                    entity_priorities=sidecar_entity_priorities,
+                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+                    global_limit=_STRUCTURAL_MAX_MODELS,
+                )
+            entity_sidecar_rows = _rank_sidecar_records(
+                entity_sidecar_rows,
+                limit=_STRUCTURAL_MAX_MODELS,
+            )
+        _append_timing(
+            notes,
+            "sidecar_entity_lookup",
+            stage_started,
+            filters=len(sidecar_entity_ids),
+            direct_seed_filters=sum(
+                1 for priority in sidecar_entity_priorities if priority == 0
+            ),
+            per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+            fanout_used=(
+                read_pool is not None
+                and read_fanout_enabled
+                and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
+            ),
+            fanout_chunk_size=read_fanout_chunk_size,
+            rows=len(entity_sidecar_rows),
+        )
+        stage_started = time.perf_counter()
+        if visited_actors:
+            actor_ids = list(visited_actors)
+            actor_orders = list(range(len(actor_ids)))
+            if (
+                read_pool is not None
+                and read_fanout_enabled
+                and len(actor_ids) >= int(read_fanout_min_seeds)
+            ):
+                actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows_fanout(
+                    read_pool,
+                    tenant_id=tenant_id,
+                    actor_ids=actor_ids,
+                    actor_orders=actor_orders,
+                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+                    global_limit=_STRUCTURAL_MAX_MODELS,
+                    chunk_size=read_fanout_chunk_size,
+                )
+            else:
+                actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_ids=actor_ids,
+                    actor_orders=actor_orders,
+                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+                    global_limit=_STRUCTURAL_MAX_MODELS,
+                )
+            actor_sidecar_rows = _rank_sidecar_records(
+                actor_sidecar_rows,
+                limit=_STRUCTURAL_MAX_MODELS,
+            )
+        _append_timing(
+            notes,
+            "sidecar_actor_lookup",
+            stage_started,
+            actors=len(visited_actors),
+            per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+            fanout_used=(
+                read_pool is not None
+                and read_fanout_enabled
+                and len(visited_actors) >= int(read_fanout_min_seeds)
+            ),
+            fanout_chunk_size=read_fanout_chunk_size,
+            rows=len(actor_sidecar_rows),
+        )
+
+        sidecar_rows = _rank_sidecar_records(
+            list(entity_sidecar_rows) + list(actor_sidecar_rows),
+            limit=_STRUCTURAL_MAX_MODELS,
+        )
+        stage_started = time.perf_counter()
+        for r in sidecar_rows:
+            if r["id"] in seen_ids:
+                continue
+            seen_ids.add(r["id"])
+            try:
+                models_out.append(_hydrate_model(r))
+            except Exception:
+                notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+                notes["hydration_skipped"]["models"] += 1
+        _append_timing(
+            notes,
+            "sidecar_hydrate",
+            stage_started,
+            rows=len(sidecar_rows),
+            models=len(models_out),
+        )
+
+        notes["scope_sidecar_entity_rows"] = len(entity_sidecar_rows)
+        notes["scope_sidecar_actor_rows"] = len(actor_sidecar_rows)
+        notes["scope_sidecar_rows"] = len(sidecar_rows)
+        notes["scope_sidecar_strategy"] = "bounded_per_scope_seed"
+        notes["scope_sidecar_per_entity_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ENTITY
+        notes["scope_sidecar_per_actor_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ACTOR
+
+        # Compatibility fallback. The normalized sidecars are the scalable
+        # lookup path; the JSONB predicates remain useful for older rows or
+        # test fixtures that have not been sidecarized.
         params: list[Any] = [tenant_id]
         clauses: list[str] = []
-        if visited_actors:
+        if visited_actors and not actor_sidecar_rows:
             params.append(list(visited_actors))
             clauses.append(f"scope_actors && ${len(params)}::uuid[]")
-        # Bundle the entity filters via JSONB containment of ANY element.
-        # GIN @> is the indexable direction; scope_entities @> '[{...}]'
-        # is true when any array element matches. We OR a CASE for each
-        # filter via a @> ANY(ARRAY[...]) equivalent: Postgres doesn't
-        # have native "@> ANY(array)" so we iterate in Python and build
-        # the OR chain. At scale-limited Wave-3 sizes, N filters is <
-        # a few hundred and the plan is still fast because of the GIN.
-        for f in scope_entity_filters:
-            params.append(_jsonb([f]))
-            clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+        if scope_entity_filters and not entity_sidecar_rows:
+            for f in scope_entity_filters:
+                params.append(_jsonb([f]))
+                clauses.append(f"scope_entities @> ${len(params)}::jsonb")
         if clauses:
             where = " OR ".join(clauses)
-            sql = f"""
+            stage_started = time.perf_counter()
+            rows = await conn.fetch(
+                f"""
                 SELECT {_MODEL_SELECT_SQL} FROM models
                 WHERE tenant_id = $1
                   AND status = 'active'
                   AND ({where})
                 ORDER BY activation DESC, created_at DESC
                 LIMIT {_STRUCTURAL_MAX_MODELS}
-            """
-            rows = await conn.fetch(sql, *params)
-            seen_ids: set[UUID] = set()
-            for r in rows:
-                mid = r["id"]
-                if mid in seen_ids:
-                    continue
-                seen_ids.add(mid)
-                try:
-                    models_out.append(_hydrate_model(r))
-                except Exception:
-                    notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
-                    notes["hydration_skipped"]["models"] += 1
-
-        sidecar_entity_types: list[str] = []
-        sidecar_entity_ids: list[UUID] = []
-        for f in scope_entity_filters:
-            try:
-                sidecar_entity_types.append(str(f["type"]))
-                sidecar_entity_ids.append(UUID(str(f["id"])))
-            except (KeyError, TypeError, ValueError):
-                continue
-        sidecar_rows: list[asyncpg.Record] = []
-        if sidecar_entity_ids or visited_actors:
-            sidecar_rows = await conn.fetch(
-                f"""
-                WITH seeded_entities AS (
-                  SELECT * FROM unnest($2::text[], $3::uuid[])
-                    AS e(entity_type, entity_id)
-                ),
-                scoped_models AS (
-                  SELECT mse.model_id
-                  FROM model_scope_entities mse
-                  JOIN seeded_entities se
-                    ON se.entity_type = mse.entity_type
-                   AND se.entity_id = mse.entity_id
-                  WHERE mse.tenant_id = $1
-                  UNION
-                  SELECT msa.model_id
-                  FROM model_scope_actors msa
-                  WHERE msa.tenant_id = $1
-                    AND msa.actor_id = ANY($4::uuid[])
-                )
-                SELECT {_MODEL_SELECT_SQL}
-                FROM models m
-                JOIN scoped_models sm ON sm.model_id = m.id
-                WHERE m.tenant_id = $1
-                  AND m.status = 'active'
-                ORDER BY m.activation DESC, m.created_at DESC
-                LIMIT {_STRUCTURAL_MAX_MODELS}
                 """,
-                tenant_id,
-                sidecar_entity_types,
-                sidecar_entity_ids,
-                list(visited_actors),
+                *params,
             )
-        if sidecar_rows:
-            seen_ids = {m.id for m in models_out}
-            for r in sidecar_rows:
+            _append_timing(
+                notes,
+                "jsonb_fallback_query",
+                stage_started,
+                rows=len(rows),
+                clauses=len(clauses),
+            )
+            stage_started = time.perf_counter()
+            for r in rows:
                 if r["id"] in seen_ids:
                     continue
                 seen_ids.add(r["id"])
@@ -875,7 +1297,25 @@ async def pathway_a_structural(
                 except Exception:
                     notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
                     notes["hydration_skipped"]["models"] += 1
-            notes["scope_sidecar_rows"] = len(sidecar_rows)
+            notes["scope_jsonb_fallback_used"] = True
+            notes["scope_jsonb_rows"] = len(rows)
+            _append_timing(
+                notes,
+                "jsonb_fallback_hydrate",
+                stage_started,
+                rows=len(rows),
+                models=len(models_out),
+            )
+        else:
+            notes["scope_jsonb_fallback_used"] = False
+            notes["scope_jsonb_rows"] = 0
+            _append_timing(
+                notes,
+                "jsonb_fallback_query",
+                time.perf_counter(),
+                skipped=True,
+                clauses=0,
+            )
 
     notes["entities_touched"] = {
         "commitments": len(visited_commits),

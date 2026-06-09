@@ -65,6 +65,8 @@ def test_summary_flags_architecture_slo_failures_despite_perfect_hits() -> None:
     assert summary["architecture_slos"]["expected_evidence_ge_24_ratio"]["passed"] is False
     assert summary["architecture_slos"]["reader_attributions_per_case"]["passed"] is False
     assert summary["structural_findings"]
+    assert summary["readiness"]["tier"] == "internal_dogfood"
+    assert "retrieval_p95_slo" in summary["readiness"]["blockers"]
 
 
 def test_summary_flags_late_trace_pressure_after_learning_saturates() -> None:
@@ -93,6 +95,7 @@ def test_summary_flags_late_trace_pressure_after_learning_saturates() -> None:
             "expected_best_sage_rank": 1,
             "expected_activated": 4,
             "expected_reasons": {"lexical": 1},
+            "passed": True,
             "selected_count": 8,
             "evidence_count": 8,
             "quality_failure_modes": [],
@@ -128,6 +131,8 @@ def test_summary_flags_late_trace_pressure_after_learning_saturates() -> None:
         "Late-run feedback mostly adds reader attribution trace rows" in finding
         for finding in summary["structural_findings"]
     )
+    assert summary["readiness"]["tier"] == "design_partner_controlled"
+    assert "late_trace_pressure" in summary["readiness"]["blockers"]
     assert summary["source_realism"]["multi_source_ingestion_validated"] is False
 
 

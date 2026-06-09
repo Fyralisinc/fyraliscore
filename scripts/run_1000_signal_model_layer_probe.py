@@ -49,6 +49,9 @@ from services.entity_aliases.repo import EntityAliasRepo
 from services.gateway.db_bootstrap import _register_codecs
 from services.synthetic.core import SyntheticSignal, inject
 from services.think.post_commit import WorkerStats, process_batch
+from services.workers.sage_topology_optimizer.worker import (
+    run_once as run_topology_optimizer_once,
+)
 from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 from tests.real_llm.infrastructure.response_cache import LLMResponseCache
 from tests.real_llm.infrastructure.scenario_loader import (
@@ -1218,16 +1221,23 @@ async def inject_generated_signals(
     embedder: OllamaClient,
     run_id: str,
     progress_every: int,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> list[UUID]:
     if scenario.tenant_id is None:
         raise RuntimeError("scenario must be materialized")
+    if offset < 0:
+        raise ValueError("offset cannot be negative")
     base = scenario.base_time or datetime.now(timezone.utc)
     observation_ids: list[UUID] = []
     all_signals = [
         signal for sequence in scenario.signal_sequences.values() for signal in sequence
     ]
+    selected_signals = (
+        all_signals[offset:] if limit is None else all_signals[offset:offset + limit]
+    )
     started = time.monotonic()
-    for index, signal_def in enumerate(all_signals, start=1):
+    for index, signal_def in enumerate(selected_signals, start=offset + 1):
         content_text = str(signal_def.get("content") or signal_def.get("text") or "")
         content_dict = dict(signal_def.get("content_dict") or {})
         content_dict.setdefault("text", content_text)
@@ -1362,6 +1372,93 @@ async def drain_post_commit_actions(
         await asyncio.sleep(0.05)
 
 
+def _merge_numeric_status(
+    total: dict[str, Any],
+    status: dict[str, Any],
+    *,
+    metric_key: str | None = None,
+) -> None:
+    for key, value in status.items():
+        if key == metric_key or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            total[key] = int(total.get(key) or 0) + value
+        elif isinstance(value, float):
+            total[key] = float(total.get(key) or 0.0) + value
+    if metric_key:
+        merged_metrics = total.setdefault(metric_key, {})
+        metrics = status.get(metric_key) or {}
+        if isinstance(metrics, dict):
+            for key, value in metrics.items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int):
+                    merged_metrics[key] = int(merged_metrics.get(key) or 0) + value
+                elif isinstance(value, float):
+                    merged_metrics[key] = float(merged_metrics.get(key) or 0.0) + value
+
+
+async def drain_topology_optimizer(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    timeout_seconds: int,
+    batch_size: int = 250,
+    lookback_hours: int = 72,
+) -> dict[str, Any]:
+    """Run topology optimization until newly completed sessions are consumed."""
+    if timeout_seconds <= 0:
+        return {
+            "status": "skipped",
+            "reason": "timeout_seconds<=0",
+            "processed": 0,
+            "completed": 0,
+            "failed": 0,
+            "iterations": 0,
+            "metrics": {},
+        }
+
+    deadline = time.monotonic() + timeout_seconds
+    totals: dict[str, Any] = {
+        "status": "drained",
+        "processed": 0,
+        "completed": 0,
+        "failed": 0,
+        "iterations": 0,
+        "metrics": {},
+    }
+    while True:
+        if time.monotonic() >= deadline:
+            totals["status"] = "timeout"
+            totals["timed_out"] = 1
+            return totals
+
+        report = await run_topology_optimizer_once(
+            pool,
+            tenant_id=tenant_id,
+            lookback_hours=lookback_hours,
+            limit=batch_size,
+        )
+        totals["iterations"] = int(totals["iterations"]) + 1
+        totals["processed"] = int(totals["processed"]) + report.processed
+        totals["completed"] = int(totals["completed"]) + report.completed
+        totals["failed"] = int(totals["failed"]) + report.failed
+
+        metrics = totals.setdefault("metrics", {})
+        for session in report.sessions:
+            for key, value in (session.metrics or {}).items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int):
+                    metrics[key] = int(metrics.get(key) or 0) + value
+                elif isinstance(value, float):
+                    metrics[key] = float(metrics.get(key) or 0.0) + value
+
+        if report.processed == 0:
+            return totals
+        await asyncio.sleep(0.05)
+
+
 async def collect_model_layer_report(
     pool: asyncpg.Pool,
     *,
@@ -1371,6 +1468,11 @@ async def collect_model_layer_report(
     scenario: Scenario,
     observation_ids: list[UUID],
     think_status: str,
+    run_config: dict[str, Any],
+    seed_status: dict[str, Any] | None,
+    processing_waves: list[dict[str, Any]],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
     elapsed_seconds: float,
 ) -> dict[str, Any]:
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -1380,8 +1482,13 @@ async def collect_model_layer_report(
             "run_id": run_id,
             "scenario_id": scenario.scenario_id,
             "company_profile": scenario.raw.get("company_profile") or {},
+            "run_config": run_config,
+            "seed_status": seed_status or {},
             "signal_count": len(observation_ids),
             "think_status": think_status,
+            "processing_waves": processing_waves,
+            "post_commit_status": post_commit_status,
+            "topology_optimizer_status": topology_optimizer_status,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "observation_count": await conn.fetchval(
                 """
@@ -1627,6 +1734,17 @@ async def collect_model_layer_report(
             """,
             tenant_id,
         )
+        summary["topology_optimizer_run_distribution"] = await _fetch_distribution(
+            conn,
+            """
+            SELECT status AS key, COUNT(*)::bigint AS value
+            FROM sage_topology_optimizer_runs
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
         summary["context_use_distribution"] = await _fetch_distribution(
             conn,
             """
@@ -1638,6 +1756,13 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
+        )
+        summary["discovery_layer_counts"] = await _fetch_discovery_layer_counts(
+            conn,
+            tenant_id,
+        )
+        summary["topology_optimizer_metric_totals"] = (
+            await _fetch_topology_optimizer_metric_totals(conn, tenant_id)
         )
         summary["top_customer_model_scopes"] = await _fetch_named_counts(
             conn,
@@ -1750,6 +1875,82 @@ async def _fetch_cost(conn: asyncpg.Connection, tenant_id: UUID) -> dict[str, An
     data = _record_to_dict(row)
     data["cost_usd"] = float(data.get("cost_usd") or 0)
     return data
+
+
+async def _fetch_discovery_layer_counts(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> dict[str, int]:
+    rows = await conn.fetch(
+        """
+        SELECT 'affordance_profiles' AS name, COUNT(*)::bigint AS count
+          FROM retrieval_affordance_profiles WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'reinforced_affordance_profiles', COUNT(*)::bigint
+          FROM retrieval_affordance_profiles
+         WHERE tenant_id = $1 AND utility_score > 0
+        UNION ALL
+        SELECT 'contextual_affordance_profiles', COUNT(*)::bigint
+          FROM retrieval_affordance_profiles
+         WHERE tenant_id = $1
+           AND jsonb_typeof(activation_signatures->'entities') = 'array'
+           AND jsonb_array_length(activation_signatures->'entities') > 0
+        UNION ALL
+        SELECT 'discovery_shortcuts', COUNT(*)::bigint
+          FROM discovery_shortcuts WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'negative_memory', COUNT(*)::bigint
+          FROM negative_memory WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'question_policy_stats', COUNT(*)::bigint
+          FROM sage_question_policy_stats WHERE tenant_id = $1
+        UNION ALL
+        SELECT 'reader_decision_attributions', COUNT(*)::bigint
+          FROM sage_reader_decision_attributions WHERE tenant_id = $1
+        """,
+        tenant_id,
+    )
+    return {str(row["name"]): int(row["count"] or 0) for row in rows}
+
+
+async def _fetch_topology_optimizer_metric_totals(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """
+        SELECT
+          COUNT(*)::bigint AS rows,
+          COUNT(*) FILTER (WHERE status = 'completed')::bigint AS completed,
+          COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed,
+          COALESCE(SUM((metrics->>'affordance_reinforces')::numeric), 0)::numeric
+            AS affordance_reinforces,
+          COALESCE(SUM((metrics->>'affordance_decays')::numeric), 0)::numeric
+            AS affordance_decays,
+          COALESCE(SUM((metrics->>'shortcut_creates_or_bumps')::numeric), 0)::numeric
+            AS shortcut_creates_or_bumps,
+          COALESCE(SUM((metrics->>'shortcut_decays')::numeric), 0)::numeric
+            AS shortcut_decays,
+          COALESCE(SUM((metrics->>'negative_memory_inserts')::numeric), 0)::numeric
+            AS negative_memory_inserts,
+          COALESCE(SUM((metrics->>'region_refreshes')::numeric), 0)::numeric
+            AS region_refreshes,
+          COALESCE(SUM((metrics->>'question_policy_updates')::numeric), 0)::numeric
+            AS question_policy_updates,
+          COALESCE(SUM((metrics->>'canonical_merge_candidates')::numeric), 0)::numeric
+            AS canonical_merge_candidates,
+          COALESCE(SUM((metrics->>'canonical_split_candidates')::numeric), 0)::numeric
+            AS canonical_split_candidates,
+          COALESCE(SUM((metrics->>'canonical_promote_candidates')::numeric), 0)::numeric
+            AS canonical_promote_candidates,
+          COALESCE(SUM((metrics->>'canonical_demote_candidates')::numeric), 0)::numeric
+            AS canonical_demote_candidates
+        FROM sage_topology_optimizer_runs
+        WHERE tenant_id = $1
+        """,
+        tenant_id,
+    )
+    return _record_to_dict(row) if row is not None else {}
 
 
 def _record_to_dict(row: asyncpg.Record) -> dict[str, Any]:
@@ -1909,6 +2110,7 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- Cash in hand: ${int(financials.get('cash_in_hand_usd') or 0):,}",
         f"- Runway months: {financials.get('runway_months', '<unknown>')}",
         f"- Employees modeled: {employee_count}",
+        f"- Initial seed models: {(summary.get('seed_status') or {}).get('models', 0)}",
         f"- Think status: `{summary['think_status']}`",
         f"- Signals injected: {summary['signal_count']}",
         f"- Observations stored: {summary['observation_count']}",
@@ -1923,9 +2125,36 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- Model edges: {summary['model_edges']}",
         f"- Relationship candidates: {summary.get('relationship_candidates', 0)}",
         f"- Latent topology candidates: {summary.get('latent_topology_candidates', 0)}",
+        f"- Topology optimizer runs: {summary.get('topology_optimizer_run_distribution', {})}",
         f"- Scope entity sidecars: {summary.get('model_scope_entity_sidecars', 0)}",
         f"- State changes: {summary['state_changes']}",
         f"- Elapsed seconds: {summary['elapsed_seconds']}",
+        "",
+        "## Self-Evolution",
+        "```json",
+        json.dumps(
+            {
+                "seed_status": summary.get("seed_status") or {},
+                "run_config": summary.get("run_config") or {},
+                "post_commit_status": summary.get("post_commit_status") or {},
+                "topology_optimizer_status": (
+                    summary.get("topology_optimizer_status") or {}
+                ),
+                "topology_optimizer_run_distribution": (
+                    summary.get("topology_optimizer_run_distribution") or {}
+                ),
+                "topology_optimizer_metric_totals": (
+                    summary.get("topology_optimizer_metric_totals") or {}
+                ),
+                "discovery_layer_counts": (
+                    summary.get("discovery_layer_counts") or {}
+                ),
+                "processing_waves": summary.get("processing_waves") or [],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        "```",
         "",
         "## Model Kinds",
         _table(summary.get("model_kind_distribution") or {}),
@@ -1991,6 +2220,31 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--think-timeout", type=int, default=3600)
     parser.add_argument("--post-commit-timeout", type=int, default=600)
+    parser.add_argument(
+        "--signal-batch-size",
+        type=int,
+        default=250,
+        help=(
+            "Inject/process signals in waves so learned model-layer changes from "
+            "earlier waves can affect later waves."
+        ),
+    )
+    parser.add_argument(
+        "--seed-models",
+        type=int,
+        default=0,
+        help="Optional starting model-layer size to seed before signals arrive.",
+    )
+    parser.add_argument("--seed-families", type=int, default=80)
+    parser.add_argument("--topology-optimizer-timeout", type=int, default=900)
+    parser.add_argument("--topology-optimizer-batch-size", type=int, default=250)
+    parser.add_argument("--topology-optimizer-lookback-hours", type=int, default=72)
+    parser.add_argument("--skip-topology-optimizer", action="store_true")
+    parser.add_argument(
+        "--skip-migrations",
+        action="store_true",
+        help="Skip db/migrations replay when the target database is already current.",
+    )
     parser.add_argument("--progress-every", type=int, default=50)
     parser.add_argument("--pool-max-size", type=int, default=8)
     parser.add_argument("--run-id", default=None)
@@ -2010,6 +2264,14 @@ async def main() -> int:
         raise SystemExit("--think-limit cannot be negative")
     if args.think_limit > args.signals:
         raise SystemExit("--think-limit cannot exceed --signals")
+    if args.signal_batch_size <= 0:
+        raise SystemExit("--signal-batch-size must be positive")
+    if args.seed_models < 0:
+        raise SystemExit("--seed-models cannot be negative")
+    if args.seed_families <= 0:
+        raise SystemExit("--seed-families must be positive")
+    if args.topology_optimizer_batch_size <= 0:
+        raise SystemExit("--topology-optimizer-batch-size must be positive")
 
     run_id = args.run_id or f"company-e2e-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     report_dir = args.report_root / f"model-layer-{run_id}"
@@ -2028,10 +2290,32 @@ async def main() -> int:
     embedder = OllamaClient(OllamaConfig.from_env())
     started = time.monotonic()
     think_status = "not_run"
-    post_commit_status: dict[str, int] = {}
+    seed_status: dict[str, Any] = {
+        "requested_models": args.seed_models,
+        "families": args.seed_families,
+        "models": 0,
+    }
+    processing_waves: list[dict[str, Any]] = []
+    post_commit_status: dict[str, Any] = {
+        "processed": 0,
+        "failed": 0,
+        "dead_lettered": 0,
+        "iterations": 0,
+    }
+    topology_optimizer_status: dict[str, Any] = {
+        "status": "skipped" if args.skip_topology_optimizer else "not_run",
+        "processed": 0,
+        "completed": 0,
+        "failed": 0,
+        "iterations": 0,
+        "metrics": {},
+    }
     try:
-        async with pool.acquire() as conn:
-            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+        if args.skip_migrations:
+            print("skipping migrations because --skip-migrations was set", flush=True)
+        else:
+            async with pool.acquire() as conn:
+                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
 
         await materialize(scenario, pool=pool)
         assert scenario.tenant_id is not None
@@ -2041,51 +2325,139 @@ async def main() -> int:
         alias_repo = EntityAliasRepo(pool)
         await _insert_extra_aliases(scenario, alias_repo)
 
-        observation_ids = await inject_generated_signals(
-            scenario,
-            pool=pool,
-            actor_repo=actor_repo,
-            alias_repo=alias_repo,
-            embedder=embedder,
-            run_id=run_id,
-            progress_every=args.progress_every,
-        )
-        print(f"injected_total={len(observation_ids)}", flush=True)
+        if args.seed_models:
+            from scripts.run_incremental_feedback_loop_stress import _seed_company
 
-        if args.think_limit:
-            enqueued = await enqueue_t1_for_observations(
+            print(
+                f"seeding {args.seed_models} starting models "
+                f"across {args.seed_families} families",
+                flush=True,
+            )
+            seeded = await _seed_company(
                 pool,
                 tenant_id=scenario.tenant_id,
-                observation_ids=observation_ids,
-                limit=args.think_limit,
+                families=args.seed_families,
+                total_models=args.seed_models,
+            )
+            seed_status = {
+                "requested_models": args.seed_models,
+                "families": args.seed_families,
+                "models": seeded.total_models,
+                "insert_ms": round(seeded.insert_ms, 3),
+                "sidecars": seeded.sidecars,
+            }
+            print(f"seed_status={json.dumps(seed_status, sort_keys=True)}", flush=True)
+
+        observation_ids: list[UUID] = []
+
+        remaining_think = args.think_limit
+        provider = _build_cached_provider() if args.think_limit else None
+        batch_size = min(args.signal_batch_size, args.signals)
+        for offset in range(0, args.signals, batch_size):
+            current_batch_size = min(batch_size, args.signals - offset)
+            wave_index = len(processing_waves) + 1
+            wave: dict[str, Any] = {
+                "wave": wave_index,
+                "signal_offset": offset,
+                "signal_start": offset + 1,
+                "signal_end": offset + current_batch_size,
+            }
+            print(
+                f"wave={wave_index} injecting signals "
+                f"{offset + 1}-{offset + current_batch_size}",
+                flush=True,
+            )
+            batch_ids = await inject_generated_signals(
+                scenario,
+                pool=pool,
+                actor_repo=actor_repo,
+                alias_repo=alias_repo,
+                embedder=embedder,
                 run_id=run_id,
+                progress_every=args.progress_every,
+                offset=offset,
+                limit=current_batch_size,
             )
-            print(
-                f"enqueued {enqueued} T1 triggers for live Think "
-                f"(limit={args.think_limit})",
-                flush=True,
-            )
-            provider = _build_cached_provider()
-            try:
-                await run_think_until_drain(
-                    scenario.tenant_id,
-                    pool=pool,
-                    provider=provider,
-                    timeout_seconds=args.think_timeout,
+            observation_ids.extend(batch_ids)
+            wave["injected"] = len(batch_ids)
+            wave["cumulative_signals"] = len(observation_ids)
+
+            if provider is not None and remaining_think > 0:
+                think_count = min(len(batch_ids), remaining_think)
+                enqueued = await enqueue_t1_for_observations(
+                    pool,
+                    tenant_id=scenario.tenant_id,
+                    observation_ids=batch_ids,
+                    limit=think_count,
+                    run_id=run_id,
                 )
-                think_status = "drained"
-            except TimeoutError as exc:
-                think_status = f"timeout: {exc}"
-                print(think_status, flush=True)
-            post_commit_status = await drain_post_commit_actions(
-                pool,
-                tenant_id=scenario.tenant_id,
-                timeout_seconds=args.post_commit_timeout,
-            )
-            print(
-                f"post_commit={json.dumps(post_commit_status, sort_keys=True)}",
-                flush=True,
-            )
+                remaining_think -= enqueued
+                wave["enqueued_t1"] = enqueued
+                print(
+                    f"wave={wave_index} enqueued {enqueued} T1 triggers "
+                    f"(remaining_think={remaining_think})",
+                    flush=True,
+                )
+
+                try:
+                    await run_think_until_drain(
+                        scenario.tenant_id,
+                        pool=pool,
+                        provider=provider,
+                        timeout_seconds=args.think_timeout,
+                    )
+                    think_status = "drained"
+                    wave["think_status"] = "drained"
+                except TimeoutError as exc:
+                    think_status = f"timeout: {exc}"
+                    wave["think_status"] = think_status
+                    print(think_status, flush=True)
+
+                current_post_commit = await drain_post_commit_actions(
+                    pool,
+                    tenant_id=scenario.tenant_id,
+                    timeout_seconds=args.post_commit_timeout,
+                )
+                wave["post_commit_status"] = current_post_commit
+                _merge_numeric_status(post_commit_status, current_post_commit)
+                print(
+                    "post_commit="
+                    f"{json.dumps(current_post_commit, sort_keys=True)}",
+                    flush=True,
+                )
+
+                if not args.skip_topology_optimizer:
+                    current_topology = await drain_topology_optimizer(
+                        pool,
+                        tenant_id=scenario.tenant_id,
+                        timeout_seconds=args.topology_optimizer_timeout,
+                        batch_size=args.topology_optimizer_batch_size,
+                        lookback_hours=args.topology_optimizer_lookback_hours,
+                    )
+                    wave["topology_optimizer_status"] = current_topology
+                    _merge_numeric_status(
+                        topology_optimizer_status,
+                        current_topology,
+                        metric_key="metrics",
+                    )
+                    if current_topology.get("status") == "timeout":
+                        topology_optimizer_status["status"] = "timeout"
+                    elif topology_optimizer_status.get("status") != "timeout":
+                        topology_optimizer_status["status"] = "drained"
+                    print(
+                        "topology_optimizer="
+                        f"{json.dumps(current_topology, sort_keys=True)}",
+                        flush=True,
+                    )
+            else:
+                wave["enqueued_t1"] = 0
+                wave["think_status"] = "not_run"
+
+            processing_waves.append(wave)
+            if str(wave.get("think_status") or "").startswith("timeout:"):
+                break
+
+        print(f"injected_total={len(observation_ids)}", flush=True)
 
         summary = await collect_model_layer_report(
             pool,
@@ -2095,6 +2467,24 @@ async def main() -> int:
             scenario=scenario,
             observation_ids=observation_ids,
             think_status=think_status,
+            run_config={
+                "signals": args.signals,
+                "think_limit": args.think_limit,
+                "signal_batch_size": args.signal_batch_size,
+                "seed_models": args.seed_models,
+                "seed_families": args.seed_families,
+                "skip_migrations": args.skip_migrations,
+                "skip_topology_optimizer": args.skip_topology_optimizer,
+                "topology_optimizer_batch_size": args.topology_optimizer_batch_size,
+                "topology_optimizer_timeout": args.topology_optimizer_timeout,
+                "topology_optimizer_lookback_hours": (
+                    args.topology_optimizer_lookback_hours
+                ),
+            },
+            seed_status=seed_status,
+            processing_waves=processing_waves,
+            post_commit_status=post_commit_status,
+            topology_optimizer_status=topology_optimizer_status,
             elapsed_seconds=time.monotonic() - started,
         )
         _write_json(report_dir / "run_summary.json", summary)
@@ -2110,6 +2500,8 @@ async def main() -> int:
                     "model_edges": summary["model_edges"],
                     "relationship_candidates": summary["relationship_candidates"],
                     "latent_topology_candidates": summary["latent_topology_candidates"],
+                    "seed_status": seed_status,
+                    "processing_waves": len(processing_waves),
                     "think_runs_success": summary["think_runs_success"],
                     "think_runs_failed": summary["think_runs_failed"],
                     "pending_triggers": summary["pending_triggers"],
@@ -2118,6 +2510,11 @@ async def main() -> int:
                         "dead_lettered_post_commit_actions"
                     ],
                     "post_commit_status": post_commit_status,
+                    "topology_optimizer_status": topology_optimizer_status,
+                    "discovery_layer_counts": summary.get("discovery_layer_counts"),
+                    "topology_optimizer_metric_totals": summary.get(
+                        "topology_optimizer_metric_totals"
+                    ),
                     "cost": summary["cost"],
                 },
                 indent=2,

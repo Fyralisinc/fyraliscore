@@ -6,7 +6,10 @@ from lib.shared.ids import uuid7
 from services.retrieval.assembler import ContextBundle
 from services.retrieval.primary import RetrievalResult, TriggerContext
 from services.think.prompt import build_prompt
-from services.think.reasoning_frame import ReasoningFrame
+from services.think.reasoning_frame import (
+    ReasoningFrame,
+    reasoning_job_from_trigger,
+)
 
 
 def test_reasoning_frame_normalizes_topology_trigger() -> None:
@@ -30,6 +33,8 @@ def test_reasoning_frame_normalizes_topology_trigger() -> None:
 
     assert frame.frame_kind == "topology_shift"
     assert frame.stimulus_kind == "T6:emergence"
+    assert frame.job_source == "topology"
+    assert frame.job_intent == "integrate_topology_shift"
     assert str(member_a) in frame.seed_model_ids
     assert str(member_b) in frame.seed_model_ids
     assert str(retrieved_id) in frame.candidate_model_ids
@@ -69,8 +74,10 @@ def test_reasoning_frame_normalizes_latent_topology_candidate() -> None:
 
     frame = ReasoningFrame.from_trigger(trigger)
 
-    assert frame.frame_kind == "topology_candidate_interpretation"
+    assert frame.frame_kind == "internal_reflection"
     assert frame.stimulus_kind == "T4:latent_relationship_candidate"
+    assert frame.job_source == "topology"
+    assert frame.job_intent == "adjudicate_candidate"
     assert str(member_a) in frame.seed_model_ids
     assert str(member_b) in frame.seed_model_ids
     assert "impact_signature_interaction" in frame.priority_dimensions
@@ -94,7 +101,8 @@ def test_build_prompt_renders_reasoning_frame_section() -> None:
     ).user
 
     assert "<reasoning_frame>" in user
-    assert "frame_kind: anomaly_explanation" in user
+    assert "frame_kind: internal_reflection" in user
+    assert "job_intent: explain_inconsistency" in user
     assert "composite_situations" in user
     assert "situation_requires_multiple_existing_models" in user
     assert user.index("<reasoning_frame>") < user.index("<retrieved_context>")
@@ -135,3 +143,32 @@ def test_build_prompt_renders_relationship_candidate_section() -> None:
     assert "<relationship_candidate>" in user
     assert "edge_kind: blocks" in user
     assert "latent_relationship_field" in user
+
+
+def test_t2_t3_t4_share_internal_reflection_family() -> None:
+    cases = [
+        (
+            TriggerContext(kind="T2", tenant_id=uuid7()),
+            "due_timer",
+            "evaluate_existing_belief",
+        ),
+        (
+            TriggerContext(kind="T3", tenant_id=uuid7()),
+            "anomaly_detector",
+            "explain_inconsistency",
+        ),
+        (
+            TriggerContext(kind="T4", tenant_id=uuid7()),
+            "maintenance",
+            "reorganize_memory",
+        ),
+    ]
+
+    for trigger, source, intent in cases:
+        job = reasoning_job_from_trigger(trigger)
+        frame = ReasoningFrame.from_trigger(trigger)
+
+        assert job.family == "internal_reflection"
+        assert frame.frame_kind == "internal_reflection"
+        assert frame.job_source == source
+        assert frame.job_intent == intent

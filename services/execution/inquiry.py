@@ -48,6 +48,10 @@ from services.retrieval.primary import RetrievalResult, TriggerContext, primary_
 from services.synthesis.state_contract import StateSource, compile_state_contract
 
 from .contracts import SignalRoute
+from .question_planning_provider import (
+    question_planning_provider_metadata,
+    select_question_planning_provider,
+)
 
 
 InquiryStopStatus = Literal[
@@ -61,6 +65,7 @@ InquiryStopStatus = Literal[
 
 RetrievalActionPath = Literal[
     "structural",
+    "focused_index",
     "semantic",
     "temporal",
     "pattern",
@@ -93,6 +98,13 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
 def _reader_attribution_nonselected_limit() -> int:
     """Operational cap for trace pressure.
 
@@ -116,6 +128,53 @@ def _reader_attribution_nonselected_min_score() -> float:
     )
 
 
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _append_stage_timing(
+    timings: list[dict[str, Any]],
+    stage: str,
+    started: float,
+    **extra: Any,
+) -> None:
+    note = {
+        "stage": stage,
+        "elapsed_ms": _elapsed_ms(started),
+    }
+    for key, value in extra.items():
+        if value is not None:
+            note[key] = value
+    timings.append(note)
+
+
+def _sum_elapsed_ms(notes: list[dict[str, Any]]) -> int:
+    total = 0
+    for note in notes:
+        try:
+            total += int(note.get("elapsed_ms") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _runtime_residual_summary(
+    *,
+    total_ms: int,
+    action_timings: list[dict[str, Any]],
+    stage_timings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    action_total = _sum_elapsed_ms(action_timings)
+    stage_total = _sum_elapsed_ms(stage_timings)
+    return {
+        "total_ms": total_ms,
+        "retrieval_action_timings_ms_total": action_total,
+        "retrieval_stage_timings_ms_total": stage_total,
+        "measured_ms_total": action_total + stage_total,
+        "unaccounted_ms": max(0, total_ms - action_total - stage_total),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class InquiryConfig:
     max_rounds: int = 2
@@ -134,12 +193,31 @@ class InquiryConfig:
     reasoning_packet_token_budget: int = 24000
     temporal_window_days: int = 30
     semantic_budget: int = 30
+    semantic_hybrid_lexical_enabled: bool = True
+    semantic_hybrid_lexical_max_candidates: int = 24
+    semantic_hybrid_lexical_terms: int = 8
+    semantic_hybrid_lexical_per_term_limit: int = 12
+    focused_index_enabled: bool = True
+    focused_index_terms: int = 12
+    focused_index_max_candidates: int = 48
+    focused_index_scope_candidates: int = 18
+    question_action_parallel_enabled: bool = True
+    question_action_parallelism: int = 6
     structural_max_hops: int = 2
+    structural_read_fanout_enabled: bool = False
+    structural_read_fanout_min_seeds: int = 16
+    structural_read_fanout_chunk_size: int = 8
     model_edge_max_hops: int = 2
     llm_question_planning_enabled: bool = True
-    llm_question_temperature: float = 0.1
+    llm_question_temperature: float = 0.0
     llm_question_max_tokens: int = 900
     sage_reader_enabled: bool = True
+    sage_reader_row_cache_enabled: bool = True
+    sage_reader_shared_substrate_enabled: bool = True
+    sage_reader_parallel_enabled: bool = True
+    sage_reader_parallelism: int = 2
+    sage_reader_gate_broad_actions: bool = True
+    persist_full_sage_reader_notes: bool = False
     persist: bool = True
 
     @classmethod
@@ -185,7 +263,61 @@ class InquiryConfig:
             ),
             temporal_window_days=int(os.environ.get("INQUIRY_TEMPORAL_WINDOW_DAYS", "30")),
             semantic_budget=int(os.environ.get("INQUIRY_SEMANTIC_BUDGET", "30")),
+            semantic_hybrid_lexical_enabled=_env_bool(
+                "INQUIRY_SEMANTIC_HYBRID_LEXICAL_ENABLED", True
+            ),
+            semantic_hybrid_lexical_max_candidates=_env_int(
+                "INQUIRY_SEMANTIC_HYBRID_LEXICAL_MAX_CANDIDATES",
+                24,
+                minimum=1,
+            ),
+            semantic_hybrid_lexical_terms=_env_int(
+                "INQUIRY_SEMANTIC_HYBRID_LEXICAL_TERMS",
+                8,
+                minimum=1,
+            ),
+            semantic_hybrid_lexical_per_term_limit=_env_int(
+                "INQUIRY_SEMANTIC_HYBRID_LEXICAL_PER_TERM_LIMIT",
+                12,
+                minimum=1,
+            ),
+            focused_index_enabled=_env_bool(
+                "INQUIRY_FOCUSED_INDEX_ENABLED", True
+            ),
+            focused_index_terms=_env_int(
+                "INQUIRY_FOCUSED_INDEX_TERMS",
+                12,
+                minimum=1,
+            ),
+            focused_index_max_candidates=_env_int(
+                "INQUIRY_FOCUSED_INDEX_MAX_CANDIDATES",
+                48,
+                minimum=1,
+            ),
+            focused_index_scope_candidates=_env_int(
+                "INQUIRY_FOCUSED_INDEX_SCOPE_CANDIDATES",
+                18,
+                minimum=1,
+            ),
+            question_action_parallel_enabled=_env_bool(
+                "INQUIRY_QUESTION_ACTION_PARALLEL_ENABLED", True
+            ),
+            question_action_parallelism=_env_int(
+                "INQUIRY_QUESTION_ACTION_PARALLELISM",
+                6,
+                minimum=1,
+            ),
             structural_max_hops=int(os.environ.get("INQUIRY_STRUCTURAL_MAX_HOPS", "2")),
+            structural_read_fanout_enabled=os.environ.get(
+                "INQUIRY_STRUCTURAL_READ_FANOUT_ENABLED",
+                "0",
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            structural_read_fanout_min_seeds=int(
+                os.environ.get("INQUIRY_STRUCTURAL_READ_FANOUT_MIN_SEEDS", "16")
+            ),
+            structural_read_fanout_chunk_size=int(
+                os.environ.get("INQUIRY_STRUCTURAL_READ_FANOUT_CHUNK_SIZE", "8")
+            ),
             model_edge_max_hops=int(os.environ.get("INQUIRY_MODEL_EDGE_MAX_HOPS", "2")),
             llm_question_planning_enabled=os.environ.get(
                 "INQUIRY_LLM_QUESTION_PLANNING_ENABLED",
@@ -195,7 +327,7 @@ class InquiryConfig:
             .lower()
             not in {"0", "false", "no", "off"},
             llm_question_temperature=float(
-                os.environ.get("INQUIRY_LLM_QUESTION_TEMPERATURE", "0.1")
+                os.environ.get("INQUIRY_LLM_QUESTION_TEMPERATURE", "0.0")
             ),
             llm_question_max_tokens=int(
                 os.environ.get("INQUIRY_LLM_QUESTION_MAX_TOKENS", "900")
@@ -203,6 +335,25 @@ class InquiryConfig:
             sage_reader_enabled=os.environ.get(
                 "SAGE_READER_ENABLED", "1"
             ).strip().lower() not in {"0", "false", "no", "off", ""},
+            sage_reader_row_cache_enabled=os.environ.get(
+                "SAGE_READER_ROW_CACHE_ENABLED", "1"
+            ).strip().lower() not in {"0", "false", "no", "off", ""},
+            sage_reader_shared_substrate_enabled=os.environ.get(
+                "SAGE_READER_SHARED_SUBSTRATE_ENABLED", "1"
+            ).strip().lower() not in {"0", "false", "no", "off", ""},
+            sage_reader_parallel_enabled=os.environ.get(
+                "SAGE_READER_PARALLEL_ENABLED", "1"
+            ).strip().lower() not in {"0", "false", "no", "off", ""},
+            sage_reader_parallelism=max(
+                1,
+                int(os.environ.get("SAGE_READER_PARALLELISM", "2")),
+            ),
+            sage_reader_gate_broad_actions=os.environ.get(
+                "SAGE_READER_GATE_BROAD_ACTIONS", "1"
+            ).strip().lower() not in {"0", "false", "no", "off", ""},
+            persist_full_sage_reader_notes=os.environ.get(
+                "SAGE_READER_PERSIST_FULL_NOTES", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"},
             persist=os.environ.get("INQUIRY_PERSIST", "1").strip().lower()
             not in {"0", "false", "no", "off"},
         )
@@ -231,9 +382,59 @@ class LLMInquiryQuestionSpec(BaseModel):
     stop_condition: str | None = Field(default=None, max_length=180)
 
 
+class LLMBeliefDeltaSpec(BaseModel):
+    delta_id: str | None = Field(default=None, max_length=96)
+    claim_atom: str = Field(
+        min_length=8,
+        max_length=240,
+        description="Atomic belief candidate implied by the signal.",
+    )
+    delta_type: str = Field(
+        default="update",
+        max_length=32,
+        description=(
+            "One of create, update, weaken, split, merge, supersede, no_op."
+        ),
+    )
+    target_model_ids: list[str] = Field(default_factory=list, max_length=5)
+    affected_entities: list[str] = Field(default_factory=list, max_length=8)
+    uncertainty_slots: list[str] = Field(default_factory=list, max_length=8)
+    evidence_needed: list[str] = Field(default_factory=list, max_length=8)
+    impact_if_true: str = Field(default="medium", max_length=16)
+    confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+
+
 class LLMInquiryQuestionPlan(BaseModel):
     rationale: str | None = Field(default=None, max_length=500)
+    belief_deltas: list[LLMBeliefDeltaSpec] = Field(
+        default_factory=list,
+        max_length=5,
+    )
     questions: list[LLMInquiryQuestionSpec] = Field(default_factory=list, max_length=6)
+
+
+class LLMCompactQuestionSpec(BaseModel):
+    p: str = Field(max_length=32)
+    q: str = Field(min_length=8, max_length=180)
+    v: float = Field(default=0.74, ge=0.0, le=1.0)
+    c: float = Field(default=0.24, ge=0.0, le=1.0)
+
+
+class LLMCompactBeliefDeltaSpec(BaseModel):
+    i: str | None = Field(default=None, max_length=96)
+    claim: str = Field(min_length=8, max_length=220)
+    type: str = Field(default="update", max_length=32)
+    entities: list[str] = Field(default_factory=list, max_length=6)
+    slots: list[str] = Field(default_factory=list, max_length=5)
+    evidence: list[str] = Field(default_factory=list, max_length=5)
+    impact: str = Field(default="medium", max_length=16)
+    conf: float = Field(default=0.45, ge=0.0, le=1.0)
+
+
+class LLMCompactQuestionPlan(BaseModel):
+    r: str | None = Field(default=None, max_length=300)
+    d: list[LLMCompactBeliefDeltaSpec] = Field(default_factory=list, max_length=4)
+    q: list[LLMCompactQuestionSpec] = Field(default_factory=list, max_length=3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +443,12 @@ class Hypothesis:
     claim: str
     confidence: float
     impact_if_true: str
+    delta_type: str | None = None
+    target_model_ids: tuple[str, ...] = ()
+    affected_entities: tuple[str, ...] = ()
+    uncertainty_slots: tuple[str, ...] = ()
+    evidence_needed: tuple[str, ...] = ()
+    source: str = "deterministic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +473,33 @@ class RetrievalAction:
     query: str | None = None
     filters: dict[str, Any] = field(default_factory=dict)
     budget: int = 25
+
+
+@dataclass(slots=True)
+class _QuestionRetrievalPlan:
+    question: InquiryQuestion
+    sage_result: RetrievalResult | None = None
+    sage_action: RetrievalAction | None = None
+    action_gate_scope: Literal["all", "broad"] | None = None
+    action_gate_reason: str | None = None
+    actions_to_run: list[RetrievalAction] = field(default_factory=list)
+    skipped_timing_notes: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ActionExecutionRecord:
+    action: RetrievalAction
+    path_result: PathwayResult | None
+    timing_note: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _FocusedIndexHit:
+    model_id: UUID
+    score: float
+    source: str
+    match_count: int = 0
+    scope_overlap: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +613,7 @@ async def retrieve_for_execution(
     *,
     embedder: Any | None = None,
     llm_provider: LLMProvider | None = None,
+    read_pool: asyncpg.Pool | None = None,
     route: SignalRoute | None = None,
     mode: Literal["deep", "fast"] = "deep",
     top_n: int = 80,
@@ -389,17 +624,28 @@ async def retrieve_for_execution(
     `EXECUTION_RETRIEVAL_ENGINE=legacy` gives an operator rollback path.
     The default is the new inquiry runtime.
     """
+    cfg = config or InquiryConfig.from_env()
     if not inquiry_enabled():
-        return await primary_retrieve(trigger, conn, embedder=embedder, top_n=top_n)
+        return await primary_retrieve(
+            trigger,
+            conn,
+            embedder=embedder,
+            read_pool=read_pool,
+            structural_read_fanout_enabled=cfg.structural_read_fanout_enabled,
+            structural_read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
+            structural_read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
+            top_n=top_n,
+        )
     return await run_inquiry_retrieval(
         trigger,
         conn,
         embedder=embedder,
         llm_provider=llm_provider,
+        read_pool=read_pool,
         route=route,
         mode=mode,
         top_n=top_n,
-        config=config,
+        config=cfg,
     )
 
 
@@ -409,11 +655,13 @@ async def run_inquiry_retrieval(
     *,
     embedder: Any | None = None,
     llm_provider: LLMProvider | None = None,
+    read_pool: asyncpg.Pool | None = None,
     route: SignalRoute | None = None,
     mode: Literal["deep", "fast"] = "deep",
     top_n: int = 80,
     config: InquiryConfig | None = None,
 ) -> InquiryResult:
+    total_started = time.perf_counter()
     cfg = config or InquiryConfig.from_env()
     route = route or ("FAST_PATH" if mode == "fast" else _route_for_trigger(trigger))
     session_id = uuid7()
@@ -423,7 +671,9 @@ async def run_inquiry_retrieval(
     weak_signal = signal_class == "weak"
     cold_weak_noop_gate = _cold_weak_noop_gate(trigger, signal_class)
     baseline_top_n = _adaptive_baseline_top_n(candidate_top_n, signal_class)
+    stage_timing_notes: list[dict[str, Any]] = []
 
+    stage_started = time.perf_counter()
     if cold_weak_noop_gate["used"]:
         baseline = _merge_results(
             trigger,
@@ -432,13 +682,38 @@ async def run_inquiry_retrieval(
             note_prefix="cold_weak_noop",
             config=cfg,
         )
+        _append_stage_timing(
+            stage_timing_notes,
+            "primary_retrieve",
+            stage_started,
+            skipped=True,
+            reason=str(cold_weak_noop_gate["reason"]),
+            models=len(baseline.models),
+            observations=len(baseline.observations),
+        )
     else:
         baseline = await primary_retrieve(
             trigger,
             conn,
             embedder=embedder,
+            read_pool=read_pool,
+            structural_read_fanout_enabled=cfg.structural_read_fanout_enabled,
+            structural_read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
+            structural_read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
             top_n=baseline_top_n,
         )
+        _append_stage_timing(
+            stage_timing_notes,
+            "primary_retrieve",
+            stage_started,
+            models=len(baseline.models),
+            observations=len(baseline.observations),
+            pathways_run=list((baseline.notes or {}).get("pathways_run", []) or []),
+            primary_pathway_timings=list(
+                (baseline.notes or {}).get("pathway_timings", []) or []
+            ),
+        )
+    stage_started = time.perf_counter()
     hypotheses = tuple(_generate_hypotheses(trigger, baseline))
     evidence_by_key: dict[tuple[str, str], EvidenceCard] = {}
     _add_result_to_reservoir(
@@ -463,19 +738,39 @@ async def run_inquiry_retrieval(
     retrieval_results = [baseline]
     unknowns: set[str] = set(_initial_unknowns(trigger, baseline))
     question_planning_notes: list[dict[str, Any]] = []
+    _append_stage_timing(
+        stage_timing_notes,
+        "baseline_reservoir_seed",
+        stage_started,
+        hypotheses=len(hypotheses),
+        evidence=len(evidence_by_key),
+    )
+    stage_started = time.perf_counter()
     question_policy = await _load_question_policy_stats(
         conn,
         tenant_id=trigger.tenant_id,
         signal_type=trigger.kind,
     )
+    _append_stage_timing(
+        stage_timing_notes,
+        "question_policy_load",
+        stage_started,
+        policies=len(question_policy),
+    )
     sage_reader_notes: dict[str, Any] = {
         "enabled": bool(cfg.sage_reader_enabled),
+        "row_cache_enabled": bool(cfg.sage_reader_row_cache_enabled),
+        "shared_substrate_enabled": bool(cfg.sage_reader_shared_substrate_enabled),
+        "parallel_enabled": bool(cfg.sage_reader_parallel_enabled),
+        "parallelism": int(cfg.sage_reader_parallelism),
+        "gate_broad_actions": bool(cfg.sage_reader_gate_broad_actions),
         "questions": {},
         "signatures": [],
         "selected_model_ids": [],
         "projected_evidence_count": 0,
         "activation_trace_count": 0,
     }
+    sage_reader_runtime: Any | None = None
     max_rounds = (
         0
         if (
@@ -487,10 +782,54 @@ async def run_inquiry_retrieval(
     )
     if weak_signal and max_rounds > 1:
         max_rounds = 1
+    if max_rounds > 0:
+        sage_reader_runtime = _build_sage_reader(cfg)
+        if cfg.sage_reader_enabled and sage_reader_runtime is None:
+            sage_reader_notes["enabled"] = False
+            sage_reader_notes["initialization_failed"] = True
+    sage_reader_substrate: Any | None = None
+    if (
+        sage_reader_runtime is not None
+        and cfg.sage_reader_shared_substrate_enabled
+        and hasattr(sage_reader_runtime, "prepare_substrate")
+    ):
+        stage_started = time.perf_counter()
+        try:
+            sage_reader_substrate = await sage_reader_runtime.prepare_substrate(
+                conn=conn,
+                tenant_id=trigger.tenant_id,
+                trigger=trigger,
+                baseline_models=tuple(baseline.models[:candidate_top_n]),
+            )
+            sage_reader_notes["substrate"] = {
+                "prepared": True,
+                "model_count": int(getattr(sage_reader_substrate, "model_count", 0)),
+                "counters": dict(
+                    sorted(getattr(sage_reader_substrate, "counters", {}).items())
+                ),
+                "timings_ms": dict(
+                    getattr(sage_reader_substrate, "timings_ms", {}) or {}
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            sage_reader_substrate = None
+            sage_reader_notes["substrate"] = {
+                "prepared": False,
+                "error": type(exc).__name__,
+            }
+        _append_stage_timing(
+            stage_timing_notes,
+            "sage_substrate_prepare",
+            stage_started,
+            prepared=sage_reader_substrate is not None,
+            models=int(getattr(sage_reader_substrate, "model_count", 0))
+            if sage_reader_substrate is not None else 0,
+        )
     stop_status: InquiryStopStatus = "insufficient_continue"
     stop_reason = "inquiry has not run"
 
     for round_index in range(1, max_rounds + 1):
+        stage_started = time.perf_counter()
         candidate_questions, planning_note = await _candidate_questions_for_round(
             trigger,
             baseline,
@@ -524,11 +863,36 @@ async def run_inquiry_retrieval(
             round_index=round_index,
             already_asked={q.primitive for q in all_questions},
         )
+        _append_stage_timing(
+            stage_timing_notes,
+            "question_planning",
+            stage_started,
+            round_index=round_index,
+            candidates=len(candidate_questions),
+            selected=len(selected),
+            mode=planning_note.get("mode"),
+        )
         if not selected:
             stop_status = "insufficient_defer"
             stop_reason = "no high-value unanswered questions remained"
             break
 
+        sage_results_by_qid, sage_batch_note = await _execute_sage_reader_actions_for_round(
+            selected,
+            trigger,
+            conn,
+            cfg,
+            reader=sage_reader_runtime,
+            substrate=sage_reader_substrate,
+            hypotheses=hypotheses,
+            read_pool=read_pool,
+        )
+        sage_reader_notes.setdefault("batches", []).append({
+            **sage_batch_note,
+            "round_index": round_index,
+        })
+
+        question_read_plans: list[_QuestionRetrievalPlan] = []
         for question in selected:
             all_questions.append(question)
             policy_signal = question_policy.get(question.primitive)
@@ -538,29 +902,11 @@ async def run_inquiry_retrieval(
                 cfg,
                 policy_signal=policy_signal,
             )
-            action_results: list[RetrievalResult] = []
-            sage_result = await _execute_sage_reader_action(
-                question,
-                trigger,
-                conn,
-                cfg,
-                hypotheses=hypotheses,
-            )
-            action_gate_scope: str | None = None
+            sage_result = sage_results_by_qid.get(question.question_id)
+            sage_action: RetrievalAction | None = None
+            action_gate_scope: Literal["all", "broad"] | None = None
             action_gate_reason: str | None = None
             if sage_result is not None:
-                action_timing_notes.append({
-                    "question_id": question.question_id,
-                    "path": "sage_reader",
-                    "target": "synthesis_reader",
-                    "elapsed_ms": _sage_reader_total_ms(sage_result),
-                    "cache_hit": False,
-                    "returned": True,
-                    "models": len(sage_result.models),
-                    "observations": len(sage_result.observations),
-                    "resources": len(sage_result.resources),
-                    "source_pathway": "SAGE",
-                })
                 sage_action = RetrievalAction(
                     question.question_id,
                     "sage_reader",
@@ -568,24 +914,13 @@ async def run_inquiry_retrieval(
                     query=question.question,
                     budget=cfg.result_model_limit,
                 )
-                all_actions.append(sage_action)
-                action_results.append(sage_result)
-                _add_result_to_reservoir(
-                    evidence_by_key,
-                    sage_result,
-                    path="sage_reader",
-                    question_id=question.question_id,
-                    hypotheses=hypotheses,
-                    score_hint=max(0.0, question.score),
-                )
-                _record_sage_reader_notes(
-                    sage_reader_notes, question, sage_result,
-                )
                 action_gate_scope, action_gate_reason = _sage_reader_action_gate(
-                    sage_result
+                    sage_result,
+                    gate_broad_actions=cfg.sage_reader_gate_broad_actions,
                 )
 
             actions_to_run: list[RetrievalAction] = []
+            skipped_timing_notes: list[dict[str, Any]] = []
             for action in actions:
                 skip_reason: str | None = None
                 if action_gate_scope == "all":
@@ -596,7 +931,7 @@ async def run_inquiry_retrieval(
                 ):
                     skip_reason = action_gate_reason or "sage_reader_focused_route"
                 if skip_reason is not None:
-                    action_timing_notes.append({
+                    skipped_timing_notes.append({
                         "question_id": question.question_id,
                         "path": action.path,
                         "target": action.target,
@@ -609,62 +944,102 @@ async def run_inquiry_retrieval(
                     continue
                 actions_to_run.append(action)
 
-            all_actions.extend(actions_to_run)
-            for action in actions_to_run:
-                cache_key = _retrieval_action_cache_key(action, trigger, cfg)
-                path_result = action_cache.get(cache_key)
-                cache_hit = path_result is not None
-                action_started = time.perf_counter()
-                if path_result is None:
-                    path_result = await _execute_action(action, trigger, conn, embedder, cfg)
-                    if path_result is not None:
-                        action_cache[cache_key] = path_result
-                elapsed_ms = int((time.perf_counter() - action_started) * 1000)
-                if path_result is None:
-                    action_timing_notes.append({
-                        "question_id": question.question_id,
-                        "path": action.path,
-                        "target": action.target,
-                        "elapsed_ms": elapsed_ms,
-                        "cache_hit": cache_hit,
-                        "returned": False,
-                    })
-                    continue
+            question_read_plans.append(_QuestionRetrievalPlan(
+                question=question,
+                sage_result=sage_result,
+                sage_action=sage_action,
+                action_gate_scope=action_gate_scope,
+                action_gate_reason=action_gate_reason,
+                actions_to_run=actions_to_run,
+                skipped_timing_notes=skipped_timing_notes,
+            ))
+
+        action_records_by_qid = await _execute_question_retrieval_actions(
+            question_read_plans,
+            trigger,
+            conn,
+            embedder,
+            cfg,
+            action_cache,
+            read_pool=read_pool,
+        )
+
+        for plan in question_read_plans:
+            question = plan.question
+            action_results: list[RetrievalResult] = []
+            if plan.sage_result is not None:
                 action_timing_notes.append({
                     "question_id": question.question_id,
-                    "path": action.path,
-                    "target": action.target,
-                    "elapsed_ms": elapsed_ms,
-                    "cache_hit": cache_hit,
+                    "path": "sage_reader",
+                    "target": "synthesis_reader",
+                    "elapsed_ms": _sage_reader_total_ms(plan.sage_result),
+                    "cache_hit": False,
                     "returned": True,
-                    "models": len(path_result.models),
-                    "observations": len(path_result.observations),
-                    "resources": len(path_result.resources),
-                    "source_pathway": path_result.source_pathway,
+                    "models": len(plan.sage_result.models),
+                    "observations": len(plan.sage_result.observations),
+                    "resources": len(plan.sage_result.resources),
+                    "source_pathway": "SAGE",
                 })
-                rr = _result_from_pathway(trigger, path_result, action)
+                if plan.sage_action is not None:
+                    all_actions.append(plan.sage_action)
+                action_results.append(plan.sage_result)
+                _add_result_to_reservoir(
+                    evidence_by_key,
+                    plan.sage_result,
+                    path="sage_reader",
+                    question_id=question.question_id,
+                    hypotheses=hypotheses,
+                    score_hint=max(0.0, question.score),
+                )
+                _record_sage_reader_notes(
+                    sage_reader_notes, question, plan.sage_result,
+                )
+            action_timing_notes.extend(plan.skipped_timing_notes)
+            all_actions.extend(plan.actions_to_run)
+            for record in action_records_by_qid.get(question.question_id, []):
+                action_timing_notes.append(record.timing_note)
+                if record.path_result is None:
+                    continue
+                rr = _result_from_pathway(trigger, record.path_result, record.action)
                 action_results.append(rr)
                 _add_result_to_reservoir(
                     evidence_by_key,
                     rr,
-                    path=action.path,
+                    path=record.action.path,
                     question_id=question.question_id,
                     hypotheses=hypotheses,
                     score_hint=max(0.0, question.score),
                 )
             if action_results:
+                stage_started = time.perf_counter()
                 merged_for_question = _merge_results(
                     trigger,
                     action_results,
                     top_n=candidate_top_n,
                     note_prefix=f"question_{question.question_id}",
                 )
+                _append_stage_timing(
+                    stage_timing_notes,
+                    "question_result_merge",
+                    stage_started,
+                    question_id=question.question_id,
+                    models=len(merged_for_question.models),
+                    observations=len(merged_for_question.observations),
+                )
                 retrieval_results.append(merged_for_question)
+            stage_started = time.perf_counter()
             answer = _answer_question(
                 question,
                 evidence_by_key,
                 trigger_occurred_at=trigger.seed_occurred_at,
                 stale_after_days=cfg.temporal_window_days,
+            )
+            _append_stage_timing(
+                stage_timing_notes,
+                "question_answer",
+                stage_started,
+                question_id=question.question_id,
+                evidence=len(evidence_by_key),
             )
             answers.append(answer)
             unknowns.difference_update(_resolved_unknowns_for_answer(question, answer))
@@ -708,6 +1083,7 @@ async def run_inquiry_retrieval(
         mode=mode,
         signal_class=signal_class,
     )
+    stage_started = time.perf_counter()
     if cold_weak_noop_gate["used"] or sage_controller_notes["global_negative_route_gate"]:
         ranked_evidence_cards = []
     else:
@@ -715,6 +1091,13 @@ async def run_inquiry_retrieval(
             list(evidence_by_key.values()),
             limit=evidence_limit,
         )
+    _append_stage_timing(
+        stage_timing_notes,
+        "evidence_rank",
+        stage_started,
+        evidence_before_rank=evidence_before_rank,
+        evidence_after_rank=len(ranked_evidence_cards),
+    )
     if max_rounds == 0:
         verdict = _sufficiency_gate(
             route,
@@ -752,6 +1135,7 @@ async def run_inquiry_retrieval(
             answered_questions=len(answers),
             remaining_unknowns=tuple(sorted(unknowns)[:10]),
         )
+    stage_started = time.perf_counter()
     evidence_cards, evidence_minimization = _select_minimal_sufficient_evidence(
         ranked_evidence_cards,
         hypotheses=hypotheses,
@@ -760,6 +1144,12 @@ async def run_inquiry_retrieval(
         route=route,
         mode=mode,
         evidence_limit=evidence_limit,
+    )
+    _append_stage_timing(
+        stage_timing_notes,
+        "evidence_minimize",
+        stage_started,
+        evidence_after_minimize=len(evidence_cards),
     )
     verdict = SufficiencyVerdict(
         status=verdict.status,
@@ -778,6 +1168,7 @@ async def run_inquiry_retrieval(
             else retrieval_results
         )
     )
+    stage_started = time.perf_counter()
     combined = _merge_results(
         trigger,
         retrieval_results_for_merge,
@@ -786,6 +1177,14 @@ async def run_inquiry_retrieval(
         config=cfg,
         relevance_gate=True,
     )
+    _append_stage_timing(
+        stage_timing_notes,
+        "final_result_merge",
+        stage_started,
+        models=len(combined.models),
+        observations=len(combined.observations),
+    )
+    stage_started = time.perf_counter()
     packet = _compile_context_packet(
         trigger,
         route,
@@ -796,6 +1195,13 @@ async def run_inquiry_retrieval(
         verdict,
         token_budget=cfg.reasoning_packet_token_budget,
     )
+    _append_stage_timing(
+        stage_timing_notes,
+        "context_packet_compile",
+        stage_started,
+        evidence=len(evidence_cards),
+    )
+    runtime_ms = _elapsed_ms(total_started)
     notes = {
         "execution_engine": "inquiry",
         "route": route,
@@ -818,6 +1224,12 @@ async def run_inquiry_retrieval(
         "question_planning": question_planning_notes,
         "cold_weak_noop_gate": cold_weak_noop_gate,
         "retrieval_action_timings": action_timing_notes,
+        "retrieval_stage_timings": stage_timing_notes,
+        "retrieval_runtime": _runtime_residual_summary(
+            total_ms=runtime_ms,
+            action_timings=action_timing_notes,
+            stage_timings=stage_timing_notes,
+        ),
         "retrieval_action_cache": _action_cache_summary(action_timing_notes),
         "retrieval_action_cache_seeded_from_baseline": baseline_action_cache_notes,
         "sage_reader": sage_reader_notes,
@@ -847,7 +1259,23 @@ async def run_inquiry_retrieval(
         notes=notes,
     )
     if cfg.persist:
-        await _persist_inquiry(conn, result, trigger)
+        stage_started = time.perf_counter()
+        await _persist_inquiry(
+            conn,
+            result,
+            trigger,
+            persist_full_sage_reader_notes=cfg.persist_full_sage_reader_notes,
+        )
+        _append_stage_timing(
+            stage_timing_notes,
+            "persist_inquiry",
+            stage_started,
+        )
+        result.notes["retrieval_runtime"] = _runtime_residual_summary(
+            total_ms=_elapsed_ms(total_started),
+            action_timings=action_timing_notes,
+            stage_timings=stage_timing_notes,
+        )
     return result
 
 
@@ -953,6 +1381,7 @@ def _generate_hypotheses(
 ) -> list[Hypothesis]:
     text = _trigger_text(trigger)
     lower = text.casefold()
+    anchors = _question_anchors(trigger)
     hypotheses: list[Hypothesis] = []
     risk = _has_risk_language(lower)
     commitment = _has_commitment_language(lower) or bool(
@@ -963,38 +1392,91 @@ def _generate_hypotheses(
             Hypothesis(
                 id="H1",
                 claim=_claim_from_text(
-                    text,
+                    anchors.focus or text,
                     fallback="The signal describes a real operational blocker or risk.",
                 ),
                 confidence=0.46,
                 impact_if_true="high",
+                delta_type="update",
+                affected_entities=tuple(
+                    _question_entity_labels(trigger)
+                    or ((anchors.subject,) if anchors.subject != "this signal" else ())
+                ),
+                uncertainty_slots=tuple(_deterministic_delta_uncertainties(lower)),
+                evidence_needed=(
+                    "fresh signal evidence",
+                    "related active commitments",
+                    "recent counterevidence",
+                ),
             )
         )
     if commitment:
         hypotheses.append(
             Hypothesis(
                 id="H2",
-                claim="An active commitment, owner, or promised outcome is affected.",
+                claim=(
+                    f"An active commitment, owner, or promised outcome is affected by "
+                    f"{anchors.focus}."
+                ),
                 confidence=0.36,
                 impact_if_true="medium",
+                delta_type="update",
+                affected_entities=tuple(
+                    _question_entity_labels(trigger)
+                    or ((anchors.subject,) if anchors.subject != "this signal" else ())
+                ),
+                uncertainty_slots=(
+                    "which active commitment is affected",
+                    "who owns the next action",
+                    "which deadline or promised outcome is at risk",
+                ),
+                evidence_needed=(
+                    "active commitments",
+                    "commitment owners",
+                    "recent owner or decision evidence",
+                ),
             )
         )
     if _mentions_recurrence(lower) or len(baseline.models) >= 3:
         hypotheses.append(
             Hypothesis(
                 id="H3",
-                claim="The signal may be part of a broader recurring pattern.",
+                claim=f"{anchors.focus} may be part of a broader recurring pattern.",
                 confidence=0.29,
                 impact_if_true="high" if risk else "medium",
+                delta_type="create" if not baseline.models else "update",
+                affected_entities=tuple(
+                    _question_entity_labels(trigger)
+                    or ((anchors.subject,) if anchors.subject != "this signal" else ())
+                ),
+                uncertainty_slots=(
+                    "whether this pattern has appeared before",
+                    "which prior models support or weaken the recurrence claim",
+                ),
+                evidence_needed=(
+                    "similar prior observations",
+                    "related pattern models",
+                    "model edges to comparable situations",
+                ),
             )
         )
     if not hypotheses:
         hypotheses.append(
             Hypothesis(
                 id="H1",
-                claim="The signal may add localized context to existing memory.",
+                claim=f"{anchors.focus} may add localized context to existing memory.",
                 confidence=0.30,
                 impact_if_true="medium",
+                delta_type="update",
+                affected_entities=tuple(
+                    _question_entity_labels(trigger)
+                    or ((anchors.subject,) if anchors.subject != "this signal" else ())
+                ),
+                uncertainty_slots=(
+                    "which existing model, if any, should absorb this signal",
+                    "whether this is already captured",
+                ),
+                evidence_needed=("nearby existing models", "recent observations"),
             )
         )
     hypotheses.append(
@@ -1003,6 +1485,12 @@ def _generate_hypotheses(
             claim="The signal is local noise or already captured and requires no Synthesis update.",
             confidence=0.16 if risk or commitment else 0.32,
             impact_if_true="low",
+            delta_type="no_op",
+            uncertainty_slots=(
+                "whether the signal is already captured",
+                "whether no model update is needed",
+            ),
+            evidence_needed=("existing matching models", "counterevidence"),
         )
     )
     return hypotheses
@@ -1038,6 +1526,32 @@ def _initial_unknowns(trigger: TriggerContext, baseline: RetrievalResult) -> lis
     return unknowns
 
 
+def _deterministic_delta_uncertainties(lower: str) -> list[str]:
+    slots: list[str] = []
+    if _has_dependency_language(lower) or _has_risk_language(lower):
+        slots.append("whether the blocker is actually on the critical path")
+    if _has_constraint_language(lower):
+        slots.append("which resource, policy, or capacity constraint is binding")
+    if _has_revenue_impact_language(lower):
+        slots.append("which customer goal or revenue path is at risk")
+    if _has_commitment_language(lower):
+        slots.append("which active commitment or promised outcome is affected")
+    if "owner" in lower or "who" in lower or _has_risk_language(lower):
+        slots.append("who owns the next action")
+    if _mentions_recurrence(lower):
+        slots.append("whether this has appeared before")
+    slots.append("what evidence would weaken this interpretation")
+    return _dedupe_unknowns(slots)
+
+
+@dataclass(frozen=True, slots=True)
+class _QuestionAnchors:
+    subject: str
+    claim: str
+    focus: str
+    constraint: str | None = None
+
+
 def _candidate_questions(
     trigger: TriggerContext,
     hypotheses: tuple[Hypothesis, ...],
@@ -1048,10 +1562,11 @@ def _candidate_questions(
     lower = text.casefold()
     broad = _has_broad_signal_language(lower)
     hids = tuple(h.id for h in hypotheses if h.id != "H0")
+    anchors = _question_anchors(trigger)
     out = [
         InquiryQuestion(
             question_id="Q_CRITICAL_PATH",
-            question="Is the named issue actually on the critical path?",
+            question=_specific_question("DEPENDENCY", anchors),
             primitive="DEPENDENCY",
             tests_hypotheses=hids[:2] or ("H1",),
             expected_value=(
@@ -1069,7 +1584,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_ACTIVE_COMMITMENT",
-            question="Is there an active commitment or promised outcome involved?",
+            question=_specific_question("COMMITMENT", anchors),
             primitive="COMMITMENT",
             tests_hypotheses=("H2", "H0"),
             expected_value=(
@@ -1082,7 +1597,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_CONSTRAINT",
-            question="What scarce resource, policy, or constraint is blocking progress?",
+            question=_specific_question("CONSTRAINT", anchors),
             primitive="CONSTRAINT",
             tests_hypotheses=hids[:2] or ("H1",),
             expected_value=(
@@ -1097,7 +1612,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_COUNTEREVIDENCE",
-            question="What evidence would weaken the leading interpretation?",
+            question=_specific_question("COUNTEREVIDENCE", anchors),
             primitive="COUNTEREVIDENCE",
             tests_hypotheses=("H1", "H0"),
             expected_value=0.84 if _has_risk_language(lower) else 0.74,
@@ -1108,7 +1623,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_OWNER",
-            question="Who owns the affected dependency, decision, or commitment?",
+            question=_specific_question("OWNERSHIP", anchors),
             primitive="OWNERSHIP",
             tests_hypotheses=("H2",),
             expected_value=0.72 if "responsible owner" in unknowns else 0.36,
@@ -1119,7 +1634,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_GOAL_IMPACT",
-            question="Which goal, customer, or resource is affected?",
+            question=_specific_question("GOAL_IMPACT", anchors),
             primitive="GOAL_IMPACT",
             tests_hypotheses=hids[:3] or ("H1",),
             expected_value=(
@@ -1137,7 +1652,7 @@ def _candidate_questions(
         ),
         InquiryQuestion(
             question_id="Q_RECURRENCE",
-            question="Is this part of a broader recurring pattern?",
+            question=_specific_question("RECURRENCE", anchors),
             primitive="RECURRENCE",
             tests_hypotheses=("H3", "H0"),
             expected_value=(
@@ -1158,6 +1673,294 @@ def _candidate_questions(
             q_score = q.expected_value - q.expected_cost
             object.__setattr__(q, "score", round(q_score, 4))
     return out
+
+
+def _question_anchors(trigger: TriggerContext) -> _QuestionAnchors:
+    text = _trigger_text(trigger)
+    claim = _claim_from_text(text, fallback="this signal")
+    entity_labels = _question_entity_labels(trigger)
+    subject = _question_subject(text, entity_labels)
+    focus = _question_focus_phrase(text, subject=subject)
+    constraint = _question_constraint_phrase(text)
+    return _QuestionAnchors(
+        subject=subject,
+        claim=claim,
+        focus=focus,
+        constraint=constraint,
+    )
+
+
+def _question_entity_labels(trigger: TriggerContext) -> tuple[str, ...]:
+    labels: list[str] = []
+    for raw_entity in trigger.seed_entity_ids[:8]:
+        if not isinstance(raw_entity, dict):
+            continue
+        label = _entity_label_from_seed(raw_entity)
+        if not label:
+            continue
+        if label.casefold() in {existing.casefold() for existing in labels}:
+            continue
+        labels.append(label)
+    return tuple(labels[:4])
+
+
+def _entity_label_from_seed(entity: dict[str, Any]) -> str | None:
+    for key in ("label", "name", "title", "natural", "slug", "id"):
+        value = entity.get(key)
+        if value is None:
+            continue
+        label = _clean_question_anchor(str(value))
+        if not label or _looks_like_machine_identifier(label):
+            continue
+        return label
+    return None
+
+
+def _question_subject(text: str, entity_labels: tuple[str, ...]) -> str:
+    if entity_labels:
+        return _clean_question_anchor(", ".join(entity_labels[:3])) or "this signal"
+    spans = _capitalized_anchor_spans(text)
+    if spans:
+        return _clean_question_anchor(", ".join(spans[:3])) or "this signal"
+    return "this signal"
+
+
+def _capitalized_anchor_spans(text: str) -> tuple[str, ...]:
+    spans: list[str] = []
+    pattern = re.compile(
+        r"\b(?:[A-Z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*"
+        r"(?:\s+[A-Z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*){0,2})\b"
+    )
+    stop = {
+        "Board",
+        "Company",
+        "Customer",
+        "Customers",
+        "Data",
+        "Goal",
+        "Issue",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    }
+    for match in pattern.finditer(text or ""):
+        span = _clean_question_anchor(match.group(0))
+        if not span or span in stop or _looks_like_machine_identifier(span):
+            continue
+        if span.casefold() not in {existing.casefold() for existing in spans}:
+            spans.append(span)
+        if len(spans) >= 4:
+            break
+    return tuple(spans)
+
+
+def _question_constraint_phrase(text: str) -> str | None:
+    clean = " ".join((text or "").split())
+    if not clean:
+        return None
+    patterns = (
+        r"\bblocked by\s+([^.;,]+)",
+        r"\bconstrained by\s+([^.;,]+)",
+        r"\bdepends on\s+([^.;,]+)",
+        r"\bwaiting on\s+([^.;,]+)",
+        r"\bdue to\s+([^.;,]+)",
+        r"\bbecause\s+([^.;,]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, clean, flags=re.IGNORECASE)
+        if not match:
+            continue
+        phrase = re.split(r"\s+(?:and|but|while|which|that)\s+", match.group(1))[0]
+        phrase = _clean_question_anchor(phrase)
+        if phrase:
+            return _truncate_text(phrase, 90)
+    return None
+
+
+def _question_focus_phrase(text: str, *, subject: str) -> str:
+    clean = " ".join((text or "").split())
+    if not clean:
+        return subject
+    clean = re.sub(r"^\[[^\]]+\]\s*", "", clean).strip()
+    candidates: list[tuple[float, str]] = []
+
+    before_context, sep, after_context = clean.partition("Company context:")
+    preface_focus = _focus_from_preface(before_context)
+    if preface_focus:
+        candidates.append((1.2, preface_focus))
+    candidate_text = after_context if sep else clean
+    for index, sentence in enumerate(_focus_sentences(candidate_text)):
+        if _looks_like_company_overview(sentence):
+            continue
+        score = _focus_sentence_score(sentence) - index * 0.05
+        if score <= 0.0:
+            continue
+        candidates.append((score, sentence))
+
+    if not candidates:
+        return _truncate_text(subject, 120)
+    _, best = max(candidates, key=lambda item: (item[0], len(item[1])))
+    return _truncate_text(best, 140)
+
+
+def _focus_from_preface(text: str) -> str | None:
+    clean = _clean_question_anchor(text)
+    if not clean:
+        return None
+    match = re.search(r"\brelates to\s+(.+)$", clean, flags=re.IGNORECASE)
+    if match:
+        return _clean_question_anchor(match.group(1))
+    return _truncate_text(clean, 120)
+
+
+def _focus_sentences(text: str) -> tuple[str, ...]:
+    out: list[str] = []
+    for raw in re.split(r"(?<=[.!?])\s+", text or ""):
+        sentence = _clean_question_anchor(raw)
+        if sentence:
+            out.append(sentence)
+    return tuple(out)
+
+
+def _looks_like_company_overview(sentence: str) -> bool:
+    lower = sentence.casefold()
+    return (
+        "post-product-market fit" in lower
+        or "months runway" in lower
+        or "people in " in lower
+        or "series " in lower
+    )
+
+
+def _focus_sentence_score(sentence: str) -> float:
+    lower = sentence.casefold()
+    keywords = (
+        "approve",
+        "approval",
+        "asked",
+        "at risk",
+        "blocker",
+        "blocked",
+        "capacity",
+        "cannot",
+        "conflict",
+        "constrained",
+        "delayed",
+        "dependency",
+        "edge case",
+        "expansion",
+        "falsifier",
+        "gap",
+        "incident",
+        "owner",
+        "procurement",
+        "redline",
+        "repeats",
+        "review",
+        "risk",
+        "saml",
+        "security",
+        "stage",
+        "stale",
+        "terms",
+        "visible",
+    )
+    score = sum(1.0 for keyword in keywords if keyword in lower)
+    if "$" in sentence or "arr" in lower:
+        score += 1.0
+    if len(sentence) >= 40:
+        score += 0.3
+    return score
+
+
+def _specific_question(primitive: str, anchors: _QuestionAnchors) -> str:
+    subject = anchors.subject or "this signal"
+    claim = _safe_question_focus(anchors.claim, subject)
+    focus = _safe_question_focus(anchors.focus or anchors.claim, subject)
+    constraint = anchors.constraint
+
+    if primitive == "DEPENDENCY":
+        if constraint:
+            question = (
+                f"Is {constraint} the dependency that puts {subject} "
+                "on the critical path?"
+            )
+        else:
+            question = f"Is {focus} the critical-path issue for {subject}?"
+    elif primitive == "COMMITMENT":
+        question = (
+            f"Which active promise, deadline, or expected outcome does {focus} "
+            f"put at risk for {subject}?"
+        )
+    elif primitive == "CONSTRAINT":
+        if constraint:
+            question = (
+                f"What resource, policy, or capacity constraint behind {constraint} "
+                f"is blocking {subject}?"
+            )
+        else:
+            question = f"What resource, policy, or capacity constraint is driving {focus} for {subject}?"
+    elif primitive == "COUNTEREVIDENCE":
+        question = f"What evidence would weaken the interpretation that {focus}?"
+    elif primitive == "OWNERSHIP":
+        if constraint:
+            question = (
+                f"Who owns resolving {constraint} for {subject}, and who owns "
+                "the affected commitment?"
+            )
+        else:
+            question = f"Who owns the next action on {focus} for {subject}?"
+    elif primitive == "GOAL_IMPACT":
+        question = f"Which customer goal, revenue path, or scarce resource does {focus} threaten for {subject}?"
+    elif primitive == "RECURRENCE":
+        question = f"Has {focus} appeared before for {subject}, or is this a one-off signal?"
+    else:
+        question = f"What does {subject} require us to verify next?"
+    return _truncate_text(" ".join(question.split()), 240)
+
+
+def _safe_question_focus(value: str, subject: str) -> str:
+    focus = _clean_question_anchor(value)
+    if _is_specific_focus_phrase(focus):
+        return _truncate_text(focus, 100)
+    keyword_focus = _domain_keyword_focus(focus)
+    if keyword_focus:
+        return _truncate_text(keyword_focus, 100)
+    before_verb = re.split(
+        r"\b(should|is|are|was|were|has|have|will|may|might|must|needs?|requires?|involves?|creates?|reports?|shows?|indicates?|threatens?)\b",
+        focus,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    before_verb = _clean_question_anchor(before_verb)
+    if len(before_verb) >= 8:
+        return _truncate_text(before_verb, 100)
+    return _truncate_text(subject or "this signal", 100)
+
+
+def _clean_question_anchor(value: str) -> str:
+    cleaned = re.sub(r"[_]+", " ", value or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\r\n'\"`.,;:()[]{}")
+    return cleaned
+
+
+def _looks_like_machine_identifier(value: str) -> bool:
+    clean = value.strip()
+    if not clean:
+        return True
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        clean,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.fullmatch(r"[0-9a-f]{16,}", clean, flags=re.IGNORECASE):
+        return True
+    return False
 
 
 _ALLOWED_QUESTION_PRIMITIVES = {
@@ -1237,6 +2040,8 @@ async def _candidate_questions_for_round(
             "reason": "llm_provider_missing",
             "candidate_count": len(deterministic),
         }
+    planning_provider = select_question_planning_provider(llm_provider)
+    provider_metadata = question_planning_provider_metadata(planning_provider)
 
     try:
         plan_call = _generate_llm_question_plan(
@@ -1245,37 +2050,70 @@ async def _candidate_questions_for_round(
             hypotheses,
             evidence_by_key,
             unknowns,
-            llm_provider=llm_provider,
+            llm_provider=planning_provider,
             config=config,
+            max_tokens=_question_planning_max_tokens(config, planning_provider),
         )
-        timeout_s = float(
-            os.environ.get("INQUIRY_LLM_QUESTION_TIMEOUT_SECONDS", "30")
-        )
+        timeout_s = _question_planning_timeout_seconds(planning_provider)
         if timeout_s > 0:
             plan = await asyncio.wait_for(plan_call, timeout=timeout_s)
         else:
             plan = await plan_call
-        llm_questions = _normalize_llm_questions(plan.questions, hypotheses)
-        if not llm_questions:
+        belief_delta_hypotheses = _normalize_llm_belief_delta_hypotheses(
+            plan.belief_deltas,
+            trigger=trigger,
+        )
+        question_quality_notes: list[dict[str, Any]] = []
+        belief_delta_questions = _candidate_questions_from_belief_deltas(
+            trigger,
+            belief_delta_hypotheses,
+            hypotheses=hypotheses,
+            quality_notes=question_quality_notes,
+        )
+        llm_questions = _normalize_llm_questions(
+            plan.questions,
+            hypotheses,
+            trigger=trigger,
+            quality_notes=question_quality_notes,
+        )
+        if not llm_questions and not belief_delta_questions:
             return deterministic, {
                 "round": round_index,
                 "mode": "deterministic_fallback",
                 "reason": "llm_returned_no_valid_questions",
                 "candidate_count": len(deterministic),
                 "llm_rationale": plan.rationale,
+                "belief_delta_count": len(belief_delta_hypotheses),
+                **provider_metadata,
             }
+        primary_questions = llm_questions or belief_delta_questions
+        safety_questions = (
+            [*belief_delta_questions, *deterministic]
+            if llm_questions else deterministic
+        )
         merged, safety_added = _merge_llm_and_safety_questions(
-            llm_questions,
-            deterministic,
+            primary_questions,
+            safety_questions,
         )
         return merged, {
             "round": round_index,
-            "mode": "llm",
+            "mode": "llm" if llm_questions else "llm_delta",
             "llm_candidate_count": len(llm_questions),
+            "belief_delta_count": len(belief_delta_hypotheses),
+            "belief_delta_question_count": len(belief_delta_questions),
+            "belief_delta_types": [
+                h.delta_type for h in belief_delta_hypotheses if h.delta_type
+            ],
+            "belief_delta_claims": [
+                h.claim for h in belief_delta_hypotheses[:5]
+            ],
             "safety_candidate_count": safety_added,
             "candidate_count": len(merged),
             "llm_rationale": plan.rationale,
             "llm_primitives": [q.primitive for q in llm_questions],
+            "llm_schema": _question_planning_schema_name(planning_provider),
+            "question_quality": _question_quality_summary(question_quality_notes),
+            **provider_metadata,
         }
     except Exception as exc:
         return deterministic, {
@@ -1284,6 +2122,7 @@ async def _candidate_questions_for_round(
             "reason": type(exc).__name__,
             "detail": str(exc)[:240],
             "candidate_count": len(deterministic),
+            **provider_metadata,
         }
 
 
@@ -1296,18 +2135,101 @@ async def _generate_llm_question_plan(
     *,
     llm_provider: LLMProvider,
     config: InquiryConfig,
+    max_tokens: int | None = None,
 ) -> LLMInquiryQuestionPlan:
+    if _use_compact_question_planning_schema(llm_provider):
+        system = (
+            "You compile retrieval questions for Fyralis model updates. "
+            "Extract atomic belief deltas, then ask only the few specific "
+            "questions needed to decide which models change. Keep text short. "
+            "Never copy a full claim into a question. Return JSON only."
+        )
+        user = json.dumps(
+            {
+                "task": "compile retrieval question plan",
+                "p": sorted(_ALLOWED_QUESTION_PRIMITIVES),
+                "types": [
+                    "create",
+                    "update",
+                    "weaken",
+                    "split",
+                    "merge",
+                    "supersede",
+                    "no_op",
+                ],
+                "signal": {
+                    "kind": trigger.kind,
+                    "text": _truncate_text(_trigger_text(trigger), 700),
+                    "entities": trigger.seed_entity_ids[:8],
+                    "actors": len(trigger.scope_actors),
+                    "at": (
+                        trigger.seed_occurred_at.isoformat()
+                        if trigger.seed_occurred_at
+                        else None
+                    ),
+                },
+                "h": [
+                    {
+                        "id": h.id,
+                        "claim": _truncate_text(h.claim, 180),
+                        "conf": h.confidence,
+                        "impact": h.impact_if_true,
+                    }
+                    for h in hypotheses[:4]
+                ],
+                "u": sorted(unknowns)[:8],
+                "base": _compact_baseline_snapshot_for_question_planning(
+                    baseline,
+                    evidence_by_key,
+                ),
+                "rules": [
+                    "d: 1-4 atomic belief deltas",
+                    "q: 2-3 questions",
+                    "q[].p must be one allowed primitive",
+                    "q[].q must be grammatical and under 22 words",
+                    "ask about missing context, counterevidence, ownership, recurrence, dependencies, or constraints",
+                    "avoid questions already answered by base evidence",
+                ],
+            },
+            default=str,
+            separators=(",", ":"),
+        )
+        compact = await llm_provider.structured(
+            system=system,
+            user=user,
+            schema=LLMCompactQuestionPlan,
+            temperature=config.llm_question_temperature,
+            max_tokens=max_tokens or config.llm_question_max_tokens,
+        )
+        return _expand_compact_question_plan(compact)
+
     system = (
-        "You plan retrieval questions for Fyralis' model-update pipeline. "
-        "Choose only the few questions that will decide what existing models "
-        "must be updated or whether a new model should be created. Prefer "
-        "specific, discriminating questions over broad searches. Always include "
-        "counterevidence when the signal makes a material claim. Return JSON only."
+        "You are a bounded semantic compiler for Fyralis' model-update "
+        "pipeline. First extract atomic belief-delta candidates from the "
+        "signal, then choose only the few retrieval questions that will decide "
+        "which existing models must be created, updated, weakened, split, "
+        "merged, superseded, or left unchanged. Prefer specific, "
+        "discriminating questions over broad searches. Always include "
+        "counterevidence when the signal makes a material claim. Keep outputs "
+        "short. Never paste a whole belief_delta claim into a question; turn "
+        "it into a compact noun phrase first. Return JSON only."
     )
     user = json.dumps(
         {
-            "task": "Generate the next retrieval questions for this signal.",
+            "task": (
+                "Compile belief deltas and generate the next retrieval "
+                "questions for this signal."
+            ),
             "allowed_primitives": sorted(_ALLOWED_QUESTION_PRIMITIVES),
+            "allowed_delta_types": [
+                "create",
+                "update",
+                "weaken",
+                "split",
+                "merge",
+                "supersede",
+                "no_op",
+            ],
             "signal": {
                 "kind": trigger.kind,
                 "text": _trigger_text(trigger),
@@ -1334,8 +2256,15 @@ async def _generate_llm_question_plan(
                 evidence_by_key,
             ),
             "guidance": [
-                "Return 2 to 5 questions.",
+                "Return 1 to 4 belief_deltas before questions.",
+                "Each belief_delta should be an atomic claim, not a summary of the whole signal.",
+                "Use uncertainty_slots to name what retrieval must resolve.",
+                "Use evidence_needed to name the source/evidence type that would resolve each slot.",
+                "Return 2 to 3 questions.",
                 "Use primitive names exactly as provided.",
+                "Each question must be one grammatical sentence under 22 words.",
+                "Do not copy claim_atom verbatim into any question.",
+                "Avoid question starts like 'Has <full sentence>' or 'Is <full sentence> actually'.",
                 "Use expected_value for likely decision value, not topicality.",
                 "Use expected_cost for retrieval breadth/cost; broad searches cost more.",
                 "Avoid questions whose answer is already clear from baseline evidence.",
@@ -1349,8 +2278,64 @@ async def _generate_llm_question_plan(
         user=user,
         schema=LLMInquiryQuestionPlan,
         temperature=config.llm_question_temperature,
-        max_tokens=config.llm_question_max_tokens,
+        max_tokens=max_tokens or config.llm_question_max_tokens,
     )
+
+
+def _question_planning_max_tokens(
+    config: InquiryConfig,
+    llm_provider: LLMProvider,
+) -> int:
+    provider_name = getattr(llm_provider.config, "provider", "")
+    if provider_name == "codex":
+        raw = os.environ.get("INQUIRY_CODEX_QUESTION_MAX_TOKENS")
+        if raw:
+            try:
+                return max(320, int(raw))
+            except ValueError:
+                pass
+        if _use_compact_question_planning_schema(llm_provider):
+            return min(config.llm_question_max_tokens, 420)
+        model_name = str(getattr(llm_provider.config, "model", "") or "").casefold()
+        if "spark" in model_name:
+            return min(config.llm_question_max_tokens, 650)
+    return config.llm_question_max_tokens
+
+
+def _question_planning_schema_name(llm_provider: LLMProvider) -> str:
+    if _use_compact_question_planning_schema(llm_provider):
+        return "compact_v1"
+    return "full_v1"
+
+
+def _use_compact_question_planning_schema(llm_provider: LLMProvider) -> bool:
+    provider_name = str(getattr(llm_provider.config, "provider", "") or "")
+    if provider_name != "codex":
+        return False
+    raw = os.environ.get("INQUIRY_CODEX_COMPACT_QUESTION_SCHEMA", "1")
+    if raw.strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    model_name = str(getattr(llm_provider.config, "model", "") or "").casefold()
+    return "spark" in model_name
+
+
+def _question_planning_timeout_seconds(llm_provider: LLMProvider) -> float:
+    provider_name = str(getattr(llm_provider.config, "provider", "") or "")
+    if provider_name == "codex":
+        raw = os.environ.get("INQUIRY_CODEX_QUESTION_TIMEOUT_SECONDS")
+        if raw:
+            try:
+                return max(1.0, float(raw))
+            except ValueError:
+                pass
+        return float(getattr(llm_provider.config, "timeout_s", 30) or 30)
+    raw = os.environ.get("INQUIRY_LLM_QUESTION_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return float(getattr(llm_provider.config, "timeout_s", 30) or 30)
 
 
 def _baseline_snapshot_for_question_planning(
@@ -1393,9 +2378,669 @@ def _baseline_snapshot_for_question_planning(
     }
 
 
+def _compact_baseline_snapshot_for_question_planning(
+    baseline: RetrievalResult,
+    evidence_by_key: dict[tuple[str, str], EvidenceCard],
+) -> dict[str, Any]:
+    cards = sorted(
+        evidence_by_key.values(),
+        key=lambda c: (-float(c.score), c.source_type, c.summary),
+    )
+    return {
+        "models": len(baseline.models),
+        "obs": len(baseline.observations),
+        "acts": {
+            "commitments": len(baseline.acts.get("commitments", [])),
+            "goals": len(baseline.acts.get("goals", [])),
+            "decisions": len(baseline.acts.get("decisions", [])),
+        },
+        "m": [
+            {
+                "id": str(model.id)[:8],
+                "s": _truncate_text(
+                    getattr(model, "natural", "") or json.dumps(
+                        getattr(model, "proposition", {}) or {},
+                        default=str,
+                    ),
+                    150,
+                ),
+                "score": round(float(baseline.model_scores.get(model.id, 0.0)), 3),
+            }
+            for model in baseline.models[:6]
+        ],
+        "e": [
+            {
+                "src": card.source_type,
+                "s": _truncate_text(card.summary, 150),
+                "score": round(float(card.score), 3),
+            }
+            for card in cards[:8]
+        ],
+    }
+
+
+def _expand_compact_question_plan(
+    plan: LLMCompactQuestionPlan,
+) -> LLMInquiryQuestionPlan:
+    deltas = [
+        LLMBeliefDeltaSpec(
+            delta_id=delta.i,
+            claim_atom=delta.claim,
+            delta_type=delta.type,
+            affected_entities=delta.entities,
+            uncertainty_slots=delta.slots,
+            evidence_needed=delta.evidence,
+            impact_if_true=delta.impact,
+            confidence=delta.conf,
+        )
+        for delta in plan.d
+    ]
+    questions = [
+        LLMInquiryQuestionSpec(
+            primitive=question.p,
+            question=question.q,
+            retrieval_target=None,
+            expected_value=question.v,
+            expected_cost=question.c,
+            tests_hypotheses=[],
+            stop_condition=None,
+        )
+        for question in plan.q
+    ]
+    return LLMInquiryQuestionPlan(
+        rationale=plan.r,
+        belief_deltas=deltas,
+        questions=questions,
+    )
+
+
+_ALLOWED_DELTA_TYPES = {
+    "create",
+    "update",
+    "weaken",
+    "split",
+    "merge",
+    "supersede",
+    "no_op",
+}
+
+
+def _normalize_llm_belief_delta_hypotheses(
+    specs: list[LLMBeliefDeltaSpec],
+    *,
+    trigger: TriggerContext,
+) -> list[Hypothesis]:
+    anchors = _question_anchors(trigger)
+    out: list[Hypothesis] = []
+    seen_claims: set[str] = set()
+    for index, spec in enumerate(specs[:5], start=1):
+        claim = _clean_question_anchor(spec.claim_atom)
+        if len(claim) < 8:
+            continue
+        claim = _truncate_text(claim, 240)
+        claim_key = claim.casefold()
+        if claim_key in seen_claims:
+            continue
+        seen_claims.add(claim_key)
+        delta_type = _normalize_delta_type(spec.delta_type)
+        entities = _clean_delta_items(spec.affected_entities, limit=8)
+        if not entities and anchors.subject != "this signal":
+            entities = (anchors.subject,)
+        uncertainties = _clean_delta_items(spec.uncertainty_slots, limit=8)
+        if not uncertainties:
+            uncertainties = _fallback_uncertainty_slots_for_delta(delta_type)
+        evidence_needed = _clean_delta_items(spec.evidence_needed, limit=8)
+        hypothesis_id = _clean_question_anchor(spec.delta_id or "") or f"D{index}"
+        hypothesis_id = re.sub(r"[^A-Za-z0-9_:-]+", "_", hypothesis_id)[:24]
+        out.append(
+            Hypothesis(
+                id=hypothesis_id or f"D{index}",
+                claim=claim,
+                confidence=_clamp_float(spec.confidence, 0.0, 1.0),
+                impact_if_true=_normalize_impact_label(spec.impact_if_true),
+                delta_type=delta_type,
+                target_model_ids=_clean_delta_items(spec.target_model_ids, limit=5),
+                affected_entities=entities,
+                uncertainty_slots=uncertainties,
+                evidence_needed=evidence_needed,
+                source="llm_delta",
+            )
+        )
+    return out
+
+
+def _candidate_questions_from_belief_deltas(
+    trigger: TriggerContext,
+    belief_deltas: list[Hypothesis],
+    *,
+    hypotheses: tuple[Hypothesis, ...],
+    quality_notes: list[dict[str, Any]] | None = None,
+) -> list[InquiryQuestion]:
+    known_hypothesis_ids = {h.id for h in hypotheses}
+    questions: list[InquiryQuestion] = []
+    seen: set[tuple[str, str]] = set()
+    for delta in belief_deltas:
+        slots = delta.uncertainty_slots or _fallback_uncertainty_slots_for_delta(
+            delta.delta_type
+        )
+        for slot in slots[:4]:
+            primitive = _primitive_for_delta_slot(slot, delta.delta_type)
+            question = _question_from_delta_slot(delta, slot, primitive, trigger)
+            question = _quality_control_question_text(
+                question,
+                primitive,
+                trigger,
+                source="belief_delta",
+                quality_notes=quality_notes,
+                delta=delta,
+                slot=slot,
+            )
+            key = (primitive, question.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            expected_cost = _DEFAULT_COST_BY_PRIMITIVE.get(primitive, 0.24)
+            expected_value = _delta_question_expected_value(delta, primitive)
+            tests = _tests_for_delta_question(
+                primitive,
+                delta,
+                known_hypothesis_ids=known_hypothesis_ids,
+            )
+            questions.append(
+                InquiryQuestion(
+                    question_id=_QUESTION_ID_BY_PRIMITIVE[primitive],
+                    question=question,
+                    primitive=primitive,
+                    tests_hypotheses=tests,
+                    expected_value=expected_value,
+                    expected_cost=expected_cost,
+                    retrieval_target=_DEFAULT_TARGET_BY_PRIMITIVE[primitive],
+                    stop_condition=_DEFAULT_STOP_BY_PRIMITIVE[primitive],
+                    score=round(expected_value - expected_cost + 0.12, 4),
+                )
+            )
+    return sorted(
+        questions,
+        key=lambda q: (-q.score, q.expected_cost, q.primitive, q.question),
+    )[:12]
+
+
+_DEFAULT_COST_BY_PRIMITIVE = {
+    "DEPENDENCY": 0.24,
+    "COMMITMENT": 0.18,
+    "CONSTRAINT": 0.24,
+    "COUNTEREVIDENCE": 0.30,
+    "OWNERSHIP": 0.22,
+    "GOAL_IMPACT": 0.20,
+    "RECURRENCE": 0.36,
+}
+
+
+def _normalize_delta_type(value: str | None) -> str:
+    delta_type = re.sub(r"[^a-z_]+", "_", str(value or "update").casefold()).strip("_")
+    aliases = {
+        "create_new": "create",
+        "new": "create",
+        "modify": "update",
+        "weaken_existing": "weaken",
+        "retire": "supersede",
+        "obsolete": "supersede",
+        "none": "no_op",
+        "noop": "no_op",
+        "no_update": "no_op",
+    }
+    delta_type = aliases.get(delta_type, delta_type)
+    return delta_type if delta_type in _ALLOWED_DELTA_TYPES else "update"
+
+
+def _normalize_impact_label(value: str | None) -> str:
+    label = str(value or "medium").casefold().strip()
+    if label in {"high", "medium", "low"}:
+        return label
+    if label in {"critical", "severe"}:
+        return "high"
+    if label in {"minor", "small"}:
+        return "low"
+    return "medium"
+
+
+def _clean_delta_items(values: list[Any] | tuple[Any, ...], *, limit: int) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values[:limit]:
+        clean = _clean_question_anchor(str(value or ""))
+        if not clean or _looks_like_machine_identifier(clean):
+            continue
+        clean = _truncate_text(clean, 140)
+        key = clean.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return tuple(out)
+
+
+def _fallback_uncertainty_slots_for_delta(delta_type: str | None) -> tuple[str, ...]:
+    if delta_type in {"weaken", "supersede"}:
+        return (
+            "what evidence contradicts or weakens the existing belief",
+            "which prior model is now stale",
+        )
+    if delta_type in {"split", "merge"}:
+        return (
+            "which existing beliefs should be separated or combined",
+            "what evidence distinguishes the competing interpretations",
+        )
+    if delta_type == "no_op":
+        return (
+            "whether this signal is already captured",
+            "what evidence supports no model update",
+        )
+    return (
+        "which existing model should change",
+        "what evidence would weaken this interpretation",
+        "who owns the next action",
+    )
+
+
+def _primitive_for_delta_slot(slot: str, delta_type: str | None) -> str:
+    lower = slot.casefold()
+    if re.search(r"\b(owner|owns|accountable|who|assignee|responsible)\b", lower):
+        return "OWNERSHIP"
+    if re.search(r"\b(commitment|promise|deadline|outcome|deliverable)\b", lower):
+        return "COMMITMENT"
+    if re.search(r"\b(resource|policy|capacity|constraint|quota|blocked by)\b", lower):
+        return "CONSTRAINT"
+    if re.search(r"\b(recur|recurrence|pattern|before|similar|repeat)\b", lower):
+        return "RECURRENCE"
+    if re.search(r"\b(goal|customer|revenue|arr|resource|impact|risk)\b", lower):
+        return "GOAL_IMPACT"
+    if re.search(
+        r"\b(counter|weaken|contradict|falsif|stale|supersede|wrong|obsolete)\b",
+        lower,
+    ):
+        return "COUNTEREVIDENCE"
+    if re.search(r"\b(dependency|critical path|blocker|blocking|depends)\b", lower):
+        return "DEPENDENCY"
+    if delta_type in {"weaken", "supersede", "no_op"}:
+        return "COUNTEREVIDENCE"
+    if delta_type in {"create", "update"}:
+        return "DEPENDENCY"
+    return "GOAL_IMPACT"
+
+
+def _question_from_delta_slot(
+    delta: Hypothesis,
+    slot: str,
+    primitive: str,
+    trigger: TriggerContext,
+) -> str:
+    subject = (
+        ", ".join(delta.affected_entities[:3])
+        if delta.affected_entities else _question_anchors(trigger).subject
+    )
+    focus = _delta_question_focus(delta, slot, trigger)
+    if primitive == "OWNERSHIP":
+        question = f"Who owns resolving {focus} for {subject}?"
+    elif primitive == "COMMITMENT":
+        question = f"Which active commitment or promised outcome would change if {focus} is true for {subject}?"
+    elif primitive == "CONSTRAINT":
+        question = f"Which resource, policy, or capacity constraint is blocking {focus} for {subject}?"
+    elif primitive == "RECURRENCE":
+        pattern_focus = focus if "pattern" in focus.casefold() else f"{focus} pattern"
+        question = f"Has this {pattern_focus} appeared before for {subject}, or is it new?"
+    elif primitive == "GOAL_IMPACT":
+        question = f"Which customer goal, revenue path, or scarce resource is affected by {focus} for {subject}?"
+    elif primitive == "COUNTEREVIDENCE":
+        question = f"What evidence would weaken or falsify the {focus} interpretation for {subject}?"
+    else:
+        question = f"Is {focus} a blocking dependency or critical-path issue for {subject}?"
+    return _truncate_text(" ".join(question.split()), 240)
+
+
+_GENERIC_DELTA_SLOT_PATTERNS = (
+    "blocker",
+    "constraint",
+    "critical path",
+    "critical path status",
+    "dependency",
+    "goal impact",
+    "issue type",
+    "owner",
+    "ownership",
+    "recurrence",
+    "status",
+    "which existing model should change",
+    "what evidence would weaken this interpretation",
+    "who owns the next action",
+    "whether this signal is already captured",
+    "what evidence supports no model update",
+    "which prior model is now stale",
+    "which existing beliefs should be separated or combined",
+    "whether this appeared before",
+    "this appeared before",
+    "appeared before",
+)
+
+
+def _delta_question_focus(
+    delta: Hypothesis,
+    slot: str,
+    trigger: TriggerContext,
+) -> str:
+    candidates = [
+        slot,
+        *delta.evidence_needed,
+        *delta.uncertainty_slots,
+        delta.claim,
+    ]
+    for candidate in candidates:
+        focus = _clean_question_focus_phrase(candidate)
+        if _is_specific_focus_phrase(focus):
+            return _truncate_text(focus, 120)
+    return _fallback_focus_from_delta_claim(delta.claim, trigger)
+
+
+def _clean_question_focus_phrase(value: str) -> str:
+    phrase = _clean_question_anchor(value)
+    phrase = re.sub(
+        r"^(commitment|constraint|counterevidence|dependency|goal[_\s-]*impact|ownership|recurrence)\s*[:/-]\s*",
+        "",
+        phrase,
+        flags=re.IGNORECASE,
+    )
+    phrase = re.sub(
+        r"^(whether|if|what|which|who|how|is|are|does|do|has|have|should|would|can|could)\s+",
+        "",
+        phrase,
+        flags=re.IGNORECASE,
+    )
+    phrase = re.sub(
+        r"^(the|a|an)\s+(evidence|source|question|signal)\s+(that|for|about)\s+",
+        "",
+        phrase,
+        flags=re.IGNORECASE,
+    )
+    phrase = re.sub(r"\b(actually|explicitly|currently)\b", "", phrase, flags=re.IGNORECASE)
+    phrase = re.sub(r"\bpattern\s+frequency\b", "pattern", phrase, flags=re.IGNORECASE)
+    phrase = re.sub(r"\bpattern\s+pattern\b", "pattern", phrase, flags=re.IGNORECASE)
+    phrase = re.sub(r"\s+", " ", phrase).strip(" .,:;?") or "the signal"
+    return phrase
+
+
+def _is_specific_focus_phrase(phrase: str) -> bool:
+    lower = phrase.casefold()
+    if len(phrase) < 8 or lower in {"the signal", "this signal", "this interpretation"}:
+        return False
+    if any(pattern in lower for pattern in _GENERIC_DELTA_SLOT_PATTERNS):
+        words = set(re.findall(r"[a-z0-9_-]+", lower))
+        domain_words = {
+            "audit",
+            "customer",
+            "data",
+            "export",
+            "incident",
+            "mapping",
+            "permission",
+            "procurement",
+            "renewal",
+            "saml",
+            "security",
+            "soc2",
+            "trail",
+        }
+        if not words.intersection(domain_words):
+            return False
+    sentence_verbs = (
+        " should ",
+        " is ",
+        " are ",
+        " was ",
+        " were ",
+        " has ",
+        " have ",
+        " will ",
+        " may ",
+        " might ",
+        " must ",
+    )
+    if len(phrase) > 72 and any(marker in f" {lower} " for marker in sentence_verbs):
+        return False
+    if phrase.count(" ") > 13:
+        return False
+    return True
+
+
+def _fallback_focus_from_delta_claim(
+    claim: str,
+    trigger: TriggerContext,
+) -> str:
+    clean = _clean_question_anchor(claim)
+    quoted = re.findall(r"'([^']{8,90})'|\"([^\"]{8,90})\"", clean)
+    for left, right in quoted:
+        phrase = _clean_question_focus_phrase(left or right)
+        if _is_specific_focus_phrase(phrase):
+            return _truncate_text(phrase, 120)
+
+    before_verb = re.split(
+        r"\b(should|is|are|was|were|has|have|will|may|might|must|needs?|requires?|involves?|creates?|reports?|shows?|indicates?)\b",
+        clean,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    before_verb = _clean_question_focus_phrase(before_verb)
+    keyword_phrase = _domain_keyword_focus(clean)
+    if _is_specific_focus_phrase(before_verb):
+        if keyword_phrase and keyword_phrase.casefold() not in before_verb.casefold():
+            return _truncate_text(f"{before_verb} {keyword_phrase}", 120)
+        return _truncate_text(before_verb, 120)
+    if keyword_phrase:
+        return _truncate_text(keyword_phrase, 120)
+
+    anchors = _question_anchors(trigger)
+    if anchors.focus:
+        return _truncate_text(anchors.focus, 120)
+    return "the signal"
+
+
+def _domain_keyword_focus(text: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", text)
+    if not tokens:
+        return ""
+    keywords = {
+        "blocker",
+        "blockers",
+        "capacity",
+        "commitment",
+        "constraint",
+        "dependency",
+        "evidence",
+        "incident",
+        "onboarding",
+        "permission",
+        "policy",
+        "procurement",
+        "renewal",
+        "replay",
+        "risk",
+        "saml",
+        "timeline",
+    }
+    for idx, token in enumerate(tokens):
+        if token.casefold() not in keywords:
+            continue
+        start = max(0, idx - 2)
+        end = min(len(tokens), idx + 4)
+        phrase = _clean_question_focus_phrase(" ".join(tokens[start:end]))
+        if len(phrase) >= 8:
+            return phrase
+    return ""
+
+
+def _delta_question_expected_value(delta: Hypothesis, primitive: str) -> float:
+    impact_boost = {"high": 0.18, "medium": 0.10, "low": 0.02}.get(
+        delta.impact_if_true,
+        0.10,
+    )
+    delta_boost = {
+        "weaken": 0.08,
+        "supersede": 0.08,
+        "split": 0.06,
+        "merge": 0.06,
+        "update": 0.05,
+        "create": 0.04,
+        "no_op": 0.02,
+    }.get(delta.delta_type or "update", 0.04)
+    primitive_boost = 0.04 if primitive in {"COUNTEREVIDENCE", "OWNERSHIP"} else 0.0
+    return round(
+        _clamp_float(0.55 + float(delta.confidence) * 0.22 + impact_boost + delta_boost + primitive_boost, 0.0, 0.98),
+        4,
+    )
+
+
+def _tests_for_delta_question(
+    primitive: str,
+    delta: Hypothesis,
+    *,
+    known_hypothesis_ids: set[str],
+) -> tuple[str, ...]:
+    preferred: tuple[str, ...]
+    if primitive == "COUNTEREVIDENCE" or delta.delta_type in {"weaken", "supersede", "no_op"}:
+        preferred = ("H1", "H0")
+    elif primitive in {"OWNERSHIP", "COMMITMENT", "GOAL_IMPACT"}:
+        preferred = ("H2", "H1")
+    elif primitive == "RECURRENCE":
+        preferred = ("H3", "H0")
+    else:
+        preferred = ("H1",)
+    tests = tuple(hid for hid in preferred if hid in known_hypothesis_ids)
+    return tests or tuple(sorted(known_hypothesis_ids))[:1] or ("H1",)
+
+
+def _quality_control_question_text(
+    question: str,
+    primitive: str,
+    trigger: TriggerContext,
+    *,
+    source: str,
+    quality_notes: list[dict[str, Any]] | None = None,
+    delta: Hypothesis | None = None,
+    slot: str | None = None,
+) -> str:
+    clean = " ".join(question.split()).strip()
+    reason = _question_quality_failure_reason(clean, primitive)
+    if reason is None:
+        return _truncate_text(clean, 240)
+    if reason == "missing_question_mark":
+        repaired = _punctuate_question_text(clean)
+        if quality_notes is not None:
+            quality_notes.append({
+                "source": source,
+                "primitive": primitive,
+                "repair_reason": "punctuation_added",
+                "original": _truncate_text(clean, 160),
+                "repaired": _truncate_text(repaired, 160),
+            })
+        return repaired
+
+    repaired = _repair_question_text(
+        primitive,
+        trigger,
+        delta=delta,
+        slot=slot,
+    )
+    if quality_notes is not None:
+        quality_notes.append({
+            "source": source,
+            "primitive": primitive,
+            "repair_reason": reason,
+            "original": _truncate_text(clean, 160),
+            "repaired": _truncate_text(repaired, 160),
+        })
+    return repaired
+
+
+def _punctuate_question_text(question: str) -> str:
+    clean = question.rstrip(" .,:;")
+    return _truncate_text(f"{clean}?", 240)
+
+
+def _question_quality_failure_reason(question: str, primitive: str) -> str | None:
+    lower = f" {question.casefold()} "
+    if len(question) > 240:
+        return "too_long"
+    if not question.endswith("?"):
+        return "missing_question_mark"
+    if re.search(r"\b(has|is|are|does|do)\s+[A-Z][^.?!]{0,90}\s+(is|are|has|should|must|will|may)\b", question):
+        return "nested_clause_subject"
+    if primitive == "CONSTRAINT" and re.search(
+        r"what resource, policy, or capacity constraint determines\s+(is|are|whether|if|should|does)\b",
+        lower,
+    ):
+        return "constraint_template_clause_leak"
+    if primitive == "DEPENDENCY" and re.search(
+        r"^is\s+.+\s+(should|is|are|has|will|must|may)\s+.+actually on the critical path",
+        lower.strip(),
+    ):
+        return "dependency_template_clause_leak"
+    if primitive == "RECURRENCE" and re.search(
+        r"^has\s+.+\s+(is|are|has|should|must|will|may)\s+.+appeared before",
+        lower.strip(),
+    ):
+        return "recurrence_template_clause_leak"
+    if re.search(
+        r"\bblocking\s+(blocker|constraint|counterevidence|dependency|goal impact|issue type|ownership|recurrence|status)\s+for\b",
+        lower,
+    ):
+        return "generic_focus_leak"
+    if re.search(
+        r"\bblocking\s+(blocker|constraint|counterevidence|dependency|goal impact|issue type|ownership|recurrence|status)\s*:",
+        lower,
+    ):
+        return "generic_focus_leak"
+    if re.search(
+        r"^is\s+(blocker|constraint|dependency|issue type|status)\s+a blocking dependency",
+        lower.strip(),
+    ):
+        return "generic_focus_leak"
+    if "..." in question and len(question) > 180:
+        return "truncated_clause"
+    return None
+
+
+def _repair_question_text(
+    primitive: str,
+    trigger: TriggerContext,
+    *,
+    delta: Hypothesis | None = None,
+    slot: str | None = None,
+) -> str:
+    if delta is None:
+        return _specific_question(primitive, _question_anchors(trigger))
+    return _question_from_delta_slot(delta, slot or "", primitive, trigger)
+
+
+def _question_quality_summary(
+    quality_notes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not quality_notes:
+        return {"repairs": 0}
+    by_reason = Counter(str(note.get("repair_reason") or "unknown") for note in quality_notes)
+    by_source = Counter(str(note.get("source") or "unknown") for note in quality_notes)
+    return {
+        "repairs": len(quality_notes),
+        "by_reason": dict(by_reason.most_common()),
+        "by_source": dict(by_source.most_common()),
+        "examples": quality_notes[:3],
+    }
+
+
 def _normalize_llm_questions(
     specs: list[LLMInquiryQuestionSpec],
     hypotheses: tuple[Hypothesis, ...],
+    *,
+    trigger: TriggerContext,
+    quality_notes: list[dict[str, Any]] | None = None,
 ) -> list[InquiryQuestion]:
     hypothesis_ids = {h.id for h in hypotheses}
     fallback_hids = tuple(h.id for h in hypotheses if h.id != "H0")[:2] or ("H1",)
@@ -1410,6 +3055,13 @@ def _normalize_llm_questions(
         question = " ".join(spec.question.split())
         if len(question) < 8:
             continue
+        question = _quality_control_question_text(
+            question,
+            primitive,
+            trigger,
+            source="llm_question",
+            quality_notes=quality_notes,
+        )
         expected_value = _clamp_float(spec.expected_value, 0.0, 1.0)
         expected_cost = _clamp_float(spec.expected_cost, 0.0, 1.0)
         tests = tuple(
@@ -1799,8 +3451,15 @@ def _compile_retrieval_plan(
     semantic_query = f"{q} {seed_text}".strip()
     common = {"seed_entities": list(trigger.seed_entity_ids)}
     semantic_budget = _policy_budget(cfg.semantic_budget, policy_signal)
+    focused_actions = _focused_index_actions(
+        question,
+        trigger,
+        cfg,
+        policy_signal=policy_signal,
+    )
+
     if question.primitive == "DEPENDENCY":
-        return [
+        return focused_actions + [
             RetrievalAction(question.question_id, "structural", "commitment_graph", filters=common),
             RetrievalAction(
                 question.question_id,
@@ -1826,7 +3485,7 @@ def _compile_retrieval_plan(
             ),
         ]
     if question.primitive == "COMMITMENT":
-        return [
+        return focused_actions + [
             RetrievalAction(question.question_id, "structural", "active_commitments", filters=common),
             RetrievalAction(
                 question.question_id,
@@ -1837,7 +3496,7 @@ def _compile_retrieval_plan(
             ),
         ]
     if question.primitive == "COUNTEREVIDENCE":
-        return [
+        return focused_actions + [
             RetrievalAction(
                 question.question_id,
                 "semantic",
@@ -1855,7 +3514,7 @@ def _compile_retrieval_plan(
             ),
         ]
     if question.primitive == "CONSTRAINT":
-        return [
+        return focused_actions + [
             RetrievalAction(
                 question.question_id,
                 "structural",
@@ -1889,7 +3548,7 @@ def _compile_retrieval_plan(
             ),
         ]
     if question.primitive == "OWNERSHIP":
-        return [
+        return focused_actions + [
             RetrievalAction(question.question_id, "structural", "ownership_graph", filters=common),
             RetrievalAction(
                 question.question_id,
@@ -1900,7 +3559,7 @@ def _compile_retrieval_plan(
             ),
         ]
     if question.primitive == "RECURRENCE":
-        return [
+        return focused_actions + [
             RetrievalAction(
                 question.question_id,
                 "pattern",
@@ -1923,7 +3582,7 @@ def _compile_retrieval_plan(
                 budget=semantic_budget,
             ),
         ]
-    return [
+    return focused_actions + [
         RetrievalAction(question.question_id, "structural", "goal_resource_bridge", filters=common),
         RetrievalAction(
             question.question_id,
@@ -1939,6 +3598,36 @@ def _compile_retrieval_plan(
             query=f"goal customer resource impact {seed_text}",
             budget=semantic_budget,
         ),
+    ]
+
+
+def _focused_index_actions(
+    question: InquiryQuestion,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+    *,
+    policy_signal: QuestionPolicySignal | None,
+) -> list[RetrievalAction]:
+    if not cfg.focused_index_enabled:
+        return []
+    terms = _focused_index_terms(
+        question.question,
+        trigger,
+        max_terms=int(cfg.focused_index_terms),
+    )
+    return [
+        RetrievalAction(
+            question.question_id,
+            "focused_index",
+            "question_answerability_scope",
+            query=question.question,
+            filters={
+                "seed_entities": list(trigger.seed_entity_ids),
+                "primitive": question.primitive,
+                "terms": terms,
+            },
+            budget=_policy_budget(cfg.focused_index_max_candidates, policy_signal),
+        )
     ]
 
 
@@ -2054,6 +3743,15 @@ def _retrieval_action_cache_key(
             scope_actors,
             scope_entities,
         )
+    if action.path == "focused_index":
+        return (
+            "focused_index",
+            model_budget,
+            scope_actors,
+            scope_entities,
+            str(action.filters.get("primitive") or ""),
+            _stable_cache_value(action.filters.get("terms") or []),
+        )
     if action.path == "temporal":
         return (
             "temporal",
@@ -2112,18 +3810,32 @@ def _sage_reader_total_ms(result: RetrievalResult) -> int | None:
 
 def _sage_reader_action_gate(
     result: RetrievalResult,
+    *,
+    gate_broad_actions: bool = True,
 ) -> tuple[Literal["all", "broad"] | None, str | None]:
+    if not gate_broad_actions:
+        return None, None
     plan = _sage_reader_plan_from_result(result)
     if not plan:
         return None, None
     mode = str(plan.get("mode") or "")
     if _sage_reader_plan_hard_abstained(plan):
         return "all", "sage_reader_negative_memory_abstain"
+    if not bool(plan.get("gate_broad_actions")):
+        return None, None
     if bool(plan.get("skip_broad_discovery")) and mode in {
         "focused",
         "guarded_negative_memory",
+        "rerank",
     }:
         return "broad", f"sage_reader_{mode}_broad_gate"
+    read_note = (result.notes or {}).get("sage_reader") or {}
+    if (
+        mode == "rerank"
+        and len(result.models) >= 1
+        and int(read_note.get("projected_evidence_count") or 0) >= 1
+    ):
+        return "broad", "sage_reader_rerank_sufficient_evidence"
     return None, None
 
 
@@ -2155,6 +3867,7 @@ def _sage_reader_controller_summary(
             "confidence": plan.get("confidence"),
             "abstain_early": bool(plan.get("abstain_early")),
             "skip_broad_discovery": bool(plan.get("skip_broad_discovery")),
+            "gate_broad_actions": bool(plan.get("gate_broad_actions")),
             "selected_model_count": selected_count,
             "hard_abstained": hard_abstained,
         }
@@ -2244,6 +3957,8 @@ async def _execute_action(
     conn: asyncpg.Connection,
     embedder: Any | None,
     cfg: InquiryConfig,
+    *,
+    read_pool: asyncpg.Pool | None = None,
 ) -> PathwayResult | None:
     def capped_budget(value: int) -> int:
         return min(max(1, int(value)), max(1, int(cfg.action_model_budget_limit)))
@@ -2264,46 +3979,30 @@ async def _execute_action(
                 trigger.tenant_id,
                 conn,
                 max_hops=cfg.structural_max_hops,
+                read_pool=read_pool,
+                read_fanout_enabled=cfg.structural_read_fanout_enabled,
+                read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
+                read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
             )
             _cap_pathway_models(result, capped_budget(action.budget))
             return result
-        if action.path == "semantic":
-            query_text = action.query or _trigger_text(trigger)
-            # Question-conditioned retrieval needs a question-conditioned
-            # vector. The trigger vector is only a fallback for tests or
-            # offline runs without an embedder.
-            precomputed_vector = (
-                trigger.precomputed_seed_vector
-                if embedder is None or query_text == _trigger_text(trigger)
-                else None
-            )
-            result = await pathway_b_semantic(
-                query_text,
-                trigger.tenant_id,
+        if action.path == "focused_index":
+            return await _execute_focused_index_action(
+                action,
+                trigger,
                 conn,
-                k=capped_budget(action.budget),
-                embedder=embedder,
-                precomputed_vector=precomputed_vector,
-                event_actors=trigger.scope_actors,
-                event_entities=trigger.seed_entity_ids,
+                cfg,
+                model_limit=capped_budget(action.budget),
             )
-            if _has_broad_signal_language(_trigger_text(trigger).casefold()):
-                broad_lexical_limit = capped_budget(action.budget) * 2
-                lexical_models = await _broad_lexical_model_scan(
-                    trigger,
-                    query_text,
-                    conn,
-                    limit=broad_lexical_limit,
-                )
-                if lexical_models:
-                    by_id = {model.id: model for model in result.models}
-                    for model in lexical_models:
-                        by_id.setdefault(model.id, model)
-                    result.models = list(by_id.values())
-                    result.notes["broad_lexical_models"] = len(lexical_models)
-                    result.notes["broad_lexical_limit"] = broad_lexical_limit
-                    _cap_pathway_models(result, capped_budget(action.budget) + broad_lexical_limit)
-            return result
+        if action.path == "semantic":
+            return await _execute_semantic_hybrid_action(
+                action,
+                trigger,
+                conn,
+                embedder,
+                cfg,
+                model_limit=capped_budget(action.budget),
+            )
         if action.path == "temporal":
             if trigger.seed_occurred_at is None:
                 return None
@@ -2339,6 +4038,295 @@ async def _execute_action(
     return None
 
 
+async def _execute_question_retrieval_actions(
+    plans: list[_QuestionRetrievalPlan],
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    embedder: Any | None,
+    cfg: InquiryConfig,
+    action_cache: dict[tuple[Any, ...], PathwayResult],
+    *,
+    read_pool: asyncpg.Pool | None,
+) -> dict[str, list[_ActionExecutionRecord]]:
+    if not plans:
+        return {}
+    action_slots: list[tuple[str, RetrievalAction, tuple[Any, ...]]] = []
+    for plan in plans:
+        for action in plan.actions_to_run:
+            action_slots.append((
+                plan.question.question_id,
+                action,
+                _retrieval_action_cache_key(action, trigger, cfg),
+            ))
+    if not action_slots:
+        return {plan.question.question_id: [] for plan in plans}
+
+    if (
+        not cfg.question_action_parallel_enabled
+        or read_pool is None
+        or int(cfg.question_action_parallelism) <= 1
+    ):
+        return await _execute_question_retrieval_actions_serial(
+            action_slots,
+            trigger,
+            conn,
+            embedder,
+            cfg,
+            action_cache,
+            read_pool=read_pool,
+        )
+
+    records_by_qid: dict[str, list[_ActionExecutionRecord]] = {
+        plan.question.question_id: [] for plan in plans
+    }
+    first_slot_by_key: dict[tuple[Any, ...], tuple[str, RetrievalAction]] = {}
+    duplicate_slots: list[tuple[str, RetrievalAction, tuple[Any, ...]]] = []
+    for qid, action, cache_key in action_slots:
+        cached = action_cache.get(cache_key)
+        if cached is not None:
+            records_by_qid.setdefault(qid, []).append(_ActionExecutionRecord(
+                action=action,
+                path_result=cached,
+                timing_note=_action_timing_note(action, cached, elapsed_ms=0, cache_hit=True),
+            ))
+            continue
+        if cache_key in first_slot_by_key:
+            duplicate_slots.append((qid, action, cache_key))
+            continue
+        first_slot_by_key[cache_key] = (qid, action)
+
+    semaphore = asyncio.Semaphore(max(1, int(cfg.question_action_parallelism)))
+
+    async def run_one(cache_key: tuple[Any, ...], qid: str, action: RetrievalAction):
+        async with semaphore:
+            started = time.perf_counter()
+            async with read_pool.acquire() as action_conn:
+                path_result = await _execute_action(
+                    action,
+                    trigger,
+                    action_conn,
+                    embedder,
+                    cfg,
+                    read_pool=read_pool,
+                )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return cache_key, qid, action, path_result, elapsed_ms
+
+    task_results = await asyncio.gather(*(
+        run_one(cache_key, qid, action)
+        for cache_key, (qid, action) in first_slot_by_key.items()
+    ))
+    for cache_key, qid, action, path_result, elapsed_ms in task_results:
+        if path_result is not None:
+            action_cache[cache_key] = path_result
+        records_by_qid.setdefault(qid, []).append(_ActionExecutionRecord(
+            action=action,
+            path_result=path_result,
+            timing_note=_action_timing_note(
+                action,
+                path_result,
+                elapsed_ms=elapsed_ms,
+                cache_hit=False,
+            ),
+        ))
+
+    for qid, action, cache_key in duplicate_slots:
+        path_result = action_cache.get(cache_key)
+        records_by_qid.setdefault(qid, []).append(_ActionExecutionRecord(
+            action=action,
+            path_result=path_result,
+            timing_note=_action_timing_note(
+                action,
+                path_result,
+                elapsed_ms=0,
+                cache_hit=True,
+            ),
+        ))
+    return records_by_qid
+
+
+async def _execute_question_retrieval_actions_serial(
+    action_slots: list[tuple[str, RetrievalAction, tuple[Any, ...]]],
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    embedder: Any | None,
+    cfg: InquiryConfig,
+    action_cache: dict[tuple[Any, ...], PathwayResult],
+    *,
+    read_pool: asyncpg.Pool | None,
+) -> dict[str, list[_ActionExecutionRecord]]:
+    records_by_qid: dict[str, list[_ActionExecutionRecord]] = {}
+    for qid, action, cache_key in action_slots:
+        path_result = action_cache.get(cache_key)
+        cache_hit = path_result is not None
+        started = time.perf_counter()
+        if path_result is None:
+            path_result = await _execute_action(
+                action,
+                trigger,
+                conn,
+                embedder,
+                cfg,
+                read_pool=read_pool,
+            )
+            if path_result is not None:
+                action_cache[cache_key] = path_result
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        records_by_qid.setdefault(qid, []).append(_ActionExecutionRecord(
+            action=action,
+            path_result=path_result,
+            timing_note=_action_timing_note(
+                action,
+                path_result,
+                elapsed_ms=elapsed_ms,
+                cache_hit=cache_hit,
+            ),
+        ))
+    return records_by_qid
+
+
+def _action_timing_note(
+    action: RetrievalAction,
+    path_result: PathwayResult | None,
+    *,
+    elapsed_ms: int,
+    cache_hit: bool,
+) -> dict[str, Any]:
+    note: dict[str, Any] = {
+        "question_id": action.question_id,
+        "path": action.path,
+        "target": action.target,
+        "elapsed_ms": int(elapsed_ms),
+        "cache_hit": bool(cache_hit),
+        "returned": path_result is not None,
+    }
+    if path_result is not None:
+        note.update({
+            "models": len(path_result.models),
+            "observations": len(path_result.observations),
+            "resources": len(path_result.resources),
+            "source_pathway": path_result.source_pathway,
+        })
+    return note
+
+
+def _build_sage_reader(cfg: InquiryConfig) -> Any | None:
+    if not cfg.sage_reader_enabled:
+        return None
+    try:
+        from services.sage.reader import ReaderBudget, SynthesisReader
+    except Exception:  # noqa: BLE001
+        return None
+    return SynthesisReader(
+        budget=ReaderBudget(
+            max_nodes=max(8, int(cfg.result_model_limit)),
+            max_edges=max(16, int(cfg.result_model_limit) * 2),
+            max_evidence_items=max(10, int(cfg.evidence_reservoir_limit)),
+            lexical_candidates=max(10, int(cfg.candidate_model_limit // 3)),
+            shortcut_candidates=12,
+            affordance_candidates=max(10, int(cfg.candidate_model_limit // 4)),
+            propagation_neighbors=max(24, int(cfg.candidate_model_limit // 2)),
+            activation_seed_limit=max(
+                24,
+                min(
+                    int(cfg.candidate_model_limit),
+                    max(
+                        int(cfg.result_model_limit) * 2,
+                        int(cfg.candidate_model_limit // 2),
+                    ),
+                ),
+            ),
+            row_cache_enabled=bool(cfg.sage_reader_row_cache_enabled),
+            shared_substrate_enabled=bool(cfg.sage_reader_shared_substrate_enabled),
+            substrate_model_limit=max(24, min(96, int(cfg.candidate_model_limit))),
+            substrate_edge_seed_limit=max(12, min(48, int(cfg.candidate_model_limit // 3))),
+            substrate_edge_limit=max(32, min(96, int(cfg.candidate_model_limit // 2))),
+            rerank_min_substrate_models=8,
+            rerank_lexical_candidates=6,
+            lexical_microquery_enabled=True,
+            lexical_microquery_terms=8,
+            lexical_microquery_per_term_limit=16,
+        )
+    )
+
+
+async def _execute_sage_reader_actions_for_round(
+    questions: list[InquiryQuestion],
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: InquiryConfig,
+    *,
+    reader: Any | None,
+    substrate: Any | None,
+    hypotheses: tuple[Hypothesis, ...],
+    read_pool: asyncpg.Pool | None,
+) -> tuple[dict[str, RetrievalResult], dict[str, Any]]:
+    if not questions or not cfg.sage_reader_enabled or reader is None:
+        return {}, {
+            "used": False,
+            "reason": "disabled_or_empty",
+            "question_count": len(questions),
+        }
+
+    parallel = (
+        bool(cfg.sage_reader_parallel_enabled)
+        and read_pool is not None
+        and len(questions) > 1
+        and int(cfg.sage_reader_parallelism) > 1
+    )
+    started = time.perf_counter()
+    results: dict[str, RetrievalResult] = {}
+    if not parallel:
+        for question in questions:
+            result = await _execute_sage_reader_action(
+                question,
+                trigger,
+                conn,
+                cfg,
+                reader=reader,
+                substrate=substrate,
+                hypotheses=hypotheses,
+            )
+            if result is not None:
+                results[question.question_id] = result
+        return results, {
+            "used": True,
+            "parallel": False,
+            "question_count": len(questions),
+            "returned": len(results),
+            "elapsed_ms": _elapsed_ms(started),
+        }
+
+    semaphore = asyncio.Semaphore(max(1, int(cfg.sage_reader_parallelism)))
+
+    async def run_one(question: InquiryQuestion) -> tuple[str, RetrievalResult | None]:
+        async with semaphore:
+            async with read_pool.acquire() as read_conn:
+                result = await _execute_sage_reader_action(
+                    question,
+                    trigger,
+                    read_conn,
+                    cfg,
+                    reader=reader,
+                    substrate=substrate,
+                    hypotheses=hypotheses,
+                )
+                return question.question_id, result
+
+    gathered = await asyncio.gather(*(run_one(question) for question in questions))
+    for qid, result in gathered:
+        if result is not None:
+            results[qid] = result
+    return results, {
+        "used": True,
+        "parallel": True,
+        "parallelism": max(1, int(cfg.sage_reader_parallelism)),
+        "question_count": len(questions),
+        "returned": len(results),
+        "elapsed_ms": _elapsed_ms(started),
+    }
+
+
 async def _execute_sage_reader_action(
     question: InquiryQuestion,
     trigger: TriggerContext,
@@ -2346,25 +4334,16 @@ async def _execute_sage_reader_action(
     cfg: InquiryConfig,
     *,
     hypotheses: tuple[Hypothesis, ...],
+    reader: Any | None = None,
+    substrate: Any | None = None,
 ) -> RetrievalResult | None:
     if not cfg.sage_reader_enabled:
         return None
-    try:
-        from services.sage.reader import ReaderBudget, SynthesisReader
-    except Exception:  # noqa: BLE001
+    if reader is None:
+        reader = _build_sage_reader(cfg)
+    if reader is None:
         return None
     try:
-        reader = SynthesisReader(
-            budget=ReaderBudget(
-                max_nodes=max(8, int(cfg.result_model_limit)),
-                max_edges=max(16, int(cfg.result_model_limit) * 2),
-                max_evidence_items=max(10, int(cfg.evidence_reservoir_limit)),
-                lexical_candidates=max(10, int(cfg.candidate_model_limit // 3)),
-                shortcut_candidates=12,
-                affordance_candidates=max(10, int(cfg.candidate_model_limit // 4)),
-                propagation_neighbors=max(24, int(cfg.candidate_model_limit // 2)),
-            )
-        )
         read = await reader.read(
             conn=conn,
             tenant_id=trigger.tenant_id,
@@ -2373,6 +4352,7 @@ async def _execute_sage_reader_action(
             question=question.question,
             question_primitive=question.primitive,
             hypotheses=hypotheses,
+            substrate=substrate,
         )
     except (asyncpg.PostgresError, ValidationError):
         raise
@@ -2443,6 +4423,641 @@ def _record_sage_reader_notes(
     ) + int(read_note.get("activation_trace_count") or 0)
 
 
+_FOCUSED_INDEX_EXTRA_STOPWORDS = {
+    "accountable", "active", "assigned", "before", "block", "blocked",
+    "blocking", "blocker", "currently", "critical", "evidence", "existing",
+    "found", "issue", "likely", "matching", "model", "models", "next",
+    "owner", "owns", "path", "question", "recent", "related", "responsible",
+    "risk", "same", "specific", "stable", "showing", "currently", "today",
+    "whether", "which", "who", "what", "where", "when", "why", "how",
+}
+
+
+async def _execute_focused_index_action(
+    action: RetrievalAction,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: InquiryConfig,
+    *,
+    model_limit: int,
+) -> PathwayResult | None:
+    raw_terms = action.filters.get("terms")
+    terms = (
+        [str(term) for term in raw_terms if str(term).strip()]
+        if isinstance(raw_terms, list)
+        else _focused_index_terms(
+            action.query or _trigger_text(trigger),
+            trigger,
+            max_terms=int(cfg.focused_index_terms),
+        )
+    )
+    primitive = str(action.filters.get("primitive") or "").upper()
+    primitives = _focused_answerability_primitives_for(primitive)
+    seed_pairs = _focused_seed_entity_pairs(trigger.seed_entity_ids)
+    model_limit = max(1, int(model_limit))
+    scope_limit = min(
+        max(1, int(cfg.focused_index_scope_candidates)),
+        model_limit,
+    )
+
+    hit_sources: dict[UUID, set[str]] = {}
+    hit_counts: dict[UUID, int] = {}
+    scope_overlaps: dict[UUID, int] = {}
+    scores: dict[UUID, float] = {}
+
+    def add_hits(hits: list[_FocusedIndexHit]) -> None:
+        for hit in hits:
+            hit_sources.setdefault(hit.model_id, set()).add(hit.source)
+            hit_counts[hit.model_id] = max(
+                hit_counts.get(hit.model_id, 0),
+                int(hit.match_count),
+            )
+            scope_overlaps[hit.model_id] = max(
+                scope_overlaps.get(hit.model_id, 0),
+                int(hit.scope_overlap),
+            )
+            scores[hit.model_id] = scores.get(hit.model_id, 0.0) + float(hit.score)
+
+    answerability_hits = await _focused_answerability_index_scan(
+        conn,
+        tenant_id=trigger.tenant_id,
+        primitives=primitives,
+        terms=terms,
+        seed_pairs=seed_pairs,
+        limit=model_limit,
+    )
+    add_hits(answerability_hits)
+    scoped_sparse_hits = await _focused_scope_sparse_scan(
+        conn,
+        tenant_id=trigger.tenant_id,
+        terms=terms,
+        seed_pairs=seed_pairs,
+        limit=model_limit,
+    )
+    add_hits(scoped_sparse_hits)
+    direct_scope_hits = await _focused_direct_scope_scan(
+        conn,
+        tenant_id=trigger.tenant_id,
+        seed_pairs=seed_pairs,
+        limit=scope_limit,
+    )
+    add_hits(direct_scope_hits)
+
+    if not scores:
+        return None
+
+    ordered_ids = sorted(
+        scores,
+        key=lambda model_id: (
+            -scores[model_id],
+            -scope_overlaps.get(model_id, 0),
+            -hit_counts.get(model_id, 0),
+            str(model_id),
+        ),
+    )[:model_limit]
+    models = await ModelsRepo(None, run_topology_on_insert=False).retrieve(
+        ordered_ids,
+        conn=conn,
+    )
+    by_id = {model.id: model for model in models}
+    ordered_models = [by_id[mid] for mid in ordered_ids if mid in by_id]
+    if not ordered_models:
+        return None
+
+    return PathwayResult(
+        models=ordered_models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="focused_index",
+        notes={
+            "target": action.target,
+            "primitive": primitive,
+            "primitives": list(primitives),
+            "terms": terms,
+            "term_groups": _focused_index_lookup_groups(terms),
+            "seed_scope_pairs": len(seed_pairs),
+            "answerability_hits": len(answerability_hits),
+            "scoped_sparse_hits": len(scoped_sparse_hits),
+            "direct_scope_hits": len(direct_scope_hits),
+            "merged_hits": len(scores),
+            "returned_models": len(ordered_models),
+            "top_hits": [
+                {
+                    "model_id": str(mid),
+                    "score": round(scores.get(mid, 0.0), 4),
+                    "sources": sorted(hit_sources.get(mid, set())),
+                    "match_count": hit_counts.get(mid, 0),
+                    "scope_overlap": scope_overlaps.get(mid, 0),
+                }
+                for mid in ordered_ids[:8]
+            ],
+        },
+    )
+
+
+def _focused_answerability_primitives_for(primitive: str) -> tuple[str, ...]:
+    normalized = str(primitive or "").strip().upper()
+    aliases = {
+        "COMMITMENT": ("COMMITMENT", "DEPENDENCY"),
+        "CONSTRAINT": ("CONSTRAINT", "COUNTEREVIDENCE"),
+        "COUNTEREVIDENCE": ("COUNTEREVIDENCE", "CONSTRAINT"),
+        "DEPENDENCY": ("DEPENDENCY", "COMMITMENT"),
+        "GOAL_IMPACT": ("GOAL_IMPACT", "COMMITMENT"),
+        "OWNERSHIP": ("OWNERSHIP", "COMMITMENT", "DEPENDENCY"),
+        "RECURRENCE": ("RECURRENCE", "DEPENDENCY", "COUNTEREVIDENCE"),
+    }
+    return aliases.get(normalized, (normalized,)) if normalized else ()
+
+
+def _focused_seed_entity_pairs(raw_entities: Any) -> list[tuple[str, UUID]]:
+    pairs: list[tuple[str, UUID]] = []
+    seen: set[tuple[str, UUID]] = set()
+    if not isinstance(raw_entities, list):
+        return pairs
+    for raw in raw_entities:
+        if not isinstance(raw, dict):
+            continue
+        raw_type = raw.get("type")
+        raw_id = raw.get("id")
+        if raw_type is None or raw_id is None:
+            continue
+        try:
+            entity_id = UUID(str(raw_id))
+        except (TypeError, ValueError):
+            continue
+        entity_type = str(raw_type)
+        candidates = (
+            ("customer", "customer_resource", "resource")
+            if entity_type in {"customer", "customer_resource", "resource"}
+            else (entity_type,)
+        )
+        for candidate_type in candidates:
+            pair = (candidate_type, entity_id)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            pairs.append(pair)
+    return pairs
+
+
+def _focused_index_terms(
+    question_text: str,
+    trigger: TriggerContext,
+    *,
+    max_terms: int,
+) -> list[str]:
+    max_terms = max(1, int(max_terms))
+    combined = f"{question_text}\n{_trigger_text(trigger)}"
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        clean = " ".join(str(value or "").strip(" '\"`.,;:()[]{}").split())
+        if not clean:
+            return
+        tokens = _focused_material_tokens(clean)
+        if not tokens:
+            return
+        normalized = " ".join(tokens[:4])
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        terms.append(normalized)
+
+    for quoted in re.findall(r"['\"]([^'\"]{4,100})['\"]", combined):
+        add(quoted)
+
+    for match in re.finditer(
+        r"\b(?:[A-Z][A-Za-z0-9_-]{2,}|[A-Z]{2,})(?:\s+(?:[A-Z][A-Za-z0-9_-]{2,}|[A-Z]{2,})){1,4}",
+        combined,
+    ):
+        phrase = match.group(0)
+        if phrase.casefold().startswith(("who ", "what ", "which ", "does ", "is ")):
+            continue
+        add(phrase)
+
+    tokens = _focused_material_tokens(combined)
+    for width in (3, 2):
+        for index in range(0, max(0, len(tokens) - width + 1)):
+            window = tokens[index:index + width]
+            if any(_is_focused_strong_token(token) for token in window):
+                add(" ".join(window))
+            if len(terms) >= max_terms:
+                return terms[:max_terms]
+    for token in tokens:
+        if _is_focused_strong_token(token):
+            add(token)
+        if len(terms) >= max_terms:
+            break
+    return terms[:max_terms]
+
+
+def _focused_material_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", str(text)):
+        token = raw.casefold()
+        if (
+            token in _RELEVANCE_STOPWORDS
+            or token in _FOCUSED_INDEX_EXTRA_STOPWORDS
+            or token.isdigit()
+        ):
+            continue
+        if len(token) < 4 and not raw.isupper():
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _is_focused_strong_token(token: str) -> bool:
+    value = str(token or "")
+    return (
+        len(value) >= 6
+        or "-" in value
+        or "_" in value
+        or any(ch.isdigit() for ch in value)
+    )
+
+
+def _focused_index_lookup_groups(terms: list[str] | tuple[str, ...]) -> list[list[str]]:
+    groups = _hybrid_sparse_lookup_groups(terms)
+    if groups:
+        return groups
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for token in _focused_material_tokens(" ".join(str(t) for t in terms)):
+        if not _is_focused_strong_token(token):
+            continue
+        key = (token,)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append([token])
+        if len(out) >= 8:
+            break
+    return out
+
+
+async def _focused_answerability_index_scan(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    primitives: tuple[str, ...],
+    terms: list[str] | tuple[str, ...],
+    seed_pairs: list[tuple[str, UUID]],
+    limit: int,
+) -> list[_FocusedIndexHit]:
+    groups = _focused_index_lookup_groups(terms)
+    if not primitives or not groups or limit <= 0:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_answerability_index')")
+    if table is None:
+        return []
+    scope_types = [pair[0] for pair in seed_pairs]
+    scope_ids = [pair[1] for pair in seed_pairs]
+    rows = await conn.fetch(
+        """
+        WITH group_tokens AS MATERIALIZED (
+          SELECT g.group_ord::int,
+                 token.value::text AS term
+          FROM jsonb_array_elements($4::jsonb)
+               WITH ORDINALITY AS g(tokens, group_ord)
+          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        ),
+        group_sizes AS MATERIALIZED (
+          SELECT group_ord,
+                 count(DISTINCT term)::int AS token_count
+          FROM group_tokens
+          GROUP BY group_ord
+        ),
+        matched AS MATERIALIZED (
+          SELECT mai.model_id,
+                 mai.primitive,
+                 gt.group_ord,
+                 count(DISTINCT gt.term)::int AS matched_terms
+          FROM group_tokens gt
+          JOIN model_answerability_index mai
+            ON mai.tenant_id = $1
+           AND mai.status = 'active'
+           AND mai.primitive = ANY($3::text[])
+           AND mai.term = gt.term
+          GROUP BY mai.model_id, mai.primitive, gt.group_ord
+        ),
+        group_hits AS MATERIALIZED (
+          SELECT matched.model_id,
+                 matched.primitive,
+                 matched.group_ord,
+                 group_sizes.token_count
+          FROM matched
+          JOIN group_sizes
+            ON group_sizes.group_ord = matched.group_ord
+          WHERE matched.matched_terms = group_sizes.token_count
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 count(DISTINCT primitive)::int AS primitive_match_count,
+                 sum(token_count)::int AS match_count,
+                 min(group_ord)::int AS first_group_ord
+          FROM group_hits
+          GROUP BY model_id
+        ),
+        scope_overlap AS MATERIALIZED (
+          SELECT mse.model_id,
+                 count(*)::int AS overlap
+          FROM unnest($5::text[], $6::uuid[]) AS seed(entity_type, entity_id)
+          JOIN model_scope_entities mse
+            ON mse.tenant_id = $1
+           AND mse.entity_type = seed.entity_type
+           AND mse.entity_id = seed.entity_id
+          GROUP BY mse.model_id
+        )
+        SELECT m.id,
+               scored.match_count,
+               scored.primitive_match_count,
+               coalesce(scope_overlap.overlap, 0)::int AS scope_overlap
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        LEFT JOIN scope_overlap
+          ON scope_overlap.model_id = m.id
+        WHERE m.status = 'active'
+        ORDER BY coalesce(scope_overlap.overlap, 0) DESC,
+                 scored.match_count DESC,
+                 scored.primitive_match_count DESC,
+                 scored.first_group_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        list(primitives),
+        json.dumps(groups),
+        scope_types,
+        scope_ids,
+    )
+    return [
+        _FocusedIndexHit(
+            model_id=row["id"],
+            score=0.78
+            + min(0.18, int(row["match_count"] or 0) * 0.025)
+            + min(0.18, int(row["scope_overlap"] or 0) * 0.05),
+            source="answerability_index",
+            match_count=int(row["match_count"] or 0),
+            scope_overlap=int(row["scope_overlap"] or 0),
+        )
+        for row in rows
+    ]
+
+
+async def _focused_scope_sparse_scan(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    terms: list[str] | tuple[str, ...],
+    seed_pairs: list[tuple[str, UUID]],
+    limit: int,
+) -> list[_FocusedIndexHit]:
+    groups = _focused_index_lookup_groups(terms)
+    if not groups or not seed_pairs or limit <= 0:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
+    if table is None:
+        return []
+    scope_types = [pair[0] for pair in seed_pairs]
+    scope_ids = [pair[1] for pair in seed_pairs]
+    rows = await conn.fetch(
+        """
+        WITH group_tokens AS MATERIALIZED (
+          SELECT g.group_ord::int,
+                 token.value::text AS term
+          FROM jsonb_array_elements($3::jsonb)
+               WITH ORDINALITY AS g(tokens, group_ord)
+          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        ),
+        group_sizes AS MATERIALIZED (
+          SELECT group_ord,
+                 count(DISTINCT term)::int AS token_count
+          FROM group_tokens
+          GROUP BY group_ord
+        ),
+        lexical AS MATERIALIZED (
+          SELECT mst.model_id,
+                 gt.group_ord,
+                 count(DISTINCT gt.term)::int AS matched_terms
+          FROM group_tokens gt
+          JOIN model_sparse_terms mst
+            ON mst.tenant_id = $1
+           AND mst.status = 'active'
+           AND mst.term = gt.term
+          GROUP BY mst.model_id, gt.group_ord
+        ),
+        lexical_hits AS MATERIALIZED (
+          SELECT lexical.model_id,
+                 lexical.group_ord,
+                 group_sizes.token_count
+          FROM lexical
+          JOIN group_sizes
+            ON group_sizes.group_ord = lexical.group_ord
+          WHERE lexical.matched_terms = group_sizes.token_count
+        ),
+        lexical_scored AS MATERIALIZED (
+          SELECT model_id,
+                 sum(token_count)::int AS match_count,
+                 min(group_ord)::int AS first_group_ord
+          FROM lexical_hits
+          GROUP BY model_id
+        ),
+        scope_overlap AS MATERIALIZED (
+          SELECT mse.model_id,
+                 count(*)::int AS overlap
+          FROM unnest($4::text[], $5::uuid[]) AS seed(entity_type, entity_id)
+          JOIN model_scope_entities mse
+            ON mse.tenant_id = $1
+           AND mse.entity_type = seed.entity_type
+           AND mse.entity_id = seed.entity_id
+          GROUP BY mse.model_id
+        )
+        SELECT m.id,
+               lexical_scored.match_count,
+               scope_overlap.overlap::int AS scope_overlap
+        FROM lexical_scored
+        JOIN scope_overlap
+          ON scope_overlap.model_id = lexical_scored.model_id
+        JOIN models m
+          ON m.id = lexical_scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scope_overlap.overlap DESC,
+                 lexical_scored.match_count DESC,
+                 lexical_scored.first_group_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        json.dumps(groups),
+        scope_types,
+        scope_ids,
+    )
+    return [
+        _FocusedIndexHit(
+            model_id=row["id"],
+            score=0.70
+            + min(0.20, int(row["scope_overlap"] or 0) * 0.055)
+            + min(0.16, int(row["match_count"] or 0) * 0.025),
+            source="scope_sparse",
+            match_count=int(row["match_count"] or 0),
+            scope_overlap=int(row["scope_overlap"] or 0),
+        )
+        for row in rows
+    ]
+
+
+async def _focused_direct_scope_scan(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    seed_pairs: list[tuple[str, UUID]],
+    limit: int,
+) -> list[_FocusedIndexHit]:
+    if not seed_pairs or limit <= 0:
+        return []
+    scope_types = [pair[0] for pair in seed_pairs]
+    scope_ids = [pair[1] for pair in seed_pairs]
+    rows = await conn.fetch(
+        """
+        WITH scope_overlap AS MATERIALIZED (
+          SELECT mse.model_id,
+                 count(*)::int AS overlap
+          FROM unnest($3::text[], $4::uuid[]) AS seed(entity_type, entity_id)
+          JOIN model_scope_entities mse
+            ON mse.tenant_id = $1
+           AND mse.entity_type = seed.entity_type
+           AND mse.entity_id = seed.entity_id
+          GROUP BY mse.model_id
+        )
+        SELECT m.id,
+               scope_overlap.overlap::int AS scope_overlap
+        FROM scope_overlap
+        JOIN models m
+          ON m.id = scope_overlap.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scope_overlap.overlap DESC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        scope_types,
+        scope_ids,
+    )
+    return [
+        _FocusedIndexHit(
+            model_id=row["id"],
+            score=0.42 + min(0.18, int(row["scope_overlap"] or 0) * 0.04),
+            source="direct_scope",
+            match_count=0,
+            scope_overlap=int(row["scope_overlap"] or 0),
+        )
+        for row in rows
+    ]
+
+
+async def _execute_semantic_hybrid_action(
+    action: RetrievalAction,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    embedder: Any | None,
+    cfg: InquiryConfig,
+    *,
+    model_limit: int,
+) -> PathwayResult:
+    query_text = action.query or _trigger_text(trigger)
+    trigger_text = _trigger_text(trigger)
+    precomputed_vector = (
+        trigger.precomputed_seed_vector
+        if embedder is None or query_text == trigger_text
+        else None
+    )
+    result = await pathway_b_semantic(
+        query_text,
+        trigger.tenant_id,
+        conn,
+        k=model_limit,
+        embedder=embedder,
+        precomputed_vector=precomputed_vector,
+        event_actors=trigger.scope_actors,
+        event_entities=trigger.seed_entity_ids,
+    )
+    semantic_ids = {model.id for model in result.models}
+    hybrid_note: dict[str, Any] = {
+        "enabled": bool(cfg.semantic_hybrid_lexical_enabled),
+        "used": False,
+        "semantic_count": len(result.models),
+        "lexical_count": 0,
+        "merged_count": len(result.models),
+    }
+    if not cfg.semantic_hybrid_lexical_enabled:
+        hybrid_note["reason"] = "disabled"
+        result.notes["semantic_hybrid_lexical"] = hybrid_note
+        return result
+
+    terms = _hybrid_lexical_terms(
+        query_text,
+        trigger,
+        max_terms=max(1, int(cfg.semantic_hybrid_lexical_terms)),
+    )
+    hybrid_note["terms"] = terms
+    if not terms:
+        hybrid_note["reason"] = "no_lexical_terms"
+        result.notes["semantic_hybrid_lexical"] = hybrid_note
+        return result
+
+    lexical_limit = min(
+        max(1, int(cfg.semantic_hybrid_lexical_max_candidates)),
+        max(1, int(model_limit) * 2),
+    )
+    per_term_limit = max(1, int(cfg.semantic_hybrid_lexical_per_term_limit))
+    lexical_hits = await _hybrid_lexical_model_scan(
+        trigger,
+        conn,
+        terms=terms,
+        limit=lexical_limit,
+        per_term_limit=per_term_limit,
+    )
+    hybrid_note.update({
+        "lexical_limit": lexical_limit,
+        "lexical_per_term_limit": per_term_limit,
+        "lexical_count": len(lexical_hits),
+    })
+    if not lexical_hits:
+        hybrid_note["reason"] = "no_lexical_hits"
+        result.notes["semantic_hybrid_lexical"] = hybrid_note
+        return result
+
+    result.models = _merge_hybrid_semantic_lexical_models(
+        result.models,
+        lexical_hits,
+        limit=max(1, int(model_limit)),
+    )
+    hybrid_note["used"] = True
+    hybrid_note["merged_count"] = len(result.models)
+    hybrid_note["lexical_only_selected"] = sum(
+        1 for model in result.models if model.id not in semantic_ids
+    )
+    result.notes["semantic_hybrid_lexical"] = hybrid_note
+    return result
+
+
 def _cap_pathway_models(result: PathwayResult, limit: int) -> None:
     limit = max(0, int(limit))
     before = len(result.models)
@@ -2459,44 +5074,284 @@ def _cap_pathway_models(result: PathwayResult, limit: int) -> None:
     result.notes["models_after_adaptive_cap"] = len(result.models)
 
 
-async def _broad_lexical_model_scan(
-    trigger: TriggerContext,
+def _hybrid_lexical_terms(
     query_text: str,
+    trigger: TriggerContext,
+    *,
+    max_terms: int,
+) -> list[str]:
+    max_terms = max(1, int(max_terms))
+    strong: list[str] = []
+    weak: list[str] = []
+
+    def add(raw_text: str, *, trigger_side: bool = False) -> None:
+        for raw in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", str(raw_text)):
+            token = raw.casefold()
+            if token in _RELEVANCE_STOPWORDS or token.isdigit():
+                continue
+            has_symbol = "-" in token or "_" in token or any(ch.isdigit() for ch in token)
+            is_acronym = len(raw) <= 6 and raw.upper() == raw and any(ch.isalpha() for ch in raw)
+            is_strong = has_symbol or is_acronym or len(token) >= (5 if trigger_side else 4)
+            target = strong if is_strong else weak
+            if token not in strong and token not in weak:
+                target.append(token)
+
+    add(query_text, trigger_side=False)
+    add(_trigger_text(trigger), trigger_side=True)
+    return (strong + weak)[:max_terms]
+
+
+def _like_patterns_for_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
+    patterns: list[str] = []
+    for term in terms:
+        value = str(term or "").casefold().strip()
+        if not value:
+            continue
+        escaped = (
+            value
+            .replace("!", "!!")
+            .replace("%", "!%")
+            .replace("_", "!_")
+        )
+        pattern = f"%{escaped}%"
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return patterns
+
+
+async def _hybrid_lexical_model_scan(
+    trigger: TriggerContext,
     conn: asyncpg.Connection,
     *,
+    terms: list[str] | tuple[str, ...],
     limit: int,
-) -> list[ModelRow]:
-    terms = [
-        term
-        for term in sorted(
-            _relevance_tokens(f"{query_text} {_trigger_text(trigger)}")
-        )
-        if len(term) >= 4
-    ]
-    if not terms or limit <= 0:
-        return []
-    terms = terms[:12]
-    conditions = " OR ".join(
-        f'"natural" ILIKE ${idx}' for idx in range(3, 3 + len(terms))
+    per_term_limit: int,
+) -> list[tuple[ModelRow, int]]:
+    sparse_hits = await _hybrid_sparse_model_scan(
+        trigger,
+        conn,
+        terms=terms,
+        limit=limit,
+        per_term_limit=per_term_limit,
     )
+    if sparse_hits:
+        return sparse_hits
+
+    patterns = _like_patterns_for_terms(terms)
+    if not patterns or limit <= 0:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_search_documents')")
+    if table is None:
+        return []
     rows = await conn.fetch(
-        f"""
-        SELECT id
-        FROM models
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND ({conditions})
-        ORDER BY activation DESC, created_at DESC
+        """
+        WITH patterns AS (
+          SELECT pattern, ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS p(pattern, ord)
+        ),
+        per_pattern AS MATERIALIZED (
+          SELECT hit.model_id,
+                 p.ord::int AS pattern_ord
+          FROM patterns p
+          CROSS JOIN LATERAL (
+            SELECT msd.model_id
+            FROM model_search_documents msd
+            JOIN models m
+              ON m.id = msd.model_id
+             AND m.tenant_id = msd.tenant_id
+            WHERE msd.tenant_id = $1
+              AND msd.status = 'active'
+              AND m.status = 'active'
+              AND msd.search_text LIKE p.pattern ESCAPE '!'
+            ORDER BY m.activation DESC, m.created_at DESC, m.id
+            LIMIT $4
+          ) hit
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 count(*)::int AS match_count,
+                 min(pattern_ord)::int AS first_pattern_ord
+          FROM per_pattern
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               scored.match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.match_count DESC,
+                 scored.first_pattern_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
         LIMIT $2
         """,
         trigger.tenant_id,
-        int(limit),
-        *[f"%{term}%" for term in terms],
+        max(1, int(limit)),
+        patterns,
+        max(1, int(per_term_limit)),
     )
     ids = [row["id"] for row in rows]
     if not ids:
         return []
-    return await ModelsRepo(None, run_topology_on_insert=False).retrieve(ids, conn=conn)
+    models = await ModelsRepo(None, run_topology_on_insert=False).retrieve(ids, conn=conn)
+    by_id = {model.id: model for model in models}
+    return [
+        (by_id[row["id"]], int(row["match_count"] or 1))
+        for row in rows
+        if row["id"] in by_id
+    ]
+
+
+async def _hybrid_sparse_model_scan(
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    *,
+    terms: list[str] | tuple[str, ...],
+    limit: int,
+    per_term_limit: int,
+) -> list[tuple[ModelRow, int]]:
+    lookup_groups = _hybrid_sparse_lookup_groups(terms)
+    if not lookup_groups or limit <= 0:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
+    if table is None:
+        return []
+    rows = await conn.fetch(
+        """
+        WITH group_tokens AS MATERIALIZED (
+          SELECT g.group_ord::int,
+                 token.value::text AS term
+          FROM jsonb_array_elements($3::jsonb)
+               WITH ORDINALITY AS g(tokens, group_ord)
+          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        ),
+        group_sizes AS MATERIALIZED (
+          SELECT group_ord,
+                 count(DISTINCT term)::int AS token_count
+          FROM group_tokens
+          GROUP BY group_ord
+        ),
+        matched AS MATERIALIZED (
+          SELECT mst.model_id,
+                 gt.group_ord,
+                 count(DISTINCT gt.term)::int AS matched_terms
+          FROM group_tokens gt
+          JOIN model_sparse_terms mst
+            ON mst.tenant_id = $1
+           AND mst.status = 'active'
+           AND mst.term = gt.term
+          GROUP BY mst.model_id, gt.group_ord
+        ),
+        group_hits AS MATERIALIZED (
+          SELECT matched.model_id,
+                 matched.group_ord,
+                 group_sizes.token_count
+          FROM matched
+          JOIN group_sizes
+            ON group_sizes.group_ord = matched.group_ord
+          WHERE matched.matched_terms = group_sizes.token_count
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 count(*)::int AS match_count,
+                 sum(token_count)::int AS term_match_count,
+                 min(group_ord)::int AS first_group_ord
+          FROM group_hits
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               scored.term_match_count AS match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.term_match_count DESC,
+                 scored.match_count DESC,
+                 scored.first_group_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        trigger.tenant_id,
+        max(1, int(limit)),
+        json.dumps(lookup_groups),
+    )
+    ids = [row["id"] for row in rows]
+    if not ids:
+        return []
+    models = await ModelsRepo(None, run_topology_on_insert=False).retrieve(ids, conn=conn)
+    by_id = {model.id: model for model in models}
+    return [
+        (by_id[row["id"]], int(row["match_count"] or 1))
+        for row in rows
+        if row["id"] in by_id
+    ]
+
+
+def _hybrid_sparse_lookup_groups(terms: list[str] | tuple[str, ...]) -> list[list[str]]:
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in terms:
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold())
+            if token not in _RELEVANCE_STOPWORDS and not token.isdigit()
+        ]
+        tokens = list(dict.fromkeys(tokens))
+        if len(tokens) >= 2:
+            group = tokens[:4]
+        elif tokens and len(tokens[0]) >= 6:
+            group = tokens
+        else:
+            continue
+        key = tuple(group)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(group)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _merge_hybrid_semantic_lexical_models(
+    semantic_models: list[ModelRow],
+    lexical_hits: list[tuple[ModelRow, int]],
+    *,
+    limit: int,
+) -> list[ModelRow]:
+    scores: dict[UUID, float] = {}
+    by_id: dict[UUID, ModelRow] = {}
+    ranks: dict[UUID, tuple[int, int]] = {}
+    rrf_k = 60.0
+
+    for rank, model in enumerate(semantic_models, start=1):
+        by_id[model.id] = model
+        scores[model.id] = scores.get(model.id, 0.0) + 1.0 / (rrf_k + rank)
+        old = ranks.get(model.id, (10_000, 10_000))
+        ranks[model.id] = (min(old[0], rank), old[1])
+
+    for rank, (model, match_count) in enumerate(lexical_hits, start=1):
+        by_id.setdefault(model.id, model)
+        lexical_score = 0.92 / (rrf_k + rank)
+        lexical_score += min(0.008, max(1, int(match_count)) * 0.002)
+        scores[model.id] = scores.get(model.id, 0.0) + lexical_score
+        old = ranks.get(model.id, (10_000, 10_000))
+        ranks[model.id] = (old[0], min(old[1], rank))
+
+    ordered_ids = sorted(
+        by_id,
+        key=lambda model_id: (
+            -scores.get(model_id, 0.0),
+            ranks.get(model_id, (10_000, 10_000))[0],
+            ranks.get(model_id, (10_000, 10_000))[1],
+            str(model_id),
+        ),
+    )
+    return [by_id[model_id] for model_id in ordered_ids[: max(1, int(limit))]]
 
 
 def _result_from_pathway(
@@ -4650,10 +7505,126 @@ def _is_low_value_model_noise(card: EvidenceCard) -> bool:
     )
 
 
+def _compact_inquiry_notes_for_persistence(
+    notes: dict[str, Any],
+    *,
+    persist_full_sage_reader_notes: bool,
+) -> dict[str, Any]:
+    if persist_full_sage_reader_notes:
+        return notes
+    compact = dict(notes)
+    if isinstance(compact.get("context_packet"), dict):
+        compact["context_packet"] = {"stored_in_context_packet_column": True}
+    sage_notes = compact.get("sage_reader")
+    if isinstance(sage_notes, dict):
+        compact["sage_reader"] = _compact_sage_reader_notes_for_persistence(
+            sage_notes
+        )
+    compact["persist_compaction"] = {
+        "sage_reader_full_notes": False,
+        "context_packet_stored_once": True,
+    }
+    return compact
+
+
+def _compact_sage_reader_notes_for_persistence(
+    sage_notes: dict[str, Any],
+) -> dict[str, Any]:
+    compact = dict(sage_notes)
+    questions = sage_notes.get("questions")
+    if isinstance(questions, dict):
+        compact["questions"] = {
+            str(qid): _compact_sage_question_note_for_persistence(qnote)
+            for qid, qnote in questions.items()
+            if isinstance(qnote, dict)
+        }
+    compact["persist_compacted"] = True
+    compact["omitted_payloads"] = [
+        "questions.*.activations",
+        "questions.*.debug.gate_scores",
+        "questions.*.debug.activation_reasons",
+    ]
+    return compact
+
+
+def _compact_sage_question_note_for_persistence(
+    qnote: dict[str, Any],
+) -> dict[str, Any]:
+    activations = qnote.get("activations")
+    activation_count = (
+        len(activations)
+        if isinstance(activations, list)
+        else int(qnote.get("activation_trace_count") or 0)
+    )
+    selected_model_ids = [
+        str(mid) for mid in (qnote.get("selected_model_ids") or [])
+    ]
+    return {
+        "question_id": qnote.get("question_id"),
+        "question_primitive": qnote.get("question_primitive"),
+        "signature": qnote.get("signature"),
+        "selected_model_ids": selected_model_ids,
+        "selected_model_count": len(selected_model_ids),
+        "projected_evidence_count": int(
+            qnote.get("projected_evidence_count") or 0
+        ),
+        "activation_trace_count": activation_count,
+        "debug": _compact_sage_reader_debug_for_persistence(
+            qnote.get("debug")
+        ),
+        "activations_stored_in": "sage_reader_activations",
+    }
+
+
+def _compact_sage_reader_debug_for_persistence(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    selector = raw.get("selector") if isinstance(raw.get("selector"), dict) else {}
+    intents = raw.get("intents") if isinstance(raw.get("intents"), list) else []
+    gate_scores = raw.get("gate_scores")
+    activation_reasons = raw.get("activation_reasons")
+    return {
+        "stage_timings_ms": raw.get("stage_timings_ms") or {},
+        "learned_read_plan": raw.get("learned_read_plan") or {},
+        "projection_budget": raw.get("projection_budget") or {},
+        "projection_coverage": raw.get("projection_coverage") or {},
+        "candidate_pool": raw.get("candidate_pool") or {},
+        "row_cache": raw.get("row_cache") or {},
+        "cue_extraction": raw.get("cue_extraction") or {},
+        "intents": [
+            {
+                "intent": item.get("intent"),
+                "paths": item.get("paths"),
+                "expected_cost": item.get("expected_cost"),
+                "expected_value": item.get("expected_value"),
+                "target": _compact(item.get("target"), 180),
+            }
+            for item in intents
+            if isinstance(item, dict)
+        ],
+        "selector": {
+            "selected_node_count": len(selector.get("selected_nodes") or []),
+            "selected_edge_count": len(selector.get("selected_edges") or []),
+            "bridge_node_count": len(selector.get("bridge_nodes") or []),
+            "coverage_metrics": selector.get("coverage_metrics") or {},
+        },
+        "gate_score_count": (
+            len(gate_scores) if isinstance(gate_scores, dict) else 0
+        ),
+        "activation_reason_count": (
+            len(activation_reasons)
+            if isinstance(activation_reasons, (dict, list))
+            else 0
+        ),
+    }
+
+
 async def _persist_inquiry(
     conn: asyncpg.Connection,
     result: InquiryResult,
     trigger: TriggerContext,
+    *,
+    persist_full_sage_reader_notes: bool = False,
 ) -> None:
     table_name = await conn.fetchval("SELECT to_regclass('public.inquiry_sessions')")
     if table_name is None:
@@ -4691,7 +7662,13 @@ async def _persist_inquiry(
         len(result.questions),
         len(result.evidence_cards),
         json.dumps(result.context_packet, default=str),
-        json.dumps(result.notes, default=str),
+        json.dumps(
+            _compact_inquiry_notes_for_persistence(
+                result.notes,
+                persist_full_sage_reader_notes=persist_full_sage_reader_notes,
+            ),
+            default=str,
+        ),
     )
     await _persist_sage_reader_activation_traces(conn, result, trigger)
     if result.questions:

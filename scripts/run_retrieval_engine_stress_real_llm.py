@@ -666,7 +666,10 @@ def _evaluate_case(case: StressCase, result: Any, elapsed_ms: float) -> dict[str
     warnings: list[str] = []
     arch = case.archetype
     selected_count = len(result.retrieval_result.models)
-    signal_class = str(relevance.get("signal_class"))
+    signal_class = str(
+        relevance.get("signal_class")
+        or (result.notes or {}).get("signal_class")
+    )
     if signal_class != arch.signal_class:
         issues.append(f"signal_class {signal_class} != expected {arch.signal_class}")
     if selected_count < arch.selected_min or selected_count > arch.selected_max:
@@ -689,7 +692,9 @@ def _evaluate_case(case: StressCase, result: Any, elapsed_ms: float) -> dict[str
     non_llm_planning = [
         note for note in planning if note.get("mode") != "llm"
     ]
-    if not planning:
+    if not planning and arch.weak and result.sufficiency.status == "no_update_needed":
+        pass
+    elif not planning:
         issues.append("question planning did not produce telemetry")
     elif non_llm_planning:
         timeout_only = all(
@@ -715,6 +720,24 @@ def _evaluate_case(case: StressCase, result: Any, elapsed_ms: float) -> dict[str
         "question_ids": question_ids,
         "question_primitives": question_primitives,
         "planning_modes": [note.get("mode") for note in planning],
+        "planning_providers": [
+            note.get("llm_provider")
+            for note in planning
+            if note.get("llm_provider")
+        ],
+        "planning_models": [
+            note.get("llm_model")
+            for note in planning
+            if note.get("llm_model")
+        ],
+        "planning_efforts": [
+            note.get("llm_reasoning_effort")
+            for note in planning
+            if note.get("llm_reasoning_effort")
+        ],
+        "uses_codex_low_effort": any(
+            bool(note.get("uses_codex_low_effort")) for note in planning
+        ),
         "planning_primitives": [
             primitive
             for note in planning

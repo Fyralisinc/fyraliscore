@@ -536,6 +536,10 @@ class LLMConfig:
     # `RETRY_POLICIES[LLMErrorClass.PARSE_ERROR]`. Callers that need
     # a custom budget still pass `max_retries=` explicitly.
     max_retries: int = 1
+    # Optional per-provider override. Currently used by Codex question
+    # planning so retrieval can run low effort without changing the main
+    # Think provider's global CODEX_REASONING_EFFORT.
+    reasoning_effort: str | None = None
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -585,6 +589,11 @@ class LLMConfig:
             api_key=api_key,
             model=model,
             timeout_s=timeout,
+            reasoning_effort=(
+                _codex_reasoning_effort()
+                if provider == "codex"
+                else None
+            ),
         )
 
 
@@ -729,8 +738,10 @@ def _codex_should_use_cli_transport() -> bool:
     return _codex_transport() == "cli"
 
 
-def _codex_reasoning_effort() -> str:
-    value = os.environ.get("CODEX_REASONING_EFFORT", "medium").strip().lower()
+def _codex_reasoning_effort(value: str | None = None) -> str:
+    value = (
+        value or os.environ.get("CODEX_REASONING_EFFORT", "medium")
+    ).strip().lower()
     allowed = {"low", "medium", "high", "xhigh"}
     if value not in allowed:
         raise LLMConfigError(
@@ -1312,6 +1323,7 @@ class CodexProvider(LLMProvider):
                 user=user,
                 schema_hint=schema_hint,
                 timeout_s=self.config.timeout_s,
+                reasoning_effort=self.config.reasoning_effort,
             ),
         )
         self._record_estimated_text_usage(
@@ -1467,6 +1479,7 @@ class _CodexAppServerClient:
         user: str,
         schema_hint: str,
         timeout_s: float,
+        reasoning_effort: str | None,
     ) -> str:
         async with self._lock:
             try:
@@ -1476,6 +1489,7 @@ class _CodexAppServerClient:
                         system=system,
                         user=user,
                         schema_hint=schema_hint,
+                        reasoning_effort=reasoning_effort,
                     ),
                     timeout=timeout_s,
                 )
@@ -1497,6 +1511,7 @@ class _CodexAppServerClient:
         system: str,
         user: str,
         schema_hint: str,
+        reasoning_effort: str | None,
     ) -> str:
         await self._ensure_started()
         assert self._proc is not None
@@ -1524,11 +1539,16 @@ class _CodexAppServerClient:
             "turn/start",
             {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": _codex_user_prompt(user, schema_hint)}],
+                "input": [
+                    {
+                        "type": "text",
+                        "text": _codex_user_prompt(user, schema_hint),
+                    }
+                ],
                 "model": model,
                 "approvalPolicy": "never",
                 "sandboxPolicy": {"type": "readOnly"},
-                "effort": _codex_reasoning_effort(),
+                "effort": _codex_reasoning_effort(reasoning_effort),
                 "summary": "none",
             },
         )

@@ -71,6 +71,57 @@ def test_question_planner_prioritizes_owner_when_owner_is_the_bottleneck(
     assert "OWNERSHIP" in {q.primitive for q in selected}
 
 
+def test_question_planner_anchors_questions_to_signal_specifics(
+    tenant_id: UUID,
+):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text=(
+            "AcmeAtlas launch is blocked by security review capacity and "
+            "the enterprise SSO commitment is now at risk."
+        ),
+        seed_entity_ids=[
+            {"type": "customer", "id": "AcmeAtlas"},
+            {"type": "system", "id": "EnterpriseSSO"},
+        ],
+    )
+    questions = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"blocking constraint", "responsible owner", "counterevidence"},
+    )
+    by_primitive = {question.primitive: question.question for question in questions}
+
+    assert "AcmeAtlas" in by_primitive["OWNERSHIP"]
+    assert "security review capacity" in by_primitive["OWNERSHIP"]
+    assert "AcmeAtlas" in by_primitive["DEPENDENCY"]
+    assert "security review capacity" in by_primitive["DEPENDENCY"]
+    assert "AcmeAtlas launch is blocked" in by_primitive["COUNTEREVIDENCE"]
+
+
+def test_question_planner_does_not_leak_uuid_anchors_into_questions(
+    tenant_id: UUID,
+):
+    opaque_id = "019ea807-48e2-7000-b96f-b0a86bf8256f"
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text="Customer launch is waiting on legal approval.",
+        seed_entity_ids=[{"type": "customer", "id": opaque_id}],
+    )
+    questions = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"whether the dependency is binding", "counterevidence"},
+    )
+
+    assert opaque_id not in " ".join(question.question for question in questions)
+    assert any("legal approval" in question.question for question in questions)
+
+
 def test_question_planner_promotes_first_class_constraint_questions(
     tenant_id: UUID,
 ):
