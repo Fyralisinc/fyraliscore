@@ -68,16 +68,20 @@ class QuickBooksClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        token_expires_at: Any | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._realm_id = realm_id
-        # Reactive OAuth re-mint (Phase 3): on a 401 the client refreshes the
-        # rotating access token via the install's refresh token, then retries.
+        # OAuth refresh (Phase 3): PROACTIVE — refresh up front when
+        # token_expires_at is within the skew; REACTIVE — re-mint on a 401 and
+        # retry. Both via the install's refresh material; inert in spammer mode.
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
+        self._token_expires_at = token_expires_at
+        self._proactive_checked = False
         self._access_token: str | None = access_token
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical QBO host; a spammer/test
@@ -126,6 +130,7 @@ class QuickBooksClient:
     ) -> dict[str, Any]:
         from services.ingest.integrations.quickbooks import metrics
         from services.ingest.integrations.oauth_refresh import (
+            maybe_proactive_refresh,
             refresh_on_unauthorized,
         )
 
@@ -133,6 +138,20 @@ class QuickBooksClient:
         max_attempts = int(os.environ.get("QUICKBOOKS_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("QUICKBOOKS_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
+
+        # Proactive re-mint: once per client, refresh up front if the token is
+        # near expiry so the first call doesn't burn a guaranteed 401.
+        if not self._proactive_checked:
+            self._proactive_checked = True
+            proactive = await maybe_proactive_refresh(
+                provider="quickbooks", pool=self._pool,
+                secret_store=self._secret_store, http=client,
+                tenant_id=self._tenant_id, install_row_id=self._install_row_id,
+                refresh_secret_ref=self._refresh_secret_ref,
+                token_expires_at=self._token_expires_at,
+            )
+            if proactive is not None:
+                self._access_token = proactive
 
         attempt = 0
         reminted = False
