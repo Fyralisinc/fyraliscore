@@ -61,11 +61,22 @@ def notion_object(object_type: str, object_id: str) -> str:
     return f"notion:{object_type}:{object_id}"
 
 
-# --- GitHub (push only; PR/issue/review/etc. adopt the node_id verbatim) -
+# --- GitHub ----------------------------------------------------------
 def github_push(repo_full: str | None, after: str | None) -> str | None:
     """`{repo_full}@{after}` (destination-branch tip), or None when either
     part is missing. The same commit pushed to two branches is two keys."""
     return f"{repo_full}@{after}" if repo_full and after else None
+
+
+def github_object(node_id: str, action: str | None) -> str:
+    """`{node_id}:{action}` — for the lifecycle objects (PR, issue) whose
+    `node_id` is byte-IDENTICAL across `opened`/`closed`/`reopened` (#1). The
+    bare node_id (the prior key) collapsed an open and its later close onto ONE
+    observation — the merge/close state-change was silently lost to dedup.
+    Namespacing by the action keeps each lifecycle transition a distinct
+    observation while a REDELIVERY of the same action still dedups (same
+    node_id + action). `none` when the webhook carried no action."""
+    return f"{node_id}:{action or 'none'}"
 
 
 # --- Grafana ---------------------------------------------------------
@@ -318,6 +329,7 @@ __all__ = [
     "figma_event",
     "fireflies_transcript",
     "github_push",
+    "github_object",
     "gmail_message",
     "google_calendar_event",
     "google_drive_comment",

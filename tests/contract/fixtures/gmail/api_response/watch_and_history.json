@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "provider": "gmail",
+    "kind": "api_response",
+    "description": "Real Gmail users.watch() response (gmail.googleapis.com/gmail/v1/users/me/watch). Per the Users.watch reference the body is exactly {\"historyId\": <string>, \"expiration\": <string>} where BOTH values are numbers serialized as strings: historyId is the mailbox's current history bookmark, expiration is a ms-since-epoch timestamp. A watch RENEWAL can return a LOWER historyId than the push/poll fetchers have already advanced the stored cursor to — the watch_scheduler must keep GREATEST(stored, returned) (numeric compare on the stringified ids) so the cursor never rewinds. Doc-derived; values are placeholders.",
+    "source": "doc:https://developers.google.com/gmail/api/reference/rest/v1/users/watch (response body: historyId string, expiration string ms-epoch; users.watch may be re-issued to renew)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "historyId": "987650",
+      "expiration": "1789200000000"
+    }
+  }
+}

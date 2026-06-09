@@ -50,6 +50,23 @@ _DEFAULT_TIMEOUT_S = 30.0
 # with the other sources. The 500 page cap is CLONED from Brex and UNVERIFIED.
 _DEFAULT_PAGE_SIZE = 50
 
+# The REAL Fireflies read query (POST /graphql) — finding #5. `transcripts` is
+# skip/limit paginated and `fromDate` bounds incremental polls. Field set mirrors
+# what the handler/fetcher consume from the REST shape so the parse is uniform.
+_TRANSCRIPTS_QUERY = """
+query Transcripts($limit: Int, $skip: Int, $fromDate: DateTime) {
+  transcripts(limit: $limit, skip: $skip, fromDate: $fromDate) {
+    id
+    title
+    date
+    duration
+    organizer_email
+    participants
+    transcript_url
+  }
+}
+""".strip()
+
 
 def _parse_retry_after(value: str | None) -> float:
     if not value:
@@ -235,6 +252,116 @@ class FirefliesClient:
         next_offset = offset + len(items)
         is_last = next_offset >= total or not items
         return items, (None if is_last else next_offset), total
+
+    # -----------------------------------------------------------------
+    # GraphQL read surface (the REAL Fireflies API — finding #5)
+    # -----------------------------------------------------------------
+    # api.fireflies.ai is a single GraphQL endpoint (POST /graphql) exposing a
+    # `transcripts(limit, skip, fromDate)` query, NOT REST paths. The REST
+    # surface above is the synthetic/mock shape; the methods below speak the real
+    # GraphQL protocol and are what production backfill uses when the install's
+    # endpoint is GraphQL. Additive: the REST path is preserved for the mock.
+
+    async def _graphql(
+        self, query: str, variables: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """POST a GraphQL `{query, variables}` to `/graphql` and return `data`.
+
+        Raises FirefliesApiError on a transport error, a non-2xx, or a GraphQL
+        `errors` array (the real API returns 200 with an `errors` extension for
+        rate limits — `code: too_many_requests`)."""
+        from services.ingest.integrations.fireflies import metrics
+
+        auth = await self._auth_header()
+        # The GraphQL endpoint is the base when it already ends in /graphql,
+        # else base + /graphql.
+        base = self._api_base_url
+        url = base if base.endswith("/graphql") else f"{base}/graphql"
+        headers = {
+            "Authorization": auth,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {"query": query}
+        if variables is not None:
+            payload["variables"] = variables
+
+        max_attempts = int(os.environ.get("FIREFLIES_RL_MAX_ATTEMPTS", "4"))
+        max_sleep = float(os.environ.get("FIREFLIES_RL_MAX_SLEEP_SEC", "30"))
+        client = self._httpx()
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+            except httpx.TransportError as exc:
+                metrics.record_request("error")
+                raise FirefliesApiError(
+                    "transport error calling fireflies graphql",
+                    code="fireflies_api_error",
+                    context={"error_type": type(exc).__name__},
+                ) from exc
+
+            if response.status_code == 429 and attempt < max_attempts:
+                metrics.record_request("rate_limited")
+                await asyncio.sleep(
+                    min(max_sleep, _parse_retry_after(response.headers.get("Retry-After")))
+                )
+                continue
+            if response.status_code // 100 != 2:
+                if response.status_code in (401, 403):
+                    metrics.record_request("unauthorized")
+                else:
+                    metrics.record_request("error")
+                raise _api_error_from_response(response, "/graphql")
+
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise FirefliesApiError(
+                    "fireflies graphql response was not a JSON object",
+                    code="fireflies_api_error", context={"path": "/graphql"},
+                )
+            errors = body.get("errors")
+            if errors:
+                # Rate-limit shows up as a 200 with errors[].extensions.code.
+                code = "fireflies_api_error"
+                if any(
+                    isinstance(e, dict)
+                    and isinstance(e.get("extensions"), dict)
+                    and e["extensions"].get("code") == "too_many_requests"
+                    for e in errors if isinstance(e, dict)
+                ):
+                    code = "fireflies_api_rate_limited"
+                    metrics.record_request("rate_limited")
+                else:
+                    metrics.record_request("error")
+                raise FirefliesApiError(
+                    "fireflies graphql returned errors",
+                    code=code, context={"errors": str(errors)[:300]},
+                )
+            metrics.record_request("ok")
+            data = body.get("data")
+            return data if isinstance(data, dict) else {}
+
+    async def list_transcripts_graphql(
+        self,
+        *,
+        limit: int = _DEFAULT_PAGE_SIZE,
+        skip: int = 0,
+        from_date: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """The REAL Fireflies read: `transcripts(limit, skip, fromDate)` GraphQL
+        query → `data.transcripts`. GraphQL has no `total`, so a full page means
+        "maybe more" (next_skip = skip+limit) and a short page is terminal
+        (next_skip None)."""
+        variables = {"limit": limit, "skip": skip}
+        if from_date:
+            variables["fromDate"] = from_date
+        data = await self._graphql(_TRANSCRIPTS_QUERY, variables)
+        items = data.get("transcripts")
+        items = [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
+        next_skip = skip + limit if len(items) >= limit and items else None
+        return items, next_skip
 
 
 # ---------------------------------------------------------------------

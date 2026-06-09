@@ -5,7 +5,10 @@ BUILD-PLAN §3 Prompt 2.B:
      issue_comment, pull_request_review, check_run.
      For PR merge: content_text synthesized ('Alice merged PR #123
      'Add rate limiter' into main'), entities include PR id, repo,
-     base branch. external_id = PR node_id.
+     base branch. external_id = `{node_id}:{action}` (#1: the node_id is
+     byte-identical across a PR/issue's opened/closed/reopened, so the bare
+     node_id collapsed lifecycle transitions onto one observation — the
+     action suffix keeps each transition distinct while a redelivery dedups).
      Trust tier: authoritative for merges/check_runs; inferential
      for comments.
      Signature verification with GITHUB_WEBHOOK_SECRET."
@@ -225,7 +228,7 @@ def _shape_pull_request(payload: dict[str, Any]) -> ObservationDraft:
         trust_tier=trust_tier,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
         source_actor_ref=f"github:{author}" if author != "unknown" else None,
-        external_id=node_id,
+        external_id=(idempotency.github_object(node_id, action) if node_id else None),
         entities_hint=entities_hint,
         raw_payload=payload,
     )
@@ -339,7 +342,7 @@ def _shape_issues(payload: dict[str, Any]) -> ObservationDraft:
         trust_tier="authoritative",
         kind=kind,  # type: ignore[arg-type]
         source_actor_ref=f"github:{author}" if author != "unknown" else None,
-        external_id=node_id,
+        external_id=(idempotency.github_object(node_id, action) if node_id else None),
         entities_hint=entities_hint,
         raw_payload=payload,
     )

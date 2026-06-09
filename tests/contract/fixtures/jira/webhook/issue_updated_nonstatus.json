@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "provider": "jira",
+    "kind": "webhook",
+    "description": "Real Jira Cloud `jira:issue_updated` webhook with a NON-status changelog (a `summary` field edit). Top-level webhookEvent + issue{id,key,fields,self} + changelog{id,items[]} + user, per developer.atlassian.com. Each changelog item carries field/fieldtype/from/fromString/to/toString. The handler must emit an observation for this delivery (a field-level 'issue updated' draft capturing the changed field) rather than dropping it — only status/resolution changes were routed before. Doc-derived; values are placeholders.",
+    "source": "doc:https://developer.atlassian.com/cloud/jira/platform/webhooks/ (jira:issue_updated; changelog provided only on issue_updated; item fields field/fieldtype/from/fromString/to/toString)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://hooks.example.com/webhooks/jira",
+    "headers": {
+      "Content-Type": "application/json",
+      "User-Agent": "Atlassian Webhook HTTP Client"
+    },
+    "body": {
+      "timestamp": 1768489800000,
+      "webhookEvent": "jira:issue_updated",
+      "issue_event_type_name": "issue_generic",
+      "user": {
+        "accountId": "557058:placeholder-account-0001",
+        "emailAddress": "bob@acme.example",
+        "displayName": "Bob Placeholder"
+      },
+      "issue": {
+        "id": "10001",
+        "key": "ENG-1",
+        "self": "https://acme.atlassian.net/rest/api/2/issue/10001",
+        "fields": {
+          "summary": "New title",
+          "issuetype": {"name": "Bug"},
+          "status": {"name": "In Progress"},
+          "priority": {"name": "High"},
+          "project": {"key": "ENG"},
+          "labels": ["backend"],
+          "created": "2026-05-01T09:00:00.000+0000",
+          "updated": "2026-01-15T15:10:00.000+0000"
+        }
+      },
+      "changelog": {
+        "id": "90220",
+        "items": [
+          {
+            "field": "summary",
+            "fieldtype": "jira",
+            "from": null,
+            "fromString": "Old title",
+            "to": null,
+            "toString": "New title"
+          }
+        ]
+      }
+    }
+  }
+}

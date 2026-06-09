@@ -35,6 +35,7 @@ what the live poll edge derives from the install.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 import time
@@ -135,18 +136,45 @@ def _region_of(install: asyncpg.Record) -> str:
     return str(install["region"]) if "region" in install else "us-east-1"
 
 
+def _iso_to_ms(value: str) -> int | None:
+    """RFC3339 / ISO-8601 string -> epoch ms (or None)."""
+    s = value.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = _dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
 def _event_time_ms(event: dict[str, Any]) -> int | None:
     """Extract the event time (epoch ms) from a CloudTrail event element.
 
-    `eventTime` may arrive as epoch ms (synthetic + normalized) or epoch s; this
-    reads the synthetic/normalized epoch-ms form. The handler owns RFC3339
-    parsing for the real-API shape.
+    Handles BOTH shapes:
+      - SYNTHETIC / normalized: camelCase `eventTime` as epoch ms (int/float).
+      - REAL botocore LookupEvents: PascalCase `EventTime` as a `datetime`
+        (botocore parses CloudTrail's RFC3339 into an aware datetime); some
+        captures / fixtures carry it as an ISO-8601 string instead.
+    The camelCase epoch-ms path is the fallback and is read first to keep the
+    synthetic gate's behavior byte-identical.
     """
     t = event.get("eventTime")
+    if t is None:
+        t = event.get("EventTime")
     if isinstance(t, bool):
         return None
     if isinstance(t, (int, float)):
         return int(t)
+    if isinstance(t, _dt.datetime):
+        dt = t if t.tzinfo else t.replace(tzinfo=_dt.timezone.utc)
+        return int(dt.timestamp() * 1000)
+    if isinstance(t, str):
+        return _iso_to_ms(t)
     return None
 
 

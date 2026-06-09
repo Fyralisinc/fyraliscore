@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "provider": "notion",
+    "kind": "api_response",
+    "description": "Real Notion POST /v1/search list response (api.notion.com). The envelope is {\"object\":\"list\",\"results\":[...],\"has_more\":bool,\"next_cursor\":str|null,\"type\":\"page_or_database\"}. This fixture captures a TWO-PAGE search used to guard the Phase-3 pagination drift (finding #36): page 1 (`response.body`) is `has_more:true` with a `next_cursor` and carries ONLY database-row pages (parent.type==\"database_id\"), so the reconciler's latest_page_edit() MUST follow next_cursor as start_cursor to reach the loose page; page 2 (`response.body_page2`) is `has_more:false`/`next_cursor:null` and carries the newest LOOSE page (parent.type==\"workspace\"). A single-call fallback response (has_more absent/false) stops after one call. Doc-derived; ids/cursors/timestamps are placeholders.",
+    "source": "doc:https://developers.notion.com/reference/post-search (list object: object=list, results[], has_more, next_cursor, type; pagination via start_cursor) + https://developers.notion.com/reference/intro#pagination",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "object": "list",
+      "results": [
+        {
+          "object": "page",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "last_edited_time": "2026-06-09T18:00:00.000Z",
+          "parent": {
+            "type": "database_id",
+            "database_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+          }
+        },
+        {
+          "object": "page",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "last_edited_time": "2026-06-09T17:30:00.000Z",
+          "parent": {
+            "type": "database_id",
+            "database_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+          }
+        }
+      ],
+      "next_cursor": "c2VhcmNoLWN1cnNvci1wbGFjZWhvbGRlcg==",
+      "has_more": true,
+      "type": "page_or_database",
+      "page_or_database": {}
+    },
+    "body_page2": {
+      "object": "list",
+      "results": [
+        {
+          "object": "page",
+          "id": "33333333-3333-4333-8333-333333333333",
+          "last_edited_time": "2026-06-09T12:00:00.000Z",
+          "parent": {
+            "type": "workspace",
+            "workspace": true
+          }
+        }
+      ],
+      "next_cursor": null,
+      "has_more": false,
+      "type": "page_or_database",
+      "page_or_database": {}
+    }
+  }
+}

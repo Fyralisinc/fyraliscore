@@ -901,11 +901,16 @@ async def _dispatch_twin(
             team_id=t.team_id, channel_id=channel, content="twin", ts=ts,
         )
     elif t.source == "github":
-        # external_id IS node_id; occurred_at must match too.
+        # #1: external_id is now "{node_id}:{action}" (the node_id alone is
+        # identical across a PR/issue's lifecycle). Split the action back off so
+        # the live twin reproduces the SAME external_id (same node_id + action)
+        # and dedups against its backfill counterpart. occurred_at must match too.
+        node_id, _, action = twin.external_id.rpartition(":")
         await drivers.github_webhook.simulate_issue_event(
             installation_id=t.installation_id,
             repo_full_name=t.repo_full_name,
-            node_id=twin.external_id,
+            node_id=node_id,
+            action=action or "opened",
             occurred_at_iso=twin.occurred_at.isoformat(),
         )
     elif t.source == "gmail":

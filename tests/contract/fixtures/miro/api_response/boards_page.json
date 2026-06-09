@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "provider": "miro",
+    "kind": "api_response",
+    "description": "Real Miro (api.miro.com) GET /v2/boards FIRST page. Offset-paginated envelope: top-level `data` (board list) plus the pagination counters `total`/`size`/`offset`/`limit` and a `links` object with `self` and `next`. `links.next` is a full URL carrying the advanced `offset` query param and is PRESENT only while more pages remain (here total=3 > offset+size=2, so a second page exists). The terminal page omits `links.next`. The current MiroClient.list_boards reads only the first page and drops boards past it; the fix follows links.next (offset fallback) to exhaustion. Doc-derived; ids/urls are placeholders.",
+    "source": "doc:https://developers.miro.com/reference/get-boards (query params team_id/limit/offset/sort; v2 offset pagination envelope data/total/size/offset/limit/links.self/links.next)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "data": [
+        {
+          "id": "uXjVABCD001=",
+          "name": "Roadmap Q3",
+          "type": "board",
+          "viewLink": "https://miro.com/app/board/uXjVABCD001=/",
+          "createdAt": "2026-01-04T10:00:00Z",
+          "modifiedAt": "2026-05-02T12:30:00Z"
+        },
+        {
+          "id": "uXjVABCD002=",
+          "name": "Design Review",
+          "type": "board",
+          "viewLink": "https://miro.com/app/board/uXjVABCD002=/",
+          "createdAt": "2026-02-11T09:15:00Z",
+          "modifiedAt": "2026-05-06T08:45:00Z"
+        }
+      ],
+      "total": 3,
+      "size": 2,
+      "offset": 0,
+      "limit": 2,
+      "links": {
+        "self": "https://api.miro.com/v2/boards?limit=2&offset=0",
+        "next": "https://api.miro.com/v2/boards?limit=2&offset=2"
+      }
+    }
+  }
+}

@@ -51,6 +51,46 @@ def _worker_name() -> str:
     return f"gmail-watch-scheduler@{socket.gethostname()}:{os.getpid()}"
 
 
+def _as_history_int(raw: object) -> int | None:
+    """Parse a Gmail historyId (a number serialized as a string) to int.
+
+    Returns None for missing / empty / non-numeric values so callers can
+    fall back rather than crash on an unexpected shape.
+    """
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _monotonic_history_id(stored: object, returned: object) -> str | None:
+    """Pick the history cursor that never moves backwards.
+
+    Gmail's users.watch() returns a fresh ``historyId`` on every renewal, but
+    that value can be LOWER than the cursor the push/poll fetchers have already
+    advanced to since the last watch. Blindly overwriting would rewind the
+    bookmark and cause history.list to re-fetch or skip. So we keep the GREATER
+    of the two ids, compared NUMERICALLY (the ids are numbers stringified —
+    lexical compare is wrong: "9" > "10").
+
+    Fallbacks: if one side is missing / non-numeric we keep the other (prefer
+    the stored cursor when the returned one is unusable, so we still don't lose
+    ground); if both are unusable we return whatever ``returned`` stringifies to
+    (or None), matching the old overwrite for the degenerate case.
+    """
+    s = _as_history_int(stored)
+    r = _as_history_int(returned)
+    if s is None and r is None:
+        return None if returned is None else str(returned)
+    if s is None:
+        return str(r)
+    if r is None:
+        return str(s)
+    return str(s if s >= r else r)
+
+
 async def _lease_due_watches(
     conn: asyncpg.Connection, *, limit: int, worker: str,
 ) -> list[asyncpg.Record]:
@@ -140,11 +180,24 @@ async def renew_one(
     async with pool.acquire() as conn:
         async with conn.transaction():
             async with bind_tenant(conn, tenant_id) as tctx:
+                # Monotonic cursor guard: a watch renewal can return a LOWER
+                # historyId than the push/poll fetchers have already advanced
+                # the stored cursor to. Keep the GREATER id (numeric compare on
+                # the stringified values) so the bookmark never rewinds. The
+                # comparison happens in SQL so it is also race-safe against a
+                # concurrent fetcher advance between our lease read and here.
+                # Non-numeric / empty ids fall back to the existing value.
                 await tctx.execute(
                     """
                     UPDATE gmail_mailbox_watches
                        SET state = 'active',
-                           history_id = $3,
+                           history_id = CASE
+                             WHEN $3 !~ '^[0-9]+$' THEN history_id
+                             WHEN history_id IS NULL OR history_id !~ '^[0-9]+$'
+                               THEN $3
+                             WHEN $3::bigint > history_id::bigint THEN $3
+                             ELSE history_id
+                           END,
                            watch_expiration = $4,
                            consecutive_poll_failures = 0,
                            last_error = NULL
@@ -218,4 +271,9 @@ async def run_forever(
             pass
 
 
-__all__ = ["renew_one", "run_forever", "tick"]
+__all__ = [
+    "_monotonic_history_id",
+    "renew_one",
+    "run_forever",
+    "tick",
+]

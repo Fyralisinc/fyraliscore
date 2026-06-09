@@ -19,9 +19,15 @@ TODO(human): confirm Brex rate-limit signalling (blueprint §5 #8). Defaults to
 429 + `Retry-After` (Mercury's scheme); tune via `BREX_RL_MAX_ATTEMPTS` /
 `BREX_RL_MAX_SLEEP_SEC`. Brex may instead signal via `X-RateLimit-Reset`.
 
-Pagination: list helpers return `(items, next_offset, total)`, `next_offset is
-None` terminal — offset/limit, CLONED from Mercury and UNVERIFIED for Brex
-(see the fetcher's pagination TODO; Brex v2 may be cursor-token based).
+Pagination: `list_transactions` returns `(items, next_offset, total)`,
+`next_offset is None` terminal. The REAL Brex transactions API
+(`GET /v2/transactions/card/primary`) is CURSOR-paginated — the body is
+`{"items": [...], "next_cursor": "<token or null>"}` with NO `total` — so the
+client follows `next_cursor` internally until it is null/absent and returns the
+whole window in one call. The legacy offset/limit + `total` shape (the synthetic
+mock spammer) is still handled as a fallback when no `next_cursor` field is
+present. See `_parse_transactions_page` for the shape discrimination. Verified
+against developer.brex.com (Transactions API + Pagination docs).
 
 Logging redaction: the API token and the auth header are NEVER logged.
 """
@@ -225,24 +231,105 @@ class BrexClient:
         `start` (ISO date) optionally bounds the window for incremental polls.
         Returns `(transactions, next_offset, total)`; `next_offset is None`
         signals no more pages.
+
+        Two pagination shapes are handled (see `_parse_transactions_page`):
+
+          - REAL Brex (api.brex.com `GET /v2/transactions/card/primary`):
+            CURSOR pagination — the response is `{"items": [...],
+            "next_cursor": "<token or null>"}` with NO `total`. When a
+            `next_cursor` is present this method follows the cursor internally,
+            accumulating every page, and returns the full set with
+            `next_offset=None` (terminal — the cursor walk is complete and the
+            fetcher persists the high-water filter, not an offset).
+          - SYNTHETIC / legacy (`{"transactions": [...], "total": N}`): the
+            original offset/limit single-page path, returned unchanged so the
+            mock spammer and the all-25 gate behave exactly as before.
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        first = await self._request(
+            "GET",
+            f"/account/{account_id}/transactions",
+            params=self._txn_params(limit, offset, start, cursor=None),
+        )
+        items, next_cursor, total = _parse_transactions_page(first)
+
+        if next_cursor is None and "next_cursor" not in first:
+            # SYNTHETIC / offset shape (no cursor field at all): preserve the
+            # original single-page offset/total contract verbatim.
+            txns = items
+            total = int(total if total is not None else len(txns))
+            next_offset = offset + len(txns)
+            is_last = next_offset >= total or not txns
+            return txns, (None if is_last else next_offset), total
+
+        # REAL cursor shape: follow `next_cursor` until it is null/absent.
+        all_items = list(items)
+        while next_cursor:
+            page = await self._request(
+                "GET",
+                f"/account/{account_id}/transactions",
+                params=self._txn_params(limit, offset, start, cursor=next_cursor),
+            )
+            page_items, next_cursor, _ = _parse_transactions_page(page)
+            all_items.extend(page_items)
+        # The cursor walk is exhausted; the whole window is in `all_items`.
+        return all_items, None, len(all_items)
+
+    @staticmethod
+    def _txn_params(
+        limit: int, offset: int, start: str | None, *, cursor: str | None,
+    ) -> dict[str, Any]:
+        """Build the transactions query params for either pagination shape.
+
+        `cursor` (real) and `offset` (synthetic) are both sent: the real API
+        ignores the unknown `offset`, the synthetic server ignores `cursor`.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        else:
+            params["offset"] = offset
         if start:
             params["start"] = start
-        resp = await self._request(
-            "GET", f"/account/{account_id}/transactions", params=params,
-        )
-        txns = resp.get("transactions")
-        txns = [t for t in txns if isinstance(t, dict)] if isinstance(txns, list) else []
-        total = int(resp.get("total", len(txns)) or 0)
-        next_offset = offset + len(txns)
-        is_last = next_offset >= total or not txns
-        return txns, (None if is_last else next_offset), total
+        return params
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _parse_transactions_page(
+    resp: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, int | None]:
+    """Parse one transactions page for EITHER Brex pagination shape.
+
+    Returns `(items, next_cursor, total)`:
+
+      - REAL Brex (`{"items": [...], "next_cursor": "<token or null>"}`):
+        `next_cursor` is the opaque follow token, or `None` when it is null /
+        empty (TERMINAL — no more pages). `total` is `None` (the real API has
+        no `total`). Items are read from `items` (falling back to
+        `transactions`).
+      - SYNTHETIC / legacy (`{"transactions": [...], "total": N}`): there is no
+        `next_cursor` key, so `next_cursor` is `None` and `total` is the int
+        count; items are read from `transactions` (falling back to `items`).
+
+    Callers distinguish the two by whether `"next_cursor" in resp`.
+    """
+    raw_items = resp.get("items")
+    if not isinstance(raw_items, list):
+        raw_items = resp.get("transactions")
+    items = [t for t in raw_items if isinstance(t, dict)] if isinstance(raw_items, list) else []
+
+    # `next_cursor` present (even if null) => real cursor shape.
+    if "next_cursor" in resp:
+        nc = resp.get("next_cursor")
+        next_cursor = nc if isinstance(nc, str) and nc else None
+        return items, next_cursor, None
+
+    raw_total = resp.get("total")
+    total = int(raw_total) if isinstance(raw_total, (int, float)) else None
+    return items, None, total
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -285,4 +372,4 @@ def _api_error_from_response(
     )
 
 
-__all__ = ["BrexClient"]
+__all__ = ["BrexClient", "_parse_transactions_page"]

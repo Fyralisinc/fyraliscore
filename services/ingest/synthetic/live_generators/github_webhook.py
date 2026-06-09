@@ -21,7 +21,9 @@ What this exercises end-to-end:
   - `selected_repositories` repo filter (NULL = all repos).
   - `github:webhook` ingestion handler (issues / pull_request shapers)
     → observation write + `(source_channel, external_id, occurred_at)`
-    UNIQUE dedup (external_id = the event's `node_id`).
+    UNIQUE dedup (external_id = `{node_id}:{action}` since #1 — the twin still
+    dedups because backfill maps state=open→action=opened and the live default
+    action is also "opened").
 
 Tenant binding (Z1.2): the driver targets a *seeded*
 `provider_installations` row (`provider='github'`,

@@ -410,7 +410,9 @@ async def test_github_webhook_default_kwarg_preserves_existing_behavior(
         "SELECT external_id FROM observations WHERE id = $1",
         UUID(result.observation_id),
     )
-    assert row["external_id"] == result.node_id
+    # #1: external_id now encodes the action (default "opened") so a PR/issue's
+    # lifecycle transitions don't collapse onto one observation.
+    assert row["external_id"] == f"{result.node_id}:opened"
 
 
 @pytest.mark.asyncio
@@ -440,7 +442,9 @@ async def test_github_webhook_injected_identity_propagates_to_observation(
         "SELECT external_id, occurred_at FROM observations WHERE id = $1",
         UUID(result.observation_id),
     )
-    assert row["external_id"] == injected_node
+    # #1: external_id = node_id:action (default "opened"). The twin still dedups
+    # because backfill (state=open → action=opened) and live both land here.
+    assert row["external_id"] == f"{injected_node}:opened"
     assert row["occurred_at"] == datetime(
         2026, 2, 2, 3, 4, 5, tzinfo=timezone.utc,
     )

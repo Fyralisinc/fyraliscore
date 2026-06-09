@@ -1,0 +1,49 @@
+{
+  "_meta": {
+    "provider": "fireflies",
+    "kind": "api_response",
+    "description": "Real Fireflies API is a single GraphQL endpoint (POST https://api.fireflies.ai/graphql), NOT REST paths. The request is {query, variables} with a `transcripts(limit, skip, fromDate)` query; the response nests results under data.transcripts. The pre-fix client (cloned from Brex) issued REST GET /transcripts, which a real install 404s. Doc-derived; ids/emails are placeholders.",
+    "source": "doc:https://docs.fireflies.ai/graphql-api/query/transcripts (POST /graphql, transcripts(limit,skip,fromDate) query; response data.transcripts[]; rate limit surfaces as 200 with errors[].extensions.code=too_many_requests)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "request": {
+    "url": "https://api.fireflies.ai/graphql",
+    "method": "POST",
+    "headers": {
+      "Authorization": "Bearer <fireflies api token>",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "query": "query Transcripts($limit: Int, $skip: Int, $fromDate: DateTime) { transcripts(limit: $limit, skip: $skip, fromDate: $fromDate) { id title date duration organizer_email participants transcript_url } }",
+      "variables": {"limit": 50, "skip": 0}
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "data": {
+        "transcripts": [
+          {
+            "id": "01HXPLACEHOLDER0001",
+            "title": "Weekly Eng Sync",
+            "date": 1768000000000,
+            "duration": 1830,
+            "organizer_email": "organizer-placeholder@example.com",
+            "participants": ["organizer-placeholder@example.com", "attendee-placeholder@example.com"],
+            "transcript_url": "https://app.fireflies.ai/view/01HXPLACEHOLDER0001"
+          },
+          {
+            "id": "01HXPLACEHOLDER0002",
+            "title": "Design Review",
+            "date": 1768003600000,
+            "duration": 2400,
+            "organizer_email": "organizer-placeholder@example.com",
+            "participants": ["organizer-placeholder@example.com"],
+            "transcript_url": "https://app.fireflies.ai/view/01HXPLACEHOLDER0002"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -44,6 +44,10 @@ def _sign_b64(raw: bytes) -> str:
     ).decode("ascii")
 
 
+def _sign_hex(raw: bytes) -> str:
+    return hmac.new(_TOKEN.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+
 def test_ramp_tenant_resolution_reads_root_business_id():
     body = _fixture().body
     # Real Ramp: business_id is a root field, not under eventNotifications.
@@ -51,12 +55,21 @@ def test_ramp_tenant_resolution_reads_root_business_id():
     assert _extract_ramp(body, {}) == body["business_id"]
 
 
-async def test_ramp_signature_verifies():
+@pytest.mark.parametrize("encode", [
+    _sign_b64,                       # base64 digest
+    _sign_hex,                       # hex digest
+    lambda raw: f"sha256={_sign_hex(raw)}",   # sha256=hex prefixed
+    lambda raw: f"sha256={_sign_b64(raw)}",   # sha256=base64 prefixed
+])
+async def test_ramp_signature_verifies_dual_encoding(encode):
+    """Phase 3B: X-Ramp-Signature encoding (hex vs base64) is undocumented, so
+    the verifier accepts EITHER — and an optional sha256= prefix — against the
+    HMAC-SHA256 spec. Every shape below validates."""
     body = _fixture().body
     raw = _raw(body)
     ctx = await ramp_verifier.verify(
         body=raw,
-        headers={"x-ramp-signature": _sign_b64(raw)},
+        headers={"x-ramp-signature": encode(raw)},
         secrets=[Secret("ramp", _TOKEN)],
     )
     assert ctx.provider == "ramp"

@@ -106,7 +106,7 @@ async def test_verified_pull_request_lands_as_observation(
         SELECT tenant_id, source_channel, external_id
           FROM observations
          WHERE source_channel = 'github:webhook'
-           AND external_id = 'PR_test_node_id_1'
+           AND external_id = 'PR_test_node_id_1:opened'
         """,
     )
     assert obs is not None

@@ -79,52 +79,73 @@ REGISTRY: list[ContractNeed] = [
     # --- B. API / SDK response shapes ---------------------------------------
     ContractNeed(
         "aws", "api_response", "cloudtrail_lookup_events", "#2",
-        "handler/fetcher read camelCase; fetcher expects int-ms event time",
-        "the REAL botocore LookupEvents response: PascalCase Events[].CloudTrailEvent "
-        "(a JSON string) + EventTime as a datetime, not int-ms",
+        "RESOLVED (Phase 3, additive): fetcher/handler now read PascalCase "
+        "Events[].* + EventTime as a datetime/ISO and json.loads the "
+        "CloudTrailEvent string; camelCase/int-ms read first as the synthetic fallback",
+        "covered by tests/contract/test_aws_contract.py against the doc-sourced "
+        "PascalCase LookupEvents fixture",
     ),
     ContractNeed(
         "fireflies", "api_response", "transcripts_query", "#5",
-        "client issues REST GET paths (cloned from Brex)",
-        "the GraphQL POST /graphql request body + the `data.transcripts` response shape",
+        "RESOLVED (Phase 3): client now speaks GraphQL (POST /graphql, "
+        "`transcripts` query → data.transcripts) via _graphql/list_transcripts_graphql; "
+        "REST path kept for the synthetic mock",
+        "covered by tests/contract/test_fireflies_contract.py (GraphQL request + "
+        "data.transcripts parse + errors[] handling)",
     ),
     ContractNeed(
         "brex", "api_response", "transactions_page", "#3",
-        "offset pagination + `resp.get('total', len(txns))` first-page sentinel",
-        "real cursor-token pagination (`next_cursor`) — confirm NO `total` field exists",
+        "RESOLVED (Phase 3, additive): client follows real `next_cursor` cursor "
+        "pagination (items[], no total); offset/total path kept as the synthetic fallback",
+        "covered by tests/contract/test_brex_contract.py against the doc-sourced "
+        "cursor fixture",
     ),
     ContractNeed(
         "miro", "api_response", "boards_page", "#10",
-        "list_boards() fetches only the first page",
-        "the real boards pagination envelope (size/offset/total or links.next/cursor)",
+        "RESOLVED (Phase 3, additive): client follows links.next / offset+total "
+        "pagination; single-page kept as fallback",
+        "covered by tests/contract/test_miro_contract.py against the doc-sourced "
+        "pagination envelope fixture",
     ),
     ContractNeed(
         "notion", "api_response", "search_page", "#36",
-        "latest_page_edit truncates at 50 results, no pagination",
-        "the real `has_more` / `next_cursor` pagination envelope on search/list",
+        "RESOLVED (Phase 3, additive): client loops has_more/next_cursor "
+        "(start_cursor) until exhausted; single-call kept as fallback",
+        "covered by tests/contract/test_notion_contract.py against the doc-sourced "
+        "has_more/next_cursor fixture",
     ),
     ContractNeed(
         "gmail", "api_response", "watch_and_history", "#9",
-        "watch_scheduler overwrites stored history_id with watch().historyId",
-        "the users.watch() response (historyId) + history.list semantics that justify "
-        "a GREATEST(stored, returned) guard",
+        "RESOLVED (Phase 3): watch_scheduler stores GREATEST(stored, returned) "
+        "historyId on renewal so the cursor never moves backwards",
+        "covered by tests/contract/test_gmail_contract.py against the doc-sourced "
+        "watch() response",
     ),
     # --- C/D. Idempotency / lifecycle / replay ------------------------------
     ContractNeed(
         "github", "webhook", "pull_request_opened", "#1",
-        "handler adopts node_id verbatim as external_id",
-        "a real pull_request OPENED webhook (node_id + action + delivery timestamp)",
+        "RESOLVED (Phase 3): external_id = idempotency.github_object(node_id, "
+        "action) = `{node_id}:{action}` so a PR/issue's opened/closed don't "
+        "collapse onto one observation (node_id is identical across the lifecycle); "
+        "synthetic twin updated in lockstep",
+        "covered by tests/contract/test_github_contract.py (opened≠closed external_id; "
+        "same-action redelivery dedups) — opened + closed fixtures share one node_id",
     ),
     ContractNeed(
         "github", "webhook", "pull_request_closed", "#1",
-        "handler adopts node_id verbatim as external_id",
-        "the SAME PR's CLOSED/MERGED webhook — to prove node_id is byte-identical "
-        "across lifecycle actions (=> external_id must encode action/state)",
+        "RESOLVED (Phase 3): see pull_request_opened — the SAME node_id at "
+        "action=closed/merged yields a DISTINCT external_id, so the merge "
+        "state-change is no longer lost to dedup",
+        "covered by tests/contract/test_github_contract.py against the closed "
+        "fixture (same node_id as opened)",
     ),
     ContractNeed(
         "jira", "webhook", "issue_updated_nonstatus", "#32",
-        "handler routes only status/resolution changelog to _transition_draft",
-        "a real issue_updated webhook whose changelog item is a NON-status field change",
+        "RESOLVED (Phase 3, additive): handler now emits an observation for a "
+        "non-status changelog change (summary/assignee/etc.) instead of dropping "
+        "it; the status-transition path is unchanged",
+        "covered by tests/contract/test_jira_contract.py against the doc-sourced "
+        "non-status changelog fixture",
     ),
     # --- E. OAuth lifecycle (official docs acceptable) ----------------------
     ContractNeed(

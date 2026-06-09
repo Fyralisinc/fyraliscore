@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "provider": "aws",
+    "kind": "api_response",
+    "description": "Real AWS CloudTrail LookupEvents (botocore cloudtrail.lookup_events) response. PascalCase envelope: top-level `Events[]` with PascalCase element keys (`EventId`, `EventName`, `EventTime`, `Username`, `Resources[].{ResourceType,ResourceName}`) plus a top-level `NextToken`. botocore returns `EventTime` as a tz-aware datetime — represented here as its ISO-8601 string. `CloudTrailEvent` is a JSON STRING (NOT a nested object) that must be json.loads()'d; it carries the real principal under userIdentity + recipientAccountId/awsRegion. Doc-derived; values are placeholders.",
+    "source": "doc:https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/API_LookupEvents.html + boto3 CloudTrail.Client.lookup_events (Events[].{EventId,EventName,EventTime,Username,CloudTrailEvent(JSON string),Resources[].{ResourceType,ResourceName}}, NextToken)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "Events": [
+        {
+          "EventId": "ec0f2e1a-3b4c-4d5e-8f60-1a2b3c4d5e6f",
+          "EventName": "RunInstances",
+          "EventTime": "2026-01-15T15:05:00+00:00",
+          "EventSource": "ec2.amazonaws.com",
+          "Username": "deploy-bot",
+          "Resources": [
+            {
+              "ResourceType": "AWS::EC2::Instance",
+              "ResourceName": "i-0abc1234def567890"
+            },
+            {
+              "ResourceType": "AWS::EC2::KeyPair",
+              "ResourceName": "deploy-key"
+            }
+          ],
+          "CloudTrailEvent": "{\"eventVersion\":\"1.08\",\"eventID\":\"ec0f2e1a-3b4c-4d5e-8f60-1a2b3c4d5e6f\",\"eventTime\":\"2026-01-15T15:05:00Z\",\"eventSource\":\"ec2.amazonaws.com\",\"eventName\":\"RunInstances\",\"awsRegion\":\"us-east-1\",\"recipientAccountId\":\"123456789012\",\"userIdentity\":{\"type\":\"AssumedRole\",\"principalId\":\"AROAEXAMPLEPLACEHOLDER:deploy-bot\",\"arn\":\"arn:aws:sts::123456789012:assumed-role/deploy/deploy-bot\",\"userName\":\"deploy-bot\"},\"sourceIPAddress\":\"203.0.113.10\",\"requestParameters\":{\"instancesSet\":{\"items\":[{\"imageId\":\"ami-0placeholder\"}]}},\"responseElements\":{\"instancesSet\":{\"items\":[{\"instanceId\":\"i-0abc1234def567890\"}]}}}"
+        }
+      ],
+      "NextToken": "eyJuZXh0VG9rZW4iOiJwbGFjZWhvbGRlci1jb250aW51YXRpb24ifQ=="
+    }
+  }
+}

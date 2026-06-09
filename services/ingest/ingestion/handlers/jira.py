@@ -343,19 +343,32 @@ async def handle_jira_issue(
 
         if webhook_event.startswith("jira:issue"):
             # A status/resolution transition is the high-value signal — emit it
-            # as a state_change when the changelog carries one; otherwise emit
-            # the issue snapshot. (Comments come as separate comment_* events.)
+            # as a state_change when the changelog carries one. A non-status
+            # changelog (summary/assignee/priority/labels/…) still carries a
+            # real field-level change, so emit it through the SAME transition
+            # builder (which downgrades to kind="signal" and captures the
+            # changed fields) rather than dropping it onto the issue snapshot —
+            # the snapshot would lose the per-field before/after and, when the
+            # webhook omits issue.fields, can't be built at all.
+            # (Comments come as separate comment_* events.)
             changelog = payload.get("changelog")
             if isinstance(changelog, dict) and changelog.get("items"):
+                issue_updated = (
+                    (issue.get("fields") or {}).get("updated")
+                    if isinstance(issue, dict) else None
+                )
+                # history_id keys the (immutable) transition external_id. Real
+                # Jira webhooks carry a changelog id; if one is absent fall back
+                # to the issue's `updated` timestamp so a field-only edit still
+                # lands a stable, idempotent observation rather than raising.
                 history = {
-                    "id": changelog.get("id"),
+                    "id": changelog.get("id") or issue_updated,
                     "items": changelog.get("items"),
                     "author": payload.get("user"),
-                    "created": (issue.get("fields") or {}).get("updated")
-                    if isinstance(issue, dict) else None,
+                    "created": issue_updated,
                 }
                 items = [i for i in changelog["items"] if isinstance(i, dict)]
-                if any((i.get("field") in _STATE_CHANGE_FIELDS) for i in items):
+                if items and history.get("id"):
                     return _transition_draft(history, issue_id, issue_key, site)
             if isinstance(issue, dict) and issue.get("id"):
                 return _issue_draft(issue, site)

@@ -205,15 +205,73 @@ class MiroClient:
 
         Used at seed/install time to populate `miro_boards`, and by the planner
         to emit one shard per board.
+
+        ADDITIVE pagination (verified against developers.miro.com): the real
+        `GET /v2/boards` returns an OFFSET-paginated envelope
+        ``{"data":[...],"total":N,"size":N,"offset":N,"limit":N,
+        "links":{"self":...,"next":"<url>"}}``. We walk every page so a tenant
+        with >limit boards is fully enumerated (the old single-page fetch
+        silently dropped boards past the first page). Page advance prefers the
+        server-supplied ``links.next`` cursor (round-tripped verbatim); when no
+        ``links.next`` is present we fall back to advancing ``offset`` by the
+        page ``size`` while ``offset + size < total``. The synthetic mock and
+        any bare-list / unpaginated response still terminate after one page
+        (no ``links.next``, no ``total`` larger than what we've seen), so the
+        all-25 synthetic gate is unaffected.
         """
-        resp = await self._request("GET", "/boards")
-        boards = resp.get("data")
-        if not isinstance(boards, list):
-            boards = resp.get("boards")
-        if not isinstance(boards, list):
-            # Some responses return the bare list.
-            boards = resp if isinstance(resp, list) else []  # type: ignore[assignment]
-        return [b for b in boards if isinstance(b, dict)]
+        out: list[dict[str, Any]] = []
+        # `next_path` is whatever the server hands us in links.next (a URL or a
+        # path); on the first call we hit the base /boards path. We bound the
+        # walk to defend against a server that returns a self-referential next.
+        next_path: str | None = "/boards"
+        offset = 0
+        seen_offsets: set[str] = set()
+        max_pages = int(os.environ.get("MIRO_BOARDS_MAX_PAGES", "1000"))
+        pages = 0
+        while next_path is not None and pages < max_pages:
+            pages += 1
+            resp = await self._request("GET", next_path)
+            out.extend(_boards_from_response(resp))
+
+            # 1) Prefer the explicit server cursor (links.next). Absent => done.
+            link_next = _links_next(resp)
+            if link_next is not None:
+                rel = _relativize(link_next, self._api_base_url)
+                if rel in seen_offsets:
+                    break  # self-referential guard
+                seen_offsets.add(rel)
+                next_path = rel
+                continue
+
+            # 2) No links.next: fall back to offset/limit math. Advance only
+            #    while the envelope says more rows remain (offset+size < total).
+            total = resp.get("total")
+            size = resp.get("size")
+            limit = resp.get("limit")
+            cur_offset = resp.get("offset")
+            if (
+                isinstance(total, int)
+                and isinstance(size, int)
+                and size > 0
+            ):
+                base = cur_offset if isinstance(cur_offset, int) else offset
+                step = limit if isinstance(limit, int) and limit > 0 else size
+                offset = base + size
+                if offset >= total:
+                    next_path = None
+                else:
+                    key = f"offset={offset}"
+                    if key in seen_offsets:
+                        break
+                    seen_offsets.add(key)
+                    next_path = f"/boards?offset={offset}&limit={step}"
+                continue
+
+            # 3) No cursor and no offset/total envelope (bare list / synthetic /
+            #    legacy single-page response): terminal after one page.
+            next_path = None
+
+        return out
 
     async def get_board(self, board_id: str) -> dict[str, Any]:
         """`GET /boards/{id}` — one board (metadata probe)."""
@@ -253,6 +311,57 @@ class MiroClient:
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _boards_from_response(resp: Any) -> list[dict[str, Any]]:
+    """Extract the board dicts from one `GET /boards` page.
+
+    Handles the real envelope (`data`), the legacy `boards` key, and a bare
+    list response — the same fallbacks the original single-page code used."""
+    if isinstance(resp, list):
+        return [b for b in resp if isinstance(b, dict)]
+    boards = resp.get("data") if isinstance(resp, dict) else None
+    if not isinstance(boards, list):
+        boards = resp.get("boards") if isinstance(resp, dict) else None
+    if not isinstance(boards, list):
+        return []
+    return [b for b in boards if isinstance(b, dict)]
+
+
+def _links_next(resp: Any) -> str | None:
+    """Return the `links.next` cursor URL/path if the page advertises one.
+
+    Miro's v2 envelope carries pagination links under `links`; `next` is
+    present only while more pages remain (absent/empty => terminal page)."""
+    if not isinstance(resp, dict):
+        return None
+    links = resp.get("links")
+    if not isinstance(links, dict):
+        return None
+    nxt = links.get("next")
+    return nxt if isinstance(nxt, str) and nxt else None
+
+
+def _relativize(url: str, api_base_url: str) -> str:
+    """Turn a (possibly absolute) `links.next` into a path `_request` can use.
+
+    `_request` prepends `self._api_base_url`, so a full URL must be stripped
+    back to its path(+query). A bare path is returned unchanged (leading slash
+    ensured)."""
+    base = api_base_url.rstrip("/")
+    if base and url.startswith(base):
+        rel = url[len(base):]
+        return rel if rel.startswith("/") else f"/{rel}"
+    if url.startswith(("http://", "https://")):
+        # Different host than our base: strip scheme+host, keep path+query.
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        rel = parts.path or "/"
+        if parts.query:
+            rel = f"{rel}?{parts.query}"
+        return rel
+    return url if url.startswith("/") else f"/{url}"
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:

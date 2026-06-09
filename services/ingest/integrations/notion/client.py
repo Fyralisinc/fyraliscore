@@ -290,25 +290,40 @@ class NotionClient:
         the page-tree walk never records as its high-water — so the reconciler
         sees `latest > high_water` on every pass and re-shares forever
         (IN-14 convergence; the page_tree probe must match the page_tree
-        coverage). `/v1/search` sorts descending, so we scan one bounded page
-        and return the newest non-database page; if the newest pages are all
-        database rows we return None (no loose-page change to chase)."""
-        body = await self._request(
-            "POST", "/v1/search",
-            json_body={
-                "page_size": 50,
+        coverage). `/v1/search` sorts descending, so we scan the result set
+        and return the newest non-database page; if the entire result set is
+        database rows we return None (no loose-page change to chase).
+
+        Pagination (Phase-3 drift fix, finding #36): real Notion paginates
+        `/v1/search` with `has_more`/`next_cursor`, so a workspace whose newest
+        objects are ALL database rows can push every loose page past the first
+        page. We loop, threading `next_cursor` back as `start_cursor`, until we
+        find a loose page or `has_more` is false. The single-call path is the
+        fallback (a response with `has_more` absent/false stops after one call),
+        so the synthetic spammer's bounded fixtures behave exactly as before."""
+        start_cursor: str | None = None
+        while True:
+            json_body: dict[str, Any] = {
+                "page_size": _DEFAULT_PAGE_SIZE,
                 "filter": {"value": "page", "property": "object"},
                 "sort": {"timestamp": "last_edited_time", "direction": "descending"},
-            },
-        )
-        results, _cursor, _more = _unwrap_list(body)
-        for page in results:
-            parent = page.get("parent")
-            if isinstance(parent, dict) and parent.get("type") == "database_id":
-                continue  # database row — owned by a notion_database shard
-            edited = page.get("last_edited_time")
-            return edited if isinstance(edited, str) else None
-        return None
+            }
+            if start_cursor is not None:
+                json_body["start_cursor"] = start_cursor
+            body = await self._request("POST", "/v1/search", json_body=json_body)
+            results, next_cursor, has_more = _unwrap_list(body)
+            for page in results:
+                parent = page.get("parent")
+                if isinstance(parent, dict) and parent.get("type") == "database_id":
+                    continue  # database row — owned by a notion_database shard
+                edited = page.get("last_edited_time")
+                return edited if isinstance(edited, str) else None
+            # No loose page on this page of results. Continue ONLY when the real
+            # `has_more=true` signal is set and a cursor advances us; absent/false
+            # `has_more` (the single-call fallback) terminates here.
+            if not (has_more and next_cursor):
+                return None
+            start_cursor = next_cursor
 
     async def retrieve_page(self, page_id: str) -> dict[str, Any]:
         """`GET /v1/pages/{id}` — a single page object (properties only)."""

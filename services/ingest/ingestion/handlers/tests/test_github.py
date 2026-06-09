@@ -83,7 +83,9 @@ async def test_github_pr_merge_happy_path():
     assert draft.trust_tier == "authoritative"
     assert draft.kind == "state_change"
     assert "alice merged PR #123 'Add rate limiter' into main" in draft.content_text
-    assert draft.external_id == "PR_kwDOABC"
+    # #1: external_id encodes the action so opened/closed don't collapse onto one
+    # observation (node_id is byte-identical across a PR's lifecycle).
+    assert draft.external_id == "PR_kwDOABC:closed"
     types = {e["type"] for e in draft.entities_hint}
     assert {"github_pr", "github_repo", "github_branch"} <= types
     assert draft.source_actor_ref == "github:alice"

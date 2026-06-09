@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "provider": "brex",
+    "kind": "api_response",
+    "description": "Real Brex (api.brex.com) GET /v2/transactions/card/primary response. CURSOR pagination: top-level `items` array + `next_cursor` (a token, or null on the LAST page). There is NO `total` field. This fixture is the TERMINAL page (`next_cursor: null`), so the client must recognize the absence of a follow token as 'no more pages'. The pre-fix client used Mercury-style offset/`total` pagination (`resp.get('total', len(txns))`) and stopped after page 1; the additive fix follows `next_cursor` when present and keeps the offset/`total` path as a fallback for the synthetic spammer. Doc-derived; ids/amounts are placeholders.",
+    "source": "doc:https://developer.brex.com/openapi/transactions_api + https://developer.brex.com/docs/pagination/ (GET /v2/transactions/card/primary -> {items[], next_cursor}; cursor/limit query params; next_cursor is nil at end of set; scope transactions.card.readonly)",
+    "captured_at": "2026-06-09",
+    "sanitized": true
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "items": [
+        {
+          "id": "pste_00000000000000000000000001",
+          "description": "Chili's",
+          "amount": {
+            "amount": 12900,
+            "currency": "USD"
+          },
+          "initiated_at_date": "2026-01-14",
+          "posted_at_date": "2026-01-15",
+          "type": "PURCHASE",
+          "card_id": "ncard_00000000000000000000000099"
+        },
+        {
+          "id": "pste_00000000000000000000000002",
+          "description": "Payment - Thank you!",
+          "amount": {
+            "amount": -50000,
+            "currency": "USD"
+          },
+          "initiated_at_date": "2026-01-18",
+          "posted_at_date": "2026-01-19",
+          "type": "COLLECTION"
+        }
+      ],
+      "next_cursor": null
+    }
+  }
+}
