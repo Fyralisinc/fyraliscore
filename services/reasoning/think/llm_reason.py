@@ -33,6 +33,7 @@ from services.reasoning.retrieval.primary import TriggerContext
 
 from .diff_schema import RawDiff, RawDiffClaimsOnly
 from .prompt import build_prompt
+from .reasoning_frame import reasoning_job_from_trigger
 
 if TYPE_CHECKING:
     from .reasoning_frame import ReasoningFrame
@@ -132,7 +133,8 @@ def _select_output_schema(
     trigger: TriggerContext,
     bundle: ContextBundle,
 ) -> type[RawDiff] | type[RawDiffClaimsOnly]:
-    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
+    job = reasoning_job_from_trigger(trigger)
+    if job.intent == "propagate_consequence":
         if _has_graph_anchor_models(bundle):
             return RawDiff
         return RawDiffClaimsOnly

@@ -23,6 +23,8 @@ from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from services.domain.models.edges_repo import EdgesRepo
 from services.reasoning.retrieval.pathways import (
     RetrievalPathwayError,
+    _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS,
+    _cap_scope_entity_filters,
     pathway_a_structural,
     pathway_b_semantic,
     pathway_c_temporal,
@@ -39,6 +41,24 @@ pytestmark = pytest.mark.integration
 # =====================================================================
 # Pathway A — structural
 # =====================================================================
+
+
+def test_pathway_a_scope_filter_cap_preserves_direct_seeds_first():
+    direct_id = uuid7()
+    expanded = [
+        {"type": "commitment", "id": str(uuid7())}
+        for _ in range(_STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS + 10)
+    ]
+    direct = {"type": "commitment", "id": str(direct_id)}
+
+    capped, dropped = _cap_scope_entity_filters(
+        [*expanded, direct],
+        direct_seed_entity_pairs={("commitment", direct_id)},
+    )
+
+    assert len(capped) == _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS
+    assert dropped == len(expanded) + 1 - _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS
+    assert capped[0] == direct
 
 
 async def test_pathway_a_commitment_seed_returns_owning_goal_and_scoped_models(

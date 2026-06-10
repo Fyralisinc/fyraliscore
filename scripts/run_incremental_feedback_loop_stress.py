@@ -285,6 +285,128 @@ def _learning_pressure(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _readiness_assessment(
+    *,
+    cases: int,
+    passed: int,
+    expected_hit_rate: float,
+    expected_misses: int,
+    retrieval_ms: dict[str, float],
+    architecture_slos: dict[str, dict[str, Any]],
+    final_counts: dict[str, Any],
+    learning_pressure: dict[str, Any],
+    source_realism: dict[str, Any],
+) -> dict[str, Any]:
+    """Conservative deployment-readiness gate for scale reports.
+
+    This is intentionally stricter than the architecture SLO table. SLOs answer
+    "did this run pass its harness contract?" Readiness answers "what kind of
+    customer promise is this evidence strong enough to support?"
+    """
+
+    pass_rate = passed / max(cases, 1)
+    p95 = float(retrieval_ms.get("p95") or 0.0)
+    p95_slo = architecture_slos.get("retrieval_p95_ms") or {}
+    p95_threshold = float(p95_slo.get("threshold") or 0.0)
+    p95_passed = bool(p95_slo.get("passed"))
+    p95_margin = (
+        (p95_threshold - p95) / p95_threshold
+        if p95_threshold > 0 else 0.0
+    )
+    learned_compact_routes = (
+        int(final_counts.get("contextual_affordance_profiles") or 0)
+        + int(final_counts.get("discovery_shortcuts") or 0)
+        + int(final_counts.get("reinforced_affordance_profiles") or 0)
+    )
+
+    dimensions = {
+        "correctness": {
+            "passed": bool(
+                pass_rate >= 0.99
+                and expected_hit_rate >= 0.995
+                and expected_misses == 0
+            ),
+            "pass_rate": round(pass_rate, 6),
+            "expected_hit_rate": round(expected_hit_rate, 6),
+            "expected_misses": expected_misses,
+        },
+        "retrieval_performance": {
+            "passed": p95_passed and p95_margin > _THIN_SLO_MARGIN_RATIO,
+            "p95_ms": round(p95, 3),
+            "slo_ms": round(p95_threshold, 3),
+            "slo_margin_ratio": round(p95_margin, 6),
+        },
+        "feedback_efficiency": {
+            "passed": not bool(learning_pressure.get("late_trace_pressure")),
+            "late_trace_pressure": bool(
+                learning_pressure.get("late_trace_pressure")
+            ),
+            "max_attributions_per_new_learning_signal": learning_pressure.get(
+                "max_attributions_per_new_learning_signal", 0.0,
+            ),
+        },
+        "operational_learning": {
+            "passed": learned_compact_routes > 0,
+            "compact_route_count": learned_compact_routes,
+            "negative_memory_count": int(final_counts.get("negative_memory") or 0),
+        },
+        "source_realism": {
+            "passed": bool(source_realism.get("multi_source_ingestion_validated")),
+            "mode": source_realism.get("mode", "unknown"),
+        },
+    }
+
+    blockers: list[str] = []
+    if not dimensions["correctness"]["passed"]:
+        blockers.append("correctness_or_expected_retrieval")
+    if not p95_passed:
+        blockers.append("retrieval_p95_slo")
+    elif p95_margin <= _THIN_SLO_MARGIN_RATIO:
+        blockers.append("thin_retrieval_latency_margin")
+    if learning_pressure.get("late_trace_pressure"):
+        blockers.append("late_trace_pressure")
+    if learned_compact_routes <= 0:
+        blockers.append("no_compact_learning")
+    if not source_realism.get("multi_source_ingestion_validated"):
+        blockers.append("multi_source_ingestion_not_validated")
+
+    if not dimensions["correctness"]["passed"] or not p95_passed:
+        tier = "internal_dogfood"
+    elif blockers:
+        tier = "design_partner_controlled"
+    else:
+        tier = "customer_beta"
+
+    score = 100
+    score -= 40 if not dimensions["correctness"]["passed"] else 0
+    score -= 20 if not p95_passed else 0
+    score -= 8 if p95_passed and p95_margin <= _THIN_SLO_MARGIN_RATIO else 0
+    score -= 12 if learning_pressure.get("late_trace_pressure") else 0
+    score -= 6 if learned_compact_routes <= 0 else 0
+    score -= (
+        15 if not source_realism.get("multi_source_ingestion_validated") else 0
+    )
+    score = max(0, min(100, score))
+
+    return {
+        "tier": tier,
+        "score": score,
+        "blockers": blockers,
+        "dimensions": dimensions,
+        "customer_value": [
+            "high_recall_company_memory_retrieval",
+            "noise_suppression_for_weak_workspace_chatter",
+            "incremental_positive_feedback_learning",
+        ],
+        "next_actions": [
+            "run_multi_source_signal_probe",
+            "tighten_or_downsample_nonselected_reader_attributions",
+            "add_compaction_for_repeated_success_traces",
+            "harden_tail_latency_for_broad_and_hidden_graph_queries",
+        ],
+    }
+
+
 async def _ensure_migrations(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         await pgvector_pool_init(conn)
@@ -822,6 +944,25 @@ def _summarize(
         final_counts=final_counts,
     )
     learning_pressure = _learning_pressure(results)
+    source_realism = {
+        "mode": "model_layer_scaffolded",
+        "multi_source_ingestion_validated": False,
+        "recommended_followup": (
+            "scripts/run_1000_signal_model_layer_probe.py --signals 2000 "
+            "--think-limit 2000"
+        ),
+    }
+    passed_count = sum(1 for row in results if row.get("passed"))
+    expected_hit_rate = (
+        (len(expected_rows) - len(misses)) / max(len(expected_rows), 1)
+    )
+    retrieval_summary = {
+        "min": min(retrieval) if retrieval else 0.0,
+        "mean": statistics.fmean(retrieval) if retrieval else 0.0,
+        "median": statistics.median(retrieval) if retrieval else 0.0,
+        "p95": _percentile(retrieval, 0.95),
+        "max": max(retrieval) if retrieval else 0.0,
+    }
 
     structural_findings = []
     if misses:
@@ -893,6 +1034,17 @@ def _summarize(
         "before treating the run as customer-source realistic."
     )
     structural_findings.extend(_architecture_slo_findings(architecture_slos))
+    readiness = _readiness_assessment(
+        cases=len(results),
+        passed=passed_count,
+        expected_hit_rate=expected_hit_rate,
+        expected_misses=len(misses),
+        retrieval_ms=retrieval_summary,
+        architecture_slos=architecture_slos,
+        final_counts=final_counts,
+        learning_pressure=learning_pressure,
+        source_realism=source_realism,
+    )
 
     return {
         "tenant_id": str(tenant_id),
@@ -907,31 +1059,17 @@ def _summarize(
             "sidecars": company.sidecars,
         },
         "cases": len(results),
-        "passed": sum(1 for row in results if row.get("passed")),
+        "passed": passed_count,
         "expected_cases": len(expected_rows),
         "expected_misses": len(misses),
-        "expected_hit_rate": (
-            (len(expected_rows) - len(misses)) / max(len(expected_rows), 1)
-        ),
-        "retrieval_ms": {
-            "min": min(retrieval) if retrieval else 0.0,
-            "mean": statistics.fmean(retrieval) if retrieval else 0.0,
-            "median": statistics.median(retrieval) if retrieval else 0.0,
-            "p95": _percentile(retrieval, 0.95),
-            "max": max(retrieval) if retrieval else 0.0,
-        },
+        "expected_hit_rate": expected_hit_rate,
+        "retrieval_ms": retrieval_summary,
         "by_repetition": rep_summary,
         "family_deltas": family_deltas,
         "final_learned_counts": final_counts,
         "learning_pressure": learning_pressure,
-        "source_realism": {
-            "mode": "model_layer_scaffolded",
-            "multi_source_ingestion_validated": False,
-            "recommended_followup": (
-                "scripts/run_1000_signal_model_layer_probe.py --signals 2000 "
-                "--think-limit 2000"
-            ),
-        },
+        "source_realism": source_realism,
+        "readiness": readiness,
         "expected_activation_reason_totals": dict(source_totals.most_common()),
         "architecture_slos": architecture_slos,
         "structural_findings": structural_findings,
@@ -968,9 +1106,23 @@ def _write_reports(
         f"{summary['retrieval_ms']['p95']:.1f} / "
         f"{summary['retrieval_ms']['max']:.1f}",
         "",
-        "## Learned Layer Counts",
+        "## Readiness",
         "",
     ]
+    readiness = summary.get("readiness") or {}
+    lines.extend([
+        f"- tier: `{readiness.get('tier', 'unknown')}`",
+        f"- score: {readiness.get('score', 0)}",
+        f"- blockers: {', '.join(readiness.get('blockers') or []) or 'none'}",
+    ])
+    for key, value in sorted((readiness.get("dimensions") or {}).items()):
+        status = "pass" if value.get("passed") else "block"
+        lines.append(f"- {key}: {status}")
+    lines.extend([
+        "",
+        "## Learned Layer Counts",
+        "",
+    ])
     for key, value in sorted((summary.get("final_learned_counts") or {}).items()):
         lines.append(f"- {key}: {value}")
     lines.extend(["", "## Learning Pressure", ""])

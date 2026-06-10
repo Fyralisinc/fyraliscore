@@ -289,11 +289,12 @@ def _build_proposition(
 ) -> dict[str, Any]:
     """Build the proposition dict.
 
-    `kind='belief'` + `legacy_kind='hypothesis'` causes
-    `derive_memory_grammar` (lib/shared/memory_grammar.py) to set
-    `claim_role='hypothesis'`, `modality='inferred'`,
-    `time_mode='unspecified'`, `polarity='neutral'` — the structural
-    shape the claim_role registry validates against.
+    `legacy_kind='hypothesis'` preserves compatibility with older
+    readers, but the current proposition validator only derives grammar
+    defaults when `kind` itself is legacy. Because this imputer emits
+    canonical `kind='belief'`, it must include the memory-grammar fields
+    explicitly so validation and the ratification surface both see a
+    real hypothesis.
 
     `is_system_hypothesis=True` is the provenance flag downstream code
     uses to (a) cap calibration confidence, (b) drive faster decay, and
@@ -304,6 +305,11 @@ def _build_proposition(
     return {
         "kind": "belief",
         "legacy_kind": "hypothesis",
+        "claim_role": "hypothesis",
+        "abstraction_level": "atomic",
+        "time_mode": "unspecified",
+        "modality": "inferred",
+        "polarity": "neutral",
         "hypothesis_text": hypothesis_text,
         "is_system_hypothesis": True,
         "imputation_source": "missing_transition_detector_v1",
@@ -335,7 +341,8 @@ def impute_hypothesis(
       - confidence \u2208 [floor, ceiling] (system-hypothesized cap)
       - confidence == confidence_at_assertion (both immutable post-insert)
       - proposition.kind == 'belief'
-      - proposition.legacy_kind == 'hypothesis' (drives grammar derivation)
+      - proposition.legacy_kind == 'hypothesis' (legacy compatibility)
+      - proposition.claim_role == 'hypothesis' (modern grammar contract)
       - proposition.is_system_hypothesis is True
       - hypothesis_text is non-empty and references the bracketed timestamps
       - falsifier.kind == 'observation_pattern' with pattern >= 20 chars

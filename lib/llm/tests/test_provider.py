@@ -113,6 +113,18 @@ def test_config_from_env_codex_api_key(monkeypatch):
     assert cfg.model
 
 
+def test_config_from_env_codex_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-key")
+    monkeypatch.setenv("CODEX_REASONING_EFFORT", "low")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-codex")
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+
+    cfg = LLMConfig.from_env()
+
+    assert cfg.reasoning_effort == "low"
+
+
 def test_config_from_env_codex_reads_auth_json(monkeypatch, tmp_path):
     auth_file = tmp_path / "auth.json"
     auth_file.write_text(

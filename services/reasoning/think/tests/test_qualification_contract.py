@@ -94,6 +94,10 @@ def _diff(
     )
 
 
+def _replayable_provider(response: str, *, attempts: int = 4) -> ScriptedProvider:
+    return ScriptedProvider(responses=[response] * attempts)
+
+
 async def _seed_actor_observation(
     pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -270,21 +274,19 @@ async def test_scripted_think_creates_model_audit_state_change_and_post_commit(
         scope_actors=[actor_id],
         seed_signature={"trigger_id": str(trigger_id)},
     )
-    provider = ScriptedProvider(
-        responses=[
-            _diff(
-                trigger_id=trigger_id,
-                tenant_id=tenant,
-                claim_ops=[
-                    _state_insert_op(
-                        tenant_id=tenant,
-                        observation_id=obs_id,
-                        actor_id=actor_id,
-                        natural=natural,
-                    )
-                ],
-            )
-        ]
+    provider = _replayable_provider(
+        _diff(
+            trigger_id=trigger_id,
+            tenant_id=tenant,
+            claim_ops=[
+                _state_insert_op(
+                    tenant_id=tenant,
+                    observation_id=obs_id,
+                    actor_id=actor_id,
+                    natural=natural,
+                )
+            ],
+        )
     )
 
     outcome = await think(
@@ -382,14 +384,12 @@ async def test_think_partially_accepts_mixed_llm_diff_and_records_drop_count(
         natural="Alice is investigating retention risk.",
         confidence=0.55,
     )
-    provider = ScriptedProvider(
-        responses=[
-            _diff(
-                trigger_id=trigger_id,
-                tenant_id=tenant,
-                claim_ops=[bad_high_conf, good_low_conf],
-            )
-        ]
+    provider = _replayable_provider(
+        _diff(
+            trigger_id=trigger_id,
+            tenant_id=tenant,
+            claim_ops=[bad_high_conf, good_low_conf],
+        )
     )
 
     outcome = await think(trigger, fresh_db, llm_provider=provider)
@@ -454,23 +454,21 @@ async def test_duplicate_claims_auto_merge_through_real_think_path(
         scope_actors=[actor_id],
         seed_signature={"trigger_id": str(trigger_id)},
     )
-    provider = ScriptedProvider(
-        responses=[
-            _diff(
-                trigger_id=trigger_id,
-                tenant_id=tenant,
-                claim_ops=[
-                    _state_insert_op(
-                        tenant_id=tenant,
-                        observation_id=obs_id,
-                        actor_id=actor_id,
-                        natural="Alice is investigating retention risk.",
-                        confidence=0.65,
-                        embedding=seed_embedding,
-                    )
-                ],
-            )
-        ]
+    provider = _replayable_provider(
+        _diff(
+            trigger_id=trigger_id,
+            tenant_id=tenant,
+            claim_ops=[
+                _state_insert_op(
+                    tenant_id=tenant,
+                    observation_id=obs_id,
+                    actor_id=actor_id,
+                    natural="Alice is investigating retention risk.",
+                    confidence=0.65,
+                    embedding=seed_embedding,
+                )
+            ],
+        )
     )
 
     outcome = await think(trigger, fresh_db, llm_provider=provider)

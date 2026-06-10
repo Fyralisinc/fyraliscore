@@ -19,6 +19,7 @@ import asyncio
 import os
 import random
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -37,33 +38,16 @@ from lib.shared.errors import (
 )
 from lib.shared.ids import uuid7
 
-from services.domain.actors.operating_context import (
-    load_actor_operating_context,
-    summarize_actor_operating_context,
-)
-from services.reasoning.dynamics import (
-    detect_dynamic_signals,
-    emit_missing_transition_triggers,
-)
 from services.reasoning.retrieval.assembler import (
     AccessContext,
-    ContextBundle,
-    assemble_context,
 )
 from services.reasoning.retrieval.primary import (
     TriggerContext,
 )
-from services.platform.execution.inquiry import InquiryResult, retrieve_for_execution
 from services.reasoning.sage.inquiry_traces.emitter import (
     TraceContext as _SageTraceContext,
     emission_enabled as _sage_emission_enabled,
     set_trace_context as _sage_set_trace_context,
-)
-from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
-from services.reasoning.retrieval.second_pass import (
-    log_second_pass_decision,
-    second_pass_expand,
-    should_run_second_pass,
 )
 
 from .anomaly_integration import (
@@ -72,9 +56,9 @@ from .anomaly_integration import (
 )
 from .applier import AlreadyAppliedError, apply_diff
 from .cascade import CascadeEvent, CascadeResult, cascade
+from .context_planner import assemble_reasoning_context, plan_context
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
-from .hooks import augment_context
 from .llm_reason import llm_reason
 from .observability import (
     METRICS,
@@ -86,12 +70,10 @@ from .observability import (
     write_region_lock_log,
 )
 from .post_commit import enqueue_post_commit_actions
-from .reasoning_frame import ReasoningFrame
 from .region_locks import (
     RegionLockAcquisition,
     acquire_region_lock,
     region_lock_key,
-    touched_entity_ids,
 )
 from .validator import (
     OutOfRegionError,
@@ -110,6 +92,19 @@ def _raise_if_postgres_error(exc: Exception) -> None:
 
 def _tx_health_check_enabled() -> bool:
     return os.environ.get("THINK_TX_HEALTH_CHECK", "0") == "1"
+
+
+def _narrow_inferential_transaction_enabled() -> bool:
+    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "1") != "0"
+
+
+@asynccontextmanager
+async def _mutation_transaction(conn: asyncpg.Connection):
+    if conn.is_in_transaction():
+        yield
+    else:
+        async with conn.transaction():
+            yield
 
 
 async def _assert_tx_usable(conn: asyncpg.Connection, phase: str) -> None:
@@ -180,8 +175,14 @@ async def think(
     max_retrieval_reruns: int = 2,
 ) -> ThinkRunOutcome:
     """
-    Single-shot Think invocation. Opens its own transaction on `pool`,
-    acquires the region lock, runs the full pipeline, commits.
+    Single-shot Think invocation.
+
+    Authoritative/deterministic triggers keep the legacy wide
+    transaction because a few deterministic handlers intentionally do
+    side-effectful reasoning. Inferential triggers run retrieval,
+    context assembly, and LLM reasoning outside the apply transaction,
+    then open a short mutation transaction for the advisory lock,
+    validation, apply, anomaly publication, queueing, and cascade.
 
     For tests that want to drive everything inside one pre-opened
     transaction (ROLLBACK at teardown), use `think_in_conn` instead —
@@ -229,12 +230,28 @@ async def think(
     try:
         while True:
             try:
+                use_wide_transaction = (
+                    is_authoritative(trigger)
+                    or not _narrow_inferential_transaction_enabled()
+                )
                 async with pool.acquire() as conn:
-                    async with conn.transaction():
+                    if use_wide_transaction:
+                        async with conn.transaction():
+                            outcome = await _run_once(
+                                conn=conn,
+                                trigger=trigger,
+                                llm_provider=llm_provider,
+                                embedder=embedder,
+                                access_context=access_context,
+                                triggering_content=triggering_content,
+                                reason_for_trigger=reason_for_trigger,
+                                record=record,
+                                expanded_region=expanded_region,
+                            )
+                    else:
                         outcome = await _run_once(
                             conn=conn,
                             trigger=trigger,
-                            pool=pool,
                             llm_provider=llm_provider,
                             embedder=embedder,
                             access_context=access_context,
@@ -498,60 +515,10 @@ def _fail_outcome(
 # ---------------------------------------------------------------------
 
 
-def _actor_ids_for_operating_context(
-    trigger: TriggerContext,
-    bundle: ContextBundle,
-    *,
-    limit: int = 3,
-) -> list[UUID]:
-    out: list[UUID] = []
-    seen: set[UUID] = set()
-
-    def add(actor_id: Any) -> None:
-        if actor_id is None:
-            return
-        try:
-            value = actor_id if isinstance(actor_id, UUID) else UUID(str(actor_id))
-        except (TypeError, ValueError):
-            return
-        if value in seen:
-            return
-        seen.add(value)
-        out.append(value)
-
-    for actor_id in trigger.scope_actors:
-        add(actor_id)
-        if len(out) >= limit:
-            return out
-    for model in bundle.models:
-        for actor_id in getattr(model, "scope_actors", []) or []:
-            add(actor_id)
-            if len(out) >= limit:
-                return out
-    return out
-
-
-def _retrieval_question_planning_provider(
-    llm_provider: LLMProvider | None,
-) -> LLMProvider | None:
-    if llm_provider is None:
-        return None
-    allow_custom = os.environ.get(
-        "INQUIRY_ALLOW_CUSTOM_LLM_QUESTION_PROVIDER",
-        "",
-    ).strip().lower()
-    if allow_custom in {"1", "true", "yes", "on"}:
-        return llm_provider
-    if llm_provider.__class__.__module__ == "lib.llm.provider":
-        return llm_provider
-    return None
-
-
 async def _run_once(
     *,
     conn: asyncpg.Connection,
     trigger: TriggerContext,
-    pool: asyncpg.Pool,
     llm_provider: LLMProvider | None,
     access_context: AccessContext | None,
     triggering_content: str | None,
@@ -561,15 +528,18 @@ async def _run_once(
     embedder: Any | None = None,
 ) -> ThinkRunOutcome:
     """
-    Full pipeline inside one open transaction. Called by `think()`.
+    Run one Think attempt. Called by `think()`.
 
-    Does NOT write to think_region_lock_log (that's post-commit in the
-    outer caller). DOES write think_runs inside the tx.
+    If the caller has already opened a transaction, the whole attempt
+    participates in it. Otherwise, pre-mutation work runs without an
+    open transaction and this function opens a short mutation
+    transaction only for think_runs, the advisory lock, validation,
+    apply, anomalies, queueing, and cascade.
     """
     trigger_kind_full = record.trigger_kind
 
     from services.reasoning.relationships.adjudication import (
-        adjudicate_candidate_for_trigger,
+        adjudicate_candidates_for_trigger,
         load_candidate_for_trigger,
     )
     loaded_relationship_candidate = await load_candidate_for_trigger(
@@ -577,138 +547,17 @@ async def _run_once(
         trigger,
     )
 
-    # --- 1. Retrieval ---------------------------------------------
-    active_retrieval = await retrieve_for_execution(
+    # --- 1. Context planning --------------------------------------
+    context_plan = await plan_context(
         trigger,
         conn,
         embedder=embedder,
-        llm_provider=_retrieval_question_planning_provider(llm_provider),
-        mode="deep",
+        llm_provider=llm_provider,
     )
-    inquiry_result = (
-        active_retrieval
-        if isinstance(active_retrieval, InquiryResult)
-        else None
-    )
-    first = (
-        active_retrieval.retrieval_result
-        if isinstance(active_retrieval, InquiryResult)
-        else active_retrieval
-    )
-    await _assert_tx_usable(conn, "primary_retrieve")
-    try:
-        second_pass_decision = should_run_second_pass(
-            first,
-            trigger,
-            sparse_threshold=RETRIEVAL_CONFIG.second_pass_sparse_threshold,
-            customer_confidence_threshold=(
-                RETRIEVAL_CONFIG.second_pass_customer_confidence_threshold
-            ),
-            t2_has_authoritative_handler=(
-                trigger.kind == "T2" and is_authoritative(trigger)
-            ),
-        )
-        log_second_pass_decision(
-            second_pass_decision,
-            trigger=trigger,
-            tenant_id=trigger.tenant_id,
-        )
-        first.notes["second_pass_decision"] = {
-            "run": second_pass_decision.run,
-            "trigger_condition": second_pass_decision.trigger_condition,
-            "suggested_dimensions": list(
-                second_pass_decision.suggested_dimensions
-            ),
-            "reason_detail": dict(second_pass_decision.reason_detail),
-        }
-        if second_pass_decision.run:
-            first = await second_pass_expand(
-                first,
-                second_pass_decision.suggested_dimensions,
-                conn,
-            )
-            first.notes["second_pass_decision"] = {
-                "run": second_pass_decision.run,
-                "trigger_condition": second_pass_decision.trigger_condition,
-                "suggested_dimensions": list(
-                    second_pass_decision.suggested_dimensions
-                ),
-                "reason_detail": dict(second_pass_decision.reason_detail),
-            }
-    except Exception as e:  # noqa: BLE001
-        _raise_if_postgres_error(e)
-        first.notes["second_pass_error"] = {
-            "type": type(e).__name__,
-            "message": str(e),
-        }
-        _log.warning(
-            "think.second_pass_failed",
-            tenant_id=str(trigger.tenant_id),
-            trigger_kind=trigger.kind,
-            error=str(e),
-        )
-    await _assert_tx_usable(conn, "second_pass")
-    reasoning_frame = ReasoningFrame.from_trigger(
-        trigger,
-        retrieval_result=first,
-    )
-    try:
-        dynamic_signals = await detect_dynamic_signals(
-            conn,
-            tenant_id=trigger.tenant_id,
-            model_ids=[
-                getattr(m, "id")
-                for m in first.models
-                if getattr(m, "id", None)
-            ],
-            actor_ids=trigger.scope_actors,
-        )
-        if dynamic_signals:
-            reasoning_frame = reasoning_frame.with_dynamic_signals(
-                [s.to_dict() for s in dynamic_signals]
-            )
-            # Imaginary-node pattern: when the substrate detects a
-            # state-jump discontinuity, enqueue a T3:missing_transition
-            # trigger for the next Think cycle to run the imputer.
-            # The current run can't process it (different region lock,
-            # different scope), so we defer. The emitter dedupes against
-            # in-queue rows so this is safe under repeated Think runs.
-            try:
-                emitted = await emit_missing_transition_triggers(
-                    conn,
-                    tenant_id=trigger.tenant_id,
-                    signals=dynamic_signals,
-                )
-                if emitted:
-                    first.notes["missing_transition_triggers_emitted"] = [
-                        str(t) for t in emitted
-                    ]
-            except Exception as e:  # noqa: BLE001
-                _raise_if_postgres_error(e)
-                first.notes["missing_transition_emission_error"] = {
-                    "type": type(e).__name__,
-                    "message": str(e),
-                }
-                _log.warning(
-                    "think.missing_transition_emission_failed",
-                    tenant_id=str(trigger.tenant_id),
-                    trigger_kind=trigger.kind,
-                    error=str(e),
-                )
-    except Exception as e:  # noqa: BLE001
-        _raise_if_postgres_error(e)
-        first.notes["dynamic_signal_error"] = {
-            "type": type(e).__name__,
-            "message": str(e),
-        }
-        _log.warning(
-            "think.dynamic_signal_detection_failed",
-            tenant_id=str(trigger.tenant_id),
-            trigger_kind=trigger.kind,
-            error=str(e),
-        )
-    await _assert_tx_usable(conn, "dynamic_signal_detection")
-    first.notes["reasoning_frame"] = reasoning_frame.to_dict()
+    inquiry_result = context_plan.inquiry_result
+    first = context_plan.retrieval_result
+    reasoning_frame = context_plan.reasoning_frame
+    await _assert_tx_usable(conn, "context_planning")
     emit("think.retrieval_done",
          run_id=str(record.id),
          models=len(first.models),
@@ -867,100 +716,44 @@ async def _run_once(
             )
         )
 
-    # --- 2. Compute region BEFORE the LLM -------------------------
-    allowed_region = touched_entity_ids(first)
-    if expanded_region:
-        merged = set(allowed_region) | set(expanded_region)
-        allowed_region = sorted(merged)
-
-    th, eh = region_lock_key(trigger.tenant_id, [
-        (t, i) for (t, i) in allowed_region
-    ])
-
-    # --- 3. Insert the think_runs row ----------------------------
-    await insert_think_run(
-        conn, record,
-        region_tenant_hash=th,
-        region_entity_hash=eh,
-    )
-    await update_think_run(
-        conn, record.id,
-        retrieval_model_count=len(first.models),
-        retrieval_observation_count=len(first.observations),
-    )
-
-    # --- 4. Acquire region lock -----------------------------------
-    acquisition = await acquire_region_lock(
-        conn, trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
-    )
-
-    # --- 5. Assemble context --------------------------------------
-    access = access_context or AccessContext(tenant_id=trigger.tenant_id)
-    bundle = await assemble_context(first, access, conn)
-
-    # Overlay context augmentation. Core's default is strict retrieval only;
-    # an installed overlay (e.g. the demo's full active-ledger augmentation)
-    # may extend the bundle and the region allow-list here via
-    # services.reasoning.think.hooks. No-op when nothing is registered.
-    # Errors keep the existing poisoned-transaction handling.
-    try:
-        allowed_region = await augment_context(
-            conn=conn,
-            trigger=trigger,
-            bundle=bundle,
-            allowed_region=allowed_region,
-        )
-    except Exception as _aug_err:  # noqa: BLE001
-        _raise_if_postgres_error(_aug_err)
-        await debug_capture(
-            conn,
-            run_id=record.id,
-            tenant_id=trigger.tenant_id,
-            stage="error",
-            payload={"phase": "acts_augmentation", "error": repr(_aug_err)},
-        )
-    await _assert_tx_usable(conn, "acts_augmentation")
-
-    await debug_capture(
+    # --- 2. Assemble model-facing context -------------------------
+    reasoning_context = await assemble_reasoning_context(
+        context_plan,
+        trigger,
         conn,
+        access_context=access_context,
+        expanded_region=expanded_region,
         run_id=record.id,
-        tenant_id=trigger.tenant_id,
-        stage="retrieval",
-        payload={
-            "phase": "post_augmentation",
-            "commitment_count": len(bundle.acts_summary.get("commitments", [])),
-            "commitment_titles": [
-                getattr(c, "title", None)
-                for c in bundle.acts_summary.get("commitments", [])
-            ][:80],
-        },
     )
+    bundle = reasoning_context.bundle
+    allowed_region = reasoning_context.allowed_region
+    actor_operating_summary = reasoning_context.actor_operating_summary
+    await _assert_tx_usable(conn, "reasoning_context")
 
-    actor_operating_summary: str | None = None
-    try:
-        actor_contexts = await load_actor_operating_context(
-            conn,
-            tenant_id=trigger.tenant_id,
-            actor_ids=_actor_ids_for_operating_context(trigger, bundle),
+    th: int | None = None
+    eh: int | None = None
+    acquisition: RegionLockAcquisition | None = None
+    mutation_row_inserted = False
+    if conn.is_in_transaction():
+        th, eh = region_lock_key(trigger.tenant_id, [
+            (t, i) for (t, i) in allowed_region
+        ])
+        await insert_think_run(
+            conn, record,
+            region_tenant_hash=th,
+            region_entity_hash=eh,
         )
-        actor_operating_summary = summarize_actor_operating_context(
-            actor_contexts
+        await update_think_run(
+            conn, record.id,
+            retrieval_model_count=len(bundle.models),
+            retrieval_observation_count=len(bundle.observations),
         )
-    except Exception as e:  # noqa: BLE001
-        _raise_if_postgres_error(e)
-        await debug_capture(
-            conn,
-            run_id=record.id,
-            tenant_id=trigger.tenant_id,
-            stage="error",
-            payload={
-                "phase": "actor_operating_context",
-                "error": repr(e),
-            },
+        acquisition = await acquire_region_lock(
+            conn, trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
         )
-    await _assert_tx_usable(conn, "actor_operating_context")
+        mutation_row_inserted = True
 
-    # --- 6. Reason ------------------------------------------------
+    # --- 3. Reason ------------------------------------------------
     llm_latency_ms: int | None = None
     if is_authoritative(trigger):
         raw_diff = await deterministic_handler(trigger, bundle, conn)
@@ -1024,288 +817,324 @@ async def _run_once(
                     set(allowed_region) | {("decision", str(tid))}
                 )
 
-    if llm_latency_ms is not None:
-        await update_think_run(conn, record.id, llm_latency_ms=llm_latency_ms)
-    await debug_capture(
-        conn,
-        run_id=record.id,
-        tenant_id=trigger.tenant_id,
-        stage="response",
-        payload={
-            "llm_latency_ms": llm_latency_ms,
-            "is_authoritative": is_authoritative(trigger),
-            "raw_diff": raw_diff,
-            "reasoning_frame": reasoning_frame.to_dict(),
-            "actor_operating_context": actor_operating_summary,
-            "context_use": raw_context_use,
-        },
-    )
+    async with _mutation_transaction(conn):
+        if not mutation_row_inserted:
+            th, eh = region_lock_key(trigger.tenant_id, [
+                (t, i) for (t, i) in allowed_region
+            ])
+            await insert_think_run(
+                conn, record,
+                region_tenant_hash=th,
+                region_entity_hash=eh,
+            )
+            await update_think_run(
+                conn, record.id,
+                retrieval_model_count=len(bundle.models),
+                retrieval_observation_count=len(bundle.observations),
+            )
+            acquisition = await acquire_region_lock(
+                conn,
+                trigger.tenant_id,
+                [(t, i) for (t, i) in allowed_region],
+            )
+        assert th is not None
+        assert eh is not None
+        assert acquisition is not None
 
-    # --- 7. Validate ---------------------------------------------
-    validated = await validate(
-        raw_diff, first, conn,
-        allowed_region=allowed_region,
-        strict_region=True,
-    )
-    validated_context_use = summarize_context_use(bundle, validated)
-    METRICS.observe_context_use(trigger_kind_full, validated_context_use)
-    emit(
-        "think.context_use",
-        run_id=str(record.id),
-        grade=validated_context_use.get("context_use_grade"),
-        selected_context_reference_ratio=validated_context_use.get(
-            "selected_context_reference_ratio"
-        ),
-        selected_model_reference_ratio=validated_context_use.get(
-            "selected_model_reference_ratio"
-        ),
-        graph_selected_reference_ratio=validated_context_use.get(
-            "graph_selected_reference_ratio"
-        ),
-        selected_context_used=validated_context_use.get(
-            "selected_context_used"
-        ),
-    )
-    emit("think.validation_done",
-         run_id=str(record.id),
-         claim_ops=len(validated.claim_ops),
-         edge_ops=len(validated.edge_ops),
-         ontology_gap_ops=len(validated.ontology_gap_ops),
-         act_ops=len(validated.act_ops),
-         resource_ops=len(validated.resource_ops),
-         dropped_ops=validated.dropped_op_count)
-    if validated.dropped_op_count:
-        emit("think.validation_partial",
-             run_id=str(record.id),
-             dropped=validated.dropped_op_count,
-             errors=validated.dropped_op_errors[:5])
-    await update_think_run(
-        conn, record.id,
-        validation_error_count=validated.dropped_op_count,
-    )
-    await debug_capture(
-        conn,
-        run_id=record.id,
-        tenant_id=trigger.tenant_id,
-        stage="validation",
-        payload={
-            "claim_ops": validated.claim_ops,
-            "edge_ops": validated.edge_ops,
-            "act_ops": validated.act_ops,
-            "resource_ops": validated.resource_ops,
-            "dropped_op_count": validated.dropped_op_count,
-            "dropped_op_errors": list(validated.dropped_op_errors[:20]),
-            "context_use": validated_context_use,
-        },
-    )
-
-    # --- 8. Apply ------------------------------------------------
-    try:
-        applied = await apply_diff(
-            validated, conn,
-            trigger_kind=trigger_kind_full,
-            trigger_cause_event_id=trigger.observation_id,
-            think_run_id=record.id,
+        if llm_latency_ms is not None:
+            await update_think_run(
+                conn, record.id, llm_latency_ms=llm_latency_ms
+            )
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="response",
+            payload={
+                "llm_latency_ms": llm_latency_ms,
+                "is_authoritative": is_authoritative(trigger),
+                "raw_diff": raw_diff,
+                "reasoning_frame": reasoning_frame.to_dict(),
+                "actor_operating_context": actor_operating_summary,
+                "context_use": raw_context_use,
+            },
         )
-    except AlreadyAppliedError as e:
+
+        # --- 4. Validate ---------------------------------------------
+        validated = await validate(
+            raw_diff, first, conn,
+            allowed_region=allowed_region,
+            strict_region=True,
+        )
+        validated_context_use = summarize_context_use(bundle, validated)
+        METRICS.observe_context_use(trigger_kind_full, validated_context_use)
+        emit(
+            "think.context_use",
+            run_id=str(record.id),
+            grade=validated_context_use.get("context_use_grade"),
+            selected_context_reference_ratio=validated_context_use.get(
+                "selected_context_reference_ratio"
+            ),
+            selected_model_reference_ratio=validated_context_use.get(
+                "selected_model_reference_ratio"
+            ),
+            graph_selected_reference_ratio=validated_context_use.get(
+                "graph_selected_reference_ratio"
+            ),
+            selected_context_used=validated_context_use.get(
+                "selected_context_used"
+            ),
+        )
+        emit("think.validation_done",
+             run_id=str(record.id),
+             claim_ops=len(validated.claim_ops),
+             edge_ops=len(validated.edge_ops),
+             ontology_gap_ops=len(validated.ontology_gap_ops),
+             act_ops=len(validated.act_ops),
+             resource_ops=len(validated.resource_ops),
+             dropped_ops=validated.dropped_op_count)
+        if validated.dropped_op_count:
+            emit("think.validation_partial",
+                 run_id=str(record.id),
+                 dropped=validated.dropped_op_count,
+                 errors=validated.dropped_op_errors[:5])
         await update_think_run(
             conn, record.id,
-            status="skipped_idempotent",
-            error=f"already applied: prior={e.context.get('prior_outcome')}",
+            validation_error_count=validated.dropped_op_count,
         )
-        emit("think.skipped_idempotent", run_id=str(record.id))
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="validation",
+            payload={
+                "claim_ops": validated.claim_ops,
+                "edge_ops": validated.edge_ops,
+                "ontology_gap_ops": validated.ontology_gap_ops,
+                "act_ops": validated.act_ops,
+                "resource_ops": validated.resource_ops,
+                "dropped_op_count": validated.dropped_op_count,
+                "dropped_op_errors": list(validated.dropped_op_errors[:20]),
+                "context_use": validated_context_use,
+            },
+        )
+
+        # --- 5. Apply ------------------------------------------------
+        try:
+            applied = await apply_diff(
+                validated, conn,
+                trigger_kind=trigger_kind_full,
+                trigger_cause_event_id=trigger.observation_id,
+                think_run_id=record.id,
+            )
+        except AlreadyAppliedError as e:
+            await update_think_run(
+                conn, record.id,
+                status="skipped_idempotent",
+                error=f"already applied: prior={e.context.get('prior_outcome')}",
+            )
+            emit("think.skipped_idempotent", run_id=str(record.id))
+            return ThinkRunOutcome(
+                run_id=record.id,
+                trigger_id=record.trigger_id,
+                trigger_kind=trigger_kind_full,
+                status="skipped_idempotent",
+                region_tenant_hash=th,
+                region_entity_hash=eh,
+                region_acquisition=acquisition,
+                llm_latency_ms=llm_latency_ms,
+            )
+        await _assert_tx_usable(conn, "apply_diff")
+
+        candidate_adjudications = await adjudicate_candidates_for_trigger(
+            conn,
+            trigger=trigger,
+            diff=validated,
+            applied=applied,
+        )
+        await _assert_tx_usable(conn, "relationship_adjudication")
+        if candidate_adjudications:
+            def _adjudication_payload(candidate_adjudication):
+                return {
+                    "candidate_id": str(candidate_adjudication.candidate_id),
+                    "review_status": candidate_adjudication.review_status,
+                    "reason": candidate_adjudication.reason,
+                    "decision_reason": candidate_adjudication.decision_reason,
+                    "accepted_model_id": (
+                        str(candidate_adjudication.accepted_model_id)
+                        if candidate_adjudication.accepted_model_id else None
+                    ),
+                    "accepted_edge_ids": [
+                        str(edge_id)
+                        for edge_id in candidate_adjudication.accepted_edge_ids
+                    ],
+                    "metadata": candidate_adjudication.metadata,
+                }
+            applied["relationship_candidate_adjudication"] = {
+                **_adjudication_payload(candidate_adjudications[0]),
+            }
+            if len(candidate_adjudications) > 1:
+                applied["relationship_candidate_adjudications"] = [
+                    _adjudication_payload(adjudication)
+                    for adjudication in candidate_adjudications
+                ]
+
+        emit("think.apply_done",
+             run_id=str(record.id),
+             ops_applied=(
+                 len(applied["claim_ops"])
+                 + len(applied["edge_ops"])
+                 + len(applied.get("ontology_gap_ops", []))
+                 + len(applied["act_ops"])
+                 + len(applied["resource_ops"])
+             ),
+             state_changes=applied.get("state_changes_emitted", 0))
+        applied["context_use"] = validated_context_use
+        applied["reasoning_frame"] = reasoning_frame.to_dict()
+        await debug_capture(
+            conn,
+            run_id=record.id,
+            tenant_id=trigger.tenant_id,
+            stage="apply",
+            payload=applied,
+        )
+
+        # Track ops metrics per kind.
+        for summary in applied.get("claim_ops", []):
+            METRICS.inc_op(f"claim_{summary.get('op')}")
+        for summary in applied.get("edge_ops", []):
+            METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
+        for summary in applied.get("ontology_gap_ops", []):
+            METRICS.inc_op(
+                f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
+            )
+        for summary in applied.get("act_ops", []):
+            METRICS.inc_op(summary.get("op", "act_unknown"))
+        for summary in applied.get("resource_ops", []):
+            METRICS.inc_op(summary.get("op", "resource_unknown"))
+
+        # --- 6. Anomalies ---------------------------------------------
+        anomalies = await check_anomalies(validated, conn)
+        await publish_anomalies(anomalies, record.id, trigger.tenant_id, conn)
+        await _assert_tx_usable(conn, "anomaly_publish")
+        emit("think.anomalies_published",
+             run_id=str(record.id), count=len(anomalies))
+
+        # --- 7. Post-commit durability queue (OP-1) -------------------
+        # THINK-DESIGN-AUDIT §8.1, §10 arg 1. Post-commit side effects
+        # (publish anomalies downstream, schedule predictions, broadcast
+        # realtime, invalidate metrics) used to run inline after apply
+        # committed — a crash between commit and post-commit swallowed
+        # them and the idempotency ledger prevented re-running. Enqueuing
+        # INSIDE this transaction makes the queue rows atomic with the
+        # apply; a separate worker (services/think/post_commit.py::
+        # post_commit_worker) drains the queue with at-least-once delivery
+        # and dead-letters after MAX_ATTEMPTS=5 failures.
+        anomaly_dicts = [
+            {
+                "kind": a.kind,
+                "region": a.region,
+                "significance": float(a.significance),
+                "triggering_op": a.triggering_op,
+            }
+            for a in anomalies
+        ]
+        await enqueue_post_commit_actions(
+            trigger, validated, conn, anomalies=anomaly_dicts,
+        )
+        await _assert_tx_usable(conn, "post_commit_enqueue")
+
+        # --- 8. Cascade ----------------------------------------------
+        casc_result: CascadeResult | None = None
+        if validated.act_ops:
+            # Pick the first applied act_op as the cascade seed.
+            seed_op = validated.act_ops[0]
+            if seed_op.op == "transition_commitment":
+                cid = seed_op.entity.get("id")
+                new_state = seed_op.entity.get("new_state")
+                if cid:
+                    # Grab the most recent state_change observation for this
+                    # commitment to chain cause_id.
+                    seed_obs = await conn.fetchval(
+                        """
+                        SELECT id FROM observations
+                        WHERE kind = 'state_change'
+                          AND tenant_id = $2
+                          AND entities_mentioned @> $1::jsonb
+                        ORDER BY occurred_at DESC
+                        LIMIT 1
+                        """,
+                        _entities_filter("commitment", cid),
+                        trigger.tenant_id,
+                    )
+                    seed_event = CascadeEvent(
+                        id=uuid7(),
+                        kind="commitment_state_change",
+                        entity_kind="commitment",
+                        entity_id=UUID(str(cid)),
+                        tenant_id=trigger.tenant_id,
+                        metadata={"new_state": new_state},
+                        observation_id=seed_obs,
+                    )
+                    casc_result = await cascade(seed_event, conn)
+            elif seed_op.op == "transition_decision" and seed_op.entity.get("new_state") == "revisited":
+                did = seed_op.entity.get("id")
+                if did:
+                    seed_obs = await conn.fetchval(
+                        """
+                        SELECT id FROM observations
+                        WHERE kind = 'state_change'
+                          AND tenant_id = $2
+                          AND entities_mentioned @> $1::jsonb
+                        ORDER BY occurred_at DESC
+                        LIMIT 1
+                        """,
+                        _entities_filter("decision", did),
+                        trigger.tenant_id,
+                    )
+                    seed_event = CascadeEvent(
+                        id=uuid7(),
+                        kind="decision_revisited",
+                        entity_kind="decision",
+                        entity_id=UUID(str(did)),
+                        tenant_id=trigger.tenant_id,
+                        metadata={},
+                        observation_id=seed_obs,
+                    )
+                    casc_result = await cascade(seed_event, conn)
+        await _assert_tx_usable(conn, "cascade")
+        cascade_depth = casc_result.depth_reached if casc_result else 0
+        if casc_result is not None:
+            METRICS.observe_cascade_depth(trigger_kind_full, cascade_depth)
+        await update_think_run(
+            conn, record.id,
+            status="success",
+            ops_applied=applied,
+            cascade_depth=cascade_depth,
+        )
+        emit("think.committed",
+             run_id=str(record.id),
+             cascade_depth=cascade_depth)
+
         return ThinkRunOutcome(
             run_id=record.id,
             trigger_id=record.trigger_id,
             trigger_kind=trigger_kind_full,
-            status="skipped_idempotent",
+            status="success",
+            ops_applied_count=(
+                len(applied["claim_ops"])
+                + len(applied["edge_ops"])
+                + len(applied.get("ontology_gap_ops", []))
+                + len(applied["act_ops"])
+                + len(applied["resource_ops"])
+            ),
+            cascade_depth=cascade_depth,
+            anomalies_flagged=len(anomalies),
+            llm_latency_ms=llm_latency_ms,
             region_tenant_hash=th,
             region_entity_hash=eh,
             region_acquisition=acquisition,
-            llm_latency_ms=llm_latency_ms,
         )
-    await _assert_tx_usable(conn, "apply_diff")
-
-    candidate_adjudication = await adjudicate_candidate_for_trigger(
-        conn,
-        trigger=trigger,
-        diff=validated,
-        applied=applied,
-    )
-    await _assert_tx_usable(conn, "relationship_adjudication")
-    if candidate_adjudication is not None:
-        applied["relationship_candidate_adjudication"] = {
-            "candidate_id": str(candidate_adjudication.candidate_id),
-            "review_status": candidate_adjudication.review_status,
-            "reason": candidate_adjudication.reason,
-            "decision_reason": candidate_adjudication.decision_reason,
-            "accepted_model_id": (
-                str(candidate_adjudication.accepted_model_id)
-                if candidate_adjudication.accepted_model_id else None
-            ),
-            "accepted_edge_ids": [
-                str(edge_id)
-                for edge_id in candidate_adjudication.accepted_edge_ids
-            ],
-            "metadata": candidate_adjudication.metadata,
-        }
-
-    emit("think.apply_done",
-         run_id=str(record.id),
-         ops_applied=(
-             len(applied["claim_ops"])
-             + len(applied["edge_ops"])
-             + len(applied.get("ontology_gap_ops", []))
-             + len(applied["act_ops"])
-             + len(applied["resource_ops"])
-         ),
-         state_changes=applied.get("state_changes_emitted", 0))
-    applied["context_use"] = validated_context_use
-    applied["reasoning_frame"] = reasoning_frame.to_dict()
-    await debug_capture(
-        conn,
-        run_id=record.id,
-        tenant_id=trigger.tenant_id,
-        stage="apply",
-        payload=applied,
-    )
-
-    # Track ops metrics per kind.
-    for summary in applied.get("claim_ops", []):
-        METRICS.inc_op(f"claim_{summary.get('op')}")
-    for summary in applied.get("edge_ops", []):
-        METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
-    for summary in applied.get("ontology_gap_ops", []):
-        METRICS.inc_op(
-            f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
-        )
-    for summary in applied.get("act_ops", []):
-        METRICS.inc_op(summary.get("op", "act_unknown"))
-    for summary in applied.get("resource_ops", []):
-        METRICS.inc_op(summary.get("op", "resource_unknown"))
-
-    # --- 9. Anomalies ---------------------------------------------
-    anomalies = await check_anomalies(validated, conn)
-    await publish_anomalies(anomalies, record.id, trigger.tenant_id, conn)
-    await _assert_tx_usable(conn, "anomaly_publish")
-    emit("think.anomalies_published",
-         run_id=str(record.id), count=len(anomalies))
-
-    # --- 9b. Post-commit durability queue (OP-1) ------------------
-    # THINK-DESIGN-AUDIT §8.1, §10 arg 1. Post-commit side effects
-    # (publish anomalies downstream, schedule predictions, broadcast
-    # realtime, invalidate metrics) used to run inline after apply
-    # committed — a crash between commit and post-commit swallowed
-    # them and the idempotency ledger prevented re-running. Enqueuing
-    # INSIDE this transaction makes the queue rows atomic with the
-    # apply; a separate worker (services/reasoning/think/post_commit.py::
-    # post_commit_worker) drains the queue with at-least-once delivery
-    # and dead-letters after MAX_ATTEMPTS=5 failures.
-    anomaly_dicts = [
-        {
-            "kind": a.kind,
-            "region": a.region,
-            "significance": float(a.significance),
-            "triggering_op": a.triggering_op,
-        }
-        for a in anomalies
-    ]
-    await enqueue_post_commit_actions(
-        trigger, validated, conn, anomalies=anomaly_dicts,
-    )
-    await _assert_tx_usable(conn, "post_commit_enqueue")
-
-    # --- 10. Cascade ---------------------------------------------
-    casc_result: CascadeResult | None = None
-    if validated.act_ops:
-        # Pick the first applied act_op as the cascade seed.
-        seed_op = validated.act_ops[0]
-        if seed_op.op == "transition_commitment":
-            cid = seed_op.entity.get("id")
-            new_state = seed_op.entity.get("new_state")
-            if cid:
-                # Grab the most recent state_change observation for this
-                # commitment to chain cause_id.
-                seed_obs = await conn.fetchval(
-                    """
-                    SELECT id FROM observations
-                    WHERE kind = 'state_change'
-                      AND tenant_id = $2
-                      AND entities_mentioned @> $1::jsonb
-                    ORDER BY occurred_at DESC
-                    LIMIT 1
-                    """,
-                    _entities_filter("commitment", cid),
-                    trigger.tenant_id,
-                )
-                seed_event = CascadeEvent(
-                    id=uuid7(),
-                    kind="commitment_state_change",
-                    entity_kind="commitment",
-                    entity_id=UUID(str(cid)),
-                    tenant_id=trigger.tenant_id,
-                    metadata={"new_state": new_state},
-                    observation_id=seed_obs,
-                )
-                casc_result = await cascade(seed_event, conn)
-        elif seed_op.op == "transition_decision" and seed_op.entity.get("new_state") == "revisited":
-            did = seed_op.entity.get("id")
-            if did:
-                seed_obs = await conn.fetchval(
-                    """
-                    SELECT id FROM observations
-                    WHERE kind = 'state_change'
-                      AND tenant_id = $2
-                      AND entities_mentioned @> $1::jsonb
-                    ORDER BY occurred_at DESC
-                    LIMIT 1
-                    """,
-                    _entities_filter("decision", did),
-                    trigger.tenant_id,
-                )
-                seed_event = CascadeEvent(
-                    id=uuid7(),
-                    kind="decision_revisited",
-                    entity_kind="decision",
-                    entity_id=UUID(str(did)),
-                    tenant_id=trigger.tenant_id,
-                    metadata={},
-                    observation_id=seed_obs,
-                )
-                casc_result = await cascade(seed_event, conn)
-    await _assert_tx_usable(conn, "cascade")
-    cascade_depth = casc_result.depth_reached if casc_result else 0
-    if casc_result is not None:
-        METRICS.observe_cascade_depth(trigger_kind_full, cascade_depth)
-    await update_think_run(
-        conn, record.id,
-        status="success",
-        ops_applied=applied,
-        cascade_depth=cascade_depth,
-    )
-    emit("think.committed",
-         run_id=str(record.id),
-         cascade_depth=cascade_depth)
-
-    return ThinkRunOutcome(
-        run_id=record.id,
-        trigger_id=record.trigger_id,
-        trigger_kind=trigger_kind_full,
-        status="success",
-        ops_applied_count=(
-            len(applied["claim_ops"])
-            + len(applied["edge_ops"])
-            + len(applied.get("ontology_gap_ops", []))
-            + len(applied["act_ops"])
-            + len(applied["resource_ops"])
-        ),
-        cascade_depth=cascade_depth,
-        anomalies_flagged=len(anomalies),
-        llm_latency_ms=llm_latency_ms,
-        region_tenant_hash=th,
-        region_entity_hash=eh,
-        region_acquisition=acquisition,
-    )
 
 
 def _entities_filter(kind: str, id_: Any) -> str:

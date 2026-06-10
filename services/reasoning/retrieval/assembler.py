@@ -12,8 +12,8 @@ Converts a RetrievalResult into a ContextBundle:
     `visible_to_subjects` + `scope_actors` membership; real roles /
     materialized views are Wave 5-A).
   - Compresses to configured size budgets:
-        * observations  ≤ 20
-        * models        ≤ 40
+        * observations  ≤ trigger cap + small historical evidence cap
+        * models        ≤ 24 by default
         * acts          ≤ 10 (across goals + commitments + decisions
                              combined, deviation (c) documented below)
         * resources     ≤ 5
@@ -23,7 +23,8 @@ Converts a RetrievalResult into a ContextBundle:
 Compression ordering (deviation (c) BUILD-LOG):
   - Models — by `model_scores` descending (from primary_retrieve).
     Tie-break on activation descending.
-  - Observations — occurred_at descending.
+  - Observations — current trigger observations first, then a small
+    historical evidence tail by occurred_at descending.
   - Acts — we flatten the three kinds into one list and take the top
     10 by last_state_change_at / created_at descending. The cap of 10
     is per BUILD-PLAN (not 10 per kind).
@@ -148,6 +149,81 @@ def _model_selection_notes(
             str(mid) for mid in visible_ids if mid not in selected_set
         ],
         "pathway_survival": pathway_survival,
+    }
+
+
+def _trigger_observation_ids(retrieval_result: RetrievalResult) -> set[UUID]:
+    trigger = retrieval_result.trigger
+    ids: set[UUID] = set()
+    if trigger.observation_id is not None:
+        ids.add(trigger.observation_id)
+    ids.update(trigger.observation_ids or [])
+    return ids
+
+
+def _select_observations(
+    retrieval_result: RetrievalResult,
+    observations: list[ObservationRow],
+    *,
+    cfg: RetrievalConfig,
+    budget_observations: int,
+    explicit_budget: bool,
+) -> tuple[list[ObservationRow], dict[str, Any]]:
+    observations.sort(key=lambda o: (o.occurred_at, o.id), reverse=True)
+    if not cfg.model_first_context_enabled:
+        selected = observations[:budget_observations]
+        return selected, {
+            "model_first_context_enabled": False,
+            "retrieved_count": len(observations),
+            "selected_count": len(selected),
+            "selected_trigger_count": 0,
+            "selected_historical_count": len(selected),
+            "trigger_candidate_count": 0,
+            "historical_candidate_count": len(observations),
+            "trigger_cap": 0,
+            "historical_cap": budget_observations,
+        }
+
+    trigger_ids = _trigger_observation_ids(retrieval_result)
+    trigger_observations: list[ObservationRow] = []
+    historical_observations: list[ObservationRow] = []
+    for observation in observations:
+        if observation.id in trigger_ids:
+            trigger_observations.append(observation)
+        else:
+            historical_observations.append(observation)
+
+    trigger_cap = max(0, int(cfg.trigger_observation_cap))
+    if explicit_budget:
+        trigger_cap = min(trigger_cap, max(0, int(budget_observations)))
+    historical_cap = min(
+        max(0, int(cfg.historical_observation_cap)),
+        max(0, int(budget_observations)),
+    )
+    selected_trigger = trigger_observations[:trigger_cap]
+    if explicit_budget:
+        historical_cap = min(
+            historical_cap,
+            max(0, int(budget_observations) - len(selected_trigger)),
+        )
+    selected_historical = historical_observations[:historical_cap]
+    selected = [*selected_trigger, *selected_historical]
+    return selected, {
+        "model_first_context_enabled": True,
+        "retrieved_count": len(observations),
+        "selected_count": len(selected),
+        "selected_trigger_count": len(selected_trigger),
+        "selected_historical_count": len(selected_historical),
+        "trigger_candidate_count": len(trigger_observations),
+        "historical_candidate_count": len(historical_observations),
+        "trigger_cap": trigger_cap,
+        "historical_cap": historical_cap,
+        "dropped_trigger_count": max(
+            0, len(trigger_observations) - len(selected_trigger)
+        ),
+        "dropped_historical_count": max(
+            0, len(historical_observations) - len(selected_historical)
+        ),
     }
 
 
@@ -598,6 +674,7 @@ async def assemble_context(
     Default False — count-cap path is unchanged.
     """
     cfg = config or CONFIG
+    explicit_observation_budget = budget_observations is not None
     budget_observations = (
         int(budget_observations)
         if budget_observations is not None
@@ -726,13 +803,18 @@ async def assemble_context(
     else:
         models_cap = visible_models[:budget_models]
 
-    # --- Observations: tenant filter + occurred_at DESC cap ---
+    # --- Observations: current trigger input + tiny historical evidence tail ---
     obs_tenant = [
         o for o in retrieval_result.observations
         if o.tenant_id == access_context.tenant_id
     ]
-    obs_tenant.sort(key=lambda o: (o.occurred_at, o.id), reverse=True)
-    observations_cap = obs_tenant[:budget_observations]
+    observations_cap, observation_selection = _select_observations(
+        retrieval_result,
+        obs_tenant,
+        cfg=cfg,
+        budget_observations=budget_observations,
+        explicit_budget=explicit_observation_budget,
+    )
 
     # --- Acts: combined cap of `budget_acts` across all three kinds ---
     # Build a unified (kind, row, timestamp) list. Sort by timestamp
@@ -799,6 +881,16 @@ async def assemble_context(
     notes: dict[str, Any] = {
         "budgets": {
             "observations": budget_observations,
+            "trigger_observations": (
+                int(cfg.trigger_observation_cap)
+                if cfg.model_first_context_enabled
+                else 0
+            ),
+            "historical_observations": (
+                int(observation_selection["historical_cap"])
+                if cfg.model_first_context_enabled
+                else budget_observations
+            ),
             "models": budget_models,
             "acts_total": budget_acts,
             "resources": budget_resources,
@@ -814,6 +906,7 @@ async def assemble_context(
         "access_redaction_reasons": reason_counts,
         "access_redactions_cross_tenant": cross_tenant_redactions,
         "retrieval_trigger_kind": retrieval_result.trigger.kind,
+        "observation_selection": observation_selection,
         "mmr": mmr_notes,
         "model_selection": _model_selection_notes(
             retrieval_result,

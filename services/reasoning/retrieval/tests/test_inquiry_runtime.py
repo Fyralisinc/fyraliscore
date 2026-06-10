@@ -19,6 +19,7 @@ from services.platform.execution.inquiry import (
     InquiryQuestion,
     ModelRelevance,
     QuestionAnswer,
+    RetrievalAction,
     SufficiencyVerdict,
     _append_structural_closure,
     _apply_relevance_diversity,
@@ -30,8 +31,13 @@ from services.platform.execution.inquiry import (
     _classify_hypothesis_links,
     _cold_weak_noop_gate,
     _compile_context_packet,
+    _execute_focused_index_action,
+    _focused_index_terms,
     _has_broad_signal_language,
+    _hybrid_lexical_model_scan,
+    _hybrid_lexical_terms,
     _merge_llm_and_safety_questions,
+    _merge_hybrid_semantic_lexical_models,
     _model_coverage_features,
     _model_relevance_cluster_key,
     _pack_structural_links,
@@ -228,6 +234,78 @@ async def test_question_planning_timeout_falls_back_to_deterministic(monkeypatch
     assert questions
 
 
+async def test_question_planning_expands_llm_belief_deltas_without_questions(tenant):
+    provider = _ScriptedQuestionProvider(
+        [
+            json.dumps(
+                {
+                    "rationale": "The signal implies a specific belief delta.",
+                    "belief_deltas": [
+                        {
+                            "delta_id": "D_AUDIT_EXPORT",
+                            "claim_atom": (
+                                "Atlas renewal approval is blocked by missing "
+                                "customer-visible audit export evidence"
+                            ),
+                            "delta_type": "update",
+                            "affected_entities": ["Atlas", "renewal"],
+                            "uncertainty_slots": [
+                                "who owns customer-visible audit export evidence",
+                                "what evidence would weaken the existing SAML blocker model",
+                                "which active renewal commitment is at risk",
+                            ],
+                            "evidence_needed": [
+                                "security review thread",
+                                "Atlas renewal commitment",
+                                "prior SAML blocker model",
+                            ],
+                            "impact_if_true": "high",
+                            "confidence": 0.68,
+                        }
+                    ],
+                    "questions": [],
+                }
+            )
+        ]
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_natural_text=(
+            "Security review asks for SOC2, audit export, SAML mapping, and "
+            "data residency evidence before Atlas will approve renewal."
+        ),
+        seed_entity_ids=[{"type": "customer", "id": "Atlas"}],
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+    )
+    baseline = RetrievalResult(trigger=trigger)
+    hypotheses = (
+        Hypothesis("H1", "The signal is a real blocker.", 0.7, "high"),
+        Hypothesis("H2", "An active commitment is affected.", 0.4, "medium"),
+        Hypothesis("H0", "The signal is already captured.", 0.2, "low"),
+    )
+
+    questions, note = await _candidate_questions_for_round(
+        trigger,
+        baseline,
+        hypotheses,
+        {},
+        {"counterevidence", "responsible owner"},
+        llm_provider=provider,
+        config=InquiryConfig(),
+        round_index=1,
+    )
+
+    question_text = " ".join(question.question for question in questions)
+    assert note["mode"] == "llm_delta"
+    assert note["belief_delta_count"] == 1
+    assert note["belief_delta_question_count"] >= 3
+    assert "audit export evidence" in question_text
+    assert {"OWNERSHIP", "COUNTEREVIDENCE", "COMMITMENT"} <= {
+        question.primitive for question in questions
+    }
+
+
 def test_safety_question_boosts_same_primitive_llm_priority():
     llm_goal = InquiryQuestion(
         question_id="Q_GOAL_IMPACT",
@@ -362,6 +440,218 @@ def test_safety_question_boosts_existing_llm_expected_value():
     assert merged[0].question == llm_dependency.question
     assert merged[0].expected_value == safety_dependency.expected_value
     assert merged[0].score == llm_dependency.score
+
+
+async def test_semantic_hybrid_lexical_promotes_exact_anchor_within_budget(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    dense_models: list[ModelRow] = []
+    for idx in range(3):
+        dense_models.append(
+            await repo.insert(
+                ModelCreate(
+                    tenant_id=tenant,
+                    born_from_event_id=fs.observation_ids[0],
+                    proposition={
+                        "kind": "belief",
+                        "subject": f"generic launch blocker {idx}",
+                        "assertion": "semantic candidate for launch blocker retrieval",
+                    },
+                    natural=f"Generic launch blocker from semantic path {idx}.",
+                    embedding=make_embedding(f"semantic dense candidate {idx}"),
+                    scope_actors=[fs.hero_actor_id],
+                    scope_entities=[
+                        {"type": "commitment", "id": str(fs.hero_commitment_id)}
+                    ],
+                    scope_temporal={"type": "now"},
+                    confidence=0.6,
+                    confidence_at_assertion=0.6,
+                ),
+                conn=tx_conn,
+            )
+        )
+    exact_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "subject": "SOC2-RISK-77 escrow dependency",
+                "assertion": "exact risk anchor identifies the escrow dependency",
+            },
+            natural="SOC2-RISK-77 vendor escrow dependency blocks the Acme launch.",
+            embedding=make_embedding("orthogonal lexical-only model"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+            scope_temporal={"type": "now"},
+            confidence=0.6,
+            confidence_at_assertion=0.6,
+        ),
+        conn=tx_conn,
+    )
+    sparse_rows = await tx_conn.fetchval(
+        """
+        SELECT count(*)::int
+        FROM model_sparse_terms
+        WHERE model_id = $1
+          AND tenant_id = $2
+          AND term = 'soc2-risk-77'
+          AND status = 'active'
+        """,
+        exact_model.id,
+        tenant,
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+        seed_natural_text="Does SOC2-RISK-77 block the Acme launch?",
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        scope_actors=[fs.hero_actor_id],
+        precomputed_seed_vector=make_embedding("semantic dense candidate 0"),
+    )
+
+    terms = _hybrid_lexical_terms(
+        "Which dependency mentions SOC2-RISK-77?",
+        trigger,
+        max_terms=4,
+    )
+    hits = await _hybrid_lexical_model_scan(
+        trigger,
+        tx_conn,
+        terms=terms,
+        limit=4,
+        per_term_limit=4,
+    )
+    merged = _merge_hybrid_semantic_lexical_models(
+        dense_models,
+        hits,
+        limit=3,
+    )
+
+    assert any("soc2-risk-77" in term for term in terms)
+    assert sparse_rows == 1
+    assert exact_model.id in {model.id for model, _match_count in hits}
+    assert len(merged) == 3
+    assert exact_model.id in {model.id for model in merged}
+
+
+async def test_focused_index_uses_question_terms_answerability_and_scope(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    exact_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "claim_role": "relation",
+                "abstraction_level": "relationship",
+                "subject": "Acme launch",
+                "relation": "depends_on",
+                "object": "SOC2-RISK-77 vendor escrow",
+            },
+            natural="SOC2-RISK-77 vendor escrow dependency blocks the Acme launch.",
+            embedding=make_embedding("focused scoped answerability model"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+            scope_temporal={"type": "now"},
+            confidence=0.6,
+            confidence_at_assertion=0.6,
+        ),
+        conn=tx_conn,
+    )
+    off_scope_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "claim_role": "relation",
+                "abstraction_level": "relationship",
+                "subject": "Other launch",
+                "relation": "depends_on",
+                "object": "SOC2-RISK-77 vendor escrow",
+            },
+            natural="SOC2-RISK-77 vendor escrow dependency blocks another launch.",
+            embedding=make_embedding("focused off scope answerability model"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(uuid4())}],
+            scope_temporal={"type": "now"},
+            confidence=0.6,
+            confidence_at_assertion=0.6,
+        ),
+        conn=tx_conn,
+    )
+    answerability_rows = await tx_conn.fetchval(
+        """
+        SELECT count(*)::int
+        FROM model_answerability_index
+        WHERE model_id = $1
+          AND tenant_id = $2
+          AND primitive = 'DEPENDENCY'
+          AND term = 'soc2-risk-77'
+          AND status = 'active'
+        """,
+        exact_model.id,
+        tenant,
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+        seed_natural_text="Does SOC2-RISK-77 block the Acme launch?",
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        scope_actors=[fs.hero_actor_id],
+    )
+    terms = _focused_index_terms(
+        "Which dependency mentions SOC2-RISK-77 for the Acme launch?",
+        trigger,
+        max_terms=8,
+    )
+    result = await _execute_focused_index_action(
+        RetrievalAction(
+            "Q_CRITICAL_PATH",
+            "focused_index",
+            "question_answerability_scope",
+            query="Which dependency mentions SOC2-RISK-77 for the Acme launch?",
+            filters={"primitive": "DEPENDENCY", "terms": terms},
+            budget=8,
+        ),
+        trigger,
+        tx_conn,
+        InquiryConfig(),
+        model_limit=8,
+    )
+
+    assert result is not None
+    returned_ids = [model.id for model in result.models]
+    top_hit = result.notes["top_hits"][0]
+
+    assert answerability_rows == 1
+    assert any("soc2-risk-77" in term for term in terms)
+    assert returned_ids[0] == exact_model.id
+    assert off_scope_model.id not in returned_ids
+    assert top_hit["model_id"] == str(exact_model.id)
+    assert "answerability_index" in top_hit["sources"]
+    assert "scope_sparse" in top_hit["sources"]
+    assert top_hit["scope_overlap"] >= 1
 
 
 def test_coverage_compaction_caps_dense_material_neighborhoods():

@@ -251,6 +251,11 @@ async def test_handler_returns_claim_op_insert_for_real_discontinuity(
     prop = entry["proposition"]
     assert prop["kind"] == "belief"
     assert prop["legacy_kind"] == "hypothesis"
+    assert prop["claim_role"] == "hypothesis"
+    assert prop["abstraction_level"] == "atomic"
+    assert prop["time_mode"] == "unspecified"
+    assert prop["modality"] == "inferred"
+    assert prop["polarity"] == "neutral"
     assert prop["is_system_hypothesis"] is True
     assert "hypothesis_text" in prop
     # Falsifier well-formed.

@@ -26,12 +26,28 @@ import pytest
 from lib.shared.ids import uuid7
 
 from services.reasoning.retrieval.primary import TriggerContext
+import services.reasoning.think.context_planner as context_planner_mod
 import services.reasoning.think.reason as reason_mod
 from services.reasoning.think.reason import ThinkRunOutcome, think
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_question_planning(monkeypatch):
+    """Pin inquiry question-planning to deterministic for these tests.
+
+    Dev's reason.py refactor added an env-gated LLM question-planning step
+    (services.platform.execution.inquiry, default on). These tests assert the
+    *reasoning* contract (the model-update diff call), not question planning,
+    so the ScriptedProvider must only see the reasoning call. Dev's LLM
+    question-planning path is covered separately by
+    tests/unit/think/test_question_planning_quality.py. Production keeps dev's
+    default (planning on); this only scopes the test environment.
+    """
+    monkeypatch.setenv("INQUIRY_LLM_QUESTION_PLANNING_ENABLED", "0")
 
 
 # =====================================================================
@@ -501,10 +517,14 @@ async def test_think_invokes_second_pass_when_retrieval_decision_runs(
         }
         return first_result
 
+    # Second-pass logic moved from reason.py into context_planner in dev's
+    # refactor; patch it at its new home.
     monkeypatch.setattr(
-        reason_mod, "should_run_second_pass", always_run_second_pass
+        context_planner_mod, "should_run_second_pass", always_run_second_pass
     )
-    monkeypatch.setattr(reason_mod, "second_pass_expand", fake_second_pass)
+    monkeypatch.setattr(
+        context_planner_mod, "second_pass_expand", fake_second_pass
+    )
 
     outcome = await think(trigger, fresh_db, llm_provider=provider)
     assert outcome.status == "success", outcome.error

@@ -47,7 +47,7 @@ def promoted_case_document(
             "expected_flags": flags,
             "minimum_selected_context_reference_ratio": 0.20,
             "require_graph_context_when_selected": True,
-            "require_edge_ops_when_graph_selected": False,
+            "require_edge_ops_when_graph_selected": True,
         },
         "case": case,
     }
@@ -94,6 +94,45 @@ def load_promoted_cases(case_dir: Path = DEFAULT_CASE_DIR) -> list[dict[str, Any
         raw["_path"] = str(path)
         docs.append(raw)
     return docs
+
+
+def _int_from_context_or_run(
+    context: dict[str, Any],
+    run: dict[str, Any],
+    key: str,
+) -> int:
+    return int(context.get(key, run.get(key, 0)) or 0)
+
+
+def _bool_from_context_or_run(
+    context: dict[str, Any],
+    run: dict[str, Any],
+    key: str,
+) -> bool:
+    return bool(context.get(key, run.get(key, False)))
+
+
+def _graph_relation_contract_satisfied(
+    context: dict[str, Any],
+    run: dict[str, Any],
+) -> bool:
+    if "graph_relation_contract_satisfied" in context:
+        return bool(context.get("graph_relation_contract_satisfied"))
+    return (
+        _int_from_context_or_run(context, run, "edge_ops_count") > 0
+        or _int_from_context_or_run(context, run, "ontology_gap_ops_count") > 0
+        or _int_from_context_or_run(context, run, "graph_non_relation_op_count") > 0
+        or _bool_from_context_or_run(
+            context,
+            run,
+            "graph_no_edge_rationale_present",
+        )
+        or _bool_from_context_or_run(
+            context,
+            run,
+            "reasoning_trace_context_used",
+        )
+    )
 
 
 def evaluate_promoted_case(doc: dict[str, Any]) -> dict[str, Any]:
@@ -144,12 +183,10 @@ def evaluate_promoted_case(doc: dict[str, Any]) -> dict[str, Any]:
         )
         if ratio < minimum:
             failures.append("selected_context_reference_ratio_too_low")
-        graph_selected = int(
-            context.get(
-                "graph_selected_model_count",
-                run.get("graph_selected_model_count", 0),
-            )
-            or 0
+        graph_selected = _int_from_context_or_run(
+            context,
+            run,
+            "graph_selected_model_count",
         )
         graph_used = bool(context.get("graph_context_used"))
         if (
@@ -158,19 +195,10 @@ def evaluate_promoted_case(doc: dict[str, Any]) -> dict[str, Any]:
             and not graph_used
         ):
             failures.append("graph_context_not_used")
-        edge_ops = int(context.get("edge_ops_count", run.get("edge_ops_count", 0)) or 0)
-        ontology_gap_ops = int(
-            context.get(
-                "ontology_gap_ops_count",
-                run.get("ontology_gap_ops_count", 0),
-            )
-            or 0
-        )
         if (
             expectation.get("require_edge_ops_when_graph_selected", False)
             and graph_selected > 0
-            and edge_ops == 0
-            and ontology_gap_ops == 0
+            and not _graph_relation_contract_satisfied(context, run)
         ):
             failures.append("graph_selected_without_edge_ops")
     else:

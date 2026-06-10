@@ -144,6 +144,49 @@ async def test_validate_accepts_insert_with_good_falsifier_at_high_conf(fresh_db
         assert len(validated.claim_ops) == 1
 
 
+async def test_validate_accepts_registered_archive_reason(fresh_db, tenant):
+    rr = _retrieval_result(tenant)
+    model_id, _ = await _make_model(fresh_db, tenant, confidence=0.5)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="archive", model_id=model_id, reason=" decay "),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.claim_ops) == 1
+    assert validated.claim_ops[0].op == "archive"
+    assert validated.claim_ops[0].reason == "decay"
+
+
+async def test_validate_drops_free_text_archive_reason(fresh_db, tenant):
+    rr = _retrieval_result(tenant)
+    model_id, _ = await _make_model(fresh_db, tenant, confidence=0.5)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="archive",
+                    model_id=model_id,
+                    reason="stale memory cleanup",
+                ),
+                ClaimOp(op="update", model_id=model_id, changes={"confidence": 0.4}),
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert [op.op for op in validated.claim_ops] == ["update"]
+    assert validated.dropped_op_count == 1
+    assert "registered lifecycle reason" in validated.dropped_op_errors[0]
+
+
 async def test_validate_clips_confidence(fresh_db, tenant):
     """
     Confidence clipped to [0.05, 0.95] on insert even when LLM proposes
@@ -353,6 +396,67 @@ async def test_validate_marks_empty_situation_members_pending(fresh_db, tenant):
     assert validated.dropped_op_count == 0
     entry = validated.claim_ops[0].entry
     assert entry["member_model_pending"] is True
+    assert entry["proposition"]["_pending_members"] is True
+
+
+async def test_validate_marks_one_member_situation_members_pending(
+    fresh_db,
+    tenant,
+):
+    """
+    The 400-wave long-horizon run exposed live-LLM situations that cited
+    only one Model id. Treat that as the same deferred-binding shape as
+    an empty member list so the splitter/applier can form concrete atomics
+    instead of failing the whole run before retry.
+    """
+    rr = _retrieval_result(tenant)
+    lonely_member = uuid7()
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "situation",
+                        "abstraction_level": "composite",
+                        "situation": "Northstar discount bridge is now visible",
+                        "summary": (
+                            "A later finance signal connects prior pricing "
+                            "concerns to the renewal decision path."
+                        ),
+                        "member_model_ids": [str(lonely_member)],
+                        "relationship_summary": (
+                            "The cited concern needs another member before "
+                            "the situation can be persisted as composition."
+                        ),
+                        "pressure_type": "decision",
+                        "shared_mechanism": (
+                            "Pricing evidence and decision timing point at "
+                            "the same approval mechanism."
+                        ),
+                    },
+                    "natural": (
+                        "Northstar later confirmed the pricing bridge, but "
+                        "the model only cited one prior member."
+                    ),
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.6,
+                    "confidence_at_assertion": 0.6,
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    entry = validated.claim_ops[0].entry
+    assert entry["member_model_pending"] is True
+    assert entry["proposition"]["member_model_ids"] == []
     assert entry["proposition"]["_pending_members"] is True
 
 

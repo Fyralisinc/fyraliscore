@@ -123,6 +123,13 @@ class RetrievalConfig:
     assembler_budget_models: int = 24
     assembler_budget_acts_total: int = 10
     assembler_budget_resources: int = 5
+    # Model-first context keeps Models as the historical memory substrate.
+    # Trigger observations are raw input that has not been compressed yet,
+    # so they get their own cap. Older observations are only evidence
+    # anchors/counterevidence, not a second memory layer.
+    model_first_context_enabled: bool = True
+    trigger_observation_cap: int = 30
+    historical_observation_cap: int = 4
     mmr_lambda_diversity: float = 0.5
     # Follow-up FU-1 (RA-4 wire): when True, `assemble_context` will run
     # MMR (token-budgeted) over the Models bucket. Default False so the

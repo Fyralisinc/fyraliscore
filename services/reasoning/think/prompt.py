@@ -25,13 +25,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 
-if TYPE_CHECKING:
-    from .reasoning_frame import ReasoningFrame
+from .reasoning_frame import ReasoningFrame, reasoning_job_from_trigger
 
 
 # Per-section char budgets.
@@ -64,12 +63,15 @@ Core discipline:
   evidence.
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
-- Keep diffs small. Most events warrant 0-3 claim_ops, 0-1 edge_ops, and 0
-  act_ops. Empty diffs are valid when memory already captures the event and no
-  state/action/relationship should change.
-- Never abbreviate UUIDs in reasoning_trace. If returning an empty diff with
-  selected context, cite at least one relevant selected Model or Observation by
-  its exact full UUID so audits can verify the no-op used retrieved memory.
+- Keep diffs small. Most single events warrant 0-3 claim_ops, 0-1 edge_ops,
+  and 0 act_ops. Batch or graph-anchor calls may legitimately need 2-4
+  edge_ops when several selected Model relationships changed. Empty diffs are
+  valid when memory already captures the event and no state/action/relationship
+  should change.
+- Never silently ignore selected context. If any selected Model or Observation
+  changes the diff, cite its full UUID in the relevant op. If selected context
+  is irrelevant, reasoning_trace must cite at least one selected full UUID and
+  say why it did not warrant a state, edge, action, or resource change.
 
 Falsifier schema (pick the right kind):
 1. observation_pattern -> {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -107,7 +109,7 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
-- archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
+- archive: {"op":"archive","model_id":"<uuid>","reason":"decay|falsifier_triggered|contested_incorrect|contested_reading_incorrect|superseded|manual|resolved_confirmed|resolved_violated|severe_drift|deprecated|acted_upon|dismissed_by_user"}
 
 Proposition stance and grammar:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -246,6 +248,8 @@ Model granularity:
 - Before inserting a same-scope claim, check selected Models for an existing
   belief that the signal confirms, updates, weakens, contradicts, or supersedes.
   Prefer claim_ops.update, archive, or edge_ops over a duplicate sibling Model.
+  Archive only with a registered lifecycle reason such as `decay`, `superseded`,
+  `contested_incorrect`, `resolved_confirmed`, or `severe_drift`.
 - Repeated evidence for the same operational reality should strengthen the
   existing Model's evidence trail; only insert a new Model when the signal adds
   a materially new belief, forecast, blocker, or causal explanation.
@@ -268,9 +272,23 @@ edge_ops:
   weakening, causal/explanatory links, blockers/enablers, shared issues,
   co-occurrence, analogy, alternatives, early warnings, instance_of,
   contributes_to_resolution, superseded_by.
+- Relationship decision contract: when graph-selected Models or candidate
+  member Models are relevant, explicitly choose one of:
+  (a) emit the sharpest registered edge_op;
+  (b) emit an ontology_gap_op because every registered edge loses important
+      decision semantics;
+  (c) update/archive a Model because that is the stronger representation; or
+  (d) write `no edge:` plus the relevant full UUIDs and reason in
+      reasoning_trace. Do not leave relational graph context only in prose.
 - Prefer the sharpest true edge. Use co_occurs_with/same_issue_as/analogous_to
   only when the evidence does not justify a causal, blocking, explanatory,
   weakening, contradiction, warning, enabling, or resolution relationship.
+- Quick edge-kind guide: `blocks` = source prevents target progress;
+  `explains` = source is the mechanism/reason for target; `weakens` =
+  source is counterevidence against target; `contradicts` = both cannot be
+  true; `enables` = source makes target possible; `contributes_to_resolution`
+  = source helps settle or resolve target; `supports` = source adds evidence
+  without a sharper relationship.
 - Causal edges (`causes`, `explains`, `blocks`, `enables`) require a concrete
   mechanism in `explanation`. If the mechanism is plausible but unconfirmed,
   set `review_status` to `candidate` or `needs_review` and put causal metadata
@@ -345,8 +363,9 @@ Core discipline:
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
 - Empty diffs are valid only when selected memory already captures the signal or
-  the signal is non-substantive. For empty diffs, reasoning_trace must cite at
-  least one relevant selected Model or Observation by exact full UUID.
+  the signal is non-substantive. If selected context is irrelevant to an empty
+  or non-empty diff, reasoning_trace must cite at least one selected full UUID
+  and say why it did not warrant a claim, edge, action, or resource change.
 - Never abbreviate UUIDs in reasoning_trace.
 
 Return exactly this JSON shape:
@@ -546,15 +565,11 @@ def _source_personality(
             "systems cartographer; reason about structural movement among "
             "Models before naming or escalating it."
         )
-    if trigger.kind == "T3":
+    job = reasoning_job_from_trigger(trigger)
+    if job.family == "internal_reflection":
         return (
-            "forensic investigator; inspect anomaly evidence for contestation, "
-            "drift, or missing causal links."
-        )
-    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        return (
-            "decision reviewer; decide whether the new Model requires CEO "
-            "action instead of recapping the belief."
+            "internal memory reviewer; decide whether the existing model "
+            "layer needs propagation, explanation, reorganization, or no-op."
         )
 
     if trust in {
@@ -604,7 +619,11 @@ def _surface_personality(
             "claim triage; emit scoped claim inserts or a justified empty diff, "
             "and mention omitted action/edge reasoning only in reasoning_trace."
         )
-    if trigger.kind == "T4" and trigger.subkind == "latent_relationship_candidate":
+    job = reasoning_job_from_trigger(trigger)
+    if (
+        job.family == "internal_reflection"
+        and job.intent == "adjudicate_candidate"
+    ):
         return (
             "topology candidate interpreter; decide whether latent "
             "consequence signals deserve an edge, situation, situation update, "
@@ -644,7 +663,14 @@ def _abstraction_guidance(
     trust = meta.get("trust_tier", "")
     _selected, graph_models = _selected_model_sets(bundle)
 
-    if trigger.kind in {"T3", "T6"}:
+    job = reasoning_job_from_trigger(trigger)
+    if job.family == "internal_reflection":
+        return (
+            "model-layer level: inspect existing beliefs, edges, and actions "
+            "as one internal reflection pass; revise only what this trigger's "
+            "intent and evidence support."
+        )
+    if trigger.kind == "T6":
         return (
             "high, but still evidence-bound: describe the pattern, anomaly, or "
             "neighborhood shift only as far as retrieved context supports it."
@@ -759,9 +785,19 @@ def _build_triggering_section(
     signature = (
         trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
     )
-    candidate = signature.get("relationship_candidate")
-    if isinstance(candidate, dict):
-        lines.extend(_relationship_candidate_lines(candidate))
+    candidates = signature.get("relationship_candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates[:8]:
+            if isinstance(candidate, dict):
+                lines.extend(_relationship_candidate_lines(candidate))
+        if len(candidates) > 8:
+            lines.append(
+                f"  relationship_candidate_omitted_count: {len(candidates) - 8}"
+            )
+    else:
+        candidate = signature.get("relationship_candidate")
+        if isinstance(candidate, dict):
+            lines.extend(_relationship_candidate_lines(candidate))
     if reason:
         lines.append(f"  reason: {reason}")
     lines.append("</triggering_event>")
@@ -1309,6 +1345,13 @@ def _build_retrieval_guidance_section(
             "over generic supports/explains."
         )
         lines.append(
+            "    Preserve explicit relationship semantics. Use 'blocks' for "
+            "blocking dependencies, 'weakens' only for counterevidence, "
+            "'explains' for causal/accounting explanations, and "
+            "'contributes_to_resolution' when a new claim advances or closes "
+            "a known issue."
+        )
+        lines.append(
             "    Use weakens only for counterevidence that lowers confidence "
             "in the target Model. Evidence that makes a risk more believable "
             "usually supports or explains that risk; it does not weaken it."
@@ -1343,11 +1386,22 @@ def _build_retrieval_guidance_section(
             "contributes_to_resolution, or co_occurs_with). Do not treat an "
             "act confidence_basis as a substitute for the graph edge."
         )
+        lines.append(
+            "    Relationship decision contract: for each important graph "
+            "anchor pair or new-claim-to-anchor link, emit the sharpest "
+            "edge_op, emit an ontology_gap_op, update/archive the existing "
+            "Model if that is stronger, or write `no edge:` with the full "
+            "UUIDs and reason in reasoning_trace. A relational insight should "
+            "not remain only as prose."
+        )
     lines.append(
-        "    If selected context is irrelevant, an empty diff is valid, but "
-        "reasoning_trace must name at least one relevant selected/graph Model "
-        "by its full UUID and briefly say why that context did not warrant a "
-        "state change, edge, or action."
+        "    Context accountability: for every non-empty diff, selected "
+        "context should either appear in claim_ops.update, edge_ops, "
+        "evidence_model_ids, evidence_event_ids, act confidence_basis, or "
+        "resource reasoning. If selected context is irrelevant, "
+        "reasoning_trace must name at least one selected/graph Model or "
+        "selected Observation by full UUID and briefly say why that context "
+        "did not warrant a state change, edge, action, or resource change."
     )
     lines.append("  </retrieval_priority>")
     return lines
@@ -1422,6 +1476,120 @@ def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
     return lines
 
 
+def _internal_reflection_instructions(trigger: TriggerContext) -> str:
+    job = reasoning_job_from_trigger(trigger)
+    header = (
+        "This is an internal-reflection job. The legacy wake-up label is "
+        f"{trigger.kind}"
+        + (f":{trigger.subkind}" if trigger.subkind else "")
+        + f"; source={job.source}; intent={job.intent}.\n"
+        "\n"
+        "Treat T2/T3/T4 as one belief-maintenance family: inspect the "
+        "current model layer, then revise, connect, downgrade, promote, "
+        "explain, act, or no-op according to the intent below."
+    )
+    if job.intent == "propagate_consequence":
+        return (
+            header
+            + "\n\n"
+            "Intent: propagate consequence from a newly inserted fact or "
+            "concern Model. Decide whether the CEO needs to act on this "
+            "belief.\n"
+            "\n"
+            "  - If a team member is blocked, waiting on a decision, or "
+            "the CEO needs to unblock someone: emit ONE claim_op with "
+            "`kind='norm'` and `claim_role='recommendation'`. Use only "
+            "actor UUIDs that appear in <actors_in_context> for "
+            "scope_actors. Write the natural field as a clear, actionable "
+            "sentence for the CEO.\n"
+            "\n"
+            "  - If the new fact Model encodes a self-report of new "
+            "in-flight work ('started X', 'building Y', 'picked up Z') "
+            "AND <acts> has no matching commitment, you MUST emit a "
+            "recommendation with proposed_change.operation='create' and "
+            "target_act_ref={\"type\":\"commitment\",\"id\":null}. Use "
+            "the create-commitment payload shape in the system prompt. "
+            "'Purely informational progress update' is NOT an acceptable "
+            "reason to skip; the ledger needs a commitment for the work to "
+            "be tracked.\n"
+            "\n"
+            "  - If purely informational and no CEO action is needed: "
+            "return an empty diff. The selected Model that caused this "
+            "internal job already records the underlying fact; do not "
+            "create recap, elaboration, or bookkeeping fact Models.\n"
+            "\n"
+            "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
+            "  - Do NOT set scope_entities unless a UUID appears in <acts> "
+            "or <retrieved_context>. Leave scope_entities as [] if unsure.\n"
+            "  - Set target_act_ref to null unless you have an exact UUID "
+            "from <acts>. Never invent a UUID.\n"
+            "  - Do NOT invent UUIDs. If no CEO UUID is in the context, "
+            "leave scope_actors as [].\n"
+            "  - Do NOT emit a duplicate if a similar recommendation "
+            "already exists with status 'active' in <acts>."
+        )
+    if job.intent == "evaluate_existing_belief":
+        return (
+            header
+            + "\n\n"
+            "Intent: evaluate an existing prediction Model whose "
+            "evaluate_at has passed. Resolve the prediction: update "
+            "confidence, set resolved_at / resolution_outcome, adjust "
+            "contributors, and propagate only materially supported "
+            "dependent updates."
+        )
+    if job.intent == "explain_inconsistency":
+        return (
+            header
+            + "\n\n"
+            "Intent: explain an anomaly region. Reflect on the full "
+            "situation. Consider whether any Model should be marked "
+            "contested_false or archived, whether a missing causal "
+            "relationship explains the discontinuity, and whether "
+            "signal_readings should update."
+        )
+    if job.intent == "adjudicate_candidate":
+        return (
+            header
+            + "\n\n"
+            "Intent: adjudicate a latent relationship candidate from the "
+            "topology layer. Topology here means a consequence-sensitive "
+            "discovery field, not accepted graph layout. Treat it as "
+            "evidence, not truth.\n"
+            "\n"
+            "Inspect the candidate member Models and decide whether the "
+            "topology signal should become durable knowledge:\n"
+            "  - emit an edge_op or edge candidate when a precise pairwise "
+            "relation is real;\n"
+            "  - emit an ontology_gap_op when the pairwise relation is "
+            "real and useful but no registered edge_kind captures it;\n"
+            "  - emit a `situation` Model when the members are symptoms of "
+            "one operational condition;\n"
+            "  - update/archive only when an existing Model is clearly "
+            "changed by this candidate;\n"
+            "  - return an empty diff when the relationship is merely "
+            "surface similarity or shared noise.\n"
+            "\n"
+            "STRICT CONSTRAINTS:\n"
+            "  - Use only member Model ids from <models>, "
+            "<reasoning_frame>, or the trigger payload.\n"
+            "  - Do not create action mutations from topology alone.\n"
+            "  - Explain the consequence: which flow/pressure/customer/"
+            "actor/commitment changes meaning if this candidate is true."
+        )
+    if job.intent == "reorganize_memory":
+        return (
+            header
+            + "\n\n"
+            "Intent: background / maintenance / dependent re-evaluation. "
+            "If the trigger carries a cause_model_id and cause_kind, update "
+            "the dependent Model's confidence or archive it as appropriate. "
+            "Prefer merge, retirement, confidence adjustment, or no-op over "
+            "creating a sibling Model."
+        )
+    return header
+
+
 def _build_instructions(trigger: TriggerContext) -> str:
     """
     Trigger-kind-specific instructions. Same core operating discipline
@@ -1465,92 +1633,8 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "they are not redundant. Use the create-commitment payload "
             "shape in the system prompt."
         )
-    elif trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        body.append(
-            "This is a T2:belief_updated trigger — a new fact or concern "
-            "model was just inserted by a T1 run. Decide whether the CEO "
-            "needs to act on this belief.\n"
-            "\n"
-            "  • If a team member is blocked, waiting on a decision, or "
-            "the CEO needs to unblock someone: emit ONE claim_op with "
-            "`kind='norm'` and `claim_role='recommendation'`. Use only actor UUIDs that "
-            "appear in <actors_in_context> for scope_actors. Write the "
-            "natural field as a clear, actionable sentence for the CEO.\n"
-            "\n"
-            "  • If the new fact Model encodes a self-report of new "
-            "in-flight work ('started X', 'building Y', 'picked up Z') "
-            "AND <acts> has no matching commitment, you MUST emit a "
-            "recommendation with proposed_change.operation='create' and "
-            "target_act_ref={\"type\":\"commitment\",\"id\":null}. Use "
-            "the create-commitment payload shape in the system prompt. "
-            "'Purely informational progress update' is NOT an acceptable "
-            "reason to skip — the ledger needs a "
-            "commitment for the work to be tracked.\n"
-            "\n"
-            "  • If purely informational and no CEO action is needed: "
-            "return an empty diff (zero claim_ops). The selected Model that "
-            "caused this T2 trigger already records the underlying fact; do "
-            "not create recap, elaboration, or bookkeeping fact Models.\n"
-            "\n"
-            "CRITICAL CONSTRAINTS for the recommendation claim_op:\n"
-            "  - Do NOT set scope_entities unless a UUID appears in <acts> "
-            "or <retrieved_context>. Leave scope_entities as [] if unsure.\n"
-            "  - Set target_act_ref to null unless you have an exact UUID "
-            "from <acts>. Never invent a UUID.\n"
-            "  - Do NOT invent UUIDs. If no CEO UUID is in the context, "
-            "leave scope_actors as [].\n"
-            "  - Do NOT emit a duplicate if a similar recommendation already "
-            "exists with status 'active' in <acts>."
-        )
-    elif trigger.kind == "T2":
-        body.append(
-            "This is a T2 trigger — a prediction Model's evaluate_at "
-            "has passed. Resolve the prediction: update confidence, "
-            "set resolved_at / resolution_outcome, adjust contributors."
-        )
-    elif trigger.kind == "T3":
-        body.append(
-            "This is a T3 trigger — an anomaly region. Reflect on the "
-            "full situation. Consider whether any Model should be "
-            "marked contested_false or archived. Update signal_readings "
-            "where appropriate."
-        )
-    elif trigger.kind == "T4":
-        if trigger.subkind == "latent_relationship_candidate":
-            body.append(
-                "This is a T4 trigger from the topology layer — a latent "
-                "relationship candidate. Topology here means a "
-                "consequence-sensitive discovery field, not accepted graph "
-                "layout. Treat it as evidence, not truth.\n"
-                "\n"
-                "Your job is to inspect the candidate member Models and "
-                "decide whether the topology signal should become durable "
-                "knowledge:\n"
-                "  - emit an edge_op or edge candidate when a precise "
-                "pairwise relation is real;\n"
-                "  - emit an ontology_gap_op when the pairwise relation is "
-                "real and useful but no registered edge_kind captures it;\n"
-                "  - emit a `situation` Model when the members are symptoms "
-                "of one operational condition;\n"
-                "  - update/archive only when an existing Model is clearly "
-                "changed by this candidate;\n"
-                "  - return an empty diff when the relationship is merely "
-                "surface similarity or shared noise.\n"
-                "\n"
-                "STRICT CONSTRAINTS:\n"
-                "  - Use only member Model ids from <models>, "
-                "<reasoning_frame>, or the trigger payload.\n"
-                "  - Do not create action mutations from topology alone.\n"
-                "  - Explain the consequence: which flow/pressure/customer/"
-                "actor/commitment changes meaning if this candidate is true."
-            )
-        else:
-            body.append(
-                "This is a T4 trigger — background / maintenance / dependent "
-                "re-evaluation. If the trigger carries a cause_model_id and "
-                "cause_kind, update the dependent Model's confidence or "
-                "archive it as appropriate."
-            )
+    elif reasoning_job_from_trigger(trigger).family == "internal_reflection":
+        body.append(_internal_reflection_instructions(trigger))
     elif trigger.kind == "T6":
         # T6 is retained for legacy accepted-memory graph phase events.
         # New topology candidates arrive as T4 latent_relationship_candidate.

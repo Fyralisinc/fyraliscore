@@ -151,6 +151,7 @@ _CONTEXT_USED_GRADES = frozenset({
     "model_context_used",
     "observation_context_used",
     "justified_noop_context_used",
+    "selected_context_accounted",
 })
 
 
@@ -277,6 +278,8 @@ def _selected_context_was_used(context_use: dict[str, Any]) -> bool:
     """Return whether Think says selected reader context contributed."""
     if context_use.get("selected_context_used") is True:
         return True
+    if context_use.get("selected_context_accounted_for") is True:
+        return True
     grade = str(context_use.get("context_use_grade") or "").strip()
     return grade in _CONTEXT_USED_GRADES
 
@@ -358,6 +361,28 @@ def _collect_model_ids_from_ops(ops_applied: dict[str, Any]) -> list[UUID]:
         payload = op.get("payload") if isinstance(op.get("payload"), dict) else {}
         _add(payload.get("model_id"))
     return out
+
+
+async def _existing_model_ids_in_order(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_ids: list[UUID],
+) -> list[UUID]:
+    if not model_ids:
+        return []
+    rows = await conn.fetch(
+        """
+        SELECT id
+        FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        model_ids,
+    )
+    existing = {row["id"] for row in rows}
+    return [model_id for model_id in model_ids if model_id in existing]
 
 
 def _collect_act_op_counts(ops_applied: dict[str, Any]) -> tuple[int, int]:
@@ -574,7 +599,11 @@ class OutcomeEvaluator:
         diff_is_valid = run_status == "success"
         diff_model_ids: list[UUID] = []
         if think_run is not None and diff_is_valid:
-            diff_model_ids = _collect_model_ids_from_ops(ops_applied)
+            diff_model_ids = await _existing_model_ids_in_order(
+                conn,
+                tenant_id=self.tenant_id,
+                model_ids=_collect_model_ids_from_ops(ops_applied),
+            )
             attribution_rows = await self._load_reader_decision_attributions(
                 conn, inquiry_session_id, diff_model_ids,
             )

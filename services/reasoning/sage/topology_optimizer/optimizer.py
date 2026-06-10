@@ -115,6 +115,8 @@ DEMOTE_QUIET_AFTER = timedelta(days=30)  # min time since last reinforcement.
 MERGE_SHARED_PATH_HITS = 2            # pair both seen in >=N useful paths.
 PROMOTE_SOURCE_MODEL_ID_LIMIT = 64    # bounded candidate payload sample.
 NEGATIVE_MEMORY_OMISSION_REASONS = frozenset({
+    "generic_hub",
+    "redundant",
     "access_denied",
     "low_confidence",
     "out_of_scope",
@@ -577,11 +579,13 @@ class TopologyOptimizer:
         )
 
         # 2. Shortcut updates (utility layer).
-        shortcut_creates, shortcut_failures = await self._update_shortcuts(
-            useful_nodes=useful_node_events,
-            useful_paths=useful_path_events,
-            noisy_paths=noisy_omissions,
-            conn=conn,
+        shortcut_creates, shortcut_failures, shortcut_missing_model_skips = (
+            await self._update_shortcuts(
+                useful_nodes=useful_node_events,
+                useful_paths=useful_path_events,
+                noisy_paths=noisy_omissions,
+                conn=conn,
+            )
         )
 
         # 3. Negative memory inserts (utility layer).
@@ -662,6 +666,10 @@ class TopologyOptimizer:
             "structural_edges_written": float(
                 structural_counts.get("edges_written", 0)
             ),
+            "structural_missing_model_skips": float(
+                structural_counts.get("missing_model_skips", 0)
+            ),
+            "shortcut_missing_model_skips": float(shortcut_missing_model_skips),
             "question_policy_updates": float(question_policy_updates),
             "canonical_validation_enqueued": float(validation_enqueued),
         }
@@ -749,6 +757,36 @@ class TopologyOptimizer:
             if row is not None:
                 decays += 1
         return reinforces, decays
+
+    async def _existing_model_ids(
+        self,
+        model_ids: Iterable[UUID],
+        *,
+        conn: asyncpg.Connection | None,
+    ) -> set[UUID]:
+        ids = list(dict.fromkeys(model_ids))
+        if not ids:
+            return set()
+
+        async def _do(c: asyncpg.Connection) -> set[UUID]:
+            rows = await c.fetch(
+                """
+                SELECT id
+                FROM models
+                WHERE tenant_id = $1
+                  AND id = ANY($2::uuid[])
+                """,
+                self._tenant_id,
+                ids,
+            )
+            return {row["id"] for row in rows}
+
+        if conn is not None:
+            return await _do(conn)
+        if self._pool is None:
+            return set(ids)
+        async with self._pool.acquire() as owned:
+            return await _do(owned)
 
     async def _update_affordance_activation_signatures(
         self,
@@ -924,13 +962,32 @@ class TopologyOptimizer:
         useful_paths: list[OutcomeEventRow],
         noisy_paths: list[OutcomeEventRow],
         conn: asyncpg.Connection | None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         creates = 0
+        missing_model_skips = 0
+        model_targets: set[UUID] = set()
+        for ev in useful_nodes:
+            to_model_id = _payload_uuid(ev.payload, "model_id", "node_id")
+            if to_model_id is not None:
+                model_targets.add(to_model_id)
+        for ev in useful_paths:
+            to_model_id = _payload_uuid(
+                ev.payload, "to_model_id", "target_model_id",
+            )
+            if to_model_id is not None:
+                model_targets.add(to_model_id)
+        existing_model_targets = await self._existing_model_ids(
+            model_targets,
+            conn=conn,
+        )
         seen_direct: set[tuple[str, UUID]] = set()
         for ev in useful_nodes:
             signature = _signature_from_payload(ev.payload)
             to_model_id = _payload_uuid(ev.payload, "model_id", "node_id")
             if not signature or to_model_id is None:
+                continue
+            if to_model_id not in existing_model_targets:
+                missing_model_skips += 1
                 continue
             key = (json.dumps(signature, sort_keys=True), to_model_id)
             if key in seen_direct:
@@ -962,6 +1019,9 @@ class TopologyOptimizer:
                 and to_region_id is None
                 and to_affordance is None
             ):
+                continue
+            if to_model_id is not None and to_model_id not in existing_model_targets:
+                missing_model_skips += 1
                 continue
             try:
                 await self._shortcuts.upsert_from_outcome(
@@ -997,7 +1057,7 @@ class TopologyOptimizer:
                 continue
             if row is not None:
                 failures += 1
-        return creates, failures
+        return creates, failures, missing_model_skips
 
     # ------------------------------------------------------------------
     # Step 3 — negative memory inserts
@@ -1183,11 +1243,27 @@ class TopologyOptimizer:
             if target is not None:
                 focus_ids.add(target)
         if not focus_ids:
-            return {"models_written": 0, "edges_written": 0}
+            return {
+                "models_written": 0,
+                "edges_written": 0,
+                "missing_model_skips": 0,
+            }
 
         ordered_focus = sorted(focus_ids, key=str)[:STRUCTURAL_REFRESH_FOCUS_LIMIT]
 
         async def _do(c: asyncpg.Connection) -> dict[str, int]:
+            existing_focus = await self._existing_model_ids(
+                ordered_focus,
+                conn=c,
+            )
+            missing_model_skips = len(ordered_focus) - len(existing_focus)
+            if not existing_focus:
+                return {
+                    "models_written": 0,
+                    "edges_written": 0,
+                    "missing_model_skips": missing_model_skips,
+                }
+            ordered_existing_focus = sorted(existing_focus, key=str)
             try:
                 incident_rows = await c.fetch(
                     """
@@ -1203,14 +1279,18 @@ class TopologyOptimizer:
                     LIMIT $3
                     """,
                     self._tenant_id,
-                    ordered_focus,
+                    ordered_existing_focus,
                     STRUCTURAL_REFRESH_EDGE_LIMIT,
                 )
             except Exception:  # pragma: no cover
                 _log.exception("structural_features.local_incident_fetch failed")
-                return {"models_written": 0, "edges_written": 0}
+                return {
+                    "models_written": 0,
+                    "edges_written": 0,
+                    "missing_model_skips": missing_model_skips,
+                }
 
-            local_ids = set(ordered_focus)
+            local_ids = set(ordered_existing_focus)
             for row in incident_rows:
                 local_ids.add(row["source_model_id"])
                 local_ids.add(row["target_model_id"])
@@ -1238,7 +1318,11 @@ class TopologyOptimizer:
                 )
             except Exception:  # pragma: no cover
                 _log.exception("structural_features.local_edge_fetch failed")
-                return {"models_written": 0, "edges_written": 0}
+                return {
+                    "models_written": 0,
+                    "edges_written": 0,
+                    "missing_model_skips": missing_model_skips,
+                }
 
             edges = [
                 StructuralEdge(
@@ -1279,15 +1363,24 @@ class TopologyOptimizer:
                 return {
                     "models_written": models_written,
                     "edges_written": edges_written,
+                    "missing_model_skips": missing_model_skips,
                 }
             except Exception:  # pragma: no cover
                 _log.exception("structural_features.local_refresh failed")
-                return {"models_written": 0, "edges_written": 0}
+                return {
+                    "models_written": 0,
+                    "edges_written": 0,
+                    "missing_model_skips": missing_model_skips,
+                }
 
         if conn is not None:
             return await _do(conn)
         if self._pool is None:
-            return {"models_written": 0, "edges_written": 0}
+            return {
+                "models_written": 0,
+                "edges_written": 0,
+                "missing_model_skips": 0,
+            }
         async with self._pool.acquire() as owned:
             return await _do(owned)
 

@@ -122,6 +122,20 @@ async def test_synthesis_reader_activates_model_by_belief_address(
         precomputed_seed_vector=ZERO_EMBEDDING,
     )
     async with gateway_pool.acquire() as conn:
+        indexed_terms = await conn.fetchval(
+            """
+            SELECT count(*)::int
+            FROM model_answerability_index
+            WHERE model_id = $1
+              AND tenant_id = $2
+              AND primitive = 'OWNERSHIP'
+              AND term = ANY($3::text[])
+              AND status = 'active'
+            """,
+            model_id,
+            tenant_id,
+            ["kestrel", "invoice", "handoff"],
+        )
         result = await SynthesisReader().read(
             conn=conn,
             tenant_id=tenant_id,
@@ -132,6 +146,7 @@ async def test_synthesis_reader_activates_model_by_belief_address(
             hypotheses=(),
         )
 
+    assert indexed_terms >= 3
     assert model_id in {m.id for m in result.models}
     trace = next(t for t in result.activations if t.model_id == model_id)
     assert trace.selected is True
