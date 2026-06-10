@@ -56,6 +56,56 @@ async def test_commit_create_active_with_goal_and_owner(
     assert c.owner_id == actor_id
 
 
+async def test_achieved_goal_rejects_new_unfinished_critical_path(
+    acts_db, event_id, event_id2, actor_id
+):
+    g = await goals.create(
+        title="parent goal",
+        created_by_event_id=event_id,
+        tenant_id=TENANT_A,
+    )
+    await commitments.create(
+        title="done work",
+        initial_state="doneverified",
+        owner_id=actor_id,
+        due_date=future_due(),
+        contributes_to_goal_ids=[(g.id, True)],
+        created_by_event_id=event_id,
+        tenant_id=TENANT_A,
+    )
+    late = await commitments.create(
+        title="maintenance placeholder",
+        initial_state="active",
+        owner_id=actor_id,
+        due_date=future_due(),
+        is_maintenance=True,
+        created_by_event_id=event_id,
+        tenant_id=TENANT_A,
+    )
+    await goals.transition(g.id, "achieved", cause_event_id=event_id2)
+
+    with pytest.raises(InvariantViolation) as exc:
+        await commitments.create(
+            title="late blocker",
+            initial_state="active",
+            owner_id=actor_id,
+            due_date=future_due(),
+            contributes_to_goal_ids=[(g.id, True)],
+            created_by_event_id=event_id,
+            tenant_id=TENANT_A,
+        )
+    assert exc.value.invariant == "G4"
+
+    with pytest.raises(InvariantViolation) as exc2:
+        await commitments.add_edge(
+            "contributes_to",
+            commitment_id=late.id,
+            goal_id=g.id,
+            is_critical_path=True,
+        )
+    assert exc2.value.invariant == "G4"
+
+
 async def test_c1_active_without_owner_rejected(acts_db, event_id):
     with pytest.raises(InvariantViolation) as exc:
         await commitments.create(

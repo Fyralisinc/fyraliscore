@@ -2769,6 +2769,13 @@ class ModelsRepo:
                 LIMIT $3
             """
             rows = await c.fetch(sql, *params)
+            if len(rows) < k:
+                async with c.transaction():
+                    await c.execute("SET LOCAL enable_indexscan = off")
+                    await c.execute("SET LOCAL enable_bitmapscan = off")
+                    exact_rows = await c.fetch(sql, *params)
+                if len(exact_rows) > len(rows):
+                    rows = exact_rows
             return [_hydrate_row(r) for r in rows]
 
         if conn is not None:

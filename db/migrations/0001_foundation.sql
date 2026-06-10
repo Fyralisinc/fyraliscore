@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS observations (
   sequence_num BIGSERIAL,
   entities_mentioned JSONB DEFAULT '[]'::jsonb,
   PRIMARY KEY (id, occurred_at),
-  UNIQUE (source_channel, external_id, occurred_at)
+  CONSTRAINT observations_tenant_source_external_occurred_key
+    UNIQUE (tenant_id, source_channel, external_id, occurred_at)
 ) PARTITION BY RANGE (occurred_at);
 
 -- S1.2 — indexes on observations (declared on the parent; propagate to partitions)

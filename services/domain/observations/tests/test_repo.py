@@ -191,6 +191,28 @@ async def test_insert_twice_same_external_id_returns_first_row(
     assert second.content_text == "hello world"
 
 
+async def test_same_external_id_is_deduped_per_tenant(
+    repo: ObservationRepository,
+    tenant_id: UUID,
+):
+    other_tenant = uuid7()
+    occurred = _now()
+    first = await repo.insert(
+        _mk_obs(tenant_id, external_id="shared", occurred_at=occurred)
+    )
+    second = await repo.insert(
+        _mk_obs(
+            other_tenant,
+            external_id="shared",
+            occurred_at=occurred,
+            content_text="other tenant body",
+        )
+    )
+    assert first.id != second.id
+    assert second.tenant_id == other_tenant
+    assert second.content_text == "other tenant body"
+
+
 async def test_null_external_id_is_not_dedup_keyed(
     repo: ObservationRepository, tenant_id: UUID,
 ):

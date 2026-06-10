@@ -111,16 +111,6 @@ class AskOrchestrator:
             content=query,
             structured_payload={"scope": scope.model_dump(mode="json"), "mode": mode},
         )
-
-        packet = await self._retrieve_packet(
-            tenant_id=tenant_id,
-            viewer_id=viewer_id,
-            query=query,
-            scope=scope,
-            mode=mode,
-            intent=intent,
-        )
-        latency_ms = int((time.perf_counter() - started) * 1000)
         retrieval_run_id = await self._store.add_retrieval_run(
             session_id=session_id,
             message_id=user_message_id,
@@ -134,53 +124,87 @@ class AskOrchestrator:
                 ],
                 "scope": scope.model_dump(mode="json"),
                 "mode": mode,
-                "debug": packet.debug,
             },
             mode=mode,
-            status="completed",
-            latency_ms=latency_ms,
-        )
-        await self._store.add_evidence_items(
-            retrieval_run_id,
-            [*packet.evidence, *packet.omitted],
+            status="running",
+            latency_ms=None,
         )
 
-        payload = _compose_answer(
-            query=query,
-            scope=scope,
-            mode=mode,
-            intent=intent,
-            packet=packet,
-        )
-        assistant_message_id = await self._store.add_message(
-            session_id=session_id,
-            role="assistant",
-            content=payload.answer,
-            structured_payload=payload.model_dump(mode="json"),
-        )
-        answer_id = await self._store.add_answer(
-            session_id=session_id,
-            message_id=assistant_message_id,
-            retrieval_run_id=retrieval_run_id,
-            payload=payload,
-            mode=mode,
-            scope=scope,
-            latency_ms=latency_ms,
-        )
-        if _should_propose_state_change(query, intent, packet):
-            change = await self._store.add_proposed_state_change(
+        try:
+            packet = await self._retrieve_packet(
                 tenant_id=tenant_id,
-                answer_id=answer_id,
-                proposed_op=_build_proposed_op(query, scope, packet),
+                viewer_id=viewer_id,
+                query=query,
+                scope=scope,
+                mode=mode,
+                intent=intent,
             )
-            payload.possible_state_change = change
-            await self._store.update_answer_payload(answer_id, payload)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await self._store.update_retrieval_run_status(
+                retrieval_run_id,
+                status="completed",
+                latency_ms=latency_ms,
+            )
+            await self._store.add_evidence_items(
+                retrieval_run_id,
+                [*packet.evidence, *packet.omitted],
+            )
+
+            payload = _compose_answer(
+                query=query,
+                scope=scope,
+                mode=mode,
+                intent=intent,
+                packet=packet,
+            )
+            assistant_message_id = await self._store.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=payload.answer,
+                structured_payload=payload.model_dump(mode="json"),
+            )
+            answer_id = await self._store.add_answer(
+                session_id=session_id,
+                message_id=assistant_message_id,
+                retrieval_run_id=retrieval_run_id,
+                payload=payload,
+                mode=mode,
+                scope=scope,
+                latency_ms=latency_ms,
+            )
+            if _should_propose_state_change(query, intent, packet):
+                change = await self._store.add_proposed_state_change(
+                    tenant_id=tenant_id,
+                    answer_id=answer_id,
+                    proposed_op=_build_proposed_op(query, scope, packet),
+                )
+                payload.possible_state_change = change
+                await self._store.update_answer_payload(answer_id, payload)
+                await self._store.add_message(
+                    session_id=session_id,
+                    role="system",
+                    content="Proposed state change created for validation.",
+                    structured_payload=change.model_dump(mode="json"),
+                )
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await self._store.update_retrieval_run_status(
+                retrieval_run_id,
+                status="failed",
+                latency_ms=latency_ms,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             await self._store.add_message(
                 session_id=session_id,
                 role="system",
-                content="Proposed state change created for validation.",
-                structured_payload=change.model_dump(mode="json"),
+                content="Ask turn failed before an answer could be composed.",
+                structured_payload={
+                    "retrieval_run_id": str(retrieval_run_id),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
             )
+            raise
 
         return AskTurnResponse(
             session=session,

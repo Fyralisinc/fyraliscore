@@ -104,8 +104,14 @@ def build_core_router() -> APIRouter:
     @router.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:
         deps = _deps(request)
-        bootstrap = _settings(request).auth_bootstrap_secret
+        settings = _settings(request)
+        bootstrap = settings.auth_bootstrap_secret
         hdr = request.headers.get("X-Bootstrap-Secret", "")
+        if not bootstrap and settings.environment in {"prod", "production"}:
+            return JSONResponse(
+                {"error": "bootstrap_secret_required"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if bootstrap and hdr != bootstrap:
             return JSONResponse(
                 {"error": "bootstrap_secret_mismatch"},

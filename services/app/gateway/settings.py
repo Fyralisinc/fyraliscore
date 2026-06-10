@@ -35,6 +35,35 @@ def _env_optional_bool(
     return _env_bool(env, name, default=False)
 
 
+def _env_name(source: Mapping[str, str]) -> str:
+    return (
+        source.get("FYRALIS_ENV")
+        or source.get("APP_ENV")
+        or source.get("ENVIRONMENT")
+        or "development"
+    ).strip().lower()
+
+
+def _is_production(env_name: str) -> bool:
+    return env_name in {"prod", "production"}
+
+
+def _required_disabled_in_production(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    production: bool,
+) -> bool:
+    if not production:
+        return _env_bool(env, name, default=False)
+    if name not in env or env.get(name, "") == "":
+        raise ValueError(f"{name}=false must be set explicitly in production")
+    enabled = _env_bool(env, name, default=False)
+    if enabled:
+        raise ValueError(f"{name} must be disabled in production")
+    return False
+
+
 def _env_float(
     env: Mapping[str, str],
     name: str,
@@ -58,6 +87,7 @@ class GatewaySettings:
     """Settings used by the gateway app factory and lifespan startup."""
 
     log_level: str = "INFO"
+    environment: str = "development"
     ollama_url: str | None = None
     auth_bootstrap_secret: str | None = None
     ceo_view_enabled: bool = True
@@ -66,8 +96,8 @@ class GatewaySettings:
     require_ingestion_data_plane: bool = False
     start_grt_scheduler: bool = True
     mount_sim: bool | None = None
-    finance_panel_enabled: bool = True
-    slack_dm_panel_enabled: bool = True
+    finance_panel_enabled: bool = False
+    slack_dm_panel_enabled: bool = False
     default_tenant_id: str | None = None
     view_ceo_token: str = "ceo-dogfood-token"
     view_ceo_display_name: str = "Rachin"
@@ -88,10 +118,16 @@ class GatewaySettings:
         env: Mapping[str, str] | None = None,
     ) -> "GatewaySettings":
         source = env if env is not None else os.environ
+        environment = _env_name(source)
+        production = _is_production(environment)
+        auth_bootstrap_secret = source.get("AUTH_BOOTSTRAP_SECRET") or None
+        if production and not auth_bootstrap_secret:
+            raise ValueError("AUTH_BOOTSTRAP_SECRET must be set in production")
         return cls(
             log_level=source.get("LOG_LEVEL", "INFO"),
+            environment=environment,
             ollama_url=source.get("OLLAMA_URL") or None,
-            auth_bootstrap_secret=source.get("AUTH_BOOTSTRAP_SECRET") or None,
+            auth_bootstrap_secret=auth_bootstrap_secret,
             ceo_view_enabled=_env_bool(
                 source,
                 "GATEWAY_CEO_VIEW_ENABLED",
@@ -118,15 +154,15 @@ class GatewaySettings:
                 default=True,
             ),
             mount_sim=_env_optional_bool(source, "GATEWAY_MOUNT_SIM"),
-            finance_panel_enabled=_env_bool(
+            finance_panel_enabled=_required_disabled_in_production(
                 source,
                 "FINANCE_PANEL_ENABLED",
-                default=True,
+                production=production,
             ),
-            slack_dm_panel_enabled=_env_bool(
+            slack_dm_panel_enabled=_required_disabled_in_production(
                 source,
                 "SLACK_DM_PANEL_ENABLED",
-                default=True,
+                production=production,
             ),
             default_tenant_id=source.get("DEFAULT_TENANT_ID") or None,
             view_ceo_token=source.get("VIEW_CEO_TOKEN") or "ceo-dogfood-token",
