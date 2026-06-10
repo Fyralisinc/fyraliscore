@@ -36,6 +36,17 @@ from services.reasoning.think.tests.conftest import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_question_planning(monkeypatch):
+    """Pin inquiry question-planning to deterministic (see test_reason.py).
+
+    Dev's reason.py adds an env-gated LLM question-planning step; these tests
+    assert reasoning behavior, not question planning, so the ScriptedProvider
+    must only see the reasoning call. Production keeps dev's default on.
+    """
+    monkeypatch.setenv("INQUIRY_LLM_QUESTION_PLANNING_ENABLED", "0")
+
+
 def _jsonb(value):
     if isinstance(value, (dict, list)):
         return value

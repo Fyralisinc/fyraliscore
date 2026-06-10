@@ -37,6 +37,17 @@ from services.reasoning.think.tests.conftest import ScriptedProvider, make_embed
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_question_planning(monkeypatch):
+    """Pin inquiry question-planning to deterministic (see test_reason.py).
+
+    These FU-3 cost tests assert the cost rows from the reasoning call; dev's
+    extra env-gated LLM question-planning call would perturb the scripted
+    provider and the cost ledger. Production keeps dev's default on.
+    """
+    monkeypatch.setenv("INQUIRY_LLM_QUESTION_PLANNING_ENABLED", "0")
+
+
 class UsageEmittingScriptedProvider(ScriptedProvider):
     """ScriptedProvider variant that also records token usage into the
     installed aggregator — mimicking real provider `_raw_call` which
