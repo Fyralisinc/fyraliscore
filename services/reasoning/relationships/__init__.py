@@ -28,7 +28,9 @@ from .ontology_proposals import (
 _ADJUDICATION_EXPORTS = {
     "CandidateAdjudication",
     "adjudicate_candidate_for_trigger",
+    "adjudicate_candidates_for_trigger",
     "candidate_id_from_trigger",
+    "candidate_ids_from_trigger",
     "load_candidate_for_trigger",
 }
 
@@ -62,6 +64,8 @@ __all__ = [
     "rank_candidates",
     "RelationshipCandidatesRepo",
     "adjudicate_candidate_for_trigger",
+    "adjudicate_candidates_for_trigger",
     "candidate_id_from_trigger",
+    "candidate_ids_from_trigger",
     "load_candidate_for_trigger",
 ]

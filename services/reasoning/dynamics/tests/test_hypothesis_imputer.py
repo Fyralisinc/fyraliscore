@@ -28,6 +28,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from lib.shared.memory_grammar import derive_memory_grammar
+from services.domain.models.propositions import validate_proposition
 from services.reasoning.dynamics.detectors import MissingTransitionDiscontinuity
 from services.reasoning.dynamics.hypothesis_imputer import (
     ImputedHypothesis,
@@ -333,6 +334,13 @@ def test_impute_proposition_derives_to_hypothesis_role() -> None:
     assert grammar.modality == "inferred"
     assert grammar.abstraction_level == "atomic"
     assert grammar.time_mode == "unspecified"
+    assert out.proposition["claim_role"] == "hypothesis"
+    assert out.proposition["abstraction_level"] == "atomic"
+    assert out.proposition["time_mode"] == "unspecified"
+    assert out.proposition["modality"] == "inferred"
+    assert out.proposition["polarity"] == "neutral"
+    parsed = validate_proposition(out.proposition)
+    assert parsed.claim_role == "hypothesis"
 
 
 def test_impute_proposition_carries_provenance_flag() -> None:

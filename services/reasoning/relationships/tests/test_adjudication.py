@@ -10,7 +10,9 @@ from services.reasoning.relationships import (
     JudgmentScores,
     RelationshipCandidatesRepo,
     adjudicate_candidate_for_trigger,
+    adjudicate_candidates_for_trigger,
     candidate_id_from_trigger,
+    candidate_ids_from_trigger,
     load_candidate_for_trigger,
     make_edge_candidate,
     make_edge_type_candidate,
@@ -442,6 +444,114 @@ async def test_load_candidate_for_trigger_attaches_prompt_shape(
     assert row is not None
     assert trigger.member_model_ids == [left, right]
     assert trigger.seed_signature["relationship_candidate"]["edge_kind"] == "blocks"
+
+
+async def test_batched_candidate_trigger_loads_and_adjudicates_all_candidates(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    left = uuid7()
+    middle = uuid7()
+    right = uuid7()
+    edge_a = uuid7()
+    edge_b = uuid7()
+    repo = RelationshipCandidatesRepo()
+    candidate_a = make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=left,
+        target_model_id=middle,
+        edge_kind="blocks",
+        basis="topology_suggested",
+        explanation="A blocks B.",
+        scores=JudgmentScores(impact=0.8, actionability=0.8, confidence=0.8),
+        source="latent_topology",
+        metadata={
+            "mechanism": "Explicit dependency.",
+            "dependency_basis": "planning graph",
+        },
+    )
+    candidate_b = make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=middle,
+        target_model_id=right,
+        edge_kind="explains",
+        basis="topology_suggested",
+        explanation="B explains C.",
+        scores=JudgmentScores(impact=0.7, actionability=0.7, confidence=0.7),
+        source="latent_topology",
+        metadata={"mechanism": "Shared causal chain."},
+    )
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=tenant_id,
+        seed_signature={
+            "relationship_candidate_ids": [
+                str(candidate_a.id),
+                str(candidate_b.id),
+            ]
+        },
+    )
+
+    async with fresh_db.acquire() as conn:
+        await repo.insert(conn, candidate_a)
+        await repo.insert(conn, candidate_b)
+        loaded = await load_candidate_for_trigger(conn, trigger)
+        results = await adjudicate_candidates_for_trigger(
+            conn,
+            trigger=trigger,
+            diff=_diff(
+                tenant_id,
+                edge_ops=[
+                    EdgeOp(
+                        op="add",
+                        source_model_id=left,
+                        target_model_id=middle,
+                        edge_kind="blocks",
+                    ),
+                    EdgeOp(
+                        op="add",
+                        source_model_id=middle,
+                        target_model_id=right,
+                        edge_kind="explains",
+                    ),
+                ],
+            ),
+            applied={
+                "edge_ops": [
+                    {
+                        "op": "add",
+                        "edge_ids": [str(edge_a)],
+                        "source_model_id": str(left),
+                        "target_model_id": str(middle),
+                        "edge_kind": "blocks",
+                    },
+                    {
+                        "op": "add",
+                        "edge_ids": [str(edge_b)],
+                        "source_model_id": str(middle),
+                        "target_model_id": str(right),
+                        "edge_kind": "explains",
+                    },
+                ],
+                "claim_ops": [],
+            },
+        )
+        row_a = await repo.get(
+            conn, candidate_id=candidate_a.id, tenant_id=tenant_id
+        )
+        row_b = await repo.get(
+            conn, candidate_id=candidate_b.id, tenant_id=tenant_id
+        )
+
+    assert loaded is not None
+    assert candidate_ids_from_trigger(trigger) == (candidate_a.id, candidate_b.id)
+    assert candidate_id_from_trigger(trigger) == candidate_a.id
+    assert len(trigger.seed_signature["relationship_candidates"]) == 2
+    assert trigger.member_model_ids == [left, middle, right]
+    assert [r.candidate_id for r in results] == [candidate_a.id, candidate_b.id]
+    assert row_a["review_status"] == "accepted"
+    assert row_b["review_status"] == "accepted"
 
 
 async def test_irrelevant_trigger_has_no_candidate_id() -> None:

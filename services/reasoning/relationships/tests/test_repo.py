@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import asyncpg
 import pytest
 
@@ -217,3 +219,61 @@ async def test_relationship_ontology_proposal_review_accepts_dynamic_kind(
     assert reviewed["metadata"]["last_review"]["reviewed_by"] == "test"
     assert accepted is not None
     assert accepted["proposed_edge_kind"] == "gated_by_decision"
+
+
+async def test_relationship_ontology_aggregation_retires_review_ready_examples(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    candidates_repo = RelationshipCandidatesRepo()
+    proposals_repo = RelationshipOntologyProposalsRepo()
+    candidate_ids = []
+
+    async with fresh_db.acquire() as conn:
+        for _ in range(3):
+            candidate = make_edge_type_candidate(
+                tenant_id=tenant_id,
+                proposed_edge_kind="gated_by_decision",
+                description="Progress depends on an explicit approval decision.",
+                relationship_summary=(
+                    "The target cannot progress until a decision is made."
+                ),
+                nearest_existing_kind="blocks",
+                parent_kind="blocks",
+                example_source_model_id=uuid7(),
+                example_target_model_id=uuid7(),
+                scores=JudgmentScores(
+                    impact=0.8,
+                    actionability=0.7,
+                    confidence=0.7,
+                ),
+            )
+            inserted = await candidates_repo.insert(conn, candidate)
+            candidate_ids.append(inserted["id"])
+
+        proposals = await proposals_repo.aggregate_from_edge_type_candidates(
+            conn,
+            tenant_id=tenant_id,
+        )
+        rows = await conn.fetch(
+            """
+            SELECT id, review_status, decided_at, metadata
+            FROM relationship_candidates
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id
+            """,
+            candidate_ids,
+        )
+
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "review_ready"
+    assert proposals[0]["example_count"] == 3
+    assert {row["review_status"] for row in rows} == {"retired"}
+    assert all(row["decided_at"] is not None for row in rows)
+    metadata_rows = []
+    for row in rows:
+        metadata = row["metadata"]
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        metadata_rows.append(metadata)
+    assert all(metadata.get("ontology_proposal_id") for metadata in metadata_rows)
