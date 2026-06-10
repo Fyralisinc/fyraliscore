@@ -9,6 +9,7 @@ import pytest
 
 from services.domain.models.repo import ModelsRepo
 
+from services.reasoning.retrieval.config import RetrievalConfig
 from services.reasoning.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
@@ -78,6 +79,39 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
         assert m.retrieval_count == prev["retrieval_count"] + 1
         assert m.confidence == prev["confidence"]  # unchanged
         assert m.last_retrieved_at is not None
+
+
+async def test_t1_accepts_iso_string_seed_occurred_at_from_queue_payload(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=fs.observation_ids[0],
+        seed_entity_ids=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+        seed_natural_text="future validation changed the renewal risk outcome",
+        seed_occurred_at="2026-06-17T10:06:54.371359+00:00",
+        scope_actors=[fs.hero_actor_id],
+        precomputed_seed_vector=make_embedding(
+            "future validation changed the renewal risk outcome"
+        ),
+    )
+
+    result = await primary_retrieve(trigger, tx_conn)
+
+    assert isinstance(trigger.seed_occurred_at, datetime)
+    assert trigger.seed_occurred_at.tzinfo is not None
+    assert "C" in result.notes["pathways_run"]
+    temporal_notes = next(
+        timing["pathway_notes"]
+        for timing in result.notes["pathway_timings"]
+        if timing["stage"] == "pathway_C"
+    )
+    assert (
+        temporal_notes["seed_occurred_at"]
+        == "2026-06-17T10:06:54.371359+00:00"
+    )
 
 
 async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
@@ -292,6 +326,39 @@ async def test_t1_backfills_scope_from_triggering_observation(
     assert customer_seed in trigger.seed_entity_ids
     assert result.notes["effective_scope"]["seed_entities"] >= 1
     assert any(r.id == fs.hero_customer_id for r in result.resources)
+
+
+async def test_primary_model_first_keeps_t1_batch_and_caps_historical_observations(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    trigger_ids = fs.observation_ids[:6]
+    cfg = RetrievalConfig(
+        temporal_max_observations=80,
+        trigger_observation_cap=6,
+        historical_observation_cap=2,
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=trigger_ids[0],
+        observation_ids=list(trigger_ids),
+        seed_natural_text="customer-0 renewal risk",
+        seed_occurred_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding("customer-0 renewal risk"),
+    )
+
+    result = await primary_retrieve(trigger, tx_conn, config=cfg)
+
+    result_ids = {o.id for o in result.observations}
+    assert set(trigger_ids).issubset(result_ids)
+    assert len(result_ids - set(trigger_ids)) <= cfg.historical_observation_cap
+    assert result.notes["observation_policy"] == {
+        "model_first_context_enabled": True,
+        "trigger_observations": 6,
+        "historical_observations": len(result_ids - set(trigger_ids)),
+        "historical_observation_cap": 2,
+    }
 
 
 async def test_primary_t2_uses_due_model_scope_text_and_embedding_without_embedder(
