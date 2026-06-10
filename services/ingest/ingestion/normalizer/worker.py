@@ -75,6 +75,9 @@ from services.ingest.ingestion.normalizer.invariants import (
     assert_envelope_invariants,
 )
 from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
+from services.ingest.ingestion.payload_validation import (
+    validate_ingest_json_payload,
+)
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import S3Client
 
@@ -519,6 +522,7 @@ async def _normalize_one_with_envelope(
     # info is already in `envelope.ingress_metadata`); for backfill,
     # headers carry the replayed webhook_metadata (A27.3).
     handler = get_handler(channel)
+    validate_ingest_json_payload(payload, channel=channel)
     draft = await handler(payload, headers)
 
     normalized = NormalizedEnvelope(

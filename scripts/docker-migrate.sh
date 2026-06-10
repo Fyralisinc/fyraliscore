@@ -50,13 +50,9 @@ for f in db/migrations/*.sql; do
   # stripping line comments via sed.
   if sed 's|--.*$||' "$f" | grep -qiE '\bCONCURRENTLY\b' \
        || grep -qiE '^[[:space:]]*--[[:space:]]*migration:no-transaction\b' "$f"; then
-    if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; then
-      echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
-    fi
+    psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
   else
-    if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"; then
-      echo "  WARNING: ${fname} failed — may already be applied. Recording and continuing."
-    fi
+    psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"
   fi
   psql -tAd "$DATABASE_URL" -c \
     "INSERT INTO schema_migrations(filename) VALUES('${fname}') ON CONFLICT DO NOTHING" >/dev/null

@@ -43,7 +43,11 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 
-from services.app.realtime.dispatcher import Dispatcher, _ClientState
+from services.app.realtime.dispatcher import (
+    ConnectionLimitExceeded,
+    Dispatcher,
+    _ClientState,
+)
 
 
 def _validate_token_lazy():
@@ -115,10 +119,14 @@ async def ws_stream(ws: WebSocket) -> None:
         return
 
     # --- Register a client + drain task -----------------------------
-    state = deps.dispatcher.register_client(
-        tenant_id=ctx.tenant_id,
-        actor_id=ctx.actor_id,
-    )
+    try:
+        state = deps.dispatcher.register_client(
+            tenant_id=ctx.tenant_id,
+            actor_id=ctx.actor_id,
+        )
+    except ConnectionLimitExceeded:
+        await _close_with(ws, CLOSE_POLICY_VIOLATION, "connection_limit_exceeded")
+        return
     # Send a ready frame with the subscription_id so the client can
     # reference it in replay cursors.
     await _safe_send(

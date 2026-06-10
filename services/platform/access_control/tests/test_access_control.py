@@ -545,6 +545,20 @@ async def test_tenant_isolation_absolute(tx_conn, tenant, other_tenant):
     assert decision.reason == "tenant_mismatch"
 
 
+async def test_actor_must_belong_to_supplied_tenant(tx_conn, tenant, other_tenant):
+    foreign_actor = await insert_actor(tx_conn, other_tenant)
+    owner = await insert_actor(tx_conn, tenant)
+    cid = await insert_commitment(tx_conn, tenant, owner_id=owner)
+    decision = await can_read(
+        foreign_actor,
+        {"kind": "commitment", "id": cid, "tenant_id": tenant},
+        conn=tx_conn,
+        tenant_id=tenant,
+    )
+    assert not decision.allowed
+    assert decision.reason == "actor_tenant_mismatch"
+
+
 # =====================================================================
 # Test 17 — Realtime: revocation drops subscription
 # =====================================================================

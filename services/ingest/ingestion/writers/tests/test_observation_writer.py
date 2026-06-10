@@ -28,6 +28,7 @@ from uuid import uuid4
 import orjson
 import pytest
 
+from lib.shared.errors import ValidationError
 from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingest.ingestion.writers import observation_writer as writer_module
 
@@ -78,16 +79,16 @@ async def test_record_event_appends_to_shadow_log():
     )
     await writer_module._record_shadow_event(env)
 
-    log_entries = writer_module.get_shadow_log()
-    assert len(log_entries) == 1
-    event = log_entries[0]
-    assert event.tenant_id == str(env.tenant_id)
-    assert event.source == "slack"
-    assert event.source_channel == "slack:message"
-    assert event.external_id == "C01:1.0"
-    assert event.content_hash == "a" * 40
 
-    assert writer_module.get_metrics()["writer.shadow_write_events"] == 1
+def test_full_mode_draft_reconstruction_applies_shared_payload_guards() -> None:
+    env = NormalizedEnvelope.model_validate(
+        json.loads(_normalized_envelope_bytes())
+    ).model_copy(update={"content": {"text": "bad\x00payload"}})
+    with pytest.raises(ValidationError, match="NUL byte"):
+        writer_module._draft_from_envelope(env)
+
+    assert writer_module.get_shadow_log() == []
+    assert writer_module.get_metrics()["writer.shadow_write_events"] == 0
 
 
 # ---------------------------------------------------------------------

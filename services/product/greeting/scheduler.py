@@ -75,6 +75,24 @@ STALENESS_WARN_THRESHOLDS = {
 _TOD_BOUNDARY_HOURS = (6, 10, 14, 18, 22)
 
 
+async def _bounded_render(
+    sem: asyncio.Semaphore,
+    *,
+    label: str,
+    render: Callable[[], Any],
+    fallback: Callable[[], Any],
+) -> Any:
+    async with sem:
+        try:
+            return await render()
+        except Exception as exc:  # noqa: BLE001 - partial refresh fallback
+            log.warning(
+                "grt.render_partial_failure",
+                extra={"render_label": label, "error": str(exc)},
+            )
+            return await fallback()
+
+
 # =====================================================================
 # Listener
 # =====================================================================
@@ -278,14 +296,45 @@ class GreetingScheduler:
         query_grid_snap = await self._composer.compose_query_grid_snapshot(
             tenant_id, now=now
         )
+        render_sem = asyncio.Semaphore(
+            max(1, int(self._config.max_concurrent_renders))
+        )
+        fallback_rendering = MockRenderingAdapter()
         greeting_task = asyncio.create_task(
-            self._rendering.render_greeting(greeting_snap, founder)
+            _bounded_render(
+                render_sem,
+                label="greeting",
+                render=lambda: self._rendering.render_greeting(
+                    greeting_snap, founder
+                ),
+                fallback=lambda: fallback_rendering.render_greeting(
+                    greeting_snap, founder
+                ),
+            )
         )
         close_task = asyncio.create_task(
-            self._rendering.render_close_line(greeting_snap, founder)
+            _bounded_render(
+                render_sem,
+                label="close_line",
+                render=lambda: self._rendering.render_close_line(
+                    greeting_snap, founder
+                ),
+                fallback=lambda: fallback_rendering.render_close_line(
+                    greeting_snap, founder
+                ),
+            )
         )
         qg_task = asyncio.create_task(
-            self._rendering.render_query_grid(query_grid_snap, founder)
+            _bounded_render(
+                render_sem,
+                label="query_grid",
+                render=lambda: self._rendering.render_query_grid(
+                    query_grid_snap, founder
+                ),
+                fallback=lambda: fallback_rendering.render_query_grid(
+                    query_grid_snap, founder
+                ),
+            )
         )
 
         # 3. Compose per-kind card snapshots and render each.
@@ -302,19 +351,46 @@ class GreetingScheduler:
         for snap in obs_snaps:
             card_tasks.append(
                 asyncio.create_task(
-                    self._rendering.render_card(snap, founder, "observation")
+                    _bounded_render(
+                        render_sem,
+                        label="card:observation",
+                        render=lambda snap=snap: self._rendering.render_card(
+                            snap, founder, "observation"
+                        ),
+                        fallback=lambda snap=snap: fallback_rendering.render_card(
+                            snap, founder, "observation"
+                        ),
+                    )
                 )
             )
         for snap in dec_snaps:
             card_tasks.append(
                 asyncio.create_task(
-                    self._rendering.render_card(snap, founder, "decision")
+                    _bounded_render(
+                        render_sem,
+                        label="card:decision",
+                        render=lambda snap=snap: self._rendering.render_card(
+                            snap, founder, "decision"
+                        ),
+                        fallback=lambda snap=snap: fallback_rendering.render_card(
+                            snap, founder, "decision"
+                        ),
+                    )
                 )
             )
         for snap in que_snaps:
             card_tasks.append(
                 asyncio.create_task(
-                    self._rendering.render_card(snap, founder, "question")
+                    _bounded_render(
+                        render_sem,
+                        label="card:question",
+                        render=lambda snap=snap: self._rendering.render_card(
+                            snap, founder, "question"
+                        ),
+                        fallback=lambda snap=snap: fallback_rendering.render_card(
+                            snap, founder, "question"
+                        ),
+                    )
                 )
             )
 
@@ -337,13 +413,25 @@ class GreetingScheduler:
             evidence_refs = _gather_card_evidence(card, focus_snap)
             reasoning_tasks.append(
                 asyncio.create_task(
-                    self._rendering.render_card_reasoning(
-                        focus_snap,
-                        founder,
-                        card.kind,
-                        card_subject=_card_subject_label(card),
-                        card_body_context=card.body_html,
-                        supporting_evidence=evidence_refs,
+                    _bounded_render(
+                        render_sem,
+                        label=f"card_reasoning:{card.kind}",
+                        render=lambda card=card, focus_snap=focus_snap, evidence_refs=evidence_refs: self._rendering.render_card_reasoning(
+                            focus_snap,
+                            founder,
+                            card.kind,
+                            card_subject=_card_subject_label(card),
+                            card_body_context=card.body_html,
+                            supporting_evidence=evidence_refs,
+                        ),
+                        fallback=lambda card=card, focus_snap=focus_snap, evidence_refs=evidence_refs: fallback_rendering.render_card_reasoning(
+                            focus_snap,
+                            founder,
+                            card.kind,
+                            card_subject=_card_subject_label(card),
+                            card_body_context=card.body_html,
+                            supporting_evidence=evidence_refs,
+                        ),
                     )
                 )
             )

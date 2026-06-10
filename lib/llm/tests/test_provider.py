@@ -714,6 +714,22 @@ def test_deepseek_reasoner_uses_json_mode_not_strict_tools(monkeypatch):
     assert _deepseek_supports_strict_tool_calling("deepseek-chat")
 
 
+def test_deepseek_strict_repair_does_not_corrupt_valid_colon_strings():
+    from lib.llm.provider import _repair_deepseek_strict_json
+
+    raw = '{"note": "owner: alice", "ok": true}'
+    assert _repair_deepseek_strict_json(raw) == raw
+
+
+def test_deepseek_strict_repair_only_repairs_object_keys():
+    from lib.llm.provider import _repair_deepseek_strict_json
+
+    repaired = _repair_deepseek_strict_json(
+        '{"trigger_ref: "x", "note": "owner: alice"}'
+    )
+    assert repaired == '{"trigger_ref": "x", "note": "owner: alice"}'
+
+
 async def test_deepseek_strict_parse_failure_falls_back_to_json_mode(
     monkeypatch,
 ):

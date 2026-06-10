@@ -129,10 +129,7 @@ for f in db/migrations/*.sql; do
     continue
   fi
   log "  + ${fname}"
-  if ! psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null; then
-    warn "  migration ${fname} failed; the schema may already include its objects."
-    warn "  Recording it as applied so we don't retry. Inspect db/migrations/${fname} manually if surprised."
-  fi
+  psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null
   psql -tAd "$DATABASE_URL" -c \
     "INSERT INTO schema_migrations(filename) VALUES('${fname}') ON CONFLICT DO NOTHING" >/dev/null
   applied=$((applied+1))

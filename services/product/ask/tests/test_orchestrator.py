@@ -121,6 +121,16 @@ class _FakeReader:
         )()
 
 
+class _FailingReader:
+    async def read(self, **kwargs):
+        raise RuntimeError("reader unavailable")
+
+
+class _FailingAnswerStore(InMemoryAskStore):
+    async def add_answer(self, *args, **kwargs):
+        raise RuntimeError("answer persistence unavailable")
+
+
 class _ChainReader:
     async def read(self, **kwargs):
         base = await _FakeReader().read(**kwargs)
@@ -641,3 +651,35 @@ async def test_state_gap_query_creates_validation_gated_change():
     )
     assert accepted.status == "accepted"
     assert accepted.linked_trigger_id is not None
+
+
+async def test_answer_turn_marks_retrieval_run_failed_on_persistence_error():
+    store = _FailingAnswerStore()
+    orch = AskOrchestrator(
+        store=store,
+        conn_provider=_ConnProvider(),
+        reader=_FakeReader(),
+    )
+    session = await orch.create_session(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        body=AskSessionCreateRequest(
+            initial_scope=AskScope(type="current_page", label="Acme deal"),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="answer persistence unavailable"):
+        await orch.answer_turn(
+            tenant_id=TENANT,
+            viewer_id=VIEWER,
+            session_id=session.id,
+            body=AskTurnRequest(query="What changed?"),
+        )
+
+    [run] = list(store.retrieval_runs.values())
+    assert run["status"] == "failed"
+    assert run["latency_ms"] is not None
+    assert (
+        "RuntimeError: answer persistence unavailable"
+        in run["retrieval_plan"]["error"]
+    )

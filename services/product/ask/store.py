@@ -54,6 +54,14 @@ class AskStore(Protocol):
         status: str,
         latency_ms: int | None,
     ) -> UUID: ...
+    async def update_retrieval_run_status(
+        self,
+        retrieval_run_id: UUID,
+        *,
+        status: str,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> None: ...
     async def add_evidence_items(
         self,
         retrieval_run_id: UUID,
@@ -254,6 +262,33 @@ class PostgresAskStore:
                 latency_ms,
             )
         return rid
+
+    async def update_retrieval_run_status(
+        self,
+        retrieval_run_id: UUID,
+        *,
+        status: str,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        plan_patch = {"error": error} if error else {}
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE ask_retrieval_runs
+                   SET status = $2,
+                       latency_ms = COALESCE($3, latency_ms),
+                       retrieval_plan = CASE
+                         WHEN $4::jsonb = '{}'::jsonb THEN retrieval_plan
+                         ELSE retrieval_plan || $4::jsonb
+                       END
+                 WHERE id = $1
+                """,
+                retrieval_run_id,
+                status,
+                latency_ms,
+                _jsonb(plan_patch),
+            )
 
     async def add_evidence_items(
         self,
@@ -561,6 +596,7 @@ class InMemoryAskStore:
     def __init__(self) -> None:
         self.sessions: dict[UUID, AskSession] = {}
         self.evidence: dict[UUID, list[AskEvidenceItem]] = {}
+        self.retrieval_runs: dict[UUID, dict[str, Any]] = {}
         self.changes: dict[UUID, AskProposedStateChange] = {}
         self.feedback: list[dict[str, Any]] = []
 
@@ -628,7 +664,33 @@ class InMemoryAskStore:
     ) -> UUID:
         rid = uuid7()
         self.evidence[rid] = []
+        self.retrieval_runs[rid] = {
+            "session_id": session_id,
+            "message_id": message_id,
+            "intent": intent,
+            "retrieval_plan": retrieval_plan,
+            "mode": mode,
+            "status": status,
+            "latency_ms": latency_ms,
+        }
         return rid
+
+    async def update_retrieval_run_status(
+        self,
+        retrieval_run_id: UUID,
+        *,
+        status: str,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        run = self.retrieval_runs.setdefault(retrieval_run_id, {})
+        run["status"] = status
+        if latency_ms is not None:
+            run["latency_ms"] = latency_ms
+        if error:
+            plan = dict(run.get("retrieval_plan") or {})
+            plan["error"] = error
+            run["retrieval_plan"] = plan
 
     async def add_evidence_items(
         self,

@@ -243,8 +243,7 @@ class CodeGraphRepo:
         """Semantic code-RAG: nearest symbols to an embedding within a snapshot."""
         # Bind the query vector as text and cast in SQL ($2::text::vector) so the
         # read works whether or not the pgvector codec is registered.
-        rows = await self.conn.fetch(
-            """
+        sql = """
             SELECT s.qualified_name, s.kind, cf.path, s.signature,
                    1 - (ce.embedding <=> $2::text::vector) AS score
               FROM code_embeddings ce
@@ -255,9 +254,16 @@ class CodeGraphRepo:
                AND ce.embedding IS NOT NULL
              ORDER BY ce.embedding <=> $2::text::vector
              LIMIT $3
-            """,
-            snapshot_id, _vec(embedding), k,
-        )
+            """
+        params = (snapshot_id, _vec(embedding), k)
+        rows = await self.conn.fetch(sql, *params)
+        if len(rows) < k:
+            async with self.conn.transaction():
+                await self.conn.execute("SET LOCAL enable_indexscan = off")
+                await self.conn.execute("SET LOCAL enable_bitmapscan = off")
+                exact_rows = await self.conn.fetch(sql, *params)
+            if len(exact_rows) > len(rows):
+                rows = exact_rows
         return [
             {
                 "qualified_name": r["qualified_name"], "kind": r["kind"],

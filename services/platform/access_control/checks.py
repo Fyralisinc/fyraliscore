@@ -131,6 +131,15 @@ async def can_read(
     if entity_tenant != tenant_id:
         return AccessDecision(False, "tenant_mismatch")
 
+    actor_tenant = await conn.fetchval(
+        "SELECT tenant_id FROM actors WHERE id = $1",
+        actor_id,
+    )
+    if actor_tenant is None:
+        return AccessDecision(False, "actor_not_found")
+    if actor_tenant != tenant_id:
+        return AccessDecision(False, "actor_tenant_mismatch")
+
     # Admin / leadership overrides come after Layer 1 but before per-
     # kind rules — the spec's "Admin can override" rule is a single
     # check. HR-channel observations explicitly skip admin override.

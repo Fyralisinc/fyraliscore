@@ -32,6 +32,13 @@ from services.reasoning.think.reason import ThinkRunOutcome, think
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
 
 
+async def test_narrow_inferential_transactions_are_opt_in_by_default(monkeypatch):
+    monkeypatch.delenv("THINK_NARROW_INFERENTIAL_TX", raising=False)
+    assert reason_mod._narrow_inferential_transaction_enabled() is False
+    monkeypatch.setenv("THINK_NARROW_INFERENTIAL_TX", "1")
+    assert reason_mod._narrow_inferential_transaction_enabled() is True
+
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 

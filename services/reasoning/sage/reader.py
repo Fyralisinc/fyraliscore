@@ -319,6 +319,7 @@ class SynthesisReader:
         substrate: SageReadSubstrate | None = None,
     ) -> SynthesisReaderResult:
         timings: dict[str, int] = {}
+        degraded_sources: list[dict[str, Any]] = []
         cache_stats_started = Counter(self._cache_stats)
         read_started = time.perf_counter()
 
@@ -356,15 +357,15 @@ class SynthesisReader:
         _add_substrate_seed_models(candidates, substrate, self._budget)
         stage_started = mark("explicit_seed_ms", stage_started)
         shortcut_hits = await self._activate_from_shortcuts(
-            conn, tenant_id, signature, candidates,
+            conn, tenant_id, signature, candidates, degraded_sources,
         )
         stage_started = mark("shortcut_activation_ms", stage_started)
         contextual_affordance_hits = await self._activate_from_affordances(
-            conn, tenant_id, primitive, signature, candidates,
+            conn, tenant_id, primitive, signature, candidates, degraded_sources,
         )
         stage_started = mark("affordance_activation_ms", stage_started)
         negative_memory = await self._suppress_from_negative_memory(
-            conn, tenant_id, signature, candidates,
+            conn, tenant_id, signature, candidates, degraded_sources,
         )
         stage_started = mark("negative_memory_ms", stage_started)
 
@@ -389,6 +390,7 @@ class SynthesisReader:
                 timings=timings,
                 read_started=read_started,
                 learned_plan=learned_plan,
+                degraded_sources=degraded_sources,
             )
 
         lexical_activation_stats = await self._activate_from_lexical_scan(
@@ -620,6 +622,7 @@ class SynthesisReader:
                 "signature": signature,
                 "selected_model_ids": [str(mid) for mid in selected_model_ids],
                 "projected_evidence_count": len(projected_dicts),
+                "degraded_sources": list(degraded_sources),
             },
         )
         debug = {
@@ -637,6 +640,7 @@ class SynthesisReader:
                 "coverage_metrics": selection.coverage_metrics,
             },
             "projection_coverage": projection.coverage,
+            "degraded_sources": list(degraded_sources),
             "projection_budget": _jsonable(asdict(projection_budget)),
             "learned_read_plan": _jsonable(asdict(learned_plan)),
             "candidate_pool": {
@@ -787,6 +791,7 @@ class SynthesisReader:
         tenant_id: UUID,
         signature: dict[str, Any],
         candidates: "_CandidateAccumulator",
+        degraded_sources: list[dict[str, Any]],
     ) -> int:
         if not signature:
             return 0
@@ -797,7 +802,12 @@ class SynthesisReader:
                 signature, limit=self._budget.shortcut_candidates, conn=conn,
             )
         except Exception as exc:  # noqa: BLE001
-            _log.debug("sage.reader.shortcuts_unavailable", error=str(exc))
+            _record_degraded_source(
+                degraded_sources,
+                tenant_id=tenant_id,
+                source="shortcuts",
+                exc=exc,
+            )
             return 0
         for shortcut in shortcuts:
             score = min(0.42, 0.22 + 0.08 * float(shortcut.utility_score or 0.0))
@@ -825,6 +835,7 @@ class SynthesisReader:
         primitive: str,
         signature: dict[str, Any],
         candidates: "_CandidateAccumulator",
+        degraded_sources: list[dict[str, Any]],
     ) -> int:
         entities = _signature_entities(signature)
         try:
@@ -838,7 +849,12 @@ class SynthesisReader:
                 conn=conn,
             )
         except Exception as exc:  # noqa: BLE001
-            _log.debug("sage.reader.affordances_unavailable", error=str(exc))
+            _record_degraded_source(
+                degraded_sources,
+                tenant_id=tenant_id,
+                source="affordances",
+                exc=exc,
+            )
             return 0
         contextual_hits = 0
         for profile in profiles:
@@ -1095,6 +1111,7 @@ class SynthesisReader:
         tenant_id: UUID,
         signature: dict[str, Any],
         candidates: "_CandidateAccumulator",
+        degraded_sources: list[dict[str, Any]],
     ) -> _NegativeMemorySignal:
         if not signature:
             return _NegativeMemorySignal()
@@ -1106,7 +1123,12 @@ class SynthesisReader:
                     by_id[memory.id] = memory
             memories = tuple(by_id.values())
         except Exception as exc:  # noqa: BLE001
-            _log.debug("sage.reader.negative_memory_unavailable", error=str(exc))
+            _record_degraded_source(
+                degraded_sources,
+                tenant_id=tenant_id,
+                source="negative_memory",
+                exc=exc,
+            )
             return _NegativeMemorySignal()
         candidate_ids = candidates.model_ids
         suppressed = 0
@@ -1119,6 +1141,28 @@ class SynthesisReader:
                     )
                     suppressed += 1
         return _NegativeMemorySignal(count=len(memories), suppressed_count=suppressed)
+
+
+def _record_degraded_source(
+    degraded_sources: list[dict[str, Any]],
+    *,
+    tenant_id: UUID,
+    source: str,
+    exc: BaseException,
+) -> None:
+    event = {
+        "source": source,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+    }
+    degraded_sources.append(event)
+    _log.warning(
+        "sage.reader.degraded_source",
+        tenant_id=str(tenant_id),
+        source=source,
+        error_type=type(exc).__name__,
+        error=str(exc),
+    )
 
 
 @dataclass(slots=True)
@@ -1485,7 +1529,9 @@ def _empty_reader_result(
     timings: dict[str, int],
     read_started: float,
     learned_plan: _LearnedReadPlan,
+    degraded_sources: list[dict[str, Any]] | None = None,
 ) -> SynthesisReaderResult:
+    degraded = list(degraded_sources or [])
     selection = SubgraphSelection(
         selected_nodes=(),
         selected_edges=(),
@@ -1510,6 +1556,7 @@ def _empty_reader_result(
             "selected_model_ids": [],
             "projected_evidence_count": 0,
             "early_abstain": True,
+            "degraded_sources": degraded,
         },
     )
     debug = {
@@ -1524,6 +1571,7 @@ def _empty_reader_result(
             "coverage_metrics": selection.coverage_metrics,
         },
         "projection_coverage": {},
+        "degraded_sources": degraded,
         "learned_read_plan": _jsonable(asdict(learned_plan)),
         "stage_timings_ms": {
             **timings,

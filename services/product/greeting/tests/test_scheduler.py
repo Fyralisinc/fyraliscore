@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.product.greeting.cache import CACHE_KEYS, ViewCeoCacheRepo
+from services.product.greeting.rendering_adapter import MockRenderingAdapter
 from services.product.greeting.scheduler import (
     GreetingScheduler,
     SchedulerConfig,
@@ -40,6 +41,11 @@ FOUNDER = FounderContext(
     display_name="Dogfood CEO",
     timezone_name="Asia/Kathmandu",
 )
+
+
+class _FailingGreetingRenderer(MockRenderingAdapter):
+    async def render_greeting(self, snapshot, founder):
+        raise TimeoutError("rendering service timed out")
 
 
 async def _seed_minimal(pool):
@@ -87,6 +93,30 @@ async def test_refresh_tenant_populates_all_keys(greeting_db):
     assert "queries" in qg
     for q in qg["queries"]:
         assert "id" in q and "icon" in q and "label" in q
+
+
+async def test_refresh_tenant_tolerates_partial_render_failure(greeting_db, caplog):
+    await _seed_minimal(greeting_db)
+    sched = GreetingScheduler(
+        greeting_db,
+        rendering=_FailingGreetingRenderer(),
+        config=SchedulerConfig(max_concurrent_renders=1),
+    )
+    sched.register_tenant(TENANT_A, FOUNDER)
+
+    caplog.set_level(logging.WARNING, logger="services.product.greeting.scheduler")
+    await sched.refresh_tenant(TENANT_A, reason="manual")
+
+    cache = ViewCeoCacheRepo(greeting_db)
+    rows = await cache.get_all(TENANT_A)
+    for key in CACHE_KEYS:
+        assert key in rows, f"missing cache key {key}"
+    assert "close_line" in rows
+    assert any(
+        record.getMessage() == "grt.render_partial_failure"
+        and getattr(record, "render_label", None) == "greeting"
+        for record in caplog.records
+    )
 
 
 async def test_scheduled_loop_fires_with_short_interval(greeting_db):

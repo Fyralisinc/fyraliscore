@@ -95,6 +95,7 @@ from services.ingest.ingestion.observability import (
     start_health_server,
 )
 from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
+from services.ingest.ingestion.payload_validation import validate_ingest_json_payload
 from services.domain.observations.partitions import ensure_partitions
 
 
@@ -259,6 +260,7 @@ def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
     `ingest_from_draft` re-derives candidate phrases from
     `content_text` in step 4.
     """
+    validate_ingest_json_payload(dict(env.content), channel=env.source_channel)
     return ObservationDraft(
         source_channel=env.source_channel,
         content_text=env.content_text,

@@ -59,6 +59,10 @@ from lib.shared.ids import uuid7
 log = logging.getLogger(__name__)
 
 
+class ConnectionLimitExceeded(RuntimeError):
+    """Raised when an actor already has the maximum open stream count."""
+
+
 # ---------------------------------------------------------------------
 # Public data shapes
 # ---------------------------------------------------------------------
@@ -191,12 +195,28 @@ class Dispatcher:
     """
 
     QUEUE_MAX = 500
+    DEFAULT_MAX_CONNECTIONS_PER_ACTOR = 5
+    DISPATCH_QUEUE_MAX = 1000
+    DISPATCH_WORKERS = 4
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        max_connections_per_actor: int | None = DEFAULT_MAX_CONNECTIONS_PER_ACTOR,
+        dispatch_queue_max: int = DISPATCH_QUEUE_MAX,
+        dispatch_workers: int = DISPATCH_WORKERS,
+    ) -> None:
         self._pool = pool
         self._clients: dict[UUID, _ClientState] = {}
         self._listen_conn: asyncpg.Connection | None = None
         self._listen_task: asyncio.Task | None = None
+        self._dispatch_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = (
+            asyncio.Queue(maxsize=max(1, int(dispatch_queue_max)))
+        )
+        self._dispatch_workers: list[asyncio.Task] = []
+        self._dispatch_worker_count = max(1, int(dispatch_workers))
+        self._max_connections_per_actor = max_connections_per_actor
         self._started = asyncio.Event()
         self._stopping = False
         # Expose a simple counter so tests can assert dispatch happened.
@@ -204,6 +224,8 @@ class Dispatcher:
             "events_received": 0,
             "events_dispatched": 0,
             "drops": 0,
+            "dispatch_queue_drops": 0,
+            "connection_limit_rejections": 0,
         }
 
     # ------------------------------------------------------------------
@@ -231,6 +253,12 @@ class Dispatcher:
         # NOTIFY callbacks on the connection's own read loop, so we only
         # need this task to hold the connection + allow cancellation.
         self._listen_task = asyncio.create_task(self._idle_loop())
+        self._dispatch_workers = [
+            asyncio.create_task(
+                self._dispatch_worker(), name=f"realtime_dispatch_{idx}"
+            )
+            for idx in range(self._dispatch_worker_count)
+        ]
         self._started.set()
 
     async def stop(self) -> None:
@@ -257,6 +285,12 @@ class Dispatcher:
             except Exception:
                 pass
             self._listen_conn = None
+        for task in self._dispatch_workers:
+            task.cancel()
+        for task in self._dispatch_workers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._dispatch_workers = []
 
     async def _idle_loop(self) -> None:
         try:
@@ -279,6 +313,21 @@ class Dispatcher:
         queue_maxsize: int | None = None,
     ) -> _ClientState:
         """Create a new client state + per-client queue."""
+        if self._max_connections_per_actor is not None:
+            actor_connections = sum(
+                1
+                for client in self._clients.values()
+                if (
+                    not client.closed
+                    and client.sub.tenant_id == tenant_id
+                    and client.sub.actor_id == actor_id
+                )
+            )
+            if actor_connections >= self._max_connections_per_actor:
+                self.stats["connection_limit_rejections"] += 1
+                raise ConnectionLimitExceeded(
+                    "max websocket connections exceeded for actor"
+                )
         connection_id = connection_id or uuid7()
         sub = SubscriptionFilter(
             subscription_id=connection_id,
@@ -338,7 +387,26 @@ class Dispatcher:
         except json.JSONDecodeError as e:
             log.warning("realtime: malformed NOTIFY payload: %s / %s", e, payload)
             return
-        asyncio.create_task(self._dispatch(channel, data))
+        try:
+            self._dispatch_queue.put_nowait((channel, data))
+        except asyncio.QueueFull:
+            self.stats["dispatch_queue_drops"] += 1
+            log.warning("realtime: dispatch queue full; dropping NOTIFY")
+
+    async def _dispatch_worker(self) -> None:
+        while not self._stopping:
+            try:
+                channel, data = await self._dispatch_queue.get()
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._dispatch(channel, data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive guard
+                log.warning("realtime: dispatch worker failed: %s", exc)
+            finally:
+                self._dispatch_queue.task_done()
 
     async def _dispatch(self, channel: str, data: dict[str, Any]) -> None:
         """Hydrate an EventFrame from the NOTIFY payload and fan out."""

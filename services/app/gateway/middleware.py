@@ -73,12 +73,6 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # NOT a Bearer token. The Bearer middleware MUST skip this prefix
     # or every webhook becomes a 401 with `missing_bearer`.
     "/webhooks/",
-    # Finance testing panel (Mercury + QuickBooks). Dev/testing tool scoped by
-    # X-Tenant-Id header (no bearer), same posture as /debug. Env-gated at mount.
-    "/finance/",
-    # Slack DM testing panel (per-user OAuth DM ingestion). Same posture as
-    # /finance - X-Tenant-Id header, no bearer, env-gated at mount.
-    "/slack/",
 )
 # Overlay packages (e.g. the demo: /v1/demo/companies, /v1/demo/sessions/start;
 # the simulation panel: /simulation/) contribute their own public prefixes via
