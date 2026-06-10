@@ -180,6 +180,32 @@ async def apply_migration(
         raise MigrationError(name, exc) from exc
 
 
+_SCHEMA_MIGRATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+
+async def _ensure_schema_migrations(conn: asyncpg.Connection) -> None:
+    await conn.execute(_SCHEMA_MIGRATIONS_SQL)
+
+
+async def _record_applied_migration(
+    conn: asyncpg.Connection,
+    filename: str,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO schema_migrations(filename)
+        VALUES ($1)
+        ON CONFLICT (filename) DO NOTHING
+        """,
+        filename,
+    )
+
+
 async def apply_migrations_dir(
     conn: asyncpg.Connection,
     migrations_dir: pathlib.Path,
@@ -211,10 +237,21 @@ async def apply_migrations_dir(
     _assert_unique_prefixes(files)
 
     async with schema_bootstrap_lock(conn):
+        # Create the ledger inside the bootstrap lock so concurrent
+        # bootstraps serialize the CREATE TABLE, then read what's already
+        # applied so re-runs against a long-lived DB skip recorded files.
+        await _ensure_schema_migrations(conn)
+        rows = await conn.fetch("SELECT filename FROM schema_migrations")
+        already_applied = {row["filename"] for row in rows}
+
         applied: list[str] = []
         for path in files:
+            if path.name in already_applied:
+                continue
             try:
                 await apply_migration(conn, path.read_text(), name=path.name)
+                await _record_applied_migration(conn, path.name)
+                already_applied.add(path.name)
                 applied.append(path.name)
             except MigrationError as e:
                 if on_error == "stop":
