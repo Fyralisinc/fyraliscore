@@ -11,18 +11,117 @@ from datetime import datetime, timezone
 import asyncpg
 import pytest
 
+from lib.shared.types import ObservationRow
+
 from services.retrieval.assembler import (
     AccessContext,
     ContextBundle,
+    _select_observations,
     assemble_context,
 )
 from services.retrieval.config import RetrievalConfig
-from services.retrieval.primary import TriggerContext, primary_retrieve
+from services.retrieval.primary import (
+    RetrievalResult,
+    TriggerContext,
+    _fetch_trigger_observations,
+    primary_retrieve,
+)
 
 from services.retrieval.tests._fixtures import build_fixture, make_embedding
 
 
 pytestmark = pytest.mark.integration
+
+
+def _obs_row(tenant, index: int) -> ObservationRow:
+    return ObservationRow(
+        id=uuid.uuid4(),
+        tenant_id=tenant,
+        occurred_at=datetime(2026, 4, 1, 12, index, tzinfo=timezone.utc),
+        ingested_at=datetime(2026, 4, 1, 12, index, tzinfo=timezone.utc),
+        kind="signal",
+        source_channel="unit",
+        source_actor_ref=None,
+        actor_id=None,
+        content={"index": index},
+        content_text=f"observation {index}",
+        embedding=None,
+        embedding_pending=False,
+        trust_tier="authoritative",
+        external_id=f"unit-{index}",
+        cause_id=None,
+        sequence_num=index,
+        entities_mentioned=[],
+    )
+
+
+def test_select_observations_model_first_preserves_trigger_batch():
+    tenant = uuid.uuid4()
+    rows = [_obs_row(tenant, i) for i in range(14)]
+    trigger_rows = rows[:6]
+    historical_rows = rows[6:]
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=trigger_rows[0].id,
+        observation_ids=[row.id for row in trigger_rows],
+    )
+    result = RetrievalResult(
+        trigger=trigger,
+        observations=[*historical_rows, *trigger_rows],
+    )
+
+    selected, notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=RetrievalConfig(
+            trigger_observation_cap=6,
+            historical_observation_cap=2,
+        ),
+        budget_observations=12,
+        explicit_budget=False,
+    )
+
+    selected_ids = {row.id for row in selected}
+    assert {row.id for row in trigger_rows}.issubset(selected_ids)
+    assert len(selected_ids & {row.id for row in historical_rows}) == 2
+    assert notes["selected_trigger_count"] == 6
+    assert notes["selected_historical_count"] == 2
+
+
+def test_select_observations_explicit_budget_is_hard_total_cap():
+    tenant = uuid.uuid4()
+    rows = [_obs_row(tenant, i) for i in range(14)]
+    trigger_rows = rows[:6]
+    historical_rows = rows[6:]
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=trigger_rows[0].id,
+        observation_ids=[row.id for row in trigger_rows],
+    )
+    result = RetrievalResult(
+        trigger=trigger,
+        observations=[*historical_rows, *trigger_rows],
+    )
+
+    selected, notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=RetrievalConfig(
+            trigger_observation_cap=6,
+            historical_observation_cap=2,
+        ),
+        budget_observations=5,
+        explicit_budget=True,
+    )
+
+    selected_ids = {row.id for row in selected}
+    assert len(selected) == 5
+    assert selected_ids.issubset({row.id for row in trigger_rows})
+    assert not selected_ids & {row.id for row in historical_rows}
+    assert notes["selected_trigger_count"] == 5
+    assert notes["selected_historical_count"] == 0
 
 
 async def _retrieve(tx_conn, pool, tenant, seed_commit_id=None):
@@ -41,18 +140,32 @@ async def _retrieve(tx_conn, pool, tenant, seed_commit_id=None):
     return await primary_retrieve(trigger, tx_conn)
 
 
+async def _fetch_observation_rows(tx_conn, tenant, observation_ids):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_ids=list(observation_ids),
+    )
+    return await _fetch_trigger_observations(trigger, tx_conn)
+
+
 async def test_assembler_respects_size_budgets(
     tx_conn, fresh_db, tenant
 ):
+    cfg = RetrievalConfig()
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
     result = await _retrieve(tx_conn, fresh_db, tenant, fs.hero_commitment_id)
     bundle = await assemble_context(
         result,
         AccessContext(tenant_id=tenant, requestor_actor_id=None),
         tx_conn,
+        config=cfg,
     )
     assert isinstance(bundle, ContextBundle)
-    assert len(bundle.observations) <= 20
+    assert (
+        len(bundle.observations)
+        <= cfg.trigger_observation_cap + cfg.historical_observation_cap
+    )
     assert len(bundle.models) <= 40
     assert (
         len(bundle.acts_summary["goals"])
@@ -96,10 +209,86 @@ async def test_assembler_uses_configured_default_budgets(
     assert len(bundle.resources_summary) <= 2
     assert bundle.notes["budgets"] == {
         "observations": 3,
+        "trigger_observations": 30,
+        "historical_observations": 3,
         "models": 7,
         "acts_total": 4,
         "resources": 2,
     }
+
+
+async def test_assembler_model_first_preserves_trigger_batch_and_caps_history(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    result = await _retrieve(tx_conn, fresh_db, tenant, fs.hero_commitment_id)
+
+    trigger_ids = fs.observation_ids[:6]
+    historical_ids = fs.observation_ids[6:14]
+    result.observations = await _fetch_observation_rows(
+        tx_conn,
+        tenant,
+        [*trigger_ids, *historical_ids],
+    )
+    result.trigger.observation_id = trigger_ids[0]
+    result.trigger.observation_ids = list(trigger_ids)
+
+    bundle = await assemble_context(
+        result,
+        AccessContext(tenant_id=tenant, requestor_actor_id=None),
+        tx_conn,
+        config=RetrievalConfig(
+            assembler_budget_observations=12,
+            trigger_observation_cap=6,
+            historical_observation_cap=2,
+        ),
+    )
+
+    selected_ids = {o.id for o in bundle.observations}
+    assert set(trigger_ids).issubset(selected_ids)
+    assert len(selected_ids & set(historical_ids)) == 2
+    selection = bundle.notes["observation_selection"]
+    assert selection["model_first_context_enabled"] is True
+    assert selection["selected_trigger_count"] == 6
+    assert selection["selected_historical_count"] == 2
+    assert selection["dropped_historical_count"] == len(historical_ids) - 2
+
+
+async def test_assembler_explicit_observation_budget_remains_hard_total_cap(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    result = await _retrieve(tx_conn, fresh_db, tenant, fs.hero_commitment_id)
+
+    trigger_ids = fs.observation_ids[:6]
+    historical_ids = fs.observation_ids[6:14]
+    result.observations = await _fetch_observation_rows(
+        tx_conn,
+        tenant,
+        [*trigger_ids, *historical_ids],
+    )
+    result.trigger.observation_id = trigger_ids[0]
+    result.trigger.observation_ids = list(trigger_ids)
+
+    bundle = await assemble_context(
+        result,
+        AccessContext(tenant_id=tenant, requestor_actor_id=None),
+        tx_conn,
+        budget_observations=5,
+        config=RetrievalConfig(
+            trigger_observation_cap=6,
+            historical_observation_cap=2,
+        ),
+    )
+
+    selected_ids = {o.id for o in bundle.observations}
+    assert len(bundle.observations) == 5
+    assert selected_ids.issubset(set(trigger_ids))
+    assert not selected_ids & set(historical_ids)
+    selection = bundle.notes["observation_selection"]
+    assert selection["selected_trigger_count"] == 5
+    assert selection["selected_historical_count"] == 0
+    assert selection["dropped_trigger_count"] == 1
 
 
 async def test_assembler_access_redacts_private_model_for_outside_actor(

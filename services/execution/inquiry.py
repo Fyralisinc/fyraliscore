@@ -9,6 +9,7 @@ reservoir, sufficiency, and a compact context packet for reasoning.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -201,6 +202,10 @@ class InquiryConfig:
     focused_index_terms: int = 12
     focused_index_max_candidates: int = 48
     focused_index_scope_candidates: int = 18
+    retrieval_motifs_enabled: bool = True
+    retrieval_motif_min_successes: int = 1
+    retrieval_motif_max_actions: int = 5
+    retrieval_motif_match_threshold: float = 0.34
     question_action_parallel_enabled: bool = True
     question_action_parallelism: int = 6
     structural_max_hops: int = 2
@@ -298,6 +303,22 @@ class InquiryConfig:
                 "INQUIRY_FOCUSED_INDEX_SCOPE_CANDIDATES",
                 18,
                 minimum=1,
+            ),
+            retrieval_motifs_enabled=_env_bool(
+                "INQUIRY_RETRIEVAL_MOTIFS_ENABLED", True
+            ),
+            retrieval_motif_min_successes=_env_int(
+                "INQUIRY_RETRIEVAL_MOTIF_MIN_SUCCESSES",
+                1,
+                minimum=0,
+            ),
+            retrieval_motif_max_actions=_env_int(
+                "INQUIRY_RETRIEVAL_MOTIF_MAX_ACTIONS",
+                5,
+                minimum=1,
+            ),
+            retrieval_motif_match_threshold=float(
+                os.environ.get("INQUIRY_RETRIEVAL_MOTIF_MATCH_THRESHOLD", "0.34")
             ),
             question_action_parallel_enabled=_env_bool(
                 "INQUIRY_QUESTION_ACTION_PARALLEL_ENABLED", True
@@ -475,6 +496,29 @@ class RetrievalAction:
     budget: int = 25
 
 
+@dataclass(frozen=True, slots=True)
+class LearnedRetrievalMotif:
+    id: UUID
+    signature: dict[str, Any]
+    question_primitive: str
+    plan: dict[str, Any]
+    utility_score: float
+    success_count: int
+    match_score: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RetrievalMotifPenalty:
+    motif_id: UUID
+    question_id: str
+    cost: float
+    reasons: tuple[str, ...]
+    selected_evidence: int = 0
+    omitted_evidence: int = 0
+    returned_models: int = 0
+    returned_observations: int = 0
+
+
 @dataclass(slots=True)
 class _QuestionRetrievalPlan:
     question: InquiryQuestion
@@ -484,6 +528,7 @@ class _QuestionRetrievalPlan:
     action_gate_reason: str | None = None
     actions_to_run: list[RetrievalAction] = field(default_factory=list)
     skipped_timing_notes: list[dict[str, Any]] = field(default_factory=list)
+    learned_motif: LearnedRetrievalMotif | None = None
 
 
 @dataclass(slots=True)
@@ -891,6 +936,12 @@ async def run_inquiry_retrieval(
             **sage_batch_note,
             "round_index": round_index,
         })
+        learned_motifs = await _load_retrieval_motifs_for_questions(
+            conn,
+            trigger,
+            selected,
+            cfg,
+        )
 
         question_read_plans: list[_QuestionRetrievalPlan] = []
         for question in selected:
@@ -901,6 +952,7 @@ async def run_inquiry_retrieval(
                 trigger,
                 cfg,
                 policy_signal=policy_signal,
+                learned_motif=learned_motifs.get(question.question_id),
             )
             sage_result = sage_results_by_qid.get(question.question_id)
             sage_action: RetrievalAction | None = None
@@ -952,6 +1004,7 @@ async def run_inquiry_retrieval(
                 action_gate_reason=action_gate_reason,
                 actions_to_run=actions_to_run,
                 skipped_timing_notes=skipped_timing_notes,
+                learned_motif=learned_motifs.get(question.question_id),
             ))
 
         action_records_by_qid = await _execute_question_retrieval_actions(
@@ -1905,7 +1958,12 @@ def _specific_question(primitive: str, anchors: _QuestionAnchors) -> str:
         else:
             question = f"What resource, policy, or capacity constraint is driving {focus} for {subject}?"
     elif primitive == "COUNTEREVIDENCE":
-        question = f"What evidence would weaken the interpretation that {focus}?"
+        counter_focus = _counterevidence_focus(
+            anchors.claim,
+            fallback=focus,
+            subject=subject,
+        )
+        question = f"What evidence would weaken the interpretation that {counter_focus}?"
     elif primitive == "OWNERSHIP":
         if constraint:
             question = (
@@ -1921,6 +1979,23 @@ def _specific_question(primitive: str, anchors: _QuestionAnchors) -> str:
     else:
         question = f"What does {subject} require us to verify next?"
     return _truncate_text(" ".join(question.split()), 240)
+
+
+def _counterevidence_focus(
+    claim: str,
+    *,
+    fallback: str,
+    subject: str,
+) -> str:
+    clean = _clean_question_anchor(claim)
+    subject_parts = [
+        part.strip().casefold()
+        for part in re.split(r"[,/]| and ", subject or "")
+        if part.strip()
+    ]
+    if clean and any(part in clean.casefold() for part in subject_parts):
+        return _truncate_text(clean, 150)
+    return fallback
 
 
 def _safe_question_focus(value: str, subject: str) -> str:
@@ -3445,6 +3520,30 @@ def _compile_retrieval_plan(
     cfg: InquiryConfig,
     *,
     policy_signal: QuestionPolicySignal | None = None,
+    learned_motif: LearnedRetrievalMotif | None = None,
+) -> list[RetrievalAction]:
+    static_actions = _compile_static_retrieval_plan(
+        question,
+        trigger,
+        cfg,
+        policy_signal=policy_signal,
+    )
+    if learned_motif is None:
+        return static_actions
+    return _compile_motif_retrieval_plan(
+        question,
+        static_actions,
+        learned_motif,
+        cfg,
+    ) or static_actions
+
+
+def _compile_static_retrieval_plan(
+    question: InquiryQuestion,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+    *,
+    policy_signal: QuestionPolicySignal | None = None,
 ) -> list[RetrievalAction]:
     q = question.question
     seed_text = _trigger_text(trigger)
@@ -3601,6 +3700,226 @@ def _compile_retrieval_plan(
     ]
 
 
+def _compile_motif_retrieval_plan(
+    question: InquiryQuestion,
+    static_actions: list[RetrievalAction],
+    motif: LearnedRetrievalMotif,
+    cfg: InquiryConfig,
+) -> list[RetrievalAction]:
+    raw_actions = motif.plan.get("actions")
+    if not isinstance(raw_actions, list):
+        return []
+    by_exact = {
+        (action.path, action.target): action
+        for action in static_actions
+    }
+    by_path: dict[str, RetrievalAction] = {}
+    for action in static_actions:
+        by_path.setdefault(action.path, action)
+
+    compiled: list[RetrievalAction] = []
+    seen: set[tuple[str, str, int]] = set()
+    for raw in raw_actions[: max(1, int(cfg.retrieval_motif_max_actions))]:
+        if not isinstance(raw, dict):
+            continue
+        path = str(raw.get("path") or "")
+        target = str(raw.get("target") or "")
+        base = by_exact.get((path, target)) or by_path.get(path)
+        if base is None:
+            continue
+        try:
+            stage = max(1, int(raw.get("stage") or 1))
+        except (TypeError, ValueError):
+            stage = 1
+        key = (base.path, base.target, stage)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            budget = int(raw.get("budget") or base.budget)
+        except (TypeError, ValueError):
+            budget = base.budget
+        filters = dict(base.filters or {})
+        filters.update({
+            "_motif_id": str(motif.id),
+            "_motif_stage": stage,
+            "_motif_match_score": round(float(motif.match_score), 4),
+            "_motif_utility_score": round(float(motif.utility_score), 4),
+        })
+        if bool(raw.get("bind_previous_scope")) and stage > 1:
+            filters["_bind_previous_scope"] = True
+        compiled.append(
+            RetrievalAction(
+                question_id=question.question_id,
+                path=base.path,
+                target=base.target,
+                query=base.query,
+                filters=filters,
+                budget=max(1, budget),
+            )
+        )
+    return compiled
+
+
+async def _load_retrieval_motifs_for_questions(
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    questions: list[InquiryQuestion],
+    cfg: InquiryConfig,
+) -> dict[str, LearnedRetrievalMotif]:
+    if not cfg.retrieval_motifs_enabled or not questions:
+        return {}
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.retrieval_motifs')"
+    )
+    if table_name is None:
+        return {}
+    primitives = sorted({q.primitive for q in questions})
+    rows = await conn.fetch(
+        """
+        SELECT id, signature, question_primitive, plan,
+               utility_score, success_count
+        FROM retrieval_motifs
+        WHERE tenant_id = $1
+          AND question_primitive = ANY($2::text[])
+          AND maturity = 'active'
+          AND utility_score > 0
+          AND success_count >= $3
+          AND (expires_at IS NULL OR expires_at > now())
+        ORDER BY utility_score DESC, success_count DESC, updated_at DESC
+        LIMIT 64
+        """,
+        trigger.tenant_id,
+        primitives,
+        int(cfg.retrieval_motif_min_successes),
+    )
+    if not rows:
+        return {}
+
+    by_primitive: dict[str, LearnedRetrievalMotif] = {}
+    current_by_primitive = {
+        primitive: _motif_signature_for(trigger, primitive)
+        for primitive in primitives
+    }
+    for row in rows:
+        primitive = str(row["question_primitive"] or "").upper()
+        current = current_by_primitive.get(primitive)
+        if not current:
+            continue
+        signature = _json_obj(row["signature"])
+        score = _motif_signature_match_score(signature, current)
+        if score < float(cfg.retrieval_motif_match_threshold):
+            continue
+        motif = LearnedRetrievalMotif(
+            id=row["id"],
+            signature=signature,
+            question_primitive=primitive,
+            plan=_json_obj(row["plan"]),
+            utility_score=float(row["utility_score"] or 0.0),
+            success_count=int(row["success_count"] or 0),
+            match_score=score,
+        )
+        prior = by_primitive.get(primitive)
+        if prior is None or (
+            motif.match_score,
+            motif.utility_score,
+            motif.success_count,
+        ) > (
+            prior.match_score,
+            prior.utility_score,
+            prior.success_count,
+        ):
+            by_primitive[primitive] = motif
+
+    return {
+        question.question_id: by_primitive[question.primitive]
+        for question in questions
+        if question.primitive in by_primitive
+    }
+
+
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _motif_signature_for(
+    trigger: TriggerContext,
+    question_primitive: str,
+) -> dict[str, Any]:
+    return {
+        "signal_type": trigger.kind,
+        "signal_class": _signal_class_for_trigger(trigger),
+        "question_primitive": question_primitive,
+        "entity_types": sorted({
+            str(entity.get("type") or "").casefold()
+            for entity in trigger.seed_entity_ids
+            if isinstance(entity, dict) and entity.get("type")
+        }),
+        "domain_terms": _motif_domain_terms(_trigger_text(trigger)),
+    }
+
+
+_MOTIF_DOMAIN_KEYWORDS = frozenset({
+    "arr", "audit", "blocker", "capacity", "churn", "commitment",
+    "compliance", "customer", "data", "dependency", "evidence",
+    "export", "freshness", "incident", "liability", "mapping",
+    "onboarding", "permission", "policy", "procurement", "renewal",
+    "replay", "risk", "saml", "security", "soc2", "terms", "trail",
+})
+
+
+def _motif_domain_terms(text: str) -> list[str]:
+    terms = {
+        token.casefold()
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", text or "")
+        if token.casefold() in _MOTIF_DOMAIN_KEYWORDS
+    }
+    return sorted(terms)[:16]
+
+
+def _motif_signature_match_score(
+    stored: dict[str, Any],
+    current: dict[str, Any],
+) -> float:
+    score = 0.0
+    if stored.get("signal_type") == current.get("signal_type"):
+        score += 0.24
+    if stored.get("signal_class") == current.get("signal_class"):
+        score += 0.16
+    if stored.get("question_primitive") == current.get("question_primitive"):
+        score += 0.20
+    score += 0.20 * _set_overlap_ratio(
+        stored.get("entity_types"),
+        current.get("entity_types"),
+    )
+    domain_overlap = _set_overlap_ratio(
+        stored.get("domain_terms"),
+        current.get("domain_terms"),
+    )
+    if domain_overlap == 0.0 and not stored.get("domain_terms"):
+        domain_overlap = 0.5
+    score += 0.20 * domain_overlap
+    return round(min(score, 1.0), 4)
+
+
+def _set_overlap_ratio(left: Any, right: Any) -> float:
+    left_set = {str(v) for v in left or [] if str(v)}
+    right_set = {str(v) for v in right or [] if str(v)}
+    if not left_set or not right_set:
+        return 0.0
+    return len(left_set & right_set) / max(len(left_set | right_set), 1)
+
+
 def _focused_index_actions(
     question: InquiryQuestion,
     trigger: TriggerContext,
@@ -3734,7 +4053,8 @@ def _retrieval_action_cache_key(
         max(1, int(cfg.action_observation_budget_limit)),
     )
     scope_actors = tuple(sorted(str(actor) for actor in (trigger.scope_actors or [])))
-    scope_entities = _stable_cache_value(trigger.seed_entity_ids or [])
+    scope_entities = _stable_cache_value(_action_seed_entities(action, trigger))
+    seed_model_ids = tuple(sorted(str(mid) for mid in _action_seed_model_ids(action)))
     if action.path == "structural":
         return (
             "structural",
@@ -3768,6 +4088,7 @@ def _retrieval_action_cache_key(
             cfg.model_edge_max_hops,
             model_budget,
             str(trigger.model_id or ""),
+            seed_model_ids,
             scope_actors,
             scope_entities,
         )
@@ -3786,6 +4107,31 @@ def _retrieval_action_cache_key(
         scope_actors,
         scope_entities,
     )
+
+
+def _action_seed_entities(
+    action: RetrievalAction,
+    trigger: TriggerContext,
+) -> list[dict[str, Any]]:
+    raw = action.filters.get("seed_entities")
+    if isinstance(raw, list):
+        out = [item for item in raw if isinstance(item, dict)]
+        if out:
+            return out
+    return list(trigger.seed_entity_ids or [])
+
+
+def _action_seed_model_ids(action: RetrievalAction) -> list[UUID]:
+    out: list[UUID] = []
+    raw = action.filters.get("seed_model_ids")
+    if not isinstance(raw, list):
+        return out
+    for value in raw:
+        try:
+            out.append(UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _stable_cache_value(value: Any) -> str:
@@ -3971,7 +4317,7 @@ async def _execute_action(
 
     try:
         if action.path == "structural":
-            seeds = list(trigger.seed_entity_ids)
+            seeds = _action_seed_entities(action, trigger)
             if not seeds and trigger.scope_actors:
                 seeds = [{"type": "actor", "id": str(a)} for a in trigger.scope_actors]
             result = await pathway_a_structural(
@@ -4012,7 +4358,7 @@ async def _execute_action(
                 trigger.tenant_id,
                 conn,
                 scope_actors=trigger.scope_actors,
-                scope_entities=trigger.seed_entity_ids,
+                scope_entities=_action_seed_entities(action, trigger),
                 max_observations=capped_observation_budget(action.budget),
                 max_models=capped_budget(action.budget),
             )
@@ -4024,11 +4370,14 @@ async def _execute_action(
                 limit=capped_budget(action.budget),
             )
         if action.path == "model_edge":
+            seed_model_ids = _action_seed_model_ids(action)
+            if trigger.model_id:
+                seed_model_ids.append(trigger.model_id)
             return await pathway_g_model_edges(
                 trigger.tenant_id,
                 conn,
-                seed_model_ids=[trigger.model_id] if trigger.model_id else [],
-                seed_entity_ids=trigger.seed_entity_ids,
+                seed_model_ids=seed_model_ids,
+                seed_entity_ids=_action_seed_entities(action, trigger),
                 scope_actors=trigger.scope_actors,
                 max_hops=cfg.model_edge_max_hops,
                 limit=capped_budget(action.budget),
@@ -4050,6 +4399,20 @@ async def _execute_question_retrieval_actions(
 ) -> dict[str, list[_ActionExecutionRecord]]:
     if not plans:
         return {}
+    if any(
+        "_motif_stage" in action.filters
+        for plan in plans
+        for action in plan.actions_to_run
+    ):
+        return await _execute_question_retrieval_actions_staged(
+            plans,
+            trigger,
+            conn,
+            embedder,
+            cfg,
+            action_cache,
+            read_pool=read_pool,
+        )
     action_slots: list[tuple[str, RetrievalAction, tuple[Any, ...]]] = []
     for plan in plans:
         for action in plan.actions_to_run:
@@ -4145,6 +4508,155 @@ async def _execute_question_retrieval_actions(
     return records_by_qid
 
 
+async def _execute_question_retrieval_actions_staged(
+    plans: list[_QuestionRetrievalPlan],
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    embedder: Any | None,
+    cfg: InquiryConfig,
+    action_cache: dict[tuple[Any, ...], PathwayResult],
+    *,
+    read_pool: asyncpg.Pool | None,
+) -> dict[str, list[_ActionExecutionRecord]]:
+    records_by_qid: dict[str, list[_ActionExecutionRecord]] = {
+        plan.question.question_id: [] for plan in plans
+    }
+    for plan in plans:
+        prior_results: list[PathwayResult] = []
+        actions_by_stage: dict[int, list[RetrievalAction]] = {}
+        for action in plan.actions_to_run:
+            try:
+                stage = max(1, int(action.filters.get("_motif_stage") or 1))
+            except (TypeError, ValueError):
+                stage = 1
+            actions_by_stage.setdefault(stage, []).append(action)
+
+        for stage in sorted(actions_by_stage):
+            for raw_action in actions_by_stage[stage]:
+                action = _bind_action_to_previous_results(
+                    raw_action,
+                    trigger,
+                    prior_results,
+                )
+                cache_key = _retrieval_action_cache_key(action, trigger, cfg)
+                path_result = action_cache.get(cache_key)
+                cache_hit = path_result is not None
+                started = time.perf_counter()
+                if path_result is None:
+                    path_result = await _execute_action(
+                        action,
+                        trigger,
+                        conn,
+                        embedder,
+                        cfg,
+                        read_pool=read_pool,
+                    )
+                    if path_result is not None:
+                        action_cache[cache_key] = path_result
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                if path_result is not None:
+                    prior_results.append(path_result)
+                records_by_qid.setdefault(plan.question.question_id, []).append(
+                    _ActionExecutionRecord(
+                        action=action,
+                        path_result=path_result,
+                        timing_note=_action_timing_note(
+                            action,
+                            path_result,
+                            elapsed_ms=elapsed_ms,
+                            cache_hit=cache_hit,
+                        ),
+                    )
+                )
+    return records_by_qid
+
+
+def _bind_action_to_previous_results(
+    action: RetrievalAction,
+    trigger: TriggerContext,
+    prior_results: list[PathwayResult],
+) -> RetrievalAction:
+    if not action.filters.get("_bind_previous_scope") or not prior_results:
+        return action
+    seed_entities = _dedupe_seed_entities([
+        *_action_seed_entities(action, trigger),
+        *_seed_entities_from_pathway_results(prior_results),
+    ])[:24]
+    seed_model_ids = [
+        str(model_id)
+        for model_id in _seed_model_ids_from_pathway_results(prior_results)[:24]
+    ]
+    filters = dict(action.filters)
+    if seed_entities:
+        filters["seed_entities"] = seed_entities
+    if seed_model_ids:
+        filters["seed_model_ids"] = seed_model_ids
+    filters["_bound_scope"] = {
+        "model_count": len(seed_model_ids),
+        "entity_count": len(seed_entities),
+    }
+    return replace(action, filters=filters)
+
+
+def _seed_model_ids_from_pathway_results(
+    results: list[PathwayResult],
+) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for result in results:
+        for model in result.models:
+            mid = model.id
+            if mid not in seen:
+                seen.add(mid)
+                out.append(mid)
+    return out
+
+
+def _seed_entities_from_pathway_results(
+    results: list[PathwayResult],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for result in results:
+        for model in result.models[:24]:
+            raw_entities = getattr(model, "scope_entities", None) or []
+            if isinstance(raw_entities, list):
+                out.extend(item for item in raw_entities if isinstance(item, dict))
+        for resource in result.resources[:12]:
+            rid = getattr(resource, "id", None)
+            if rid is not None:
+                out.append({"type": "resource", "id": str(rid)})
+        for key, entity_type in (
+            ("commitments", "commitment"),
+            ("goals", "goal"),
+            ("decisions", "decision"),
+        ):
+            for act in (result.acts or {}).get(key, [])[:12]:
+                aid = getattr(act, "id", None)
+                if aid is not None:
+                    out.append({"type": entity_type, "id": str(aid)})
+    return _dedupe_seed_entities(out)
+
+
+def _dedupe_seed_entities(
+    entities: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        etype = str(entity.get("type") or "").strip()
+        eid = str(entity.get("id") or "").strip()
+        if not etype or not eid:
+            continue
+        key = (etype.casefold(), eid)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"type": etype, "id": eid})
+    return out
+
+
 async def _execute_question_retrieval_actions_serial(
     action_slots: list[tuple[str, RetrievalAction, tuple[Any, ...]]],
     trigger: TriggerContext,
@@ -4207,6 +4719,13 @@ def _action_timing_note(
             "resources": len(path_result.resources),
             "source_pathway": path_result.source_pathway,
         })
+    if action.filters.get("_motif_id"):
+        note["motif_id"] = action.filters.get("_motif_id")
+        note["motif_stage"] = action.filters.get("_motif_stage")
+        note["motif_match_score"] = action.filters.get("_motif_match_score")
+        note["motif_utility_score"] = action.filters.get("_motif_utility_score")
+        if action.filters.get("_bound_scope"):
+            note["bound_scope"] = action.filters.get("_bound_scope")
     return note
 
 
@@ -4453,7 +4972,7 @@ async def _execute_focused_index_action(
     )
     primitive = str(action.filters.get("primitive") or "").upper()
     primitives = _focused_answerability_primitives_for(primitive)
-    seed_pairs = _focused_seed_entity_pairs(trigger.seed_entity_ids)
+    seed_pairs = _focused_seed_entity_pairs(_action_seed_entities(action, trigger))
     model_limit = max(1, int(model_limit))
     scope_limit = min(
         max(1, int(cfg.focused_index_scope_candidates)),
@@ -4996,7 +5515,7 @@ async def _execute_semantic_hybrid_action(
         embedder=embedder,
         precomputed_vector=precomputed_vector,
         event_actors=trigger.scope_actors,
-        event_entities=trigger.seed_entity_ids,
+        event_entities=_action_seed_entities(action, trigger),
     )
     semantic_ids = {model.id for model in result.models}
     hybrid_note: dict[str, Any] = {
@@ -7708,6 +8227,7 @@ async def _persist_inquiry(
             ],
         )
     if not result.evidence_cards:
+        await _penalize_retrieval_motifs(conn, result, trigger)
         await _emit_phase1_traces(conn, result, trigger)
         return
     await conn.executemany(
@@ -7751,6 +8271,8 @@ async def _persist_inquiry(
             for card in result.evidence_cards
         ],
     )
+    await _learn_retrieval_motifs(conn, result, trigger)
+    await _penalize_retrieval_motifs(conn, result, trigger)
     await _emit_phase1_traces(conn, result, trigger)
 
 
@@ -7981,6 +8503,351 @@ def _packet_evidence_refs_by_question(
         for question_id in card.retrieved_for_questions:
             out.setdefault(str(question_id), []).append(ref)
     return out
+
+
+async def _learn_retrieval_motifs(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    if not _env_bool("INQUIRY_RETRIEVAL_MOTIFS_LEARNING_ENABLED", True):
+        return
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.retrieval_motifs')"
+    )
+    if table_name is None:
+        return
+    actions_by_question: dict[str, list[RetrievalAction]] = {}
+    for action in result.retrieval_actions:
+        if action.path == "sage_reader":
+            continue
+        actions_by_question.setdefault(action.question_id, []).append(action)
+
+    for question in result.questions:
+        cards = [
+            card for card in result.evidence_cards
+            if question.question_id in card.retrieved_for_questions
+        ]
+        if not cards:
+            continue
+        raw_actions = actions_by_question.get(question.question_id, [])
+        if not raw_actions:
+            continue
+        used_paths = {
+            path
+            for card in cards
+            for path in card.retrieval_paths
+            if path != "sage_reader"
+        }
+        useful_actions = [
+            action for action in raw_actions
+            if not used_paths or action.path in used_paths
+        ]
+        if len(useful_actions) < 2:
+            continue
+        plan = _motif_plan_from_actions(useful_actions)
+        if not plan.get("actions"):
+            continue
+        signature = _motif_signature_for(trigger, question.primitive)
+        signature_hash = _stable_hash(signature)
+        plan_hash = _stable_hash(plan)
+        credit = float(len(cards))
+        cost = (
+            0.08 * len(plan["actions"])
+            + sum(float(action.get("budget") or 0) for action in plan["actions"]) / 500.0
+        )
+        utility = credit - cost
+        if utility <= 0:
+            continue
+        await conn.execute(
+            """
+            INSERT INTO retrieval_motifs (
+              id, tenant_id, signature, signature_hash,
+              question_primitive, plan, plan_hash,
+              maturity, utility_score, success_count,
+              total_credit, total_cost, last_success_at, updated_at
+            ) VALUES (
+              $1, $2, $3::jsonb, $4,
+              $5, $6::jsonb, $7,
+              'active', $8, 1,
+              $9, $10, now(), now()
+            )
+            ON CONFLICT (
+              tenant_id, question_primitive, signature_hash, plan_hash
+            )
+            DO UPDATE SET
+              success_count = retrieval_motifs.success_count + 1,
+              total_credit = retrieval_motifs.total_credit + EXCLUDED.total_credit,
+              total_cost = retrieval_motifs.total_cost + EXCLUDED.total_cost,
+              utility_score = (
+                (retrieval_motifs.total_credit + EXCLUDED.total_credit)
+                - (retrieval_motifs.total_cost + EXCLUDED.total_cost)
+              ) / GREATEST(
+                retrieval_motifs.success_count
+                + retrieval_motifs.failure_count
+                + 1,
+                1
+              ),
+              maturity = CASE
+                WHEN retrieval_motifs.maturity = 'quarantined'
+                THEN retrieval_motifs.maturity
+                ELSE 'active'
+              END,
+              last_success_at = now(),
+              updated_at = now()
+            """,
+            uuid7(),
+            trigger.tenant_id,
+            json.dumps(signature, default=str),
+            signature_hash,
+            question.primitive,
+            json.dumps(plan, default=str),
+            plan_hash,
+            utility,
+            credit,
+            cost,
+        )
+
+
+async def _penalize_retrieval_motifs(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    if not _env_bool("INQUIRY_RETRIEVAL_MOTIF_FAILURE_LEARNING_ENABLED", True):
+        return
+    penalties = _motif_failure_penalties(result)
+    if not penalties:
+        return
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.retrieval_motifs')"
+    )
+    if table_name is None:
+        return
+    quarantine_failures = _env_int(
+        "INQUIRY_RETRIEVAL_MOTIF_QUARANTINE_FAILURES",
+        3,
+        minimum=1,
+    )
+    quarantine_utility = _env_float(
+        "INQUIRY_RETRIEVAL_MOTIF_QUARANTINE_UTILITY",
+        0.0,
+        minimum=-10.0,
+    )
+    for penalty in penalties:
+        await conn.execute(
+            """
+            UPDATE retrieval_motifs
+            SET
+              failure_count = failure_count + 1,
+              total_cost = total_cost + $3,
+              utility_score = (
+                total_credit - (total_cost + $3)
+              ) / GREATEST(success_count + failure_count + 1, 1),
+              maturity = CASE
+                WHEN maturity = 'quarantined'
+                THEN maturity
+                WHEN failure_count + 1 >= $4
+                  AND (
+                    total_credit - (total_cost + $3)
+                  ) / GREATEST(success_count + failure_count + 1, 1) <= $5
+                THEN 'quarantined'
+                ELSE maturity
+              END,
+              last_failure_at = now(),
+              updated_at = now()
+            WHERE tenant_id = $1
+              AND id = $2
+            """,
+            trigger.tenant_id,
+            penalty.motif_id,
+            float(penalty.cost),
+            quarantine_failures,
+            quarantine_utility,
+        )
+
+
+def _motif_failure_penalties(result: InquiryResult) -> list[_RetrievalMotifPenalty]:
+    motif_actions: dict[tuple[str, UUID], list[RetrievalAction]] = {}
+    for action in result.retrieval_actions:
+        motif_id = _action_motif_uuid(action)
+        if motif_id is None:
+            continue
+        motif_actions.setdefault((action.question_id, motif_id), []).append(action)
+    if not motif_actions:
+        return []
+
+    used_ids = _packet_used_evidence_ids(result.context_packet)
+    timings = [
+        note for note in (result.notes or {}).get("retrieval_action_timings", [])
+        if isinstance(note, dict)
+    ]
+    output_by_motif: dict[tuple[str, UUID], dict[str, int]] = {}
+    for note in timings:
+        motif_id = _safe_uuid(note.get("motif_id"))
+        question_id = str(note.get("question_id") or "")
+        if motif_id is None or not question_id:
+            continue
+        bucket = output_by_motif.setdefault(
+            (question_id, motif_id),
+            {"models": 0, "observations": 0},
+        )
+        bucket["models"] += _safe_int(note.get("models"))
+        bucket["observations"] += _safe_int(note.get("observations"))
+
+    penalties: list[_RetrievalMotifPenalty] = []
+    for (question_id, motif_id), actions in motif_actions.items():
+        paths = {action.path for action in actions}
+        cards = [
+            card for card in result.evidence_cards
+            if question_id in card.retrieved_for_questions
+            and bool(card.retrieval_paths & paths)
+        ]
+        selected = [
+            card for card in cards
+            if str(card.evidence_id) in used_ids
+        ]
+        omitted = [card for card in cards if str(card.evidence_id) not in used_ids]
+        low_value_omitted = [card for card in omitted if _is_low_value_model_noise(card)]
+        outputs = output_by_motif.get((question_id, motif_id), {})
+        returned_models = int(outputs.get("models") or 0)
+        returned_observations = int(outputs.get("observations") or 0)
+        selected_count = len(selected)
+        omitted_count = len(omitted)
+
+        reasons: list[str] = []
+        if selected_count == 0 and (cards or returned_models >= 20 or returned_observations >= 8):
+            reasons.append("no_packet_evidence")
+        if (
+            omitted_count >= _env_int(
+                "INQUIRY_RETRIEVAL_MOTIF_NOISY_OMISSION_MIN",
+                6,
+                minimum=1,
+            )
+            and omitted_count >= max(3, selected_count * 3)
+        ):
+            reasons.append("noisy_omission_ratio")
+        if returned_models >= _env_int(
+            "INQUIRY_RETRIEVAL_MOTIF_WIDE_MODEL_THRESHOLD",
+            80,
+            minimum=1,
+        ) and selected_count <= 2:
+            reasons.append("wide_motif_selection")
+        if len(low_value_omitted) >= 4:
+            reasons.append("low_value_model_noise")
+        if not reasons:
+            continue
+
+        raw_cost = 0.0
+        if "no_packet_evidence" in reasons:
+            raw_cost += 1.2
+        if "noisy_omission_ratio" in reasons:
+            raw_cost += min(3.0, 0.25 * omitted_count)
+        if "wide_motif_selection" in reasons:
+            raw_cost += min(2.5, returned_models / 80.0)
+        if "low_value_model_noise" in reasons:
+            raw_cost += min(2.0, 0.35 * len(low_value_omitted))
+        benefit_discount = min(0.8, 0.12 * selected_count)
+        cost = max(0.15, raw_cost - benefit_discount)
+        penalties.append(
+            _RetrievalMotifPenalty(
+                motif_id=motif_id,
+                question_id=question_id,
+                cost=round(min(6.0, cost), 4),
+                reasons=tuple(sorted(set(reasons))),
+                selected_evidence=selected_count,
+                omitted_evidence=omitted_count,
+                returned_models=returned_models,
+                returned_observations=returned_observations,
+            )
+        )
+    return penalties
+
+
+def _action_motif_uuid(action: RetrievalAction) -> UUID | None:
+    return _safe_uuid((action.filters or {}).get("_motif_id"))
+
+
+def _safe_uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _packet_used_evidence_ids(packet: dict[str, Any]) -> set[str]:
+    tiers = (packet or {}).get("tiers") or {}
+    used: set[str] = set()
+    for item in tiers.get("decisive_evidence", []) or []:
+        if isinstance(item, dict) and item.get("evidence_id"):
+            used.add(str(item["evidence_id"]))
+    for group in tiers.get("supporting_evidence_groups", []) or []:
+        if not isinstance(group, dict):
+            continue
+        for evidence_id in group.get("evidence_ids", []) or []:
+            used.add(str(evidence_id))
+    return used
+
+
+def _motif_plan_from_actions(
+    actions: list[RetrievalAction],
+) -> dict[str, Any]:
+    initializer_paths = {"focused_index", "structural"}
+    has_initializer = any(action.path in initializer_paths for action in actions)
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for action in actions:
+        key = (action.path, action.target)
+        if key in seen:
+            continue
+        seen.add(key)
+        if action.filters.get("_motif_stage"):
+            try:
+                stage = max(1, int(action.filters.get("_motif_stage") or 1))
+            except (TypeError, ValueError):
+                stage = 1
+            bind_previous = bool(action.filters.get("_bind_previous_scope"))
+        else:
+            stage = 1 if action.path in initializer_paths or not has_initializer else 2
+            bind_previous = stage > 1 and action.path in {
+                "focused_index",
+                "model_edge",
+                "semantic",
+                "temporal",
+            }
+        out.append({
+            "path": action.path,
+            "target": action.target,
+            "budget": int(action.budget),
+            "stage": stage,
+            "bind_previous_scope": bind_previous,
+        })
+    out.sort(key=lambda item: (
+        int(item["stage"]),
+        str(item["path"]),
+        str(item["target"]),
+    ))
+    return {
+        "version": 1,
+        "execution": "staged",
+        "actions": out[:5],
+    }
+
+
+def _stable_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 async def _emit_phase1_traces(

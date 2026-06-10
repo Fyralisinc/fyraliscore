@@ -54,6 +54,9 @@ def test_ra5_config_defaults_match_spec():
     assert cfg.assembler_budget_models == 24
     assert cfg.assembler_budget_acts_total == 10
     assert cfg.assembler_budget_resources == 5
+    assert cfg.model_first_context_enabled is True
+    assert cfg.trigger_observation_cap == 30
+    assert cfg.historical_observation_cap == 4
     assert cfg.mmr_lambda_diversity == 0.5
     assert cfg.second_pass_sparse_threshold == 5
     assert cfg.second_pass_customer_confidence_threshold == 0.7
@@ -63,10 +66,14 @@ def test_ra5_config_env_overrides_int(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_K", "40")
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_HNSW_EF_SEARCH", "200")
     monkeypatch.setenv("RETRIEVAL_ASSEMBLER_BUDGET_MODELS", "18")
+    monkeypatch.setenv("RETRIEVAL_TRIGGER_OBSERVATION_CAP", "25")
+    monkeypatch.setenv("RETRIEVAL_HISTORICAL_OBSERVATION_CAP", "2")
     cfg = RetrievalConfig.from_env()
     assert cfg.semantic_k == 40
     assert cfg.semantic_hnsw_ef_search == 200
     assert cfg.assembler_budget_models == 18
+    assert cfg.trigger_observation_cap == 25
+    assert cfg.historical_observation_cap == 2
 
 
 def test_ra5_config_env_overrides_bool(monkeypatch):
@@ -76,6 +83,9 @@ def test_ra5_config_env_overrides_bool(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_TEMPORAL_INCLUDE_ENTITY_MENTIONS", "1")
     cfg = RetrievalConfig.from_env()
     assert cfg.temporal_include_entity_mentions is True
+    monkeypatch.setenv("RETRIEVAL_MODEL_FIRST_CONTEXT_ENABLED", "false")
+    cfg = RetrievalConfig.from_env()
+    assert cfg.model_first_context_enabled is False
 
 
 def test_ra5_config_env_overrides_float(monkeypatch):

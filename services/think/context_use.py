@@ -64,6 +64,12 @@ def _observations_from_bundle(bundle: ContextBundle) -> set[UUID]:
     return {o.id for o in bundle.observations}
 
 
+def _observation_selection_notes(bundle: ContextBundle) -> dict[str, Any]:
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    selection = notes.get("observation_selection")
+    return selection if isinstance(selection, dict) else {}
+
+
 def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
     referenced: set[UUID] = set()
 
@@ -134,6 +140,30 @@ def _ids_from_reasoning_trace(diff: RawDiff | ValidatedDiff) -> set[UUID]:
     return {UUID(match.group(0)) for match in _UUID_RE.finditer(str(trace))}
 
 
+def _trace_has_no_edge_rationale(
+    diff: RawDiff | ValidatedDiff,
+    graph_model_ids: set[UUID],
+) -> bool:
+    trace = getattr(diff, "reasoning_trace", None)
+    if not trace or not graph_model_ids:
+        return False
+    text = str(trace).lower()
+    if not any(
+        marker in text
+        for marker in (
+            "no edge",
+            "no-edge",
+            "does not warrant an edge",
+            "did not warrant an edge",
+            "edge is not warranted",
+            "edge not warranted",
+        )
+    ):
+        return False
+    trace_ids = _ids_from_reasoning_trace(diff)
+    return bool(trace_ids & graph_model_ids)
+
+
 def summarize_context_use(
     bundle: ContextBundle,
     diff: RawDiff | ValidatedDiff,
@@ -144,6 +174,12 @@ def summarize_context_use(
     op_referenced_models = _referenced_model_ids(diff)
     op_referenced_observations = _referenced_observation_ids(diff)
     trace_referenced_ids = _ids_from_reasoning_trace(diff)
+    trace_referenced_models = trace_referenced_ids & selected_model_ids
+    trace_referenced_observations = trace_referenced_ids & selected_observation_ids
+    graph_no_edge_rationale_present = _trace_has_no_edge_rationale(
+        diff,
+        graph_model_ids,
+    )
     total_ops = (
         len(diff.claim_ops)
         + len(diff.edge_ops)
@@ -151,11 +187,12 @@ def summarize_context_use(
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
-    trace_referenced_models = trace_referenced_ids & selected_model_ids
-    trace_referenced_observations = trace_referenced_ids & selected_observation_ids
     reasoning_trace_context_used = (
         total_ops == 0
         and bool(trace_referenced_models or trace_referenced_observations)
+    )
+    reasoning_trace_context_accounted = bool(
+        trace_referenced_models or trace_referenced_observations
     )
     referenced_models = set(op_referenced_models)
     referenced_observations = set(op_referenced_observations)
@@ -195,6 +232,11 @@ def summarize_context_use(
     selected_context_reference_count = (
         len(selected_referenced) + len(observation_referenced)
     )
+    selected_context_accounted_count = selected_context_reference_count
+    if selected_context_reference_count == 0 and reasoning_trace_context_accounted:
+        selected_context_accounted_count = (
+            len(trace_referenced_models) + len(trace_referenced_observations)
+        )
     graph_context_used = (
         bool(graph_referenced)
         or edge_ops_touching_graph > 0
@@ -212,18 +254,66 @@ def summarize_context_use(
         context_use_grade = "model_context_used"
     elif observation_context_used:
         context_use_grade = "observation_context_used"
+    elif reasoning_trace_context_accounted:
+        context_use_grade = "selected_context_accounted"
     else:
         context_use_grade = "unused_selected_context"
 
+    observation_selection = _observation_selection_notes(bundle)
+    graph_claim_op_reference_count = sum(
+        1
+        for op in diff.claim_ops
+        if _coerce_uuid(getattr(op, "model_id", None)) in graph_model_ids
+    )
+    graph_act_op_reference_count = sum(
+        1
+        for op in diff.act_ops
+        if _coerce_uuid(getattr(op, "confidence_basis", None)) in graph_model_ids
+    )
+    graph_non_relation_op_count = (
+        graph_claim_op_reference_count + graph_act_op_reference_count
+    )
+    graph_trace_reference_count = len(trace_referenced_models & graph_model_ids)
+    graph_trace_accounted = graph_trace_reference_count > 0 and total_ops == 0
+    graph_relation_op_count = (
+        edge_ops_touching_graph + ontology_gap_ops_touching_graph
+    )
+    graph_selected_without_relation_ops = (
+        graph_count > 0
+        and total_ops > 0
+        and graph_relation_op_count == 0
+    )
+    graph_relation_contract_satisfied = (
+        graph_count == 0
+        or graph_relation_op_count > 0
+        or graph_no_edge_rationale_present
+        or graph_non_relation_op_count > 0
+        or graph_trace_accounted
+    )
+    if graph_count == 0:
+        graph_relation_contract_basis = "no_graph_selected"
+    elif graph_relation_op_count > 0:
+        graph_relation_contract_basis = "relation_op"
+    elif graph_no_edge_rationale_present:
+        graph_relation_contract_basis = "no_edge_rationale"
+    elif graph_non_relation_op_count > 0:
+        graph_relation_contract_basis = "model_or_act_mutation"
+    elif graph_trace_accounted:
+        graph_relation_contract_basis = "noop_trace_accounted"
+    else:
+        graph_relation_contract_basis = "missing"
     return {
         "context_use_grade": context_use_grade,
         "selected_context_used": selected_context_reference_count > 0,
+        "selected_context_accounted_for": selected_context_accounted_count > 0,
         "graph_context_used": graph_context_used,
         "model_context_used": model_context_used,
         "observation_context_used": observation_context_used,
         "selected_context_count": selected_context_count,
         "selected_context_reference_count": selected_context_reference_count,
+        "selected_context_accounted_count": selected_context_accounted_count,
         "reasoning_trace_context_used": reasoning_trace_context_used,
+        "reasoning_trace_context_accounted": reasoning_trace_context_accounted,
         "trace_referenced_model_ids": sorted(
             str(mid) for mid in trace_referenced_models
         ),
@@ -256,6 +346,15 @@ def summarize_context_use(
             str(mid) for mid in graph_model_ids - referenced_models
         ),
         "selected_observation_count": selected_observation_count,
+        "selected_trigger_observation_count": int(
+            observation_selection.get("selected_trigger_count") or 0
+        ),
+        "selected_historical_observation_count": int(
+            observation_selection.get("selected_historical_count") or 0
+        ),
+        "historical_observation_cap": int(
+            observation_selection.get("historical_cap") or 0
+        ),
         "selected_observation_reference_count": len(observation_referenced),
         "selected_observation_reference_ratio": (
             len(observation_referenced) / selected_observation_count
@@ -283,6 +382,17 @@ def summarize_context_use(
             ontology_gap_ops_between_selected
         ),
         "ontology_gap_ops_touching_graph_models": ontology_gap_ops_touching_graph,
+        "graph_relation_op_count": graph_relation_op_count,
+        "graph_non_relation_op_count": graph_non_relation_op_count,
+        "graph_claim_op_reference_count": graph_claim_op_reference_count,
+        "graph_act_op_reference_count": graph_act_op_reference_count,
+        "graph_trace_reference_count": graph_trace_reference_count,
+        "graph_selected_without_relation_ops": (
+            graph_selected_without_relation_ops
+        ),
+        "graph_no_edge_rationale_present": graph_no_edge_rationale_present,
+        "graph_relation_contract_satisfied": graph_relation_contract_satisfied,
+        "graph_relation_contract_basis": graph_relation_contract_basis,
         "claim_ops_count": len(diff.claim_ops),
         "act_ops_count": len(diff.act_ops),
         "resource_ops_count": len(diff.resource_ops),

@@ -32,6 +32,7 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 from uuid import UUID
@@ -49,6 +50,27 @@ from .detectors import (
 T3_MISSING_TRANSITION_SUBKIND: str = "missing_transition"
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW = timedelta(
+    hours=max(
+        0.0,
+        _env_float(
+            "T3_MISSING_TRANSITION_COMPLETED_GAP_SUPPRESSION_HOURS",
+            24.0,
+        ),
+    )
+)
+
+
 async def emit_missing_transition_triggers(
     conn: asyncpg.Connection,
     *,
@@ -56,6 +78,9 @@ async def emit_missing_transition_triggers(
     signals: Iterable[DynamicSignal],
     reference_time: datetime | None = None,
     lookback: timedelta = timedelta(days=30),
+    completed_gap_suppression_window: timedelta = (
+        DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW
+    ),
 ) -> list[UUID]:
     """For each missing_transition signal, enqueue a T3 trigger if one
     isn't already pending. Returns the list of newly-enqueued trigger
@@ -100,12 +125,11 @@ async def emit_missing_transition_triggers(
             continue
         seen_keys.add(dedup_key)
 
-        # Dedup against the persistent queue. We hold the caller's
-        # transaction, so concurrent emitters in OTHER transactions
-        # could race past this check — duplicate enqueue is acceptable
-        # because the reconciler dedupes the resulting hypothesis
-        # Models on cosine similarity (and `applied_triggers`
-        # idempotency catches re-runs of the same trigger row).
+        # Dedup against the persistent queue at the model level while a
+        # missing-transition trigger is still open. When a model has one
+        # unresolved imaginary-node explanation pending, additional gaps on
+        # that same model are usually churn; the deterministic handler should
+        # resolve the current one before we ask for another.
         already_pending = await conn.fetchval(
             """
             SELECT 1 FROM think_trigger_queue
@@ -113,17 +137,41 @@ async def emit_missing_transition_triggers(
               AND trigger_kind = 'T3'
               AND trigger_subkind = $2
               AND model_id = $3
-              AND (payload -> 'region_spec' ->> 'prev_event_id')::bigint = $4
               AND completed_at IS NULL
             LIMIT 1
             """,
             tenant_id,
             T3_MISSING_TRANSITION_SUBKIND,
             model_id,
-            disc.prev_event_id,
         )
         if already_pending is not None:
             continue
+
+        # Also suppress quick re-emission of the *same* completed gap. This
+        # preserves a path for genuinely later discontinuities, while avoiding
+        # the repeated "same gap was handled but not yet ratified" loop that
+        # showed up as low-value T3 backlog in large E2E runs.
+        if completed_gap_suppression_window.total_seconds() > 0:
+            recently_completed = await conn.fetchval(
+                """
+                SELECT 1 FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND trigger_kind = 'T3'
+                  AND trigger_subkind = $2
+                  AND model_id = $3
+                  AND (payload -> 'region_spec' ->> 'prev_event_id')::bigint = $4
+                  AND completed_at IS NOT NULL
+                  AND completed_at >= now() - ($5 || ' seconds')::interval
+                LIMIT 1
+                """,
+                tenant_id,
+                T3_MISSING_TRANSITION_SUBKIND,
+                model_id,
+                disc.prev_event_id,
+                str(completed_gap_suppression_window.total_seconds()),
+            )
+            if recently_completed is not None:
+                continue
 
         trig_id = uuid7()
         payload = {

@@ -213,6 +213,13 @@ async def assemble_reasoning_context(
             stage="retrieval",
             payload={
                 "phase": "post_augmentation",
+                "retrieved_model_count": len(retrieval_result.models),
+                "retrieved_observation_count": len(retrieval_result.observations),
+                "selected_model_count": len(bundle.models),
+                "selected_observation_count": len(bundle.observations),
+                "observation_selection": bundle.notes.get(
+                    "observation_selection"
+                ),
                 "commitment_count": len(
                     bundle.acts_summary.get("commitments", [])
                 ),

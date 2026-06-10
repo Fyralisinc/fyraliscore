@@ -539,7 +539,7 @@ async def _run_once(
     trigger_kind_full = record.trigger_kind
 
     from services.relationships.adjudication import (
-        adjudicate_candidate_for_trigger,
+        adjudicate_candidates_for_trigger,
         load_candidate_for_trigger,
     )
     loaded_relationship_candidate = await load_candidate_for_trigger(
@@ -745,8 +745,8 @@ async def _run_once(
         )
         await update_think_run(
             conn, record.id,
-            retrieval_model_count=len(first.models),
-            retrieval_observation_count=len(first.observations),
+            retrieval_model_count=len(bundle.models),
+            retrieval_observation_count=len(bundle.observations),
         )
         acquisition = await acquire_region_lock(
             conn, trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
@@ -829,8 +829,8 @@ async def _run_once(
             )
             await update_think_run(
                 conn, record.id,
-                retrieval_model_count=len(first.models),
-                retrieval_observation_count=len(first.observations),
+                retrieval_model_count=len(bundle.models),
+                retrieval_observation_count=len(bundle.observations),
             )
             acquisition = await acquire_region_lock(
                 conn,
@@ -910,6 +910,7 @@ async def _run_once(
             payload={
                 "claim_ops": validated.claim_ops,
                 "edge_ops": validated.edge_ops,
+                "ontology_gap_ops": validated.ontology_gap_ops,
                 "act_ops": validated.act_ops,
                 "resource_ops": validated.resource_ops,
                 "dropped_op_count": validated.dropped_op_count,
@@ -945,29 +946,38 @@ async def _run_once(
             )
         await _assert_tx_usable(conn, "apply_diff")
 
-        candidate_adjudication = await adjudicate_candidate_for_trigger(
+        candidate_adjudications = await adjudicate_candidates_for_trigger(
             conn,
             trigger=trigger,
             diff=validated,
             applied=applied,
         )
         await _assert_tx_usable(conn, "relationship_adjudication")
-        if candidate_adjudication is not None:
+        if candidate_adjudications:
+            def _adjudication_payload(candidate_adjudication):
+                return {
+                    "candidate_id": str(candidate_adjudication.candidate_id),
+                    "review_status": candidate_adjudication.review_status,
+                    "reason": candidate_adjudication.reason,
+                    "decision_reason": candidate_adjudication.decision_reason,
+                    "accepted_model_id": (
+                        str(candidate_adjudication.accepted_model_id)
+                        if candidate_adjudication.accepted_model_id else None
+                    ),
+                    "accepted_edge_ids": [
+                        str(edge_id)
+                        for edge_id in candidate_adjudication.accepted_edge_ids
+                    ],
+                    "metadata": candidate_adjudication.metadata,
+                }
             applied["relationship_candidate_adjudication"] = {
-                "candidate_id": str(candidate_adjudication.candidate_id),
-                "review_status": candidate_adjudication.review_status,
-                "reason": candidate_adjudication.reason,
-                "decision_reason": candidate_adjudication.decision_reason,
-                "accepted_model_id": (
-                    str(candidate_adjudication.accepted_model_id)
-                    if candidate_adjudication.accepted_model_id else None
-                ),
-                "accepted_edge_ids": [
-                    str(edge_id)
-                    for edge_id in candidate_adjudication.accepted_edge_ids
-                ],
-                "metadata": candidate_adjudication.metadata,
+                **_adjudication_payload(candidate_adjudications[0]),
             }
+            if len(candidate_adjudications) > 1:
+                applied["relationship_candidate_adjudications"] = [
+                    _adjudication_payload(adjudication)
+                    for adjudication in candidate_adjudications
+                ]
 
         emit("think.apply_done",
              run_id=str(record.id),

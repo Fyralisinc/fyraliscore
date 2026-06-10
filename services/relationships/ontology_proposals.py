@@ -286,6 +286,7 @@ class RelationshipOntologyProposalsRepo:
                 tenant_id=tenant_id,
                 proposal_id=row["id"],
                 candidate_ids=proposal.example_candidate_ids,
+                retire_examples=row["status"] == "review_ready",
             )
             out.append(row)
         return out
@@ -432,13 +433,31 @@ class RelationshipOntologyProposalsRepo:
         tenant_id: UUID,
         proposal_id: UUID,
         candidate_ids: Sequence[UUID],
+        retire_examples: bool = False,
     ) -> int:
         if not candidate_ids:
             return 0
-        status = await conn.execute(
+        review_status_sql = (
             """
+              review_status = CASE
+                WHEN review_status IN ('candidate', 'needs_review')
+                THEN 'retired'
+                ELSE review_status
+              END,
+              decided_at = CASE
+                WHEN review_status IN ('candidate', 'needs_review')
+                THEN now()
+                ELSE decided_at
+              END,
+            """
+            if retire_examples
+            else ""
+        )
+        status = await conn.execute(
+            f"""
             UPDATE relationship_candidates
-            SET metadata = metadata || jsonb_build_object(
+            SET {review_status_sql}
+                metadata = metadata || jsonb_build_object(
               'ontology_proposal_id', $3::text
             )
             WHERE tenant_id = $1
@@ -446,7 +465,7 @@ class RelationshipOntologyProposalsRepo:
             """,
             tenant_id,
             list(candidate_ids),
-            proposal_id,
+            str(proposal_id),
         )
         return int(status.split()[-1]) if status.startswith("UPDATE ") else 0
 

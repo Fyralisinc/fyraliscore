@@ -226,7 +226,7 @@ async def test_build_prompt_surfaces_selected_graph_memory_priority():
     assert "Graph anchors are the memory layer's strongest candidate" in pair.user
     assert "Edge endpoints must be existing Model ids from <models>" in pair.user
     assert "born_from_event_id of a claim_ops.insert" in pair.user
-    assert "reasoning_trace must name at least one relevant selected/graph Model" in pair.user
+    assert "reasoning_trace must name at least one selected/graph Model" in pair.user
 
 
 async def test_build_prompt_surfaces_inquiry_context_packet():

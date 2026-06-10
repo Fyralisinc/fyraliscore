@@ -31,6 +31,7 @@ from services.sage.outcome_evaluator import (
     OutcomeEvaluator,
 )
 from services.sage.inquiry_traces.repo import OutcomeEventsRepo
+from services.sage.topology_optimizer import TopologyOptimizer
 from tests.unit.sage._seed import seed_model
 
 pytestmark = pytest.mark.integration
@@ -296,8 +297,8 @@ async def test_emits_node_used_in_valid_diff_for_each_diff_model_id(
     """A successful think_run with claim_ops + edge_ops should emit
     one `node_used_in_valid_diff` per distinct model_id and one
     `path_used_in_valid_diff` per traversed active edge."""
-    model_a = uuid7()
-    model_b = uuid7()
+    model_a = await seed_model(gateway_pool, tenant_id=tenant_id)
+    model_b = await seed_model(gateway_pool, tenant_id=tenant_id)
     ops_applied = {
         "claim_ops": [{"op": "update", "model_id": str(model_a)}],
         "edge_ops": [{
@@ -351,6 +352,60 @@ async def test_emits_node_used_in_valid_diff_for_each_diff_model_id(
         "entities": ["Acme", "SSO"],
         "question_primitive": "DEPENDENCY",
     }
+
+
+@pytest.mark.asyncio
+async def test_valid_diff_events_ignore_generated_missing_model_refs(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    """Offline evaluation should not turn generated/non-existent UUIDs
+    into utility-layer model refs. That keeps the topology optimizer from
+    reporting shortcut/structural missing-model skips for normal runs.
+    """
+    missing_a = uuid7()
+    missing_b = uuid7()
+    ops_applied = {
+        "claim_ops": [{"op": "update", "model_id": str(missing_a)}],
+        "edge_ops": [{
+            "op": "add",
+            "source_model_id": str(missing_a),
+            "target_model_id": str(missing_b),
+            "edge_kind": "supports",
+        }],
+        "act_ops": [],
+        "resource_ops": [],
+    }
+    run_id = await _seed_think_run(
+        gateway_pool, tenant_id=tenant_id,
+        status="success", ops_applied=ops_applied,
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet={
+            "source_metadata": {"trigger_kind": "T1"},
+            "question_path": [
+                {"question_id": "Q_DEPENDENCY", "primitive": "DEPENDENCY"}
+            ],
+        },
+        think_run_id=run_id,
+    )
+
+    evaluator = OutcomeEvaluator(pool=gateway_pool, tenant_id=tenant_id)
+    summary = await evaluator.evaluate(inquiry_session_id=session_id)
+    report = await TopologyOptimizer(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+    ).optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert summary.events_by_type.get("node_used_in_valid_diff", 0) == 0
+    assert summary.events_by_type.get("path_used_in_valid_diff", 0) == 0
+    assert summary.useful_node_ids == ()
+    assert report.metrics["shortcut_missing_model_skips"] == 0.0
+    assert report.metrics["structural_missing_model_skips"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -700,6 +755,70 @@ async def test_successful_noop_does_not_punish_justified_context_use(
 
 
 @pytest.mark.asyncio
+async def test_accounted_selected_context_does_not_emit_low_value_feedback(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    model_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        natural="Related but not decisive memory",
+    )
+    packet = {
+        "source_metadata": {"trigger_kind": "T1"},
+        "resolved_entities": [{"id": "Acme"}],
+        "question_path": [{"primitive": "CONSTRAINT"}],
+        "tiers": {
+            "supporting_evidence_groups": [
+                {"source_ref": "obs:kept-1"},
+                {"source_ref": "obs:kept-2"},
+                {"source_ref": "obs:kept-3"},
+            ],
+        },
+    }
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={
+            "claim_ops": [{"op": "insert"}],
+            "edge_ops": [],
+            "act_ops": [],
+            "context_use": {
+                "selected_context_used": False,
+                "selected_context_accounted_for": True,
+                "context_use_grade": "selected_context_accounted",
+            },
+        },
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    for i in range(1, 4):
+        await _seed_evidence(
+            gateway_pool,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_ref=f"obs:kept-{i}",
+        )
+    await _seed_reader_decision_attribution(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        model_id=model_id,
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool, tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.events_by_type.get("reader_decision_low_value", 0) == 0
+    assert "unused_selected_context" not in summary.quality_signal.failure_modes
+
+
+@pytest.mark.asyncio
 async def test_evaluate_is_idempotent_no_double_emit(
     gateway_pool: asyncpg.Pool, tenant_id: UUID,
 ):
@@ -707,7 +826,7 @@ async def test_evaluate_is_idempotent_no_double_emit(
     appends ZERO new events because the evaluator dedupes against the
     already-stored events (per (event_type, payload-key) tuple).
     Per-type counts therefore stay constant across calls."""
-    model_a = uuid7()
+    model_a = await seed_model(gateway_pool, tenant_id=tenant_id)
     ops_applied = {
         "claim_ops": [{"op": "update", "model_id": str(model_a)}],
         "edge_ops": [], "act_ops": [], "resource_ops": [],

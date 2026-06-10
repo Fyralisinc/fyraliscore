@@ -34,7 +34,7 @@ import math
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -77,6 +77,34 @@ def _raise_if_postgres_error(exc: Exception) -> None:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def _coerce_trigger_seed_occurred_at(trigger: TriggerContext) -> None:
+    """Normalize queue JSON timestamps before temporal retrieval.
+
+    TriggerContext is a dataclass, so callers can still pass the JSONB
+    payload's ISO string despite the type hint. Normalize here because this
+    is the shared boundary before Pathway C, inquiry question planning, and
+    prompt rendering consume the value.
+    """
+    value = trigger.seed_occurred_at
+    if value is None:
+        return
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            trigger.seed_occurred_at = value.replace(tzinfo=timezone.utc)
+        return
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            trigger.seed_occurred_at = None
+            return
+        trigger.seed_occurred_at = (
+            parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        )
+        return
+    trigger.seed_occurred_at = None
 
 
 def _pathway_counts(result: PathwayResult | None) -> dict[str, Any]:
@@ -133,7 +161,11 @@ class TriggerContext:
 
       T1: observation_id, seed_entity_ids, seed_natural_text,
           seed_occurred_at, scope_actors
-      T2: model_id (the prediction whose evaluate_at is due)
+      T1:event_batch: observation_ids + member_trigger_ids, with
+          observation_id preserved as the primary/oldest signal for
+          backwards-compatible provenance and deterministic fallbacks
+      T2: model_id; batched belief updates also pass additional model
+          seeds in member_model_ids
       T3: region_spec (anomaly region descriptor); typically carries
           seed_entity_ids + seed_natural_text under the hood (populated
           by the Anomaly processor's enqueue path)
@@ -145,6 +177,8 @@ class TriggerContext:
 
     # T1
     observation_id: UUID | None = None
+    observation_ids: list[UUID] = field(default_factory=list)
+    member_trigger_ids: list[UUID] = field(default_factory=list)
     seed_entity_ids: list[dict[str, Any]] = field(default_factory=list)
     seed_natural_text: str | None = None
     seed_occurred_at: datetime | None = None
@@ -177,6 +211,10 @@ class TriggerContext:
 
     # Pathway B k
     semantic_k: int = 40
+
+    @property
+    def is_batch(self) -> bool:
+        return bool(self.observation_ids or self.member_trigger_ids)
 
 
 @dataclass
@@ -420,6 +458,54 @@ def _coerce_vector(value: Any) -> list[float] | None:
         return None
 
 
+def _hydrate_observation(record: asyncpg.Record) -> ObservationRow:
+    raw = dict(record)
+    for key in ("content", "entities_mentioned"):
+        value = raw.get(key)
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode()
+        if isinstance(value, str):
+            try:
+                raw[key] = json.loads(value)
+            except json.JSONDecodeError:
+                raw[key] = {} if key == "content" else []
+    raw["embedding"] = _coerce_vector(raw.get("embedding"))
+    return ObservationRow.model_validate(raw)
+
+
+async def _fetch_trigger_observations(
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+) -> list[ObservationRow]:
+    if trigger.kind != "T1":
+        return []
+    observation_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    if trigger.observation_id is not None:
+        observation_ids.append(trigger.observation_id)
+        seen.add(trigger.observation_id)
+    for oid in trigger.observation_ids:
+        if oid not in seen:
+            observation_ids.append(oid)
+            seen.add(oid)
+    if not observation_ids:
+        return []
+    rows = await conn.fetch(
+        """
+        SELECT id, tenant_id, occurred_at, ingested_at, kind, source_channel,
+               source_actor_ref, actor_id, content, content_text, embedding,
+               embedding_pending, trust_tier, external_id, cause_id,
+               sequence_num, entities_mentioned
+        FROM observations
+        WHERE id = ANY($1::uuid[]) AND tenant_id = $2
+        ORDER BY occurred_at DESC
+        """,
+        observation_ids,
+        trigger.tenant_id,
+    )
+    return [_hydrate_observation(row) for row in rows]
+
+
 def _coerce_entity_refs(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return []
@@ -459,36 +545,59 @@ async def _derive_trigger_scope(
     model_natural: str | None = None
     model_embedding: list[float] | None = None
 
-    if trigger.kind == "T1" and trigger.observation_id is not None:
-        row = await conn.fetchrow(
-            """
-            SELECT entities_mentioned, actor_id, content_text, embedding
-            FROM observations
-            WHERE id = $1 AND tenant_id = $2
-            """,
-            trigger.observation_id,
-            trigger.tenant_id,
-        )
-        if row is not None:
-            for e in _coerce_entity_refs(row["entities_mentioned"]):
-                _append_seed_once(seeds, seen_seeds, e)
-            if row["actor_id"] is not None:
-                _append_actor_once(actors, seen_actors, row["actor_id"])
-            if isinstance(row["content_text"], str) and row["content_text"].strip():
-                model_natural = row["content_text"]
-            model_embedding = _coerce_vector(row["embedding"])
+    if trigger.kind == "T1":
+        observation_ids: list[UUID] = []
+        seen_observation_ids: set[UUID] = set()
+        if trigger.observation_id is not None:
+            observation_ids.append(trigger.observation_id)
+            seen_observation_ids.add(trigger.observation_id)
+        for oid in trigger.observation_ids:
+            if oid not in seen_observation_ids:
+                observation_ids.append(oid)
+                seen_observation_ids.add(oid)
+        if observation_ids:
+            rows = await conn.fetch(
+                """
+                SELECT entities_mentioned, actor_id, content_text, embedding
+                FROM observations
+                WHERE id = ANY($1::uuid[]) AND tenant_id = $2
+                ORDER BY occurred_at ASC
+                """,
+                observation_ids,
+                trigger.tenant_id,
+            )
+            for row in rows:
+                for e in _coerce_entity_refs(row["entities_mentioned"]):
+                    _append_seed_once(seeds, seen_seeds, e)
+                if row["actor_id"] is not None:
+                    _append_actor_once(actors, seen_actors, row["actor_id"])
+                if (
+                    not model_natural
+                    and isinstance(row["content_text"], str)
+                    and row["content_text"].strip()
+                ):
+                    model_natural = row["content_text"]
+                if model_embedding is None:
+                    model_embedding = _coerce_vector(row["embedding"])
 
-    if trigger.kind == "T2" and trigger.model_id is not None:
-        row = await conn.fetchrow(
+    if trigger.kind == "T2":
+        t2_model_ids: list[UUID] = []
+        if trigger.model_id is not None:
+            t2_model_ids.append(trigger.model_id)
+        for mid in trigger.member_model_ids:
+            if mid not in t2_model_ids:
+                t2_model_ids.append(mid)
+        rows = await conn.fetch(
             """
             SELECT scope_entities, scope_actors, "natural", embedding
             FROM models
-            WHERE id = $1 AND tenant_id = $2
+            WHERE id = ANY($1::uuid[]) AND tenant_id = $2
+            ORDER BY array_position($1::uuid[], id)
             """,
-            trigger.model_id,
+            t2_model_ids,
             trigger.tenant_id,
-        )
-        if row is not None:
+        ) if t2_model_ids else []
+        for row in rows:
             raw_se = row["scope_entities"]
             if isinstance(raw_se, (bytes, bytearray)):
                 raw_se = raw_se.decode()
@@ -502,9 +611,14 @@ async def _derive_trigger_scope(
                     _append_seed_once(seeds, seen_seeds, e)
             for a in row["scope_actors"] or []:
                 _append_actor_once(actors, seen_actors, a)
-            if isinstance(row["natural"], str) and row["natural"].strip():
+            if (
+                model_natural is None
+                and isinstance(row["natural"], str)
+                and row["natural"].strip()
+            ):
                 model_natural = row["natural"]
-            model_embedding = _coerce_vector(row["embedding"])
+            if model_embedding is None:
+                model_embedding = _coerce_vector(row["embedding"])
 
     return seeds, actors, model_natural, model_embedding
 
@@ -548,6 +662,7 @@ async def primary_retrieve(
     explicitly — config only fills in defaults.
     """
     cfg = config or CONFIG
+    _coerce_trigger_seed_occurred_at(trigger)
     weights = _TRIGGER_WEIGHTS.get(trigger.kind)
     if weights is None:
         raise ValidationError(
@@ -702,6 +817,12 @@ async def primary_retrieve(
     if "C" in weights:
         if trigger.seed_occurred_at is not None:
             stage_started = time.perf_counter()
+            temporal_max_observations = int(cfg.temporal_max_observations)
+            if cfg.model_first_context_enabled:
+                temporal_max_observations = min(
+                    temporal_max_observations,
+                    max(0, int(cfg.historical_observation_cap)),
+                )
             try:
                 pr_c = await pathway_c_temporal(
                     trigger.seed_occurred_at,
@@ -710,7 +831,7 @@ async def primary_retrieve(
                     conn,
                     scope_actors=effective_scope_actors,
                     scope_entities=effective_seed_entities,
-                    max_observations=cfg.temporal_max_observations,
+                    max_observations=temporal_max_observations,
                     max_models=cfg.temporal_max_models,
                     include_entity_mentions=cfg.temporal_include_entity_mentions,
                 )
@@ -822,6 +943,13 @@ async def primary_retrieve(
         scoring_mode=cfg.scoring_mode,
     )
     observations = _merge_observations(pathway_results)
+    trigger_observations = await _fetch_trigger_observations(trigger, conn)
+    if trigger_observations:
+        seen_observation_ids = {o.id for o in trigger_observations}
+        observations = [
+            *trigger_observations,
+            *[o for o in observations if o.id not in seen_observation_ids],
+        ]
     acts = _merge_acts(pathway_results)
     resources = _merge_resources(pathway_results)
     _append_pathway_timing(
@@ -837,6 +965,16 @@ async def primary_retrieve(
 
     notes["models_merged"] = len(models)
     notes["observations_merged"] = len(observations)
+    notes["observation_policy"] = {
+        "model_first_context_enabled": bool(cfg.model_first_context_enabled),
+        "trigger_observations": len(trigger_observations),
+        "historical_observations": max(0, len(observations) - len(trigger_observations)),
+        "historical_observation_cap": (
+            int(cfg.historical_observation_cap)
+            if cfg.model_first_context_enabled
+            else int(cfg.temporal_max_observations)
+        ),
+    }
     notes["acts_merged"] = {k: len(v) for k, v in acts.items()}
     notes["resources_merged"] = len(resources)
 

@@ -28,6 +28,11 @@ import pytest
 
 from lib.shared.ids import uuid7
 
+from services.relationships import (
+    JudgmentScores,
+    RelationshipCandidatesRepo,
+    make_edge_type_candidate,
+)
 from services.think.observability import METRICS
 from services.think.tests.conftest import ScriptedProvider, make_embedding
 from services.think.worker import ThinkWorker, WorkerConfig
@@ -93,6 +98,103 @@ async def _lock_trigger(pool, trigger_id: UUID, worker_id: str) -> None:
             trigger_id,
             worker_id,
         )
+
+
+async def _seed_model(
+    pool,
+    tenant: UUID,
+    *,
+    born_event: UUID,
+    natural: str,
+) -> UUID:
+    mid = uuid7()
+    customer_id = uuid7()
+    proposition = {
+        "kind": "belief",
+        "claim_role": "fact",
+        "subject": natural,
+        "assertion": "true",
+        "summary": natural,
+    }
+    scope_entities = [{"type": "customer", "id": str(customer_id)}]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO models
+              (id, tenant_id, born_from_event_id, proposition, "natural",
+               embedding, scope_actors, scope_entities, scope_temporal,
+               confidence, activation, status, confidence_at_assertion,
+               activation_coefficient)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, '{}'::uuid[], $7::jsonb,
+                    '{}'::jsonb, 0.6, 1.0, 'active', 0.6, 1.0)
+            """,
+            mid,
+            tenant,
+            born_event,
+            json.dumps(proposition),
+            natural,
+            make_embedding(natural),
+            json.dumps(scope_entities),
+        )
+    return mid
+
+
+async def _enqueue_t2_belief_updated(
+    pool,
+    tenant: UUID,
+    *,
+    model_id: UUID,
+    observation_id: UUID | None = None,
+) -> UUID:
+    trigger_id = uuid7()
+    payload = {
+        "trigger_id": str(trigger_id),
+        "source_model_id": str(model_id),
+        "seed_natural_text": "updated belief",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue
+              (id, tenant_id, trigger_kind, trigger_subkind,
+               observation_id, model_id, payload)
+            VALUES ($1, $2, 'T2', 'belief_updated', $3, $4, $5::jsonb)
+            """,
+            trigger_id,
+            tenant,
+            observation_id,
+            model_id,
+            json.dumps(payload),
+        )
+    return trigger_id
+
+
+async def _enqueue_t4_latent_candidate(
+    pool,
+    tenant: UUID,
+    *,
+    candidate_id: UUID,
+    member_model_ids: list[UUID],
+) -> UUID:
+    trigger_id = uuid7()
+    payload = {
+        "trigger_id": str(trigger_id),
+        "relationship_candidate_id": str(candidate_id),
+        "member_model_ids": [str(mid) for mid in member_model_ids],
+        "seed_natural_text": "candidate explanation",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue
+              (id, tenant_id, trigger_kind, trigger_subkind, payload)
+            VALUES ($1, $2, 'T4', 'latent_relationship_candidate', $3::jsonb)
+            """,
+            trigger_id,
+            tenant,
+            json.dumps(payload),
+        )
+    return trigger_id
 
 
 # =====================================================================
@@ -234,6 +336,703 @@ async def test_poll_does_not_overlease_when_in_flight_is_full(
 
     assert len(dispatched) == 3
     assert locked == 3
+
+
+async def test_t1_batch_window_holds_fresh_singletons(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            tenant_filter=tenant,
+            t1_batch_window_s=60.0,
+            t1_batch_max_size=4,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list[UUID] = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row["id"])
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert dispatched == []
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT locked_by, batch_parent_id, completed_at
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trig,
+        )
+    assert row["locked_by"] is None
+    assert row["batch_parent_id"] is None
+    assert row["completed_at"] is None
+
+
+async def test_t1_batch_window_holds_fresh_partial_batches(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs_a = await _seed_signal_observation(fresh_db, tenant)
+    obs_b = await _seed_signal_observation(fresh_db, tenant)
+    trig_a = await _enqueue_trigger_row(fresh_db, tenant, obs_a)
+    trig_b = await _enqueue_trigger_row(fresh_db, tenant, obs_b)
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            tenant_filter=tenant,
+            t1_batch_window_s=60.0,
+            t1_batch_max_size=4,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list[UUID] = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row["id"])
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert dispatched == []
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, locked_by, batch_parent_id, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id
+            """,
+            [trig_a, trig_b],
+        )
+    assert len(rows) == 2
+    assert all(row["locked_by"] is None for row in rows)
+    assert all(row["batch_parent_id"] is None for row in rows)
+    assert all(row["completed_at"] is None for row in rows)
+
+
+async def test_t1_batch_coalesces_ready_rows_and_attaches_members(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs_a = await _seed_signal_observation(fresh_db, tenant)
+    obs_b = await _seed_signal_observation(fresh_db, tenant)
+    trig_a = await _enqueue_trigger_row(fresh_db, tenant, obs_a)
+    trig_b = await _enqueue_trigger_row(fresh_db, tenant, obs_b)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '10 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="batcher",
+            tenant_filter=tenant,
+            t1_batch_window_s=1.0,
+            t1_batch_max_size=4,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert len(dispatched) == 1
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T1"
+    assert batch["trigger_subkind"] == "event_batch"
+    payload = batch["payload"]
+    assert payload["batch"] is True
+    assert set(payload["batch_member_trigger_ids"]) == {str(trig_a), str(trig_b)}
+    assert set(payload["batch_observation_ids"]) == {str(obs_a), str(obs_b)}
+    assert "Batch of 2 signals" in payload["seed_natural_text"]
+
+    async with fresh_db.acquire() as conn:
+        members = await conn.fetch(
+            """
+            SELECT id, batch_parent_id, locked_by, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id
+            """,
+            [trig_a, trig_b],
+        )
+        batch_locked_by = await conn.fetchval(
+            "SELECT locked_by FROM think_trigger_queue WHERE id = $1",
+            batch["id"],
+        )
+    assert batch_locked_by == "batcher"
+    assert {row["batch_parent_id"] for row in members} == {batch["id"]}
+    assert all(row["locked_by"] is None for row in members)
+    assert all(row["completed_at"] is None for row in members)
+
+
+async def test_t1_batch_complete_marks_member_triggers_complete(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs_a = await _seed_signal_observation(fresh_db, tenant)
+    obs_b = await _seed_signal_observation(fresh_db, tenant)
+    trig_a = await _enqueue_trigger_row(fresh_db, tenant, obs_a)
+    trig_b = await _enqueue_trigger_row(fresh_db, tenant, obs_b)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '10 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="batch-complete",
+            tenant_filter=tenant,
+            t1_batch_window_s=1.0,
+            t1_batch_max_size=4,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+    batch = dispatched[0]
+
+    await worker._mark_trigger_complete(batch["id"], payload=batch["payload"])
+
+    async with fresh_db.acquire() as conn:
+        completed = await conn.fetch(
+            """
+            SELECT id, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [batch["id"], trig_a, trig_b],
+        )
+    assert len(completed) == 3
+    assert all(row["completed_at"] is not None for row in completed)
+
+
+async def test_t1_batch_terminal_failure_releases_member_triggers(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs_a = await _seed_signal_observation(fresh_db, tenant)
+    obs_b = await _seed_signal_observation(fresh_db, tenant)
+    trig_a = await _enqueue_trigger_row(fresh_db, tenant, obs_a)
+    trig_b = await _enqueue_trigger_row(fresh_db, tenant, obs_b)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '10 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="batch-fail",
+            tenant_filter=tenant,
+            t1_batch_window_s=1.0,
+            t1_batch_max_size=4,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+    batch = dispatched[0]
+
+    await worker._mark_trigger_failed(batch["id"], "boom", force_terminal=True)
+
+    async with fresh_db.acquire() as conn:
+        members = await conn.fetch(
+            """
+            SELECT id, batch_parent_id, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+        batch_completed = await conn.fetchval(
+            "SELECT completed_at FROM think_trigger_queue WHERE id = $1",
+            batch["id"],
+        )
+    assert batch_completed is not None
+    assert all(row["batch_parent_id"] is None for row in members)
+    assert all(row["completed_at"] is None for row in members)
+
+
+async def test_downstream_batch_coalesces_t2_belief_updates(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    model_a = await _seed_model(
+        fresh_db, tenant, born_event=obs, natural="customer risk increased"
+    )
+    model_b = await _seed_model(
+        fresh_db, tenant, born_event=obs, natural="security review blocked"
+    )
+    trig_a = await _enqueue_t2_belief_updated(
+        fresh_db, tenant, model_id=model_a, observation_id=obs
+    )
+    trig_b = await _enqueue_t2_belief_updated(
+        fresh_db, tenant, model_id=model_b, observation_id=obs
+    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '2 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="downstream-batcher",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t2_batch_max_size=4,
+            prune_low_value_downstream_triggers=False,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+    assert len(dispatched) == 1
+
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T2"
+    assert batch["trigger_subkind"] == "belief_updated"
+    assert batch["model_id"] == model_a
+    payload = batch["payload"]
+    assert payload["batch"] is True
+    assert payload["batch_kind"] == "downstream"
+    assert set(payload["batch_member_trigger_ids"]) == {str(trig_a), str(trig_b)}
+    assert payload["model_ids"] == [str(model_a), str(model_b)]
+    assert "Batch of 2 updated beliefs" in payload["seed_natural_text"]
+
+    async with fresh_db.acquire() as conn:
+        members = await conn.fetch(
+            """
+            SELECT id, batch_parent_id, locked_by, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id
+            """,
+            [trig_a, trig_b],
+        )
+    assert {row["batch_parent_id"] for row in members} == {batch["id"]}
+    assert all(row["locked_by"] is None for row in members)
+    assert all(row["completed_at"] is None for row in members)
+
+
+async def test_downstream_batch_complete_marks_t2_members_complete(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    model_a = await _seed_model(fresh_db, tenant, born_event=obs, natural="a")
+    model_b = await _seed_model(fresh_db, tenant, born_event=obs, natural="b")
+    trig_a = await _enqueue_t2_belief_updated(fresh_db, tenant, model_id=model_a)
+    trig_b = await _enqueue_t2_belief_updated(fresh_db, tenant, model_id=model_b)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '2 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="downstream-complete",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t2_batch_max_size=4,
+            prune_low_value_downstream_triggers=False,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+    batch = dispatched[0]
+    await worker._mark_trigger_complete(batch["id"], payload=batch["payload"])
+
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [batch["id"], trig_a, trig_b],
+        )
+    assert all(row["completed_at"] is not None for row in rows)
+
+
+async def test_worker_prunes_non_prediction_t2_belief_updated(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    model_id = await _seed_model(
+        fresh_db, tenant, born_event=obs, natural="ordinary customer risk"
+    )
+    trigger_id = await _enqueue_t2_belief_updated(
+        fresh_db,
+        tenant,
+        model_id=model_id,
+        observation_id=obs,
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t2-pruner",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t2_batch_max_size=4,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT completed_at, payload
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+
+    assert dispatched == []
+    assert row is not None
+    assert row["completed_at"] is not None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["auto_completed_reason"] == (
+        "non_prediction_belief_updated_noop"
+    )
+
+
+async def test_downstream_batch_coalesces_t4_latent_candidates(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    candidate_a = uuid7()
+    candidate_b = uuid7()
+    member_a = uuid7()
+    member_b = uuid7()
+    trig_a = await _enqueue_t4_latent_candidate(
+        fresh_db, tenant, candidate_id=candidate_a, member_model_ids=[member_a]
+    )
+    trig_b = await _enqueue_t4_latent_candidate(
+        fresh_db, tenant, candidate_id=candidate_b, member_model_ids=[member_b]
+    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '2 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-batcher",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+    assert len(dispatched) == 1
+
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T4"
+    assert batch["trigger_subkind"] == "latent_relationship_candidate"
+    payload = batch["payload"]
+    assert payload["batch"] is True
+    assert payload["relationship_candidate_id"] == str(candidate_a)
+    assert payload["relationship_candidate_ids"] == [
+        str(candidate_a),
+        str(candidate_b),
+    ]
+    assert set(payload["member_model_ids"]) == {str(member_a), str(member_b)}
+    assert (
+        "Batch of 2 latent relationship candidates"
+        in payload["seed_natural_text"]
+    )
+
+
+async def test_worker_prunes_edge_type_t4_candidate_trigger(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    left = uuid7()
+    right = uuid7()
+    candidate = make_edge_type_candidate(
+        tenant_id=tenant,
+        proposed_edge_kind="gated_by_decision",
+        description="Progress depends on an explicit approval decision.",
+        relationship_summary="The relationship belongs in ontology review.",
+        nearest_existing_kind="blocks",
+        parent_kind="blocks",
+        example_source_model_id=left,
+        example_target_model_id=right,
+        scores=JudgmentScores(impact=0.8, actionability=0.7, confidence=0.6),
+    )
+    async with fresh_db.acquire() as conn:
+        await RelationshipCandidatesRepo().insert(conn, candidate)
+    trigger_id = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=candidate.id,
+        member_model_ids=[left, right],
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-edge-type-pruner",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT completed_at, payload
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+        candidate_row = await RelationshipCandidatesRepo().get(
+            conn,
+            candidate_id=candidate.id,
+            tenant_id=tenant,
+        )
+
+    assert dispatched == []
+    assert row is not None
+    assert row["completed_at"] is not None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["auto_completed_reason"] == (
+        "edge_type_candidate_aggregation_path"
+    )
+    assert candidate_row is not None
+    assert candidate_row["review_status"] == "needs_review"
+
+
+async def test_worker_aggregates_and_retires_edge_type_t4_examples(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    triggers = []
+    candidate_ids = []
+    async with fresh_db.acquire() as conn:
+        repo = RelationshipCandidatesRepo()
+        for _ in range(3):
+            left = uuid7()
+            right = uuid7()
+            candidate = make_edge_type_candidate(
+                tenant_id=tenant,
+                proposed_edge_kind="gated_by_decision",
+                description="Progress depends on an explicit approval decision.",
+                relationship_summary="Repeated examples belong in one proposal.",
+                nearest_existing_kind="blocks",
+                parent_kind="blocks",
+                example_source_model_id=left,
+                example_target_model_id=right,
+                scores=JudgmentScores(
+                    impact=0.8,
+                    actionability=0.7,
+                    confidence=0.6,
+                ),
+            )
+            inserted = await repo.insert(conn, candidate)
+            candidate_ids.append(inserted["id"])
+
+    for candidate_id in candidate_ids:
+        triggers.append(
+            await _enqueue_t4_latent_candidate(
+                fresh_db,
+                tenant,
+                candidate_id=candidate_id,
+                member_model_ids=[uuid7(), uuid7()],
+            )
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-edge-type-aggregator",
+            tenant_filter=tenant,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    async with fresh_db.acquire() as conn:
+        trigger_rows = await conn.fetch(
+            """
+            SELECT completed_at, payload
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            triggers,
+        )
+        candidate_rows = await conn.fetch(
+            """
+            SELECT review_status, decided_at, metadata
+            FROM relationship_candidates
+            WHERE id = ANY($1::uuid[])
+            """,
+            candidate_ids,
+        )
+        proposals = await conn.fetch(
+            """
+            SELECT status, example_count
+            FROM relationship_ontology_proposals
+            WHERE tenant_id = $1
+              AND proposed_edge_kind = 'gated_by_decision'
+            """,
+            tenant,
+        )
+
+    assert dispatched == []
+    assert all(row["completed_at"] is not None for row in trigger_rows)
+    assert {row["review_status"] for row in candidate_rows} == {"retired"}
+    assert all(row["decided_at"] is not None for row in candidate_rows)
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "review_ready"
+    assert proposals[0]["example_count"] == 3
+    for row in candidate_rows:
+        metadata = row["metadata"]
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        assert metadata.get("ontology_proposal_id")
 
 
 async def test_two_workers_pick_different_rows(fresh_db, tenant, tenant_cleanup):
@@ -554,13 +1353,15 @@ async def test_mark_trigger_failed_eventually_dead_letters(
 
 
 async def test_worker_idempotency_second_run_skipped(
-    fresh_db, tenant, tenant_cleanup,
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
 ):
     """
     Dispatch the same trigger row twice through _process_trigger. The
     second call sees applied_triggers has a prior row and records
     status='skipped_idempotent' in think_runs.
     """
+    monkeypatch.setenv("INQUIRY_LLM_QUESTION_PLANNING_ENABLED", "0")
+
     obs = await _seed_signal_observation(fresh_db, tenant)
     trig = await _enqueue_trigger_row(
         fresh_db, tenant, obs, subkind="event_arrival",

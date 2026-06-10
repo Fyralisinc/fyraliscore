@@ -43,7 +43,7 @@ class ReasoningJob:
     budget: dict[str, int] = field(
         default_factory=lambda: {
             "claim_ops": 3,
-            "edge_ops": 2,
+            "edge_ops": 4,
             "act_ops": 1,
             "resource_ops": 1,
         }
@@ -83,7 +83,7 @@ class ReasoningFrame:
     budget: dict[str, int] = field(
         default_factory=lambda: {
             "claim_ops": 3,
-            "edge_ops": 2,
+            "edge_ops": 4,
             "act_ops": 1,
             "resource_ops": 1,
         }
@@ -92,6 +92,7 @@ class ReasoningFrame:
         default_factory=lambda: {
             "prefer_existing_models": True,
             "emit_edges_for_pairwise_relationships": True,
+            "relationship_decision_required_when_graph_selected": True,
             "emit_situation_for_composite_conditions": True,
             "situation_requires_compositional_fields": True,
             "treat_topology_as_evidence_not_truth": True,
@@ -118,6 +119,7 @@ class ReasoningFrame:
         policy = {
             "prefer_existing_models": True,
             "emit_edges_for_pairwise_relationships": True,
+            "relationship_decision_required_when_graph_selected": True,
             "emit_situation_for_composite_conditions": True,
             "do_not_invent_ids": True,
             "minimize_diff": True,

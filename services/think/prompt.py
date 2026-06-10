@@ -63,12 +63,15 @@ Core discipline:
   evidence.
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
-- Keep diffs small. Most events warrant 0-3 claim_ops, 0-1 edge_ops, and 0
-  act_ops. Empty diffs are valid when memory already captures the event and no
-  state/action/relationship should change.
-- Never abbreviate UUIDs in reasoning_trace. If returning an empty diff with
-  selected context, cite at least one relevant selected Model or Observation by
-  its exact full UUID so audits can verify the no-op used retrieved memory.
+- Keep diffs small. Most single events warrant 0-3 claim_ops, 0-1 edge_ops,
+  and 0 act_ops. Batch or graph-anchor calls may legitimately need 2-4
+  edge_ops when several selected Model relationships changed. Empty diffs are
+  valid when memory already captures the event and no state/action/relationship
+  should change.
+- Never silently ignore selected context. If any selected Model or Observation
+  changes the diff, cite its full UUID in the relevant op. If selected context
+  is irrelevant, reasoning_trace must cite at least one selected full UUID and
+  say why it did not warrant a state, edge, action, or resource change.
 
 Falsifier schema (pick the right kind):
 1. observation_pattern -> {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -106,7 +109,7 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
-- archive: {"op":"archive","model_id":"<uuid>","reason":"<brief>"}
+- archive: {"op":"archive","model_id":"<uuid>","reason":"decay|falsifier_triggered|contested_incorrect|contested_reading_incorrect|superseded|manual|resolved_confirmed|resolved_violated|severe_drift|deprecated|acted_upon|dismissed_by_user"}
 
 Proposition stance and grammar:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -245,6 +248,8 @@ Model granularity:
 - Before inserting a same-scope claim, check selected Models for an existing
   belief that the signal confirms, updates, weakens, contradicts, or supersedes.
   Prefer claim_ops.update, archive, or edge_ops over a duplicate sibling Model.
+  Archive only with a registered lifecycle reason such as `decay`, `superseded`,
+  `contested_incorrect`, `resolved_confirmed`, or `severe_drift`.
 - Repeated evidence for the same operational reality should strengthen the
   existing Model's evidence trail; only insert a new Model when the signal adds
   a materially new belief, forecast, blocker, or causal explanation.
@@ -267,9 +272,23 @@ edge_ops:
   weakening, causal/explanatory links, blockers/enablers, shared issues,
   co-occurrence, analogy, alternatives, early warnings, instance_of,
   contributes_to_resolution, superseded_by.
+- Relationship decision contract: when graph-selected Models or candidate
+  member Models are relevant, explicitly choose one of:
+  (a) emit the sharpest registered edge_op;
+  (b) emit an ontology_gap_op because every registered edge loses important
+      decision semantics;
+  (c) update/archive a Model because that is the stronger representation; or
+  (d) write `no edge:` plus the relevant full UUIDs and reason in
+      reasoning_trace. Do not leave relational graph context only in prose.
 - Prefer the sharpest true edge. Use co_occurs_with/same_issue_as/analogous_to
   only when the evidence does not justify a causal, blocking, explanatory,
   weakening, contradiction, warning, enabling, or resolution relationship.
+- Quick edge-kind guide: `blocks` = source prevents target progress;
+  `explains` = source is the mechanism/reason for target; `weakens` =
+  source is counterevidence against target; `contradicts` = both cannot be
+  true; `enables` = source makes target possible; `contributes_to_resolution`
+  = source helps settle or resolve target; `supports` = source adds evidence
+  without a sharper relationship.
 - Causal edges (`causes`, `explains`, `blocks`, `enables`) require a concrete
   mechanism in `explanation`. If the mechanism is plausible but unconfirmed,
   set `review_status` to `candidate` or `needs_review` and put causal metadata
@@ -344,8 +363,9 @@ Core discipline:
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
 - Empty diffs are valid only when selected memory already captures the signal or
-  the signal is non-substantive. For empty diffs, reasoning_trace must cite at
-  least one relevant selected Model or Observation by exact full UUID.
+  the signal is non-substantive. If selected context is irrelevant to an empty
+  or non-empty diff, reasoning_trace must cite at least one selected full UUID
+  and say why it did not warrant a claim, edge, action, or resource change.
 - Never abbreviate UUIDs in reasoning_trace.
 
 Return exactly this JSON shape:
@@ -765,9 +785,19 @@ def _build_triggering_section(
     signature = (
         trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
     )
-    candidate = signature.get("relationship_candidate")
-    if isinstance(candidate, dict):
-        lines.extend(_relationship_candidate_lines(candidate))
+    candidates = signature.get("relationship_candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates[:8]:
+            if isinstance(candidate, dict):
+                lines.extend(_relationship_candidate_lines(candidate))
+        if len(candidates) > 8:
+            lines.append(
+                f"  relationship_candidate_omitted_count: {len(candidates) - 8}"
+            )
+    else:
+        candidate = signature.get("relationship_candidate")
+        if isinstance(candidate, dict):
+            lines.extend(_relationship_candidate_lines(candidate))
     if reason:
         lines.append(f"  reason: {reason}")
     lines.append("</triggering_event>")
@@ -1315,6 +1345,13 @@ def _build_retrieval_guidance_section(
             "over generic supports/explains."
         )
         lines.append(
+            "    Preserve explicit relationship semantics. Use 'blocks' for "
+            "blocking dependencies, 'weakens' only for counterevidence, "
+            "'explains' for causal/accounting explanations, and "
+            "'contributes_to_resolution' when a new claim advances or closes "
+            "a known issue."
+        )
+        lines.append(
             "    Use weakens only for counterevidence that lowers confidence "
             "in the target Model. Evidence that makes a risk more believable "
             "usually supports or explains that risk; it does not weaken it."
@@ -1349,11 +1386,22 @@ def _build_retrieval_guidance_section(
             "contributes_to_resolution, or co_occurs_with). Do not treat an "
             "act confidence_basis as a substitute for the graph edge."
         )
+        lines.append(
+            "    Relationship decision contract: for each important graph "
+            "anchor pair or new-claim-to-anchor link, emit the sharpest "
+            "edge_op, emit an ontology_gap_op, update/archive the existing "
+            "Model if that is stronger, or write `no edge:` with the full "
+            "UUIDs and reason in reasoning_trace. A relational insight should "
+            "not remain only as prose."
+        )
     lines.append(
-        "    If selected context is irrelevant, an empty diff is valid, but "
-        "reasoning_trace must name at least one relevant selected/graph Model "
-        "by its full UUID and briefly say why that context did not warrant a "
-        "state change, edge, or action."
+        "    Context accountability: for every non-empty diff, selected "
+        "context should either appear in claim_ops.update, edge_ops, "
+        "evidence_model_ids, evidence_event_ids, act confidence_basis, or "
+        "resource reasoning. If selected context is irrelevant, "
+        "reasoning_trace must name at least one selected/graph Model or "
+        "selected Observation by full UUID and briefly say why that context "
+        "did not warrant a state change, edge, action, or resource change."
     )
     lines.append("  </retrieval_priority>")
     return lines

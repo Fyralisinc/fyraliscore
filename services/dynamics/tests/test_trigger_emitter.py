@@ -231,6 +231,7 @@ async def test_emit_is_idempotent_against_pending_queue_row(
         second = await emit_missing_transition_triggers(
             conn, tenant_id=tenant_id, signals=signals,
             reference_time=now,
+            completed_gap_suppression_window=timedelta(0),
         )
 
         rows = await conn.fetch(
@@ -285,6 +286,7 @@ async def test_emit_allows_new_trigger_after_completion(
         second = await emit_missing_transition_triggers(
             conn, tenant_id=tenant_id, signals=signals,
             reference_time=now,
+            completed_gap_suppression_window=timedelta(0),
         )
 
         rows = await conn.fetch(
@@ -297,6 +299,99 @@ async def test_emit_allows_new_trigger_after_completion(
     assert len(second) == 1
     assert first[0] != second[0]
     assert len(rows) == 2
+
+
+async def test_emit_suppresses_recently_completed_same_gap(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_discontinuity(
+            conn, tenant_id, actor_id, obs_id, model_id, now,
+        )
+        signals = await detect_dynamic_signals(
+            conn, tenant_id=tenant_id, model_ids=[model_id],
+            reference_time=now,
+        )
+        first = await emit_missing_transition_triggers(
+            conn, tenant_id=tenant_id, signals=signals,
+            reference_time=now,
+        )
+        await conn.execute(
+            "UPDATE think_trigger_queue SET completed_at = now() "
+            "WHERE id = $1",
+            first[0],
+        )
+        second = await emit_missing_transition_triggers(
+            conn, tenant_id=tenant_id, signals=signals,
+            reference_time=now,
+        )
+
+        rows = await conn.fetch(
+            "SELECT id FROM think_trigger_queue "
+            "WHERE tenant_id = $1 AND model_id = $2",
+            tenant_id, model_id,
+        )
+
+    assert len(first) == 1
+    assert second == []
+    assert len(rows) == 1
+
+
+async def test_emit_suppresses_when_model_already_has_pending_gap(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_discontinuity(
+            conn, tenant_id, actor_id, obs_id, model_id, now,
+        )
+        pending_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue (
+              id, tenant_id, trigger_kind, trigger_subkind, model_id, payload
+            )
+            VALUES ($1, $2, 'T3', $3, $4, $5::jsonb)
+            """,
+            pending_id,
+            tenant_id,
+            T3_MISSING_TRANSITION_SUBKIND,
+            model_id,
+            json.dumps({
+                "region_spec": {
+                    "anomaly_kind": "missing_transition",
+                    "prev_event_id": -1,
+                }
+            }),
+        )
+        signals = await detect_dynamic_signals(
+            conn, tenant_id=tenant_id, model_ids=[model_id],
+            reference_time=now,
+        )
+        emitted = await emit_missing_transition_triggers(
+            conn, tenant_id=tenant_id, signals=signals,
+            reference_time=now,
+        )
+
+        rows = await conn.fetch(
+            "SELECT id FROM think_trigger_queue "
+            "WHERE tenant_id = $1 AND model_id = $2",
+            tenant_id, model_id,
+        )
+
+    assert emitted == []
+    assert [row["id"] for row in rows] == [pending_id]
 
 
 # =====================================================================

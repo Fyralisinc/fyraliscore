@@ -350,6 +350,53 @@ async def test_creates_shortcut_after_path_used_in_valid_diff(
 
 
 @pytest.mark.asyncio
+async def test_skips_shortcut_and_structural_writes_for_missing_models(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    """Outcome payloads can mention non-canonical/generated IDs.
+
+    The optimizer should treat those as skipped utility-layer work instead
+    of attempting FK-invalid shortcut or structural-feature writes.
+    """
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    missing_node = uuid7()
+    missing_target = uuid7()
+
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    await events.append(
+        session_id,
+        "node_used_in_valid_diff",
+        {
+            "model_id": str(missing_node),
+            "signal_type": "generated",
+            "question_primitive": "DEPENDENCY",
+        },
+    )
+    await events.append(
+        session_id,
+        "path_used_in_valid_diff",
+        {
+            "path_id": str(uuid4()),
+            "target_model_id": str(missing_target),
+            "signal_type": "generated",
+            "question_primitive": "DEPENDENCY",
+        },
+    )
+
+    report = await TopologyOptimizer(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+    ).optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert report.shortcut_creates_or_bumps == 0
+    assert report.metrics["shortcut_missing_model_skips"] == 2.0
+    assert report.metrics["structural_missing_model_skips"] == 2.0
+
+
+@pytest.mark.asyncio
 async def test_records_failure_on_noisy_shortcut(
     gateway_pool: asyncpg.Pool, tenant_id: UUID,
 ):

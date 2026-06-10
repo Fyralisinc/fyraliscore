@@ -292,6 +292,14 @@ async def ingest(
     with notify_scope() as scope:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if draft.external_id is not None:
+                    await conn.execute(
+                        """
+                        SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))
+                        """,
+                        draft.source_channel,
+                        draft.external_id,
+                    )
                 # Pre-check for dedup so we can tell the caller whether
                 # the returned row was a re-insert or a fresh one.
                 if draft.external_id is not None:

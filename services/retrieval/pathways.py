@@ -62,6 +62,7 @@ _DEFAULT_STRUCTURAL_MAX_HOPS = 2
 _STRUCTURAL_MAX_MODELS = 200
 _STRUCTURAL_MODELS_PER_SCOPE_ENTITY = 32
 _STRUCTURAL_MODELS_PER_SCOPE_ACTOR = 48
+_STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS = 64
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
 _DEFAULT_EDGE_MAX_HOPS = 2
@@ -402,6 +403,35 @@ def _canonical_seed_type(raw_type: Any) -> str | None:
 def _chunked(values: Sequence[Any], size: int) -> list[list[Any]]:
     chunk_size = max(1, int(size))
     return [list(values[i:i + chunk_size]) for i in range(0, len(values), chunk_size)]
+
+
+def _scope_filter_key(entry: dict[str, Any]) -> tuple[str, UUID] | None:
+    try:
+        return str(entry["type"]), UUID(str(entry["id"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _cap_scope_entity_filters(
+    filters: Sequence[dict[str, Any]],
+    *,
+    direct_seed_entity_pairs: set[tuple[str, UUID]],
+    limit: int = _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS,
+) -> tuple[list[dict[str, Any]], int]:
+    """Bound model-scope lookup fanout while preserving direct seeds first."""
+    cap = max(1, int(limit))
+    if len(filters) <= cap:
+        return list(filters), 0
+    direct: list[dict[str, Any]] = []
+    expanded: list[dict[str, Any]] = []
+    for entry in filters:
+        key = _scope_filter_key(entry)
+        if key is not None and key in direct_seed_entity_pairs:
+            direct.append(entry)
+        else:
+            expanded.append(entry)
+    capped = [*direct, *expanded][:cap]
+    return capped, len(filters) - len(capped)
 
 
 def _record_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
@@ -1097,11 +1127,19 @@ async def pathway_a_structural(
             seen_scope_filters.add(key)
             deduped_scope_filters.append(entry)
         scope_entity_filters = deduped_scope_filters
+    filters_before_cap = len(scope_entity_filters)
+    scope_entity_filters, filters_dropped_by_cap = _cap_scope_entity_filters(
+        scope_entity_filters,
+        direct_seed_entity_pairs=direct_seed_entity_pairs,
+    )
     _append_timing(
         notes,
         "scope_filter_expand",
         stage_started,
         filters=len(scope_entity_filters),
+        filters_before_cap=filters_before_cap,
+        filter_cap=_STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS,
+        filters_dropped_by_cap=filters_dropped_by_cap,
         actors=len(visited_actors),
     )
 

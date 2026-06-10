@@ -166,6 +166,17 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _graph_relation_contract_satisfied(context: dict[str, Any]) -> bool:
+    if "graph_relation_contract_satisfied" in context:
+        return bool(context.get("graph_relation_contract_satisfied"))
+    return (
+        _as_int(context.get("graph_relation_op_count")) > 0
+        or _as_int(context.get("graph_non_relation_op_count")) > 0
+        or bool(context.get("graph_no_edge_rationale_present"))
+        or bool(context.get("reasoning_trace_context_used"))
+    )
+
+
 def _iso(value: Any) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -262,7 +273,7 @@ def _flags_for_context(
         and edge_ops == 0
         and ontology_gap_ops == 0
         and total_ops > 0
-        and not graph_used
+        and not _graph_relation_contract_satisfied(context)
     ):
         flags.append("graph_context_without_edge_ops")
     if (
@@ -306,11 +317,17 @@ def _quality_gates(summary: dict[str, Any]) -> dict[str, Any]:
     flagged = int(summary.get("flagged_successful_runs") or 0)
     unused = int(summary.get("unused_selected_context_runs") or 0)
     graph_ignored = int(summary.get("graph_context_ignored_runs") or 0)
+    graph_relation_failed = int(
+        summary.get("graph_relation_contract_failed_runs") or 0
+    )
 
     flagged_rate = flagged / successful if successful else 0.0
     unused_rate = unused / successful if successful else 0.0
     graph_ignored_rate = (
         graph_ignored / graph_applicable if graph_applicable else 0.0
+    )
+    graph_relation_failed_rate = (
+        graph_relation_failed / graph_applicable if graph_applicable else 0.0
     )
     gates = [
         _gate(
@@ -344,6 +361,17 @@ def _quality_gates(summary: dict[str, Any]) -> dict[str, Any]:
             fail_at=0.25,
             direction="max",
             detail="Graph-selected context should be used in graph-applicable runs.",
+        ),
+        _gate(
+            "graph_relation_contract_failed_rate",
+            value=graph_relation_failed_rate,
+            warn_at=0.15,
+            fail_at=0.35,
+            direction="max",
+            detail=(
+                "Graph-selected context should produce edge/ontology structure, "
+                "a stronger model mutation, or an explicit no-edge rationale."
+            ),
         ),
     ]
     if any(g["status"] == "fail" for g in gates):
@@ -416,6 +444,7 @@ async def build_think_quality_report(
     missing_context_use = 0
     graph_applicable_successful_runs = 0
     graph_context_ignored_runs = 0
+    graph_relation_contract_failed_runs = 0
     unused_selected_context_runs = 0
     low_selected_context_runs = 0
 
@@ -466,6 +495,8 @@ async def build_think_quality_report(
                 graph_applicable_successful_runs += 1
             if "graph_context_ignored" in flags:
                 graph_context_ignored_runs += 1
+            if "graph_context_without_edge_ops" in flags:
+                graph_relation_contract_failed_runs += 1
             if "unused_selected_context" in flags:
                 unused_selected_context_runs += 1
             if "low_selected_context_use" in flags:
@@ -509,6 +540,9 @@ async def build_think_quality_report(
         "flagged_successful_runs": len(bad_runs),
         "graph_applicable_successful_runs": graph_applicable_successful_runs,
         "graph_context_ignored_runs": graph_context_ignored_runs,
+        "graph_relation_contract_failed_runs": (
+            graph_relation_contract_failed_runs
+        ),
         "unused_selected_context_runs": unused_selected_context_runs,
         "low_selected_context_runs": low_selected_context_runs,
     }

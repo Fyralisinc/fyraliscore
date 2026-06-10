@@ -1757,6 +1757,43 @@ async def collect_model_layer_report(
             """,
             tenant_id,
         )
+        row = await conn.fetchrow(
+            """
+            WITH contexts AS (
+              SELECT ops_applied->'context_use' AS context
+              FROM think_runs
+              WHERE tenant_id = $1
+                AND status = 'success'
+                AND ops_applied ? 'context_use'
+            )
+            SELECT
+              COUNT(*)::bigint AS context_use_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
+              )::bigint AS graph_selected_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE(NULLIF(context->>'graph_relation_op_count', '')::int, 0) > 0
+              )::bigint AS graph_relation_op_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE((context->>'graph_no_edge_rationale_present')::boolean, false)
+              )::bigint AS graph_no_edge_rationale_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE((context->>'graph_selected_without_relation_ops')::boolean, false)
+              )::bigint AS graph_selected_without_relation_ops_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
+              )::bigint AS graph_relation_contract_satisfied_runs,
+              COUNT(*) FILTER (
+                WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
+                  AND NOT COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
+              )::bigint AS graph_relation_contract_failed_runs
+            FROM contexts
+            """,
+            tenant_id,
+        )
+        summary["context_use_relation_contract"] = (
+            _record_to_dict(row) if row is not None else {}
+        )
         summary["discovery_layer_counts"] = await _fetch_discovery_layer_counts(
             conn,
             tenant_id,
@@ -1944,7 +1981,11 @@ async def _fetch_topology_optimizer_metric_totals(
           COALESCE(SUM((metrics->>'canonical_promote_candidates')::numeric), 0)::numeric
             AS canonical_promote_candidates,
           COALESCE(SUM((metrics->>'canonical_demote_candidates')::numeric), 0)::numeric
-            AS canonical_demote_candidates
+            AS canonical_demote_candidates,
+          COALESCE(SUM((metrics->>'shortcut_missing_model_skips')::numeric), 0)::numeric
+            AS shortcut_missing_model_skips,
+          COALESCE(SUM((metrics->>'structural_missing_model_skips')::numeric), 0)::numeric
+            AS structural_missing_model_skips
         FROM sage_topology_optimizer_runs
         WHERE tenant_id = $1
         """,

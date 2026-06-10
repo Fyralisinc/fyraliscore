@@ -601,8 +601,8 @@ async def enqueue_t2_belief_updated(
     model_id: UUID,
     source_observation_id: UUID | None,
 ) -> UUID:
-    """Enqueue a T2:belief_updated trigger for a newly-inserted state/concern
-    model so the LLM can decide whether it warrants a recommendation card.
+    """Enqueue a T2:belief_updated trigger for a newly-inserted prediction
+    model so the deterministic resolver can reevaluate it when appropriate.
 
     Fetches the model's natural text and scope_actors so pathway B (semantic)
     and pathway A (structural) have seeds to work with even when scope_entities

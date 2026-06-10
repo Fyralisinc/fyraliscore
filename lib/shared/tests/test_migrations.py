@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import pathlib
 import tempfile
+import uuid
 
 import asyncpg
 import pytest
@@ -41,12 +42,30 @@ async def conn():
         await c.execute(
             "DROP TABLE IF EXISTS migrations_t3_marker CASCADE"
         )
+        await c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+              filename text PRIMARY KEY,
+              applied_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await c.execute(
+            "DELETE FROM schema_migrations WHERE filename LIKE 'test_migrations_%'"
+        )
         yield c
         # Clean up after the test.
         await c.execute(
             "DROP TABLE IF EXISTS migrations_t3_marker CASCADE"
         )
+        await c.execute(
+            "DELETE FROM schema_migrations WHERE filename LIKE 'test_migrations_%'"
+        )
     await pool.close()
+
+
+def _migration_name(label: str) -> str:
+    return f"test_migrations_{label}_{uuid.uuid4().hex}.sql"
 
 
 async def test_failing_second_statement_rolls_back_first(conn):
@@ -91,16 +110,18 @@ async def test_apply_migrations_dir_stops_on_first_failure(conn, tmp_path):
     """`on_error='stop'` re-raises the first failure and the previous
     successful migrations must persist (each migration is its own
     transaction). The failing one must NOT have left side effects."""
-    (tmp_path / "01_first.sql").write_text(
+    first = _migration_name("01_first")
+    bad = _migration_name("02_bad")
+    (tmp_path / first).write_text(
         "CREATE TABLE migrations_t3_marker (id INT PRIMARY KEY);"
     )
-    (tmp_path / "02_bad.sql").write_text(
+    (tmp_path / bad).write_text(
         "CREATE TABLE migrations_t3_marker_bad (id INT PRIMARY KEY); "
         "INSERT INTO no_such_table VALUES (1);"
     )
     with pytest.raises(MigrationError) as ei:
         await apply_migrations_dir(conn, tmp_path, on_error="stop")
-    assert ei.value.filename == "02_bad.sql"
+    assert ei.value.filename == bad
     # First migration's effect persists.
     assert await conn.fetchval(
         "SELECT to_regclass('public.migrations_t3_marker') IS NOT NULL"
@@ -117,14 +138,41 @@ async def test_apply_migrations_dir_warn_continues(conn, tmp_path):
     """`on_error='warn'` skips failing migrations and applies the rest.
     The harness uses this against long-lived dev DBs where most
     migrations are already applied."""
-    (tmp_path / "01_bad.sql").write_text(
+    bad = _migration_name("01_bad")
+    good = _migration_name("02_good")
+    (tmp_path / bad).write_text(
         "CREATE TABLE no_op (); INSERT INTO no_such_table VALUES (1);"
     )
-    (tmp_path / "02_good.sql").write_text(
+    (tmp_path / good).write_text(
         "CREATE TABLE migrations_t3_marker (id INT PRIMARY KEY);"
     )
     applied = await apply_migrations_dir(conn, tmp_path, on_error="warn")
-    assert applied == ["02_good.sql"]
+    assert applied == [good]
+    assert await conn.fetchval(
+        "SELECT to_regclass('public.migrations_t3_marker') IS NOT NULL"
+    )
+
+
+async def test_apply_migrations_dir_skips_recorded_files(conn, tmp_path):
+    skipped = _migration_name("01_skipped")
+    applied_name = _migration_name("02_applied")
+    await conn.execute(
+        "INSERT INTO schema_migrations(filename) VALUES ($1)",
+        skipped,
+    )
+    (tmp_path / skipped).write_text(
+        "CREATE TABLE migrations_t3_marker_skipped (id INT PRIMARY KEY);"
+    )
+    (tmp_path / applied_name).write_text(
+        "CREATE TABLE migrations_t3_marker (id INT PRIMARY KEY);"
+    )
+
+    applied = await apply_migrations_dir(conn, tmp_path, on_error="stop")
+
+    assert applied == [applied_name]
+    assert not await conn.fetchval(
+        "SELECT to_regclass('public.migrations_t3_marker_skipped') IS NOT NULL"
+    )
     assert await conn.fetchval(
         "SELECT to_regclass('public.migrations_t3_marker') IS NOT NULL"
     )

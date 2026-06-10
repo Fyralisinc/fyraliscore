@@ -24,6 +24,9 @@ def _context(
     graph_ratio: float = 1.0,
     graph_used: bool = False,
     edge_ops: int = 0,
+    ontology_gap_ops: int = 0,
+    non_relation_ops: int = 0,
+    no_edge_rationale: bool = False,
     unused_models: list[str] | None = None,
     unused_graph: list[str] | None = None,
     unused_observations: list[str] | None = None,
@@ -37,6 +40,16 @@ def _context(
         "graph_selected_reference_ratio": graph_ratio,
         "graph_context_used": graph_used,
         "edge_ops_count": edge_ops,
+        "ontology_gap_ops_count": ontology_gap_ops,
+        "graph_relation_op_count": edge_ops + ontology_gap_ops,
+        "graph_non_relation_op_count": non_relation_ops,
+        "graph_no_edge_rationale_present": no_edge_rationale,
+        "graph_relation_contract_satisfied": (
+            graph_count == 0
+            or edge_ops + ontology_gap_ops > 0
+            or non_relation_ops > 0
+            or no_edge_rationale
+        ),
         "claim_ops_count": 1,
         "act_ops_count": 0,
         "unused_selected_model_ids": unused_models or [],
@@ -218,6 +231,7 @@ async def test_quality_report_flags_context_and_graph_failures(
     assert report["summary"]["grade_counts"]["unused_selected_context"] == 1
     assert report["summary"]["grade_counts"]["justified_noop_context_used"] == 1
     assert report["summary"]["trigger_grade_counts"]["T2"]["graph_context_used"] == 1
+    assert report["summary"]["graph_relation_contract_failed_runs"] == 1
     assert report["cost"]["llm_calls"] == 2
     assert report["cost"]["input_tokens"] == 1000
     assert report["cost"]["cost_usd"] == pytest.approx(0.42)
@@ -260,3 +274,41 @@ async def test_quality_report_empty_window_is_well_formed(
     assert report["summary"]["total_runs"] == 0
     assert report["summary"]["context_use_coverage_ratio"] == 1.0
     assert report["flagged_runs"] == []
+
+
+async def test_quality_report_accepts_graph_backed_model_mutation(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        run_id, _ = await _insert_run(
+            conn,
+            tenant=tenant,
+            trigger_kind="T1",
+            context_use=_context(
+                grade="graph_context_used",
+                selected_count=8,
+                selected_ratio=0.25,
+                graph_count=2,
+                graph_ratio=0.50,
+                graph_used=True,
+                edge_ops=0,
+                ontology_gap_ops=0,
+                non_relation_ops=1,
+            ),
+        )
+
+        report = await build_think_quality_report(
+            conn,
+            tenant_id=tenant,
+            since_hours=24,
+            low_context_ratio=0.20,
+        )
+
+    assert report["summary"]["successful_runs"] == 1
+    assert report["summary"]["graph_applicable_successful_runs"] == 1
+    assert report["summary"]["graph_relation_contract_failed_runs"] == 0
+    assert str(run_id) not in {
+        run["run_id"] for run in report["flagged_runs"]
+    }
