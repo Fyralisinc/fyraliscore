@@ -33,7 +33,6 @@ from services.reasoning.relationships import (
     RelationshipCandidatesRepo,
     make_edge_type_candidate,
 )
-from services.reasoning.think.observability import METRICS
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
