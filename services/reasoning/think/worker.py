@@ -33,7 +33,7 @@ import json
 import os
 import signal
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -78,6 +78,18 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
         trigger.seed_entity_ids = [
             e for e in entity_ids if isinstance(e, dict)
         ]
+
+    observation_ids = payload.get("observation_ids")
+    if not isinstance(observation_ids, list):
+        observation_ids = payload.get("batch_observation_ids")
+    if isinstance(observation_ids, list):
+        trigger.observation_ids = _coerce_uuid_list(observation_ids)
+
+    member_trigger_ids = payload.get("member_trigger_ids")
+    if not isinstance(member_trigger_ids, list):
+        member_trigger_ids = payload.get("batch_member_trigger_ids")
+    if isinstance(member_trigger_ids, list):
+        trigger.member_trigger_ids = _coerce_uuid_list(member_trigger_ids)
 
     occurred = payload.get("seed_occurred_at")
     if isinstance(occurred, str):
@@ -139,6 +151,67 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
                 except ValueError:
                     continue
         trigger.member_model_ids = out
+    model_ids = payload.get("model_ids")
+    if not isinstance(model_ids, list):
+        model_ids = payload.get("batch_model_ids")
+    if isinstance(model_ids, list):
+        merged = list(trigger.member_model_ids)
+        seen = set(merged)
+        for mid in _coerce_uuid_list(model_ids):
+            if trigger.model_id is not None and mid == trigger.model_id:
+                continue
+            if mid not in seen:
+                seen.add(mid)
+                merged.append(mid)
+        trigger.member_model_ids = merged
+
+
+def _coerce_uuid_list(values: list[Any]) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if isinstance(value, UUID):
+            uid = value
+        else:
+            try:
+                uid = UUID(str(value))
+            except (TypeError, ValueError):
+                continue
+        if uid not in seen:
+            seen.add(uid)
+            out.append(uid)
+    return out
+
+
+def _payload_uuid_list(payload: dict[str, Any], key: str) -> list[UUID]:
+    values = payload.get(key)
+    if not isinstance(values, list):
+        return []
+    return _coerce_uuid_list(values)
+
+
+def _payload_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            decoded = raw.decode()
+        except Exception:
+            return {}
+        raw = decoded
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _timestamp(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
 
 
 # ---------------------------------------------------------------------
@@ -157,6 +230,14 @@ class WorkerConfig:
     trigger_lock_timeout_s: float = 600.0
     trigger_heartbeat_interval_s: float = 30.0
     run_timeout_s: float = 600.0
+    t1_batch_window_s: float = 0.0
+    t1_batch_max_size: int = 30
+    t1_batch_min_size: int = 20
+    downstream_batch_window_s: float = 0.0
+    downstream_batch_min_size: int = 2
+    t2_batch_max_size: int = 8
+    t4_batch_max_size: int = 4
+    prune_low_value_downstream_triggers: bool = True
     worker_id: str = "worker"
     tenant_filter: UUID | None = None
 
@@ -186,6 +267,33 @@ class WorkerConfig:
             run_timeout_s=float(os.environ.get(
                 "THINK_RUN_TIMEOUT_S", 600.0
             )),
+            t1_batch_window_s=float(os.environ.get(
+                "THINK_T1_BATCH_WINDOW_S", 0.0
+            )),
+            t1_batch_max_size=int(os.environ.get(
+                "THINK_T1_BATCH_MAX_SIZE", 30
+            )),
+            t1_batch_min_size=int(os.environ.get(
+                "THINK_T1_BATCH_MIN_SIZE", 20
+            )),
+            downstream_batch_window_s=float(os.environ.get(
+                "THINK_DOWNSTREAM_BATCH_WINDOW_S", 0.0
+            )),
+            downstream_batch_min_size=int(os.environ.get(
+                "THINK_DOWNSTREAM_BATCH_MIN_SIZE", 2
+            )),
+            t2_batch_max_size=int(os.environ.get(
+                "THINK_T2_BATCH_MAX_SIZE", 8
+            )),
+            t4_batch_max_size=int(os.environ.get(
+                "THINK_T4_BATCH_MAX_SIZE", 4
+            )),
+            prune_low_value_downstream_triggers=(
+                os.environ.get(
+                    "THINK_PRUNE_LOW_VALUE_DOWNSTREAM_TRIGGERS", "1"
+                ).strip().lower()
+                not in {"0", "false", "no", "off"}
+            ),
             worker_id=os.environ.get("THINK_WORKER_ID", f"worker-{os.getpid()}"),
         )
 
@@ -365,19 +473,51 @@ class ThinkWorker:
             return
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                if self.config.tenant_filter is None:
-                    rows = await conn.fetch(
+                await self._prune_low_value_downstream_rows(conn)
+                rows: list[Any] = await self._create_t1_batch_rows(
+                    conn,
+                    available_slots=available_slots,
+                )
+                remaining_slots = available_slots - len(rows)
+                if remaining_slots > 0:
+                    downstream_rows = await self._create_downstream_batch_rows(
+                        conn,
+                        available_slots=remaining_slots,
+                    )
+                    rows.extend(downstream_rows)
+                    remaining_slots = available_slots - len(rows)
+                if remaining_slots <= 0:
+                    poll_rows = []
+                elif self.config.tenant_filter is None:
+                    poll_rows = await conn.fetch(
                         """
                         SELECT id, tenant_id, trigger_kind, trigger_subkind,
                                observation_id, model_id, payload, attempts
                         FROM think_trigger_queue
                         WHERE completed_at IS NULL
+                          AND batch_parent_id IS NULL
                           AND (
                             locked_by IS NULL
                             OR locked_at < now() - ($3 || ' seconds')::interval
                           )
                           AND scheduled_for <= now()
                           AND attempts < $1
+                          AND (
+                            $4 = '0'
+                            OR trigger_kind != 'T1'
+                            OR trigger_subkind IS DISTINCT FROM 'event_arrival'
+                            OR enqueued_at <= now() - ($4 || ' seconds')::interval
+                          )
+                          AND (
+                            $5 = '0'
+                            OR NOT (
+                              (trigger_kind = 'T2'
+                               AND trigger_subkind = 'belief_updated')
+                              OR (trigger_kind = 'T4'
+                                  AND trigger_subkind = 'latent_relationship_candidate')
+                            )
+                            OR enqueued_at <= now() - ($5 || ' seconds')::interval
+                          )
                         ORDER BY
                           CASE
                             WHEN trigger_kind = 'T4'
@@ -393,16 +533,19 @@ class ThinkWorker:
                         LIMIT $2
                         """,
                         self.config.trigger_max_attempts,
-                        available_slots,
+                        remaining_slots,
                         str(self.config.trigger_lock_timeout_s),
+                        self._t1_batch_window_arg(),
+                        self._downstream_batch_window_arg(),
                     )
                 else:
-                    rows = await conn.fetch(
+                    poll_rows = await conn.fetch(
                         """
                         SELECT id, tenant_id, trigger_kind, trigger_subkind,
                                observation_id, model_id, payload, attempts
                         FROM think_trigger_queue
                         WHERE completed_at IS NULL
+                          AND batch_parent_id IS NULL
                           AND (
                             locked_by IS NULL
                             OR locked_at < now() - ($4 || ' seconds')::interval
@@ -410,6 +553,22 @@ class ThinkWorker:
                           AND scheduled_for <= now()
                           AND attempts < $1
                           AND tenant_id = $2
+                          AND (
+                            $5 = '0'
+                            OR trigger_kind != 'T1'
+                            OR trigger_subkind IS DISTINCT FROM 'event_arrival'
+                            OR enqueued_at <= now() - ($5 || ' seconds')::interval
+                          )
+                          AND (
+                            $6 = '0'
+                            OR NOT (
+                              (trigger_kind = 'T2'
+                               AND trigger_subkind = 'belief_updated')
+                              OR (trigger_kind = 'T4'
+                                  AND trigger_subkind = 'latent_relationship_candidate')
+                            )
+                            OR enqueued_at <= now() - ($6 || ' seconds')::interval
+                          )
                         ORDER BY
                           CASE
                             WHEN trigger_kind = 'T4'
@@ -426,9 +585,12 @@ class ThinkWorker:
                         """,
                         self.config.trigger_max_attempts,
                         self.config.tenant_filter,
-                        available_slots,
+                        remaining_slots,
                         str(self.config.trigger_lock_timeout_s),
+                        self._t1_batch_window_arg(),
+                        self._downstream_batch_window_arg(),
                     )
+                rows.extend(poll_rows)
                 leased_ids = [r["id"] for r in rows]
                 if leased_ids:
                     await conn.execute(
@@ -447,8 +609,833 @@ class ThinkWorker:
                 self._in_flight.add(task)
                 task.add_done_callback(self._in_flight.discard)
 
+    async def _prune_low_value_downstream_rows(
+        self,
+        conn: asyncpg.Connection,
+    ) -> None:
+        if not self.config.prune_low_value_downstream_triggers:
+            return
+        tenant_clause = ""
+        args: list[Any] = [self.config.worker_id]
+        if self.config.tenant_filter is not None:
+            args.append(self.config.tenant_filter)
+            tenant_clause = f"AND q.tenant_id = ${len(args)}"
+
+        await conn.execute(
+            f"""
+            UPDATE think_trigger_queue q
+            SET completed_at = now(),
+                locked_by = NULL,
+                locked_at = NULL,
+                payload = q.payload || jsonb_build_object(
+                  'auto_completed_reason',
+                  'non_prediction_belief_updated_noop',
+                  'auto_completed_by',
+                  $1::text
+                )
+            FROM models m
+            WHERE q.completed_at IS NULL
+              AND q.batch_parent_id IS NULL
+              AND q.trigger_kind = 'T2'
+              AND q.trigger_subkind = 'belief_updated'
+              AND q.model_id = m.id
+              AND q.tenant_id = m.tenant_id
+              {tenant_clause}
+              AND COALESCE(m.proposition_kind, 'belief') <> 'prediction'
+              AND (m.falsifier IS NULL OR m.falsifier = '{{}}'::jsonb)
+              AND m.evaluate_at IS NULL
+              AND m.resolution_criteria IS NULL
+            """,
+            *args,
+        )
+
+        await self._aggregate_edge_type_candidates_for_pruning(conn)
+
+        await conn.execute(
+            f"""
+            UPDATE think_trigger_queue q
+            SET completed_at = now(),
+                locked_by = NULL,
+                locked_at = NULL,
+                payload = q.payload || jsonb_build_object(
+                  'auto_completed_reason',
+                  'missing_model_belief_updated_noop',
+                  'auto_completed_by',
+                  $1::text
+                )
+            WHERE q.completed_at IS NULL
+              AND q.batch_parent_id IS NULL
+              AND q.trigger_kind = 'T2'
+              AND q.trigger_subkind = 'belief_updated'
+              {tenant_clause}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM models m
+                WHERE m.id = q.model_id
+                  AND m.tenant_id = q.tenant_id
+              )
+            """,
+            *args,
+        )
+
+        await conn.execute(
+            f"""
+            UPDATE think_trigger_queue q
+            SET completed_at = now(),
+                locked_by = NULL,
+                locked_at = NULL,
+                payload = q.payload || jsonb_build_object(
+                  'auto_completed_reason',
+                  'edge_type_candidate_aggregation_path',
+                  'auto_completed_by',
+                  $1::text
+                )
+            FROM relationship_candidates c
+            WHERE q.completed_at IS NULL
+              AND q.batch_parent_id IS NULL
+              AND q.trigger_kind = 'T4'
+              AND q.trigger_subkind = 'latent_relationship_candidate'
+              {tenant_clause}
+              AND q.payload ? 'relationship_candidate_id'
+              AND (q.payload->>'relationship_candidate_id') ~*
+                '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+              AND c.tenant_id = q.tenant_id
+              AND c.id = (q.payload->>'relationship_candidate_id')::uuid
+              AND c.candidate_kind = 'edge_type'
+            """,
+            *args,
+        )
+
+    async def _aggregate_edge_type_candidates_for_pruning(
+        self,
+        conn: asyncpg.Connection,
+    ) -> None:
+        tenant_clause = ""
+        args: list[Any] = []
+        if self.config.tenant_filter is not None:
+            args.append(self.config.tenant_filter)
+            tenant_clause = f"AND q.tenant_id = ${len(args)}"
+        try:
+            rows = await conn.fetch(
+                f"""
+                SELECT DISTINCT q.tenant_id
+                FROM think_trigger_queue q
+                JOIN relationship_candidates c
+                  ON c.tenant_id = q.tenant_id
+                 AND c.id = CASE
+                   WHEN (q.payload->>'relationship_candidate_id') ~*
+                     '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+                   THEN (q.payload->>'relationship_candidate_id')::uuid
+                   ELSE NULL
+                 END
+                WHERE q.completed_at IS NULL
+                  AND q.batch_parent_id IS NULL
+                  AND q.trigger_kind = 'T4'
+                  AND q.trigger_subkind = 'latent_relationship_candidate'
+                  {tenant_clause}
+                  AND q.payload ? 'relationship_candidate_id'
+                  AND (q.payload->>'relationship_candidate_id') ~*
+                    '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+                  AND c.candidate_kind = 'edge_type'
+                """,
+                *args,
+            )
+        except (
+            asyncpg.UndefinedTableError,
+            asyncpg.UndefinedColumnError,
+        ):
+            return
+        if not rows:
+            return
+        from services.reasoning.relationships import RelationshipOntologyProposalsRepo
+
+        repo = RelationshipOntologyProposalsRepo()
+        for row in rows:
+            try:
+                await repo.aggregate_from_edge_type_candidates(
+                    conn,
+                    tenant_id=row["tenant_id"],
+                )
+            except (
+                asyncpg.UndefinedTableError,
+                asyncpg.UndefinedColumnError,
+            ):
+                return
+
+    def _t1_batching_enabled(self) -> bool:
+        return (
+            self.config.t1_batch_window_s > 0
+            and self.config.t1_batch_max_size >= 2
+            and self.config.t1_batch_min_size >= 2
+        )
+
+    def _t1_batch_window_arg(self) -> str:
+        if not self._t1_batching_enabled():
+            return "0"
+        return str(max(0.0, self.config.t1_batch_window_s))
+
+    def _downstream_batching_enabled(self) -> bool:
+        return (
+            self.config.downstream_batch_window_s > 0
+            and self.config.downstream_batch_min_size >= 2
+            and (
+                self.config.t2_batch_max_size >= 2
+                or self.config.t4_batch_max_size >= 2
+            )
+        )
+
+    def _downstream_batch_window_arg(self) -> str:
+        if not self._downstream_batching_enabled():
+            return "0"
+        return str(max(0.0, self.config.downstream_batch_window_s))
+
+    def _downstream_batch_max_size(self, kind: str, subkind: str | None) -> int:
+        if kind == "T2" and subkind == "belief_updated":
+            return max(0, self.config.t2_batch_max_size)
+        if kind == "T4" and subkind == "latent_relationship_candidate":
+            return max(0, self.config.t4_batch_max_size)
+        return 0
+
+    async def _create_downstream_batch_rows(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        available_slots: int,
+    ) -> list[dict[str, Any]]:
+        if not self._downstream_batching_enabled() or available_slots <= 0:
+            return []
+        largest_batch = max(
+            self.config.t2_batch_max_size,
+            self.config.t4_batch_max_size,
+            0,
+        )
+        if largest_batch < self.config.downstream_batch_min_size:
+            return []
+        limit = max(largest_batch, largest_batch * available_slots)
+        if self.config.tenant_filter is None:
+            candidates = await conn.fetch(
+                """
+                SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                       observation_id, model_id, payload, attempts, enqueued_at
+                FROM think_trigger_queue
+                WHERE completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND (
+                    locked_by IS NULL
+                    OR locked_at < now() - ($2 || ' seconds')::interval
+                  )
+                  AND scheduled_for <= now()
+                  AND attempts < $1
+                  AND payload->>'batch' IS DISTINCT FROM 'true'
+                  AND (
+                    (trigger_kind = 'T2'
+                     AND trigger_subkind = 'belief_updated'
+                     AND model_id IS NOT NULL)
+                    OR (trigger_kind = 'T4'
+                        AND trigger_subkind = 'latent_relationship_candidate'
+                        AND payload ? 'relationship_candidate_id')
+                  )
+                ORDER BY enqueued_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT $3
+                """,
+                self.config.trigger_max_attempts,
+                str(self.config.trigger_lock_timeout_s),
+                limit,
+            )
+        else:
+            candidates = await conn.fetch(
+                """
+                SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                       observation_id, model_id, payload, attempts, enqueued_at
+                FROM think_trigger_queue
+                WHERE completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND (
+                    locked_by IS NULL
+                    OR locked_at < now() - ($3 || ' seconds')::interval
+                  )
+                  AND scheduled_for <= now()
+                  AND attempts < $1
+                  AND tenant_id = $2
+                  AND payload->>'batch' IS DISTINCT FROM 'true'
+                  AND (
+                    (trigger_kind = 'T2'
+                     AND trigger_subkind = 'belief_updated'
+                     AND model_id IS NOT NULL)
+                    OR (trigger_kind = 'T4'
+                        AND trigger_subkind = 'latent_relationship_candidate'
+                        AND payload ? 'relationship_candidate_id')
+                  )
+                ORDER BY enqueued_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT $4
+                """,
+                self.config.trigger_max_attempts,
+                self.config.tenant_filter,
+                str(self.config.trigger_lock_timeout_s),
+                limit,
+            )
+        if not candidates:
+            return []
+
+        now = datetime.now(timezone.utc)
+        by_group: dict[tuple[UUID, str, str | None], list[asyncpg.Record]] = {}
+        for row in candidates:
+            key = (row["tenant_id"], row["trigger_kind"], row["trigger_subkind"])
+            by_group.setdefault(key, []).append(row)
+
+        batch_rows: list[dict[str, Any]] = []
+        for (tenant_id, kind, subkind), rows in by_group.items():
+            if len(batch_rows) >= available_slots:
+                break
+            max_size = self._downstream_batch_max_size(kind, subkind)
+            if max_size < self.config.downstream_batch_min_size:
+                continue
+            rows.sort(key=lambda r: r["enqueued_at"])
+            oldest = rows[0]["enqueued_at"]
+            if oldest.tzinfo is None:
+                oldest = oldest.replace(tzinfo=timezone.utc)
+            cutoff = oldest.timestamp() + self.config.downstream_batch_window_s
+            in_window = [
+                r for r in rows
+                if _timestamp(r["enqueued_at"]) <= cutoff
+            ]
+            window_elapsed = (
+                (now - oldest).total_seconds()
+                >= self.config.downstream_batch_window_s
+            )
+            max_size_reached = len(in_window) >= max_size
+            if not window_elapsed and not max_size_reached:
+                continue
+            members = in_window[:max_size]
+            if len(members) < self.config.downstream_batch_min_size:
+                continue
+            batch_row = await self._insert_downstream_batch_row(
+                conn,
+                tenant_id=tenant_id,
+                trigger_kind=kind,
+                trigger_subkind=subkind,
+                members=members,
+            )
+            batch_rows.append(batch_row)
+        return batch_rows
+
+    async def _create_t1_batch_rows(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        available_slots: int,
+    ) -> list[dict[str, Any]]:
+        if not self._t1_batching_enabled() or available_slots <= 0:
+            return []
+        limit = max(
+            self.config.t1_batch_max_size,
+            self.config.t1_batch_max_size * available_slots,
+        )
+        if self.config.tenant_filter is None:
+            candidates = await conn.fetch(
+                """
+                SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                       observation_id, model_id, payload, attempts, enqueued_at
+                FROM think_trigger_queue
+                WHERE completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND (
+                    locked_by IS NULL
+                    OR locked_at < now() - ($2 || ' seconds')::interval
+                  )
+                  AND scheduled_for <= now()
+                  AND attempts < $1
+                  AND trigger_kind = 'T1'
+                  AND trigger_subkind = 'event_arrival'
+                  AND observation_id IS NOT NULL
+                ORDER BY enqueued_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT $3
+                """,
+                self.config.trigger_max_attempts,
+                str(self.config.trigger_lock_timeout_s),
+                limit,
+            )
+        else:
+            candidates = await conn.fetch(
+                """
+                SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                       observation_id, model_id, payload, attempts, enqueued_at
+                FROM think_trigger_queue
+                WHERE completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND (
+                    locked_by IS NULL
+                    OR locked_at < now() - ($3 || ' seconds')::interval
+                  )
+                  AND scheduled_for <= now()
+                  AND attempts < $1
+                  AND tenant_id = $2
+                  AND trigger_kind = 'T1'
+                  AND trigger_subkind = 'event_arrival'
+                  AND observation_id IS NOT NULL
+                ORDER BY enqueued_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT $4
+                """,
+                self.config.trigger_max_attempts,
+                self.config.tenant_filter,
+                str(self.config.trigger_lock_timeout_s),
+                limit,
+            )
+        if not candidates:
+            return []
+
+        now = datetime.now(timezone.utc)
+        by_tenant: dict[UUID, list[asyncpg.Record]] = {}
+        for row in candidates:
+            by_tenant.setdefault(row["tenant_id"], []).append(row)
+
+        batch_rows: list[dict[str, Any]] = []
+        for tenant_id, rows in by_tenant.items():
+            if len(batch_rows) >= available_slots:
+                break
+            rows.sort(key=lambda r: r["enqueued_at"])
+            oldest = rows[0]["enqueued_at"]
+            if oldest.tzinfo is None:
+                oldest = oldest.replace(tzinfo=timezone.utc)
+            cutoff = oldest.timestamp() + self.config.t1_batch_window_s
+            in_window = [
+                r for r in rows
+                if _timestamp(r["enqueued_at"]) <= cutoff
+            ]
+            window_elapsed = (
+                (now - oldest).total_seconds() >= self.config.t1_batch_window_s
+            )
+            max_size_reached = len(in_window) >= self.config.t1_batch_max_size
+            if not window_elapsed and not max_size_reached:
+                continue
+            members = in_window[:self.config.t1_batch_max_size]
+            if len(members) < self.config.t1_batch_min_size:
+                continue
+            batch_row = await self._insert_t1_batch_row(conn, tenant_id, members)
+            batch_rows.append(batch_row)
+        return batch_rows
+
+    async def _insert_t1_batch_row(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        members: list[asyncpg.Record],
+    ) -> dict[str, Any]:
+        batch_id = uuid7()
+        member_ids = [m["id"] for m in members]
+        observation_ids = [m["observation_id"] for m in members if m["observation_id"]]
+        payload = await self._build_t1_batch_payload(
+            conn,
+            batch_id=batch_id,
+            members=members,
+            observation_ids=observation_ids,
+        )
+        primary_observation_id = observation_ids[0] if observation_ids else None
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue (
+              id, tenant_id, trigger_kind, trigger_subkind,
+              observation_id, model_id, payload, scheduled_for, locked_by, locked_at
+            ) VALUES (
+              $1, $2, 'T1', 'event_batch',
+              $3, NULL, $4::jsonb, now(), $5, now()
+            )
+            """,
+            batch_id,
+            tenant_id,
+            primary_observation_id,
+            json.dumps(payload, default=str),
+            self.config.worker_id,
+        )
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET batch_parent_id = $1
+            WHERE id = ANY($2::uuid[])
+              AND completed_at IS NULL
+              AND batch_parent_id IS NULL
+            """,
+            batch_id,
+            member_ids,
+        )
+        return {
+            "id": batch_id,
+            "tenant_id": tenant_id,
+            "trigger_kind": "T1",
+            "trigger_subkind": "event_batch",
+            "observation_id": primary_observation_id,
+            "model_id": None,
+            "payload": payload,
+            "attempts": 0,
+        }
+
+    async def _build_t1_batch_payload(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        batch_id: UUID,
+        members: list[asyncpg.Record],
+        observation_ids: list[UUID],
+    ) -> dict[str, Any]:
+        rows = await conn.fetch(
+            """
+            SELECT id, occurred_at, source_channel, kind, trust_tier,
+                   actor_id, content_text, entities_mentioned
+            FROM observations
+            WHERE id = ANY($1::uuid[])
+            ORDER BY occurred_at ASC
+            """,
+            observation_ids,
+        )
+        seed_entities: list[dict[str, Any]] = []
+        seen_entities: set[tuple[str, str]] = set()
+        scope_actors: list[str] = []
+        seen_actors: set[str] = set()
+        signal_lines: list[str] = []
+        earliest: datetime | None = None
+        channels: set[str] = set()
+        trust_tiers: set[str] = set()
+        kinds: set[str] = set()
+        for row in rows:
+            occurred_at = row["occurred_at"]
+            if earliest is None or occurred_at < earliest:
+                earliest = occurred_at
+            channels.add(str(row["source_channel"]))
+            trust_tiers.add(str(row["trust_tier"]))
+            kinds.add(str(row["kind"]))
+            actor_id = row["actor_id"]
+            if actor_id is not None and str(actor_id) not in seen_actors:
+                seen_actors.add(str(actor_id))
+                scope_actors.append(str(actor_id))
+            entities = row["entities_mentioned"] or []
+            if isinstance(entities, str):
+                try:
+                    entities = json.loads(entities)
+                except json.JSONDecodeError:
+                    entities = []
+            if isinstance(entities, list):
+                for entity in entities:
+                    if not isinstance(entity, dict):
+                        continue
+                    etype = entity.get("type")
+                    eid = entity.get("id")
+                    if not etype or eid is None:
+                        continue
+                    key = (str(etype), str(eid))
+                    if key in seen_entities:
+                        continue
+                    seen_entities.add(key)
+                    seed_entities.append({"type": str(etype), "id": str(eid)})
+            text = (row["content_text"] or "").strip()
+            if text:
+                compact = " ".join(text.split())
+                if len(compact) > 280:
+                    compact = compact[:277].rstrip() + "..."
+                signal_lines.append(f"- {row['id']}: {compact}")
+        summary = f"Batch of {len(observation_ids)} signals"
+        if signal_lines:
+            summary = f"{summary}:\n" + "\n".join(signal_lines)
+        if len(summary) > 2000:
+            summary = summary[:1997].rstrip() + "..."
+        return {
+            "trigger_id": str(batch_id),
+            "batch": True,
+            "batch_window_s": self.config.t1_batch_window_s,
+            "batch_member_trigger_ids": [str(m["id"]) for m in members],
+            "batch_observation_ids": [str(oid) for oid in observation_ids],
+            "observation_ids": [str(oid) for oid in observation_ids],
+            "member_trigger_ids": [str(m["id"]) for m in members],
+            "source_channel": "batch",
+            "kind": "signal_batch",
+            "observation_kind": "signal_batch",
+            "signal_type": "event_batch",
+            "trust_tier": "mixed" if len(trust_tiers) != 1 else next(iter(trust_tiers)),
+            "source_channels": sorted(channels),
+            "observation_kinds": sorted(kinds),
+            "trust_tiers": sorted(trust_tiers),
+            "seed_occurred_at": earliest.isoformat() if earliest else None,
+            "seed_natural_text": summary,
+            "seed_entity_ids": seed_entities,
+            "scope_actors": scope_actors,
+        }
+
+    async def _insert_downstream_batch_row(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        trigger_kind: str,
+        trigger_subkind: str | None,
+        members: list[asyncpg.Record],
+    ) -> dict[str, Any]:
+        batch_id = uuid7()
+        member_ids = [m["id"] for m in members]
+        payload = await self._build_downstream_batch_payload(
+            conn,
+            batch_id=batch_id,
+            trigger_kind=trigger_kind,
+            trigger_subkind=trigger_subkind,
+            members=members,
+        )
+        primary_model_id = None
+        model_ids = _payload_uuid_list(payload, "model_ids")
+        if model_ids:
+            primary_model_id = model_ids[0]
+        primary_observation_id = next(
+            (m["observation_id"] for m in members if m["observation_id"]),
+            None,
+        )
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue (
+              id, tenant_id, trigger_kind, trigger_subkind,
+              observation_id, model_id, payload, scheduled_for, locked_by, locked_at
+            ) VALUES (
+              $1, $2, $3, $4,
+              $5, $6, $7::jsonb, now(), $8, now()
+            )
+            """,
+            batch_id,
+            tenant_id,
+            trigger_kind,
+            trigger_subkind,
+            primary_observation_id,
+            primary_model_id,
+            json.dumps(payload, default=str),
+            self.config.worker_id,
+        )
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET batch_parent_id = $1
+            WHERE id = ANY($2::uuid[])
+              AND completed_at IS NULL
+              AND batch_parent_id IS NULL
+            """,
+            batch_id,
+            member_ids,
+        )
+        return {
+            "id": batch_id,
+            "tenant_id": tenant_id,
+            "trigger_kind": trigger_kind,
+            "trigger_subkind": trigger_subkind,
+            "observation_id": primary_observation_id,
+            "model_id": primary_model_id,
+            "payload": payload,
+            "attempts": 0,
+        }
+
+    async def _build_downstream_batch_payload(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        batch_id: UUID,
+        trigger_kind: str,
+        trigger_subkind: str | None,
+        members: list[asyncpg.Record],
+    ) -> dict[str, Any]:
+        if trigger_kind == "T2" and trigger_subkind == "belief_updated":
+            return await self._build_t2_batch_payload(
+                conn,
+                batch_id=batch_id,
+                members=members,
+            )
+        if (
+            trigger_kind == "T4"
+            and trigger_subkind == "latent_relationship_candidate"
+        ):
+            return await self._build_t4_latent_batch_payload(
+                conn,
+                batch_id=batch_id,
+                members=members,
+            )
+        return {
+            "trigger_id": str(batch_id),
+            "batch": True,
+            "batch_kind": "downstream",
+            "batch_member_trigger_ids": [str(m["id"]) for m in members],
+            "member_trigger_ids": [str(m["id"]) for m in members],
+        }
+
+    async def _build_t2_batch_payload(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        batch_id: UUID,
+        members: list[asyncpg.Record],
+    ) -> dict[str, Any]:
+        model_ids = [
+            m["model_id"] for m in members
+            if m["model_id"] is not None
+        ]
+        model_ids = list(dict.fromkeys(model_ids))
+        rows = await conn.fetch(
+            """
+            SELECT id, "natural", scope_actors, scope_entities
+            FROM models
+            WHERE id = ANY($1::uuid[])
+            ORDER BY array_position($1::uuid[], id)
+            """,
+            model_ids,
+        ) if model_ids else []
+        scope_actors: list[str] = []
+        seen_actors: set[str] = set()
+        seed_entities: list[dict[str, Any]] = []
+        seen_entities: set[tuple[str, str]] = set()
+        lines: list[str] = []
+        for row in rows:
+            natural = (row["natural"] or "").strip()
+            if natural:
+                compact = " ".join(natural.split())
+                if len(compact) > 220:
+                    compact = compact[:217].rstrip() + "..."
+                lines.append(f"- {row['id']}: {compact}")
+            for actor_id in row["scope_actors"] or []:
+                sid = str(actor_id)
+                if sid not in seen_actors:
+                    seen_actors.add(sid)
+                    scope_actors.append(sid)
+            raw_entities = row["scope_entities"] or []
+            if isinstance(raw_entities, str):
+                try:
+                    raw_entities = json.loads(raw_entities)
+                except json.JSONDecodeError:
+                    raw_entities = []
+            if isinstance(raw_entities, list):
+                for entity in raw_entities:
+                    if not isinstance(entity, dict):
+                        continue
+                    etype = entity.get("type")
+                    eid = entity.get("id")
+                    if not etype or eid is None:
+                        continue
+                    key = (str(etype), str(eid))
+                    if key in seen_entities:
+                        continue
+                    seen_entities.add(key)
+                    seed_entities.append({"type": str(etype), "id": str(eid)})
+
+        observation_ids = [
+            m["observation_id"] for m in members
+            if m["observation_id"] is not None
+        ]
+        summary = f"Batch of {len(model_ids)} updated beliefs"
+        if lines:
+            summary = f"{summary}:\n" + "\n".join(lines)
+        if len(summary) > 2000:
+            summary = summary[:1997].rstrip() + "..."
+        return {
+            "trigger_id": str(batch_id),
+            "batch": True,
+            "batch_kind": "downstream",
+            "batch_trigger_kind": "T2",
+            "batch_trigger_subkind": "belief_updated",
+            "batch_window_s": self.config.downstream_batch_window_s,
+            "batch_member_trigger_ids": [str(m["id"]) for m in members],
+            "member_trigger_ids": [str(m["id"]) for m in members],
+            "batch_model_ids": [str(mid) for mid in model_ids],
+            "model_ids": [str(mid) for mid in model_ids],
+            "member_model_ids": [str(mid) for mid in model_ids],
+            "source_observation_ids": [str(oid) for oid in observation_ids],
+            "seed_natural_text": summary,
+            "seed_entity_ids": seed_entities,
+            "scope_actors": scope_actors,
+        }
+
+    async def _build_t4_latent_batch_payload(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        batch_id: UUID,
+        members: list[asyncpg.Record],
+    ) -> dict[str, Any]:
+        candidate_ids: list[UUID] = []
+        member_model_ids: list[UUID] = []
+        seen_members: set[UUID] = set()
+        seed_lines: list[str] = []
+        for member in members:
+            payload = _payload_dict(member["payload"])
+            cid_values = payload.get("relationship_candidate_ids")
+            if not isinstance(cid_values, list):
+                cid_values = [payload.get("relationship_candidate_id")]
+            for cid in _coerce_uuid_list(cid_values):
+                if cid not in candidate_ids:
+                    candidate_ids.append(cid)
+            for mid in _coerce_uuid_list(payload.get("member_model_ids") or []):
+                if mid not in seen_members:
+                    seen_members.add(mid)
+                    member_model_ids.append(mid)
+            seed_text = payload.get("seed_natural_text")
+            if isinstance(seed_text, str) and seed_text.strip():
+                compact = " ".join(seed_text.split())
+                if len(compact) > 220:
+                    compact = compact[:217].rstrip() + "..."
+                seed_lines.append(f"- {member['id']}: {compact}")
+
+        rows = await conn.fetch(
+            """
+            SELECT id, member_model_ids, source_model_id, target_model_id,
+                   explanation
+            FROM relationship_candidates
+            WHERE id = ANY($1::uuid[])
+            ORDER BY array_position($1::uuid[], id)
+            """,
+            candidate_ids,
+        ) if candidate_ids else []
+        for row in rows:
+            for value in row["member_model_ids"] or []:
+                if value not in seen_members:
+                    seen_members.add(value)
+                    member_model_ids.append(value)
+            for key in ("source_model_id", "target_model_id"):
+                value = row[key]
+                if value is not None and value not in seen_members:
+                    seen_members.add(value)
+                    member_model_ids.append(value)
+            explanation = (row["explanation"] or "").strip()
+            if explanation:
+                compact = " ".join(explanation.split())
+                if len(compact) > 220:
+                    compact = compact[:217].rstrip() + "..."
+                seed_lines.append(f"- candidate {row['id']}: {compact}")
+
+        summary = f"Batch of {len(candidate_ids)} latent relationship candidates"
+        if seed_lines:
+            summary = f"{summary}:\n" + "\n".join(seed_lines[:8])
+        if len(summary) > 2000:
+            summary = summary[:1997].rstrip() + "..."
+        first_candidate = str(candidate_ids[0]) if candidate_ids else None
+        return {
+            "trigger_id": str(batch_id),
+            "batch": True,
+            "batch_kind": "downstream",
+            "batch_trigger_kind": "T4",
+            "batch_trigger_subkind": "latent_relationship_candidate",
+            "batch_window_s": self.config.downstream_batch_window_s,
+            "batch_member_trigger_ids": [str(m["id"]) for m in members],
+            "member_trigger_ids": [str(m["id"]) for m in members],
+            "relationship_candidate_id": first_candidate,
+            "relationship_candidate_ids": [
+                str(cid) for cid in candidate_ids
+            ],
+            "batch_relationship_candidate_ids": [
+                str(cid) for cid in candidate_ids
+            ],
+            "member_model_ids": [str(mid) for mid in member_model_ids],
+            "seed_natural_text": summary,
+            "seed_signature": {
+                "kind": "latent_relationship_candidate_batch",
+                "candidate_count": len(candidate_ids),
+            },
+        }
+
     async def _dispatch_trigger(
-        self, row: asyncpg.Record
+        self, row: asyncpg.Record | dict[str, Any]
     ) -> None:
         tenant_id = row["tenant_id"]
         sem = self._semaphores.setdefault(
@@ -459,14 +1446,7 @@ class ThinkWorker:
             await self._process_trigger(row)
 
     async def _process_trigger(self, row: asyncpg.Record) -> None:
-        payload = row["payload"] or {}
-        if isinstance(payload, (bytes, bytearray)):
-            payload = json.loads(payload.decode())
-        elif isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except Exception:
-                payload = {}
+        payload = _payload_dict(row["payload"])
 
         # TK-3 — enforce cross-trigger cascade depth bound. If this T1
         # carries a `cascade_depth` that has reached MAX_CASCADE_DEPTH,
@@ -647,6 +1627,24 @@ class ThinkWorker:
                     trigger_id,
                     self.config.worker_id,
                 )
+                member_ids = (
+                    _payload_uuid_list(payload, "batch_member_trigger_ids")
+                    if payload else []
+                )
+                if member_ids:
+                    await conn.execute(
+                        """
+                        UPDATE think_trigger_queue
+                        SET completed_at = now(),
+                            locked_by = NULL,
+                            locked_at = NULL
+                        WHERE id = ANY($1::uuid[])
+                          AND batch_parent_id = $2
+                          AND completed_at IS NULL
+                        """,
+                        member_ids,
+                        trigger_id,
+                    )
                 if payload and "reeval_row_id" in payload:
                     try:
                         rrid = UUID(str(payload["reeval_row_id"]))
@@ -689,14 +1687,7 @@ class ThinkWorker:
                 if row is None:
                     return
                 attempts = int(row["attempts"] or 0) + 1
-                payload = row["payload"] or {}
-                if isinstance(payload, (bytes, bytearray)):
-                    payload = json.loads(payload.decode())
-                elif isinstance(payload, str):
-                    try:
-                        payload = json.loads(payload)
-                    except Exception:
-                        payload = {}
+                payload = _payload_dict(row["payload"])
                 # Increment attempts; if past the limit (or forced), complete (dead letter).
                 terminal = force_terminal or attempts >= self.config.trigger_max_attempts
                 backoff_seconds = min(300, 10 * (2 ** min(attempts, 4)))
@@ -712,6 +1703,24 @@ class ThinkWorker:
                         """,
                         trigger_id, attempts,
                     )
+                    member_ids = _payload_uuid_list(
+                        payload, "batch_member_trigger_ids"
+                    )
+                    if member_ids:
+                        await conn.execute(
+                            """
+                            UPDATE think_trigger_queue
+                            SET batch_parent_id = NULL,
+                                locked_by = NULL,
+                                locked_at = NULL,
+                                scheduled_for = now()
+                            WHERE id = ANY($1::uuid[])
+                              AND batch_parent_id = $2
+                              AND completed_at IS NULL
+                            """,
+                            member_ids,
+                            trigger_id,
+                        )
                     # For model_reeval, move the original row to dead letter.
                     if "reeval_row_id" in payload:
                         try:
@@ -793,6 +1802,7 @@ class ThinkWorker:
                     """
                     SELECT COUNT(*) FROM think_trigger_queue
                     WHERE completed_at IS NULL
+                      AND batch_parent_id IS NULL
                     """
                 )
             else:
@@ -800,6 +1810,7 @@ class ThinkWorker:
                     """
                     SELECT COUNT(*) FROM think_trigger_queue
                     WHERE completed_at IS NULL
+                      AND batch_parent_id IS NULL
                       AND tenant_id = $1
                     """,
                     self.config.tenant_filter,

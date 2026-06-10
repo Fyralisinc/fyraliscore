@@ -12,7 +12,16 @@ from services.reasoning.think.quality_promoter import (
 )
 
 
-def _case(flags=None, *, ratio=0.0, graph_selected=0, graph_used=False):
+def _case(
+    flags=None,
+    *,
+    ratio=0.0,
+    graph_selected=0,
+    graph_used=False,
+    edge_ops=0,
+    non_relation_ops=0,
+    no_edge_rationale=False,
+):
     flags = list(flags or [])
     return {
         "case_id": "think-quality:abc",
@@ -21,13 +30,23 @@ def _case(flags=None, *, ratio=0.0, graph_selected=0, graph_used=False):
             "run_id": "abc",
             "selected_context_reference_ratio": ratio,
             "graph_selected_model_count": graph_selected,
-            "edge_ops_count": 0,
+            "edge_ops_count": edge_ops,
+            "graph_non_relation_op_count": non_relation_ops,
+            "graph_no_edge_rationale_present": no_edge_rationale,
         },
         "context_use": {
             "selected_context_reference_ratio": ratio,
             "graph_selected_model_count": graph_selected,
             "graph_context_used": graph_used,
-            "edge_ops_count": 0,
+            "edge_ops_count": edge_ops,
+            "graph_non_relation_op_count": non_relation_ops,
+            "graph_relation_contract_satisfied": (
+                graph_selected == 0
+                or edge_ops > 0
+                or non_relation_ops > 0
+                or no_edge_rationale
+            ),
+            "graph_no_edge_rationale_present": no_edge_rationale,
         },
     }
 
@@ -45,7 +64,7 @@ def test_promoted_known_failure_case_evaluates_pass() -> None:
 
 def test_promoted_must_pass_case_enforces_context_contract() -> None:
     doc = promoted_case_document(
-        _case([], ratio=0.5, graph_selected=2, graph_used=True),
+        _case([], ratio=0.5, graph_selected=2, graph_used=True, edge_ops=1),
         expectation_mode="must_pass",
     )
 
@@ -56,6 +75,36 @@ def test_promoted_must_pass_case_enforces_context_contract() -> None:
 
     assert result["status"] == "fail"
     assert "graph_context_not_used" in result["failures"]
+
+
+def test_promoted_must_pass_accepts_explicit_no_edge_rationale() -> None:
+    doc = promoted_case_document(
+        _case(
+            [],
+            ratio=0.5,
+            graph_selected=2,
+            graph_used=True,
+            no_edge_rationale=True,
+        ),
+        expectation_mode="must_pass",
+    )
+
+    assert evaluate_promoted_case(doc)["status"] == "pass"
+
+
+def test_promoted_must_pass_accepts_graph_backed_model_mutation() -> None:
+    doc = promoted_case_document(
+        _case(
+            [],
+            ratio=0.5,
+            graph_selected=2,
+            graph_used=True,
+            non_relation_ops=1,
+        ),
+        expectation_mode="must_pass",
+    )
+
+    assert evaluate_promoted_case(doc)["status"] == "pass"
 
 
 def test_promote_quality_cases_writes_stable_json(tmp_path) -> None:

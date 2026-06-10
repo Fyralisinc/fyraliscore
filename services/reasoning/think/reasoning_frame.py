@@ -1,9 +1,12 @@
 """Unified reasoning frame for Think triggers.
 
-The trigger kind says *what woke Think up*. The reasoning frame says
-*what question this run is meant to answer*. Keeping that distinction
-lets T3/T4/T6 behave like modes of one cognitive kernel instead of
-becoming separate products in the prompt, telemetry, and review layers.
+The trigger kind says *what woke Think up*. The reasoning job says what
+kind of belief work is needed. The reasoning frame is the prompt-facing
+version of that job.
+
+T2/T3/T4 intentionally collapse into one internal-reflection family:
+prediction due, anomaly, and background maintenance differ by source
+and intent, not by having separate cognitive engines.
 """
 from __future__ import annotations
 
@@ -15,10 +18,49 @@ from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 
 
 @dataclass(frozen=True)
+class ReasoningJob:
+    """Normalized Think job produced from legacy trigger labels."""
+
+    family: str
+    source: str
+    intent: str
+    legacy_trigger_kind: str
+    legacy_trigger_subkind: str | None = None
+    question_to_answer: str = (
+        "What minimal memory/action update should this trigger produce?"
+    )
+    allowed_ops: tuple[str, ...] = (
+        "claim_ops",
+        "edge_ops",
+        "act_ops",
+        "resource_ops",
+    )
+    priority_dimensions: tuple[str, ...] = (
+        "cross_model_relationships",
+        "composite_situations",
+        "decision_leverage",
+    )
+    budget: dict[str, int] = field(
+        default_factory=lambda: {
+            "claim_ops": 3,
+            "edge_ops": 4,
+            "act_ops": 1,
+            "resource_ops": 1,
+        }
+    )
+
+    @property
+    def frame_kind(self) -> str:
+        return self.family
+
+
+@dataclass(frozen=True)
 class ReasoningFrame:
     frame_kind: str
     trigger_kind: str
     stimulus_kind: str
+    job_source: str
+    job_intent: str
     question_to_answer: str
     seed_model_ids: tuple[str, ...] = ()
     seed_entity_ids: tuple[dict[str, str], ...] = ()
@@ -41,7 +83,7 @@ class ReasoningFrame:
     budget: dict[str, int] = field(
         default_factory=lambda: {
             "claim_ops": 3,
-            "edge_ops": 2,
+            "edge_ops": 4,
             "act_ops": 1,
             "resource_ops": 1,
         }
@@ -50,6 +92,7 @@ class ReasoningFrame:
         default_factory=lambda: {
             "prefer_existing_models": True,
             "emit_edges_for_pairwise_relationships": True,
+            "relationship_decision_required_when_graph_selected": True,
             "emit_situation_for_composite_conditions": True,
             "situation_requires_compositional_fields": True,
             "treat_topology_as_evidence_not_truth": True,
@@ -65,7 +108,7 @@ class ReasoningFrame:
         *,
         retrieval_result: RetrievalResult | None = None,
     ) -> "ReasoningFrame":
-        frame_kind = _frame_kind(trigger)
+        job = reasoning_job_from_trigger(trigger)
         seed_model_ids = _seed_model_ids(trigger)
         candidate_model_ids = _candidate_model_ids(retrieval_result)
         seed_entity_ids = _seed_entity_ids(trigger)
@@ -73,31 +116,28 @@ class ReasoningFrame:
         if getattr(trigger, "temporal_window", None) is not None:
             time_window_days = trigger.temporal_window.total_seconds() / 86400.0
 
-        allowed_ops = _allowed_ops(trigger)
-        budget = _budget(trigger)
         policy = {
             "prefer_existing_models": True,
             "emit_edges_for_pairwise_relationships": True,
+            "relationship_decision_required_when_graph_selected": True,
             "emit_situation_for_composite_conditions": True,
             "do_not_invent_ids": True,
             "minimize_diff": True,
+            "internal_reflection_family": job.family == "internal_reflection",
             "treat_topology_as_evidence_not_truth": (
-                trigger.kind == "T6"
-                or (
-                    trigger.kind == "T4"
-                    and trigger.subkind == "latent_relationship_candidate"
-                )
+                job.source == "topology"
             ),
             "situation_requires_multiple_existing_models": True,
             "situation_requires_compositional_fields": True,
         }
-        priority_dimensions = _priority_dimensions(trigger)
 
         return cls(
-            frame_kind=frame_kind,
+            frame_kind=job.frame_kind,
             trigger_kind=trigger.kind,
             stimulus_kind=_stimulus_kind(trigger),
-            question_to_answer=_question(trigger),
+            job_source=job.source,
+            job_intent=job.intent,
+            question_to_answer=job.question_to_answer,
             seed_model_ids=seed_model_ids,
             seed_entity_ids=seed_entity_ids,
             candidate_model_ids=candidate_model_ids,
@@ -108,9 +148,9 @@ class ReasoningFrame:
                 if trigger.neighborhood_id is not None
                 else None
             ),
-            allowed_ops=allowed_ops,
-            priority_dimensions=priority_dimensions,
-            budget=budget,
+            allowed_ops=job.allowed_ops,
+            priority_dimensions=job.priority_dimensions,
+            budget=job.budget,
             policy=policy,
         )
 
@@ -119,6 +159,8 @@ class ReasoningFrame:
             "frame_kind": self.frame_kind,
             "trigger_kind": self.trigger_kind,
             "stimulus_kind": self.stimulus_kind,
+            "job_source": self.job_source,
+            "job_intent": self.job_intent,
             "question_to_answer": self.question_to_answer,
             "seed_model_ids": list(self.seed_model_ids),
             "seed_entity_ids": [dict(e) for e in self.seed_entity_ids],
@@ -141,6 +183,8 @@ class ReasoningFrame:
             frame_kind=self.frame_kind,
             trigger_kind=self.trigger_kind,
             stimulus_kind=self.stimulus_kind,
+            job_source=self.job_source,
+            job_intent=self.job_intent,
             question_to_answer=self.question_to_answer,
             seed_model_ids=self.seed_model_ids,
             seed_entity_ids=self.seed_entity_ids,
@@ -160,6 +204,8 @@ class ReasoningFrame:
             "<reasoning_frame>",
             f"  frame_kind: {self.frame_kind}",
             f"  stimulus_kind: {self.stimulus_kind}",
+            f"  job_source: {self.job_source}",
+            f"  job_intent: {self.job_intent}",
             f"  question_to_answer: {self.question_to_answer}",
         ]
         if self.seed_model_ids:
@@ -214,22 +260,153 @@ class ReasoningFrame:
         return "\n".join(lines)
 
 
-def _frame_kind(trigger: TriggerContext) -> str:
+def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
     if trigger.kind == "T1":
-        return "new_signal"
+        return ReasoningJob(
+            family="external_signal_integration",
+            source="external_signal",
+            intent="integrate",
+            legacy_trigger_kind=trigger.kind,
+            legacy_trigger_subkind=trigger.subkind,
+            question_to_answer=(
+                "What changed, which existing Models does it connect to, "
+                "what composite situation is forming, and what action is "
+                "warranted?"
+            ),
+        )
     if trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        return "belief_update"
+        return _internal_reflection_job(
+            trigger,
+            source="model_change",
+            intent="propagate_consequence",
+            priority=("downstream_consequences",),
+            allowed_ops=("claim_ops", "edge_ops", "act_ops"),
+            budget={
+                "claim_ops": 2,
+                "edge_ops": 2,
+                "act_ops": 1,
+                "resource_ops": 0,
+            },
+        )
     if trigger.kind == "T2":
-        return "prediction_due"
+        return _internal_reflection_job(
+            trigger,
+            source="due_timer",
+            intent="evaluate_existing_belief",
+            priority=("downstream_consequences",),
+        )
     if trigger.kind == "T3":
-        return "anomaly_explanation"
+        return _internal_reflection_job(
+            trigger,
+            source="anomaly_detector",
+            intent="explain_inconsistency",
+            priority=("structural_explanation",),
+            allowed_ops=("claim_ops", "edge_ops"),
+            budget={
+                "claim_ops": 3,
+                "edge_ops": 3,
+                "act_ops": 0,
+                "resource_ops": 0,
+            },
+        )
     if trigger.kind == "T4":
         if trigger.subkind == "latent_relationship_candidate":
-            return "topology_candidate_interpretation"
-        return "maintenance_rethink"
+            return _internal_reflection_job(
+                trigger,
+                source="topology",
+                intent="adjudicate_candidate",
+                priority=(
+                    "structural_explanation",
+                    "impact_signature_interaction",
+                ),
+                allowed_ops=("claim_ops", "edge_ops"),
+                budget={
+                    "claim_ops": 2,
+                    "edge_ops": 2,
+                    "act_ops": 0,
+                    "resource_ops": 0,
+                },
+            )
+        return _internal_reflection_job(
+            trigger,
+            source="maintenance",
+            intent="reorganize_memory",
+            priority=("memory_quality",),
+            allowed_ops=("claim_ops", "edge_ops"),
+            budget={
+                "claim_ops": 3,
+                "edge_ops": 3,
+                "act_ops": 0,
+                "resource_ops": 0,
+            },
+        )
     if trigger.kind == "T6":
-        return "topology_shift"
-    return "general_reasoning"
+        return ReasoningJob(
+            family="topology_shift",
+            source="topology",
+            intent="integrate_topology_shift",
+            legacy_trigger_kind=trigger.kind,
+            legacy_trigger_subkind=trigger.subkind,
+            question_to_answer=(
+                "What relationship or composite situation changed because "
+                "this topology region shifted?"
+            ),
+            allowed_ops=("claim_ops", "edge_ops"),
+            priority_dimensions=_priority_dimensions_with(
+                "structural_explanation",
+            ),
+            budget={
+                "claim_ops": 2,
+                "edge_ops": 2,
+                "act_ops": 0,
+                "resource_ops": 0,
+            },
+        )
+    return ReasoningJob(
+        family="general_reasoning",
+        source="unknown",
+        intent="reason",
+        legacy_trigger_kind=trigger.kind,
+        legacy_trigger_subkind=trigger.subkind,
+    )
+
+
+def _internal_reflection_job(
+    trigger: TriggerContext,
+    *,
+    source: str,
+    intent: str,
+    priority: tuple[str, ...] = (),
+    allowed_ops: tuple[str, ...] = (
+        "claim_ops",
+        "edge_ops",
+        "act_ops",
+        "resource_ops",
+    ),
+    budget: dict[str, int] | None = None,
+) -> ReasoningJob:
+    return ReasoningJob(
+        family="internal_reflection",
+        source=source,
+        intent=intent,
+        legacy_trigger_kind=trigger.kind,
+        legacy_trigger_subkind=trigger.subkind,
+        question_to_answer=(
+            "Given the current model layer and this internal signal, what "
+            "belief should be revised, connected, downgraded, promoted, "
+            "explained, or acted on?"
+        ),
+        allowed_ops=allowed_ops,
+        priority_dimensions=_priority_dimensions_with(*priority),
+        budget=budget
+        if budget is not None
+        else {
+            "claim_ops": 3,
+            "edge_ops": 2,
+            "act_ops": 1,
+            "resource_ops": 1,
+        },
+    )
 
 
 def _stimulus_kind(trigger: TriggerContext) -> str:
@@ -240,86 +417,14 @@ def _stimulus_kind(trigger: TriggerContext) -> str:
     return trigger.kind
 
 
-def _question(trigger: TriggerContext) -> str:
-    if trigger.kind == "T1":
-        return (
-            "What changed, which existing Models does it connect to, "
-            "what composite situation is forming, and what action is warranted?"
-        )
-    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        return (
-            "What downstream belief, edge, situation, or CEO action should "
-            "update because this Model changed?"
-        )
-    if trigger.kind == "T2":
-        return (
-            "Did the prediction resolve, and what dependent Models, edges, "
-            "or actions should update?"
-        )
-    if trigger.kind == "T3":
-        return (
-            "What situation, contradiction, or missing causal relationship "
-            "best explains this anomalous region?"
-        )
-    if trigger.kind == "T4":
-        if trigger.subkind == "latent_relationship_candidate":
-            return (
-                "Does this topology candidate represent a real "
-                "relationship, composite situation, situation update, "
-                "or noise?"
-            )
-        return (
-            "Which stale, dependent, recurring, or weakly supported belief "
-            "should be revised, merged, promoted, or retired?"
-        )
-    if trigger.kind == "T6":
-        return (
-            "What relationship or composite situation changed because this "
-            "topology region shifted?"
-        )
-    return "What minimal memory/action update should this trigger produce?"
-
-
-def _allowed_ops(trigger: TriggerContext) -> tuple[str, ...]:
-    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        return ("claim_ops", "edge_ops", "act_ops")
-    if trigger.kind == "T3":
-        return ("claim_ops", "edge_ops")
-    if trigger.kind == "T4":
-        return ("claim_ops", "edge_ops")
-    if trigger.kind == "T6":
-        return ("claim_ops", "edge_ops")
-    return ("claim_ops", "edge_ops", "act_ops", "resource_ops")
-
-
-def _budget(trigger: TriggerContext) -> dict[str, int]:
-    if trigger.kind == "T6":
-        return {"claim_ops": 2, "edge_ops": 2, "act_ops": 0, "resource_ops": 0}
-    if trigger.kind == "T4" and trigger.subkind == "latent_relationship_candidate":
-        return {"claim_ops": 2, "edge_ops": 2, "act_ops": 0, "resource_ops": 0}
-    if trigger.kind in {"T3", "T4"}:
-        return {"claim_ops": 3, "edge_ops": 3, "act_ops": 0, "resource_ops": 0}
-    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
-        return {"claim_ops": 2, "edge_ops": 2, "act_ops": 1, "resource_ops": 0}
-    return {"claim_ops": 3, "edge_ops": 2, "act_ops": 1, "resource_ops": 1}
-
-
-def _priority_dimensions(trigger: TriggerContext) -> tuple[str, ...]:
+def _priority_dimensions_with(*front: str) -> tuple[str, ...]:
     base = [
         "cross_model_relationships",
         "composite_situations",
         "decision_leverage",
     ]
-    if trigger.kind in {"T3", "T6"}:
-        base.insert(0, "structural_explanation")
-    if trigger.kind == "T4":
-        if trigger.subkind == "latent_relationship_candidate":
-            base.insert(0, "structural_explanation")
-            base.insert(1, "impact_signature_interaction")
-        else:
-            base.insert(0, "memory_quality")
-    if trigger.kind == "T2":
-        base.insert(0, "downstream_consequences")
+    for dimension in reversed(front):
+        base.insert(0, dimension)
     return tuple(dict.fromkeys(base))
 
 
@@ -360,4 +465,4 @@ def _seed_entity_ids(trigger: TriggerContext) -> tuple[dict[str, str], ...]:
     return tuple(out)
 
 
-__all__ = ["ReasoningFrame"]
+__all__ = ["ReasoningFrame", "ReasoningJob", "reasoning_job_from_trigger"]

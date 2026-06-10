@@ -58,7 +58,7 @@ from lib.shared.errors import (
     TrustTierError,
     ValidationError,
 )
-from lib.shared.types import EdgeDetectedBy
+from lib.shared.types import EdgeDetectedBy, ModelArchiveReason
 from lib.shared.trust import TrustTier
 
 from services.domain.acts.state_machines import can_transition
@@ -137,6 +137,7 @@ async def _emit_validation_drop_event(
 
 
 _ALLOWED_EDGE_DETECTED_BY = set(get_args(EdgeDetectedBy))
+_ALLOWED_MODEL_ARCHIVE_REASONS = set(get_args(ModelArchiveReason))
 
 
 def _coerce_uuid(value: Any) -> UUID | None:
@@ -377,12 +378,12 @@ def _repair_non_situation_abstraction_level(entry: dict[str, Any]) -> None:
 
 
 def _mark_empty_situation_members_pending(entry: dict[str, Any]) -> None:
-    """Allow explicit situations with deferred member binding.
+    """Allow explicit situations with deferred/under-bound member binding.
 
     A provider can correctly identify the composite situation before it
-    has existing Model ids to cite, especially in sparse retrieval. Mark
-    that as a transient pending-member shape so the splitter/applier can
-    form atomics and patch concrete member_model_ids after insert.
+    has enough existing Model ids to cite, especially in sparse retrieval.
+    Mark that as a transient pending-member shape so the splitter/applier
+    can form atomics and patch concrete member_model_ids after insert.
     """
     prop = entry.get("proposition")
     if not isinstance(prop, dict):
@@ -395,7 +396,7 @@ def _mark_empty_situation_members_pending(entry: dict[str, Any]) -> None:
     if not is_situation:
         return
     members = prop.get("member_model_ids")
-    if isinstance(members, list) and members:
+    if isinstance(members, list) and len(members) >= 2:
         return
     prop["member_model_ids"] = []
     prop["_pending_members"] = True
@@ -957,7 +958,14 @@ async def _validate_claim_op(
             raise ValidationError("claim_op archive requires model_id")
         if not op.reason:
             raise ValidationError("claim_op archive requires reason")
-        return op
+        reason = str(op.reason).strip()
+        if reason not in _ALLOWED_MODEL_ARCHIVE_REASONS:
+            raise ValidationError(
+                "claim_op archive reason must be a registered lifecycle reason",
+                reason=op.reason,
+                allowed=sorted(_ALLOWED_MODEL_ARCHIVE_REASONS),
+            )
+        return op.model_copy(update={"reason": reason})
 
     raise ValidationError(f"unknown claim_op: {op.op!r}")
 

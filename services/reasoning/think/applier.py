@@ -206,7 +206,12 @@ async def apply_diff(
 
     # --- 1. claim_ops ---------------------------------------------
     _belief_updated_model_ids: list[UUID] = []
-    _T2_BELIEF_KINDS = {"belief", "state", "concern", "expectation"}
+    # T2:belief_updated is a deterministic reevaluation path for prediction
+    # Models. Older builds enqueued it for ordinary beliefs/concerns as a
+    # recommendation-card hook, but that path now routes to a no-op and only
+    # spends retrieval/context budget. Keep the queue focused on Models that
+    # actually have prediction-resolution semantics.
+    _T2_REEVALUATION_KINDS = {"prediction"}
     # T5: reconcile each claim_op.insert before applying. If the
     # reconciler decides auto_merge, we substitute the replacement
     # update op for the original insert. human_review and no_match
@@ -450,7 +455,8 @@ async def apply_diff(
                         )
             if (
                 op.op == "insert"
-                and result["summary"].get("proposition_kind") in _T2_BELIEF_KINDS
+                and result["summary"].get("proposition_kind")
+                in _T2_REEVALUATION_KINDS
             ):
                 _belief_updated_model_ids.append(result["model_id"])
         state_changes_emitted += result.get("state_changes", 0)
@@ -2434,6 +2440,7 @@ async def _apply_ontology_gap_op(
     from services.reasoning.relationships import (
         JudgmentScores,
         RelationshipCandidatesRepo,
+        RelationshipOntologyProposalsRepo,
         make_edge_type_candidate,
     )
 
@@ -2479,7 +2486,30 @@ async def _apply_ontology_gap_op(
             }
         },
     )
-    row = await RelationshipCandidatesRepo().insert(conn, candidate)
+    candidates_repo = RelationshipCandidatesRepo()
+    row = await candidates_repo.insert(conn, candidate)
+    proposals_upserted = 0
+    try:
+        proposals = await (
+            RelationshipOntologyProposalsRepo()
+            .aggregate_from_edge_type_candidates(
+                conn,
+                tenant_id=tenant_id,
+            )
+        )
+        proposals_upserted = len(proposals)
+        refreshed = await candidates_repo.get(
+            conn,
+            candidate_id=row["id"],
+            tenant_id=tenant_id,
+        )
+        if refreshed is not None:
+            row = refreshed
+    except (
+        asyncpg.UndefinedTableError,
+        asyncpg.UndefinedColumnError,
+    ):
+        proposals_upserted = 0
     proposed = row["proposed_proposition"]["proposed_edge_kind"]
     fallback = row["metadata"].get("ontology_gap", {}).get(
         "retrieval_fallback_kind"
@@ -2494,6 +2524,7 @@ async def _apply_ontology_gap_op(
             "target_model_id": str(op.target_model_id),
             "retrieval_fallback_kind": fallback,
             "review_status": row["review_status"],
+            "ontology_proposals_upserted": proposals_upserted,
         },
         "state_changes": 0,
     }
