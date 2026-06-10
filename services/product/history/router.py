@@ -110,11 +110,14 @@ async def get_summary(request: Request) -> JSONResponse:
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
-        payload = await build_summary(
-            tenant_id=auth.tenant_id,
-            range_days=range_days,
-            conn=conn,
-        )
+        # build_summary uses SAVEPOINTs to survive failed prepares, and
+        # Postgres only allows SAVEPOINT inside a transaction block.
+        async with conn.transaction():
+            payload = await build_summary(
+                tenant_id=auth.tenant_id,
+                range_days=range_days,
+                conn=conn,
+            )
     return JSONResponse(payload, status_code=200)
 
 
