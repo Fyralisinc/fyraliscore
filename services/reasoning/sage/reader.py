@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -78,6 +78,17 @@ class ReaderBudget:
     focused_max_edges: int = 48
     focused_propagation_neighbors: int = 32
     abstain_negative_memory_threshold: int = 3
+    activation_seed_limit: int = 80
+    row_cache_enabled: bool = False
+    shared_substrate_enabled: bool = True
+    substrate_model_limit: int = 96
+    substrate_edge_seed_limit: int = 48
+    substrate_edge_limit: int = 96
+    rerank_min_substrate_models: int = 8
+    rerank_lexical_candidates: int = 6
+    lexical_microquery_enabled: bool = True
+    lexical_microquery_terms: int = 8
+    lexical_microquery_per_term_limit: int = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,10 +120,35 @@ class SynthesisReaderResult:
     debug: dict[str, Any]
 
 
+@dataclass(slots=True)
+class SageReadSubstrate:
+    """Reusable, signal-scoped read material.
+
+    This is intentionally not an answer context. Question-specific cues,
+    signatures, learned plans, scoring, selection, and projection still happen
+    inside each read. The substrate only carries material that is invariant for
+    all questions spawned by the same signal.
+    """
+
+    tenant_id: UUID
+    aliases: dict[str, str] | None = None
+    baseline_model_ids: tuple[UUID, ...] = ()
+    candidate_edges_by_key: dict[tuple[tuple[UUID, ...], int], list[dict[str, Any]]] = (
+        field(default_factory=dict)
+    )
+    counters: Counter[str] = field(default_factory=Counter)
+    timings_ms: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def model_count(self) -> int:
+        return len(self.baseline_model_ids)
+
+
 @dataclass(frozen=True, slots=True)
 class _LearnedReadPlan:
     mode: str = "default"
     skip_broad_discovery: bool = False
+    gate_broad_actions: bool = False
     abstain_early: bool = False
     lexical_candidates: int | None = None
     max_nodes: int | None = None
@@ -154,6 +190,121 @@ class SynthesisReader:
                 max_summarized_hubs=10,
             )
         )
+        self._alias_cache: dict[UUID, dict[str, str]] = {}
+        self._model_cache: defaultdict[UUID, dict[UUID, ModelRow]] = defaultdict(dict)
+        self._model_feature_cache: defaultdict[
+            UUID, dict[UUID, ModelStructuralFeatures | None]
+        ] = defaultdict(dict)
+        self._edge_feature_cache: defaultdict[
+            UUID, dict[UUID, EdgeStructuralFeatures | None]
+        ] = defaultdict(dict)
+        self._observation_cache: defaultdict[
+            UUID, dict[UUID, ObservationRow | None]
+        ] = defaultdict(dict)
+        self._cache_stats: Counter[str] = Counter()
+
+    def cache_stats_snapshot(self) -> dict[str, int]:
+        return {key: int(value) for key, value in sorted(self._cache_stats.items())}
+
+    async def prepare_substrate(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        trigger: TriggerContext,
+        baseline_models: tuple[ModelRow, ...] | list[ModelRow] = (),
+    ) -> SageReadSubstrate:
+        """Build the signal-scoped substrate reused by question reads."""
+        substrate = SageReadSubstrate(tenant_id=tenant_id)
+        if not self._budget.shared_substrate_enabled:
+            substrate.counters["disabled"] += 1
+            return substrate
+
+        started = time.perf_counter()
+        substrate.aliases = await self._load_aliases_cached(conn, tenant_id)
+        substrate.timings_ms["aliases_ms"] = int(
+            (time.perf_counter() - started) * 1000
+        )
+
+        model_started = time.perf_counter()
+        baseline_ids: list[UUID] = []
+        baseline_by_id: dict[UUID, ModelRow] = {}
+        for model in baseline_models:
+            model_id = getattr(model, "id", None)
+            if model_id is None or model_id in baseline_by_id:
+                continue
+            baseline_by_id[model_id] = model
+            baseline_ids.append(model_id)
+            if len(baseline_ids) >= max(1, int(self._budget.substrate_model_limit)):
+                break
+        for model_id in _explicit_seed_ids(trigger):
+            if model_id not in baseline_by_id and model_id not in baseline_ids:
+                baseline_ids.append(model_id)
+
+        substrate.baseline_model_ids = tuple(baseline_ids)
+        if self._budget.row_cache_enabled and baseline_by_id:
+            self._model_cache[tenant_id].update(baseline_by_id)
+            substrate.counters["models_seeded"] += len(baseline_by_id)
+        if baseline_ids:
+            await self._load_model_features_cached(conn, tenant_id, baseline_ids)
+        substrate.timings_ms["models_ms"] = int(
+            (time.perf_counter() - model_started) * 1000
+        )
+
+        edge_started = time.perf_counter()
+        edge_seed_ids = baseline_ids[: max(0, int(self._budget.substrate_edge_seed_limit))]
+        if edge_seed_ids:
+            await self._load_candidate_edges_for_read(
+                conn,
+                tenant_id=tenant_id,
+                seed_model_ids=edge_seed_ids,
+                limit=max(1, int(self._budget.substrate_edge_limit)),
+                substrate=substrate,
+            )
+        substrate.timings_ms["edges_ms"] = int(
+            (time.perf_counter() - edge_started) * 1000
+        )
+        substrate.timings_ms["total_ms"] = int((time.perf_counter() - started) * 1000)
+        return substrate
+
+    async def _load_aliases_for_read(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        substrate: SageReadSubstrate | None,
+    ) -> dict[str, str]:
+        if substrate is not None and substrate.aliases is not None:
+            substrate.counters["alias_reuses"] += 1
+            return dict(substrate.aliases)
+        return await self._load_aliases_cached(conn, tenant_id)
+
+    async def _load_candidate_edges_for_read(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        seed_model_ids: list[UUID],
+        limit: int,
+        substrate: SageReadSubstrate | None,
+    ) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(seed_model_ids))
+        if not ids:
+            return []
+        effective_limit = max(1, int(limit))
+        key = (tuple(sorted(ids, key=str)), effective_limit)
+        if substrate is not None and key in substrate.candidate_edges_by_key:
+            substrate.counters["edge_cache_hits"] += 1
+            return [dict(row) for row in substrate.candidate_edges_by_key[key]]
+        rows = await _load_candidate_edges(
+            conn,
+            tenant_id=tenant_id,
+            seed_model_ids=ids,
+            limit=effective_limit,
+        )
+        if substrate is not None:
+            substrate.candidate_edges_by_key[key] = [dict(row) for row in rows]
+            substrate.counters["edge_cache_misses"] += 1
+        return rows
 
     async def read(
         self,
@@ -165,8 +316,10 @@ class SynthesisReader:
         question: str,
         question_primitive: str,
         hypotheses: tuple[Any, ...] = (),
+        substrate: SageReadSubstrate | None = None,
     ) -> SynthesisReaderResult:
         timings: dict[str, int] = {}
+        cache_stats_started = Counter(self._cache_stats)
         read_started = time.perf_counter()
 
         def mark(stage: str, started: float) -> float:
@@ -179,7 +332,7 @@ class SynthesisReader:
             pool=self._pool,
             tenant_id=tenant_id,
             alias_loader=(
-                lambda: _load_aliases_with_conn(conn, tenant_id)
+                lambda: self._load_aliases_for_read(conn, tenant_id, substrate)
             ),
         ).extract(
             signal=_signal_payload(trigger),
@@ -200,6 +353,7 @@ class SynthesisReader:
 
         candidates = _CandidateAccumulator()
         _add_explicit_trigger_models(candidates, trigger)
+        _add_substrate_seed_models(candidates, substrate, self._budget)
         stage_started = mark("explicit_seed_ms", stage_started)
         shortcut_hits = await self._activate_from_shortcuts(
             conn, tenant_id, signature, candidates,
@@ -223,6 +377,7 @@ class SynthesisReader:
             negative_memory_count=negative_memory.count,
             suppressed_count=negative_memory.suppressed_count,
             explicit_model_count=_explicit_model_count(trigger),
+            substrate_model_count=substrate.model_count if substrate else 0,
         )
         if learned_plan.abstain_early:
             return _empty_reader_result(
@@ -236,7 +391,7 @@ class SynthesisReader:
                 learned_plan=learned_plan,
             )
 
-        await self._activate_from_lexical_scan(
+        lexical_activation_stats = await self._activate_from_lexical_scan(
             conn,
             tenant_id,
             question,
@@ -264,13 +419,19 @@ class SynthesisReader:
             )
             stage_started = mark("alternative_activation_ms", stage_started)
 
-        seed_ids = list(candidates.model_ids)
-        edges = await _load_candidate_edges(
+        candidate_count_before_edge_seed = len(candidates.model_ids)
+        edge_seed_limit = _edge_seed_limit(self._budget, learned_plan)
+        seed_ids = candidates.ranked_model_ids(
+            limit=edge_seed_limit,
+            required_ids=_explicit_seed_ids(trigger),
+        )
+        edges = await self._load_candidate_edges_for_read(
             conn,
             tenant_id=tenant_id,
             seed_model_ids=seed_ids,
             limit=learned_plan.propagation_neighbors
             or self._budget.propagation_neighbors,
+            substrate=substrate,
         )
         stage_started = mark("load_candidate_edges_ms", stage_started)
         model_ids = set(seed_ids)
@@ -278,11 +439,15 @@ class SynthesisReader:
             model_ids.add(edge["source_model_id"])
             model_ids.add(edge["target_model_id"])
 
-        models = await _load_models(conn, tenant_id, sorted(model_ids, key=str))
+        models = await self._load_models_cached(
+            conn, tenant_id, sorted(model_ids, key=str)
+        )
         stage_started = mark("load_models_ms", stage_started)
-        features = await _load_model_features(conn, tenant_id, list(models))
+        features = await self._load_model_features_cached(
+            conn, tenant_id, list(models)
+        )
         stage_started = mark("load_model_features_ms", stage_started)
-        edge_features = await _load_edge_features(
+        edge_features = await self._load_edge_features_cached(
             conn, tenant_id, [r["id"] for r in edges],
         )
         stage_started = mark("load_edge_features_ms", stage_started)
@@ -408,7 +573,9 @@ class SynthesisReader:
             for item in projection.projected
             if item.evidence_kind == "observation"
         ]
-        observations = await _load_observations(conn, tenant_id, observation_ids)
+        observations = await self._load_observations_cached(
+            conn, tenant_id, observation_ids
+        )
         stage_started = mark("load_observations_ms", stage_started)
 
         selection_rank = {mid: idx for idx, mid in enumerate(selected_model_ids)}
@@ -472,6 +639,26 @@ class SynthesisReader:
             "projection_coverage": projection.coverage,
             "projection_budget": _jsonable(asdict(projection_budget)),
             "learned_read_plan": _jsonable(asdict(learned_plan)),
+            "candidate_pool": {
+                "substrate_model_count": substrate.model_count if substrate else 0,
+                "substrate_counters": (
+                    dict(sorted(substrate.counters.items())) if substrate else {}
+                ),
+                "substrate_timings_ms": (
+                    dict(substrate.timings_ms) if substrate else {}
+                ),
+                "before_edge_seed_count": candidate_count_before_edge_seed,
+                "edge_seed_limit": edge_seed_limit,
+                "edge_seed_count": len(seed_ids),
+                "edge_seed_pruned_count": max(
+                    0,
+                    candidate_count_before_edge_seed - len(seed_ids),
+                ),
+                "candidate_edge_count": len(edges),
+                "loaded_model_count": len(models),
+                "lexical_activation": lexical_activation_stats,
+            },
+            "row_cache": _counter_delta(self._cache_stats, cache_stats_started),
             "stage_timings_ms": {
                 **timings,
                 "reader_total_ms": int((time.perf_counter() - read_started) * 1000),
@@ -493,6 +680,106 @@ class SynthesisReader:
             pathway_result=pathway,
             debug=debug,
         )
+
+    async def _load_aliases_cached(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+    ) -> dict[str, str]:
+        if not self._budget.row_cache_enabled:
+            return await _load_aliases_with_conn(conn, tenant_id)
+        cached = self._alias_cache.get(tenant_id)
+        if cached is not None:
+            self._cache_stats["alias_hits"] += 1
+            return dict(cached)
+        aliases = await _load_aliases_with_conn(conn, tenant_id)
+        self._alias_cache[tenant_id] = dict(aliases)
+        self._cache_stats["alias_misses"] += 1
+        return aliases
+
+    async def _load_models_cached(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        model_ids: list[UUID],
+    ) -> dict[UUID, ModelRow]:
+        if not self._budget.row_cache_enabled:
+            return await _load_models(conn, tenant_id, model_ids)
+        ids = list(dict.fromkeys(model_ids))
+        cache = self._model_cache[tenant_id]
+        missing = [mid for mid in ids if mid not in cache]
+        self._cache_stats["model_hits"] += len(ids) - len(missing)
+        if missing:
+            loaded = await _load_models(conn, tenant_id, missing)
+            cache.update(loaded)
+            self._cache_stats["model_misses"] += len(missing)
+        return {mid: cache[mid] for mid in ids if mid in cache}
+
+    async def _load_model_features_cached(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        model_ids: list[UUID],
+    ) -> dict[UUID, ModelStructuralFeatures]:
+        if not self._budget.row_cache_enabled:
+            return await _load_model_features(conn, tenant_id, model_ids)
+        ids = list(dict.fromkeys(model_ids))
+        cache = self._model_feature_cache[tenant_id]
+        missing = [mid for mid in ids if mid not in cache]
+        self._cache_stats["model_feature_hits"] += len(ids) - len(missing)
+        if missing:
+            loaded = await _load_model_features(conn, tenant_id, missing)
+            for mid in missing:
+                cache[mid] = loaded.get(mid)
+            self._cache_stats["model_feature_misses"] += len(missing)
+        return {
+            mid: feature
+            for mid, feature in ((mid, cache.get(mid)) for mid in ids)
+            if feature is not None
+        }
+
+    async def _load_edge_features_cached(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        edge_ids: list[UUID],
+    ) -> dict[UUID, EdgeStructuralFeatures]:
+        if not self._budget.row_cache_enabled:
+            return await _load_edge_features(conn, tenant_id, edge_ids)
+        ids = list(dict.fromkeys(edge_ids))
+        cache = self._edge_feature_cache[tenant_id]
+        missing = [eid for eid in ids if eid not in cache]
+        self._cache_stats["edge_feature_hits"] += len(ids) - len(missing)
+        if missing:
+            loaded = await _load_edge_features(conn, tenant_id, missing)
+            for eid in missing:
+                cache[eid] = loaded.get(eid)
+            self._cache_stats["edge_feature_misses"] += len(missing)
+        return {
+            eid: feature
+            for eid, feature in ((eid, cache.get(eid)) for eid in ids)
+            if feature is not None
+        }
+
+    async def _load_observations_cached(
+        self,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        observation_ids: list[UUID],
+    ) -> list[ObservationRow]:
+        if not self._budget.row_cache_enabled:
+            return await _load_observations(conn, tenant_id, observation_ids)
+        ids = list(dict.fromkeys(observation_ids))
+        cache = self._observation_cache[tenant_id]
+        missing = [oid for oid in ids if oid not in cache]
+        self._cache_stats["observation_hits"] += len(ids) - len(missing)
+        if missing:
+            loaded = await _load_observations(conn, tenant_id, missing)
+            by_id = {obs.id: obs for obs in loaded}
+            for oid in missing:
+                cache[oid] = by_id.get(oid)
+            self._cache_stats["observation_misses"] += len(missing)
+        return [obs for oid in ids if (obs := cache.get(oid)) is not None]
 
     async def _activate_from_shortcuts(
         self,
@@ -588,10 +875,11 @@ class SynthesisReader:
         cues: StructuredCues,
         candidates: "_CandidateAccumulator",
         limit: int | None = None,
-    ) -> None:
-        terms = _candidate_terms(question, trigger, cues)
-        if not terms:
-            return
+    ) -> dict[str, int]:
+        stats = {
+            "text_search_limit": 0,
+            "text_search_hits": 0,
+        }
         # Question-only Ask paths need a lexical safety rail even when
         # learned shortcuts/affordances have already produced generic
         # candidates. Otherwise a few broad learned hits can starve the
@@ -600,14 +888,23 @@ class SynthesisReader:
             int(limit) if limit is not None else int(self._budget.lexical_candidates)
         )
         if requested_limit <= 0:
-            return
-        remaining = max(1, requested_limit)
+            return stats
+        terms = _candidate_terms(question, trigger, cues)
+        if not terms:
+            return stats
+        stats["text_search_limit"] = requested_limit
         rows = await _fetch_search_document_matches(
             conn,
             tenant_id=tenant_id,
             terms=terms,
-            limit=remaining,
+            limit=requested_limit,
+            microquery_enabled=bool(self._budget.lexical_microquery_enabled),
+            microquery_terms=int(self._budget.lexical_microquery_terms),
+            microquery_per_term_limit=int(
+                self._budget.lexical_microquery_per_term_limit
+            ),
         )
+        stats["text_search_hits"] = len(rows)
         for idx, row in enumerate(rows):
             match_count = int(row["match_count"] or 1)
             candidates.add(
@@ -621,6 +918,7 @@ class SynthesisReader:
                 f"lexical:{match_count}",
                 source="lexical",
             )
+        return stats
 
     async def _activate_from_alternative_scan(
         self,
@@ -648,6 +946,11 @@ class SynthesisReader:
             tenant_id=tenant_id,
             terms=[term for _, term in terms],
             limit=max(12, min(self._budget.lexical_candidates, len(terms) * 4)),
+            microquery_enabled=bool(self._budget.lexical_microquery_enabled),
+            microquery_terms=int(self._budget.lexical_microquery_terms),
+            microquery_per_term_limit=int(
+                self._budget.lexical_microquery_per_term_limit
+            ),
         )
 
         for rank, row in enumerate(rows):
@@ -886,6 +1189,39 @@ class _CandidateAccumulator:
             return score
         return min(float(score) * 0.18, 0.12)
 
+    def ranked_model_ids(
+        self,
+        *,
+        limit: int,
+        required_ids: set[UUID] | tuple[UUID, ...] | list[UUID] = (),
+    ) -> list[UUID]:
+        required = [
+            mid
+            for mid in sorted(set(required_ids), key=str)
+            if mid in self.details
+        ]
+        effective_limit = max(len(required), max(0, int(limit)))
+        ranked = sorted(
+            self.details,
+            key=lambda mid: (
+                -self.adjusted_score_for(mid, self.details[mid].score),
+                str(mid),
+            ),
+        )
+        out: list[UUID] = []
+        seen: set[UUID] = set()
+        for mid in required:
+            out.append(mid)
+            seen.add(mid)
+        for mid in ranked:
+            if mid in seen:
+                continue
+            out.append(mid)
+            seen.add(mid)
+            if len(out) >= effective_limit:
+                break
+        return out
+
     def suppress(self, model_id: UUID, reason: str) -> None:
         self.suppressed[model_id] = reason
         detail = self.details[model_id]
@@ -916,6 +1252,24 @@ class _CandidateAccumulator:
         )
 
 
+def _edge_seed_limit(budget: ReaderBudget, learned_plan: _LearnedReadPlan) -> int:
+    configured = max(1, int(budget.activation_seed_limit))
+    propagation_cap = (
+        learned_plan.propagation_neighbors
+        if learned_plan.propagation_neighbors is not None
+        else budget.propagation_neighbors
+    )
+    return max(1, min(configured, int(propagation_cap)))
+
+
+def _explicit_seed_ids(trigger: TriggerContext) -> set[UUID]:
+    out: set[UUID] = set()
+    if trigger.model_id is not None:
+        out.add(trigger.model_id)
+    out.update(trigger.member_model_ids or [])
+    return out
+
+
 def _learned_read_plan(
     *,
     budget: ReaderBudget,
@@ -926,6 +1280,7 @@ def _learned_read_plan(
     negative_memory_count: int,
     suppressed_count: int,
     explicit_model_count: int,
+    substrate_model_count: int = 0,
 ) -> _LearnedReadPlan:
     if not budget.learned_planning_enabled:
         return _LearnedReadPlan(reasons=("learned_planning_disabled",))
@@ -998,6 +1353,7 @@ def _learned_read_plan(
         return _LearnedReadPlan(
             mode="focused",
             skip_broad_discovery=True,
+            gate_broad_actions=True,
             lexical_candidates=max(0, int(budget.focused_lexical_candidates)),
             max_nodes=max(4, min(budget.max_nodes, budget.focused_max_nodes)),
             max_edges=max(8, min(budget.max_edges, budget.focused_max_edges)),
@@ -1009,6 +1365,40 @@ def _learned_read_plan(
                 ),
             ),
             confidence=_clamp(0.48 + top_learned_score * 0.55, 0.0, 0.92),
+            reasons=tuple(reasons),
+        )
+
+    rerank_ready = (
+        substrate_model_count >= max(1, int(budget.rerank_min_substrate_models))
+        and (
+            explicit_model_count > 0
+            or positive_hit_count >= 1
+            or top_learned_score >= 0.24
+        )
+    )
+    if rerank_ready:
+        reasons.extend([
+            f"substrate_model_count={substrate_model_count}",
+            f"positive_hit_count={positive_hit_count}",
+            f"top_learned_score={top_learned_score:.3f}",
+        ])
+        if suppressed_count:
+            reasons.append(f"suppressed_by_negative_memory={suppressed_count}")
+        return _LearnedReadPlan(
+            mode="rerank",
+            skip_broad_discovery=True,
+            gate_broad_actions=False,
+            lexical_candidates=max(0, int(budget.rerank_lexical_candidates)),
+            max_nodes=max(8, min(budget.max_nodes, max(16, budget.focused_max_nodes))),
+            max_edges=max(16, min(budget.max_edges, max(32, budget.focused_max_edges))),
+            propagation_neighbors=max(
+                12,
+                min(
+                    budget.propagation_neighbors,
+                    max(24, budget.focused_propagation_neighbors),
+                ),
+            ),
+            confidence=_clamp(0.42 + top_learned_score * 0.35, 0.0, 0.82),
             reasons=tuple(reasons),
         )
 
@@ -1026,6 +1416,7 @@ def _learned_read_plan(
         return _LearnedReadPlan(
             mode="guarded_negative_memory",
             skip_broad_discovery=True,
+            gate_broad_actions=True,
             lexical_candidates=0,
             max_nodes=max(4, min(budget.max_nodes, 8)),
             max_edges=max(8, min(budget.max_edges, 16)),
@@ -1074,7 +1465,7 @@ def _projection_budget_for(
         max(12, int(node_cap)),
         primitive_cap,
     )
-    if learned_plan.mode in {"focused", "guarded_negative_memory"}:
+    if learned_plan.mode in {"focused", "guarded_negative_memory", "rerank"}:
         cap = min(cap, max(12, int(round(node_cap * 1.5))))
     if learned_plan.abstain_early:
         cap = 0
@@ -1556,6 +1947,29 @@ def _add_explicit_trigger_models(
         candidates.add(mid, 0.48, "explicit:member_model", source="explicit")
 
 
+def _add_substrate_seed_models(
+    candidates: _CandidateAccumulator,
+    substrate: SageReadSubstrate | None,
+    budget: ReaderBudget,
+) -> None:
+    if substrate is None or not substrate.baseline_model_ids:
+        return
+    limit = max(0, min(len(substrate.baseline_model_ids), int(budget.substrate_model_limit)))
+    if limit <= 0:
+        return
+    for rank, model_id in enumerate(substrate.baseline_model_ids[:limit]):
+        # A small prior keeps primary-retrieved scoped candidates available for
+        # question-specific reranking without overpowering lexical/learned cues.
+        score = max(0.03, 0.10 - rank * 0.001)
+        candidates.add(
+            model_id,
+            score,
+            "substrate:primary_candidate",
+            source="substrate",
+        )
+    substrate.counters["model_priors_added"] += limit
+
+
 def _candidate_terms(
     question: str,
     trigger: TriggerContext,
@@ -1692,16 +2106,139 @@ def _fts_lexeme(token: str) -> str:
     return clean
 
 
+def _sparse_lookup_terms(
+    terms: list[str] | tuple[str, ...],
+    *,
+    max_terms: int,
+) -> list[str]:
+    out: list[str] = []
+    for raw in terms:
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold()):
+            if token in _STOPWORDS or token.isdigit():
+                continue
+            if token not in out:
+                out.append(token)
+            if len(out) >= max(1, int(max_terms)):
+                return out
+    return out
+
+
+def _sparse_lookup_groups(
+    terms: list[str] | tuple[str, ...],
+    *,
+    max_groups: int,
+    exclude_generics: bool = False,
+) -> list[list[str]]:
+    groups: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in terms:
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold())
+            if token not in _STOPWORDS and not token.isdigit()
+        ]
+        if exclude_generics:
+            tokens = [
+                token
+                for token in tokens
+                if token not in _BELIEF_ADDRESS_FTS_GENERIC_TERMS
+            ]
+        tokens = list(dict.fromkeys(tokens))
+        if len(tokens) >= 2:
+            group = tokens[:4]
+        elif tokens and len(tokens[0]) >= 6:
+            group = tokens
+        else:
+            continue
+        key = tuple(group)
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append(group)
+        if len(groups) >= max(1, int(max_groups)):
+            break
+    return groups
+
+
 async def _fetch_search_document_matches(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
     terms: list[str] | tuple[str, ...],
     limit: int,
+    microquery_enabled: bool = False,
+    microquery_terms: int = 8,
+    microquery_per_term_limit: int = 16,
 ) -> list[asyncpg.Record]:
+    sparse_rows = await _fetch_sparse_term_matches(
+        conn,
+        tenant_id=tenant_id,
+        terms=terms,
+        limit=limit,
+        max_terms=microquery_terms,
+        per_term_limit=microquery_per_term_limit,
+    )
+    if sparse_rows:
+        return sparse_rows
+
     patterns = _contains_like_patterns(terms)
     if not patterns:
         return []
+    if microquery_enabled and len(patterns) > 1:
+        bounded_patterns = patterns[: max(1, int(microquery_terms))]
+        per_term_limit = max(1, int(microquery_per_term_limit))
+        rows = list(await conn.fetch(
+            """
+            WITH patterns AS (
+              SELECT pattern, ord
+              FROM unnest($3::text[]) WITH ORDINALITY AS p(pattern, ord)
+            ),
+            per_pattern AS MATERIALIZED (
+              SELECT hit.model_id,
+                     p.ord::int AS pattern_ord
+              FROM patterns p
+              CROSS JOIN LATERAL (
+                SELECT msd.model_id
+                FROM model_search_documents msd
+                JOIN models m
+                  ON m.id = msd.model_id
+                 AND m.tenant_id = msd.tenant_id
+                WHERE msd.tenant_id = $1
+                  AND msd.status = 'active'
+                  AND m.status = 'active'
+                  AND msd.search_text LIKE p.pattern ESCAPE '!'
+                ORDER BY m.activation DESC, m.created_at DESC, m.id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(*)::int AS match_count,
+                     min(pattern_ord)::int AS first_pattern_ord
+              FROM per_pattern
+              GROUP BY model_id
+            )
+            SELECT m.id,
+                   m."natural",
+                   scored.match_count
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+            WHERE m.status = 'active'
+            ORDER BY scored.match_count DESC,
+                     scored.first_pattern_ord ASC,
+                     m.activation DESC,
+                     m.created_at DESC
+            LIMIT $2
+            """,
+            tenant_id,
+            max(1, int(limit)),
+            bounded_patterns,
+            per_term_limit,
+        ))
+        if rows:
+            return rows
 
     like_checks: list[str] = []
     count_parts: list[str] = []
@@ -1742,6 +2279,85 @@ async def _fetch_search_document_matches(
     ))
 
 
+async def _fetch_sparse_term_matches(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    terms: list[str] | tuple[str, ...],
+    limit: int,
+    max_terms: int,
+    per_term_limit: int,
+) -> list[asyncpg.Record]:
+    lookup_groups = _sparse_lookup_groups(terms, max_groups=max_terms)
+    if not lookup_groups or limit <= 0:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
+    if table is None:
+        return []
+    return list(await conn.fetch(
+        """
+        WITH group_tokens AS MATERIALIZED (
+          SELECT g.group_ord::int,
+                 token.value::text AS term
+          FROM jsonb_array_elements($3::jsonb)
+               WITH ORDINALITY AS g(tokens, group_ord)
+          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        ),
+        group_sizes AS MATERIALIZED (
+          SELECT group_ord,
+                 count(DISTINCT term)::int AS token_count
+          FROM group_tokens
+          GROUP BY group_ord
+        ),
+        matched AS MATERIALIZED (
+          SELECT mst.model_id,
+                 gt.group_ord,
+                 count(DISTINCT gt.term)::int AS matched_terms
+          FROM group_tokens gt
+          JOIN model_sparse_terms mst
+            ON mst.tenant_id = $1
+           AND mst.status = 'active'
+           AND mst.term = gt.term
+          GROUP BY mst.model_id, gt.group_ord
+        ),
+        group_hits AS MATERIALIZED (
+          SELECT matched.model_id,
+                 matched.group_ord,
+                 group_sizes.token_count
+          FROM matched
+          JOIN group_sizes
+            ON group_sizes.group_ord = matched.group_ord
+          WHERE matched.matched_terms = group_sizes.token_count
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 count(*)::int AS match_count,
+                 sum(token_count)::int AS term_match_count,
+                 min(group_ord)::int AS first_group_ord
+          FROM group_hits
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               m."natural",
+               scored.term_match_count AS match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.term_match_count DESC,
+                 scored.match_count DESC,
+                 scored.first_group_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        json.dumps(lookup_groups),
+    ))
+
+
 def _belief_address_primitives_for(primitive: str) -> tuple[str, ...]:
     coarse = str(primitive or "").strip().upper()
     if not coarse:
@@ -1778,6 +2394,16 @@ async def _fetch_belief_address_matches(
     ]
     if not primitive_values:
         return []
+
+    indexed_rows = await _fetch_answerability_index_matches(
+        conn,
+        tenant_id=tenant_id,
+        primitive_values=primitive_values,
+        terms=terms,
+        limit=limit,
+    )
+    if indexed_rows:
+        return indexed_rows
 
     fts_query = _belief_address_fts_query_for_terms(terms)
     if fts_query:
@@ -2013,6 +2639,114 @@ async def _fetch_belief_address_matches_via_search_documents(
         primitive_values,
         lexical_limit,
         *patterns,
+    ))
+
+
+async def _fetch_answerability_index_matches(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    primitive_values: list[str],
+    terms: list[str] | tuple[str, ...],
+    limit: int,
+) -> list[asyncpg.Record]:
+    lookup_groups = _sparse_lookup_groups(
+        terms,
+        max_groups=8,
+        exclude_generics=True,
+    )
+    if not lookup_groups:
+        return []
+    table = await conn.fetchval("SELECT to_regclass('public.model_answerability_index')")
+    if table is None:
+        return []
+    return list(await conn.fetch(
+        """
+        WITH group_tokens AS MATERIALIZED (
+          SELECT g.group_ord::int,
+                 token.value::text AS term
+          FROM jsonb_array_elements($4::jsonb)
+               WITH ORDINALITY AS g(tokens, group_ord)
+          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        ),
+        group_sizes AS MATERIALIZED (
+          SELECT group_ord,
+                 count(DISTINCT term)::int AS token_count
+          FROM group_tokens
+          GROUP BY group_ord
+        ),
+        matched AS MATERIALIZED (
+          SELECT mai.model_id,
+                 mai.primitive,
+                 gt.group_ord,
+                 count(DISTINCT gt.term)::int AS matched_terms
+          FROM group_tokens gt
+          JOIN model_answerability_index mai
+            ON mai.tenant_id = $1
+           AND mai.status = 'active'
+           AND mai.primitive = ANY($3::text[])
+           AND mai.term = gt.term
+          GROUP BY mai.model_id, mai.primitive, gt.group_ord
+        ),
+        group_hits AS MATERIALIZED (
+          SELECT matched.model_id,
+                 matched.primitive,
+                 matched.group_ord,
+                 group_sizes.token_count
+          FROM matched
+          JOIN group_sizes
+            ON group_sizes.group_ord = matched.group_ord
+          WHERE matched.matched_terms = group_sizes.token_count
+        ),
+        matched_groups AS MATERIALIZED (
+          SELECT model_id,
+                 group_ord,
+                 max(token_count)::int AS token_count
+          FROM group_hits
+          GROUP BY model_id, group_ord
+        ),
+        matched_primitives AS MATERIALIZED (
+          SELECT model_id,
+                 count(DISTINCT primitive)::int AS primitive_match_count,
+                 array_agg(DISTINCT primitive ORDER BY primitive) AS matched_primitives
+          FROM group_hits
+          GROUP BY model_id
+        ),
+        scored AS MATERIALIZED (
+          SELECT matched_groups.model_id,
+                 matched_primitives.primitive_match_count,
+                 sum(matched_groups.token_count)::int AS lexical_match_count,
+                 matched_primitives.matched_primitives,
+                 min(matched_groups.group_ord)::int AS first_group_ord
+          FROM matched_groups
+          JOIN matched_primitives
+            ON matched_primitives.model_id = matched_groups.model_id
+          GROUP BY matched_groups.model_id,
+                   matched_primitives.primitive_match_count,
+                   matched_primitives.matched_primitives
+        )
+        SELECT m.id,
+               m."natural",
+               scored.primitive_match_count,
+               scored.lexical_match_count,
+               scored.matched_primitives,
+               TRUE AS lexical_terms_present
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.primitive_match_count DESC,
+                 scored.lexical_match_count DESC,
+                 scored.first_group_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        primitive_values,
+        json.dumps(lookup_groups),
     ))
 
 
@@ -2494,6 +3228,15 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(v) for v in value]
     return value
+
+
+def _counter_delta(current: Counter[str], previous: Counter[str]) -> dict[str, int]:
+    keys = set(current) | set(previous)
+    return {
+        key: int(current.get(key, 0) - previous.get(key, 0))
+        for key in sorted(keys)
+        if current.get(key, 0) != previous.get(key, 0)
+    }
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:

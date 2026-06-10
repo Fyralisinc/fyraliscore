@@ -17,6 +17,7 @@ from services.platform.execution.inquiry import (
     _select_minimal_sufficient_evidence,
     _candidate_questions,
     _compile_retrieval_plan,
+    _load_question_policy_stats,
     _question_policy_budget_multiplier,
     _apply_question_policy,
     _question_marginal_score,
@@ -69,6 +70,57 @@ def test_question_planner_prioritizes_owner_when_owner_is_the_bottleneck(
 
     assert selected[0].primitive == "OWNERSHIP"
     assert "OWNERSHIP" in {q.primitive for q in selected}
+
+
+def test_question_planner_anchors_questions_to_signal_specifics(
+    tenant_id: UUID,
+):
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text=(
+            "AcmeAtlas launch is blocked by security review capacity and "
+            "the enterprise SSO commitment is now at risk."
+        ),
+        seed_entity_ids=[
+            {"type": "customer", "id": "AcmeAtlas"},
+            {"type": "system", "id": "EnterpriseSSO"},
+        ],
+    )
+    questions = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"blocking constraint", "responsible owner", "counterevidence"},
+    )
+    by_primitive = {question.primitive: question.question for question in questions}
+
+    assert "AcmeAtlas" in by_primitive["OWNERSHIP"]
+    assert "security review capacity" in by_primitive["OWNERSHIP"]
+    assert "AcmeAtlas" in by_primitive["DEPENDENCY"]
+    assert "security review capacity" in by_primitive["DEPENDENCY"]
+    assert "AcmeAtlas launch is blocked" in by_primitive["COUNTEREVIDENCE"]
+
+
+def test_question_planner_does_not_leak_uuid_anchors_into_questions(
+    tenant_id: UUID,
+):
+    opaque_id = "019ea807-48e2-7000-b96f-b0a86bf8256f"
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text="Customer launch is waiting on legal approval.",
+        seed_entity_ids=[{"type": "customer", "id": opaque_id}],
+    )
+    questions = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"whether the dependency is binding", "counterevidence"},
+    )
+
+    assert opaque_id not in " ".join(question.question for question in questions)
+    assert any("legal approval" in question.question for question in questions)
 
 
 def test_question_planner_promotes_first_class_constraint_questions(
@@ -687,6 +739,110 @@ async def test_reader_writer_feedback_lifts_useful_node_into_next_read(
     assert policy_stats["utility_score"] > 0
     assert target_id in {trace.model_id for trace in after.activations}
     assert target_id in {model.id for model in after.models}
+
+
+async def test_question_policy_credit_round_trips_into_next_question_plan(
+    gateway_pool,
+    tenant_id: UUID,
+):
+    obs_id = await seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="Writer validated that reviewer capacity is the constraint.",
+    )
+    target_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="Reviewer capacity is the launch-blocking constraint.",
+        supporting_event_ids=[obs_id],
+        signal_readings=[{"kind": "observe", "event_id": str(obs_id), "weight": 1.0}],
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text="AcmeAtlas SsoRelay launch is blocked by review capacity.",
+        seed_entity_ids=[],
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+    candidates = _candidate_questions(
+        trigger,
+        _hypotheses(),
+        evidence_by_key={},
+        unknowns={"whether the dependency is binding", "counterevidence"},
+    )
+    cold_selected = _select_questions(
+        candidates,
+        questions_per_round=1,
+        round_index=0,
+        already_asked=set(),
+    )
+
+    async with gateway_pool.acquire() as conn:
+        session_id = await _seed_writer_success_session(
+            conn,
+            tenant_id=tenant_id,
+            used_model_id=target_id,
+            primitive="CONSTRAINT",
+        )
+        await OutcomeEvaluator(
+            pool=None,
+            tenant_id=tenant_id,
+        ).evaluate(inquiry_session_id=session_id, conn=conn)
+        report = await TopologyOptimizer(
+            pool=None,
+            tenant_id=tenant_id,
+        ).optimize(
+            inquiry_session_id=session_id,
+            trigger_event="validated_synthesis_diff_applied",
+            conn=conn,
+        )
+        learned_policy = await _load_question_policy_stats(
+            conn,
+            tenant_id=tenant_id,
+            signal_type="T1",
+        )
+
+    policy_candidates = _apply_question_policy(
+        candidates,
+        question_policy=learned_policy,
+    )
+    hot_selected = _select_questions(
+        policy_candidates,
+        questions_per_round=1,
+        round_index=0,
+        already_asked=set(),
+    )
+    cold_constraint = next(q for q in candidates if q.primitive == "CONSTRAINT")
+    cold_dependency = next(q for q in candidates if q.primitive == "DEPENDENCY")
+    hot_constraint = next(
+        q for q in policy_candidates if q.primitive == "CONSTRAINT"
+    )
+    hot_dependency = next(
+        q for q in policy_candidates if q.primitive == "DEPENDENCY"
+    )
+    cfg = InquiryConfig(semantic_budget=30)
+    cold_plan = _compile_retrieval_plan(cold_constraint, trigger, cfg)
+    hot_plan = _compile_retrieval_plan(
+        hot_constraint,
+        trigger,
+        cfg,
+        policy_signal=learned_policy["CONSTRAINT"],
+    )
+
+    assert report.question_policy_updates >= 1
+    assert cold_selected[0].score == cold_dependency.score
+    assert cold_constraint.score == cold_dependency.score
+    assert learned_policy["CONSTRAINT"].attempts >= 1
+    assert learned_policy["CONSTRAINT"].successes >= 1
+    assert learned_policy["CONSTRAINT"].utility_score > 0
+    assert hot_selected[0].primitive == "CONSTRAINT"
+    assert hot_constraint.score > cold_constraint.score
+    assert hot_constraint.score > hot_dependency.score
+    assert sum(action.budget for action in hot_plan) < sum(
+        action.budget for action in cold_plan
+    )
 
 
 def _hypotheses() -> tuple[Hypothesis, ...]:
