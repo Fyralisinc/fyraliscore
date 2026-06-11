@@ -1,4 +1,4 @@
--- 0130_disputed_edges_and_valid_until.sql
+-- 0131_disputed_edges_and_valid_until.sql
 --
 -- Capability plan C3/C7: allow an active edge to be explicitly disputed
 -- instead of forcing a binary accepted/rejected lifecycle. Also add a small

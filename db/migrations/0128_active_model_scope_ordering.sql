@@ -1,4 +1,4 @@
--- 0127_active_model_scope_ordering.sql
+-- 0128_active_model_scope_ordering.sql
 -- Support bounded scoped retrieval by scanning active tenant models in ranking
 -- order and checking indexed scope sidecars with EXISTS.
 

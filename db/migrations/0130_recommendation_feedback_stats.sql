@@ -1,4 +1,4 @@
--- 0129_recommendation_feedback_stats.sql
+-- 0130_recommendation_feedback_stats.sql
 --
 -- Close the CEO recommendation feedback loop. The product already emits
 -- recommendation_acted_upon / recommendation_dismissed state changes; this

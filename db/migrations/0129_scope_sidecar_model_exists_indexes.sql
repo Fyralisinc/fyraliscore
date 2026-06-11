@@ -1,4 +1,4 @@
--- 0128_scope_sidecar_model_exists_indexes.sql
+-- 0129_scope_sidecar_model_exists_indexes.sql
 -- Cover model-ordered scoped retrieval EXISTS probes.
 
 CREATE INDEX IF NOT EXISTS model_scope_entities_model_entity_lookup_idx
