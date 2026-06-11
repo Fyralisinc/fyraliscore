@@ -1,20 +1,21 @@
-"""services/ingest/ingestion/planners/gusto.py — Gusto planner (finance).
+"""services/ingest/ingestion/planners/gusto.py — Gusto planner (finance/payroll).
 
-Per the Jira loader precedent (A18.2): Gusto' install record is company-scoped,
+Per the Jira loader precedent (A18.2): Gusto's install record is company-scoped,
 and the planner needs the 1-to-N active-entity list to emit one shard per entity
-type. The enrichment lives in `gusto_entities`; the SourceOnboarding loader
+kind. The enrichment lives in `gusto_entities`; the SourceOnboarding loader
 JSON-aggregates it into `ctx.install["entities"]` so the planner stays stateless.
 
-Each shard is one entity type's stream for the company. The fetcher walks the
-query endpoint, then incrementally via the per-entity updated-at high-water
-cursor.
+Each shard is one entity kind's stream for the company. The taxonomy (VERIFIED
+against docs.gusto.com) is the `/v1/companies/{company_uuid}/...` read surface:
 
-TODO(human): confirm the Gusto resource taxonomy to shard. This planner is
-    entity-type-agnostic (it reads the active entity list from the `gusto_entities`
-    child table), but the seeded Gusto entities are `payrolls`, `employees`, and
-    `contractor_payments`, each path-scoped under
-    `/v1/companies/{company_uuid}/...`. Start with the payroll cash-flow entity
-    (highest signal value) and add the others as their read surface is confirmed.
+  - `employee` — `GET .../employees` (no updated-since filter → full re-walk,
+    version-deduped downstream).
+  - `payroll`  — `GET .../payrolls` (date-window filter → `check_date`
+    high-water incremental via the per-entity `updated_cursor`).
+
+The planner itself is entity-kind-agnostic (it reads the active entity list
+from the `gusto_entities` child table); the seeded kinds come from
+`client.DEFAULT_ENTITIES`.
 
 `ctx.source_client` is None — entities are read from DB state.
 """
@@ -52,7 +53,7 @@ def _decode_entities(install: Any) -> list[dict[str, Any]]:
 
 
 async def plan_shards_gusto(ctx: PlannerContext) -> list[Shard]:
-    """One `gusto_entity` shard per active entity type."""
+    """One `gusto_entity` shard per active entity kind."""
     install_id = str(ctx.install["id"])
     company_uuid = str(ctx.install["company_uuid"]) if "company_uuid" in ctx.install else None
     entities = _decode_entities(ctx.install)
@@ -69,7 +70,8 @@ async def plan_shards_gusto(ctx: PlannerContext) -> list[Shard]:
                 "entity_type": entity_type,
                 "company_uuid": company_uuid,
                 "installation_id": install_id,
-                # The high-water LastUpdatedTime cursor — None on first sync.
+                # The high-water cursor (payroll check_date) — None on first
+                # sync and on employee shards (full re-walk).
                 "updated_cursor": ent.get("updated_cursor"),
             },
             recency_score=1.0,

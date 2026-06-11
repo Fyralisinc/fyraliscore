@@ -97,16 +97,33 @@ def build_core_router() -> APIRouter:
     async def metrics() -> Response:
         from services.app.webhooks import metrics as webhook_metrics
 
+        content = webhook_metrics.render_prometheus()
+        # Shared lib.observability registry: http_request_*, db_pool_*,
+        # ollama_*, kafka_producer_*, plus the per-source integration
+        # collector (install/lifecycle counters live in this process).
+        try:
+            import services.ingest.integrations.metrics_export  # noqa: F401
+            from lib.observability.metrics import render_default
+
+            content += render_default()
+        except Exception:  # noqa: BLE001 — scrape must not 500
+            pass
         return Response(
-            content=webhook_metrics.render_prometheus(),
+            content=content,
             media_type="text/plain; version=0.0.4",
         )
 
     @router.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:
         deps = _deps(request)
-        bootstrap = _settings(request).auth_bootstrap_secret
+        settings = _settings(request)
+        bootstrap = settings.auth_bootstrap_secret
         hdr = request.headers.get("X-Bootstrap-Secret", "")
+        if not bootstrap and settings.environment in {"prod", "production"}:
+            return JSONResponse(
+                {"error": "bootstrap_secret_required"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if bootstrap and hdr != bootstrap:
             return JSONResponse(
                 {"error": "bootstrap_secret_mismatch"},

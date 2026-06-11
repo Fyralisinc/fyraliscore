@@ -96,6 +96,43 @@ async def test_account_snapshot_is_signal_with_balance():
     assert "482,350.12" in draft.content_text
 
 
+async def test_real_brex_money_object_is_major_units():
+    draft = await handle_brex_transaction({
+        "_fyralis_record_type": "transaction",
+        "_fyralis_account_id": _ACCT,
+        "transaction": {
+            "id": "t-cents",
+            "amount": {"amount": -12345, "currency": "USD"},
+            "counterparty_name": "Vendor Co",
+            "status": "posted",
+            "type": "cash",
+            "posted_at": "2026-05-20T12:30:00Z",
+        },
+    }, {})
+    assert draft.content["amount"] == -123.45
+    assert draft.content["amount_raw"] == {"amount": -12345, "currency": "USD"}
+    assert draft.content["direction"] == "outflow"
+    assert "$123.45" in draft.content_text
+
+
+async def test_real_brex_balance_money_objects_are_normalized():
+    draft = await handle_brex_transaction({
+        "_fyralis_record_type": "account_snapshot",
+        "_fyralis_account_id": _ACCT,
+        "as_of": "2026-05-31T00:00:00Z",
+        "account": {
+            "id": _ACCT,
+            "name": "Cash",
+            "_fyralis_account_kind": "cash",
+            "available_balance": {"amount": 2500, "currency": "USD"},
+            "current_balance": {"amount": 3000, "currency": "USD"},
+        },
+    }, {})
+    assert draft.content["available_balance"] == 25.0
+    assert draft.content["current_balance"] == 30.0
+    assert draft.content["account_kind"] == "cash"
+
+
 # --- live webhook path -----------------------------------------------------
 
 async def test_webhook_transaction_created():

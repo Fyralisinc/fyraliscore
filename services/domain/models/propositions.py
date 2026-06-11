@@ -500,6 +500,17 @@ def _falsifier_text(value: Any) -> str:
     return ""
 
 
+def apply_stance_grammar_defaults(prop: dict[str, Any]) -> None:
+    """Fill missing grammar-axis keys with the canonical kind's defaults.
+
+    Public wrapper used by the constructor to restore axis keys after
+    `sanitize_explicit_grammar_axes` drops off-enum values — the
+    `target_actor_id` generated column reads `proposition->>'claim_role'`
+    directly, so the persisted payload must carry the on-enum default.
+    """
+    _apply_stance_defaults(prop)
+
+
 def _apply_stance_defaults(prop: dict[str, Any]) -> None:
     kind = prop.get("kind")
     if kind == "observation":

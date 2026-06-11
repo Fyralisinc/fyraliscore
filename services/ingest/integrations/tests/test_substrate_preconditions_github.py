@@ -77,20 +77,19 @@ async def test_installation_audit_log_action_check_widened(db_pool) -> None:
 
 
 async def test_observations_unique_index_present(db_pool) -> None:
-    """T006: confirm dedup index on (source_channel, external_id,
-    occurred_at) exists so the existing GitHub handler's idempotency
-    contract holds."""
+    """T006: confirm dedup is tenant-scoped so idempotency never crosses tenants."""
     row = await db_pool.fetchrow(
         """
         SELECT indexdef
           FROM pg_indexes
          WHERE tablename = 'observations'
-           AND indexname = 'observations_source_channel_external_id_occurred_at_key'
+           AND indexname = 'observations_tenant_source_external_occurred_key'
         """
     )
     assert row is not None, (
         "observations dedup unique index missing"
     )
+    assert "tenant_id" in row["indexdef"]
     assert "source_channel" in row["indexdef"]
     assert "external_id" in row["indexdef"]
 

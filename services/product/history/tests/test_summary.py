@@ -143,3 +143,20 @@ async def test_summary_range_days_clamped(
         tenant_id=tenant, range_days=0, conn=tx_conn,
     )
     assert payload["range_days"] == 30
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_summary_works_on_bare_connection_without_transaction(
+    db_pool, tenant,
+):
+    """Regression: the gateway route hands build_summary a pooled
+    connection. SAVEPOINT is illegal outside a transaction block, so
+    build_summary must not assume one (this used to 500 every call).
+    """
+    async with db_pool.acquire() as conn:
+        assert not conn.is_in_transaction()
+        payload = await build_summary(
+            tenant_id=tenant, range_days=30, conn=conn,
+        )
+    assert "events" in payload

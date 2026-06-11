@@ -1,20 +1,19 @@
 """services/ingest/ingestion/planners/carta.py — Carta planner (cap-table).
 
-Per the Gusto loader precedent (A18.2): Carta's install record is firm-scoped,
-and the planner needs the 1-to-N active-entity list to emit one shard per entity
-type. The enrichment lives in `carta_entities`; the SourceOnboarding loader
-JSON-aggregates it into `ctx.install["entities"]` so the planner stays stateless.
+Per the Gusto loader precedent (A18.2): Carta's install record is issuer-scoped
+(`carta_installations.firm_id` holds the Carta issuer id), and the planner needs
+the 1-to-N active-entity list to emit one shard per entity type. The enrichment
+lives in `carta_entities`; the SourceOnboarding loader JSON-aggregates it into
+`ctx.install["entities"]` so the planner stays stateless.
 
-Each shard is one cap-table entity type's stream for the firm. The fetcher walks
-the query endpoint, then incrementally via the per-entity updated-at high-water
-cursor.
-
-TODO(human): confirm the Carta resource taxonomy to shard. This planner is
-    entity-type-agnostic (it reads the active entity list from the
-    `carta_entities` child table), but the seeded Carta entities are
-    `shareholders`, `share_classes`, `safes`, and `option_grants`, each
-    path-scoped under `/v1/firms/{firm_id}/...`. Confirm the high-signal entity
-    set and add the others as their read surface is confirmed.
+Each shard is one cap-table entity type's stream for the issuer. The seeded
+entity types match the real `/v1alpha1` issuer collections (CONFIRMED — see
+integrations/carta/client.py): `stakeholder` / `shareClass` / `optionGrant` /
+`convertibleNote`. The fetcher walks `GET /v1alpha1/issuers/{issuer}/
+{collection}` with AIP-158 `pageToken` pagination; incrementally, only
+`optionGrant` has a server-side delta filter (`lastModifiedDatetimeAfter`) — the
+per-entity `updated_cursor` warm-starts it. The other entity types full-re-walk
+idempotently (the planner stays agnostic; the fetcher decides).
 
 `ctx.source_client` is None — entities are read from DB state.
 """
@@ -69,7 +68,8 @@ async def plan_shards_carta(ctx: PlannerContext) -> list[Shard]:
                 "entity_type": entity_type,
                 "firm_id": firm_id,
                 "installation_id": install_id,
-                # The high-water LastUpdatedTime cursor — None on first sync.
+                # The lastModifiedDatetime high-water cursor — None on first
+                # sync; only honoured by the optionGrant fetcher path.
                 "updated_cursor": ent.get("updated_cursor"),
             },
             recency_score=1.0,

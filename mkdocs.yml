@@ -94,6 +94,8 @@ nav:
       - Workers — Background Jobs: architecture/workers.md
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
+      - Observability — Prometheus & Grafana: architecture/observability_architecture.md
+      - Observability audit (2026-06-11): architecture/observability_audit.md
   - Services: services.md
   - Glossary: glossary.md
   - Codebase reference:

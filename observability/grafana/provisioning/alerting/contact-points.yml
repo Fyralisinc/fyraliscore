@@ -1,0 +1,12 @@
+# Grafana alerting contact points (provisioned as-code).
+# $INGESTION_ALERT_WEBHOOK_URL is expanded by Grafana from the environment at load time.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: fyralis-ops
+    receivers:
+      - uid: fyralis-ops-webhook
+        type: webhook
+        settings:
+          url: $INGESTION_ALERT_WEBHOOK_URL

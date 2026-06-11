@@ -67,7 +67,6 @@ vector.
 from __future__ import annotations
 
 import json
-import math
 from datetime import datetime, timezone
 from typing import Any, Sequence
 from uuid import UUID
@@ -100,11 +99,6 @@ from services.domain.models.batch import ModelBatchPlan, PlannedModel, plan_mode
 from services.domain.models.constructor import ConstructedModel, construct_model
 from services.domain.models.edges_repo import EdgesRepo
 from services.domain.models.falsifier import is_adequate_falsifier
-from services.domain.models.propositions import (
-    canonicalize_proposition,
-    ensure_situation_compositional_defaults,
-    validate_proposition,
-)
 from services.domain.models.recommendations import validate_recommendation
 from services.domain.observations.events import NewObservationEvent, schedule_notify
 from services.domain.observations.state_change import (
@@ -2769,6 +2763,13 @@ class ModelsRepo:
                 LIMIT $3
             """
             rows = await c.fetch(sql, *params)
+            if len(rows) < k:
+                async with c.transaction():
+                    await c.execute("SET LOCAL enable_indexscan = off")
+                    await c.execute("SET LOCAL enable_bitmapscan = off")
+                    exact_rows = await c.fetch(sql, *params)
+                if len(exact_rows) > len(rows):
+                    rows = exact_rows
             return [_hydrate_row(r) for r in rows]
 
         if conn is not None:

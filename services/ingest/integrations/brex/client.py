@@ -1,41 +1,25 @@
-"""services/ingest/integrations/brex/client.py — outbound Brex REST client.
+"""services/ingest/integrations/brex/client.py - outbound Brex REST client.
 
-Single outbound surface for backfill + poll-incremental + the planner's account
-enumeration. Brex is authenticated with a long-lived API token presented as a
-**Bearer** token. The token is resolved once from the secret store (or preset in
-spammer mode) and reused for the life of the client — same posture as the
-Notion/Jira clients. No token refresh (Bearer archetype).
+Verified Brex surface:
 
-TODO(human): confirm Brex API host + read endpoints/scopes (blueprint §5 #6/#7).
-The host defaults via the endpoint resolver (`endpoint("brex_api")`) and is
-overridable per-install (`base_url`) and per-env (`BREX_API_BASE_URL`); the
-read surface below (`/accounts`, `/account/{id}`, `/account/{id}/transactions`)
-is CLONED from Mercury and UNVERIFIED for Brex — Brex's real paths (e.g.
-`/v2/accounts/cash`, `/v2/transactions/card`) and the required OAuth-token
-scopes must be confirmed and the read methods adjusted. Implement only the
-verified read surface.
+  * base host: https://platform.brexapis.com
+  * accounts: GET /v2/accounts/cash (cursor envelope) and
+    GET /v2/accounts/card (bare array or items envelope)
+  * transactions: GET /v2/transactions/cash/{account_id} and
+    GET /v2/transactions/card/primary
+  * pagination: opaque next_cursor, limit max 1000
+  * money: signed integer cents objects, decoded by the handler
 
-TODO(human): confirm Brex rate-limit signalling (blueprint §5 #8). Defaults to
-429 + `Retry-After` (Mercury's scheme); tune via `BREX_RL_MAX_ATTEMPTS` /
-`BREX_RL_MAX_SLEEP_SEC`. Brex may instead signal via `X-RateLimit-Reset`.
-
-Pagination: `list_transactions` returns `(items, next_offset, total)`,
-`next_offset is None` terminal. The REAL Brex transactions API
-(`GET /v2/transactions/card/primary`) is CURSOR-paginated — the body is
-`{"items": [...], "next_cursor": "<token or null>"}` with NO `total` — so the
-client follows `next_cursor` internally until it is null/absent and returns the
-whole window in one call. The legacy offset/limit + `total` shape (the synthetic
-mock spammer) is still handled as a fallback when no `next_cursor` field is
-present. See `_parse_transactions_page` for the shape discrimination. Verified
-against developer.brex.com (Transactions API + Pagination docs).
-
-Logging redaction: the API token and the auth header are NEVER logged.
+The public method names intentionally match the old fetcher seam
+(`list_accounts`, `get_account`, `list_transactions`), but the HTTP paths are
+the real Brex /v2 paths.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -48,9 +32,8 @@ log = structlog.get_logger("integrations.brex.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
-# Default to 100 to bound payload size and keep parity with the other sources.
-# The 500 page cap is CLONED from Mercury and UNVERIFIED for Brex.
 _DEFAULT_PAGE_SIZE = 100
+_MAX_PAGE_SIZE = 1000
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -63,12 +46,7 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class BrexClient:
-    """Outbound Brex REST client, one per backfill/poll shard open.
-
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_brex_client`
-    (production / spammer) and by the seed/onboarding account probe. Shares the
-    process-wide httpx client when one is injected.
-    """
+    """Outbound Brex API client, one per backfill/poll shard open."""
 
     def __init__(
         self,
@@ -86,12 +64,8 @@ class BrexClient:
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
-        # resolved lazily from the secret store on first request.
         self._api_token: str | None = api_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Brex API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
@@ -131,28 +105,19 @@ class BrexClient:
             )
             return self._api_token
 
-    async def _auth_header(self) -> str:
-        token = await self._token()
-        return f"Bearer {token}"
-
     async def _request(
         self,
         method: str,
         path: str,
         *,
         params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """One Brex API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `BrexApiError`.
-        """
+    ) -> Any:
         from services.ingest.integrations.brex import metrics
 
-        auth = await self._auth_header()
+        token = await self._token()
         url = f"{self._api_base_url}{path}"
         headers = {
-            "Authorization": auth,
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
         max_attempts = int(os.environ.get("BREX_RL_MAX_ATTEMPTS", "4"))
@@ -182,14 +147,7 @@ class BrexClient:
 
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise BrexApiError(
-                        "brex response was not a JSON object",
-                        code="brex_api_error",
-                        context={"path": path},
-                    )
-                return body
+                return _safe_json(response)
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
@@ -202,21 +160,32 @@ class BrexClient:
     # -----------------------------------------------------------------
 
     async def list_accounts(self) -> list[dict[str, Any]]:
-        """`GET /accounts` — all accounts visible to the token, with balances.
+        """List all cash and card accounts visible to the token."""
+        cash = await self._list_cursor_items(
+            "/v2/accounts/cash", item_keys=("items", "accounts"),
+        )
+        for account in cash:
+            account.setdefault("_fyralis_account_kind", "cash")
+            account.setdefault("type", account.get("type") or "cash")
 
-        Used at seed/install time to populate `brex_accounts`, and by the
-        fetcher to emit per-account balance snapshots.
-        """
-        resp = await self._request("GET", "/accounts")
-        accounts = resp.get("accounts")
-        if not isinstance(accounts, list):
-            # Some Brex responses return the bare list.
-            accounts = resp if isinstance(resp, list) else []  # type: ignore[assignment]
-        return [a for a in accounts if isinstance(a, dict)]
+        card_body = await self._request("GET", "/v2/accounts/card")
+        cards = _extract_list(card_body, "items", "accounts", "cards")
+        for account in cards:
+            account.setdefault("_fyralis_account_kind", "card")
+            account.setdefault("type", account.get("type") or "card")
+
+        return cash + cards
 
     async def get_account(self, account_id: str) -> dict[str, Any]:
-        """`GET /account/{id}` — one account (balance snapshot probe)."""
-        return await self._request("GET", f"/account/{account_id}")
+        """Return one account by enumerating the real cash/card account lists."""
+        for account in await self.list_accounts():
+            if _account_id(account) == account_id:
+                return account
+        raise BrexApiError(
+            "brex account not found or not visible to the token",
+            code="brex_api_not_found",
+            context={"account_id": account_id},
+        )
 
     async def list_transactions(
         self,
@@ -225,102 +194,137 @@ class BrexClient:
         limit: int = _DEFAULT_PAGE_SIZE,
         offset: int = 0,
         start: str | None = None,
+        account_kind: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
-        """`GET /account/{id}/transactions` — paginated transactions.
+        """List transactions for a cash account or the primary card account.
 
-        `start` (ISO date) optionally bounds the window for incremental polls.
-        Returns `(transactions, next_offset, total)`; `next_offset is None`
-        signals no more pages.
-
-        Two pagination shapes are handled (see `_parse_transactions_page`):
-
-          - REAL Brex (api.brex.com `GET /v2/transactions/card/primary`):
-            CURSOR pagination — the response is `{"items": [...],
-            "next_cursor": "<token or null>"}` with NO `total`. When a
-            `next_cursor` is present this method follows the cursor internally,
-            accumulating every page, and returns the full set with
-            `next_offset=None` (terminal — the cursor walk is complete and the
-            fetcher persists the high-water filter, not an offset).
-          - SYNTHETIC / legacy (`{"transactions": [...], "total": N}`): the
-            original offset/limit single-page path, returned unchanged so the
-            mock spammer and the all-25 gate behave exactly as before.
+        The fetcher still receives the historical `(items, next_offset, total)`
+        shape. Real cursor pagination is walked internally and returns
+        `next_offset=None` when exhausted. A legacy `{transactions,total}` body
+        is still parsed for local compatibility.
         """
-        first = await self._request(
-            "GET",
-            f"/account/{account_id}/transactions",
-            params=self._txn_params(limit, offset, start, cursor=None),
+        kind = (account_kind or "").lower()
+        if kind in {"card", "credit_card", "primary_card"}:
+            return await self._list_card_transactions(limit=limit, start=start)
+        if kind in {"cash", "checking", "savings"}:
+            return await self._list_cash_transactions(
+                account_id, limit=limit, start=start,
+            )
+
+        try:
+            return await self._list_cash_transactions(
+                account_id, limit=limit, start=start,
+            )
+        except BrexApiError as exc:
+            if getattr(exc, "code", "") != "brex_api_not_found":
+                raise
+        return await self._list_card_transactions(limit=limit, start=start)
+
+    async def _list_cash_transactions(
+        self, account_id: str, *, limit: int, start: str | None,
+    ) -> tuple[list[dict[str, Any]], int | None, int]:
+        path = f"/v2/transactions/cash/{quote(account_id, safe='')}"
+        return await self._list_transaction_cursor(path, limit=limit, start=start)
+
+    async def _list_card_transactions(
+        self, *, limit: int, start: str | None,
+    ) -> tuple[list[dict[str, Any]], int | None, int]:
+        return await self._list_transaction_cursor(
+            "/v2/transactions/card/primary", limit=limit, start=start,
         )
+
+    async def _list_transaction_cursor(
+        self, path: str, *, limit: int, start: str | None,
+    ) -> tuple[list[dict[str, Any]], int | None, int]:
+        effective_limit = max(1, min(_MAX_PAGE_SIZE, int(limit or _DEFAULT_PAGE_SIZE)))
+        params = _txn_params(effective_limit, start, cursor=None)
+        first = await self._request("GET", path, params=params)
+        if not isinstance(first, dict):
+            raise BrexApiError(
+                "brex transactions response was not a JSON object",
+                code="brex_api_error",
+                context={"path": path},
+            )
         items, next_cursor, total = _parse_transactions_page(first)
 
         if next_cursor is None and "next_cursor" not in first:
-            # SYNTHETIC / offset shape (no cursor field at all): preserve the
-            # original single-page offset/total contract verbatim.
-            txns = items
-            total = int(total if total is not None else len(txns))
-            next_offset = offset + len(txns)
-            is_last = next_offset >= total or not txns
-            return txns, (None if is_last else next_offset), total
+            total_int = int(total if total is not None else len(items))
+            # Legacy compatibility: one offset-shaped page. The real path does
+            # not use offset, so terminality is based on the returned total.
+            next_offset = len(items)
+            is_last = next_offset >= total_int or not items
+            return items, (None if is_last else next_offset), total_int
 
-        # REAL cursor shape: follow `next_cursor` until it is null/absent.
         all_items = list(items)
         while next_cursor:
             page = await self._request(
                 "GET",
-                f"/account/{account_id}/transactions",
-                params=self._txn_params(limit, offset, start, cursor=next_cursor),
+                path,
+                params=_txn_params(effective_limit, start, cursor=next_cursor),
             )
+            if not isinstance(page, dict):
+                break
             page_items, next_cursor, _ = _parse_transactions_page(page)
             all_items.extend(page_items)
-        # The cursor walk is exhausted; the whole window is in `all_items`.
         return all_items, None, len(all_items)
 
-    @staticmethod
-    def _txn_params(
-        limit: int, offset: int, start: str | None, *, cursor: str | None,
-    ) -> dict[str, Any]:
-        """Build the transactions query params for either pagination shape.
-
-        `cursor` (real) and `offset` (synthetic) are both sent: the real API
-        ignores the unknown `offset`, the synthetic server ignores `cursor`.
-        """
-        params: dict[str, Any] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
-        else:
-            params["offset"] = offset
-        if start:
-            params["start"] = start
-        return params
+    async def _list_cursor_items(
+        self, path: str, *, item_keys: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": _MAX_PAGE_SIZE}
+            if cursor:
+                params["cursor"] = cursor
+            body = await self._request("GET", path, params=params)
+            if not isinstance(body, dict):
+                return out
+            out.extend(_extract_list(body, *item_keys))
+            raw_next = body.get("next_cursor")
+            cursor = raw_next if isinstance(raw_next, str) and raw_next else None
+            if not cursor:
+                return out
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
 
+def _txn_params(
+    limit: int, start: str | None, *, cursor: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if cursor:
+        params["cursor"] = cursor
+    if start:
+        params["posted_at_start"] = start
+    return params
+
+
+def _extract_list(body: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        return [x for x in body if isinstance(x, dict)]
+    if isinstance(body, dict):
+        for key in keys:
+            value = body.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+    return []
+
+
+def _account_id(account: dict[str, Any]) -> str:
+    return str(account.get("id") or account.get("account_id") or "")
+
+
 def _parse_transactions_page(
     resp: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], str | None, int | None]:
-    """Parse one transactions page for EITHER Brex pagination shape.
-
-    Returns `(items, next_cursor, total)`:
-
-      - REAL Brex (`{"items": [...], "next_cursor": "<token or null>"}`):
-        `next_cursor` is the opaque follow token, or `None` when it is null /
-        empty (TERMINAL — no more pages). `total` is `None` (the real API has
-        no `total`). Items are read from `items` (falling back to
-        `transactions`).
-      - SYNTHETIC / legacy (`{"transactions": [...], "total": N}`): there is no
-        `next_cursor` key, so `next_cursor` is `None` and `total` is the int
-        count; items are read from `transactions` (falling back to `items`).
-
-    Callers distinguish the two by whether `"next_cursor" in resp`.
-    """
     raw_items = resp.get("items")
     if not isinstance(raw_items, list):
         raw_items = resp.get("transactions")
     items = [t for t in raw_items if isinstance(t, dict)] if isinstance(raw_items, list) else []
 
-    # `next_cursor` present (even if null) => real cursor shape.
     if "next_cursor" in resp:
         nc = resp.get("next_cursor")
         next_cursor = nc if isinstance(nc, str) and nc else None
@@ -341,7 +345,6 @@ def _safe_json(response: httpx.Response) -> Any:
 def _api_error_from_response(
     response: httpx.Response, path: str,
 ) -> BrexApiError:
-    """Map a non-2xx Brex response to a typed `BrexApiError`."""
     status = response.status_code
     if status in (401, 403):
         return BrexApiError(

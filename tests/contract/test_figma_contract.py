@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from services.app.webhooks.signatures.figma import verifier as figma_verifier
 from services.app.webhooks.tenant_resolver import _extract_figma
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
 from services.ingest.ingestion.handlers.figma import handle_figma_event
+from services.ingest.integrations.figma.client import FigmaClient
 from tests.contract.framework import load_fixture
 
 pytestmark = pytest.mark.contract
@@ -98,3 +100,77 @@ async def test_figma_distinct_timestamp_is_a_new_observation():
     b = await handle_figma_event(later, {})
     assert a.external_id != b.external_id
     assert a.external_id.startswith(f"figma:{_WEBHOOK_ID}:event:")
+
+
+@pytest.mark.asyncio
+async def test_figma_file_enumeration_uses_team_projects_and_project_files():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/v1/teams/team-1/projects":
+            return httpx.Response(200, json={"projects": [{"id": "proj-1", "name": "App"}]})
+        if request.url.path == "/v1/projects/proj-1/files":
+            return httpx.Response(200, json={"files": [{"key": "file-1", "name": "Design"}]})
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FigmaClient(
+            base_url="https://api.figma.com",
+            api_token="test-token",
+            http_client=http,
+            team_id="team-1",
+        )
+        files = await client.list_files()
+
+    assert seen == ["/v1/teams/team-1/projects", "/v1/projects/proj-1/files"]
+    assert files[0]["key"] == "file-1"
+    assert files[0]["project_id"] == "proj-1"
+    assert files[0]["team_id"] == "team-1"
+
+
+@pytest.mark.asyncio
+async def test_figma_events_are_derived_from_versions_and_comments():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.endswith("/versions"):
+            return httpx.Response(200, json={
+                "versions": [{
+                    "id": "v1",
+                    "label": "Initial",
+                    "created_at": "2026-05-02T00:00:00Z",
+                    "user": {"handle": "ada"},
+                }],
+                "pagination": {"next_page": None},
+            })
+        if request.url.path.endswith("/comments"):
+            return httpx.Response(200, json={
+                "comments": [{
+                    "id": "c1",
+                    "message": "Ship it",
+                    "created_at": "2026-05-01T00:00:00Z",
+                    "user": {"handle": "grace"},
+                }],
+            })
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FigmaClient(
+            base_url="https://api.figma.com",
+            api_token="test-token",
+            http_client=http,
+        )
+        events, next_offset, total = await client.list_events("file-1", limit=10)
+
+    assert seen == [
+        "/v1/files/file-1/versions",
+        "/v1/files/file-1/comments",
+    ]
+    assert [event["event_type"] for event in events] == [
+        "FILE_VERSION_UPDATE",
+        "FILE_COMMENT",
+    ]
+    assert next_offset is None
+    assert total == 2

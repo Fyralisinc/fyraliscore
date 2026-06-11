@@ -56,6 +56,7 @@ from services.ingest.ingestion.feature_flags.traffic_signal import (
     maybe_emit_traffic_signal,
 )
 from services.ingest.ingestion.handlers import HandlerNotFound
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.raw_tier.s3 import compute_content_hash
 from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
@@ -313,7 +314,8 @@ async def _attempt_kafka_path(
         # the caller falls back to inline ingest() — idempotent via S3
         # PutIfAbsent + observation-layer dedup, so a late-delivered duplicate
         # is harmless. Mirrors the Notion handler's flush.
-        remaining = await kafka_producer.flush(
+        remaining = await coalesced_flush(
+            kafka_producer,
             timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC,
         )
         if remaining:

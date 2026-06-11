@@ -65,13 +65,25 @@ class PollDeps:
     tenant_flags: Any = None     # feature_flags.TenantFlags | None
 
 
+def _has_id_basis(entity_type: str, entity: dict[str, Any]) -> bool:
+    """Whether the element carries what the handler keys the external_id on:
+    posts need `id` (the post URN); statistics need `timeRange.start` (the
+    snapshot bucket)."""
+    if entity_type == "post":
+        return bool(entity.get("id"))
+    tr = entity.get("timeRange")
+    return isinstance(tr, dict) and tr.get("start") is not None
+
+
 def build_change_record(
     change: dict[str, Any], *, organization_urn: str,
 ) -> dict[str, Any] | None:
     """Build the canonical fetcher-shaped record from a polled change, or None.
 
-    A polled change is `{"entity_type": "share"|..., "entity": {<full LinkedIn
-    object incl. Id, MetaData.LastUpdatedTime>}}`. The record is the SAME shape
+    A polled change is `{"entity_type": "post"|"share_statistics"|
+    "follower_statistics", "entity": {<raw Community-Management element — a
+    post carries `id` + epoch-millis `lastModifiedAt`; a statistics bucket
+    carries `timeRange.start`>}}`. The record is the SAME shape
     `fetch_page_linkedin` emits so `handle_linkedin_object` builds an identical
     external_id — giving cross-path dedup with backfill.
     """
@@ -79,10 +91,11 @@ def build_change_record(
     entity = change.get("entity")
     if not isinstance(entity_type, str) or not entity_type:
         return None
-    if not isinstance(entity, dict) or not entity.get("Id"):
+    entity_type = entity_type.lower()
+    if not isinstance(entity, dict) or not _has_id_basis(entity_type, entity):
         return None
     return {
-        "_fyralis_record_type": entity_type.lower(),
+        "_fyralis_record_type": entity_type,
         "_fyralis_org_urn": organization_urn,
         "entity": entity,
     }
@@ -95,10 +108,16 @@ def _poll_raw(record: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     content_hash dedup / replay-from-raw hold."""
     raw_body = orjson.dumps(record, option=orjson.OPT_SORT_KEYS)
     entity = record.get("entity") or {}
+    entity_id = None
+    if isinstance(entity, dict):
+        tr = entity.get("timeRange")
+        entity_id = entity.get("id") or (
+            tr.get("start") if isinstance(tr, dict) else None
+        )
     ingress_metadata = {
         "event_type": "poll_change",
         "entity_type": record.get("_fyralis_record_type"),
-        "entity_id": entity.get("Id") if isinstance(entity, dict) else None,
+        "entity_id": entity_id,
     }
     return raw_body, ingress_metadata
 
@@ -177,7 +196,7 @@ async def handle_polled_change(change: dict[str, Any], deps: PollDeps) -> None:
         log.exception(
             "linkedin_poll_ingest_failed",
             entity_type=record.get("_fyralis_record_type"),
-            entity_id=(record.get("entity") or {}).get("Id"),
+            entity_id=(record.get("entity") or {}).get("id"),
         )
         return
 

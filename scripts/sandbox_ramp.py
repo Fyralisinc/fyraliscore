@@ -2,18 +2,22 @@
 """scripts/sandbox_ramp.py — local end-to-end sandbox for Ramp
 ingestion (finance), with NO real Ramp credentials.
 
-Cloned from the QuickBooks sandbox. Ramp is a spend/card REST API (OAuth 2.0,
-business-scoped) with a query surface (archetype shape) and HMAC-signed webhooks.
-This sandbox stands up a REAL local mock of the archetype query endpoint and
-drives the REAL pipeline:
+Ramp is a spend/card REST API (OAuth 2.0 client credentials, keyset-paginated
+collections — verified docs.ramp.com) with HMAC-signed flat webhooks. This
+sandbox stands up a REAL local mock of the wire contract
+(`{"data": [...], "page": {"next": …}}` envelopes + `POST /token` +
+`GET /business`) and drives the REAL pipeline:
 
-    RampClient (real httpx, spammer auth) -> fetch_page_ramp (real
-    cursor + query) -> handle_ramp_transaction (real ObservationDraft) ->
+    RampClient (real httpx, spammer auth) -> fetch_page_ramp (real keyset
+    cursor) -> handle_ramp_transaction (real ObservationDraft) ->
     ingest() (real observation insert + dedup)
 
-It exercises: entity enumeration (install), per-entity backfill, the incremental
-LastUpdatedTime delta (an invoice paid -> state_change), the live-webhook path
-(thin change notification), cross-path behavior, and the reconciler gap probe.
+It exercises: the `GET /business` probe, per-stream backfill (transaction /
+reimbursement / card / user), the incremental `from_date` window (a NEW
+transaction lands; NOTE state flips on OLD transactions ride the webhook, not
+the date window — `from_date` filters `user_transaction_time`), the
+live-webhook path (real flat event -> thin change), dedup parity, and the
+reconciler gap probe.
 
 Database: DATABASE_URL if set, else a throwaway DB on SANDBOX_ADMIN_URL
 (postgresql://company_os:company_os@localhost:5434/company_os), dropped on exit.
@@ -43,10 +47,9 @@ import asyncpg
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000006401")
-# UNVERIFIED host — see integrations/ramp/oauth.py and lib/integrations/endpoints.py.
-# TODO(human): confirm Ramp sandbox host.
+# Verified production host (docs.ramp.com); the spammer override wins locally.
 _BASE_URL = "https://api.ramp.com/developer/v1"
-_BUSINESS = "9341452000000001"
+_BUSINESS = "bus-sandbox-0001"
 
 
 def _hr(title: str) -> None:
@@ -62,70 +65,81 @@ def _check(label: str, ok: bool) -> None:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S-08:00")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _build_fixtures() -> dict:
     now = datetime.now(timezone.utc)
 
-    def invoice(iid, sync, doc, total, balance, customer, updated, due=None):
-        obj = {
-            "Id": iid, "SyncToken": str(sync), "DocNumber": doc,
-            "TotalAmt": total, "Balance": balance,
-            "CustomerRef": {"value": "1", "name": customer},
-            "TxnDate": (now - timedelta(days=20)).strftime("%Y-%m-%d"),
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-        if due:
-            obj["DueDate"] = due
-        return obj
-
-    def bill(bid, sync, total, balance, vendor, updated):
+    def txn(tid, state, amount, merchant, when, holder="Avery Chen"):
+        cents = int(round(amount * 100))
+        first, last = holder.split(" ", 1)
         return {
-            "Id": bid, "SyncToken": str(sync),
-            "TotalAmt": total, "Balance": balance,
-            "VendorRef": {"value": "7", "name": vendor},
-            "TxnDate": (now - timedelta(days=15)).strftime("%Y-%m-%d"),
-            "MetaData": {"LastUpdatedTime": updated},
+            "id": tid, "state": state,
+            "amount": amount, "currency_code": "USD",
+            "original_transaction_amount": {
+                "amount": cents, "currency_code": "USD",
+                "minor_unit_conversion_rate": 100,
+            },
+            "user_transaction_time": _iso(when),
+            "settlement_date": _iso(when),
+            "merchant_name": merchant,
+            "sk_category_name": "Cloud Computing",
+            "card_holder": {"first_name": first, "last_name": last},
+            "disputes": [],
         }
 
-    def payment(pid, sync, total, customer, updated):
+    def reimb(rid, state, amount, who, when):
         return {
-            "Id": pid, "SyncToken": str(sync), "TotalAmt": total,
-            "CustomerRef": {"value": "1", "name": customer},
-            "MetaData": {"LastUpdatedTime": updated},
+            "id": rid, "state": state,
+            "amount": amount, "currency": "USD",
+            "created_at": _iso(when - timedelta(days=1)),
+            "updated_at": _iso(when),
+            "user_full_name": who,
+            "merchant": "Conference Travel",
+            "type": "OUT_OF_POCKET", "direction": "BUSINESS_TO_USER",
         }
 
     return {
-        "Invoice": {
+        "transactions": {
             "rows": [
-                invoice("1037", 0, "1037", 5000.00, 5000.00, "Globex",
-                        _iso(now - timedelta(days=3)),
-                        due=(now - timedelta(days=1)).strftime("%Y-%m-%d")),
-                invoice("1038", 0, "1038", 12000.00, 12000.00, "Initech",
-                        _iso(now - timedelta(days=2)),
-                        due=(now + timedelta(days=20)).strftime("%Y-%m-%d")),
+                txn("txn-1001", "PENDING", 5000.00, "Globex Cloud",
+                    now - timedelta(days=3)),
+                txn("txn-1002", "DECLINED", 12000.00, "Initech SaaS",
+                    now - timedelta(days=2)),
             ],
-            # Incremental: invoice 1037 gets PAID (Balance -> 0, SyncToken bumps)
-            # — an AR-collected state_change.
+            # Incremental window (`from_date` on user_transaction_time): a NEW
+            # transaction since the high-water. (A state flip on an OLD
+            # transaction rides the webhook path, not the date window.)
             "delta": [
-                invoice("1037", 1, "1037", 5000.00, 0.00, "Globex",
-                        _iso(now - timedelta(hours=1))),
+                txn("txn-1003", "CLEARED", 750.00, "Acme Tools",
+                    now - timedelta(hours=1)),
             ],
         },
-        "Bill": {
+        "reimbursements": {
             "rows": [
-                bill("204", 0, 3200.00, 3200.00, "AWS",
-                     _iso(now - timedelta(days=4))),
+                reimb("rmb-2001", "PENDING", 320.00, "Jordan Lee",
+                      now - timedelta(days=4)),
             ],
             "delta": [],
         },
-        "BillPayment": {"rows": [], "delta": []},
-        "Payment": {
-            "rows": [
-                payment("88", 0, 8000.00, "Initech",
-                        _iso(now - timedelta(days=1))),
-            ],
+        "cards": {
+            "rows": [{
+                "id": "card-3001", "state": "ACTIVE",
+                "display_name": "Eng Infra", "last_four": "4242",
+                "cardholder_name": "Avery Chen", "is_physical": False,
+                "expiration": "2030-01",
+                "created_at": _iso(now - timedelta(days=30)),
+            }],
+            "delta": [],
+        },
+        "users": {
+            "rows": [{
+                "id": "usr-4001", "status": "USER_ACTIVE",
+                "first_name": "Avery", "last_name": "Chen",
+                "email": "avery@example.com", "role": "BUSINESS_ADMIN",
+                "is_manager": True,
+            }],
             "delta": [],
         },
     }
@@ -177,7 +191,7 @@ async def run(args) -> int:
     from services.ingest.synthetic.mock_servers.ramp import start_mock_ramp
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_ramp(fixtures)
+    server, base_url = start_mock_ramp(fixtures, business_id=_BUSINESS)
     os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
     _hr("MOCK SERVER")
     print(f"  Ramp API base : {base_url} (served under /ramp via spammer routing)")
@@ -209,7 +223,7 @@ async def run(args) -> int:
         print("  Migrations applied, partitions ensured, tenant seeded.")
 
         # 2. Connectivity probe via the REAL client.
-        _hr("PROBE (RampClient.company_info)")
+        _hr("PROBE (RampClient.business)")
         from services.ingest.ingestion.fetchers._clients import build_ramp_client
 
         class _Inst:
@@ -220,8 +234,8 @@ async def run(args) -> int:
             def __contains__(self, k): return k in self._d
 
         client = await build_ramp_client(_Inst())
-        info = await client.company_info()
-        _check("company_info probe succeeds", "CompanyInfo" in info)
+        info = await client.business()
+        _check("GET /business probe succeeds", info.get("id") == _BUSINESS)
 
         # 3. Provision the install + webhook row.
         _hr("PROVISION (ramp.onboarding.finalize_install)")
@@ -257,10 +271,10 @@ async def run(args) -> int:
         shards = await plan_shards_ramp(ctx)
         print(f"  planned {len(shards)} shard(s): "
               + ", ".join(s.shard_identifier["entity_type"] for s in shards))
-        _check("one shard per entity type", len(shards) == len(DEFAULT_ENTITIES))
+        _check("one shard per entity stream", len(shards) == len(DEFAULT_ENTITIES))
 
-        # 5. Backfill.
-        _hr("BACKFILL (query -> ingest)")
+        # 5. Backfill (keyset walk -> ingest).
+        _hr("BACKFILL (keyset list -> ingest)")
         for shard in shards:
             ext = await _drain_shard(pool, install_row, shard.shard_identifier)
             print(f"  {shard.shard_identifier['entity_type']}: ingested {len(ext)} observations")
@@ -271,57 +285,52 @@ async def run(args) -> int:
             _TENANT_ID,
         )
         print(f"  observations: total={counts['tot']} signal={counts['sig']} state_change={counts['sc']}")
-        # 2 invoices (1037 overdue -> state_change, 1038 open -> signal) + 1 bill
-        # (open -> signal) + 1 payment (signal) = 4 total, 1 state_change.
-        _check("backfill produced 4 observations", counts["tot"] == 4)
-        _check("overdue invoice landed as state_change", counts["sc"] == 1)
+        # 2 transactions (1002 DECLINED -> state_change) + 1 reimbursement +
+        # 1 card + 1 user = 5 total, 1 state_change.
+        _check("backfill produced 5 observations", counts["tot"] == 5)
+        _check("declined transaction landed as state_change", counts["sc"] == 1)
 
-        # 6. Incremental: invoice 1037 paid (Balance -> 0, SyncToken bumps).
-        _hr("INCREMENTAL (invoice paid: AR collected)")
+        # 6. Incremental: a NEW transaction past the high-water window.
+        _hr("INCREMENTAL (from_date window: new transaction)")
         hw = await pool.fetchval(
-            "SELECT max(content->>'last_updated') FROM observations "
-            "WHERE tenant_id=$1 AND content->>'object_type'='invoice'", _TENANT_ID,
+            "SELECT max(content->>'user_transaction_time') FROM observations "
+            "WHERE tenant_id=$1 AND content->>'object_type'='transaction'",
+            _TENANT_ID,
         )
-        incr_shard = {"shard_kind": "ramp_entity", "entity_type": "Invoice",
+        incr_shard = {"shard_kind": "ramp_entity", "entity_type": "transaction",
                       "business_id": _BUSINESS, "updated_cursor": hw}
         incr = await _drain_shard(pool, install_row, incr_shard)
         print(f"  incremental ingested {len(incr)} new observations: {incr}")
-        paid = await pool.fetchval(
-            "SELECT count(*) FROM observations WHERE tenant_id=$1 "
-            "AND content->>'status'='paid'", _TENANT_ID,
-        )
-        _check("incremental delta surfaced a paid invoice (new SyncToken)", paid == 1)
+        _check("incremental window surfaced the new cleared transaction",
+               len(incr) == 1 and ":txn:txn-1003:cleared" in incr[0])
 
-        # 7. Dedup: re-ingest a backfilled invoice twin -> deduped.
+        # 7. Dedup: re-ingest a backfilled transaction twin -> deduped.
         _hr("DEDUP (backfill vs re-fetch twin)")
         from services.ingest.ingestion.core import ingest
-        twin = {"_fyralis_record_type": "invoice", "_fyralis_business_id": _BUSINESS,
-                "entity": fixtures["Invoice"]["rows"][1]}
+        twin = {"_fyralis_record_type": "transaction",
+                "_fyralis_business_id": _BUSINESS,
+                "entity": fixtures["transactions"]["rows"][1]}
         res = await ingest("ramp:transaction", twin, pool=pool, tenant_id=_TENANT_ID)
-        _check("re-ingesting an existing invoice dedups (SyncToken external_id parity)",
+        _check("re-ingesting an existing transaction dedups (state-versioned external_id parity)",
                res.deduped is True)
 
-        # 8. LIVE WEBHOOK path: a Ramp eventNotifications change lands as a
-        #    fresh thin-change observation through the SAME handler.
-        _hr("LIVE WEBHOOK (eventNotifications)")
+        # 8. LIVE WEBHOOK path: a REAL Ramp flat event lands as a fresh
+        #    thin-change observation through the SAME handler.
+        _hr("LIVE WEBHOOK (flat event, root business_id)")
         webhook_payload = {
-            "eventNotifications": [{
-                "businessId": _BUSINESS,
-                "dataChangeEvent": {"entities": [{
-                    "name": "Invoice", "id": "1038", "operation": "Update",
-                    "lastUpdated": _iso(datetime.now(timezone.utc)),
-                }]},
-            }],
+            "id": f"evt_{uuid4()}",
+            "type": "transactions.cleared",
+            "created_at": _iso(datetime.now(timezone.utc)),
+            "business_id": _BUSINESS,
+            "object": {"id": "txn-1001"},
         }
         res = await ingest("ramp:transaction", webhook_payload, pool=pool, tenant_id=_TENANT_ID)
         _check("live webhook change lands as a fresh observation", res.deduped is False)
 
-        # 9. Reconciler gap probe.
-        _hr("RECONCILER GAP PROBE (query since high-water)")
-        rows, _ = await client.query("Invoice",
-                                     where=f"Metadata.LastUpdatedTime > '{hw}'",
-                                     start_position=1, max_results=1)
-        _check("reconciler probe detects an invoice updated since the high-water",
+        # 9. Reconciler gap probe (minimal keyset page past the high-water).
+        _hr("RECONCILER GAP PROBE (list_transactions from_date=high-water)")
+        rows, _ = await client.list_transactions(from_date=hw, page_size=2)
+        _check("reconciler probe detects a transaction past the high-water",
                len(rows) >= 1)
 
         # 10. Inspect.

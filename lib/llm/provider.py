@@ -2180,11 +2180,21 @@ def _repair_deepseek_strict_json(text: str) -> str:
     """Patch the known DeepSeek strict-mode bug of missing closing quote on keys.
 
     Pattern: `"key: value` -> `"key": value`. Conservative regex: only
-    matches when an opening quote is followed by an identifier-like
-    sequence then a colon-space, with no intervening closing quote.
+    repairs object keys at `{` or `,` boundaries, and leaves already
+    valid JSON untouched so string values like `"owner: alice"` survive.
     """
+    import json
     import re
-    return re.sub(r'"([A-Za-z_][A-Za-z0-9_]*):\s', r'"\1": ', text)
+    try:
+        json.loads(text)
+        return text
+    except Exception:
+        pass
+    return re.sub(
+        r'(?P<prefix>[{,]\s*)"(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s',
+        r'\g<prefix>"\g<key>": ',
+        text,
+    )
 
 
 def _deepseek_supports_strict_tool_calling(model_name: str | None) -> bool:

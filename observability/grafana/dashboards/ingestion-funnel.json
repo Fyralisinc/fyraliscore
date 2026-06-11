@@ -1,0 +1,129 @@
+{
+  "uid": "fyralis-ingestion-funnel",
+  "title": "Fyralis · Ingestion Funnel",
+  "tags": ["fyralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Funnel throughput (consumed → normalized → written → embedded)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "rate(ingestion_normalizer_messages_consumed[5m])", "legendFormat": "raw consumed"},
+        {"refId": "B", "expr": "rate(ingestion_normalizer_messages_produced[5m])", "legendFormat": "normalized"},
+        {"refId": "C", "expr": "rate(ingestion_writer_full_mode_writes[5m])", "legendFormat": "written"},
+        {"refId": "D", "expr": "rate(ingestion_embedding_worker_embeds_succeeded[5m])", "legendFormat": "embedded"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Writer dedup ratio",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "rate(ingestion_writer_full_mode_dedup_hits[5m]) / clamp_min(rate(ingestion_writer_messages_consumed[5m]), 1e-9)", "legendFormat": "dedup ratio"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Pipeline failures",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "rate(ingestion_normalizer_parse_failure[5m])", "legendFormat": "normalizer parse failure"},
+        {"refId": "B", "expr": "rate(ingestion_normalizer_invariant_failure[5m])", "legendFormat": "normalizer invariant failure"},
+        {"refId": "C", "expr": "rate(ingestion_writer_parse_failure[5m])", "legendFormat": "writer parse failure"},
+        {"refId": "D", "expr": "rate(ingestion_writer_full_mode_failures[5m])", "legendFormat": "writer full-mode failure"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "DLQ unresolved by failure kind",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (failure_kind) (fyralis_dlq_unresolved)", "legendFormat": "{{failure_kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "DLQ unresolved by source",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (source) (fyralis_dlq_unresolved)", "legendFormat": "{{source}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Backfill shards by status",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (status) (fyralis_onboarding_shards_shards)", "legendFormat": "{{status}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Embedding backlog (pending + drain rate)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "fyralis_embedding_backlog_pending", "legendFormat": "pending rows"},
+        {"refId": "B", "expr": "rate(ingestion_backlog_rows_embedded[5m])", "legendFormat": "drain rate (rows/s)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Normalizer transform avg duration",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "rate(ingestion_normalizer_transform_duration_ms_sum[5m]) / clamp_min(rate(ingestion_normalizer_transform_duration_ms_count[5m]),1e-9)", "legendFormat": "avg transform ms"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Writer partition autocreates vs consumed",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "rate(ingestion_writer_partition_autocreated[5m])", "legendFormat": "partition autocreated"},
+        {"refId": "B", "expr": "rate(ingestion_writer_messages_consumed[5m])", "legendFormat": "writer consumed"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    }
+  ]
+}

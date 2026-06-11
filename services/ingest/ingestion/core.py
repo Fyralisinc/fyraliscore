@@ -49,7 +49,7 @@ from lib.embeddings.ollama import (
     OllamaDimensionMismatch,
     OllamaError,
 )
-from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
@@ -58,17 +58,15 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
     get_handler,
 )
+from services.ingest.ingestion.payload_validation import (
+    MAX_PAYLOAD_BYTES,
+    PayloadTooLarge,
+    validate_ingest_json_payload,
+)
 from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 from services.domain.observations.events import emit_pending_notifications, notify_scope
 from services.domain.observations.partitions import ensure_partition_for_occurred_at
 from services.domain.observations.repo import ObservationRepository
-
-
-MAX_PAYLOAD_BYTES = 1 * 1024 * 1024  # 1 MB per BUILD-PLAN tests
-
-
-class PayloadTooLarge(CompanyOSError):
-    default_code = "payload_too_large"
 
 
 # Phrase extraction: a tiny tokenizer that yields 1- to 3-word runs of
@@ -154,24 +152,7 @@ async def ingest(
     """
     if not isinstance(raw_payload, dict):
         raise ValidationError("raw_payload must be a JSON object")
-    # Oversize check (1 MB). Using json.dumps gives us a stable byte
-    # budget independent of the original HTTP transport encoding.
-    encoded = json.dumps(raw_payload, default=str)
-    if len(encoded.encode("utf-8")) > MAX_PAYLOAD_BYTES:
-        raise PayloadTooLarge(
-            f"payload size > {MAX_PAYLOAD_BYTES} bytes",
-            channel=channel,
-            size=len(encoded),
-        )
-    # Reject NUL bytes in string fields. Postgres TEXT columns cannot
-    # store \x00 and the resulting UntranslatableCharacterError is not a
-    # structured 4xx shape we want leaking to callers. `json.dumps`
-    # escapes NUL as "\\u0000", so scan the original dict recursively.
-    if _contains_nul(raw_payload):
-        raise ValidationError(
-            "payload contains NUL byte (0x00) which cannot be stored",
-            channel=channel,
-        )
+    validate_ingest_json_payload(raw_payload, channel=channel)
 
     request_headers = request_headers or {}
 
@@ -318,8 +299,12 @@ async def ingest_from_draft(
         seen_ref_keys = {
             json.dumps(e, sort_keys=True) for e in entities_mentioned
         }
-        for phrase in candidate_phrases(draft.content_text):
-            ref = await alias_repo.fast_path_resolve(phrase, tenant_id)
+        phrases = candidate_phrases(draft.content_text)
+        resolved_by_norm = await alias_repo.fast_path_resolve_many(
+            phrases, tenant_id
+        )
+        for phrase in phrases:
+            ref = resolved_by_norm.get(normalize_phrase(phrase))
             if ref is not None:
                 key = json.dumps(ref, sort_keys=True)
                 if key not in seen_ref_keys:
@@ -484,20 +469,6 @@ async def ingest_from_draft(
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
-
-def _contains_nul(obj: Any) -> bool:
-    """Recursively check a JSON-shaped value for NUL bytes in strings."""
-    if isinstance(obj, str):
-        return "\x00" in obj
-    if isinstance(obj, dict):
-        return any(
-            (isinstance(k, str) and "\x00" in k) or _contains_nul(v)
-            for k, v in obj.items()
-        )
-    if isinstance(obj, list):
-        return any(_contains_nul(v) for v in obj)
-    return False
 
 
 def _looks_like_entity(phrase: str) -> bool:

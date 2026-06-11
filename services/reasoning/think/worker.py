@@ -41,11 +41,17 @@ import asyncpg
 import structlog
 
 from lib.llm.provider import LLMProvider, build_provider
+from lib.observability.health import (
+    Heartbeat,
+    run_heartbeat_ticker,
+    start_health_server,
+)
+from lib.observability.metrics import render_default
 from lib.shared.ids import uuid7
 
 from services.reasoning.retrieval.primary import TriggerContext
 
-from .observability import METRICS, emit
+from .observability import METRICS, emit, render_prometheus_text
 from .reason import think
 
 
@@ -420,39 +426,59 @@ class ThinkWorker:
 
     async def run(self) -> None:
         emit("think.worker.started", worker_id=self.config.worker_id)
-        while not self._shutdown_event.is_set():
-            try:
-                # 1. Promote pending model_reeval_queue rows to T4 triggers.
-                await self._promote_reeval_rows()
+        # P2-13: liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT,
+        # which the compose x-app-env anchor already sets). /healthz goes 503
+        # when the poll loop wedges; /metrics serves the Think families plus
+        # the shared lib.observability registry (ollama, db pool, …).
+        heartbeat = Heartbeat()
+        health = start_health_server(
+            worker_name="think_worker",
+            render_metrics=lambda: render_prometheus_text() + render_default(),
+            heartbeat=heartbeat,
+        )
+        ticker = asyncio.create_task(
+            run_heartbeat_ticker(heartbeat, self._shutdown_event)
+        )
+        try:
+            while not self._shutdown_event.is_set():
+                heartbeat.touch()
+                try:
+                    # 1. Promote pending model_reeval_queue rows to T4 triggers.
+                    await self._promote_reeval_rows()
 
-                # 2. Poll and dispatch.
-                await self._poll_and_dispatch()
-            except Exception as e:
-                _log.exception("think.worker.loop_error", error=str(e))
+                    # 2. Poll and dispatch.
+                    await self._poll_and_dispatch()
+                except Exception as e:
+                    _log.exception("think.worker.loop_error", error=str(e))
 
-            # Backpressure-sensitive sleep.
-            depth = await self._queue_depth()
-            interval = self.config.poll_interval_s
-            if depth > self.config.backpressure_limit:
-                interval *= 1.5
-                _log.warning(
-                    "think.worker.backpressure",
-                    depth=depth,
-                    limit=self.config.backpressure_limit,
-                )
-            try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=interval
-                )
-                break
-            except asyncio.TimeoutError:
-                pass
+                # Backpressure-sensitive sleep.
+                depth = await self._queue_depth()
+                interval = self.config.poll_interval_s
+                if depth > self.config.backpressure_limit:
+                    interval *= 1.5
+                    _log.warning(
+                        "think.worker.backpressure",
+                        depth=depth,
+                        limit=self.config.backpressure_limit,
+                    )
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(), timeout=interval
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    pass
 
-        # Shutdown — wait for in-flight runs to finish.
-        emit("think.worker.shutting_down",
-             in_flight=len(self._in_flight))
-        if self._in_flight:
-            await asyncio.gather(*self._in_flight, return_exceptions=True)
+            # Shutdown — wait for in-flight runs to finish.
+            emit("think.worker.shutting_down",
+                 in_flight=len(self._in_flight))
+            if self._in_flight:
+                await asyncio.gather(*self._in_flight, return_exceptions=True)
+        finally:
+            ticker.cancel()
+            await asyncio.gather(ticker, return_exceptions=True)
+            if health is not None:
+                health.shutdown()
         emit("think.worker.stopped")
 
     async def stop(self) -> None:

@@ -78,7 +78,8 @@ _EXPECTED: dict[str, int] = {
     "google_drive": 3, "jira": 3, "mercury": 5, "notion": 3, "quickbooks": 4,
     "grafana": 3, "telegram": 5,
     # IN-FIN2 finance sources. brex/deel = Mercury archetype (1 snapshot +
-    # 4 txns/payments = 5); ramp/gusto = QBO archetype (4 entities × 1 row = 4).
+    # 4 txns/payments = 5); ramp = 1 transaction stream × 4 rows = 4;
+    # gusto = real /v1 taxonomy (2 entity kinds × 2 rows = 4).
     "brex": 5, "ramp": 4, "gusto": 4, "deel": 5,
     # Vertical-2 sources. fireflies = 4 transcripts (NO snapshot); miro = 1 board
     # × 4 items; figma = 4 events (pure event stream); carta = 4 cap-table entity
@@ -178,17 +179,21 @@ def _scen_params(source: str, slug: str) -> dict:
         # the realm-equivalent + entity external_ids are tenant-distinct;
         # 4 entities × 1 row = 4.
         "brex": {"accounts": 1, "transactions_per_account": 4, "seed": slug},
-        # Ramp's handler is transaction-shaped — external_id ramp:{biz}:txn:{id}:{state}
-        # carries NO entity_kind (unlike gusto:object's {entity}:{id} key). Four
-        # same-id QBO entity types therefore collapse onto txn:1000:{state}. Use one
-        # entity stream × 4 rows so the four txns get DISTINCT ids (1000..1003) → 4
-        # backfill observations/tenant, matching _EXPECTED["ramp"]=4.
+        # Ramp (real REST taxonomy): one `transaction` stream × 4 rows → 4
+        # distinct ids → 4 backfill observations/tenant, matching
+        # _EXPECTED["ramp"]=4. external_id ramp:{biz}:txn:{id}:{state};
+        # business_id embeds the slug so external_ids stay tenant-distinct.
         "ramp": {"business_id": f"r-{slug}",
-                 "entities": ["Invoice"],
+                 "entities": ["transaction"],
                  "rows_per_entity": 4},
+        # Gusto (real /v1 taxonomy): 2 entity kinds (employee/payroll) × 2 rows
+        # = 4 backfill obs, matching _EXPECTED["gusto"]=4. external_id
+        # gusto:{company}:{kind}:{uuid}:{version}; company_uuid embeds the slug
+        # AND seeds the per-row uuid digests, so external_ids stay
+        # tenant-distinct.
         "gusto": {"company_uuid": f"c-{slug}",
-                  "entities": ["Invoice", "Bill", "BillPayment", "Payment"],
-                  "rows_per_entity": 1},
+                  "entities": ["employee", "payroll"],
+                  "rows_per_entity": 2},
         "deel": {"contracts": 1, "payments_per_contract": 4, "seed": slug},
         # Vertical-2 sources. Each embeds `slug` into the identifier the
         # external_id keys on so the global observations UNIQUE never collapses
@@ -216,7 +221,7 @@ def _scen_params(source: str, slug: str) -> dict:
         # figma: external_id figma:{team_id}:event:{event_id}:{version}; team_id
         # namespaces. 4 events × 1 file = 4 obs (pure event stream).
         "figma": {"team_id": f"team-{slug}", "events": 4, "seed": slug},
-        # carta: external_id carta:{firm_id}:{entity_kind}:{entity_id}:{token};
+        # carta: external_id carta:{firm_id}:{entity_kind}:{entity_id}:{version};
         # firm_id namespaces. 4 cap-table entity kinds × 1 row = 4 obs (entity
         # kind discriminates so same-id rows never collide).
         "carta": {"firm_id": f"firm-{slug}", "rows_per_entity": 1,
@@ -238,9 +243,10 @@ def _scen_params(source: str, slug: str) -> dict:
                                "offer"],
                   "rows_per_entity": 1, "seed": slug},
         # linkedin: external_id linkedin:{org}:{kind}:{id}; organization_urn
-        # namespaces. 3 entity kinds × 1 row = 3 obs.
+        # namespaces. 3 streams × 1 row = 3 obs.
         "linkedin": {"organization_urn": f"li-org-{slug}",
-                     "entities": ["share", "social_action", "follower_stat"],
+                     "entities": ["post", "share_statistics",
+                                  "follower_statistics"],
                      "rows_per_entity": 1, "seed": slug},
     }[source]
 

@@ -9,6 +9,7 @@ from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from lib.observability import counter, histogram
 from lib.shared.ids import uuid7
 from services.app.gateway.auth import AuthContext, validate_token
 from services.app.gateway.deps import get_gateway_deps
@@ -73,12 +74,6 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     # NOT a Bearer token. The Bearer middleware MUST skip this prefix
     # or every webhook becomes a 401 with `missing_bearer`.
     "/webhooks/",
-    # Finance testing panel (Mercury + QuickBooks). Dev/testing tool scoped by
-    # X-Tenant-Id header (no bearer), same posture as /debug. Env-gated at mount.
-    "/finance/",
-    # Slack DM testing panel (per-user OAuth DM ingestion). Same posture as
-    # /finance - X-Tenant-Id header, no bearer, env-gated at mount.
-    "/slack/",
 )
 # Overlay packages (e.g. the demo: /v1/demo/companies, /v1/demo/sessions/start;
 # the simulation panel: /simulation/) contribute their own public prefixes via
@@ -90,6 +85,31 @@ def _public_path_prefixes() -> tuple[str, ...]:
     from services.app.gateway.extensions import extension_public_path_prefixes
 
     return _PUBLIC_PATH_PREFIXES + extension_public_path_prefixes()
+
+
+# ---------------------------------------------------------------------
+# Request metrics. `route` is the matched route TEMPLATE
+# (e.g. /v1/forecasts/{prediction_id}) — never the raw path — so UUID
+# segments can't explode label cardinality; requests that match no route
+# (404 scans) collapse into "unmatched". The duration histogram omits
+# `status` to keep series count = methods × routes, not × status too.
+# ---------------------------------------------------------------------
+_HTTP_REQUESTS = counter(
+    "http_requests_total",
+    "Gateway requests by method, route template, and status code.",
+    ("method", "route", "status"),
+)
+_HTTP_DURATION = histogram(
+    "http_request_duration_seconds",
+    "Gateway request latency by method and route template.",
+    ("method", "route"),
+)
+
+
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template if isinstance(template, str) else "unmatched"
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -116,6 +136,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         except Exception as e:  # pragma: no cover - fallthrough for uncaught
             duration_ms = (time.monotonic() - started) * 1000
+            route = _route_template(request)
+            _HTTP_REQUESTS.inc(method=request.method, route=route, status="500")
+            _HTTP_DURATION.observe(
+                duration_ms / 1000.0, method=request.method, route=route
+            )
             log.error(
                 "request_failed",
                 method=request.method,
@@ -125,6 +150,13 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             )
             raise
         duration_ms = (time.monotonic() - started) * 1000
+        route = _route_template(request)
+        _HTTP_REQUESTS.inc(
+            method=request.method, route=route, status=str(response.status_code)
+        )
+        _HTTP_DURATION.observe(
+            duration_ms / 1000.0, method=request.method, route=route
+        )
         # Auth middleware bound actor_id/tenant_id to contextvars in a
         # downstream task context; Starlette's BaseHTTPMiddleware boundary
         # doesn't propagate those back up, so pull directly from request.state.

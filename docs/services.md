@@ -57,6 +57,11 @@ not run; `infra` = data store / container.
 | Redis | infra | Rate-limiter token buckets; optional cache. | compose `redis` |
 | Kafka (KRaft) | infra | Per-source ingestion lanes (`ingestion.{raw,normalized,embedding,dlq}.{source}`). | compose `kafka` |
 | S3 / MinIO | infra | Raw-tier object storage (`fyralis-raw`). | compose `minio` |
+| Prometheus | infra | Scrapes every worker/gateway `/metrics` + exporters; 15d retention. | compose `prometheus`, config `observability/prometheus/` |
+| Grafana | infra | Provisioned dashboards + alert rules (folder *Fyralis*). | compose `grafana`, config `observability/grafana/` |
+| postgres-exporter | infra | Postgres stats + custom gauges (DLQ depth, think queue, dead-letter rows, embedding backlog). | compose `postgres-exporter`, queries `observability/postgres-exporter/queries.yaml` |
+| kafka-exporter | infra | Consumer-group lag / topic metrics (the lag source of truth). | compose `kafka-exporter` |
+| redis-exporter | infra | Redis memory/clients/commands metrics. | compose `redis-exporter` |
 
 !!! note "Demo and UI moved to the overlay"
     The **demo** subsystem (company picker, per-session tenants, simulator, SSE)

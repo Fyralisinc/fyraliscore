@@ -1,0 +1,323 @@
+{
+  "uid": "fyralis-system-health",
+  "title": "Fyralis · System Health",
+  "tags": ["fyralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Scrape Targets Up",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(up{job=~\"fyralis-.*\"}) / count(up{job=~\"fyralis-.*\"})",
+          "legendFormat": "targets up"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.9},
+              {"color": "green", "value": 1}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Target Status by Worker",
+      "gridPos": {"h": 6, "w": 18, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=~\"fyralis-.*\"}",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "color-background"}}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "Value", "desc": false}]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Worker Heartbeat Age",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:worker_heartbeat_age_seconds",
+          "legendFormat": "{{worker}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 120}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "DLQ Depth",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ingestion_dlq_writer_unresolved_depth",
+          "legendFormat": "dlq_writer unresolved depth"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(fyralis_dlq_unresolved)",
+          "legendFormat": "pg dlq unresolved (all kinds)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Worst Kafka Consumer Group Lag",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:kafka_worst_group_lag",
+          "legendFormat": "{{consumergroup}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Gateway 5xx Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(fyralis:gateway_5xx_rate:5m)",
+          "legendFormat": "total 5xx"
+        },
+        {
+          "refId": "B",
+          "expr": "fyralis:gateway_5xx_rate:5m",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Worker Error Rates",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(ingestion_normalizer_parse_failure[5m])",
+          "legendFormat": "normalizer parse failures"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(ingestion_writer_full_mode_failures[5m])",
+          "legendFormat": "writer full-mode failures"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(ingestion_embedding_worker_embeds_failed[5m])",
+          "legendFormat": "embedding worker embed failures"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(think_runs_failed_total[5m])",
+          "legendFormat": "think runs failed ({{trigger_kind}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Dead-Letter Rows (total)",
+      "gridPos": {"h": 8, "w": 4, "x": 12, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(fyralis_dead_letter_rows)",
+          "legendFormat": "dead-letter rows"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 100}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Dead-Letter Rows by Table",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis_dead_letter_rows",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "Value", "desc": true}]
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Worker Uptime",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "worker_uptime_seconds{worker=~\".*\"}",
+          "legendFormat": "{{worker}}"
+        },
+        {
+          "refId": "B",
+          "expr": "ingestion_uptime_seconds",
+          "legendFormat": "{{worker}} (ingestion)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    }
+  ]
+}

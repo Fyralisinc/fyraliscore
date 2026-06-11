@@ -8,8 +8,8 @@ exchange; this test pins each provider's request shape (grant, client-auth
 placement, refresh_token rotation) and response parsing against doc-sourced
 fixtures, using an httpx MockTransport (no network, no real credentials).
 
-Carta is special: NO refresh grant — it re-mints via `client_credentials` and
-returns no refresh token.
+Ramp and Carta are special: NO refresh grant — they re-mint via
+`client_credentials` and return no refresh token.
 """
 from __future__ import annotations
 
@@ -34,9 +34,9 @@ _CLIENT_SECRET = "test-client-secret"
 # (provider, fixture_stem, client_creds_in_basic_header, rotates_refresh_token)
 _CASES = [
     ("quickbooks", "refresh", True, True),
-    ("ramp", "refresh", True, True),
+    ("ramp", "client_credentials", True, False),
     ("gusto", "refresh", False, True),
-    ("carta", "client_credentials", False, False),
+    ("carta", "client_credentials", True, False),
 ]
 
 

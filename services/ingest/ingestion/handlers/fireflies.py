@@ -49,6 +49,11 @@ def _utcnow() -> datetime:
 
 
 def _parse_iso(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
     if not isinstance(value, str) or not value:
         return None
     s = value
@@ -123,7 +128,9 @@ def _transcript_extras(t: dict[str, Any]) -> dict[str, Any]:
         "action_items": action_items if isinstance(action_items, (list, str)) else None,
         "duration_minutes": t.get("duration") or t.get("durationMinutes"),
         "meeting_url": t.get("meetingLink") or t.get("transcript_url") or t.get("audio_url"),
-        "organizer_email": t.get("organizerEmail") or t.get("host_email"),
+        "organizer_email": (
+            t.get("organizerEmail") or t.get("organizer_email") or t.get("host_email")
+        ),
         "calendar_id": t.get("calendarId") or t.get("calendar_id"),
         "fireflies_user_id": t.get("userId") or t.get("user_id"),
     }

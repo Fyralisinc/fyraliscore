@@ -1315,8 +1315,9 @@ class BackfillHarness:
                         uuid7(), outcome.tenant_id, install_id,
                     )
                 elif source == "gusto":
-                    # IN-FIN2: OAuth finance source (QuickBooks-shaped). company_uuid
-                    # is the scope id; one gusto_entities row per entity type.
+                    # IN-FIN2: OAuth payroll REST source (real /v1 contract —
+                    # employee/payroll taxonomy). company_uuid is the scope id;
+                    # one gusto_entities row per entity type.
                     fixture = _build_fixture(
                         "gusto", outcome.scenario.fixture_params,
                     )
@@ -1817,7 +1818,7 @@ class BackfillHarness:
                         RETURNING id
                         """,
                         uuid7(), outcome.tenant_id, organization_urn,
-                        "https://api.linkedin.com",
+                        "https://api.linkedin.com/rest",
                     )
                     for entity_type in fixture.get("entities", {}):
                         await conn.execute(

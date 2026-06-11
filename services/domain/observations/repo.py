@@ -240,8 +240,10 @@ class ObservationRepository:
         if obs.external_id is not None:
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE source_channel = $1 AND external_id = $2 "
+                "WHERE tenant_id = $1 AND source_channel = $2 "
+                "  AND external_id = $3 "
                 "ORDER BY occurred_at DESC LIMIT 1",
+                obs.tenant_id,
                 obs.source_channel,
                 obs.external_id,
             )
@@ -267,7 +269,7 @@ class ObservationRepository:
                 $12, $13, $14,
                 $15::jsonb
             )
-            ON CONFLICT (source_channel, external_id, occurred_at) DO NOTHING
+            ON CONFLICT (tenant_id, source_channel, external_id, occurred_at) DO NOTHING
             RETURNING {_SELECT_COLS}
             """,
             obs_id,
@@ -299,8 +301,9 @@ class ObservationRepository:
                 )
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE source_channel = $1 AND external_id = $2 "
-                "  AND occurred_at = $3",
+                "WHERE tenant_id = $1 AND source_channel = $2 "
+                "  AND external_id = $3 AND occurred_at = $4",
+                obs.tenant_id,
                 obs.source_channel,
                 obs.external_id,
                 obs.occurred_at,
@@ -310,8 +313,10 @@ class ObservationRepository:
                 # occurred_at. Fall back to the broader dedup query.
                 existing = await conn.fetchrow(
                     f"SELECT {_SELECT_COLS} FROM observations "
-                    "WHERE source_channel = $1 AND external_id = $2 "
+                    "WHERE tenant_id = $1 AND source_channel = $2 "
+                    "  AND external_id = $3 "
                     "ORDER BY occurred_at DESC LIMIT 1",
+                    obs.tenant_id,
                     obs.source_channel,
                     obs.external_id,
                 )
@@ -437,6 +442,8 @@ class ObservationRepository:
         async with _connection(self._pool, conn or self._default_conn) as c:
             await _ensure_vector_codec(c)
             rows = await c.fetch(sql, *params)
+            if len(rows) < k:
+                rows = await _exact_embedding_fallback(c, sql, params, rows)
         return [_hydrate_row(r) for r in rows]
 
     # -----------------------------------------------------------------
@@ -609,6 +616,20 @@ class ObservationRepository:
             await _ensure_vector_codec(c)
             rows = await c.fetch(sql, *params)
         return [_hydrate_row(r) for r in rows]
+
+
+async def _exact_embedding_fallback(
+    conn: asyncpg.Connection,
+    sql: str,
+    params: list[Any],
+    indexed_rows: list[asyncpg.Record],
+) -> list[asyncpg.Record]:
+    """Retry vector search as an exact scan when HNSW post-filter recall is low."""
+    async with conn.transaction():
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        await conn.execute("SET LOCAL enable_bitmapscan = off")
+        exact_rows = await conn.fetch(sql, *params)
+    return exact_rows if len(exact_rows) > len(indexed_rows) else indexed_rows
 
 
 # ---------------------------------------------------------------------

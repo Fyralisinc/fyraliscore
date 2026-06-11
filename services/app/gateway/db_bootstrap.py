@@ -98,6 +98,10 @@ async def create_gateway_pool(
         init=_register_codecs,
     )
     _db_module._pool = pool
+    # Scrape-time db_pool_* gauges (gateway /metrics → DBPoolSaturated alert).
+    from lib.observability.pools import register_pool
+
+    register_pool("gateway", pool)
     return pool
 
 

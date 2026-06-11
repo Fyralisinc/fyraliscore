@@ -8,33 +8,35 @@ calls.
 ============================================================
 ONE SHARD KIND, TWO SYNC MODES
 ============================================================
-A `gusto_entity` shard streams one entity type (Invoice / Bill /
-BillPayment / Payment) for the company.
+A `gusto_entity` shard streams one entity kind (`employee` | `payroll`) for
+the company. The wire contract (VERIFIED against docs.gusto.com): bare-array
+list endpoints under `/v1/companies/{company_uuid}/...`, offset pagination via
+`page`/`per` query params with `X-Total-Count`/`X-Page`/`X-Per-Page` response
+headers; a short/empty page is terminal.
 
-  - FULL (initial backfill): `SELECT * FROM <Entity> ORDERBY
-    Metadata.LastUpdatedTime STARTPOSITION n MAXRESULTS m`, offset-paginated.
-  - INCREMENTAL (poll): when warm-started with an `updated_cursor` (the
-    LastUpdatedTime high-water), the WHERE clause adds
-    `Metadata.LastUpdatedTime > '<cursor>'` so only changed entities come back.
+  - `payroll`: `GET .../payrolls`. FULL walks the whole collection;
+    INCREMENTAL (warm-started with an `updated_cursor` — the max `check_date`
+    high-water) passes `start_date=<cursor>&date_filter_by=check_date` so only
+    payrolls paid on/after the high-water come back (dedup absorbs the
+    boundary re-fetch). `payroll_types=regular,off_cycle` widens past the
+    server default (regular only); `processing_statuses` keeps the server
+    default (processed).
+  - `employee`: `GET .../employees`. The endpoint has NO updated-since filter,
+    so every sync is a full re-walk; the `version`-discriminated external_id
+    makes re-walks idempotent (only a changed employee lands as a new
+    observation). The `terminated` query param is left unset (it is a FILTER —
+    sending it would narrow the walk to one sub-population).
 
 ============================================================
 RECORDS
 ============================================================
-Each entity row is emitted as one record tagged with the private
-`_fyralis_record_type` = the entity type (lowercased), plus `_fyralis_company_uuid`.
-The `gusto:object` handler builds ONE observation per record. Because
-invoices/bills MUTATE (draft -> sent -> paid -> overdue), the external_id is
-versioned by `SyncToken` so a status change lands as a NEW observation.
+Each row is emitted as one record tagged with the private
+`_fyralis_record_type` = the entity kind, plus `_fyralis_company_uuid`. The
+`gusto:object` handler builds ONE observation per record; mutations land as
+NEW observations because the external_id is versioned (employee `version`,
+payroll processed-state).
 
-TODO(human): confirm Gusto pagination (page/per_page params) + per-entity
-    updated-since filter. This module clones the QuickBooks offset/STARTPOSITION
-    archetype; Gusto's real REST surface is page/per_page (and an `updated_since`
-    style filter), so `client.query(...)` + the WHERE clause below are a
-    placeholder. Page size is env-overridable via GUSTO_BACKFILL_PAGE_SIZE.
-TODO(human): confirm Gusto's incremental "updated since" filter field name.
-    The cursor freezes whatever monotonic timestamp the API exposes into
-    `incremental_floor`; if no such filter exists, fall back to a full re-walk
-    (idempotent via the versioned external_id).
+Page size is env-overridable via GUSTO_BACKFILL_PAGE_SIZE (API max 100).
 """
 from __future__ import annotations
 
@@ -55,10 +57,14 @@ log = logging.getLogger(__name__)
 SHARD_KIND_ENTITY = "gusto_entity"
 _DEFAULT_PAGE_SIZE = 100
 
+ENTITY_EMPLOYEE = "employee"
+ENTITY_PAYROLL = "payroll"
+
 
 def _page_size() -> int:
     try:
-        return min(1000, int(os.environ.get("GUSTO_BACKFILL_PAGE_SIZE", "100")))
+        # docs.gusto.com: `per` max is 100.
+        return min(100, int(os.environ.get("GUSTO_BACKFILL_PAGE_SIZE", "100")))
     except ValueError:
         return _DEFAULT_PAGE_SIZE
 
@@ -66,20 +72,21 @@ def _page_size() -> int:
 class GustoCursor(BaseModel):
     """Cursor for one entity shard.
 
-    - start_position    : the GUSTO STARTPOSITION offset within this run (1-based).
-    - high_water_updated : max Metadata.LastUpdatedTime (ISO) observed — the
-                           warm-start / incremental lower bound AND the
-                           reconciler's gap reference point.
-    - incremental_floor : the `LastUpdatedTime >` lower bound frozen for this run
-                          (None in FULL mode).
+    - page              : the Gusto `page` offset within this run (1-based).
+    - high_water        : max payroll `check_date` (YYYY-MM-DD) observed — the
+                          warm-start / incremental lower bound AND the
+                          reconciler's gap reference point. Stays None on
+                          employee shards (no updated-since semantics).
+    - incremental_floor : the `start_date` lower bound frozen for this run
+                          (None in FULL mode / on employee shards).
     - rows_seen         : diagnostic.
     - seeded            : whether the first-call setup ran.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    start_position: int = 1
-    high_water_updated: str | None = None
+    page: int = 1
+    high_water: str | None = None
     incremental_floor: str | None = None
     rows_seen: int = 0
     seeded: bool = False
@@ -101,19 +108,17 @@ async def _open_gusto_client(install: asyncpg.Record):  # noqa: ANN202
     return await open_gusto_client(install)
 
 
-def _last_updated(row: dict[str, Any]) -> str | None:
-    meta = row.get("MetaData") or row.get("Metadata") or {}
-    if isinstance(meta, dict):
-        v = meta.get("LastUpdatedTime")
-        return v if isinstance(v, str) else None
-    return None
+def _check_date(row: dict[str, Any]) -> str | None:
+    v = row.get("check_date")
+    return v if isinstance(v, str) and v else None
 
 
-def _bump_high_water(cur: GustoCursor, updated: str | None) -> None:
-    if isinstance(updated, str) and (
-        cur.high_water_updated is None or updated > cur.high_water_updated
+def _bump_high_water(cur: GustoCursor, check_date: str | None) -> None:
+    # YYYY-MM-DD strings compare lexicographically == chronologically.
+    if isinstance(check_date, str) and (
+        cur.high_water is None or check_date > cur.high_water
     ):
-        cur.high_water_updated = updated
+        cur.high_water = check_date
 
 
 def _company_uuid_of(install: asyncpg.Record) -> str:
@@ -127,35 +132,40 @@ async def fetch_page_gusto(
 ) -> FetchResult:
     """One page of entity rows + next cursor."""
     entity_type = shard_identifier.get("entity_type")
-    if not isinstance(entity_type, str) or not entity_type:
+    if entity_type not in (ENTITY_EMPLOYEE, ENTITY_PAYROLL):
         return FetchResult(records=[], next_cursor=cursor, end_of_data=True)
 
     cur = _decode_cursor(cursor)
     if not cur.seeded:
         warm = shard_identifier.get("updated_cursor")
-        if isinstance(warm, str) and warm:
+        # Only payrolls have a server-side date filter; employee shards always
+        # full re-walk (dedup makes that idempotent).
+        if entity_type == ENTITY_PAYROLL and isinstance(warm, str) and warm:
             cur.incremental_floor = warm
-            cur.high_water_updated = warm
+            cur.high_water = warm
         cur.seeded = True
 
     company_uuid = _company_uuid_of(install)
-    where = (
-        f"Metadata.LastUpdatedTime > '{cur.incremental_floor}'"
-        if cur.incremental_floor else None
-    )
 
     client, close = await _open_gusto_client(install)
     try:
         try:
-            rows, next_start = await client.query(
-                entity_type,
-                where=where,
-                start_position=cur.start_position,
-                max_results=_page_size(),
-            )
+            if entity_type == ENTITY_EMPLOYEE:
+                rows, next_page = await client.list_employees(
+                    page=cur.page, per=_page_size(),
+                )
+            else:
+                rows, next_page = await client.list_payrolls(
+                    page=cur.page,
+                    per=_page_size(),
+                    start_date=cur.incremental_floor,
+                    date_filter_by=(
+                        "check_date" if cur.incremental_floor else None
+                    ),
+                    payroll_types=("regular", "off_cycle"),
+                )
         except GustoApiError as exc:
-            code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
-            if code == "gusto_api_rate_limited":
+            if exc.code == "gusto_api_rate_limited":
                 log.info("gusto_backfill_rate_limited",
                          extra={"entity_type": entity_type})
                 return FetchResult(
@@ -167,16 +177,17 @@ async def fetch_page_gusto(
         records: list[dict[str, Any]] = []
         for row in rows:
             records.append({
-                "_fyralis_record_type": entity_type.lower(),
+                "_fyralis_record_type": entity_type,
                 "_fyralis_company_uuid": company_uuid,
                 "entity": row,
             })
-            _bump_high_water(cur, _last_updated(row))
+            if entity_type == ENTITY_PAYROLL:
+                _bump_high_water(cur, _check_date(row))
 
         cur.rows_seen += len(rows)
-        is_last = next_start is None
-        if next_start is not None:
-            cur.start_position = next_start
+        is_last = next_page is None
+        if next_page is not None:
+            cur.page = next_page
 
         log.info(
             "gusto_backfill_page",
@@ -197,6 +208,8 @@ FETCHER_DISPATCH["gusto"] = fetch_page_gusto
 
 __all__ = [
     "SHARD_KIND_ENTITY",
+    "ENTITY_EMPLOYEE",
+    "ENTITY_PAYROLL",
     "GustoCursor",
     "fetch_page_gusto",
 ]

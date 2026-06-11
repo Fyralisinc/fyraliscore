@@ -57,8 +57,8 @@ from services.ingest.integrations.deel.onboarding import (
 log = structlog.get_logger("integrations.deel.oauth")
 
 
-# Canonical Deel API host (same default the finance panel + fetcher use).
-_DEFAULT_BASE_URL = "https://api.letsdeel.com"
+# Canonical Deel API base (same default the finance panel + fetcher use).
+_DEFAULT_BASE_URL = "https://api.letsdeel.com/rest/v2"
 
 
 router = APIRouter(prefix="/integrations/deel", tags=["deel"])

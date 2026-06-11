@@ -1,31 +1,41 @@
-"""services/ingest/ingestion/handlers/ramp.py — Ramp transaction handler (finance).
+"""services/ingest/ingestion/handlers/ramp.py — Ramp record handler (finance).
 
-Cloned from the QuickBooks archetype. ONE channel `ramp:transaction` (mirrors
-jira:issue's one-channel/many-record-types shape). The handler is a pure function
-(no DB / network) and branches on the input shape to produce exactly ONE
-observation per call:
+ONE channel `ramp:transaction` (mirrors jira:issue's
+one-channel/many-record-types shape). The handler is a pure function (no DB /
+network) and branches on the input shape to produce exactly ONE observation per
+call:
 
   - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
-    ∈ {"invoice","bill","billpayment","payment"} (set by the fetcher; kept as the
-    archetype taxonomy until the verified Ramp taxonomy lands — see fetcher TODO).
-  - LIVE WEBHOOK: a Ramp `eventNotifications` entity entry (or a CloudEvents
-    wrapper); the handler maps the entity `name`+`operation` onto the same record
-    builders so a webhook-delivered change and its backfill twin dedup. The
-    webhook only carries the entity id + operation, so when no full entity body
-    is present the handler emits a thin change observation keyed the same way.
+    ∈ {"transaction","reimbursement","card","user"} (set by the fetcher — the
+    VERIFIED Ramp Developer API taxonomy, docs.ramp.com) and carry the REAL
+    Ramp resource body under `entity`.
+  - LIVE WEBHOOK: a real Ramp flat event ({"id","type","created_at",
+    "business_id","object":{"id":…}}). The webhook carries only the affected
+    resource id (no body), so the handler emits a thin change observation; the
+    poll re-fetch fills the authoritative body.
+
+Money decode is DEFENSIVE for Ramp's dual representation (verified
+docs.ramp.com/developer-api/v1/monetary-values):
+  - top-level `amount` is a NUMBER in major units (dollars),
+  - nested currency-amount objects ({"amount": <int minor units>,
+    "currency_code", "minor_unit_conversion_rate"}) carry integer cents.
 
 Signal mapping (the reasoning value) — blueprint §4 state predicate:
-  - state ∈ {declined, disputed}                            -> kind="state_change"
-  - invoice/bill that is fully paid (Balance == 0)          -> kind="state_change"
-    (the AR/AP-health signal: receivable collected / payable cleared)
-  - invoice/bill past due with an open balance              -> kind="state_change"
-    (overdue — the cash-risk signal)
-  - everything else (created / updated, payments)           -> kind="signal"
+  - transaction DECLINED / ERROR, or carrying disputes      -> kind="state_change"
+  - reimbursement terminal (REIMBURSED* / MANUALLY_REIMBURSED
+    or REJECTED / CANCELED / failed states)                 -> kind="state_change"
+  - card SUSPENDED / TERMINATED / CHIP_LOCKED               -> kind="state_change"
+  - user USER_INACTIVE / USER_SUSPENDED / INVITE_EXPIRED    -> kind="state_change"
+  - everything else (pending / cleared / active …)          -> kind="signal"
 
 external_id — VERSIONED by state (blueprint §4; the mutable-source dedup lesson;
-the observations repo dedups on (source_channel, external_id) IGNORING occurred_at
-so a state change must land as a NEW observation):
-  - ramp:{business_id}:txn:{txn_id}:{state}
+the observations repo dedups on (source_channel, external_id) IGNORING
+occurred_at so a state change must land as a NEW observation):
+  - ramp:{business_id}:txn:{id}:{state}
+  - ramp:{business_id}:reimb:{id}:{state}
+  - ramp:{business_id}:card:{id}:{state}
+  - ramp:{business_id}:user:{id}:{status}
+  - ramp:{business_id}:txn:{id}:chg:{event_id}   (thin live-webhook change)
 
 These external_ids are built INLINE here (not via the shared idempotency module)
 so this isolated handler + its tests form a self-consistent loop; the shared
@@ -50,36 +60,48 @@ from services.ingest.ingestion.handlers import (
 _CHANNEL = "ramp:transaction"
 _TRUST = "authoritative"
 
-# States that flip an observation from a plain signal to a state_change
-# (blueprint §4: declined / disputed). Kept as a module constant so the verified
-# Ramp transaction-state vocabulary can be extended in one place.
-# TODO(human): confirm Ramp transaction state vocabulary (declined / disputed /
-# other terminal states) and map them here.
-_STATE_CHANGE_STATES = frozenset({"declined", "disputed"})
+# Verified state vocabularies (docs.ramp.com OpenAPI enums), lowercased.
+# Transaction states: ALL/CLEARED/COMPLETION/DECLINED/ERROR/PENDING/
+# PENDING_INITIATION — declined/error are the §4 state-change states (a
+# dispute is carried in the `disputes` list, not `state`).
+_TXN_STATE_CHANGES = frozenset({"declined", "error"})
+# Reimbursement terminal states — cash moved (good) or definitively not (bad).
+_REIMB_STATE_CHANGES = frozenset({
+    "reimbursed", "reimbursed_via_push", "manually_reimbursed",
+    "rejected", "canceled", "deleted", "failed_reimbursement",
+    "push_payment_failed", "export_failed",
+})
+# Card lifecycle states that flip availability.
+_CARD_STATE_CHANGES = frozenset({"suspended", "terminated", "chip_locked"})
+# User lifecycle states that revoke access.
+_USER_STATE_CHANGES = frozenset({
+    "user_inactive", "user_suspended", "invite_expired",
+})
 
+_RECORD_TYPES = frozenset({"transaction", "reimbursement", "card", "user"})
 
-def _txn_external_id(business_id: str, txn_id: str, state: str) -> str:
-    """ramp:{business_id}:txn:{txn_id}:{state} — versioned by state (§4).
-
-    Built inline (not via the shared idempotency module) so this isolated
-    handler + tests stay self-consistent; the shared `ramp_transaction`
-    constructor (§2.8) yields the identical string."""
-    return f"ramp:{business_id}:txn:{txn_id}:{state}"
-
-
-def _change_external_id(business_id: str, txn_id: str, ver: str) -> str:
-    """Thin live-webhook variant (body-less notification), versioned by the
-    change marker so each live change event stays distinct from its backfill
-    twin until the poll re-fetch carries the authoritative body."""
-    return f"ramp:{business_id}:txn:{txn_id}:chg:{ver}"
-
-# Map a RAMP entity `name` (webhook) / record_type (backfill) to a canonical kind.
-_ENTITY_NORMALISE = {
-    "invoice": "invoice",
-    "bill": "bill",
-    "billpayment": "bill_payment",
-    "payment": "payment",
+# external_id segment per record type.
+_ID_SEGMENT = {
+    "transaction": "txn",
+    "reimbursement": "reimb",
+    "card": "card",
+    "user": "user",
 }
+
+
+def _external_id(
+    record_type: str, business_id: str, entity_id: str, state: str,
+) -> str:
+    """ramp:{business_id}:{seg}:{id}:{state} — versioned by state (§4)."""
+    return f"ramp:{business_id}:{_ID_SEGMENT[record_type]}:{entity_id}:{state}"
+
+
+def _change_external_id(business_id: str, entity_id: str, ver: str) -> str:
+    """Thin live-webhook variant (body-less notification), versioned by the
+    stable event id (constant across retries) so each live change event stays
+    distinct from its backfill twin until the poll re-fetch carries the
+    authoritative body."""
+    return f"ramp:{business_id}:txn:{entity_id}:chg:{ver}"
 
 
 def _utcnow() -> datetime:
@@ -101,14 +123,6 @@ def _parse_iso(value: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _last_updated(entity: dict[str, Any]) -> str | None:
-    meta = entity.get("MetaData") or entity.get("Metadata") or {}
-    if isinstance(meta, dict):
-        v = meta.get("LastUpdatedTime")
-        return v if isinstance(v, str) else None
-    return None
-
-
 def _num(value: Any) -> float | None:
     try:
         return float(value)
@@ -116,274 +130,133 @@ def _num(value: Any) -> float | None:
         return None
 
 
-def _fmt_money(amount: Any) -> str:
-    val = _num(amount)
-    return f"${val:,.2f}" if val is not None else str(amount)
+# ---------------------------------------------------------------------
+# Money — defensive dual decode (major-unit number vs minor-unit object)
+# ---------------------------------------------------------------------
+
+def _money(value: Any) -> tuple[float | None, str | None]:
+    """Decode either Ramp money shape to `(major_units, currency_code)`.
+
+    - a bare number is already major units (dollars),
+    - a CurrencyAmount object carries integer minor units (cents) +
+      `minor_unit_conversion_rate` (default 100) + `currency_code`.
+    """
+    if isinstance(value, dict):
+        minor = _num(value.get("amount"))
+        if minor is None:
+            return None, value.get("currency_code")
+        rate = _num(value.get("minor_unit_conversion_rate")) or 100.0
+        return minor / rate, value.get("currency_code")
+    return _num(value), None
 
 
-def _doc_label(entity_kind: str, entity: dict[str, Any]) -> str:
-    """Human reference like 'Invoice #1037' / 'Bill 9921'."""
-    doc = entity.get("DocNumber") or entity.get("Id") or "?"
-    nice = entity_kind.replace("_", " ").title()
-    return f"{nice} #{doc}"
-
-
-def _party(entity: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
-    """(actor_ref, entity_hint) for the customer/vendor on the doc."""
-    ref = entity.get("CustomerRef") or entity.get("VendorRef")
-    if isinstance(ref, dict):
-        name = ref.get("name")
-        rid = ref.get("value")
-        role = "customer" if "CustomerRef" in entity else "vendor"
-        hint: dict[str, Any] = {"type": "organization", "role": role}
-        if name:
-            hint["id"] = name
-        elif rid:
-            hint["id"] = str(rid)
-        actor = f"ramp:{role}:{rid}" if rid else None
-        return actor, (hint if hint.get("id") else None)
-    return None, None
+def _fmt_money(amount: float | None, currency: str | None) -> str:
+    if amount is None:
+        return "?"
+    cur = (currency or "USD").upper()
+    return f"${amount:,.2f}" if cur == "USD" else f"{amount:,.2f} {cur}"
 
 
 def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-# ---------------------------------------------------------------------
-# Rich-field extraction (the signals beyond the AR/AP-health header)
-# ---------------------------------------------------------------------
-
-def _ref_name(ref: Any) -> str | None:
-    """Human name of a RAMP ReferenceType ({value, name}), value as fallback."""
-    if isinstance(ref, dict):
-        name = ref.get("name")
-        if isinstance(name, str) and name:
-            return name
-        val = ref.get("value")
-        return str(val) if val not in (None, "") else None
-    return None
-
-
-def _line_summary(line: dict[str, Any]) -> dict[str, Any]:
-    """Flatten one RAMP Line into the bits that carry revenue/expense meaning.
-
-    Covers sales (SalesItemLineDetail) and expense
-    (Account-/Item-BasedExpenseLineDetail) lines — the *what was sold / bought*
-    that header TotalAmt hides."""
-    summary: dict[str, Any] = {
-        "amount": line.get("Amount"),
-        "description": line.get("Description"),
-        "detail_type": line.get("DetailType"),
-    }
-    sid = line.get("SalesItemLineDetail")
-    if isinstance(sid, dict):
-        summary["item"] = _ref_name(sid.get("ItemRef"))
-        summary["quantity"] = sid.get("Qty")
-        summary["unit_price"] = sid.get("UnitPrice")
-        summary["class"] = _ref_name(sid.get("ClassRef"))
-    for key in ("AccountBasedExpenseLineDetail", "ItemBasedExpenseLineDetail"):
-        d = line.get(key)
-        if isinstance(d, dict):
-            summary["account"] = _ref_name(d.get("AccountRef"))
-            summary.setdefault("item", _ref_name(d.get("ItemRef")))
-            summary["class"] = _ref_name(d.get("ClassRef"))
-            billable = _ref_name(d.get("CustomerRef"))
-            if billable:
-                summary["billable_customer"] = billable
-    return {k: v for k, v in summary.items() if v is not None}
-
-
-def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
-    """The richer RAMP entity fields beyond the header money signal.
-
-    Already returned by `SELECT *`; the handler is where they were dropped.
-    Only present keys are returned so `content` stays lean."""
-    extras: dict[str, Any] = {}
-
-    # Line items — product-level revenue / expense-category breakdown.
-    lines = entity.get("Line")
-    if isinstance(lines, list):
-        summaries = [
-            s for ln in lines
-            if isinstance(ln, dict)
-            and ln.get("DetailType") not in ("SubTotalLineDetail",)
-            for s in (_line_summary(ln),) if s
-        ]
-        if summaries:
-            extras["line_items"] = summaries
-
-    # LinkedTxn — the AR/AP graph edges (Invoice<->Payment, PO->Bill->Payment).
-    linked = entity.get("LinkedTxn")
-    if isinstance(linked, list) and linked:
-        edges = [
-            {"txn_id": lt.get("TxnId"), "txn_type": lt.get("TxnType")}
-            for lt in linked if isinstance(lt, dict) and lt.get("TxnId")
-        ]
-        if edges:
-            extras["linked_txns"] = edges
-
-    # Tax — total + (if present) the lightweight rate breakdown.
-    tax = entity.get("TxnTaxDetail")
-    if isinstance(tax, dict) and tax:
-        tax_out: dict[str, Any] = {}
-        if tax.get("TotalTax") is not None:
-            tax_out["total_tax"] = tax.get("TotalTax")
-        if isinstance(tax.get("TaxLine"), list):
-            tax_out["lines"] = len(tax["TaxLine"])
-        if tax_out:
-            extras["tax"] = tax_out
-
-    # Multi-currency normalization.
-    for src, dst in (
-        ("HomeTotalAmt", "home_total_amount"),
-        ("HomeBalance", "home_balance"),
-        ("ExchangeRate", "exchange_rate"),
-    ):
-        if entity.get(src) is not None:
-            extras[dst] = entity.get(src)
-
-    # Cash-position nuance on Payments.
-    if entity.get("UnappliedAmt") is not None:
-        extras["unapplied_amount"] = entity.get("UnappliedAmt")
-    dep = _ref_name(entity.get("DepositToAccountRef"))
-    if dep:
-        extras["deposit_to_account"] = dep
-    ar = _ref_name(entity.get("ARAccountRef"))
-    if ar:
-        extras["ar_account"] = ar
-    ap = _ref_name(entity.get("APAccountRef"))
-    if ap:
-        extras["ap_account"] = ap
-
-    # Payment channel (how cash moved + funding account).
-    pm = _ref_name(entity.get("PaymentMethodRef"))
-    if pm:
-        extras["payment_method"] = pm
-    if entity.get("PaymentRefNum"):
-        extras["payment_ref_num"] = entity.get("PaymentRefNum")
-    if entity.get("PayType"):
-        extras["pay_type"] = entity.get("PayType")
-
-    # Segmentation dimensions for P&L attribution.
-    for src, dst in (
-        ("ClassRef", "class"),
-        ("DepartmentRef", "department"),
-        ("ProjectRef", "project"),
-    ):
-        name = _ref_name(entity.get(src))
-        if name:
-            extras[dst] = name
-
-    return extras
-
-
-def _explicit_state(entity: dict[str, Any]) -> str | None:
-    """A Ramp-supplied transaction state, if present (declined / disputed / ...).
-    TODO(human): confirm the Ramp transaction state field name + value casing."""
-    for key in ("state", "status", "TxnStatus"):
-        v = entity.get(key)
-        if isinstance(v, str) and v:
-            return v.lower()
-    return None
-
-
-def _classify(entity_kind: str, entity: dict[str, Any]) -> tuple[str, str]:
-    """Return (kind, status_word) for the entity.
-
-    Per blueprint §4 the state predicate wins first: a transaction in a
-    declined/disputed state is a state_change. Otherwise the archetype AR/AP
-    health rules apply: invoices/bills with a zero balance are 'paid' (a
-    state_change — AR collected / AP cleared); those past their due date with an
-    open balance are 'overdue' (a state_change — cash-risk). Everything else is a
-    plain signal.
-    """
-    state = _explicit_state(entity)
-    if state in _STATE_CHANGE_STATES:
-        return "state_change", state  # type: ignore[return-value]
-    if entity_kind in ("invoice", "bill"):
-        balance = _num(entity.get("Balance"))
-        if balance is not None and balance <= 0:
-            return "state_change", "paid"
-        due = _parse_iso(entity.get("DueDate"))
-        if due is not None and due < _utcnow() and (balance or 0) > 0:
-            return "state_change", "overdue"
-        return "signal", "open"
-    # Payments / bill payments are cash events — signal unless an explicit state.
-    return "signal", state or "recorded"
+def _person_hint(name: str | None) -> dict[str, Any] | None:
+    return {"type": "person", "id": name} if name else None
 
 
 # ---------------------------------------------------------------------
-# Record builder (shared by backfill + webhook paths)
+# Per-record-type builders (verified field names)
 # ---------------------------------------------------------------------
 
-def _entity_draft(
-    entity_kind: str, entity: dict[str, Any], business_id: str,
-) -> ObservationDraft:
-    entity_id = str(entity.get("Id") or "")
+def _transaction_draft(entity: dict[str, Any], business_id: str) -> ObservationDraft:
+    entity_id = str(entity.get("id") or "")
     if not business_id or not entity_id:
         raise ValidationError(
-            "ramp entity missing business_id/Id", channel=_CHANNEL,
+            "ramp transaction missing business_id/id", channel=_CHANNEL,
         )
-    sync_token = str(entity.get("SyncToken") or "0")
 
-    updated = _last_updated(entity)
-    occurred = _parse_iso(updated) or _utcnow()
-    kind, status_word = _classify(entity_kind, entity)
-    actor_ref, party_hint = _party(entity)
-
-    # external_id versioned by state (§4). SyncToken is folded into the state
-    # token so each per-edit mutation stays distinct (the mutable-source dedup
-    # lesson — a coarse status alone would collide across in-place edits).
-    state_token = f"{status_word}.{sync_token}" if sync_token != "0" else status_word
-    external_id = _txn_external_id(business_id, entity_id, state_token)
-
-    total = entity.get("TotalAmt")
-    balance = entity.get("Balance")
-    label = _doc_label(entity_kind, entity)
-    who = (party_hint or {}).get("id")
-    parts = [label]
-    if who:
-        parts.append(f"· {who}")
-    parts.append(f"· {_fmt_money(total)}")
-    if entity_kind in ("invoice", "bill"):
-        parts.append(f"· {status_word} (bal {_fmt_money(balance)})")
+    state = str(entity.get("state") or "").lower()
+    disputes = entity.get("disputes")
+    disputed = isinstance(disputes, list) and len(disputes) > 0
+    if disputed:
+        kind, status_word = "state_change", "disputed"
+    elif state in _TXN_STATE_CHANGES:
+        kind, status_word = "state_change", state
     else:
-        parts.append(f"· {status_word}")
+        kind, status_word = "signal", (state or "recorded")
+
+    # Money: top-level `amount` is dollars; original_transaction_amount is the
+    # pre-conversion minor-unit object. Decode both defensively.
+    amount, _ = _money(entity.get("amount"))
+    currency = entity.get("currency_code")
+    if amount is None:
+        amount, currency2 = _money(entity.get("original_transaction_amount"))
+        currency = currency or currency2
+
+    occurred = (
+        _parse_iso(entity.get("user_transaction_time"))
+        or _parse_iso(entity.get("settlement_date"))
+        or _utcnow()
+    )
+
+    holder = entity.get("card_holder")
+    holder_name = None
+    holder_user_id = None
+    if isinstance(holder, dict):
+        first = holder.get("first_name") or ""
+        last = holder.get("last_name") or ""
+        holder_name = f"{first} {last}".strip() or None
+        uid = holder.get("user_id")
+        holder_user_id = str(uid) if uid else None
+
+    merchant = entity.get("merchant_name")
+    category = entity.get("sk_category_name")
+    line_items = entity.get("line_items")
+    n_lines = len(line_items) if isinstance(line_items, list) else 0
+
+    external_id = _external_id("transaction", business_id, entity_id, status_word)
+
+    parts = [f"Transaction {entity_id[:13]}"]
+    if merchant:
+        parts.append(f"· {merchant}")
+    parts.append(f"· {_fmt_money(amount, currency)}")
+    parts.append(f"· {status_word}")
+    if holder_name:
+        parts.append(f"({holder_name})")
+    if n_lines > 1:
+        parts.append(f"· {n_lines} lines")
     content_text = " ".join(parts)
 
     entities: list[dict[str, Any]] = [
-        {"type": "ramp_transaction", "id": f"{entity_kind}:{entity_id}"},
+        {"type": "ramp_transaction", "id": f"transaction:{entity_id}"},
     ]
-    if party_hint:
-        entities.append(party_hint)
+    hint = _person_hint(holder_name)
+    if hint:
+        entities.append(hint)
 
-    content: dict[str, Any] = {
-        "object_type": entity_kind,
+    content = _compact({
+        "object_type": "transaction",
         "business_id": business_id,
         "entity_id": entity_id,
-        "sync_token": sync_token,
-        "doc_number": entity.get("DocNumber"),
+        "state": state or None,
         "status": status_word,
-        "total_amount": total,
-        "balance": balance,
-        "currency": (entity.get("CurrencyRef") or {}).get("value")
-        if isinstance(entity.get("CurrencyRef"), dict) else None,
-        "txn_date": entity.get("TxnDate"),
-        "due_date": entity.get("DueDate"),
-        "customer": (entity.get("CustomerRef") or {}).get("name")
-        if isinstance(entity.get("CustomerRef"), dict) else None,
-        "vendor": (entity.get("VendorRef") or {}).get("name")
-        if isinstance(entity.get("VendorRef"), dict) else None,
-        "last_updated": updated,
-    }
-    # Merge the richer fields (line items, linked txns, tax, multi-currency,
-    # payment channel, P&L dimensions) — additive, only present keys.
-    content.update(_entity_extras(entity))
-    # Surface line-item depth inline so the reasoning layer sees there's detail.
-    line_items = content.get("line_items")
-    if isinstance(line_items, list) and line_items:
-        n = len(line_items)
-        content_text = f"{content_text} · {n} line{'s' if n != 1 else ''}"
+        "amount": amount,
+        "currency": currency,
+        "merchant": merchant,
+        "merchant_id": entity.get("merchant_id"),
+        "category": category,
+        "card_holder": holder_name,
+        "card_id": entity.get("card_id"),
+        "memo": entity.get("memo"),
+        "user_transaction_time": entity.get("user_transaction_time"),
+        "settlement_date": entity.get("settlement_date"),
+        "sync_status": entity.get("sync_status"),
+        "disputed": True if disputed else None,
+        "decline_reason": _decline_reason(entity),
+        "original_amount": _original_amount(entity),
+        "line_item_count": n_lines or None,
+    })
 
     return ObservationDraft(
         source_channel=_CHANNEL,
@@ -392,11 +265,243 @@ def _entity_draft(
         occurred_at=occurred,
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
-        source_actor_ref=actor_ref,
+        source_actor_ref=(f"ramp:user:{holder_user_id}" if holder_user_id else None),
         external_id=external_id,
         entities_hint=entities,
         raw_payload=entity,
     )
+
+
+def _decline_reason(entity: dict[str, Any]) -> str | None:
+    dd = entity.get("decline_details")
+    if isinstance(dd, dict):
+        reason = dd.get("reason")
+        return str(reason) if reason else None
+    return None
+
+
+def _original_amount(entity: dict[str, Any]) -> dict[str, Any] | None:
+    """Pre-conversion amount, decoded from the minor-unit object — emitted only
+    when it differs in currency from the settled amount."""
+    orig = entity.get("original_transaction_amount")
+    if not isinstance(orig, dict):
+        return None
+    amount, currency = _money(orig)
+    if amount is None:
+        return None
+    settled_currency = entity.get("currency_code")
+    if currency and settled_currency and currency == settled_currency:
+        return None
+    return {"amount": amount, "currency": currency}
+
+
+def _reimbursement_draft(entity: dict[str, Any], business_id: str) -> ObservationDraft:
+    entity_id = str(entity.get("id") or "")
+    if not business_id or not entity_id:
+        raise ValidationError(
+            "ramp reimbursement missing business_id/id", channel=_CHANNEL,
+        )
+
+    state = str(entity.get("state") or "").lower()
+    kind = "state_change" if state in _REIMB_STATE_CHANGES else "signal"
+    status_word = state or "recorded"
+
+    # Money: top-level `amount` is the payor's major-unit number + `currency`;
+    # payee_amount / original_reimbursement_amount are minor-unit objects.
+    amount, _ = _money(entity.get("amount"))
+    currency = entity.get("currency")
+    if amount is None:
+        amount, currency2 = _money(entity.get("payee_amount"))
+        currency = currency or currency2
+
+    occurred = (
+        _parse_iso(entity.get("updated_at"))
+        or _parse_iso(entity.get("created_at"))
+        or _utcnow()
+    )
+
+    who = entity.get("user_full_name")
+    uid = entity.get("user_id")
+    external_id = _external_id("reimbursement", business_id, entity_id, status_word)
+
+    parts = [f"Reimbursement {entity_id[:13]}"]
+    if who:
+        parts.append(f"· {who}")
+    if entity.get("merchant"):
+        parts.append(f"· {entity['merchant']}")
+    parts.append(f"· {_fmt_money(amount, currency)}")
+    parts.append(f"· {status_word}")
+    content_text = " ".join(parts)
+
+    entities: list[dict[str, Any]] = [
+        {"type": "ramp_transaction", "id": f"reimbursement:{entity_id}"},
+    ]
+    hint = _person_hint(who if isinstance(who, str) else None)
+    if hint:
+        entities.append(hint)
+
+    content = _compact({
+        "object_type": "reimbursement",
+        "business_id": business_id,
+        "entity_id": entity_id,
+        "state": state or None,
+        "status": status_word,
+        "amount": amount,
+        "currency": currency,
+        "merchant": entity.get("merchant"),
+        "user": who,
+        "reimbursement_type": entity.get("type"),
+        "direction": entity.get("direction"),
+        "memo": entity.get("memo"),
+        "transaction_date": entity.get("transaction_date"),
+        "created_at": entity.get("created_at"),
+        "updated_at": entity.get("updated_at"),
+        "sync_status": entity.get("sync_status"),
+    })
+
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind=kind,  # type: ignore[arg-type]
+        source_actor_ref=(f"ramp:user:{uid}" if uid else None),
+        external_id=external_id,
+        entities_hint=entities,
+        raw_payload=entity,
+    )
+
+
+def _card_draft(entity: dict[str, Any], business_id: str) -> ObservationDraft:
+    entity_id = str(entity.get("id") or "")
+    if not business_id or not entity_id:
+        raise ValidationError(
+            "ramp card missing business_id/id", channel=_CHANNEL,
+        )
+
+    state = str(entity.get("state") or "").lower()
+    kind = "state_change" if state in _CARD_STATE_CHANGES else "signal"
+    status_word = state or "recorded"
+    occurred = _parse_iso(entity.get("created_at")) or _utcnow()
+
+    name = entity.get("display_name")
+    holder = entity.get("cardholder_name")
+    last_four = entity.get("last_four")
+    external_id = _external_id("card", business_id, entity_id, status_word)
+
+    parts = [f"Card {name or entity_id[:13]}"]
+    if last_four:
+        parts.append(f"·{last_four}")
+    if holder:
+        parts.append(f"· {holder}")
+    parts.append(f"· {status_word}")
+    content_text = " ".join(parts)
+
+    entities: list[dict[str, Any]] = [
+        {"type": "ramp_transaction", "id": f"card:{entity_id}"},
+    ]
+    hint = _person_hint(holder if isinstance(holder, str) else None)
+    if hint:
+        entities.append(hint)
+
+    content = _compact({
+        "object_type": "card",
+        "business_id": business_id,
+        "entity_id": entity_id,
+        "state": state or None,
+        "status": status_word,
+        "display_name": name,
+        "cardholder": holder,
+        "cardholder_id": entity.get("cardholder_id"),
+        "last_four": last_four,
+        "is_physical": entity.get("is_physical"),
+        "expiration": entity.get("expiration"),
+        "created_at": entity.get("created_at"),
+    })
+
+    cid = entity.get("cardholder_id")
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind=kind,  # type: ignore[arg-type]
+        source_actor_ref=(f"ramp:user:{cid}" if cid else None),
+        external_id=external_id,
+        entities_hint=entities,
+        raw_payload=entity,
+    )
+
+
+def _user_draft(entity: dict[str, Any], business_id: str) -> ObservationDraft:
+    entity_id = str(entity.get("id") or "")
+    if not business_id or not entity_id:
+        raise ValidationError(
+            "ramp user missing business_id/id", channel=_CHANNEL,
+        )
+
+    status = str(entity.get("status") or "").lower()
+    kind = "state_change" if status in _USER_STATE_CHANGES else "signal"
+    status_word = status or "recorded"
+    occurred = _utcnow()  # users carry no creation/update timestamp (verified)
+
+    first = entity.get("first_name") or ""
+    last = entity.get("last_name") or ""
+    name = f"{first} {last}".strip() or None
+    external_id = _external_id("user", business_id, entity_id, status_word)
+
+    parts = [f"User {name or entity_id[:13]}"]
+    if entity.get("role"):
+        parts.append(f"· {str(entity['role']).lower()}")
+    parts.append(f"· {status_word}")
+    content_text = " ".join(parts)
+
+    entities: list[dict[str, Any]] = [
+        {"type": "ramp_transaction", "id": f"user:{entity_id}"},
+    ]
+    hint = _person_hint(name)
+    if hint:
+        entities.append(hint)
+
+    content = _compact({
+        "object_type": "user",
+        "business_id": business_id,
+        "entity_id": entity_id,
+        "status": status_word,
+        "name": name,
+        "email": entity.get("email"),
+        "role": entity.get("role"),
+        "department_id": entity.get("department_id"),
+        "is_manager": entity.get("is_manager"),
+    })
+
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind=kind,  # type: ignore[arg-type]
+        source_actor_ref=f"ramp:user:{entity_id}",
+        external_id=external_id,
+        entities_hint=entities,
+        raw_payload=entity,
+    )
+
+
+_DRAFT_BUILDERS = {
+    "transaction": _transaction_draft,
+    "reimbursement": _reimbursement_draft,
+    "card": _card_draft,
+    "user": _user_draft,
+}
+
+
+def _compact(d: dict[str, Any]) -> dict[str, Any]:
+    """Drop absent keys so `content` stays lean (None means 'not present')."""
+    return {k: v for k, v in d.items() if v is not None}
 
 
 def _thin_change_draft(
@@ -404,25 +509,25 @@ def _thin_change_draft(
     operation: str | None, last_updated: str | None,
     version: str | None = None,
 ) -> ObservationDraft:
-    """A webhook notification with no full entity body (body-less webhooks carry
-    only id + operation). Emit a thin change observation; the next backfill/poll
-    re-fetch fills the full body (and dedups by SyncToken if unchanged).
+    """A webhook notification with no full entity body (real Ramp deliveries
+    carry only the affected `object.id`). Emit a thin change observation; the
+    next backfill/poll re-fetch fills the full body (and dedups by the
+    state-versioned external_id if unchanged).
 
-    `version` overrides the dedup discriminator (the real Ramp delivery carries a
-    stable event `id`, constant across retries — a stronger key than the
-    timestamp); when absent the change is versioned by LastUpdatedTime."""
+    `version` is the stable event `id` (constant across retries — the dedup
+    discriminator); when absent the change is versioned by the timestamp."""
     if not business_id or not entity_id:
         raise ValidationError(
             "ramp change missing business_id/id", channel=_CHANNEL,
         )
-    # Version by the explicit `version` (event id) when given, else by
-    # LastUpdatedTime, to keep each change event distinct (the poll re-fetch
-    # carries the authoritative body).
     ver = version or last_updated or _utcnow().isoformat()
     external_id = _change_external_id(business_id, entity_id, ver)
     occurred = _parse_iso(last_updated) or _utcnow()
-    op = operation or "Update"
-    content_text = f"{entity_kind.replace('_', ' ').title()} #{entity_id} {op.lower()} (live)"
+    op = operation or "update"
+    content_text = (
+        f"{entity_kind.replace('_', ' ').title()} {entity_id[:13]} "
+        f"{op.lower()} (live)"
+    )
     return ObservationDraft(
         source_channel=_CHANNEL,
         content_text=content_text,
@@ -445,8 +550,8 @@ def _thin_change_draft(
     )
 
 
-def _business_of(payload: dict[str, Any], entity: dict[str, Any] | None) -> str:
-    rid = payload.get("_fyralis_business_id") or payload.get("businessId")
+def _business_of(payload: dict[str, Any]) -> str:
+    rid = payload.get("_fyralis_business_id") or payload.get("business_id")
     if isinstance(rid, str) and rid:
         return rid
     return ""
@@ -469,8 +574,7 @@ async def handle_ramp_transaction(
     # dot.notation (e.g. "transactions.cleared"); `object.id` is the affected
     # resource; `id` is the STABLE event id (constant across retries -> the
     # dedup discriminator). No entity body (thin notification — the poll
-    # re-fetch fills it). Verified against docs.ramp.com webhooks. There is no
-    # `eventNotifications` wrapper (that was a QuickBooks-clone artifact).
+    # re-fetch fills it). Verified against docs.ramp.com webhooks.
     if payload.get("business_id") and isinstance(payload.get("object"), dict):
         business_id = str(payload.get("business_id") or "")
         ev_type = str(payload.get("type") or "")
@@ -488,64 +592,17 @@ async def handle_ramp_transaction(
             version=str(payload.get("id") or "") or None,
         )
 
-    # --- LIVE WEBHOOK path (legacy cloned eventNotifications envelope shape) ---
-    # Shape: {"eventNotifications":[{"businessId":"...","dataChangeEvent":
-    #   {"entities":[{"name":"Invoice","id":"1","operation":"Update",
-    #   "lastUpdated":"..."}]}}]}. The finance harness may also send a single
-    # flattened {"businessId","name","id","operation","entity"?} for convenience.
-    notifications = payload.get("eventNotifications")
-    if isinstance(notifications, list) and notifications:
-        first = notifications[0]
-        business_id = str(first.get("businessId") or "") if isinstance(first, dict) else ""
-        dce = first.get("dataChangeEvent") if isinstance(first, dict) else None
-        ents = dce.get("entities") if isinstance(dce, dict) else None
-        if isinstance(ents, list) and ents:
-            ent = ents[0]
-            name = str(ent.get("name") or "").lower()
-            entity_kind = _ENTITY_NORMALISE.get(name)
-            if entity_kind is None:
-                raise ValidationError(
-                    f"unsupported ramp entity {ent.get('name')!r}",
-                    channel=_CHANNEL,
-                )
-            return _thin_change_draft(
-                entity_kind, str(ent.get("id") or ""), business_id,
-                operation=ent.get("operation"),
-                last_updated=ent.get("lastUpdated"),
-            )
-        raise ValidationError("ramp webhook missing entities", channel=_CHANNEL)
-
-    # Flattened webhook (harness convenience): a `name` + `id` (+ optional full
-    # `entity` body).
-    if "name" in payload and "id" in payload and "_fyralis_record_type" not in payload:
-        name = str(payload.get("name") or "").lower()
-        entity_kind = _ENTITY_NORMALISE.get(name)
-        if entity_kind is None:
-            raise ValidationError(
-                f"unsupported ramp entity {payload.get('name')!r}",
-                channel=_CHANNEL,
-            )
-        business_id = str(payload.get("businessId") or "")
-        body = payload.get("entity")
-        if isinstance(body, dict) and body.get("Id"):
-            return _entity_draft(entity_kind, body, business_id)
-        return _thin_change_draft(
-            entity_kind, str(payload.get("id") or ""), business_id,
-            operation=payload.get("operation"),
-            last_updated=payload.get("lastUpdated"),
-        )
-
     # --- BACKFILL / POLL path (fetcher-tagged records) ---
     record_type = payload.get("_fyralis_record_type")
     if isinstance(record_type, str) and record_type:
-        entity_kind = _ENTITY_NORMALISE.get(record_type.lower())
-        if entity_kind is None:
+        builder = _DRAFT_BUILDERS.get(record_type.lower())
+        if builder is None:
             raise ValidationError(
                 f"unsupported ramp record_type {record_type!r}",
                 channel=_CHANNEL,
             )
         entity = payload.get("entity") or {}
-        return _entity_draft(entity_kind, entity, _business_of(payload, entity))
+        return builder(entity, _business_of(payload))
 
     raise ValidationError(
         "ramp payload is neither a webhook event nor a tagged record",

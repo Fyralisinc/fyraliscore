@@ -18,7 +18,11 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.app.realtime.dispatcher import Dispatcher, EventFrame
+from services.app.realtime.dispatcher import (
+    ConnectionLimitExceeded,
+    Dispatcher,
+    EventFrame,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -128,6 +132,31 @@ async def test_goal_state_change_dispatched_to_subscribed_client(
         assert frame.kind == "act_change"
     finally:
         await disp.stop()
+
+
+def test_register_client_enforces_actor_connection_cap(
+    tenant_id, seeded_actor,
+) -> None:
+    disp = Dispatcher(object(), max_connections_per_actor=2)
+    disp.register_client(tenant_id=tenant_id, actor_id=seeded_actor)
+    disp.register_client(tenant_id=tenant_id, actor_id=seeded_actor)
+    with pytest.raises(ConnectionLimitExceeded):
+        disp.register_client(tenant_id=tenant_id, actor_id=seeded_actor)
+    assert disp.stats["connection_limit_rejections"] == 1
+
+
+def test_notify_dispatch_queue_is_bounded(tenant_id) -> None:
+    disp = Dispatcher(object(), dispatch_queue_max=1)
+    payload = json.dumps(
+        {
+            "id": str(uuid7()),
+            "tenant_id": str(tenant_id),
+            "kind": "signal",
+        }
+    )
+    disp._on_notify(None, 1, "observations_new", payload)  # type: ignore[arg-type]
+    disp._on_notify(None, 1, "observations_new", payload)  # type: ignore[arg-type]
+    assert disp.stats["dispatch_queue_drops"] == 1
 
 
 # ---------------------------------------------------------------------
@@ -307,7 +336,7 @@ async def test_replay_since_sequence_num_ordered(
 async def test_many_concurrent_clients_all_receive_event(
     realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
 ) -> None:
-    disp = Dispatcher(realtime_pool)
+    disp = Dispatcher(realtime_pool, max_connections_per_actor=50)
     await disp.start()
     try:
         topic = f"tenant:{tenant_id}"

@@ -1,22 +1,32 @@
-"""Gusto entity fixture generator (finance, IN-FIN).
+"""Gusto entity fixture generator (payroll/HR, IN-FIN).
 
 `make_gusto(company_uuid=..., entities=[...], rows_per_entity=N)` produces a
-deterministic per-entity-type fixture shaped to feed `MockGustoClient`. The
-mock paginates each entity list by GUSTO's offset cursor (`STARTPOSITION` /
-`start_position`) and the fetcher drives one `gusto_entity` shard per entity
-type.
+deterministic per-entity-kind fixture shaped to feed `MockGustoClient`. The
+mock paginates each entity list by the REAL Gusto offset cursor (`page`/`per`
+query params, `X-Total-Count`-style totals) and the fetcher drives one
+`gusto_entity` shard per entity kind.
 
-Each generated entity carries exactly the fields the `gusto:object` handler
-reads (handlers/gusto.py):
-  - `Id`, `SyncToken`, `MetaData.LastUpdatedTime` (every entity),
-  - `TotalAmt`, `Balance`, `DueDate`, `CustomerRef`/`VendorRef` for the AR/AP
-    entities (Invoice / Bill),
-  - a `Line` item so the handler's rich-field extraction has something to lift.
+Rows mirror the REAL wire shapes (VERIFIED against docs.gusto.com — bare-array
+list endpoints, snake_case fields, dollar amounts as decimal STRINGS):
 
-Determinism: timestamps are spaced one minute apart, oldest first, anchored at
-`base_iso`; ids/amounts are derived from a stable SHA-256 digest of
-(company_uuid, entity_type, idx). Re-running with the same args yields byte-identical
-output.
+  - `employee`: `uuid`, `version` (the concurrency token that discriminates
+    the external_id), `first_name`/`last_name`, `work_email`, `department`,
+    `terminated`/`onboarded`, `jobs[]` with `hire_date`/`title`/`rate`(string)/
+    `payment_unit`.
+  - `payroll`: `payroll_uuid` (+ `uuid` twin), `check_date`, `processed` (+
+    `processed_date`), `off_cycle`, `pay_period{start_date,end_date,
+    pay_schedule_uuid}`, `totals{gross_pay,net_pay,...}` as decimal strings,
+    `employee_compensations` (left empty — list endpoints elide them unless
+    included).
+
+Even payroll rows are processed (-> state_change "processed"); odd rows stay
+unprocessed. Employees are active (state "signal"); bump `version` (and
+`terminated`) on a row to exercise external_id versioning.
+
+Determinism: payroll check_dates are spaced one day apart, oldest first,
+anchored at `base_iso`; ids/amounts are derived from a stable SHA-256 digest of
+(company_uuid, entity_type, idx). Re-running with the same args yields
+byte-identical output.
 """
 from __future__ import annotations
 
@@ -25,16 +35,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-# The four transactional entities the planner shards on (client.DEFAULT_ENTITIES).
-DEFAULT_ENTITIES: tuple[str, ...] = ("Invoice", "Bill", "BillPayment", "Payment")
+# The two entity kinds the planner shards on (client.DEFAULT_ENTITIES).
+DEFAULT_ENTITIES: tuple[str, ...] = ("employee", "payroll")
 
-# Which entities carry the AR/AP balance signal (Invoice -> AR, Bill -> AP).
-_AR_AP = {"Invoice", "Bill"}
+_FIRST_NAMES = ("Ava", "Noah", "Mia", "Liam", "Zoe", "Eli", "Ivy", "Max")
+_LAST_NAMES = ("Reyes", "Chen", "Okafor", "Silva", "Novak", "Hart", "Kim",
+               "Patel")
+_DEPARTMENTS = ("Engineering", "Sales", "Operations", "Finance")
+_TITLES = ("Software Engineer", "Account Executive", "Ops Manager",
+           "Financial Analyst")
 
 
 def make_gusto(
     *,
-    company_uuid: str = "9341452000000001",
+    company_uuid: str = "8b342a55-907e-4ba8-a95d-d29fbf95d6e1",
     entities: list[str] | None = None,
     rows_per_entity: int = 1,
     base_iso: str = "2026-01-05T00:00:00Z",
@@ -43,13 +57,13 @@ def make_gusto(
     """Build a Gusto company fixture.
 
     Args:
-      company_uuid: GUSTO company company id (stamped into refs + returned at top level).
-      entities: Entity types to generate; defaults to the four transactional
-        entities ("Invoice", "Bill", "BillPayment", "Payment").
-      rows_per_entity: Number of rows generated for EACH entity type.
-      base_iso: Anchor for the (deterministic, 1-min-spaced) LastUpdatedTime
-        timestamps. Accepts "...Z" or an explicit offset.
-      page_size: The mock client's per-query MAXRESULTS cap (so callers can drive
+      company_uuid: Gusto company UUID (stamped into rows + returned at top
+        level; every API call is scoped to it).
+      entities: Entity kinds to generate; defaults to ("employee", "payroll").
+      rows_per_entity: Number of rows generated for EACH entity kind.
+      base_iso: Anchor for the (deterministic, 1-day-spaced) payroll
+        check_dates / employee hire_dates. Accepts "...Z" or an explicit offset.
+      page_size: The mock client's per-request `per` cap (so callers can drive
         multi-page pagination by setting rows_per_entity > page_size).
 
     Returns:
@@ -58,9 +72,8 @@ def make_gusto(
           "company_uuid": "...",
           "page_size": 100,
           "entities": {
-            "Invoice": [ {<full GUSTO entity>}, ... ],   # ordered oldest-first
-            "Bill":    [ ... ],
-            ...
+            "employee": [ {<real-shaped employee>}, ... ],  # ordered, stable
+            "payroll":  [ {<real-shaped payroll>}, ... ],   # oldest-first
           },
         }
     """
@@ -69,10 +82,12 @@ def make_gusto(
 
     entities_out: dict[str, list[dict[str, Any]]] = {}
     for entity_type in ents:
-        rows = [
-            _entity(company_uuid, entity_type, idx, base)
-            for idx in range(rows_per_entity)
-        ]
+        if entity_type == "payroll":
+            rows = [_payroll(company_uuid, idx, base)
+                    for idx in range(rows_per_entity)]
+        else:  # employee (and any future people-shaped kind)
+            rows = [_employee(company_uuid, idx, base)
+                    for idx in range(rows_per_entity)]
         entities_out[entity_type] = rows
 
     return {
@@ -86,83 +101,96 @@ def make_gusto(
 # Per-entity builders
 # ---------------------------------------------------------------------
 
-def _entity(
-    company_uuid: str, entity_type: str, idx: int, base: datetime,
-) -> dict[str, Any]:
-    # ISO LastUpdatedTime spaced 1 minute apart, oldest first, with offset.
-    updated = (base + timedelta(minutes=idx)).isoformat()
-    seed = _digest(company_uuid, entity_type, idx)
-    entity_id = str(1000 + idx)
-    # A nonzero SyncToken on some rows exercises external_id versioning.
-    sync_token = str(idx % 3)
-    total = round(100.0 + (int(seed[:6], 16) % 900_000) / 100.0, 2)
+def _employee(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
+    seed = _digest(company_uuid, "employee", idx)
+    uuid = _uuid_from(seed)
+    first = _FIRST_NAMES[idx % len(_FIRST_NAMES)]
+    last = _LAST_NAMES[(idx + int(seed[:2], 16)) % len(_LAST_NAMES)]
+    # Annual salary as a decimal STRING in dollars (real wire shape).
+    rate = f"{60000 + (int(seed[:6], 16) % 90000)}.00"
+    hire_date = (base - timedelta(days=200 + idx * 30)).date().isoformat()
 
-    entity: dict[str, Any] = {
-        "Id": entity_id,
-        "SyncToken": sync_token,
-        "DocNumber": f"{entity_type[:3].upper()}-{entity_id}",
-        "TotalAmt": total,
-        "MetaData": {
-            "CreateTime": (base - timedelta(days=1)).isoformat(),
-            "LastUpdatedTime": updated,
-        },
+    return {
+        "uuid": uuid,
+        # The concurrency token; bump it to exercise external_id versioning.
+        "version": seed[8:16],
+        "first_name": first,
+        "last_name": last,
+        "middle_initial": None,
+        "email": f"{first.lower()}.{last.lower()}@personal.example",
+        "work_email": f"{first.lower()}.{last.lower()}@acme.example",
+        "company_uuid": company_uuid,
+        "manager_uuid": None,
+        "department": _DEPARTMENTS[idx % len(_DEPARTMENTS)],
+        "terminated": False,
+        "onboarded": True,
+        "current_employment_status": "full_time",
+        "employee_code": f"E{1000 + idx}",
+        "payment_method": "Direct Deposit",
+        "has_ssn": True,
+        "phone": None,
+        "preferred_first_name": None,
+        "jobs": [{
+            "uuid": _uuid_from(_digest(uuid, "job", 0)),
+            "primary": True,
+            "title": _TITLES[idx % len(_TITLES)],
+            "hire_date": hire_date,
+            "rate": rate,
+            "payment_unit": "Year",
+        }],
+        "eligible_paid_time_off": [],
+        "terminations": [],
+        "garnishments": [],
     }
 
-    if entity_type in _AR_AP:
-        # AR/AP entities carry Balance + DueDate (the handler's paid/overdue
-        # signal) plus the customer/vendor party.
-        # Even rows are fully paid (Balance 0 -> state_change "paid"); odd rows
-        # stay open. A far-future DueDate keeps "open" rows out of "overdue".
-        balance = 0.0 if idx % 2 == 0 else total
-        entity["Balance"] = balance
-        entity["DueDate"] = (base + timedelta(days=30)).date().isoformat()
-        entity["TxnDate"] = base.date().isoformat()
-        if entity_type == "Invoice":
-            entity["CustomerRef"] = {
-                "value": str(1 + idx), "name": f"Customer-{seed[:6]}",
-            }
-            entity["Line"] = [{
-                "Id": "1",
-                "Amount": total,
-                "Description": "Platform License",
-                "DetailType": "SalesItemLineDetail",
-                "SalesItemLineDetail": {
-                    "ItemRef": {"value": "5", "name": "Platform License"},
-                    "Qty": 1,
-                    "UnitPrice": total,
-                },
-            }]
-        else:  # Bill
-            entity["VendorRef"] = {
-                "value": str(1 + idx), "name": f"Vendor-{seed[:6]}",
-            }
-            entity["Line"] = [{
-                "Id": "1",
-                "Amount": total,
-                "Description": "Cloud Infra",
-                "DetailType": "AccountBasedExpenseLineDetail",
-                "AccountBasedExpenseLineDetail": {
-                    "AccountRef": {"value": "33", "name": "Cloud Infra"},
-                },
-            }]
-    else:
-        # Payment / BillPayment are pure cash events (signal only). Payment is
-        # customer-side AR cash; BillPayment is vendor-side AP cash.
-        if entity_type == "Payment":
-            entity["CustomerRef"] = {
-                "value": str(1 + idx), "name": f"Customer-{seed[:6]}",
-            }
-        else:  # BillPayment
-            entity["VendorRef"] = {
-                "value": str(1 + idx), "name": f"Vendor-{seed[:6]}",
-            }
-        entity["Line"] = [{
-            "Amount": total,
-            "LinkedTxn": [{"TxnId": entity_id, "TxnType": "Invoice"
-                           if entity_type == "Payment" else "Bill"}],
-        }]
 
-    return entity
+def _payroll(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
+    seed = _digest(company_uuid, "payroll", idx)
+    payroll_uuid = _uuid_from(seed)
+    # check_dates spaced 1 day apart, oldest first.
+    check = (base + timedelta(days=idx)).date()
+    period_start = (base + timedelta(days=idx) - timedelta(days=14)).date()
+    period_end = (base + timedelta(days=idx) - timedelta(days=1)).date()
+    # Even rows are processed (state_change "processed"); odd rows pending.
+    processed = idx % 2 == 0
+    gross = 10000.0 + (int(seed[:6], 16) % 900_000) / 100.0
+    employee_taxes = round(gross * 0.18, 2)
+    employer_taxes = round(gross * 0.08, 2)
+    net = round(gross - employee_taxes, 2)
+
+    return {
+        "payroll_uuid": payroll_uuid,
+        "uuid": payroll_uuid,
+        "company_uuid": company_uuid,
+        "check_date": check.isoformat(),
+        "processed": processed,
+        "processed_date": check.isoformat() if processed else None,
+        "calculated_at": f"{period_end.isoformat()}T12:00:00Z",
+        "payroll_deadline": f"{period_end.isoformat()}T17:00:00Z",
+        "off_cycle": False,
+        "external": False,
+        "pay_period": {
+            "start_date": period_start.isoformat(),
+            "end_date": period_end.isoformat(),
+            "pay_schedule_uuid": _uuid_from(_digest(company_uuid, "sched", 0)),
+        },
+        # All dollar amounts are decimal STRINGS, to the cent.
+        "totals": {
+            "company_debit": f"{round(gross + employer_taxes, 2):.2f}",
+            "net_pay_debit": f"{net:.2f}",
+            "tax_debit": f"{round(employee_taxes + employer_taxes, 2):.2f}",
+            "reimbursement_debit": "0.00",
+            "child_support_debit": "0.00",
+            "reimbursements": "0.00",
+            "net_pay": f"{net:.2f}",
+            "gross_pay": f"{gross:.2f}",
+            "employee_taxes": f"{employee_taxes:.2f}",
+            "employer_taxes": f"{employer_taxes:.2f}",
+            "benefits": "0.00",
+        },
+        # List endpoints elide per-employee compensations unless included.
+        "employee_compensations": [],
+    }
 
 
 # ---------------------------------------------------------------------
@@ -183,6 +211,11 @@ def _digest(*parts: Any) -> str:
         h.update(str(p).encode())
         h.update(b"|")
     return h.hexdigest()
+
+
+def _uuid_from(seed: str) -> str:
+    """A stable UUID-shaped string from a hex digest."""
+    return f"{seed[:8]}-{seed[8:12]}-{seed[12:16]}-{seed[16:20]}-{seed[20:32]}"
 
 
 __all__ = ["make_gusto", "DEFAULT_ENTITIES"]

@@ -999,6 +999,60 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
 }
 
 
+def _coerce_update_value(column: str, value: Any) -> Any:
+    """Coerce an LLM-provided model-update value to the column's type.
+
+    The LLM sees timestamps as ISO strings in its context and echoes
+    them back (booleans/ints sometimes arrive stringified too); asyncpg
+    rejects mistyped parameters with a DataError that fails the whole
+    run. Coerce the known column set instead, raising ValidationError
+    on garbage so a bad op fails with a contract error, not a driver
+    error.
+    """
+    if value is None:
+        return None
+    if column in ("last_confirmed_at", "resolved_at"):
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValidationError(
+                    f"apply_claim_op update: {column} is not an ISO "
+                    f"timestamp: {value!r}"
+                ) from exc
+        raise ValidationError(
+            f"apply_claim_op update: {column} must be a timestamp; "
+            f"got {type(value).__name__}"
+        )
+    if column in ("reading_contestable", "resolution_outcome"):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            return value.strip().lower() == "true"
+        raise ValidationError(
+            f"apply_claim_op update: {column} must be a boolean; got {value!r}"
+        )
+    if column in ("confirmed_count", "contested_count"):
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"apply_claim_op update: {column} must be an integer; "
+                f"got {value!r}"
+            ) from exc
+    if column == "evidential_weight":
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"apply_claim_op update: {column} must be a number; "
+                f"got {value!r}"
+            ) from exc
+    return value
+
+
 _EVIDENCE_TOKEN_STOPWORDS = {
     "about", "after", "also", "and", "are", "because", "been", "but",
     "call", "case", "customer", "from", "has", "have", "into", "now",
@@ -2188,7 +2242,7 @@ async def _apply_claim_op(
             if isinstance(maybe_payload, dict):
                 situation_merge_payload = maybe_payload
         changes = {
-            k: v for k, v in raw_changes.items()
+            k: _coerce_update_value(k, v) for k, v in raw_changes.items()
             if k in _ALLOWED_MODEL_UPDATE_COLUMNS
         }
         resolution_update_dropped = False

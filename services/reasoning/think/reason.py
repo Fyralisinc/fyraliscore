@@ -147,7 +147,7 @@ def _early_idempotency_skip_enabled() -> bool:
 
 
 def _narrow_inferential_transaction_enabled() -> bool:
-    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "1") != "0"
+    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "0") != "0"
 
 
 @asynccontextmanager
@@ -234,10 +234,10 @@ async def think(
 
     Authoritative/deterministic triggers keep the legacy wide
     transaction because a few deterministic handlers intentionally do
-    side-effectful reasoning. Inferential triggers run retrieval,
-    context assembly, and LLM reasoning outside the apply transaction,
-    then open a short mutation transaction for the advisory lock,
-    validation, apply, anomaly publication, queueing, and cascade.
+    side-effectful reasoning. Inferential triggers also default to the
+    wide transaction path so region advisory locks are held before LLM
+    reasoning; set THINK_NARROW_INFERENTIAL_TX=1 only when a stronger
+    freshness protocol is available.
 
     For tests that want to drive everything inside one pre-opened
     transaction (ROLLBACK at teardown), use `think_in_conn` instead —
@@ -909,6 +909,31 @@ async def _run_once(
         )
         acquisition = await acquire_region_lock(
             conn, trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
+        )
+        locked_context = await assemble_reasoning_context(
+            context_plan,
+            trigger,
+            conn,
+            access_context=access_context,
+            expanded_region=expanded_region,
+            run_id=record.id,
+        )
+        locked_region = list(locked_context.allowed_region)
+        if set(locked_region) != set(allowed_region):
+            allowed_region = sorted(set(allowed_region) | set(locked_region))
+            acquisition = await acquire_region_lock(
+                conn,
+                trigger.tenant_id,
+                [(t, i) for (t, i) in allowed_region],
+            )
+        reasoning_context = locked_context
+        bundle = reasoning_context.bundle
+        actor_operating_summary = reasoning_context.actor_operating_summary
+        await update_think_run(
+            conn,
+            record.id,
+            retrieval_model_count=len(bundle.models),
+            retrieval_observation_count=len(bundle.observations),
         )
         mutation_row_inserted = True
 

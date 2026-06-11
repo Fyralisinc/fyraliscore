@@ -1,20 +1,15 @@
 """services/ingest/integrations/gusto/oauth.py — admin connect wizard (finance).
 
-Gusto authenticates with OAuth 2.0 — a short-lived access token plus a rotating
-refresh token, every call scoped to a company ``company_uuid``. This repo
-deliberately does NOT implement the OAuth bounce (authorize → callback → code
-exchange): the read client consumes the current access token. So the genuine
-production install surface is operator-mediated credential submission: the
-operator pastes the `company_uuid` + the `access_token` (and `refresh_token`)
-they obtained from their Gusto OAuth app, and the router verifies them against
-the REAL Gusto API before seeding the install.
-
-TODO(human): implement Gusto OAuth token refresh — NONE exists yet (the
-    documented-but-unbuilt seam, exactly as the QuickBooks archetype ships).
-    `finalize` already persists `refresh_secret_ref` + (optionally)
-    `token_expires_at`; wire a refresh loop (refresh-on-401 in the client OR an
-    oauth_poller) so short-lived access tokens are rotated. Do NOT assume tokens
-    never expire.
+Gusto authenticates with OAuth 2.0 — a short-lived access token (2 h; rotated
+via the refresh-token grant at ``POST /oauth/token``, see
+`integrations/oauth_refresh.py`) — and every call is scoped to a company
+``company_uuid``. This repo deliberately does NOT implement the OAuth bounce
+(authorize → callback → code exchange): the read client consumes the current
+access token, with a reactive 401 re-mint in `GustoClient._request`. So the
+genuine production install surface is operator-mediated credential submission:
+the operator pastes the `company_uuid` + the `access_token` (and
+`refresh_token`) they obtained from their Gusto OAuth app, and the router
+verifies them against the REAL Gusto API before seeding the install.
 
 This is the production surface the audit flagged as missing: `finalize_install`
 / `register_webhook_installation` were reachable only through the dev
@@ -26,7 +21,8 @@ Flow:
 
     POST /integrations/gusto/connect/preflight
         body: { company_uuid, access_token, base_url? }
-        → GustoClient.company_info() to verify the token + company
+        → GustoClient.company() (`GET /v1/companies/{company_uuid}`) to verify
+          the token + company
         → on auth failure: a structured 400 (no secret is stored)
 
     POST /integrations/gusto/connect/finalize
@@ -66,8 +62,9 @@ from services.ingest.integrations.gusto.onboarding import (
 log = structlog.get_logger("integrations.gusto.oauth")
 
 
-# TODO(human): confirm Gusto production API host. The operator may pass a
-# sandbox/demo host via base_url when testing; this default is a placeholder.
+# CONFIRMED (docs.gusto.com): production host is https://api.gusto.com; the
+# operator may pass the demo host (https://api.gusto-demo.com) via base_url
+# when testing against a Gusto demo company.
 _DEFAULT_BASE_URL = "https://api.gusto.com"
 
 
@@ -135,7 +132,8 @@ def _auth_failure_response(exc: GustoApiError) -> JSONResponse:
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    """Verify the access token + company via the companyinfo probe."""
+    """Verify the access token + company via the `GET /v1/companies/{uuid}`
+    probe."""
     _tenant_from_request(request)  # auth check
     body = await request.json()
     company_uuid, access_token, base_url = _require_creds(body)
@@ -144,14 +142,13 @@ async def connect_preflight(request: Request) -> JSONResponse:
         base_url=base_url, company_uuid=company_uuid, access_token=access_token,
     )
     try:
-        info = await client.company_info()
+        info = await client.company()
     except GustoApiError as exc:
         return _auth_failure_response(exc)
     finally:
         await client.aclose()
 
-    company = info.get("CompanyInfo") if isinstance(info, dict) else None
-    company_name = company.get("CompanyName") if isinstance(company, dict) else None
+    company_name = info.get("name") if isinstance(info, dict) else None
     return JSONResponse(content={
         "ok": True,
         "company_uuid": company_uuid,
@@ -189,7 +186,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         base_url=base_url, company_uuid=company_uuid, access_token=access_token,
     )
     try:
-        await client.company_info()
+        await client.company()
     except GustoApiError as exc:
         return _auth_failure_response(exc)
     finally:

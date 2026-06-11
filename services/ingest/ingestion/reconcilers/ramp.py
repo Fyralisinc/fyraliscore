@@ -1,15 +1,22 @@
 """services/ingest/ingestion/reconcilers/ramp.py — gap detection (finance).
 
 After an entity shard completes, its cursor carries `high_water_updated` — the
-max Metadata.LastUpdatedTime the fetcher walked. The reconciler probes the LIVE
-business for any entity of that type updated after the high-water; if one exists, a
-reshare is emitted for that entity type, warm-started at the high-water
-(incremental mode).
+max per-stream timestamp the fetcher walked (`user_transaction_time` for
+transactions, `updated_at` for reimbursements, `created_at` for cards). The
+reconciler probes the LIVE business for any entity of that type past the
+high-water via the stream's server-side window param (`from_date` /
+`updated_after`); if one exists, a reshare is emitted for that entity type,
+warm-started at the high-water (incremental mode).
 
-`external_id` parity (versioned by SyncToken) means re-walked entities dedup
-against what backfill already wrote — only genuinely new/changed entities produce
-new observations. Pragmatic v1: one cheap 1-row query per entity type; it can
-over-reshare but never under-reshares, and dedup makes re-walks idempotent.
+Cards and users have NO server-side incremental filter (verified docs.ramp.com)
+— they are NOT gap-probed here; their periodic full re-walks are idempotent via
+the state-versioned external_id.
+
+`external_id` parity (versioned by state) means re-walked entities dedup
+against what backfill already wrote — only genuinely new/changed entities
+produce new observations. Pragmatic v1: one cheap minimal-page probe per
+probe-able entity type; it can over-reshare but never under-reshares, and dedup
+makes re-walks idempotent.
 """
 from __future__ import annotations
 
@@ -86,17 +93,24 @@ async def _check_one_shard_for_gap(
     if not entity_type:
         return None
 
+    # Only the streams with a server-side incremental window are probe-able.
+    if entity_type not in ("transaction", "reimbursement"):
+        return None
+
     high_water = await _load_shard_high_water(pool, shard["id"])
     if high_water is None:
         return None
 
     try:
-        rows, _ = await client.query(
-            entity_type,
-            where=f"Metadata.LastUpdatedTime > '{high_water}'",
-            start_position=1,
-            max_results=1,
-        )
+        # Minimal keyset page (page_size floor is 2 per docs.ramp.com).
+        if entity_type == "transaction":
+            rows, _ = await client.list_transactions(
+                from_date=high_water, page_size=2,
+            )
+        else:
+            rows, _ = await client.list_reimbursements(
+                updated_after=high_water, page_size=2,
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
             "reconcilers.ramp.probe_failed",

@@ -1,29 +1,34 @@
 """Carta cap-table fixture generator (IN-CARTA).
 
 `make_carta(firm_id=..., entities=[...], rows_per_entity=N)` produces a
-deterministic per-entity-type fixture shaped to feed `MockCartaClient`. The mock
-paginates each entity list by CARTA's offset cursor (`STARTPOSITION` /
-`start_position`) and the fetcher drives one `carta_entity` shard per entity
-type.
+deterministic per-entity-type fixture shaped to feed `MockCartaClient` (the
+in-process `_open_carta_client` seam) and `start_mock_carta` (the threaded HTTP
+mock). Entities are REAL Issuer v1alpha1 shapes (CONFIRMED — see
+integrations/carta/client.py): camelCase field names and protobuf wrapper
+objects — `{"value": "<decimal string>"}` (v1alpha1Decimal / dates / datetimes)
+and `{"currencyCode": {"value": "USD"}, "amount": {"value": "1.25"}}`
+(v1alpha1Money) — so the `carta:object` handler decodes fixtures exactly as it
+decodes production payloads.
 
-Each generated entity carries exactly the fields the `carta:object` handler
-reads (handlers/carta.py):
-  - `Id`, `SyncToken`, `MetaData.LastUpdatedTime` (every entity),
-  - `Status` (the handler's state_change/open signal classifier),
-  - `StakeholderRef` + cap-table extras (ShareCount / Quantity / StrikePrice /
-    InvestmentAmount / ValuationCap / ...) per entity type.
+Entity taxonomy = the four `/v1alpha1/issuers/{id}/{collection}` lists the
+fetcher shards on (client.DEFAULT_ENTITIES): `stakeholder` / `shareClass` /
+`optionGrant` / `convertibleNote`. ONLY option grants carry
+`lastModifiedDatetime` (the one collection with a server-side delta filter,
+`lastModifiedDatetimeAfter`); the other kinds have no timestamp — incremental
+sync is a full idempotent re-walk.
 
-DEFAULT: 4 entity kinds (Shareholder / ShareClass / SafeNote / OptionGrant) ×
-1 row = exactly 4 backfill observations per tenant. Because the entity_kind is
-baked into the external_id (`carta:{firm}:{kind}:{id}:{sync_token}`), the four
-rows stay distinct even if their `Id`s repeat — so multi-entity fixtures never
-collide (cap-table-shaped, NOT transaction-shaped).
+DEFAULT: 4 entity kinds × 1 row = exactly 4 backfill observations per tenant.
+Because the entity_kind is baked into the external_id
+(`carta:{firm}:{kind}:{id}:{version}`, version = content digest — see
+handlers/carta.py `carta_version`), the four rows stay distinct even if their
+`id`s repeat — so multi-entity fixtures never collide (cap-table-shaped, NOT
+transaction-shaped).
 
-Determinism: timestamps are spaced one minute apart, oldest first, anchored at
-`base_iso`; ids/amounts are derived from a stable SHA-256 digest of
-(firm_id, entity_type, idx). Re-running with the same args yields byte-identical
-output. The `seed` kwarg, when set, salts the digest so distinct tenants get
-distinct ids/amounts without colliding.
+Determinism: option-grant `lastModifiedDatetime`s are spaced one minute apart,
+oldest first, anchored at `base_iso`; ids/amounts are derived from a stable
+SHA-256 digest of (firm_id, entity_type, idx). Re-running with the same args
+yields byte-identical output. The `seed` kwarg, when set, salts the digest so
+distinct tenants get distinct ids/amounts without colliding.
 """
 from __future__ import annotations
 
@@ -32,48 +37,52 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-# The four cap-table entities the planner shards on (client.DEFAULT_ENTITIES).
+# The four cap-table entity kinds the planner shards on — the shard taxonomy
+# keys of client.ENTITY_COLLECTIONS (== client.DEFAULT_ENTITIES).
 DEFAULT_ENTITIES: tuple[str, ...] = (
-    "Shareholder", "ShareClass", "SafeNote", "OptionGrant",
+    "stakeholder", "shareClass", "optionGrant", "convertibleNote",
 )
 
 
 def make_carta(
     *,
-    firm_id: str = "firm_9341452000000001",
+    firm_id: str = "f6e1d4a0-0000-4000-8000-000000000001",
     entities: list[str] | None = None,
     rows_per_entity: int = 1,
-    seed: int | None = None,
+    seed: Any | None = None,
     base_iso: str = "2026-01-05T00:00:00Z",
-    page_size: int = 100,
+    page_size: int = 50,
 ) -> dict[str, Any]:
-    """Build a Carta firm fixture.
+    """Build a Carta issuer fixture.
 
     Args:
-      firm_id: CARTA firm scope id (stamped into refs + returned at top level).
-      entities: Entity types to generate; defaults to the four cap-table entities
-        ("Shareholder", "ShareClass", "SafeNote", "OptionGrant").
+      firm_id: The Carta **issuer id** (the install scope, stored in
+        `carta_installations.firm_id`; stamped into every entity's `issuerId`).
+      entities: Entity types to generate; defaults to the four cap-table kinds
+        ("stakeholder", "shareClass", "optionGrant", "convertibleNote").
       rows_per_entity: Number of rows generated for EACH entity type. The default
         4 entities × 1 row = exactly 4 backfill observations per tenant.
       seed: Optional salt mixed into the deterministic digest so distinct tenants
         get distinct ids/amounts (the global observations UNIQUE has no tenant_id,
         so per-tenant fixtures must differ — though the entity_kind discriminator
         already keeps same-id rows distinct WITHIN a tenant).
-      base_iso: Anchor for the (deterministic, 1-min-spaced) LastUpdatedTime
-        timestamps. Accepts "...Z" or an explicit offset.
-      page_size: The mock client's per-query MAXRESULTS cap (so callers can drive
-        multi-page pagination by setting rows_per_entity > page_size).
+      base_iso: Anchor for the (deterministic, 1-min-spaced) option-grant
+        `lastModifiedDatetime` timestamps. Accepts "...Z" or an explicit offset.
+      page_size: The mock's per-list `pageSize` cap (so callers can drive
+        multi-page AIP-158 pagination by setting rows_per_entity > page_size).
 
     Returns:
-      Fixture dict consumed by `MockCartaClient(fixture=...)`:
+      Fixture dict consumed by `MockCartaClient(fixture=...)` /
+      `start_mock_carta(...)`:
         {
-          "firm_id": "...",
-          "page_size": 100,
+          "firm_id": "...",                      # the Carta issuer id
+          "page_size": 50,
+          "issuer": {"id": "...", "legalName": "..."},
           "entities": {
-            "Shareholder": [ {<full CARTA entity>}, ... ],   # oldest-first
-            "ShareClass":  [ ... ],
-            "SafeNote":    [ ... ],
-            "OptionGrant": [ ... ],
+            "stakeholder":     [ {<v1alpha1 Stakeholder>}, ... ],  # oldest-first
+            "shareClass":      [ ... ],
+            "optionGrant":     [ ... ],
+            "convertibleNote": [ ... ],
           },
         }
     """
@@ -92,8 +101,26 @@ def make_carta(
     return {
         "firm_id": firm_id,
         "page_size": page_size,
+        "issuer": {
+            "id": firm_id,
+            "legalName": f"Synthetic Issuer {firm_id[:8]}",
+        },
         "entities": entities_out,
     }
+
+
+# ---------------------------------------------------------------------
+# Wrapper builders (v1alpha1Decimal / Date / DateTime / Money)
+# ---------------------------------------------------------------------
+
+def _dec(value: Any) -> dict[str, str]:
+    """v1alpha1Decimal / date / datetime wrapper: `{"value": "<string>"}`."""
+    return {"value": str(value)}
+
+
+def _money(amount: Any, currency: str = "USD") -> dict[str, Any]:
+    """v1alpha1Money: `{"currencyCode": {"value": ...}, "amount": {"value": ...}}`."""
+    return {"currencyCode": _dec(currency), "amount": _dec(amount)}
 
 
 # ---------------------------------------------------------------------
@@ -103,49 +130,74 @@ def make_carta(
 def _entity(
     firm_id: str, entity_type: str, idx: int, base: datetime, salt: str,
 ) -> dict[str, Any]:
-    # ISO LastUpdatedTime spaced 1 minute apart, oldest first, with offset.
-    updated = (base + timedelta(minutes=idx)).isoformat()
     digest = _digest(salt, firm_id, entity_type, idx)
     entity_id = str(1000 + idx)
-    # A nonzero SyncToken on some rows exercises external_id versioning.
-    sync_token = str(idx % 3)
     amount = round(100.0 + (int(digest[:6], 16) % 900_000) / 100.0, 2)
+    # ISO lastModifiedDatetime spaced 1 minute apart, oldest first (UTC "Z").
+    updated = _iso_z(base + timedelta(minutes=idx))
 
-    entity: dict[str, Any] = {
-        "Id": entity_id,
-        "SyncToken": sync_token,
-        "DocNumber": f"{entity_type[:3].upper()}-{entity_id}",
-        "Status": "active",
-        "StakeholderRef": {
-            "value": str(1 + idx), "name": f"Holder-{digest[:6]}",
-        },
-        "MetaData": {
-            "CreateTime": (base - timedelta(days=1)).isoformat(),
-            "LastUpdatedTime": updated,
-        },
-    }
-
-    if entity_type == "Shareholder":
-        entity["ShareCount"] = 1000 * (idx + 1)
-        entity["Ownership"] = round(1.0 + idx, 4)
-        entity["ShareClassRef"] = {"value": "1", "name": "Common"}
-    elif entity_type == "ShareClass":
-        entity["ShareCount"] = 10_000_000
-        entity["PricePerShare"] = amount
-        entity["DocNumber"] = f"SC-{entity_id}"
-    elif entity_type == "SafeNote":
-        entity["InvestmentAmount"] = amount
-        entity["ValuationCap"] = amount * 100
-        entity["DiscountRate"] = 0.2
-        entity["IssueDate"] = base.date().isoformat()
-    else:  # OptionGrant
-        entity["Quantity"] = 500 * (idx + 1)
-        entity["StrikePrice"] = round(amount / 100.0, 4)
-        entity["GrantDate"] = base.date().isoformat()
-        entity["VestingSchedule"] = "4yr-1yr-cliff"
-        entity["ShareClassRef"] = {"value": "1", "name": "Common"}
-
-    return entity
+    if entity_type == "stakeholder":
+        return {
+            "id": entity_id,
+            "issuerId": firm_id,
+            "fullName": f"Holder {digest[:6]}",
+            "email": f"holder-{digest[:6]}@synthetic.example",
+            "employeeId": f"EMP-{entity_id}",
+            # Open relationships only — EX_* maps to a "former" state_change
+            # in the handler; keep defaults signal-shaped and predictable.
+            "relationship": ("EMPLOYEE", "FOUNDER", "INVESTOR", "ADVISOR")[idx % 4],
+            "entityType": "INDIVIDUAL",
+        }
+    if entity_type == "shareClass":
+        return {
+            "id": entity_id,
+            "issuerId": firm_id,
+            "name": f"Common {digest[:4].upper()}",
+            "prefix": "CS",
+            "type": "COMMON",
+            "authorizedShareCount": _dec(10_000_000),
+            "parValue": _money("0.0001"),
+            "seniority": 1,
+            "pariPassu": False,
+        }
+    if entity_type == "optionGrant":
+        qty = 500 * (idx + 1)
+        return {
+            "id": entity_id,
+            "issuerId": firm_id,
+            "securityLabel": f"OG-{entity_id}",
+            "securityId": digest[:16],
+            "stakeholderId": str(1 + idx),
+            "shareClassId": "1",
+            "stockOptionType": "ISO",
+            "quantity": _dec(qty),
+            "outstandingQuantity": _dec(qty),
+            "vestedQuantity": _dec(0),
+            # 0 exercised -> the handler classifies "outstanding" (signal).
+            "exercisedQuantity": _dec(0),
+            "exercisePrice": _money(f"{amount / 100.0:.4f}"),
+            "issueDate": _dec(base.date().isoformat()),
+            "grantExpirationDate": _dec(
+                (base + timedelta(days=3650)).date().isoformat()
+            ),
+            "lastModifiedDatetime": _dec(updated),
+        }
+    if entity_type == "convertibleNote":
+        return {
+            "id": entity_id,
+            "issuerId": firm_id,
+            "securityLabel": f"CN-{entity_id}",
+            "securityId": digest[16:32],
+            "stakeholderId": str(1 + idx),
+            "cashPaid": _money(f"{amount:.2f}"),
+            "priceCap": _money(f"{amount * 100:.2f}"),
+            "discountPercentage": _dec("20"),
+            "interestRate": _dec("5"),
+            "issueDatetime": _dec(_iso_z(base - timedelta(days=1))),
+            "maturityDatetime": _dec(_iso_z(base + timedelta(days=730))),
+            # No conversion/cancel datetime -> "outstanding" (signal).
+        }
+    raise ValueError(f"unknown carta entity_type {entity_type!r}")
 
 
 # ---------------------------------------------------------------------
@@ -158,6 +210,10 @@ def _parse_iso(value: str) -> datetime:
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _iso_z(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _digest(*parts: Any) -> str:

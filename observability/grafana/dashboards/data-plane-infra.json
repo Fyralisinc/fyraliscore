@@ -1,0 +1,315 @@
+{
+  "uid": "fyralis-data-plane-infra",
+  "title": "Fyralis · Data Plane Infrastructure",
+  "tags": ["fyralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Kafka Consumer Lag by Group",
+      "gridPos": {"h": 8, "w": 18, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (consumergroup) (kafka_consumergroup_lag_sum)",
+          "legendFormat": "{{consumergroup}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Kafka Brokers",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kafka_brokers",
+          "legendFormat": "brokers"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Postgres Backends (company_os)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "pg_stat_database_numbackends{datname=\"company_os\"}",
+          "legendFormat": "backends"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Postgres Transaction Rate (company_os)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(pg_stat_database_xact_commit{datname=\"company_os\"}[5m])",
+          "legendFormat": "commit/s"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(pg_stat_database_xact_rollback{datname=\"company_os\"}[5m])",
+          "legendFormat": "rollback/s"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Postgres Locks by Mode",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "pg_locks_count",
+          "legendFormat": "{{mode}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "App DB Pool Saturation",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:db_pool_saturation",
+          "legendFormat": "{{pool}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 0.9}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "DB Pool Acquire Wait p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, pool) (rate(db_pool_acquire_wait_seconds_bucket[5m])))",
+          "legendFormat": "{{pool}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Kafka Producer Deliveries & Flush p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(kafka_producer_delivery_total[5m]))",
+          "legendFormat": "delivery {{outcome}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kafka_producer_flush_duration_seconds_bucket[5m])))",
+          "legendFormat": "flush p95 (s)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "flush p95 (s)"},
+            "properties": [{"id": "unit", "value": "s"}]
+          }
+        ]
+      },
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Redis Memory & Clients",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_memory_used_bytes",
+          "legendFormat": "memory used"
+        },
+        {
+          "refId": "B",
+          "expr": "redis_connected_clients",
+          "legendFormat": "connected clients"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes"},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "connected clients"},
+            "properties": [{"id": "unit", "value": "short"}]
+          }
+        ]
+      },
+      "options": {}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "OAuth Refresh Outcomes",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider, outcome) (rate(oauth_refresh_outcomes_total[15m]))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Integration API Outcomes",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source, outcome) (rate(integration_requests_total[15m]))",
+          "legendFormat": "{{source}} {{outcome}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Scrape Target Health",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (job) (up{job=~\"prometheus|postgres|kafka|redis|minio|grafana|fyralis-.*\"})",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "MinIO Capacity",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "minio_cluster_usage_total_bytes",
+          "legendFormat": "used"
+        },
+        {
+          "refId": "B",
+          "expr": "minio_cluster_capacity_usable_free_bytes",
+          "legendFormat": "free"
+        },
+        {
+          "refId": "C",
+          "expr": "minio_cluster_capacity_usable_total_bytes",
+          "legendFormat": "usable total"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Grafana Process Health",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes{job=\"grafana\"}",
+          "legendFormat": "memory"
+        },
+        {
+          "refId": "B",
+          "expr": "go_goroutines{job=\"grafana\"}",
+          "legendFormat": "goroutines"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes"},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "goroutines"},
+            "properties": [{"id": "unit", "value": "short"}]
+          }
+        ]
+      },
+      "options": {}
+    }
+  ]
+}

@@ -51,6 +51,7 @@ _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000006901")
 _BASE_URL = "https://api.figma.com"
 _TEAM_ID = "team-sandbox"
+_WEBHOOK_ID = "webhook-sandbox"
 _FILE = "file-design-system"
 
 
@@ -73,21 +74,23 @@ def _iso(dt: datetime) -> str:
 def _build_fixtures() -> dict:
     now = datetime.now(timezone.utc)
 
-    def ev(eid, etype, label, created, version, status=None):
-        return {
+    def ev(eid, etype, label, created, version=None, status=None):
+        event = {
             "id": eid,
             "event_id": eid,
             "event_type": etype,
             "type": etype,
             "team_id": _TEAM_ID,
             "file_key": _FILE,
-            "version": version,
             "label": label,
             "status": status,
             "user": "ada",
             "createdAt": created,
             "created_at": created,
         }
+        if version is not None:
+            event["version"] = version
+        return event
 
     return {
         _FILE: {
@@ -101,7 +104,7 @@ def _build_fixtures() -> dict:
                 ev("e-1001", "FILE_VERSION_UPDATE", "v1.0 checkpoint",
                    _iso(now - timedelta(days=3)), "v-1"),
                 ev("e-1002", "FILE_COMMENT", "needs review",
-                   _iso(now - timedelta(days=2)), "v-1"),
+                   _iso(now - timedelta(days=2))),
             ],
             # Incremental delta: e-1001 is re-published at a NEW version — a
             # fresh observation the poll/reconcile surfaces.
@@ -219,7 +222,8 @@ async def run(args) -> int:
             team_id=_TEAM_ID,
         )
         await register_webhook_installation(
-            pool, tenant_id=_TENANT_ID, team_id=_TEAM_ID, webhook_secret_ref=None,
+            pool, tenant_id=_TENANT_ID, webhook_id=_WEBHOOK_ID,
+            team_id=_TEAM_ID, webhook_secret_ref=None,
         )
         file_count = await pool.fetchval(
             "SELECT count(*) FROM figma_files WHERE figma_installation_id=$1", install_id,

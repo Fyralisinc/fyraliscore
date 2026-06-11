@@ -255,6 +255,12 @@ async def create(
                 goal_id, is_cp = item, False
             else:
                 goal_id, is_cp = item[0], bool(item[1])
+            await _require_goal_can_accept_critical_path(
+                tx,
+                goal_id=goal_id,
+                commitment_state=effective_initial,
+                is_critical_path=is_cp,
+            )
             await tx.execute(
                 """
                 INSERT INTO contributes_to (
@@ -364,6 +370,73 @@ async def _require_tenant_goal(
         raise ValidationError(
             "contributes_to goal belongs to different tenant",
             goal_id=str(goal_id),
+        )
+
+
+async def _require_goal_can_accept_critical_path(
+    tx: asyncpg.Connection,
+    *,
+    goal_id: UUID,
+    commitment_state: str,
+    is_critical_path: bool,
+) -> None:
+    if not is_critical_path:
+        return
+    state = await tx.fetchval(
+        "SELECT state FROM goals WHERE id = $1 FOR UPDATE",
+        goal_id,
+    )
+    if state == "achieved" and commitment_state != "doneverified":
+        raise InvariantViolation(
+            "G4",
+            "achieved goal cannot receive an unfinished critical-path commitment",
+            goal_id=str(goal_id),
+            commitment_state=commitment_state,
+        )
+
+
+async def _require_contributes_to_allowed(
+    tx: asyncpg.Connection,
+    *,
+    commitment_id: UUID,
+    goal_id: UUID,
+    is_critical_path: bool,
+) -> None:
+    c_row = await tx.fetchrow(
+        "SELECT tenant_id, state FROM commitments WHERE id = $1 FOR UPDATE",
+        commitment_id,
+    )
+    if c_row is None:
+        raise ValidationError(
+            "contributes_to commitment_id does not exist",
+            commitment_id=str(commitment_id),
+        )
+    g_row = await tx.fetchrow(
+        "SELECT tenant_id, state FROM goals WHERE id = $1 FOR UPDATE",
+        goal_id,
+    )
+    if g_row is None:
+        raise ValidationError(
+            "contributes_to goal_id does not exist",
+            goal_id=str(goal_id),
+        )
+    if c_row["tenant_id"] != g_row["tenant_id"]:
+        raise ValidationError(
+            "contributes_to entities belong to different tenants",
+            commitment_id=str(commitment_id),
+            goal_id=str(goal_id),
+        )
+    if (
+        is_critical_path
+        and g_row["state"] == "achieved"
+        and c_row["state"] != "doneverified"
+    ):
+        raise InvariantViolation(
+            "G4",
+            "achieved goal cannot receive an unfinished critical-path commitment",
+            goal_id=str(goal_id),
+            commitment_id=str(commitment_id),
+            commitment_state=c_row["state"],
         )
 
 
@@ -654,6 +727,12 @@ async def add_edge(
                 raise ValidationError(
                     "contributes_to requires commitment_id and goal_id"
                 )
+            await _require_contributes_to_allowed(
+                tx,
+                commitment_id=commitment_id,
+                goal_id=goal_id,
+                is_critical_path=is_critical_path,
+            )
             await tx.execute(
                 """
                 INSERT INTO contributes_to (

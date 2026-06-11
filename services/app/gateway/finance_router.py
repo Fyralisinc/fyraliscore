@@ -363,7 +363,8 @@ _DEEL_CONTRACTS = [
      "contract_kind": "contractor"},
 ]
 _RAMP_ENTITIES = ("Invoice", "Bill", "BillPayment", "Payment")
-_GUSTO_ENTITIES = ("Invoice", "Bill", "BillPayment", "Payment")
+# Gusto's real /v1 taxonomy (employees + payrolls) — see integrations/gusto.
+_GUSTO_ENTITIES = ("employee", "payroll")
 
 _BREX_COUNTERPARTIES = [
     ("AWS", -1850.00, "card_payment"),
@@ -550,32 +551,42 @@ def _ramp_live_event(business_id: str, seq: int) -> dict:
 
 def _gusto_backfill_records(entity: str, company_uuid: str, n: int,
                             seed: int) -> list[dict]:
-    """Gusto backfill records — QBO-shaped entity bodies (gusto handler reuses
-    the QuickBooks entity decoder); `_fyralis_company_uuid` keys the scope id."""
-    recs = _qbo_backfill_records(entity, company_uuid, n, seed)
-    for r in recs:
-        r.pop("_fyralis_realm_id", None)
-        r["_fyralis_company_uuid"] = company_uuid
-    return recs
+    """Gusto backfill records — REAL-shaped employee/payroll bodies (the
+    gusto:object handler decodes the real /v1 wire fields, see
+    fixtures/gusto_generator.py); `_fyralis_company_uuid` keys the scope id.
+    `seed` shifts the deterministic id space so re-runs mint fresh
+    external_ids."""
+    from services.ingest.synthetic.fixtures.gusto_generator import make_gusto
+
+    fixture = make_gusto(
+        company_uuid=f"{company_uuid}-s{seed}" if seed else company_uuid,
+        entities=[entity],
+        rows_per_entity=n,
+    )
+    return [
+        {
+            "_fyralis_record_type": entity,
+            "_fyralis_company_uuid": company_uuid,
+            "entity": row,
+        }
+        for row in fixture["entities"][entity]
+    ]
 
 
 def _gusto_live_event(company_uuid: str, seq: int) -> dict:
-    """One live Gusto eventNotifications body. Carries BOTH `company_uuid`
-    (snake, for tenant_resolver._extract_gusto) and `companyId` (camel, read by
-    the handler webhook decoder)."""
+    """One live Gusto thin notification — REAL flat snake_case shape (VERIFIED
+    against docs.gusto.com): `resource_uuid` is ALWAYS the company (keys
+    tenant_resolver._extract_gusto); `entity_type`/`entity_uuid` name the
+    changed resource; no entity body (the poll re-fetch fills it)."""
     entity = _GUSTO_ENTITIES[seq % len(_GUSTO_ENTITIES)]
     return {
-        "company_uuid": company_uuid,
-        "eventNotifications": [{
-            "company_uuid": company_uuid,
-            "companyId": company_uuid,
-            "dataChangeEvent": {"entities": [{
-                "name": entity,
-                "id": f"live-{seq}",
-                "operation": "Update",
-                "lastUpdated": _iso_qbo(_now()),
-            }]},
-        }],
+        "uuid": f"evt-{company_uuid}-{seq}",
+        "event_type": f"{entity}.updated",
+        "resource_type": "Company",
+        "resource_uuid": company_uuid,
+        "entity_type": entity.title(),
+        "entity_uuid": f"live-{seq}",
+        "timestamp": int(_now().timestamp()),
     }
 
 

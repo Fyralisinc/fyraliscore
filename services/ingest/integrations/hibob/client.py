@@ -1,35 +1,19 @@
-"""services/ingest/integrations/hibob/client.py — outbound HiBob REST client.
+"""services/ingest/integrations/hibob/client.py - outbound HiBob REST client.
 
-Single outbound surface for backfill + poll-incremental. HiBob is authenticated
-with a **service user**: a ``service_user_id`` + a long-lived ``token`` presented
-as HTTP **Basic** auth (``Authorization: Basic base64(id:token)``). This clones
-Brex's secret-resolved-token client posture (long-lived credential, resolved once
-from the secret store or preset in spammer mode and reused for the life of the
-client; NO token refresh), but the scheme is Basic, not Bearer — so the token
-half is resolved from the secret store and the id half rides on the install row.
+Verified HiBob surface:
 
-TODO(human): confirm HiBob API host + read endpoints/paths + the per-entity
-    "modified since" filter. The host defaults via the endpoint resolver
-    (``endpoint("hibob_api")``) and is overridable per-install (``base_url``) and
-    per-env (``HIBOB_API_BASE_URL``). The read surface below
-    (``/v1/people``, ``/v1/people/{id}``, lifecycle/time-off/payroll list paths)
-    is modelled on HiBob's documented People API but the exact collection paths
-    + query params per entity type are UNVERIFIED; implement only the verified
-    read surface and tag speculative endpoints.
-
-TODO(human): confirm HiBob concurrent rate-limit numbers + signalling. This
-    defaults to 429 + ``Retry-After`` (the Brex scheme); tune the retry budget
-    via ``HIBOB_RL_MAX_ATTEMPTS`` / ``HIBOB_RL_MAX_SLEEP_SEC``. HiBob's real
-    per-account concurrency limit is UNVERIFIED.
-
-Logging redaction: the service-user token and the Basic auth header are NEVER
-logged.
+  * auth: HTTP Basic base64(service_user_id:token)
+  * employees: POST /v1/people/search, no pagination
+  * time off changes: GET /v1/timeoff/requests/changes
+  * salary/payroll history: GET /v1/bulk/people/salaries, cursor pagination
+  * lifecycle/work history: GET /v1/bulk/people/work, cursor pagination
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -43,9 +27,21 @@ log = structlog.get_logger("integrations.hibob.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
-# Default to 100 to bound payload size and keep parity with the other sources.
-# HiBob's real per-entity page cap is UNVERIFIED (see the fetcher TODO).
 _DEFAULT_PAGE_SIZE = 100
+_MAX_PAGE_SIZE = 200
+
+DEFAULT_ENTITIES = ("employee", "lifecycle", "timeoff", "payroll")
+
+_PEOPLE_FIELDS = [
+    "root.id",
+    "root.displayName",
+    "root.email",
+    "work.department",
+    "work.title",
+    "work.startDate",
+    "work.site",
+    "about.avatar",
+]
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -58,16 +54,7 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class HibobClient:
-    """Outbound HiBob REST client, one per backfill/poll shard open.
-
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_hibob_client`
-    (production / spammer) and by the seed/onboarding probe. Shares the
-    process-wide httpx client when one is injected.
-
-    Auth is HTTP Basic ``base64(service_user_id:token)``: the ``service_user_id``
-    is the public half (rides on the install row), the ``token`` is the secret
-    half (resolved from the secret store; preset in spammer mode).
-    """
+    """Outbound HiBob REST client, one per backfill/poll shard open."""
 
     def __init__(
         self,
@@ -89,12 +76,8 @@ class HibobClient:
         self._secret_ref = secret_ref
         self._company_id = company_id
         self._service_user_id = service_user_id
-        # Preset token (spammer mode presets a recognized token); otherwise
-        # resolved lazily from the secret store on first request.
         self._token: str | None = token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical HiBob API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
@@ -135,7 +118,6 @@ class HibobClient:
             return self._token
 
     async def _auth_header(self) -> str:
-        """HTTP Basic ``base64(service_user_id:token)``."""
         token = await self._token_value()
         creds = f"{self._service_user_id}:{token}".encode("utf-8")
         return "Basic " + base64.b64encode(creds).decode("ascii")
@@ -146,12 +128,8 @@ class HibobClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """One HiBob API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `HibobApiError`.
-        """
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
         from services.ingest.integrations.hibob import metrics
 
         auth = await self._auth_header()
@@ -160,6 +138,8 @@ class HibobClient:
             "Authorization": auth,
             "Accept": "application/json",
         }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         max_attempts = int(os.environ.get("HIBOB_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("HIBOB_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
@@ -169,7 +149,11 @@ class HibobClient:
             attempt += 1
             try:
                 response = await client.request(
-                    method, url, headers=headers, params=params,
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json=json_body,
                 )
             except httpx.TransportError as exc:
                 metrics.record_request("error")
@@ -187,14 +171,7 @@ class HibobClient:
 
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise HibobApiError(
-                        "hibob response was not a JSON object",
-                        code="hibob_api_error",
-                        context={"path": path},
-                    )
-                return body
+                return _safe_json(response)
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
@@ -204,10 +181,6 @@ class HibobClient:
 
     # -----------------------------------------------------------------
     # Public read surface
-    #
-    # ONE generic entity lister keeps the fetcher entity-agnostic (one shard
-    # per entity_type). Returns `(rows, next_offset)`; `next_offset is None`
-    # is terminal — offset/limit pagination, mirroring Brex/Mercury.
     # -----------------------------------------------------------------
 
     async def list_entities(
@@ -216,72 +189,159 @@ class HibobClient:
         *,
         limit: int = _DEFAULT_PAGE_SIZE,
         offset: int = 0,
+        page_cursor: str | None = None,
         modified_since: str | None = None,
-    ) -> tuple[list[dict[str, Any]], int | None]:
-        """List one People/HR entity type for the company.
-
-        TODO(human): confirm the per-entity collection path + the response
-            envelope key + the "modified since" param name. HiBob's People API
-            returns ``{"employees": [...]}`` for people; lifecycle/time-off/
-            payroll live under different paths/keys (UNVERIFIED). The mapping
-            below is modelled on the documented People API and tagged
-            speculative for the other three entity types.
-
-        Returns `(rows, next_offset)`; `next_offset is None` is terminal.
-        """
-        path, envelope_key = _entity_endpoint(entity_type)
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if modified_since:
-            # TODO(human): confirm HiBob's incremental filter param name (e.g.
-            # `modifiedSince` vs `since`); placeholder per the People API.
-            params["modifiedSince"] = modified_since
-        resp = await self._request("GET", path, params=params)
-        rows = resp.get(envelope_key)
-        if not isinstance(rows, list):
-            # Some HiBob list responses return a bare list / a generic "values".
-            rows = resp.get("values") if isinstance(resp.get("values"), list) else []
-        rows = [r for r in rows if isinstance(r, dict)]
-        next_offset = offset + len(rows)
-        # A short page (< limit) is terminal.
-        is_last = len(rows) < limit or not rows
-        return rows, (None if is_last else next_offset)
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        kind = entity_type.lower()
+        eff_limit = max(1, min(_MAX_PAGE_SIZE, int(limit or _DEFAULT_PAGE_SIZE)))
+        if kind == "employee":
+            rows = await self._people_search(modified_since=modified_since)
+            page = rows[offset:offset + eff_limit]
+            next_offset = offset + len(page)
+            return page, (str(next_offset) if next_offset < len(rows) and page else None)
+        if kind == "timeoff":
+            return await self._timeoff_changes(modified_since=modified_since)
+        if kind == "payroll":
+            return await self._cursor_table(
+                "/v1/bulk/people/salaries",
+                result_key="results",
+                limit=eff_limit,
+                cursor=page_cursor,
+                modified_since=modified_since,
+            )
+        if kind == "lifecycle":
+            return await self._cursor_table(
+                "/v1/bulk/people/work",
+                result_key="results",
+                limit=eff_limit,
+                cursor=page_cursor,
+                modified_since=modified_since,
+            )
+        return [], None
 
     async def company_info(self) -> dict[str, Any]:
-        """Connectivity / scope probe.
+        """Cheap connectivity probe via a one-field people search."""
+        rows = await self._people_search(limit=1, modified_since=None)
+        return {
+            "id": self._company_id,
+            "company_id": self._company_id,
+            "sample_employee_count": len(rows),
+        }
 
-        TODO(human): confirm the HiBob company/account metadata endpoint. The
-            ``/v1/company/named-lists`` placeholder below is a cheap authenticated
-            GET; swap for the verified company-info path.
-        """
-        return await self._request("GET", "/v1/company/named-lists")
+    async def _people_search(
+        self,
+        *,
+        limit: int | None = None,
+        modified_since: str | None,
+    ) -> list[dict[str, Any]]:
+        body = {
+            "fields": _PEOPLE_FIELDS,
+            "showInactive": True,
+        }
+        response = await self._request("POST", "/v1/people/search", json_body=body)
+        rows = _extract_list(response, "employees")
+        rows = [_normalise_employee(r) for r in rows]
+        if modified_since:
+            rows = [r for r in rows if (_row_modified(r) or "") > modified_since]
+        return rows[:limit] if limit is not None else rows
 
+    async def _timeoff_changes(
+        self, *, modified_since: str | None,
+    ) -> tuple[list[dict[str, Any]], None]:
+        since = modified_since or _six_month_floor()
+        params = {"since": since, "to": _now_iso()}
+        response = await self._request(
+            "GET", "/v1/timeoff/requests/changes", params=params,
+        )
+        rows = _extract_list(response, "requests", "changes", "values")
+        rows = [_stamp_entity_kind(r, "timeoff") for r in rows]
+        return rows, None
 
-# ---------------------------------------------------------------------
-# Entity → (path, response-envelope-key) mapping
-# ---------------------------------------------------------------------
-
-# TODO(human): confirm each entity's real collection path + response key.
-# `employee` is modelled on the documented People API (`GET /v1/people` →
-# `{"employees": [...]}`); the other three are UNVERIFIED placeholders.
-_ENTITY_ENDPOINTS: dict[str, tuple[str, str]] = {
-    "employee": ("/v1/people", "employees"),
-    "lifecycle": ("/v1/people/lifecycle", "values"),
-    "timeoff": ("/v1/timeoff/requests", "requests"),
-    "payroll": ("/v1/payroll/history", "values"),
-}
-
-
-def _entity_endpoint(entity_type: str) -> tuple[str, str]:
-    return _ENTITY_ENDPOINTS.get(entity_type, (f"/v1/{entity_type}", "values"))
-
-
-# The entity types we shard on (one shard per type). Per the CONTRACT.
-DEFAULT_ENTITIES = ("employee", "lifecycle", "timeoff", "payroll")
+    async def _cursor_table(
+        self,
+        path: str,
+        *,
+        result_key: str,
+        limit: int,
+        cursor: str | None,
+        modified_since: str | None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "includeArchived": "true",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        response = await self._request("GET", path, params=params)
+        rows = _extract_list(response, result_key, "results", "values")
+        if modified_since:
+            rows = [r for r in rows if (_row_modified(r) or "") > modified_since]
+        next_cursor = _next_cursor(response)
+        return rows, next_cursor
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _extract_list(body: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        return [x for x in body if isinstance(x, dict)]
+    if isinstance(body, dict):
+        for key in keys:
+            value = body.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+    return []
+
+
+def _next_cursor(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    metadata = body.get("response_metadata")
+    if isinstance(metadata, dict):
+        value = metadata.get("next_cursor") or metadata.get("nextCursor")
+        if isinstance(value, str) and value:
+            return value
+    value = body.get("next_cursor") or body.get("cursor")
+    return value if isinstance(value, str) and value else None
+
+
+def _normalise_employee(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    out.setdefault("id", row.get("id") or row.get("/root/id"))
+    out.setdefault("displayName", row.get("displayName") or row.get("/root/displayName"))
+    out.setdefault("email", row.get("email") or row.get("/root/email"))
+    work = row.get("work")
+    if isinstance(work, dict):
+        out.setdefault("department", work.get("department"))
+        out.setdefault("title", work.get("title"))
+        out.setdefault("startDate", work.get("startDate"))
+    out.setdefault("status", row.get("status") or row.get("employmentStatus") or "active")
+    return _stamp_entity_kind(out, "employee")
+
+
+def _stamp_entity_kind(row: dict[str, Any], kind: str) -> dict[str, Any]:
+    out = dict(row)
+    out.setdefault("_hibob_entity_type", kind)
+    return out
+
+
+def _row_modified(row: dict[str, Any]) -> str | None:
+    for key in ("modified", "modifiedAt", "lastModified", "updatedAt", "updated"):
+        value = row.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _six_month_floor() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -293,7 +353,6 @@ def _safe_json(response: httpx.Response) -> Any:
 def _api_error_from_response(
     response: httpx.Response, path: str,
 ) -> HibobApiError:
-    """Map a non-2xx HiBob response to a typed `HibobApiError`."""
     status = response.status_code
     if status in (401, 403):
         return HibobApiError(
@@ -303,9 +362,9 @@ def _api_error_from_response(
         )
     if status == 404:
         return HibobApiError(
-            "hibob 404: entity/resource not found or not visible to the service user",
+            "hibob 404: entity/resource not found or not visible",
             code="hibob_api_not_found",
-            context={"http_status": 404, "path": path},
+            context={"http_status": status, "path": path},
         )
     if status == 429:
         return HibobApiError(

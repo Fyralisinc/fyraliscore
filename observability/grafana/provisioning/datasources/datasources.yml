@@ -1,0 +1,31 @@
+# Grafana datasources — provisioned as code (architecture doc §6).
+# fyralis-prom: all dashboard/alert queries. fyralis-pg: the DB-resident
+# observability substrate (think_run_costs per-tenant spend, ingestion
+# failure drill-down) — per-tenant data deliberately lives ONLY here,
+# never as Prometheus labels.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: fyralis-prom
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Fyralis Postgres
+    uid: fyralis-pg
+    type: postgres
+    access: proxy
+    url: $FYRALIS_PG_DATASOURCE_URL
+    user: $FYRALIS_PG_DATASOURCE_USER
+    secureJsonData:
+      password: $FYRALIS_PG_DATASOURCE_PASSWORD
+    jsonData:
+      database: company_os
+      sslmode: disable
+      postgresVersion: 1600
+      maxOpenConns: 4
+      maxIdleConns: 2

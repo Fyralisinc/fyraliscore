@@ -72,7 +72,7 @@ def test_backfill_resolves_to_same_channel_as_live_surface():
 def test_unknown_source_backfill_returns_none():
     """An unmapped source under backfill ingress preserves the
     skip-with-None behaviour (no accidental catch-all)."""
-    assert resolve_channel("linkedin", "backfill") is None  # type: ignore[arg-type]
+    assert resolve_channel("not_a_source", "backfill") is None  # type: ignore[arg-type]
 
 
 def test_resolved_channels_all_have_callable_handlers():

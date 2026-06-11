@@ -82,6 +82,13 @@ def normalize_phrase(phrase: str) -> str:
     return collapsed
 
 
+def _parse_jsonb_obj(raw: Any) -> dict[str, Any]:
+    """asyncpg may return JSONB as a dict or encoded string."""
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return raw
+
+
 class EntityAliasRepo:
     """Repository for entity_aliases."""
 
@@ -137,13 +144,7 @@ class EntityAliasRepo:
         # form as the dedup key.
         refs_by_json: dict[str, dict[str, Any]] = {}
         for r in rows:
-            raw = r["resolved_entity_ref"]
-            # asyncpg returns JSONB either as dict or string depending
-            # on codec state. Handle both.
-            if isinstance(raw, str):
-                parsed = json.loads(raw)
-            else:
-                parsed = raw
+            parsed = _parse_jsonb_obj(r["resolved_entity_ref"])
             key = json.dumps(parsed, sort_keys=True)
             refs_by_json.setdefault(key, parsed)
 
@@ -151,6 +152,56 @@ class EntityAliasRepo:
             return next(iter(refs_by_json.values()))
         # Ambiguous — multiple distinct canonical refs for same phrase.
         return None
+
+    async def fast_path_resolve_many(
+        self, phrases: list[str], tenant_id: UUID
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Bulk version of :meth:`fast_path_resolve`.
+
+        The return keys are normalized phrases. Only unambiguous aliases
+        are returned; phrases that have no row or multiple distinct refs
+        are omitted so callers can use the same fallback path as the
+        single-phrase resolver. This collapses the ingestion hot path from
+        up to 50 alias queries per observation to one indexed lookup.
+        """
+        norms: list[str] = []
+        seen: set[str] = set()
+        for phrase in phrases:
+            if not phrase or not phrase.strip():
+                continue
+            norm = normalize_phrase(phrase)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            norms.append(norm)
+        if not norms:
+            return {}
+
+        rows = await self._pool.fetch(
+            """
+            SELECT
+                regexp_replace(lower(alias_text), '\\s+', ' ', 'g') AS normalized,
+                resolved_entity_ref
+            FROM entity_aliases
+            WHERE tenant_id = $1
+              AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = ANY($2::text[])
+            """,
+            tenant_id,
+            norms,
+        )
+
+        refs_by_norm: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            ref = _parse_jsonb_obj(row["resolved_entity_ref"])
+            key = json.dumps(ref, sort_keys=True)
+            refs_by_norm.setdefault(row["normalized"], {}).setdefault(key, ref)
+
+        resolved: dict[str, dict[str, Any]] = {}
+        for norm, refs_by_json in refs_by_norm.items():
+            if len(refs_by_json) == 1:
+                resolved[norm] = next(iter(refs_by_json.values()))
+        return resolved
 
     # -----------------------------------------------------------------
     # insert_alias

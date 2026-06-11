@@ -1,0 +1,76 @@
+# postgres_exporter custom queries — lift the DB-resident observability
+# substrate into Prometheus. All aggregates are cross-tenant (no tenant_id
+# labels — architecture doc §8); every label is a bounded enum.
+#
+# Closes the metric half of hardening item P2-2 (dead-letter tables now
+# emit fyralis_dead_letter_rows{table_name}).
+
+fyralis_dlq:
+  query: |
+    SELECT failure_kind, source, count(*) AS unresolved
+    FROM ingestion_failures
+    WHERE resolved_at IS NULL
+    GROUP BY failure_kind, source
+  metrics:
+    - failure_kind:
+        usage: "LABEL"
+    - source:
+        usage: "LABEL"
+    - unresolved:
+        usage: "GAUGE"
+        description: "Unresolved ingestion_failures rows by failure kind and source."
+
+fyralis_embedding_backlog:
+  query: |
+    SELECT count(*) AS pending FROM observations WHERE embedding_pending
+  metrics:
+    - pending:
+        usage: "GAUGE"
+        description: "Observations awaiting an embedding (embedding_pending = TRUE)."
+
+fyralis_think_queue:
+  query: |
+    SELECT count(*) AS pending
+    FROM think_trigger_queue
+    WHERE completed_at IS NULL
+  metrics:
+    - pending:
+        usage: "GAUGE"
+        description: "think_trigger_queue rows not yet completed."
+
+fyralis_dead_letter:
+  query: |
+    SELECT 'model_reeval_dead_letter' AS table_name, count(*) AS rows
+    FROM model_reeval_dead_letter
+    UNION ALL
+    SELECT 'pending_post_commit_actions' AS table_name, count(*) AS rows
+    FROM pending_post_commit_actions
+    WHERE dead_lettered_at IS NOT NULL
+  metrics:
+    - table_name:
+        usage: "LABEL"
+    - rows:
+        usage: "GAUGE"
+        description: "Dead-lettered rows per dead-letter table (P2-2)."
+
+fyralis_onboarding_shards:
+  query: |
+    SELECT status, count(*) AS shards
+    FROM onboarding_shards
+    GROUP BY status
+  metrics:
+    - status:
+        usage: "LABEL"
+    - shards:
+        usage: "GAUGE"
+        description: "Backfill shards by status."
+
+fyralis_think_cost_recent:
+  query: |
+    SELECT coalesce(sum(llm_cost_usd), 0) AS usd_1h
+    FROM think_run_costs
+    WHERE computed_at > now() - interval '1 hour'
+  metrics:
+    - usd_1h:
+        usage: "GAUGE"
+        description: "LLM spend (USD) recorded in think_run_costs over the trailing hour."

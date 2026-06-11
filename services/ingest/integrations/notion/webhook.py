@@ -55,6 +55,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import NotionApiError
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
     shadow_write_raw,
@@ -264,7 +265,8 @@ async def _shadow_write_page(
         # but we avoid the gap). Bounded by CUTOVER_FLUSH_TIMEOUT_SEC so a slow
         # broker doesn't block the synchronous webhook; remaining>0 ⇒ delivery
         # in doubt (librdkafka keeps delivering in the background regardless).
-        remaining = await ndp.producer.flush(
+        remaining = await coalesced_flush(
+            ndp.producer,
             timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC,
         )
         if remaining:

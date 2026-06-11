@@ -4,7 +4,11 @@ from uuid import uuid4
 import pytest
 
 from services.reasoning.sage import reader as reader_mod
-from services.reasoning.sage.reader import ReaderBudget, SynthesisReader
+from services.reasoning.sage.reader import (
+    ReaderBudget,
+    SynthesisReader,
+    _record_degraded_source,
+)
 
 
 @pytest.mark.asyncio
@@ -107,3 +111,27 @@ async def test_synthesis_reader_row_cache_can_be_disabled(monkeypatch) -> None:
 
     assert calls == [[model_id], [model_id]]
     assert reader.cache_stats_snapshot() == {}
+
+
+def test_record_degraded_source_emits_structured_event(capsys) -> None:
+    tenant_id = uuid4()
+    degraded: list[dict[str, object]] = []
+
+    _record_degraded_source(
+        degraded,
+        tenant_id=tenant_id,
+        source="negative_memory",
+        exc=RuntimeError("read failed"),
+    )
+
+    assert degraded == [
+        {
+            "source": "negative_memory",
+            "error_type": "RuntimeError",
+            "error": "read failed",
+        }
+    ]
+    logged = capsys.readouterr().out
+    assert "sage.reader.degraded_source" in logged
+    assert str(tenant_id) in logged
+    assert "negative_memory" in logged

@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """scripts/sandbox_gusto.py — local end-to-end sandbox for Gusto
-ingestion (finance), with NO real Intuit credentials.
+ingestion (finance/payroll), with NO real Gusto credentials.
 
-Gusto is an accounting REST API (OAuth 2.0, company-scoped) with a
-SQL-like query surface and HMAC-SHA256-signed webhooks. This sandbox stands up a
-REAL local mock of the GUSTO v3 query endpoint and drives the REAL pipeline:
+Gusto is a payroll REST API (OAuth 2.0, company-scoped — verified
+docs.gusto.com) with bare-array list endpoints under
+`/v1/companies/{company_uuid}/...`, `page`/`per` offset pagination surfaced in
+`X-Total-Count`/`X-Page`/`X-Per-Page` response headers, and hex-HMAC-signed
+thin webhooks. This sandbox stands up a REAL local mock of that wire contract
+and drives the REAL pipeline:
 
-    GustoClient (real httpx, spammer auth) -> fetch_page_gusto (real
-    cursor + query) -> handle_gusto_object (real ObservationDraft) ->
-    ingest() (real observation insert + dedup)
+    GustoClient (real httpx, spammer auth) -> fetch_page_gusto (real page
+    cursor + check_date high-water) -> handle_gusto_object (real
+    ObservationDraft) -> ingest() (real observation insert + dedup)
 
-It exercises: entity enumeration (install), per-entity backfill, the incremental
-LastUpdatedTime delta (an invoice paid -> state_change), the live-webhook path
-(thin change notification), cross-path behavior, and the reconciler gap probe.
+It exercises: the `GET /v1/companies/{uuid}` probe, per-entity backfill
+(employee / payroll), the incremental `start_date`+`date_filter_by=check_date`
+payroll window (a NEW payroll lands), the employee full re-walk (a `version`
+bump lands exactly one new observation — there is NO updated-since filter on
+/employees), the live-webhook path (real flat thin notification), dedup
+parity, and the reconciler gap probe.
 
 Database: DATABASE_URL if set, else a throwaway DB on SANDBOX_ADMIN_URL
 (postgresql://company_os:company_os@localhost:5434/company_os), dropped on exit.
@@ -42,8 +48,9 @@ import asyncpg
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000006401")
+# Verified production host (docs.gusto.com); the spammer override wins locally.
 _BASE_URL = "https://api.gusto.com"
-_COMPANY = "9341452000000001"
+_COMPANY = "8b342a55-907e-4ba8-a95d-d29fbf95d6e1"
 
 
 def _hr(title: str) -> None:
@@ -58,72 +65,81 @@ def _check(label: str, ok: bool) -> None:
     print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
 
 
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S-08:00")
+def _date(dt: datetime) -> str:
+    return dt.date().isoformat()
+
+
+def _employee(uuid, version, first, last, *, title, terminated=False,
+              hire_days_ago=300, termination_date=None):
+    row = {
+        "uuid": uuid, "version": version,
+        "first_name": first, "last_name": last,
+        "work_email": f"{first.lower()}.{last.lower()}@acme.example",
+        "department": "Engineering",
+        "terminated": terminated, "onboarded": True,
+        "current_employment_status": "full_time",
+        "payment_method": "Direct Deposit",
+        "jobs": [{
+            "uuid": f"job-{uuid}", "primary": True, "title": title,
+            "hire_date": _date(
+                datetime.now(timezone.utc) - timedelta(days=hire_days_ago)),
+            "rate": "98000.00", "payment_unit": "Year",
+        }],
+        "terminations": [],
+    }
+    if terminated and termination_date:
+        row["terminations"] = [{"effective_date": termination_date,
+                                "active": False}]
+    return row
+
+
+def _payroll(uuid, check_date, *, processed):
+    return {
+        "payroll_uuid": uuid, "uuid": uuid, "company_uuid": _COMPANY,
+        "check_date": check_date, "processed": processed,
+        "processed_date": check_date if processed else None,
+        "off_cycle": False, "external": False,
+        "pay_period": {
+            "start_date": _date(
+                datetime.fromisoformat(check_date) - timedelta(days=14)),
+            "end_date": _date(
+                datetime.fromisoformat(check_date) - timedelta(days=1)),
+            "pay_schedule_uuid": "sched-0001",
+        },
+        # All dollar amounts are decimal STRINGS (real wire shape).
+        "totals": {
+            "gross_pay": "42000.00", "net_pay": "33600.00",
+            "employee_taxes": "8400.00", "employer_taxes": "3360.00",
+            "company_debit": "45360.00", "benefits": "0.00",
+            "reimbursements": "0.00",
+        },
+        "employee_compensations": [],
+    }
 
 
 def _build_fixtures() -> dict:
     now = datetime.now(timezone.utc)
-
-    def invoice(iid, sync, doc, total, balance, customer, updated, due=None):
-        obj = {
-            "Id": iid, "SyncToken": str(sync), "DocNumber": doc,
-            "TotalAmt": total, "Balance": balance,
-            "CustomerRef": {"value": "1", "name": customer},
-            "TxnDate": (now - timedelta(days=20)).strftime("%Y-%m-%d"),
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-        if due:
-            obj["DueDate"] = due
-        return obj
-
-    def bill(bid, sync, total, balance, vendor, updated):
-        return {
-            "Id": bid, "SyncToken": str(sync),
-            "TotalAmt": total, "Balance": balance,
-            "VendorRef": {"value": "7", "name": vendor},
-            "TxnDate": (now - timedelta(days=15)).strftime("%Y-%m-%d"),
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
-    def payment(pid, sync, total, customer, updated):
-        return {
-            "Id": pid, "SyncToken": str(sync), "TotalAmt": total,
-            "CustomerRef": {"value": "1", "name": customer},
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
     return {
-        "Invoice": {
-            "rows": [
-                invoice("1037", 0, "1037", 5000.00, 5000.00, "Globex",
-                        _iso(now - timedelta(days=3)),
-                        due=(now - timedelta(days=1)).strftime("%Y-%m-%d")),
-                invoice("1038", 0, "1038", 12000.00, 12000.00, "Initech",
-                        _iso(now - timedelta(days=2)),
-                        due=(now + timedelta(days=20)).strftime("%Y-%m-%d")),
-            ],
-            # Incremental: invoice 1037 gets PAID (Balance -> 0, SyncToken bumps)
-            # — an AR-collected state_change.
-            "delta": [
-                invoice("1037", 1, "1037", 5000.00, 0.00, "Globex",
-                        _iso(now - timedelta(hours=1))),
-            ],
-        },
-        "Bill": {
-            "rows": [
-                bill("204", 0, 3200.00, 3200.00, "AWS",
-                     _iso(now - timedelta(days=4))),
-            ],
-            "delta": [],
-        },
-        "BillPayment": {"rows": [], "delta": []},
-        "Payment": {
-            "rows": [
-                payment("88", 0, 8000.00, "Initech",
-                        _iso(now - timedelta(days=1))),
-            ],
-            "delta": [],
+        # Mock-server fixture keys are the singular entity taxonomy; the dict
+        # is held by reference, so the phases below mutate it for drift.
+        "employee": [
+            _employee("emp-1001", "v-aaa1", "Ava", "Reyes",
+                      title="Software Engineer"),
+            _employee("emp-1002", "v-bbb2", "Noah", "Chen",
+                      title="Account Executive"),
+            _employee("emp-1003", "v-ccc3", "Mia", "Okafor",
+                      title="Ops Manager", terminated=True,
+                      termination_date=_date(now - timedelta(days=5))),
+        ],
+        "payroll": [
+            _payroll("pay-2001", _date(now - timedelta(days=20)),
+                     processed=True),
+            _payroll("pay-2002", _date(now - timedelta(days=6)),
+                     processed=False),
+        ],
+        "company": {
+            "uuid": _COMPANY, "name": "Gusto Sandbox Co",
+            "trade_name": "Sandbox Co", "company_status": "Approved",
         },
     }
 
@@ -206,7 +222,7 @@ async def run(args) -> int:
         print("  Migrations applied, partitions ensured, tenant seeded.")
 
         # 2. Connectivity probe via the REAL client.
-        _hr("PROBE (GustoClient.company_info)")
+        _hr("PROBE (GustoClient.company)")
         from services.ingest.ingestion.fetchers._clients import build_gusto_client
 
         class _Inst:
@@ -217,8 +233,9 @@ async def run(args) -> int:
             def __contains__(self, k): return k in self._d
 
         client = await build_gusto_client(_Inst())
-        info = await client.company_info()
-        _check("company_info probe succeeds", "CompanyInfo" in info)
+        info = await client.company()
+        _check("GET /v1/companies/{uuid} probe succeeds",
+               info.get("uuid") == _COMPANY)
 
         # 3. Provision the install + webhook row.
         _hr("PROVISION (gusto.onboarding.finalize_install)")
@@ -254,10 +271,10 @@ async def run(args) -> int:
         shards = await plan_shards_gusto(ctx)
         print(f"  planned {len(shards)} shard(s): "
               + ", ".join(s.shard_identifier["entity_type"] for s in shards))
-        _check("one shard per entity type", len(shards) == len(DEFAULT_ENTITIES))
+        _check("one shard per entity kind", len(shards) == len(DEFAULT_ENTITIES))
 
-        # 5. Backfill.
-        _hr("BACKFILL (query -> ingest)")
+        # 5. Backfill (page walk -> ingest).
+        _hr("BACKFILL (page/per list -> ingest)")
         for shard in shards:
             ext = await _drain_shard(pool, install_row, shard.shard_identifier)
             print(f"  {shard.shard_identifier['entity_type']}: ingested {len(ext)} observations")
@@ -268,60 +285,81 @@ async def run(args) -> int:
             _TENANT_ID,
         )
         print(f"  observations: total={counts['tot']} signal={counts['sig']} state_change={counts['sc']}")
-        # 2 invoices (1037 overdue -> state_change, 1038 open -> signal) + 1 bill
-        # (open -> signal) + 1 payment (signal) = 4 total, 1 state_change.
-        _check("backfill produced 4 observations", counts["tot"] == 4)
-        _check("overdue invoice landed as state_change", counts["sc"] == 1)
+        # 3 employees (emp-1003 terminated -> state_change) + 2 payrolls
+        # (pay-2001 processed -> state_change, pay-2002 pending -> signal)
+        # = 5 total, 2 state_change.
+        _check("backfill produced 5 observations", counts["tot"] == 5)
+        _check("terminated employee + processed payroll landed as state_change",
+               counts["sc"] == 2)
 
-        # 6. Incremental: invoice 1037 paid (Balance -> 0, SyncToken bumps).
-        _hr("INCREMENTAL (invoice paid: AR collected)")
+        # 6. Incremental: a NEW payroll past the check_date high-water window.
+        _hr("INCREMENTAL (start_date + date_filter_by=check_date: new payroll)")
         hw = await pool.fetchval(
-            "SELECT max(content->>'last_updated') FROM observations "
-            "WHERE tenant_id=$1 AND content->>'object_type'='invoice'", _TENANT_ID,
+            "SELECT max(content->>'check_date') FROM observations "
+            "WHERE tenant_id=$1 AND content->>'object_type'='payroll'",
+            _TENANT_ID,
         )
-        incr_shard = {"shard_kind": "gusto_entity", "entity_type": "Invoice",
+        fixtures["payroll"].append(_payroll(
+            "pay-2003", _date(datetime.now(timezone.utc) - timedelta(days=1)),
+            processed=True,
+        ))
+        incr_shard = {"shard_kind": "gusto_entity", "entity_type": "payroll",
                       "company_uuid": _COMPANY, "updated_cursor": hw}
         incr = await _drain_shard(pool, install_row, incr_shard)
         print(f"  incremental ingested {len(incr)} new observations: {incr}")
-        paid = await pool.fetchval(
-            "SELECT count(*) FROM observations WHERE tenant_id=$1 "
-            "AND content->>'status'='paid'", _TENANT_ID,
-        )
-        _check("incremental delta surfaced a paid invoice (new SyncToken)", paid == 1)
+        # The inclusive day-granular window re-fetches the boundary payroll —
+        # dedup absorbs it; only the NEW processed payroll lands.
+        _check("incremental window surfaced the new processed payroll",
+               len(incr) == 1 and ":payroll:pay-2003:processed" in incr[0])
 
-        # 7. Dedup: re-ingest a backfilled invoice twin -> deduped.
+        # 7. Employee re-walk: a `version` bump lands exactly one new
+        #    observation (NO updated-since filter exists on /employees).
+        _hr("EMPLOYEE RE-WALK (version bump -> one new observation)")
+        fixtures["employee"][0]["version"] = "v-aaa2"
+        rewalk_shard = {"shard_kind": "gusto_entity", "entity_type": "employee",
+                        "company_uuid": _COMPANY}
+        rewalk = await _drain_shard(pool, install_row, rewalk_shard)
+        print(f"  re-walk ingested {len(rewalk)} new observations: {rewalk}")
+        _check("version bump landed exactly one new employee observation",
+               len(rewalk) == 1 and ":employee:emp-1001:v-aaa2" in rewalk[0])
+
+        # 8. Dedup: re-ingest a backfilled employee twin -> deduped.
         _hr("DEDUP (backfill vs re-fetch twin)")
         from services.ingest.ingestion.core import ingest
-        twin = {"_fyralis_record_type": "invoice", "_fyralis_company_uuid": _COMPANY,
-                "entity": fixtures["Invoice"]["rows"][1]}
+        twin = {"_fyralis_record_type": "employee",
+                "_fyralis_company_uuid": _COMPANY,
+                "entity": fixtures["employee"][1]}
         res = await ingest("gusto:object", twin, pool=pool, tenant_id=_TENANT_ID)
-        _check("re-ingesting an existing invoice dedups (SyncToken external_id parity)",
+        _check("re-ingesting an unchanged employee dedups (version external_id parity)",
                res.deduped is True)
 
-        # 8. LIVE WEBHOOK path: an Intuit eventNotifications change lands as a
-        #    fresh thin-change observation through the SAME handler.
-        _hr("LIVE WEBHOOK (eventNotifications)")
+        # 9. LIVE WEBHOOK path: a REAL Gusto flat thin notification lands as a
+        #    fresh observation through the SAME handler.
+        _hr("LIVE WEBHOOK (flat thin notification, resource_uuid=company)")
         webhook_payload = {
-            "eventNotifications": [{
-                "companyId": _COMPANY,
-                "dataChangeEvent": {"entities": [{
-                    "name": "Invoice", "id": "1038", "operation": "Update",
-                    "lastUpdated": _iso(datetime.now(timezone.utc)),
-                }]},
-            }],
+            "uuid": str(uuid4()),
+            "event_type": "employee.terminated",
+            "resource_type": "Company",
+            "resource_uuid": _COMPANY,
+            "entity_type": "Employee",
+            "entity_uuid": "emp-1002",
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
         res = await ingest("gusto:object", webhook_payload, pool=pool, tenant_id=_TENANT_ID)
         _check("live webhook change lands as a fresh observation", res.deduped is False)
 
-        # 9. Reconciler gap probe.
-        _hr("RECONCILER GAP PROBE (query since high-water)")
-        rows, _ = await client.query("Invoice",
-                                     where=f"Metadata.LastUpdatedTime > '{hw}'",
-                                     start_position=1, max_results=1)
-        _check("reconciler probe detects an invoice updated since the high-water",
-               len(rows) >= 1)
+        # 10. Reconciler gap probe (one cheap page past the high-water).
+        _hr("RECONCILER GAP PROBE (list_payrolls start_date=high-water)")
+        rows, _ = await client.list_payrolls(
+            page=1, per=100, start_date=hw, date_filter_by="check_date",
+            payroll_types=("regular", "off_cycle"),
+        )
+        fresh = [r for r in rows
+                 if isinstance(r.get("check_date"), str) and r["check_date"] > hw]
+        _check("reconciler probe detects a payroll past the high-water",
+               len(fresh) >= 1)
 
-        # 10. Inspect.
+        # 11. Inspect.
         _hr("OBSERVATIONS")
         obs = await pool.fetch(
             "SELECT kind, trust_tier, external_id, content_text FROM observations "
