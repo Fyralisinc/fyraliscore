@@ -12,7 +12,6 @@ import pytest
 
 from services.ingest.integrations.oauth_refresh import (
     OAuthRefreshError,
-    REFRESH_CONFIGS,
     ensure_fresh_access_token,
     needs_refresh,
     refresh_and_persist,

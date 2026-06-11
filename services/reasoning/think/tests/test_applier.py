@@ -21,7 +21,6 @@ from services.reasoning.think.diff_schema import (
     ClaimOp,
     EdgeOp,
     OntologyGapOp,
-    ResourceOp,
     ValidatedDiff,
 )
 from services.reasoning.retrieval.primary import TriggerContext
@@ -2000,3 +1999,44 @@ async def test_apply_edge_cycle_is_dropped_not_transaction_fatal(
     assert result["apply_dropped_op_count"] == 1
     assert result["edge_ops"][0]["op"] == "skip"
     assert result["edge_ops"][0]["reason"] == "cycle_prevention"
+
+
+# ---------------------------------------------------------------------
+# _coerce_update_value — LLM-provided update values reach asyncpg typed.
+# ---------------------------------------------------------------------
+
+
+async def test_coerce_update_value_parses_iso_timestamp_strings() -> None:
+    from datetime import datetime, timezone
+
+    from services.reasoning.think.applier import _coerce_update_value
+
+    got = _coerce_update_value("resolved_at", "2026-06-11T05:20:02.460042+00:00")
+    assert got == datetime(2026, 6, 11, 5, 20, 2, 460042, tzinfo=timezone.utc)
+    # Zulu suffix and existing datetimes also pass through correctly.
+    got_z = _coerce_update_value("last_confirmed_at", "2026-06-11T05:20:02Z")
+    assert got_z.tzinfo is not None
+    assert _coerce_update_value("resolved_at", got) is got
+    assert _coerce_update_value("resolved_at", None) is None
+
+
+async def test_coerce_update_value_coerces_bools_ints_floats() -> None:
+    from services.reasoning.think.applier import _coerce_update_value
+
+    assert _coerce_update_value("resolution_outcome", "true") is True
+    assert _coerce_update_value("reading_contestable", False) is False
+    assert _coerce_update_value("confirmed_count", "3") == 3
+    assert _coerce_update_value("evidential_weight", "0.7") == 0.7
+
+
+async def test_coerce_update_value_rejects_garbage_with_contract_error() -> None:
+    from lib.shared.errors import ValidationError as ContractError
+
+    from services.reasoning.think.applier import _coerce_update_value
+
+    with pytest.raises(ContractError):
+        _coerce_update_value("resolved_at", "yesterday-ish")
+    with pytest.raises(ContractError):
+        _coerce_update_value("resolution_outcome", "maybe")
+    with pytest.raises(ContractError):
+        _coerce_update_value("confirmed_count", "many")

@@ -21,7 +21,6 @@ from services.reasoning.think.diff_schema import (
     EdgeOp,
     OntologyGapOp,
     RawDiff,
-    ResourceOp,
 )
 from services.reasoning.think.validator import (
     OutOfRegionError, ValidationFailure, validate,

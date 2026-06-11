@@ -60,7 +60,6 @@ from services.reasoning.sage.region_summaries.refresh import (
     should_refresh,
 )
 from services.reasoning.sage.region_summaries.repo import RegionSummariesRepo
-from services.reasoning.sage.structural_features.job import recompute_features_for_tenant
 from services.reasoning.sage.structural_features.repo import StructuralFeaturesRepo
 from services.reasoning.sage.topology_optimizer.types import OptimizationRunReport
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
@@ -70,25 +69,12 @@ from services.reasoning.relationships.candidates import (
     make_situation_candidate,
 )
 from services.reasoning.relationships.repo import RelationshipCandidatesRepo
-from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
-from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
-from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
-from services.reasoning.sage.discovery.types import NegativeMemory
-from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
-from services.reasoning.sage.inquiry_traces.types import OutcomeEventRow
-from services.reasoning.sage.region_summaries.refresh import (
-    refresh_region,
-    should_refresh,
-)
-from services.reasoning.sage.region_summaries.repo import RegionSummariesRepo
 from services.reasoning.sage.structural_features.compute import (
     build_adjacency,
     compute_edge_features,
     compute_model_features,
 )
-from services.reasoning.sage.structural_features.repo import StructuralFeaturesRepo
 from services.reasoning.sage.structural_features.types import StructuralEdge
-from services.reasoning.sage.topology_optimizer.types import OptimizationRunReport
 
 
 _log = logging.getLogger(__name__)
