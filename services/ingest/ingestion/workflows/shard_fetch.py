@@ -1499,6 +1499,20 @@ async def _run_service() -> None:
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
 
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT). This
+    # worker has no in-process counter dict of its own; /metrics carries the
+    # shared registry (kafka producer, db pool, oauth, per-source backfill
+    # API counters recorded by the fetchers running in this process).
+    from services.ingest.ingestion.observability import (
+        Heartbeat,
+        run_heartbeat_ticker,
+        start_health_server,
+    )
+
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
+
     log.info("workflow.shard_fetch.started", extra={
         "instance": config.instance_name,
     })
@@ -1506,6 +1520,10 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.shard_fetch.shutting_down")
+        ticker.cancel()
+        await asyncio.gather(ticker, return_exceptions=True)
+        if health is not None:
+            health.shutdown()
         await producer.stop()
         await s3_client.close()
         if redis is not None:

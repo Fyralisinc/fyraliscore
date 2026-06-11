@@ -39,6 +39,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaClient, OllamaError
+from lib.observability import counter, histogram
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.types import (
     CommitmentRow,
@@ -91,6 +92,24 @@ class RetrievalPathwayError(CompanyOSError):
     default_code = "retrieval_pathway_error"
 
 
+# Retrieval pathway Prometheus families (exposed by the worker /metrics).
+_INNER_DURATION = histogram(
+    "retrieval_pathway_inner_seconds",
+    "Intra-pathway stage latency (graph walk, hydration, fallbacks).",
+    ("stage",),
+)
+_PGVECTOR_DURATION = histogram(
+    "retrieval_pgvector_query_seconds",
+    "pgvector ANN / exact-rank query latency in pathway B.",
+    ("query",),
+)
+_PGVECTOR_QUERIES = counter(
+    "retrieval_pgvector_queries_total",
+    "pgvector queries executed in pathway B (ann | exact_fallback).",
+    ("query",),
+)
+
+
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
@@ -101,14 +120,18 @@ def _append_timing(
     started: float,
     **extra: Any,
 ) -> None:
+    elapsed_ms = _elapsed_ms(started)
     timing = {
         "stage": stage,
-        "elapsed_ms": _elapsed_ms(started),
+        "elapsed_ms": elapsed_ms,
     }
     for key, value in extra.items():
         if value is not None:
             timing[key] = value
     notes.setdefault("timings", []).append(timing)
+    # Prometheus twin — `stage` is a bounded literal set (graph_walk,
+    # act_row_fetch, sidecar_*, jsonb_fallback_*, …).
+    _INNER_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
 
 
 # ModelRow SELECT columns must match models/repo.py._SELECT_COLS exactly
@@ -1559,6 +1582,7 @@ async def pathway_b_semantic(
     if scope_clauses:
         scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
 
+    ann_started = time.perf_counter()
     rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_SQL}
@@ -1571,6 +1595,10 @@ async def pathway_b_semantic(
         """,
         *scope_params,
     )
+    ann_elapsed = time.perf_counter() - ann_started
+    _PGVECTOR_DURATION.observe(ann_elapsed, query="ann")
+    _PGVECTOR_QUERIES.inc(query="ann")
+    notes["ann_query_ms"] = int(ann_elapsed * 1000)
     models = _hydrate_many(rows, _hydrate_model, notes, "models")
 
     # HNSW is approximate and Postgres applies the JSONB/actor scope
@@ -1579,6 +1607,7 @@ async def pathway_b_semantic(
     # even when scoped candidates exist. Exact-rank the scoped candidate
     # pool in Python as a production precision fallback.
     if scope_clauses and len(models) < min(k, 10):
+        exact_started = time.perf_counter()
         exact_rows = await conn.fetch(
             f"""
             WITH _params AS (
@@ -1593,6 +1622,10 @@ async def pathway_b_semantic(
             """,
             *scope_params,
         )
+        _PGVECTOR_DURATION.observe(
+            time.perf_counter() - exact_started, query="exact_fallback"
+        )
+        _PGVECTOR_QUERIES.inc(query="exact_fallback")
         exact_models = _hydrate_many(
             exact_rows, _hydrate_model, notes, "scope_exact_models"
         )
@@ -1956,7 +1989,7 @@ async def pathway_g_model_edges(
 
     if entity_ids or scope_actors:
         scoped_seed_rows = await conn.fetch(
-            f"""
+            """
             WITH seeded_entities AS (
               SELECT * FROM unnest($2::text[], $3::uuid[])
                 AS e(entity_type, entity_id)

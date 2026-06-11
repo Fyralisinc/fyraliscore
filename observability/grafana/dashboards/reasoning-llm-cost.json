@@ -1,0 +1,171 @@
+{
+  "uid": "fyralis-reasoning-llm-cost",
+  "title": "Fyralis · Reasoning / LLM Cost",
+  "tags": ["fyralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "LLM Spend per Hour",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "fyralis:llm_spend_usd_per_hour", "legendFormat": "recording rule ($/hr)"},
+        {"refId": "B", "expr": "fyralis_think_cost_recent_usd_1h", "legendFormat": "DB truth (last 1h)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Spend Rate by Trigger Kind ($/hr)",
+      "gridPos": {"h": 6, "w": 9, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (trigger_kind) (rate(think_llm_cost_usd_total[15m])) * 3600", "legendFormat": "{{trigger_kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Token Throughput (tokens/s)",
+      "gridPos": {"h": 6, "w": 9, "x": 15, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (trigger_kind) (rate(think_llm_input_tokens_total[5m]))", "legendFormat": "in · {{trigger_kind}}"},
+        {"refId": "B", "expr": "sum by (trigger_kind) (rate(think_llm_output_tokens_total[5m]))", "legendFormat": "out · {{trigger_kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "LLM Calls by Trigger Kind",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (trigger_kind) (rate(think_llm_calls_total[5m]))", "legendFormat": "{{trigger_kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Think Run Latency p95",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "think_run_latency_seconds_p95", "legendFormat": "{{trigger_kind}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Think Queue Depth (worker vs DB truth)",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "think_queue_depth", "legendFormat": "worker gauge"},
+        {"refId": "B", "expr": "fyralis_think_queue_pending", "legendFormat": "DB truth (pending)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Think Runs vs Failures",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (trigger_kind) (rate(think_runs_total[5m]))", "legendFormat": "runs · {{trigger_kind}}"},
+        {"refId": "B", "expr": "sum(rate(think_runs_failed_total[5m]))", "legendFormat": "failures (all)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Validation Dropped Ops by Reason",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (reason) (rate(think_validation_dropped_ops_total[15m]))", "legendFormat": "{{reason}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Cascade Invariant Violations by Branch",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (branch) (rate(think_cascade_invariant_violations_total[15m]))", "legendFormat": "{{branch}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 10,
+      "type": "piechart",
+      "title": "Reconcile Decisions (24h)",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 18},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (decision) (increase(think_reconcile_decisions_total[24h]))", "legendFormat": "{{decision}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Per-Tenant Spend (24h, DB truth)",
+      "gridPos": {"h": 8, "w": 10, "x": 6, "y": 18},
+      "datasource": {"type": "postgres", "uid": "fyralis-pg"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT tenant_id::text AS tenant, sum(llm_cost_usd) AS usd, sum(llm_calls_count) AS calls, sum(llm_input_tokens_total) AS input_tokens, sum(llm_output_tokens_total) AS output_tokens FROM think_run_costs WHERE computed_at > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC LIMIT 20"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Spend by Model + Outcome (24h, DB truth)",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 18},
+      "datasource": {"type": "postgres", "uid": "fyralis-pg"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(model_name,'unknown') AS model, outcome, sum(llm_cost_usd) AS usd, count(*) AS runs FROM think_run_costs WHERE computed_at > now() - interval '24 hours' GROUP BY 1,2 ORDER BY 3 DESC"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    }
+  ]
+}

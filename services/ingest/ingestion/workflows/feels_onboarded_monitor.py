@@ -549,7 +549,10 @@ async def _run_service() -> None:
         IdempotentProducer,
         ProducerConfig,
     )
-    from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.ingestion.workflows.runtime import (
+        make_workflow_pool,
+        start_workflow_health,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     producer = IdempotentProducer(ProducerConfig(
@@ -570,10 +573,13 @@ async def _run_service() -> None:
         loop.add_signal_handler(s, stop_event.set)
 
     log.info("workflow.feels_onboarded_monitor.started")
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    health_shutdown = start_workflow_health(stop_event)
     try:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.feels_onboarded_monitor.shutting_down")
+        await health_shutdown()
         await producer.stop()
         await pool.close()
     log.info("workflow.feels_onboarded_monitor.exited")

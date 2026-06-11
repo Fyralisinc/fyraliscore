@@ -18,16 +18,47 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
+from lib.observability import counter, histogram
 
 
 EMBEDDING_DIM = 768  # SCHEMA-LOCK.md S1.1 / S2.1 / S6.1 — VECTOR(768)
 DEFAULT_MODEL = "nomic-embed-text"
+
+
+# ---------------------------------------------------------------------
+# Prometheus families (rendered by whichever process serves /metrics).
+# `status` semantics are per-HTTP-attempt: ok | http_4xx | http_5xx |
+# connection_error | invalid_json. Retries are counted separately, so
+# requests_total{status="ok"} / sum(requests_total) is the per-attempt
+# success rate and retries_total tracks backoff pressure.
+# ---------------------------------------------------------------------
+_REQUESTS = counter(
+    "ollama_embed_requests_total",
+    "Ollama embedding HTTP attempts by model, operation, and outcome.",
+    ("model", "operation", "status"),
+)
+_RETRIES = counter(
+    "ollama_embed_retries_total",
+    "Ollama embedding retries (transient 5xx/connection failures).",
+    ("model", "operation"),
+)
+_DIM_MISMATCH = counter(
+    "ollama_embed_dimension_mismatch_total",
+    "Embeddings rejected because the vector dimension was wrong.",
+    ("model",),
+)
+_DURATION = histogram(
+    "ollama_embed_request_duration_seconds",
+    "Per-attempt Ollama embedding HTTP latency.",
+    ("model", "operation", "status"),
+)
 
 
 class OllamaError(EmbedderError):
@@ -114,6 +145,7 @@ class OllamaClient:
         if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
             raise OllamaError("Ollama response missing 'embedding' list", body=payload)
         if len(vec) != self.config.expected_dim:
+            _DIM_MISMATCH.inc(model=self.config.model)
             raise OllamaDimensionMismatch(
                 f"embedding dim mismatch: got {len(vec)}, expected "
                 f"{self.config.expected_dim}",
@@ -140,26 +172,40 @@ class OllamaClient:
         self,
         path: str,
         body: dict[str, Any],
+        *,
+        operation: str = "embed",
     ) -> dict[str, Any]:
         last_exc: Exception | None = None
         backoff = self.config.initial_backoff_s
+        model = self.config.model
+
+        def _observe(status: str, started: float) -> None:
+            elapsed = time.monotonic() - started
+            _REQUESTS.inc(model=model, operation=operation, status=status)
+            _DURATION.observe(
+                elapsed, model=model, operation=operation, status=status
+            )
 
         for attempt in range(self.config.max_retries):
+            started = time.monotonic()
             try:
                 resp = await self._client.post(path, json=body)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout,
                     httpx.PoolTimeout, httpx.RemoteProtocolError) as e:
+                _observe("connection_error", started)
                 last_exc = e
                 if attempt == self.config.max_retries - 1:
                     raise OllamaError(
                         f"ollama unreachable after {attempt + 1} attempts: {e}",
                         path=path,
                     ) from e
+                _RETRIES.inc(model=model, operation=operation)
                 await asyncio.sleep(backoff)
                 backoff *= self.config.backoff_factor
                 continue
 
             if resp.status_code >= 500:
+                _observe("http_5xx", started)
                 last_exc = OllamaError(
                     f"ollama returned {resp.status_code}",
                     status=resp.status_code,
@@ -167,12 +213,14 @@ class OllamaClient:
                 )
                 if attempt == self.config.max_retries - 1:
                     raise last_exc
+                _RETRIES.inc(model=model, operation=operation)
                 await asyncio.sleep(backoff)
                 backoff *= self.config.backoff_factor
                 continue
 
             if resp.status_code >= 400:
                 # 4xx is a caller bug; don't retry.
+                _observe("http_4xx", started)
                 raise OllamaError(
                     f"ollama 4xx: {resp.status_code}",
                     status=resp.status_code,
@@ -180,12 +228,15 @@ class OllamaClient:
                 )
 
             try:
-                return resp.json()
+                payload = resp.json()
             except Exception as e:
+                _observe("invalid_json", started)
                 raise OllamaError(
                     f"ollama returned non-JSON response: {e}",
                     body=resp.text[:500],
                 ) from e
+            _observe("ok", started)
+            return payload
 
         # Theoretically unreachable — the loop always either returns
         # or raises — but defensive.

@@ -8,13 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
+import sys
 
 import asyncpg
 import structlog
 
-from lib.llm.provider import build_provider
-from services.app.gateway.db_bootstrap import _register_codecs
-from services.reasoning.think.worker import ThinkWorker
+# In-container the repo lives at /app but `python scripts/x.py` puts
+# /app/scripts (not /app) on sys.path — same bootstrap as the other
+# script launchers (run_discord_gateway_worker.py).
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from lib.llm.provider import build_provider  # noqa: E402
+from lib.observability.pools import register_pool  # noqa: E402
+from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
+from services.reasoning.think.worker import ThinkWorker  # noqa: E402
 
 
 async def _main() -> None:
@@ -23,6 +33,7 @@ async def _main() -> None:
     pool = await asyncpg.create_pool(
         dsn=dsn, min_size=2, max_size=8, init=_register_codecs,
     )
+    register_pool("think_worker", pool)
     llm = build_provider()
     try:
         worker = ThinkWorker(pool, llm_provider=llm)

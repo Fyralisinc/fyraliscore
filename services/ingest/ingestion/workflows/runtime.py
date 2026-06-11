@@ -79,13 +79,50 @@ async def make_workflow_pool(
     cursor-style — at most one tick in flight per service. Per-source
     services that fan out internally should pass a larger `max_size`.
     """
-    return await asyncpg.create_pool(
+    pool = await asyncpg.create_pool(
         dsn,
         min_size=min_size,
         max_size=max_size,
         command_timeout=command_timeout,
         statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
     )
+    # Scrape-time db_pool_* gauges. One pool per workflow process, so the
+    # static "workflow" name is unambiguous per scrape target (the
+    # prometheus `worker` label distinguishes processes).
+    from lib.observability.pools import register_pool
+
+    register_pool("workflow", pool)
+    return pool
+
+
+def start_workflow_health(stop_event: asyncio.Event):
+    """Heartbeat + opt-in /healthz + /metrics for a workflow service loop.
+
+    Same surface as the Kafka consumers (INGESTION_HEALTH_PORT-gated; the
+    compose x-app-env anchor already sets the port). The rendered metrics
+    are the shared lib.observability registry (db pool, kafka producer,
+    oauth, per-source integration counters recorded in this process) —
+    workflow services keep no in-process counter dict of their own.
+
+    Returns an async shutdown callable for the caller's `finally` block.
+    """
+    from services.ingest.ingestion.observability import (
+        Heartbeat,
+        run_heartbeat_ticker,
+        start_health_server,
+    )
+
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
+
+    async def shutdown() -> None:
+        ticker.cancel()
+        await asyncio.gather(ticker, return_exceptions=True)
+        if health is not None:
+            health.shutdown()
+
+    return shutdown
 
 
 # ---------------------------------------------------------------------

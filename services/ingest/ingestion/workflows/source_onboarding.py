@@ -1441,7 +1441,10 @@ async def _run_service() -> None:
         IdempotentProducer,
         ProducerConfig,
     )
-    from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.ingestion.workflows.runtime import (
+        make_workflow_pool,
+        start_workflow_health,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.started` (LLD §6).
@@ -1473,10 +1476,13 @@ async def _run_service() -> None:
     log.info("workflow.source_onboarding.started", extra={
         "instance": config.instance_name,
     })
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
+    health_shutdown = start_workflow_health(stop_event)
     try:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.source_onboarding.shutting_down")
+        await health_shutdown()
         await producer.stop()
         await pool.close()
     log.info("workflow.source_onboarding.exited")

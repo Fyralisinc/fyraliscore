@@ -1,0 +1,49 @@
+# Recording rules — precompute the dashboard-hot expressions.
+# Naming: level:metric:operation per Prometheus convention, prefixed
+# fyralis. The legacy ingestion counters carry no _total suffix; rate()
+# works on them regardless.
+
+groups:
+  - name: fyralis-recording
+    interval: 30s
+    rules:
+      # Per-worker heartbeat age (new lib families OR legacy ingestion one).
+      - record: fyralis:worker_heartbeat_age_seconds
+        expr: >
+          max by (worker) (
+            ingestion_heartbeat_age_seconds
+            or worker_heartbeat_age_seconds
+          )
+
+      # Embedding failure ratio over 10m (alert input).
+      - record: fyralis:embed_failure_ratio:10m
+        expr: >
+          sum(rate(ingestion_embedding_worker_embeds_failed[10m]))
+          /
+          clamp_min(
+            sum(rate(ingestion_embedding_worker_embeds_succeeded[10m]))
+            + sum(rate(ingestion_embedding_worker_embeds_failed[10m])),
+            1e-9
+          )
+
+      # Gateway 5xx rate by route over 5m.
+      - record: fyralis:gateway_5xx_rate:5m
+        expr: >
+          sum by (route) (rate(http_requests_total{status=~"5.."}[5m]))
+
+      # Webhook verification failure rate by provider over 5m.
+      - record: fyralis:webhook_failure_rate:5m
+        expr: >
+          sum by (provider) (rate(webhook_verification_failures_total[5m]))
+
+      # LLM spend per hour (USD), from the think worker's cost counter.
+      - record: fyralis:llm_spend_usd_per_hour
+        expr: sum(rate(think_llm_cost_usd_total[1h])) * 3600
+
+      # DB pool saturation per process pool.
+      - record: fyralis:db_pool_saturation
+        expr: db_pool_in_use / clamp_min(db_pool_max, 1)
+
+      # Worst consumer-group lag (kafka-exporter).
+      - record: fyralis:kafka_worst_group_lag
+        expr: max by (consumergroup) (kafka_consumergroup_lag_sum)

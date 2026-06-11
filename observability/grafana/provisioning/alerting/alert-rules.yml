@@ -1,0 +1,472 @@
+# Grafana alert rules (provisioned as-code).
+# All queries target the Prometheus datasource uid fyralis-prom; the threshold
+# condition is evaluated by the server-side expression engine (__expr__).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: fyralis-alerts
+    folder: Fyralis
+    interval: 1m
+    rules:
+      - uid: worker-heartbeat-stale
+        title: WorkerHeartbeatStale
+        condition: C
+        for: 1m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "A worker heartbeat is older than 120s — the worker loop is stalled or dead (covers legacy ingestion workers and think/post-commit workers)."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max by (worker) (ingestion_heartbeat_age_seconds or worker_heartbeat_age_seconds)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [120]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: worker-scrape-down
+        title: WorkerScrapeDown
+        condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot scrape one or more Fyralis targets (up == 0 for a fyralis-* job) — the process is down or unreachable."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'count by (worker) (up{job=~"fyralis-.*"} == 0)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: infra-scrape-down
+        title: InfraScrapeDown
+        condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot scrape a Fyralis infrastructure target — check Prometheus, exporters, Grafana, or MinIO connectivity."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'count by (job, instance) (up{job=~"prometheus|postgres|kafka|redis|minio|grafana"} == 0)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: dlq-depth-high
+        title: DLQDepthHigh
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 25 unresolved DLQ rows — ingestion failures are accumulating faster than they are being resolved."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(ingestion_dlq_writer_unresolved_depth)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [25]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: consumer-lag-high
+        title: ConsumerLagHigh
+        condition: C
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "A Kafka consumer group is more than 1000 messages behind for 10m — a downstream worker is not keeping up with produce rate."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(kafka_consumergroup_lag_sum)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1000]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: signature-failure-spike
+        title: SignatureFailureSpike
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Webhook signature verification failures exceed 1/s — possible secret rotation drift, misconfigured provider, or probing traffic."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'sum(rate(webhook_verification_failures_total[5m]))'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: embed-failure-ratio-high
+        title: EmbedFailureRatioHigh
+        condition: C
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of embedding attempts failed over the last 10m — check Ollama health and the embedding worker logs."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'fyralis:embed_failure_ratio:10m'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.05]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: think-queue-backpressure
+        title: ThinkQueueBackpressure
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Think queue depth above 500 for 5m — the think worker is falling behind trigger production; reasoning latency will grow."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(think_queue_depth or fyralis_think_queue_pending)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [500]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: db-pool-saturated
+        title: DBPoolSaturated
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "A DB connection pool is over 90% utilized for 5m — acquire waits and timeouts are imminent; consider raising pool max or fixing a leak."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max by (pool) (fyralis:db_pool_saturation)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.9]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: llm-spend-burn-rate-high
+        title: LLMSpendBurnRateHigh
+        condition: C
+        for: 15m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM spend burn rate exceeds $5/hour for 15m. Threshold is a placeholder — tune to budget. Partial P2-14 mitigation (cost runaway detection)."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'fyralis:llm_spend_usd_per_hour'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [5]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: dead-letter-rows-present
+        title: DeadLetterRowsPresent
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead-letter rows present in product-side dead-letter tables for 15m — post-commit work was abandoned and needs manual replay (P2-2)."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'sum(fyralis_dead_letter_rows)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query

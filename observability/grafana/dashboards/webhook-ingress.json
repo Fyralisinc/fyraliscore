@@ -1,0 +1,146 @@
+{
+  "uid": "fyralis-webhook-ingress",
+  "title": "Fyralis · Webhook Ingress",
+  "tags": ["fyralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Webhook request rate by route",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(http_requests_total{route=~\"/webhooks.*\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Webhook ingress latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route=~\"/webhooks.*\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Verification failures by provider",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (rate(webhook_verification_failures_total[5m]))",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "Verification failures by reason (1h)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (increase(webhook_verification_failures_total[1h]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Resolver duration p95 by provider",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "webhook_resolver_duration_p95_seconds",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Resolver cache hit rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(webhook_resolver_cache_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(webhook_resolver_cache_total{result=~\"hit|miss\"}[5m])),1e-9)",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Kafka cutover: fallback vs success by provider",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (rate(webhook_router_kafka_path_total{outcome=\"fallback\"}[5m]))",
+          "legendFormat": "fallback {{provider}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (provider) (rate(webhook_router_kafka_path_total{outcome=\"success\"}[5m]))",
+          "legendFormat": "success {{provider}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Resolver outcomes",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(webhook_resolver_outcomes_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    }
+  ]
+}

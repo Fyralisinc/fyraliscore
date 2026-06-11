@@ -1,0 +1,106 @@
+# Prometheus scrape configuration for the Fyralis compose stack.
+# Topology: docs/architecture/observability_architecture.md §2.
+# Targets are compose service names; everything scrapes on the compose
+# network (only Grafana/Prometheus get loopback host ports).
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: fyralis-gateway
+    static_configs:
+      - targets: ["gateway:8000"]
+        labels:
+          worker: gateway
+
+  # All app workers serve /healthz + /metrics on INGESTION_HEALTH_PORT
+  # (9300, set by the compose x-app-env anchor). One target per service
+  # with a stable `worker` label for dashboards/alerts.
+  - job_name: fyralis-workers
+    static_configs:
+      - targets: ["normalizer:9300"]
+        labels: { worker: normalizer }
+      - targets: ["observation_writer:9300"]
+        labels: { worker: observation_writer }
+      - targets: ["dlq_writer:9300"]
+        labels: { worker: dlq_writer }
+      - targets: ["embedding_worker:9300"]
+        labels: { worker: embedding_worker }
+      - targets: ["embedding_backlog:9300"]
+        labels: { worker: embedding_backlog }
+      - targets: ["periodic_reconciler:9300"]
+        labels: { worker: periodic_reconciler }
+      - targets: ["circuit_breaker:9300"]
+        labels: { worker: circuit_breaker }
+      - targets: ["think_worker:9300"]
+        labels: { worker: think_worker }
+      - targets: ["post_commit_worker:9300"]
+        labels: { worker: post_commit_worker }
+      - targets: ["shard_fetch:9300"]
+        labels: { worker: shard_fetch }
+      - targets: ["oauth_poller:9300"]
+        labels: { worker: oauth_poller }
+      - targets: ["tenant_onboarding:9300"]
+        labels: { worker: tenant_onboarding }
+      - targets: ["source_onboarding:9300"]
+        labels: { worker: source_onboarding }
+      - targets: ["reconciler:9300"]
+        labels: { worker: reconciler }
+      - targets: ["feels_onboarded_monitor:9300"]
+        labels: { worker: feels_onboarded_monitor }
+      - targets: ["discord_gateway_worker:9300"]
+        labels: { worker: discord_gateway_worker }
+      - targets: ["telegram_gateway_worker:9300"]
+        labels: { worker: telegram_gateway_worker }
+      - targets: ["signal_gateway_worker:9300"]
+        labels: { worker: signal_gateway_worker }
+      - targets: ["gmail_watch_scheduler:9300"]
+        labels: { worker: gmail_watch_scheduler }
+      - targets: ["gmail_history_poller:9300"]
+        labels: { worker: gmail_history_poller }
+      - targets: ["google_calendar_live_poller:9300"]
+        labels: { worker: google_calendar_live_poller }
+      - targets: ["google_drive_live_poller:9300"]
+        labels: { worker: google_drive_live_poller }
+      - targets: ["google_calendar_watch_scheduler:9300"]
+        labels: { worker: google_calendar_watch_scheduler }
+      - targets: ["google_drive_watch_scheduler:9300"]
+        labels: { worker: google_drive_watch_scheduler }
+      - targets: ["github_intel_worker:9300"]
+        labels: { worker: github_intel_worker }
+      - targets: ["sage_structural_features_worker:9300"]
+        labels: { worker: sage_structural_features_worker }
+      - targets: ["sage_topology_optimizer_worker:9300"]
+        labels: { worker: sage_topology_optimizer_worker }
+      - targets: ["relationship_ontology_proposals_worker:9300"]
+        labels: { worker: relationship_ontology_proposals_worker }
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]

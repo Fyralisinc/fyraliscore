@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 from uuid import UUID
 
+from worker_observability import install_signal_handlers, start_worker_health
 from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 from services.ingest.github_intel.config import GITHUB_INTEL_ENABLED
 from services.ingest.github_intel.worker import drain, enqueue_new_github_observations
@@ -36,12 +36,8 @@ async def main() -> None:
     pool = await make_workflow_pool(dsn, min_size=1, max_size=5)
 
     stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass
+    install_signal_handlers(stop)
+    health_shutdown = start_worker_health("github_intel_worker", stop)
 
     from services.ingest.ingestion.feature_flags.client import TenantFlags
     flags = TenantFlags(pool)
@@ -60,6 +56,7 @@ async def main() -> None:
             except asyncio.TimeoutError:
                 pass
     finally:
+        await health_shutdown()
         await pool.close()
 
 

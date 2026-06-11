@@ -109,6 +109,20 @@ async def _main() -> int:
     refresh_task: asyncio.Task[None] | None = None
     lock: LeaderLock | None = None
     stop_event = asyncio.Event()
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT). The
+    # discord_gateway_* counters recorded in this process are rendered via
+    # the shared registry's integration collector.
+    from services.ingest.ingestion.observability import (
+        Heartbeat,
+        run_heartbeat_ticker,
+        start_health_server,
+    )
+
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
+    health_ticker = asyncio.ensure_future(
+        run_heartbeat_ticker(heartbeat, stop_event)
+    )
     try:
         secret_store = build_secret_store(pool)
         # Reuse the same resolver shape the HTTP gateway uses (IN-07).
@@ -278,6 +292,10 @@ async def _main() -> int:
         # Stop the refresh tick + release the lease FIRST so a successor
         # can acquire immediately (no waiting out the 30s TTL).
         stop_event.set()
+        health_ticker.cancel()
+        await asyncio.gather(health_ticker, return_exceptions=True)
+        if health is not None:
+            health.shutdown()
         if refresh_task is not None:
             try:
                 await refresh_task
