@@ -299,8 +299,12 @@ async def ingest_from_draft(
         seen_ref_keys = {
             json.dumps(e, sort_keys=True) for e in entities_mentioned
         }
-        for phrase in candidate_phrases(draft.content_text):
-            ref = await alias_repo.fast_path_resolve(phrase, tenant_id)
+        phrases = candidate_phrases(draft.content_text)
+        resolved_by_norm = await alias_repo.fast_path_resolve_many(
+            phrases, tenant_id
+        )
+        for phrase in phrases:
+            ref = resolved_by_norm.get(normalize_phrase(phrase))
             if ref is not None:
                 key = json.dumps(ref, sort_keys=True)
                 if key not in seen_ref_keys:

@@ -36,6 +36,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from services.ingest.ingestion.feature_flags import SHADOW_WRITE_ENABLED
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.shadow_write import shadow_write_raw
 from services.ingest.integrations.gmail.push_handler import (
     GmailPushError,
@@ -256,7 +257,9 @@ async def gmail_pubsub_push(
     producer = getattr(request.app.state, "kafka_producer", None)
     if producer is not None:
         try:
-            remaining = await producer.flush(timeout_seconds=10.0)
+            remaining = await coalesced_flush(
+                producer, timeout_seconds=10.0,
+            )
             if remaining:
                 log.warning("gmail.pubsub.kafka_flush_incomplete", remaining=remaining)
         except Exception as exc:  # noqa: BLE001 — never break the 200 ack
