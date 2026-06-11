@@ -33,7 +33,7 @@ def test_envelope_valid_minimal() -> None:
 
 def test_envelope_rejects_unknown_source() -> None:
     bad = _minimal_kwargs()
-    bad["source"] = "linkedin"  # not in SourceLiteral
+    bad["source"] = "not_a_source"  # not in SourceLiteral
     with pytest.raises(ValidationError):
         RawEnvelope(**bad)
 

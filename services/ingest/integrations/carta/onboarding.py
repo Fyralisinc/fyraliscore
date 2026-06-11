@@ -1,21 +1,24 @@
 """services/ingest/integrations/carta/onboarding.py — install + provision (cap-table).
 
-Carta authenticates with OAuth 2.0; every call is scoped to a firm ``firm_id``.
+Carta authenticates with OAuth 2.0; every read is scoped to an **issuer**
+(`/v1alpha1/issuers/{issuer_id}/...`). The issuer id is stored in
+``carta_installations.firm_id`` (the column predates the issuer naming).
 Onboarding mirrors the Gusto dedicated-table shape:
 
   finalize_install() — UPSERT a carta_installations row, INSERT one
-  carta_entities row per entity type to shard (Shareholder/ShareClass/
-  SafeNote/OptionGrant), and emit an onboarding_triggers row (source='carta')
-  so the existing M6 backfill chain fires. All in one tenant-scoped transaction.
+  carta_entities row per entity type to shard (stakeholder / shareClass /
+  optionGrant / convertibleNote — the real /v1alpha1 issuer collections), and
+  emit an onboarding_triggers row (source='carta') so the existing M6 backfill
+  chain fires. All in one tenant-scoped transaction.
 
 Carta is POLL-ONLY: there is NO webhook, so there is NO
 register_webhook_installation() and NO webhook_secret_ref. The live edge
 (`services/ingest/integrations/carta/poll.py`) re-lists changed objects on an
 interval and resolves the tenant directly from carta_installations.
 
-The access + refresh tokens are stored in encrypted_secrets; the install row
-carries `secret_ref` (access token) and `refresh_secret_ref` (rotating refresh
-token, owned by the oauth_poller in production).
+Secrets in encrypted_secrets; the install row carries `secret_ref` (the ~1 h
+access token) and `refresh_secret_ref` (the client_credentials SECRET used to
+RE-MINT the access token — Carta has no OAuth refresh-token grant).
 """
 from __future__ import annotations
 

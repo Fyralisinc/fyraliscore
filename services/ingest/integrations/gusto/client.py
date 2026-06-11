@@ -1,26 +1,32 @@
 """services/ingest/integrations/gusto/client.py — outbound Gusto client.
 
-Single outbound surface for backfill + poll-incremental. Gusto is authenticated
-with an OAuth 2.0 Bearer **access token** (short-lived) and every call is scoped
-to a company ``company_uuid``. The access token is resolved once from the secret
-store (or preset in spammer mode) and reused for the life of the client.
+Single outbound surface for backfill + poll-incremental. Gusto is a payroll
+REST API (base path ``/v1`` on ``https://api.gusto.com``; the demo environment
+is ``https://api.gusto-demo.com``) authenticated with an OAuth 2.0 Bearer
+**access token** (expires after 2 h; the rotating refresh token re-mints it via
+``POST /oauth/token`` — see `integrations/oauth_refresh.py`). Every read is
+scoped to a company ``company_uuid``:
 
-TODO(human): implement Gusto OAuth token refresh — NONE exists yet (this is the
-    documented-but-unbuilt seam, exactly as the QuickBooks archetype ships). The
-    install row persists `refresh_secret_ref` + `token_expires_at`; wire either a
-    refresh-on-401 exchange here (exchange refresh token -> persist rotated token
-    -> retry once) OR an oauth_poller. Do NOT assume tokens never expire.
+    GET /v1/companies/{company_uuid}            — connectivity probe (single object)
+    GET /v1/companies/{company_uuid}/employees  — bare JSON array
+    GET /v1/companies/{company_uuid}/payrolls   — bare JSON array
 
-TODO(human): confirm Gusto API host + read endpoints + OAuth scopes. The host is
-    set in `lib/integrations/endpoints.py` (`gusto_api`) and is overridable per
-    env (`GUSTO_API_BASE_URL`) and per install (`base_url`). The read surface
-    below clones the QuickBooks query endpoint as a placeholder; Gusto's real
-    read surface is REST collections under `/v1/companies/{company_uuid}/...`
-    (payrolls, employees, contractor_payments). Implement only the verified read
-    surface and tag speculative endpoints.
+VERIFIED against docs.gusto.com (embedded-payroll/app-integrations reference,
+2026-06): list responses are **bare arrays**; pagination is **offset-style via
+query params** `page` / `per` (per defaults to 25, max 100) with the totals in
+**response headers** `X-Total-Count` / `X-Page` / `X-Per-Page` (no Link
+header). Payrolls accept a date window (`start_date` / `end_date`, optionally
+`date_filter_by=check_date`); employees have NO updated-since filter (callers
+full re-walk + dedup). Dollar amounts are decimal STRINGS (e.g. "1234.56").
 
-Rate limits: default to 429 + Retry-After (env knobs GUSTO_RL_MAX_ATTEMPTS /
-GUSTO_RL_MAX_SLEEP_SEC). Non-2xx maps to ``GustoApiError``.
+The optional `X-Gusto-API-Version` header pins the API version (date string,
+e.g. "2026-02-01" — the reference default); omitted requests fall back to the
+app's Developer Portal minimum. Pin via GUSTO_API_VERSION.
+
+Rate limits: 429 + Retry-After (env knobs GUSTO_RL_MAX_ATTEMPTS /
+GUSTO_RL_MAX_SLEEP_SEC). Non-2xx maps to ``GustoApiError``. A 401/403 triggers
+one reactive token re-mint via `refresh_on_unauthorized` (inert in spammer
+mode), then retries once.
 
 Logging redaction: the access token / auth header are NEVER logged.
 """
@@ -28,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
+from typing import Any, Sequence
 from uuid import UUID
 from urllib.parse import quote
 
@@ -42,8 +48,11 @@ log = structlog.get_logger("integrations.gusto.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
+# docs.gusto.com pagination: `per` defaults to 25, max 100.
 _DEFAULT_PAGE_SIZE = 100
-_MINOR_VERSION = "75"
+_MAX_PAGE_SIZE = 100
+# Pinned API version (docs.gusto.com reference default). Overridable per env.
+_DEFAULT_API_VERSION = "2026-02-01"
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -53,6 +62,10 @@ def _parse_retry_after(value: str | None) -> float:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _api_version() -> str:
+    return os.environ.get("GUSTO_API_VERSION", _DEFAULT_API_VERSION)
 
 
 class GustoClient:
@@ -86,7 +99,7 @@ class GustoClient:
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token: str | None = access_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical GUSTO host; a spammer/test
+        # In production the base is the canonical Gusto host; a spammer/test
         # override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
@@ -129,7 +142,7 @@ class GustoClient:
 
     async def _request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> httpx.Response:
         from services.ingest.integrations.gusto import metrics
         from services.ingest.integrations.oauth_refresh import (
             refresh_on_unauthorized,
@@ -148,6 +161,7 @@ class GustoClient:
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
+                "X-Gusto-API-Version": _api_version(),
             }
             try:
                 response = await client.request(
@@ -169,14 +183,7 @@ class GustoClient:
 
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise GustoApiError(
-                        "gusto response was not a JSON object",
-                        code="gusto_api_error",
-                        context={"path": path},
-                    )
-                return body
+                return response
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
@@ -197,50 +204,125 @@ class GustoClient:
             metrics.record_request("error")
             raise _api_error_from_response(response, path)
 
+    def _list_rows(self, response: httpx.Response, path: str) -> list[dict[str, Any]]:
+        body = _safe_json(response)
+        if not isinstance(body, list):
+            raise GustoApiError(
+                "gusto list response was not a JSON array",
+                code="gusto_api_error",
+                context={"path": path},
+            )
+        return [r for r in body if isinstance(r, dict)]
+
+    @staticmethod
+    def _next_page(
+        page: int, rows: list[dict[str, Any]], per: int, headers: httpx.Headers,
+    ) -> int | None:
+        """The next `page`, or None when terminal.
+
+        Prefer the documented count headers (`X-Total-Count` / `X-Page` /
+        `X-Per-Page`); fall back to the short-/empty-page heuristic when a
+        server omits them. A short or empty page is always terminal.
+        """
+        if not rows or len(rows) < per:
+            return None
+        total = headers.get("X-Total-Count")
+        if total is not None:
+            try:
+                cur_page = int(headers.get("X-Page", page))
+                per_page = int(headers.get("X-Per-Page", per))
+                if cur_page * per_page >= int(total):
+                    return None
+                return cur_page + 1
+            except (TypeError, ValueError):
+                pass
+        return page + 1
+
     # -----------------------------------------------------------------
     # Public read surface
     # -----------------------------------------------------------------
 
-    async def query(
+    async def list_employees(
         self,
-        entity: str,
         *,
-        where: str | None = None,
-        order_by: str = "Metadata.LastUpdatedTime",
-        start_position: int = 1,
-        max_results: int = _DEFAULT_PAGE_SIZE,
+        page: int = 1,
+        per: int = _DEFAULT_PAGE_SIZE,
+        terminated: bool | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
-        """Run a SELECT against one entity. Returns `(rows, next_start_position)`;
-        `next_start_position is None` is terminal.
+        """`GET /v1/companies/{company_uuid}/employees` — one page of employee
+        objects (bare array). Returns `(rows, next_page)`; `next_page is None`
+        is terminal.
 
-        GUSTO query language: `SELECT * FROM Invoice [WHERE ...] ORDERBY <f>
-        STARTPOSITION n MAXRESULTS m`. `Metadata.LastUpdatedTime` is the
-        incremental cursor field.
+        There is NO updated-since filter on this endpoint — incremental sync is
+        a full re-walk, deduped downstream via the `version`-discriminated
+        external_id. `terminated` is a FILTER (true → only terminated /
+        scheduled-to-terminate employees); leave it None to walk the default
+        collection.
         """
-        sql = f"SELECT * FROM {entity}"
-        if where:
-            sql += f" WHERE {where}"
-        sql += f" ORDERBY {order_by} STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        path = f"/v3/company/{self._company_uuid}/query"
-        params = {"query": sql, "minorversion": _MINOR_VERSION}
-        resp = await self._request("GET", path, params=params)
-        qr = resp.get("QueryResponse")
-        if not isinstance(qr, dict):
-            return [], None
-        rows = qr.get(entity)
-        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-        # GUSTO returns maxResults == page length; a short page is terminal.
-        returned = int(qr.get("maxResults", len(rows)) or 0)
-        next_start = start_position + len(rows)
-        is_last = returned < max_results or not rows
-        return rows, (None if is_last else next_start)
+        per = min(per, _MAX_PAGE_SIZE)
+        params: dict[str, Any] = {"page": page, "per": per}
+        if terminated is not None:
+            params["terminated"] = "true" if terminated else "false"
+        path = f"/v1/companies/{quote(self._company_uuid)}/employees"
+        response = await self._request("GET", path, params=params)
+        rows = self._list_rows(response, path)
+        return rows, self._next_page(page, rows, per, response.headers)
 
-    async def company_info(self) -> dict[str, Any]:
-        """`GET /v3/company/{company}/companyinfo/{company}` — connectivity probe."""
-        path = f"/v3/company/{self._company_uuid}/companyinfo/{quote(self._company_uuid)}"
-        return await self._request(
-            "GET", path, params={"minorversion": _MINOR_VERSION},
-        )
+    async def list_payrolls(
+        self,
+        *,
+        page: int = 1,
+        per: int = _DEFAULT_PAGE_SIZE,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        date_filter_by: str | None = None,
+        processing_statuses: Sequence[str] | None = None,
+        payroll_types: Sequence[str] | None = None,
+        sort_order: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """`GET /v1/companies/{company_uuid}/payrolls` — one page of payroll
+        objects (bare array). Returns `(rows, next_page)`; `next_page is None`
+        is terminal.
+
+        Date window: `start_date` / `end_date` (YYYY-MM-DD) filter by pay
+        period by default; `date_filter_by="check_date"` switches the filter
+        field (the incremental high-water this repo tracks). The window may not
+        exceed 1 year. `processing_statuses` defaults server-side to
+        `processed`; `payroll_types` defaults to `regular`.
+        """
+        per = min(per, _MAX_PAGE_SIZE)
+        params: dict[str, Any] = {"page": page, "per": per}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if date_filter_by:
+            params["date_filter_by"] = date_filter_by
+        if processing_statuses:
+            params["processing_statuses"] = ",".join(processing_statuses)
+        if payroll_types:
+            params["payroll_types"] = ",".join(payroll_types)
+        if sort_order:
+            params["sort_order"] = sort_order
+        path = f"/v1/companies/{quote(self._company_uuid)}/payrolls"
+        response = await self._request("GET", path, params=params)
+        rows = self._list_rows(response, path)
+        return rows, self._next_page(page, rows, per, response.headers)
+
+    async def company(self) -> dict[str, Any]:
+        """`GET /v1/companies/{company_uuid}` — cheap connectivity/credential
+        probe. Returns the single company object (uuid, name, trade_name,
+        company_status, ...)."""
+        path = f"/v1/companies/{quote(self._company_uuid)}"
+        response = await self._request("GET", path)
+        body = _safe_json(response)
+        if not isinstance(body, dict):
+            raise GustoApiError(
+                "gusto company response was not a JSON object",
+                code="gusto_api_error",
+                context={"path": path},
+            )
+        return body
 
 
 # ---------------------------------------------------------------------
@@ -267,7 +349,7 @@ def _api_error_from_response(
         )
     if status == 404:
         return GustoApiError(
-            "gusto 404: entity/company not found or not visible",
+            "gusto 404: resource/company not found or not visible",
             code="gusto_api_not_found",
             context={"http_status": 404, "path": path},
         )
@@ -288,9 +370,10 @@ def _api_error_from_response(
     )
 
 
-# The entity types we shard on, in dependency order (customers/vendors first
-# would be ideal but v1 ingests the four transactional entities directly).
-DEFAULT_ENTITIES = ("Invoice", "Bill", "BillPayment", "Payment")
+# The entity kinds we shard on — one `gusto_entity` shard per kind. `employee`
+# walks /employees (full re-walk + version dedup); `payroll` walks /payrolls
+# (check_date high-water incremental).
+DEFAULT_ENTITIES = ("employee", "payroll")
 
 
 __all__ = ["GustoClient", "DEFAULT_ENTITIES"]

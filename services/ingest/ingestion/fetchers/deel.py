@@ -1,10 +1,9 @@
 """services/ingest/ingestion/fetchers/deel.py — Deel backfill/poll fetcher (finance).
 
-TODO(human): confirm Deel pagination + created-since filter on payments/contracts.
-The archetype assumes offset/limit pagination with a date-granular `start=` lower
-bound on payments. Deel's real API may be cursor- or page-token-based and may
-expose a different "created since" field; keep this configurable
-(`DEEL_BACKFILL_PAGE_SIZE`) and confirm against the Deel docs before prod.
+Deel's real REST v2 API exposes contracts under `/contracts` and payment-like
+cash movement via the org invoice stream (`/invoices`). The client keeps the
+existing `list_payments` seam and maps the fetcher's start floor to the invoice
+created filter.
 
 Per the per-source backfill contract (A18): a fetcher takes one
 `(install, shard_identifier, cursor)` triple and returns one page of records +
@@ -16,7 +15,7 @@ ONE SHARD KIND, TWO SYNC MODES
 ============================================================
 A `deel_contract_payments` shard streams one contract's payments.
 
-  - FULL (initial backfill): walk `GET /contract/{id}/payments` from
+  - FULL (initial backfill): walk invoices for the contract from
     offset 0, paginated, newest-first. On the FIRST page the fetcher also emits
     one `contract_snapshot` record (the current contract state) so the
     contract-position signal lands alongside the payment history.
@@ -106,11 +105,17 @@ async def _open_deel_client(install: asyncpg.Record):  # noqa: ANN202
     return await open_deel_client(install)
 
 
-def _iso_date(iso: str | None) -> str | None:
-    """The date portion of an ISO timestamp (Deel `start` is date-granular)."""
-    if not isinstance(iso, str) or not iso:
-        return None
-    return iso[:10]
+def _payment_high_water(payment: dict[str, Any]) -> Any:
+    return (
+        payment.get("createdAt")
+        or payment.get("created_at")
+        or payment.get("postedAt")
+        or payment.get("posted_at")
+        or payment.get("issued_at")
+        or payment.get("invoice_date")
+        or payment.get("updated_at")
+        or payment.get("updatedAt")
+    )
 
 
 def _bump_high_water(cur: DeelCursor, created: Any) -> None:
@@ -161,7 +166,7 @@ async def fetch_page_deel(
                 contract_id,
                 limit=_page_size(),
                 offset=cur.offset,
-                start=_iso_date(cur.incremental_floor),
+                start=cur.incremental_floor,
             )
         except DeelApiError as exc:
             if (exc.context or {}).get("code") == "deel_api_rate_limited" or \
@@ -180,7 +185,7 @@ async def fetch_page_deel(
                 "_fyralis_contract_id": contract_id,
                 "payment": payment,
             })
-            _bump_high_water(cur, payment.get("createdAt") or payment.get("postedAt"))
+            _bump_high_water(cur, _payment_high_water(payment))
 
         cur.payments_seen += len(payments)
         is_last = next_offset is None

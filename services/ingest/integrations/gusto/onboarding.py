@@ -1,12 +1,13 @@
 """services/ingest/integrations/gusto/onboarding.py — install + provision (finance).
 
 Gusto authenticates with OAuth 2.0; every call is scoped to a company
-``companyId``. Onboarding mirrors the Jira dedicated-table shape:
+``company_uuid``. Onboarding mirrors the Jira dedicated-table shape:
 
   finalize_install() — UPSERT a gusto_installations row, INSERT one
-  gusto_entities row per entity type to shard (Invoice/Bill/BillPayment/
-  Payment), and emit an onboarding_triggers row (source='gusto') so the
-  existing M6 backfill chain fires. All in one tenant-scoped transaction.
+  gusto_entities row per entity kind to shard (employee / payroll — the
+  `/v1/companies/{company_uuid}/...` read surface), and emit an
+  onboarding_triggers row (source='gusto') so the existing M6 backfill chain
+  fires. All in one tenant-scoped transaction.
 
   register_webhook_installation() — register the LIVE-path row in
   provider_installations (provider='gusto', installation_id=company_uuid,
@@ -14,8 +15,8 @@ Gusto authenticates with OAuth 2.0; every call is scoped to a company
   loads the signing secret via the existing machinery.
 
 The access + refresh tokens are stored in encrypted_secrets; the install row
-carries `secret_ref` (access token) and `refresh_secret_ref` (rotating refresh
-token, owned by the oauth_poller in production).
+carries `secret_ref` (access token) and `refresh_secret_ref` (the rotating
+refresh token the reactive 401 re-mint exchanges + persists).
 """
 from __future__ import annotations
 

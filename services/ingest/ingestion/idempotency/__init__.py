@@ -308,14 +308,16 @@ def aws_event(account_id: str, region: str, event_id: str) -> str:
     return f"aws:{account_id}:{region}:event:{event_id}"
 
 
-# --- Carta (Gusto-backfill / poll-live archetype) --------------------
+# --- Carta (issuer-REST backfill / poll-live archetype) --------------
 def carta_entity(
-    firm_id: str, entity_kind: str, entity_id: str, sync_token: str,
+    firm_id: str, entity_kind: str, entity_id: str, version: str,
 ) -> str:
-    """`carta:{firm}:{kind}:{id}:{sync_token}` — namespaced by firm and
-    discriminated by entity_kind (so multiple cap-table entity kinds sharing
-    an id never collide), VERSIONED by sync_token so each edit re-observes."""
-    return f"carta:{firm_id}:{entity_kind}:{entity_id}:{sync_token}"
+    """`carta:{firm}:{kind}:{id}:{version}` — namespaced by the issuer id
+    (`firm_id` holds the Carta issuer id) and discriminated by entity_kind (so
+    multiple cap-table entity kinds sharing an id never collide), VERSIONED by
+    `handlers.carta.carta_version(entity)` (a content digest — Carta v1alpha1
+    entities have no revision counter) so each mutation re-observes."""
+    return f"carta:{firm_id}:{entity_kind}:{entity_id}:{version}"
 
 
 __all__ = [

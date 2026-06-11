@@ -10,11 +10,11 @@ ONE SHARD KIND, TWO SYNC MODES
 ============================================================
 A `fireflies_transcripts` shard streams one workspace's meeting transcripts.
 
-  - FULL (initial backfill): walk `GET /transcripts` from offset 0, paginated,
+  - FULL (initial backfill): walk the GraphQL `transcripts` query from offset 0, paginated,
     newest-first.
   - INCREMENTAL (poll): when the shard is warm-started with a
     `transcript_cursor` (the high-water transcript `dateTime`), the fetcher
-    passes `start=<date>` so only recent transcripts come back; the overlap
+    passes `start=<iso>` so only recent transcripts come back; the overlap
     re-fetch dedups via the versioned external_id.
 
 ============================================================
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
@@ -107,18 +108,23 @@ async def _open_fireflies_client(install: asyncpg.Record):  # noqa: ANN202
     return await open_fireflies_client(install)
 
 
-def _iso_date(iso: str | None) -> str | None:
-    """The date portion of an ISO timestamp (the `start` filter is date-granular)."""
-    if not isinstance(iso, str) or not iso:
-        return None
-    return iso[:10]
-
-
 def _transcript_created(t: dict[str, Any]) -> Any:
     return t.get("dateTime") or t.get("date") or t.get("createdAt")
 
 
+def _iso_from_value(value: Any) -> str | None:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _bump_high_water(cur: FirefliesCursor, created: Any) -> None:
+    created = _iso_from_value(created)
     if isinstance(created, str) and (
         cur.high_water_created is None or created > cur.high_water_created
     ):
@@ -152,7 +158,7 @@ async def fetch_page_fireflies(
             transcripts, next_offset, total = await client.list_transcripts(
                 limit=_page_size(),
                 offset=cur.offset,
-                start=_iso_date(cur.incremental_floor),
+                start=cur.incremental_floor,
             )
         except FirefliesApiError as exc:
             if (exc.context or {}).get("code") == "fireflies_api_rate_limited" or \

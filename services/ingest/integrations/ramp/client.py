@@ -1,42 +1,46 @@
 """services/ingest/integrations/ramp/client.py — outbound Ramp client.
 
-Single outbound surface for backfill + poll-incremental. Ramp is authenticated
-with an OAuth 2.0 Bearer **access token** (~hours lifetime) and every call is
-scoped to a company ``businessId``. The access token is resolved once from the
-secret store (or preset in spammer mode) and reused for the life of the client.
-Production token refresh (the rotating refresh token) is owned by the
-oauth_poller; this read client consumes the current access token.
+Single outbound surface for backfill + poll-incremental. VERIFIED against the
+official Ramp Developer API (docs.ramp.com, OpenAPI `/openapi/developer-api.json`):
 
-This module is cloned from the QuickBooks archetype. The Ramp-specific
-read surface (host, endpoints, query vs REST list, OAuth scopes) is UNVERIFIED
-and kept configurable behind the archetype defaults — see the TODO markers below.
+  - Base: ``https://api.ramp.com/developer/v1`` — plain REST collections.
+  - Auth: OAuth 2.0 **client-credentials** — mint a Bearer access token at
+    ``POST {base}/token`` (HTTP Basic ``client_id:client_secret``, form body
+    ``grant_type=client_credentials&scope=…``). Tokens live ``expires_in``
+    seconds (~1 h) and there is NO refresh token for this grant — expiry/401 is
+    handled by RE-MINTING (reactively via `refresh_on_unauthorized`, which now
+    re-mints for ramp; proactively by the oauth poller).
+  - Read surface: ``GET /transactions``, ``/reimbursements``, ``/cards``,
+    ``/users`` + the ``GET /business`` connectivity probe.
+  - Pagination: **KEYSET** — every list response is the envelope
+    ``{"data": [...], "page": {"next": "<full URL embedding start=<last id>>"
+    or null}}``. ``page_size`` default 20, allowed 2..100. The client follows
+    ``page.next`` URLs; when an ``api_base_url`` override is set (spammer /
+    mock), foreign-host next-URLs are re-rooted onto the override so mocks work.
+  - Incremental: transactions support ``from_date``/``to_date`` (filter on
+    ``user_transaction_time``, ISO8601); reimbursements support
+    ``updated_after`` (filter on ``updated_at``). Cards/users have NO
+    server-side incremental filter — callers fall back to a full idempotent
+    re-walk (dedup via the deterministic external_id).
 
-Reads go through the cloned **query endpoint** shape:
-    GET /v3/company/{businessId}/query?query=<SQL>&minorversion=75
-returning ``{"QueryResponse": {"<Entity>": [...], "startPosition", "maxResults"}}``.
-Pagination is offset-based via ``STARTPOSITION n MAXRESULTS m`` in the SQL.
-TODO(human): confirm Ramp read endpoints + OAuth scopes (Ramp is likely a
-REST list API under https://api.ramp.com/developer/v1, NOT a SQL-query API —
-if so, switch ``query()`` to a list+from_date REST call; see fetchers/ramp.py).
+Spammer/test mode: a preset ``access_token`` (or ``api_base_url`` override)
+skips real OAuth entirely — no client credentials needed.
 
-TODO(human): implement Ramp OAuth token refresh (refresh-on-401 or poller;
-none exists, this is the QBO seam — persist refresh_secret_ref + token_expires_at
-and exchange the rotating refresh token, then retry once).
+Rate limits: 429 + ``Retry-After`` honoured with a bounded retry budget
+(env knobs RAMP_RL_MAX_ATTEMPTS / RAMP_RL_MAX_SLEEP_SEC). Non-2xx maps to
+``RampApiError`` with the stable ``ramp_api_*`` codes.
 
-Rate limits: default to 429 + ``Retry-After`` (Mercury/QBO scheme), honoured with
-a bounded retry. Non-2xx maps to ``RampApiError``.
-TODO(human): confirm Ramp rate-limit signalling (429+Retry-After vs
-X-RateLimit-Reset); env knobs RAMP_RL_MAX_ATTEMPTS / RAMP_RL_MAX_SLEEP_SEC.
-
-Logging redaction: the access token / auth header are NEVER logged.
+Logging redaction: the access token / client secret / auth header are NEVER
+logged.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 from typing import Any
 from uuid import UUID
-from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -48,8 +52,15 @@ log = structlog.get_logger("integrations.ramp.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
+# page_size is documented 2..100 (default 20); use the max for backfill.
 _DEFAULT_PAGE_SIZE = 100
-_MINOR_VERSION = "75"
+_MIN_PAGE_SIZE = 2
+
+# Read-only scopes for the streams we ingest (docs.ramp.com OAuth scopes;
+# overridable per-deploy via RAMP_OAUTH_SCOPES).
+DEFAULT_SCOPES = (
+    "transactions:read reimbursements:read cards:read users:read business:read"
+)
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -62,7 +73,7 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class RampClient:
-    """Outbound Ramp Online client, one per backfill/poll shard open.
+    """Outbound Ramp Developer API client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_ramp_client`.
     """
@@ -71,7 +82,7 @@ class RampClient:
         self,
         *,
         base_url: str,
-        business_id: str,
+        business_id: str = "",
         pool: Any | None = None,
         secret_store: Any | None = None,
         tenant_id: UUID | None = None,
@@ -81,6 +92,9 @@ class RampClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        scopes: str | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -92,11 +106,21 @@ class RampClient:
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token: str | None = access_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical RAMP host; a spammer/test
-        # override (api_base_url) wins so backfill points at the mock.
+        # Client-credentials mint material (falls back to RAMP_CLIENT_ID /
+        # RAMP_CLIENT_SECRET env); only used when no token is preset/stored.
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._scopes = scopes
+        # In production the base is the canonical Ramp host
+        # (https://api.ramp.com/developer/v1); a spammer/test override
+        # (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+
+    @property
+    def business_id(self) -> str:
+        return self._business_id
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -109,6 +133,66 @@ class RampClient:
             await self._http.aclose()
             self._http = None
 
+    # -----------------------------------------------------------------
+    # Token: preset (spammer) → secret store → client-credentials mint
+    # -----------------------------------------------------------------
+
+    def _mint_credentials(self) -> tuple[str | None, str | None]:
+        cid = self._client_id or os.environ.get("RAMP_CLIENT_ID")
+        csec = self._client_secret or os.environ.get("RAMP_CLIENT_SECRET")
+        return cid, csec
+
+    async def mint_token(self) -> dict[str, Any]:
+        """`POST {base}/token` — client-credentials mint (docs.ramp.com
+        authorization). HTTP Basic `client_id:client_secret`, form body
+        `grant_type=client_credentials&scope=…`. Returns the token response
+        (`access_token`, `expires_in`, `token_type`, `scope`; NO refresh token
+        for this grant) and caches the access token on the client."""
+        from services.ingest.integrations.ramp import metrics
+
+        cid, csec = self._mint_credentials()
+        if not (cid and csec):
+            raise RampApiError(
+                "ramp client cannot mint a token (missing client_id/"
+                "client_secret; set RAMP_CLIENT_ID/RAMP_CLIENT_SECRET)",
+                code="ramp_api_unauthorized",
+            )
+        basic = base64.b64encode(f"{cid}:{csec}".encode("utf-8")).decode("ascii")
+        scopes = self._scopes or os.environ.get("RAMP_OAUTH_SCOPES", DEFAULT_SCOPES)
+        try:
+            response = await self._httpx().post(
+                f"{self._api_base_url}/token",
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Accept": "application/json",
+                },
+                data={"grant_type": "client_credentials", "scope": scopes},
+            )
+        except httpx.TransportError as exc:
+            metrics.record_request("error")
+            raise RampApiError(
+                "transport error minting ramp token",
+                code="ramp_api_error",
+                context={"error_type": type(exc).__name__, "path": "/token"},
+            ) from exc
+        if response.status_code // 100 != 2:
+            metrics.record_request("unauthorized")
+            raise RampApiError(
+                f"ramp token mint returned {response.status_code}",
+                code="ramp_api_unauthorized",
+                context={"http_status": response.status_code, "path": "/token"},
+            )
+        body = _safe_json(response)
+        token = body.get("access_token") if isinstance(body, dict) else None
+        if not isinstance(token, str) or not token:
+            raise RampApiError(
+                "ramp token mint response missing access_token",
+                code="ramp_api_error",
+                context={"path": "/token"},
+            )
+        self._access_token = token
+        return body
+
     async def _token(self) -> str:
         if self._access_token is not None:
             return self._access_token
@@ -116,32 +200,64 @@ class RampClient:
             if self._access_token is not None:
                 return self._access_token
             if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
+                self._secret_store is not None
+                and self._secret_ref is not None
+                and self._tenant_id is not None
             ):
-                raise RampApiError(
-                    "ramp client has no access token and cannot resolve "
-                    "one (missing secret_store / secret_ref / tenant_id)",
-                    code="ramp_api_unauthorized",
+                raw = await self._secret_store.get(
+                    self._secret_ref, tenant_id=self._tenant_id,
                 )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+                self._access_token = (
+                    raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                )
+                return self._access_token
+            cid, csec = self._mint_credentials()
+            if cid and csec:
+                await self.mint_token()
+                assert self._access_token is not None
+                return self._access_token
+            raise RampApiError(
+                "ramp client has no access token and cannot resolve or mint "
+                "one (missing secret_store/secret_ref/tenant_id and no "
+                "client credentials)",
+                code="ramp_api_unauthorized",
             )
-            self._access_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._access_token
+
+    # -----------------------------------------------------------------
+    # Request core
+    # -----------------------------------------------------------------
+
+    def _resolve_page_url(self, next_url: str) -> str:
+        """Resolve a `page.next` URL against the configured base.
+
+        Production next-URLs already start with the canonical base and pass
+        through untouched. When an `api_base_url` override is in effect
+        (spammer/mock) a foreign-host next-URL is re-rooted: the collection
+        segment + query are grafted onto the override base so the keyset walk
+        stays on the mock."""
+        if next_url.startswith(self._api_base_url + "/"):
+            return next_url
+        parsed = urlsplit(next_url)
+        resource = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        rebuilt = f"{self._api_base_url}/{resource}"
+        return f"{rebuilt}?{parsed.query}" if parsed.query else rebuilt
 
     async def _request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        self,
+        method: str,
+        path: str | None = None,
+        *,
+        params: dict[str, Any] | None = None,
+        url: str | None = None,
     ) -> dict[str, Any]:
         from services.ingest.integrations.ramp import metrics
         from services.ingest.integrations.oauth_refresh import (
             refresh_on_unauthorized,
         )
 
-        url = f"{self._api_base_url}{path}"
+        if url is None:
+            url = f"{self._api_base_url}{path}"
+        log_path = path or urlsplit(url).path
         max_attempts = int(os.environ.get("RAMP_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("RAMP_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
@@ -164,7 +280,7 @@ class RampClient:
                 raise RampApiError(
                     "transport error calling ramp",
                     code="ramp_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                    context={"error_type": type(exc).__name__, "path": log_path},
                 ) from exc
 
             if response.status_code == 429 and attempt < max_attempts:
@@ -180,7 +296,7 @@ class RampClient:
                     raise RampApiError(
                         "ramp response was not a JSON object",
                         code="ramp_api_error",
-                        context={"path": path},
+                        context={"path": log_path},
                     )
                 return body
 
@@ -188,6 +304,10 @@ class RampClient:
                 metrics.record_request("unauthorized")
                 if not reminted:
                     reminted = True
+                    # Reactive re-mint: refresh_on_unauthorized's ramp config
+                    # performs the client-credentials exchange + persists the
+                    # new token ref (inert in spammer mode — preset token, no
+                    # secret store).
                     new_token = await refresh_on_unauthorized(
                         provider="ramp", pool=self._pool,
                         secret_store=self._secret_store, http=client,
@@ -199,59 +319,134 @@ class RampClient:
                     if new_token is not None:
                         self._access_token = new_token
                         continue
-                raise _api_error_from_response(response, path)
+                    # Self-mint fallback when the client holds creds directly.
+                    cid, csec = self._mint_credentials()
+                    if cid and csec:
+                        try:
+                            await self.mint_token()
+                        except RampApiError:
+                            raise _api_error_from_response(response, log_path)
+                        continue
+                raise _api_error_from_response(response, log_path)
             metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+            raise _api_error_from_response(response, log_path)
 
     # -----------------------------------------------------------------
-    # Public read surface
+    # Public read surface (keyset-paginated REST collections)
     # -----------------------------------------------------------------
 
-    async def query(
+    async def _list(
         self,
-        entity: str,
+        path: str,
+        params: dict[str, Any],
+        page_url: str | None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """One keyset page. Returns `(rows, next_page_url)`;
+        `next_page_url is None` is terminal (`page.next` null at EOF)."""
+        if page_url:
+            resp = await self._request("GET", url=self._resolve_page_url(page_url))
+        else:
+            resp = await self._request(
+                "GET", path,
+                params={k: v for k, v in params.items() if v is not None},
+            )
+        data = resp.get("data")
+        rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+        page = resp.get("page")
+        next_url = page.get("next") if isinstance(page, dict) else None
+        next_url = next_url if isinstance(next_url, str) and next_url else None
+        return rows, next_url
+
+    async def list_transactions(
+        self,
         *,
-        where: str | None = None,
-        order_by: str = "Metadata.LastUpdatedTime",
-        start_position: int = 1,
-        max_results: int = _DEFAULT_PAGE_SIZE,
-    ) -> tuple[list[dict[str, Any]], int | None]:
-        """Run a SELECT against one entity. Returns `(rows, next_start_position)`;
-        `next_start_position is None` is terminal.
-
-        RAMP query language: `SELECT * FROM Invoice [WHERE ...] ORDERBY <f>
-        STARTPOSITION n MAXRESULTS m`. `Metadata.LastUpdatedTime` is the
-        incremental cursor field.
-        """
-        sql = f"SELECT * FROM {entity}"
-        if where:
-            sql += f" WHERE {where}"
-        sql += f" ORDERBY {order_by} STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        path = f"/v3/company/{self._business_id}/query"
-        params = {"query": sql, "minorversion": _MINOR_VERSION}
-        resp = await self._request("GET", path, params=params)
-        qr = resp.get("QueryResponse")
-        if not isinstance(qr, dict):
-            return [], None
-        rows = qr.get(entity)
-        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-        # RAMP returns maxResults == page length; a short page is terminal.
-        returned = int(qr.get("maxResults", len(rows)) or 0)
-        next_start = start_position + len(rows)
-        is_last = returned < max_results or not rows
-        return rows, (None if is_last else next_start)
-
-    async def company_info(self) -> dict[str, Any]:
-        """`GET /v3/company/{business}/companyinfo/{business}` — connectivity probe."""
-        path = f"/v3/company/{self._business_id}/companyinfo/{quote(self._business_id)}"
-        return await self._request(
-            "GET", path, params={"minorversion": _MINOR_VERSION},
+        from_date: str | None = None,
+        to_date: str | None = None,
+        state: str | None = None,
+        page_size: int = _DEFAULT_PAGE_SIZE,
+        start: str | None = None,
+        page_url: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """`GET /transactions`. `from_date`/`to_date` filter on
+        `user_transaction_time` (ISO8601); `start` is the id of the last entity
+        of the previous page; pass `page_url` to follow a prior `page.next`."""
+        return await self._list(
+            "/transactions",
+            {
+                "from_date": from_date,
+                "to_date": to_date,
+                "state": state,
+                "page_size": _clamp_page_size(page_size),
+                "start": start,
+            },
+            page_url,
         )
+
+    async def list_reimbursements(
+        self,
+        *,
+        updated_after: str | None = None,
+        from_date: str | None = None,
+        page_size: int = _DEFAULT_PAGE_SIZE,
+        start: str | None = None,
+        page_url: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """`GET /reimbursements`. `updated_after` filters on `updated_at`
+        (the true incremental filter); `from_date` filters on `created_at`."""
+        return await self._list(
+            "/reimbursements",
+            {
+                "updated_after": updated_after,
+                "from_date": from_date,
+                "page_size": _clamp_page_size(page_size),
+                "start": start,
+            },
+            page_url,
+        )
+
+    async def list_cards(
+        self,
+        *,
+        page_size: int = _DEFAULT_PAGE_SIZE,
+        start: str | None = None,
+        page_url: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """`GET /cards`. NO server-side incremental filter — callers re-walk
+        the full collection idempotently (dedup via external_id)."""
+        return await self._list(
+            "/cards",
+            {"page_size": _clamp_page_size(page_size), "start": start},
+            page_url,
+        )
+
+    async def list_users(
+        self,
+        *,
+        page_size: int = _DEFAULT_PAGE_SIZE,
+        start: str | None = None,
+        page_url: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """`GET /users`. NO server-side incremental filter — callers re-walk
+        the full collection idempotently (dedup via external_id)."""
+        return await self._list(
+            "/users",
+            {"page_size": _clamp_page_size(page_size), "start": start},
+            page_url,
+        )
+
+    async def business(self) -> dict[str, Any]:
+        """`GET /business` — cheap connectivity/credential probe. Returns the
+        company info (`id` is the business_id every webhook carries at root)."""
+        return await self._request("GET", "/business")
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _clamp_page_size(value: int) -> int:
+    return max(_MIN_PAGE_SIZE, min(_DEFAULT_PAGE_SIZE, int(value)))
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -267,13 +462,13 @@ def _api_error_from_response(
     if status in (401, 403):
         return RampApiError(
             f"ramp {status}: access token rejected or insufficient scope "
-            "(may need refresh)",
+            "(re-mint via client_credentials)",
             code="ramp_api_unauthorized",
             context={"http_status": status, "path": path},
         )
     if status == 404:
         return RampApiError(
-            "ramp 404: entity/business not found or not visible",
+            "ramp 404: resource not found or not visible",
             code="ramp_api_not_found",
             context={"http_status": 404, "path": path},
         )
@@ -294,15 +489,11 @@ def _api_error_from_response(
     )
 
 
-# The entity types we shard on. Kept as the QBO archetype taxonomy
-# (Invoice/Bill/BillPayment/Payment) so the cloned synthetic loop stays
-# self-consistent end-to-end; the verified Ramp taxonomy is per blueprint §4
-# (transaction / card / reimbursement — the cash/card flow entities carry the
-# highest signal value).
-# TODO(human): confirm Ramp resource taxonomy + exact entity names/casing
-# (transaction vs card vs reimbursement) and re-key the generator + planner +
-# handler decode together; start with the transaction flow (highest signal).
-DEFAULT_ENTITIES = ("Invoice", "Bill", "BillPayment", "Payment")
+# The entity streams we shard on — the VERIFIED Ramp resource taxonomy
+# (docs.ramp.com): card transactions, out-of-pocket reimbursements, issued
+# cards, and the employee directory. Lowercase singular; the planner seeds one
+# `ramp_entity` shard per stream and the fetcher/handler key on these literals.
+DEFAULT_ENTITIES = ("transaction", "reimbursement", "card", "user")
 
 
-__all__ = ["RampClient", "DEFAULT_ENTITIES"]
+__all__ = ["RampClient", "DEFAULT_ENTITIES", "DEFAULT_SCOPES"]

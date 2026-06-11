@@ -5,6 +5,7 @@ behavior the contract layer can't express.
 """
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -122,9 +123,16 @@ async def test_carta_remints_via_client_credentials_from_install(monkeypatch):
 
     assert captured["form"]["grant_type"] == "client_credentials"
     assert "refresh_token" not in captured["form"]
-    # client_secret came from the install, not env, and rides in the body
-    assert captured["form"]["client_secret"] == "carta-install-client-secret"
-    assert captured["form"]["client_id"] == "carta-cid"
+    # scope is REQUIRED for Carta's client_credentials grant
+    assert captured["form"]["scope"]
+    # client_secret came from the install, not env, and rides in the HTTP
+    # **Basic** header (base64(client_id:client_secret) — docs.carta.com
+    # client-credentials flow), never in the form body.
+    expected_basic = base64.b64encode(
+        b"carta-cid:carta-install-client-secret"
+    ).decode("ascii")
+    assert captured["headers"]["authorization"] == f"Basic {expected_basic}"
+    assert "client_secret" not in captured["form"]
     # no refresh token returned/persisted; the refresh_secret_ref is unchanged
     assert refreshed.refresh_token is None
     sql, args = pool.executed[0]

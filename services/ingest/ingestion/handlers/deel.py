@@ -98,7 +98,9 @@ def _truncate(text: str, limit: int = 600) -> str:
 # Bank identifiers that must NOT land verbatim in the reasoning layer — masked
 # to the last 4 chars so the rail/counterparty mapping is still useful without
 # leaking full account/routing/IBAN numbers into observations + LLM context.
-_SENSITIVE_ROUTING_KEYS = frozenset({"accountNumber", "routingNumber", "iban"})
+_SENSITIVE_ROUTING_KEYS = frozenset(
+    {"accountNumber", "routingNumber", "account_number", "routing_number", "iban"}
+)
 
 
 def _mask_secret(value: Any) -> Any:
@@ -128,22 +130,30 @@ def _payment_extras(payment: dict[str, Any]) -> dict[str, Any]:
     """
     raw: dict[str, Any] = {
         # cash-risk detail — WHY a payment failed (pairs with state_change).
-        "reason_for_failure": payment.get("reasonForFailure"),
-        "failed_at": payment.get("failedAt"),
+        "reason_for_failure": payment.get("reasonForFailure") or payment.get("reason_for_failure"),
+        "failed_at": payment.get("failedAt") or payment.get("failed_at"),
         # forward cash-flow — projected settlement of a pending payment.
-        "estimated_delivery_date": payment.get("estimatedDeliveryDate"),
+        "estimated_delivery_date": (
+            payment.get("estimatedDeliveryDate") or payment.get("estimated_delivery_date")
+        ),
         # free spend classification + bookkeeping mapping.
-        "deel_category": payment.get("deelCategory"),
-        "general_ledger_code_name": payment.get("generalLedgerCodeName"),
+        "deel_category": payment.get("deelCategory") or payment.get("deel_category"),
+        "general_ledger_code_name": (
+            payment.get("generalLedgerCodeName") or payment.get("general_ledger_code_name")
+        ),
         # stable counterparty identity + the memo that travels on the payment.
-        "counterparty_id": payment.get("counterpartyId"),
-        "counterparty_nickname": payment.get("counterpartyNickname"),
-        "external_memo": payment.get("externalMemo"),
+        "counterparty_id": payment.get("counterpartyId") or payment.get("counterparty_id"),
+        "counterparty_nickname": (
+            payment.get("counterpartyNickname") or payment.get("counterparty_nickname")
+        ),
+        "external_memo": payment.get("externalMemo") or payment.get("external_memo"),
         # true all-in cost (links to the fee transaction).
-        "fee_id": payment.get("feeId"),
-        "dashboard_link": payment.get("dashboardLink"),
+        "fee_id": payment.get("feeId") or payment.get("fee_id"),
+        "dashboard_link": payment.get("dashboardLink") or payment.get("dashboard_link"),
         # FX exposure (currency from/to, amount, rate, fee).
-        "currency_exchange_info": payment.get("currencyExchangeInfo"),
+        "currency_exchange_info": (
+            payment.get("currencyExchangeInfo") or payment.get("currency_exchange_info")
+        ),
     }
     extras = {k: v for k, v in raw.items() if v is not None}
     # rail/counterparty-bank mapping (ACH / wire / card), PII-redacted.
@@ -157,24 +167,57 @@ def _payment_extras(payment: dict[str, Any]) -> dict[str, Any]:
 # Per-record-type draft builders (shared by backfill + webhook paths)
 # ---------------------------------------------------------------------
 
+def _first_present(obj: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = obj.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _nested_value(obj: dict[str, Any], key: str) -> Any:
+    value = obj.get(key)
+    if value not in (None, ""):
+        return value
+    for container_key in ("contract", "contractor", "worker", "vendor"):
+        nested = obj.get(container_key)
+        if isinstance(nested, dict):
+            value = nested.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
 def _payment_draft(payment: dict[str, Any], contract_id: str) -> ObservationDraft:
-    payment_id = str(payment.get("id") or "")
+    payment_id = str(payment.get("id") or payment.get("invoice_id") or "")
     if not contract_id or not payment_id:
         raise ValidationError(
             "deel payment missing contract_id/id", channel=_CHANNEL,
         )
     status = str(payment.get("status") or "unknown").lower()
-    amount = payment.get("amount")
+    amount = _first_present(payment, "amount", "total", "total_amount", "gross_amount")
     counterparty = (
         payment.get("counterpartyName")
+        or payment.get("counterparty_name")
         or payment.get("counterparty")
+        or payment.get("worker_name")
+        or payment.get("contractor_name")
+        or payment.get("vendor")
+        or _nested_value(payment, "name")
         or payment.get("bankDescription")
+        or payment.get("bank_description")
         or "unknown counterparty"
     )
-    kind_field = payment.get("kind") or "payment"
+    kind_field = payment.get("kind") or payment.get("type") or "payment"
     occurred = (
         _parse_iso(payment.get("postedAt"))
+        or _parse_iso(payment.get("posted_at"))
         or _parse_iso(payment.get("createdAt"))
+        or _parse_iso(payment.get("created_at"))
+        or _parse_iso(payment.get("issued_at"))
+        or _parse_iso(payment.get("invoice_date"))
+        or _parse_iso(payment.get("updated_at"))
+        or _parse_iso(payment.get("updatedAt"))
         or _utcnow()
     )
     external_id = idempotency.deel_payment(contract_id, payment_id, status)
@@ -187,7 +230,7 @@ def _payment_draft(payment: dict[str, Any], contract_id: str) -> ObservationDraf
     content_text = f"{money} {direction} {prep} {counterparty} · {status} · {kind_field}"
     # Surface WHY a payment failed inline — turns a bare failure into an
     # actionable liquidity / counterparty-risk signal.
-    reason = payment.get("reasonForFailure")
+    reason = payment.get("reasonForFailure") or payment.get("reason_for_failure")
     if is_state_change and isinstance(reason, str) and reason:
         content_text = f"{content_text} — {reason}"
 
@@ -207,9 +250,11 @@ def _payment_draft(payment: dict[str, Any], contract_id: str) -> ObservationDraf
         "kind": kind_field,
         "counterparty": counterparty,
         "note": payment.get("note"),
-        "bank_description": payment.get("bankDescription"),
-        "posted_at": payment.get("postedAt"),
-        "created_at": payment.get("createdAt"),
+        "bank_description": payment.get("bankDescription") or payment.get("bank_description"),
+        "posted_at": payment.get("postedAt") or payment.get("posted_at"),
+        "created_at": payment.get("createdAt") or payment.get("created_at"),
+        "issued_at": payment.get("issued_at"),
+        "invoice_date": payment.get("invoice_date"),
     }
     # Merge the richer fields (failure reason, category, GL code, FX, rail
     # routing, memos) — additive, only present keys.
@@ -239,10 +284,19 @@ def _contract_snapshot_draft(
     updated_token = updated or occurred.isoformat()
     external_id = idempotency.deel_contract(contract_id, updated_token)
 
-    name = contract.get("name") or contract.get("title") or contract_id
+    name = (
+        contract.get("name")
+        or contract.get("title")
+        or contract.get("contract_name")
+        or contract_id
+    )
     status = contract.get("status")
-    contract_type = contract.get("type") or contract.get("contractType")
-    rate = contract.get("rate") or contract.get("amount")
+    contract_type = (
+        contract.get("type")
+        or contract.get("contractType")
+        or contract.get("contract_type")
+    )
+    rate = _first_present(contract, "rate", "amount", "total_amount")
     content_text = (
         f"{name} contract ({contract_type or 'contract'}): {status or 'unknown'}"
         f" · {_fmt_money(rate)} (as of {updated_token[:10]})"
@@ -261,8 +315,11 @@ def _contract_snapshot_draft(
     # Entity-attribution context for the contract (no account/routing PII).
     for src, dst in (
         ("workerName", "worker_name"),
+        ("worker_name", "worker_name"),
         ("legalBusinessName", "legal_business_name"),
+        ("legal_business_name", "legal_business_name"),
         ("createdAt", "contract_created_at"),
+        ("created_at", "contract_created_at"),
     ):
         if contract.get(src) is not None:
             content[dst] = contract.get(src)
@@ -282,13 +339,21 @@ def _contract_snapshot_draft(
 
 def _contract_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
     """Resolve the contract id for a webhook/backfill record."""
-    cid = payload.get("_fyralis_contract_id") or payload.get("contractId")
-    if isinstance(cid, str) and cid:
-        return cid
+    cid = (
+        payload.get("_fyralis_contract_id")
+        or payload.get("contractId")
+        or payload.get("contract_id")
+    )
+    if cid not in (None, ""):
+        return str(cid)
     if isinstance(obj, dict):
         cand = obj.get("contractId") or obj.get("contract_id")
-        if isinstance(cand, str) and cand:
-            return cand
+        if cand in (None, ""):
+            contract = obj.get("contract")
+            if isinstance(contract, dict):
+                cand = contract.get("id") or contract.get("contract_id")
+        if cand not in (None, ""):
+            return str(cand)
     return ""
 
 

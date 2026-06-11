@@ -1,33 +1,24 @@
-"""services/ingest/integrations/deel/client.py — outbound Deel REST client.
+"""services/ingest/integrations/deel/client.py - outbound Deel REST client.
 
-Single outbound surface for backfill + poll-incremental + the planner's contract
-enumeration. Deel is authenticated with a long-lived API token presented as a
-**Bearer** token. The token is resolved once from the secret store (or preset in
-spammer mode) and reused for the life of the client — same posture as the
-Notion/Jira clients.
+Verified Deel surface:
 
-TODO(human): confirm Deel read endpoints + OAuth scopes. The paths below
-(`/contracts`, `/contract/{id}`, `/contract/{id}/payments`) follow the Mercury
-archetype's shape; verify them (and any required token scopes) against the Deel
-API docs before prod — only the verified read surface should ship.
+  * base: https://api.letsdeel.com/rest/v2
+  * contracts: GET /contracts and GET /contracts/{id}
+  * payments/invoices: GET /invoices
+  * envelope: {data: ..., page: {cursor, total_rows}}
+  * required version header: X-Version: YYYY-MM-DD
+  * money: decimal strings in major units, decoded by the handler
 
-Rate limits: TODO(human): confirm Deel rate-limit signalling (429 + Retry-After
-vs X-RateLimit-Reset). The archetype defaults to 429 + `Retry-After`; tune via
-`DEEL_RL_MAX_ATTEMPTS` / `DEEL_RL_MAX_SLEEP_SEC`. All read methods route through
-`_request`, which honours `Retry-After` with a bounded retry budget before
-surfacing `DeelApiError(deel_api_rate_limited)`.
-
-Pagination: list endpoints return `{total, contracts|payments: [...]}` and
-accept `limit` + `offset`. The list helpers return `(items, next_offset,
-is_last)`; `next_offset is None` is terminal.
-
-Logging redaction: the API token and the auth header are NEVER logged.
+The public fetcher seam remains `list_contracts`, `get_contract`, and
+`list_payments`; internally `list_payments` reads the org invoice stream and
+filters to the requested contract when the invoice payload carries a contract id.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 from typing import Any
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
@@ -40,9 +31,9 @@ log = structlog.get_logger("integrations.deel.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
-# Deel payment listing caps the page at 500; default to 100 to bound
-# payload size and keep parity with the other sources.
 _DEFAULT_PAGE_SIZE = 100
+_MAX_PAGE_SIZE = 100
+_DEFAULT_API_VERSION = "2026-01-01"
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -54,13 +45,16 @@ def _parse_retry_after(value: str | None) -> float:
         return 1.0
 
 
-class DeelClient:
-    """Outbound Deel REST client, one per backfill/poll shard open.
+def _normalise_base_url(url: str) -> str:
+    base = url.rstrip("/")
+    parsed = urlsplit(base)
+    if parsed.netloc == "api.letsdeel.com" and not parsed.path.endswith("/rest/v2"):
+        return f"{base}/rest/v2"
+    return base
 
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_deel_client`
-    (production / spammer) and by the seed/onboarding contract probe. Shares the
-    process-wide httpx client when one is injected.
-    """
+
+class DeelClient:
+    """Outbound Deel REST API client, one per backfill/poll shard open."""
 
     def __init__(
         self,
@@ -73,18 +67,20 @@ class DeelClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        api_version: str | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
-        # resolved lazily from the secret store on first request.
         self._api_token: str | None = api_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Deel API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
-        self._api_base_url = (api_base_url or base_url).rstrip("/")
+        self._api_base_url = _normalise_base_url(api_base_url or base_url)
+        self._api_version = (
+            api_version
+            or os.environ.get("DEEL_API_VERSION")
+            or _DEFAULT_API_VERSION
+        )
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
 
@@ -123,10 +119,6 @@ class DeelClient:
             )
             return self._api_token
 
-    async def _auth_header(self) -> str:
-        token = await self._token()
-        return f"Bearer {token}"
-
     async def _request(
         self,
         method: str,
@@ -134,18 +126,14 @@ class DeelClient:
         *,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """One Deel API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `DeelApiError`.
-        """
         from services.ingest.integrations.deel import metrics
 
-        auth = await self._auth_header()
+        token = await self._token()
         url = f"{self._api_base_url}{path}"
         headers = {
-            "Authorization": auth,
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
+            "X-Version": self._api_version,
         }
         max_attempts = int(os.environ.get("DEEL_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("DEEL_RL_MAX_SLEEP_SEC", "30"))
@@ -194,21 +182,18 @@ class DeelClient:
     # -----------------------------------------------------------------
 
     async def list_contracts(self) -> list[dict[str, Any]]:
-        """`GET /contracts` — all contracts visible to the token.
-
-        Used at seed/install time to populate `deel_contracts`, and by the
-        fetcher to emit per-contract state snapshots.
-        """
-        resp = await self._request("GET", "/contracts")
-        contracts = resp.get("contracts")
-        if not isinstance(contracts, list):
-            # Some Deel responses return the bare list.
-            contracts = resp if isinstance(resp, list) else []  # type: ignore[assignment]
-        return [c for c in contracts if isinstance(c, dict)]
+        """`GET /contracts` - all contracts visible to the token."""
+        return await self._list_data_pages("/contracts")
 
     async def get_contract(self, contract_id: str) -> dict[str, Any]:
-        """`GET /contract/{id}` — one contract (state snapshot probe)."""
-        return await self._request("GET", f"/contract/{contract_id}")
+        """`GET /contracts/{id}` - one contract from the `{data}` envelope."""
+        body = await self._request(
+            "GET", f"/contracts/{quote(contract_id, safe='')}",
+        )
+        data = body.get("data")
+        if isinstance(data, dict):
+            return data
+        return body
 
     async def list_payments(
         self,
@@ -218,29 +203,119 @@ class DeelClient:
         offset: int = 0,
         start: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
-        """`GET /contract/{id}/payments` — paginated payments.
+        """Read Deel invoices and expose them as the existing payment stream.
 
-        `start` (ISO date) optionally bounds the window for incremental polls.
-        Returns `(payments, next_offset, total)`; `next_offset is None`
-        signals no more pages.
+        Deel's real stream is org-level `/invoices`, not
+        `/contract/{id}/payments`. We gather the available invoices, keep those
+        for `contract_id` when the payload carries a contract reference, and
+        then apply the fetcher's offset window.
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        invoices = await self._list_invoices(contract_id=contract_id, start=start)
+        if contract_id:
+            filtered = [i for i in invoices if _invoice_contract_id(i) in {"", contract_id}]
+        else:
+            filtered = invoices
+
+        eff_limit = max(1, min(_MAX_PAGE_SIZE, int(limit or _DEFAULT_PAGE_SIZE)))
+        page = filtered[offset:offset + eff_limit]
+        total = len(filtered)
+        next_offset = offset + len(page)
+        is_last = next_offset >= total or not page
+        return page, (None if is_last else next_offset), total
+
+    async def _list_invoices(
+        self, *, contract_id: str | None, start: str | None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": _MAX_PAGE_SIZE, "offset": 0}
+        if contract_id:
+            params["contract_id"] = contract_id
         if start:
-            params["start"] = start
-        resp = await self._request(
-            "GET", f"/contract/{contract_id}/payments", params=params,
-        )
-        payments = resp.get("payments")
-        payments = [p for p in payments if isinstance(p, dict)] if isinstance(payments, list) else []
-        total = int(resp.get("total", len(payments)) or 0)
-        next_offset = offset + len(payments)
-        is_last = next_offset >= total or not payments
-        return payments, (None if is_last else next_offset), total
+            params["created_after"] = start
+
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        offset = 0
+        while True:
+            page_params = dict(params)
+            page_params["offset"] = offset
+            if cursor:
+                page_params["cursor"] = cursor
+            body = await self._request("GET", "/invoices", params=page_params)
+            items = _data_list(body, "invoices")
+            out.extend(items)
+            cursor = _page_cursor(body)
+            if cursor:
+                offset += len(items)
+                continue
+            total = _page_total(body)
+            offset += len(items)
+            if total is not None and offset < total and items:
+                continue
+            return out
+
+    async def _list_data_pages(self, path: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": _MAX_PAGE_SIZE}
+            if cursor:
+                params["cursor"] = cursor
+            body = await self._request("GET", path, params=params)
+            items = _data_list(body)
+            out.extend(items)
+            cursor = _page_cursor(body)
+            if not cursor:
+                return out
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _data_list(body: dict[str, Any], fallback_key: str | None = None) -> list[dict[str, Any]]:
+    data = body.get("data")
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(fallback_key, str):
+        value = body.get(fallback_key)
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+    return []
+
+
+def _page_cursor(body: dict[str, Any]) -> str | None:
+    page = body.get("page")
+    if isinstance(page, dict):
+        cursor = page.get("cursor") or page.get("next_cursor")
+        if isinstance(cursor, str) and cursor:
+            return cursor
+    cursor = body.get("cursor") or body.get("next_cursor")
+    return cursor if isinstance(cursor, str) and cursor else None
+
+
+def _page_total(body: dict[str, Any]) -> int | None:
+    page = body.get("page")
+    if isinstance(page, dict):
+        total = page.get("total_rows") or page.get("total")
+    else:
+        total = body.get("total")
+    if isinstance(total, (int, float)):
+        return int(total)
+    return None
+
+
+def _invoice_contract_id(invoice: dict[str, Any]) -> str:
+    for key in ("contract_id", "contractId"):
+        value = invoice.get(key)
+        if value not in (None, ""):
+            return str(value)
+    contract = invoice.get("contract")
+    if isinstance(contract, dict):
+        value = contract.get("id") or contract.get("contract_id")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -252,7 +327,6 @@ def _safe_json(response: httpx.Response) -> Any:
 def _api_error_from_response(
     response: httpx.Response, path: str,
 ) -> DeelApiError:
-    """Map a non-2xx Deel response to a typed `DeelApiError`."""
     status = response.status_code
     if status in (401, 403):
         return DeelApiError(

@@ -148,6 +148,9 @@ def _transcript_id(t: dict[str, Any]) -> str:
 def _transcript_date(t: dict[str, Any]) -> str:
     """Date portion of a transcript's date/dateTime (for `start` filtering)."""
     iso = t.get("dateTime") or t.get("date") or t.get("createdAt") or ""
+    if isinstance(iso, (int, float)):
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(iso / 1000.0, tz=timezone.utc).date().isoformat()
     return iso[:10] if isinstance(iso, str) else ""
 
 

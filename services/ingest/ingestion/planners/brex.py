@@ -6,8 +6,8 @@ one shard per account. The enrichment lives in `brex_accounts`; the
 SourceOnboarding loader JSON-aggregates it into `ctx.install["accounts"]` so the
 planner stays stateless (no DB I/O).
 
-Each shard is one account's transaction stream. The fetcher walks
-`GET /account/{id}/transactions` on first run, then incrementally via the
+Each shard is one account's transaction stream. The fetcher walks the real Brex
+v2 cash/card transaction endpoints on first run, then incrementally via the
 per-account transaction high-water cursor.
 
 `ctx.source_client` is None — accounts are read from DB state (populated at
@@ -72,6 +72,12 @@ async def plan_shards_brex(ctx: PlannerContext) -> list[Shard]:
                 "shard_kind": SHARD_KIND_ACCOUNT_TXNS,
                 "account_id": account_id,
                 "account_name": acct.get("account_name"),
+                "account_kind": (
+                    acct.get("account_kind")
+                    or acct.get("_fyralis_account_kind")
+                    or acct.get("type")
+                    or acct.get("kind")
+                ),
                 "installation_id": install_id,
                 # The high-water transaction-createdAt cursor — None on first sync.
                 "txn_cursor": acct.get("txn_cursor"),

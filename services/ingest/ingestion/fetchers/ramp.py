@@ -8,38 +8,34 @@ calls.
 ============================================================
 ONE SHARD KIND, TWO SYNC MODES
 ============================================================
-A `ramp_entity` shard streams one entity type (Invoice / Bill /
-BillPayment / Payment) for the business.
+A `ramp_entity` shard streams one entity type (`transaction` / `reimbursement`
+/ `card` / `user` — the VERIFIED Ramp Developer API taxonomy, docs.ramp.com).
 
-  - FULL (initial backfill): `SELECT * FROM <Entity> ORDERBY
-    Metadata.LastUpdatedTime STARTPOSITION n MAXRESULTS m`, offset-paginated.
+  - FULL (initial backfill): walk the REST collection
+    (`GET /developer/v1/<resource>?page_size=…`) following the KEYSET
+    `page.next` URL (`{"data": [...], "page": {"next": <url|null>}}`) until
+    `page.next` is null.
   - INCREMENTAL (poll): when warm-started with an `updated_cursor` (the
-    LastUpdatedTime high-water), the WHERE clause adds
-    `Metadata.LastUpdatedTime > '<cursor>'` so only changed entities come back.
+    high-water timestamp), the server-side window param narrows the walk:
+      * transaction    — `from_date` (filters `user_transaction_time`)
+      * reimbursement  — `updated_after` (filters `updated_at`)
+      * card / user    — NO server-side incremental filter (verified): fall
+        back to a full idempotent re-walk; the deterministic state-versioned
+        external_id dedups unchanged rows.
 
 ============================================================
 RECORDS
 ============================================================
 Each entity row is emitted as one record tagged with the private
-`_fyralis_record_type` = the entity type (lowercased), plus `_fyralis_business_id`.
+`_fyralis_record_type` = the entity type, plus `_fyralis_business_id`.
 The `ramp:transaction` handler builds ONE observation per record. Because
-transactions MUTATE (pending -> cleared -> declined/disputed), the external_id is
-versioned by `SyncToken`/state so a state change lands as a NEW observation.
+Ramp resources MUTATE (PENDING → CLEARED / DECLINED, reimbursements walk a
+state machine, cards suspend/terminate), the external_id is versioned by state
+so a state change lands as a NEW observation.
 
-============================================================
-UNVERIFIED — KEEP CONFIGURABLE (blueprint §5)
-============================================================
-TODO(human): confirm Ramp supports a `from_date`/`since` filter on transactions.
-This fetcher clones the QBO SELECT-query shape (`Metadata.LastUpdatedTime >
-'<floor>'`). Ramp is likely a REST list API (NOT a SQL-query API) — if REST-only,
-switch to the Mercury-style list + `from_date`/`start` filter instead of the SQL
-WHERE clause; the cursor fields (incremental_floor / high_water_updated /
-start_position) carry over unchanged.
-
-TODO(human): confirm Ramp pagination scheme (offset/STARTPOSITION vs cursor/page
-token). Page size is capped + env-knobbed via RAMP_BACKFILL_PAGE_SIZE; default is
-the QBO offset/limit archetype. If no incremental filter exists, fall back to a
-full idempotent re-walk (dedup is guaranteed by the versioned external_id).
+Pagination cursor: the `page.next` URL is persisted verbatim between calls
+(KEYSET — `start=<last entity id>` is embedded in it). Page size is capped at
+the documented max 100 and env-knobbed via RAMP_BACKFILL_PAGE_SIZE.
 """
 from __future__ import annotations
 
@@ -60,10 +56,19 @@ log = logging.getLogger(__name__)
 SHARD_KIND_ENTITY = "ramp_entity"
 _DEFAULT_PAGE_SIZE = 100
 
+# Per-stream high-water timestamp field (the incremental cursor reference).
+# `user` has no usable timestamp → no high-water (always full re-walk).
+_HIGH_WATER_FIELD = {
+    "transaction": "user_transaction_time",
+    "reimbursement": "updated_at",
+    "card": "created_at",
+}
+
 
 def _page_size() -> int:
     try:
-        return min(1000, int(os.environ.get("RAMP_BACKFILL_PAGE_SIZE", "100")))
+        # docs.ramp.com: page_size must be between 2 and 100.
+        return max(2, min(100, int(os.environ.get("RAMP_BACKFILL_PAGE_SIZE", "100"))))
     except ValueError:
         return _DEFAULT_PAGE_SIZE
 
@@ -71,19 +76,20 @@ def _page_size() -> int:
 class RampCursor(BaseModel):
     """Cursor for one entity shard.
 
-    - start_position    : the RAMP STARTPOSITION offset within this run (1-based).
-    - high_water_updated : max Metadata.LastUpdatedTime (ISO) observed — the
-                           warm-start / incremental lower bound AND the
-                           reconciler's gap reference point.
-    - incremental_floor : the `LastUpdatedTime >` lower bound frozen for this run
-                          (None in FULL mode).
+    - next_page_url     : the keyset `page.next` URL to resume at (None = next
+                          call starts a fresh window / is terminal).
+    - high_water_updated : max per-stream timestamp observed (ISO; see
+                          _HIGH_WATER_FIELD) — the warm-start / incremental
+                          lower bound AND the reconciler's gap reference point.
+    - incremental_floor : the server-side window floor frozen for this run
+                          (None in FULL mode or for streams with no filter).
     - rows_seen         : diagnostic.
     - seeded            : whether the first-call setup ran.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    start_position: int = 1
+    next_page_url: str | None = None
     high_water_updated: str | None = None
     incremental_floor: str | None = None
     rows_seen: int = 0
@@ -106,12 +112,12 @@ async def _open_ramp_client(install: asyncpg.Record):  # noqa: ANN202
     return await open_ramp_client(install)
 
 
-def _last_updated(row: dict[str, Any]) -> str | None:
-    meta = row.get("MetaData") or row.get("Metadata") or {}
-    if isinstance(meta, dict):
-        v = meta.get("LastUpdatedTime")
-        return v if isinstance(v, str) else None
-    return None
+def _row_timestamp(entity_type: str, row: dict[str, Any]) -> str | None:
+    field = _HIGH_WATER_FIELD.get(entity_type)
+    if field is None:
+        return None
+    v = row.get(field)
+    return v if isinstance(v, str) else None
 
 
 def _bump_high_water(cur: RampCursor, updated: str | None) -> None:
@@ -123,6 +129,40 @@ def _bump_high_water(cur: RampCursor, updated: str | None) -> None:
 
 def _business_id_of(install: asyncpg.Record) -> str:
     return str(install["business_id"]) if "business_id" in install else ""
+
+
+async def _fetch_entity_page(
+    client: Any, entity_type: str, cur: RampCursor,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Dispatch one keyset page for the shard's stream. Returns
+    `(rows, next_page_url)`."""
+    size = _page_size()
+    if entity_type == "transaction":
+        return await client.list_transactions(
+            from_date=cur.incremental_floor,
+            page_size=size,
+            page_url=cur.next_page_url,
+        )
+    if entity_type == "reimbursement":
+        return await client.list_reimbursements(
+            updated_after=cur.incremental_floor,
+            page_size=size,
+            page_url=cur.next_page_url,
+        )
+    if entity_type == "card":
+        # No server-side incremental filter — full idempotent re-walk.
+        return await client.list_cards(
+            page_size=size, page_url=cur.next_page_url,
+        )
+    if entity_type == "user":
+        return await client.list_users(
+            page_size=size, page_url=cur.next_page_url,
+        )
+    raise RampApiError(
+        f"unknown ramp entity_type {entity_type!r}",
+        code="ramp_api_error",
+        context={"entity_type": entity_type},
+    )
 
 
 async def fetch_page_ramp(
@@ -139,25 +179,19 @@ async def fetch_page_ramp(
     if not cur.seeded:
         warm = shard_identifier.get("updated_cursor")
         if isinstance(warm, str) and warm:
-            cur.incremental_floor = warm
+            # Streams without a server-side filter (card/user) keep the
+            # high-water for the reconciler but re-walk in full.
+            if entity_type in ("transaction", "reimbursement"):
+                cur.incremental_floor = warm
             cur.high_water_updated = warm
         cur.seeded = True
 
     business_id = _business_id_of(install)
-    where = (
-        f"Metadata.LastUpdatedTime > '{cur.incremental_floor}'"
-        if cur.incremental_floor else None
-    )
 
     client, close = await _open_ramp_client(install)
     try:
         try:
-            rows, next_start = await client.query(
-                entity_type,
-                where=where,
-                start_position=cur.start_position,
-                max_results=_page_size(),
-            )
+            rows, next_url = await _fetch_entity_page(client, entity_type, cur)
         except RampApiError as exc:
             code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
             if code == "ramp_api_rate_limited":
@@ -172,16 +206,15 @@ async def fetch_page_ramp(
         records: list[dict[str, Any]] = []
         for row in rows:
             records.append({
-                "_fyralis_record_type": entity_type.lower(),
+                "_fyralis_record_type": entity_type,
                 "_fyralis_business_id": business_id,
                 "entity": row,
             })
-            _bump_high_water(cur, _last_updated(row))
+            _bump_high_water(cur, _row_timestamp(entity_type, row))
 
         cur.rows_seen += len(rows)
-        is_last = next_start is None
-        if next_start is not None:
-            cur.start_position = next_start
+        is_last = next_url is None
+        cur.next_page_url = next_url
 
         log.info(
             "ramp_backfill_page",

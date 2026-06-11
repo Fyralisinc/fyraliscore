@@ -70,16 +70,18 @@ def build_change_record(
 ) -> dict[str, Any] | None:
     """Build the canonical fetcher-shaped record from a polled change, or None.
 
-    A polled change is `{"entity_type": "Shareholder"|..., "entity": {<full
-    Carta object incl. Id, SyncToken, MetaData.LastUpdatedTime>}}`. The record
-    is the SAME shape `fetch_page_carta` emits so `handle_carta_object` builds an
-    identical external_id — giving cross-path dedup with backfill.
+    A polled change is `{"entity_type": "stakeholder"|"shareClass"|
+    "optionGrant"|"convertibleNote", "entity": {<full /v1alpha1 Carta object
+    incl. id and wrapper-shaped decimals/dates>}}`. The record is the SAME shape
+    `fetch_page_carta` emits so `handle_carta_object` builds an identical
+    external_id (content-digest version) — giving cross-path dedup with
+    backfill. `firm_id` carries the Carta issuer id.
     """
     entity_type = change.get("entity_type")
     entity = change.get("entity")
     if not isinstance(entity_type, str) or not entity_type:
         return None
-    if not isinstance(entity, dict) or not entity.get("Id"):
+    if not isinstance(entity, dict) or not entity.get("id"):
         return None
     return {
         "_fyralis_record_type": entity_type.lower(),
@@ -98,7 +100,7 @@ def _poll_raw(record: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     ingress_metadata = {
         "event_type": "poll_change",
         "entity_type": record.get("_fyralis_record_type"),
-        "entity_id": entity.get("Id") if isinstance(entity, dict) else None,
+        "entity_id": entity.get("id") if isinstance(entity, dict) else None,
     }
     return raw_body, ingress_metadata
 
@@ -177,7 +179,7 @@ async def handle_polled_change(change: dict[str, Any], deps: PollDeps) -> None:
         log.exception(
             "carta_poll_ingest_failed",
             entity_type=record.get("_fyralis_record_type"),
-            entity_id=(record.get("entity") or {}).get("Id"),
+            entity_id=(record.get("entity") or {}).get("id"),
         )
         return
 

@@ -1,19 +1,17 @@
 """services/ingest/ingestion/planners/ramp.py — Ramp planner (finance).
 
-Cloned from the QuickBooks archetype. Per the Jira loader precedent (A18.2):
-Ramp's install record is business-scoped, and the planner needs the 1-to-N
-active-entity list to emit one shard per entity type. The enrichment lives in
-`ramp_entities`; the SourceOnboarding loader JSON-aggregates it into
-`ctx.install["entities"]` so the planner stays stateless.
+Per the Jira loader precedent (A18.2): Ramp's install record is
+business-scoped, and the planner needs the 1-to-N active-entity list to emit
+one shard per entity type. The enrichment lives in `ramp_entities`; the
+SourceOnboarding loader JSON-aggregates it into `ctx.install["entities"]` so
+the planner stays stateless.
 
-Each shard is one entity type's stream. The fetcher walks the read endpoint, then
-incrementally via the per-entity LastUpdatedTime high-water cursor.
-
-TODO(human): confirm Ramp resource taxonomy — the verified shard set per §4 is
-{transaction, card, reimbursement} (entity_type), scoped by business_id. The
-archetype taxonomy (Invoice/Bill/BillPayment/Payment) is kept here only so the
-cloned synthetic loop stays self-consistent; re-key `ramp_entities` + the
-generator + handler decode together when the taxonomy is confirmed.
+The shard set is the VERIFIED Ramp Developer API taxonomy (docs.ramp.com):
+{transaction, reimbursement, card, user} (entity_type), scoped by business_id.
+Each shard is one REST collection's stream; the fetcher walks it via keyset
+`page.next` pagination, then incrementally via the per-entity high-water cursor
+(`from_date` on transactions / `updated_after` on reimbursements; cards/users
+re-walk in full — no server-side incremental filter exists for them).
 
 `ctx.source_client` is None — entities are read from DB state.
 """
@@ -68,7 +66,8 @@ async def plan_shards_ramp(ctx: PlannerContext) -> list[Shard]:
                 "entity_type": entity_type,
                 "business_id": business_id,
                 "installation_id": install_id,
-                # The high-water LastUpdatedTime cursor — None on first sync.
+                # The high-water timestamp cursor (user_transaction_time /
+                # updated_at / created_at per stream) — None on first sync.
                 "updated_cursor": ent.get("updated_cursor"),
             },
             recency_score=1.0,

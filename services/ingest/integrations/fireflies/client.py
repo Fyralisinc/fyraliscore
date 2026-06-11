@@ -1,38 +1,19 @@
-"""services/ingest/integrations/fireflies/client.py — outbound Fireflies client.
+"""services/ingest/integrations/fireflies/client.py - outbound Fireflies client.
 
-Single outbound surface for backfill + poll-incremental + the planner's
-workspace probe. Fireflies is authenticated with a long-lived API token
-presented as a **Bearer** token. The token is resolved once from the secret
-store (or preset in spammer mode) and reused for the life of the client — same
-posture as the Brex/Notion/Jira clients. No token refresh (Bearer archetype).
+Fireflies is GraphQL-only: all reads are POSTs to /graphql. The methods keep
+the existing fetcher seam while speaking the real protocol:
 
-TODO(human): confirm Fireflies API host + read endpoints/scopes. The host
-defaults via the endpoint resolver (`endpoint("fireflies_api")`) and is
-overridable per-install (`base_url`) and per-env (`FIREFLIES_API_BASE_URL`); the
-read surface below (`/transcripts`, `/transcript/{id}`) is CLONED from Brex and
-UNVERIFIED for Fireflies — Fireflies' real API is a GraphQL endpoint
-(`https://api.fireflies.ai/graphql`) exposing a `transcripts` query and a
-`transcript(id:)` query, NOT REST paths. If the GraphQL surface is confirmed,
-swap `_request` for a single POST to `/graphql` with a query+variables body and
-adapt `list_transcripts` / `get_transcript` to read `data.transcripts` /
-`data.transcript`. Implement only the verified read surface.
+  * user() -> data.user (used as the token-owner identity)
+  * transcript(id) -> data.transcript
+  * transcripts(skip, limit<=50, fromDate, toDate) -> data.transcripts
 
-TODO(human): confirm Fireflies rate-limit signalling. Defaults to 429 +
-`Retry-After` (Brex's scheme); tune via `FIREFLIES_RL_MAX_ATTEMPTS` /
-`FIREFLIES_RL_MAX_SLEEP_SEC`. Fireflies may instead signal via a GraphQL error
-extension (`code: "too_many_requests"`).
-
-Pagination: `list_transcripts` returns `(items, next_offset, total)`,
-`next_offset is None` terminal — offset/limit, CLONED from Brex and UNVERIFIED
-for Fireflies (see the fetcher's pagination TODO; the GraphQL `transcripts`
-query is `skip`/`limit` based, which maps cleanly onto offset/limit).
-
-Logging redaction: the API token and the auth header are NEVER logged.
+GraphQL errors are terminal even when returned with HTTP 200.
 """
 from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -46,23 +27,59 @@ log = structlog.get_logger("integrations.fireflies.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
-# Default to 50 to bound payload size (transcripts are large) and keep parity
-# with the other sources. The 500 page cap is CLONED from Brex and UNVERIFIED.
 _DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 50
 
-# The REAL Fireflies read query (POST /graphql) — finding #5. `transcripts` is
-# skip/limit paginated and `fromDate` bounds incremental polls. Field set mirrors
-# what the handler/fetcher consume from the REST shape so the parse is uniform.
+_USER_QUERY = """
+query User {
+  user {
+    id
+    email
+    name
+  }
+}
+""".strip()
+
 _TRANSCRIPTS_QUERY = """
-query Transcripts($limit: Int, $skip: Int, $fromDate: DateTime) {
-  transcripts(limit: $limit, skip: $skip, fromDate: $fromDate) {
+query Transcripts($limit: Int, $skip: Int, $fromDate: DateTime, $toDate: DateTime) {
+  transcripts(limit: $limit, skip: $skip, fromDate: $fromDate, toDate: $toDate) {
     id
     title
     date
     duration
     organizer_email
+    organizerEmail
     participants
     transcript_url
+    summary {
+      overview
+      shorthand_bullet
+      gist
+      action_items
+      actionItems
+    }
+  }
+}
+""".strip()
+
+_TRANSCRIPT_QUERY = """
+query Transcript($id: String!) {
+  transcript(id: $id) {
+    id
+    title
+    date
+    duration
+    organizer_email
+    organizerEmail
+    participants
+    transcript_url
+    summary {
+      overview
+      shorthand_bullet
+      gist
+      action_items
+      actionItems
+    }
   }
 }
 """.strip()
@@ -78,12 +95,7 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class FirefliesClient:
-    """Outbound Fireflies client, one per backfill/poll shard open.
-
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_fireflies_client`
-    (production / spammer) and by the seed/onboarding workspace probe. Shares the
-    process-wide httpx client when one is injected.
-    """
+    """Outbound Fireflies GraphQL client, one per backfill/poll shard open."""
 
     def __init__(
         self,
@@ -101,12 +113,8 @@ class FirefliesClient:
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
-        # resolved lazily from the secret store on first request.
         self._api_token: str | None = api_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Fireflies API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
@@ -146,139 +154,21 @@ class FirefliesClient:
             )
             return self._api_token
 
-    async def _auth_header(self) -> str:
-        token = await self._token()
-        return f"Bearer {token}"
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """One Fireflies API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `FirefliesApiError`.
-        """
-        from services.ingest.integrations.fireflies import metrics
-
-        auth = await self._auth_header()
-        url = f"{self._api_base_url}{path}"
-        headers = {
-            "Authorization": auth,
-            "Accept": "application/json",
-        }
-        max_attempts = int(os.environ.get("FIREFLIES_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("FIREFLIES_RL_MAX_SLEEP_SEC", "30"))
-        client = self._httpx()
-
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                response = await client.request(
-                    method, url, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise FirefliesApiError(
-                    "transport error calling fireflies",
-                    code="fireflies_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
-                ) from exc
-
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise FirefliesApiError(
-                        "fireflies response was not a JSON object",
-                        code="fireflies_api_error",
-                        context={"path": path},
-                    )
-                return body
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
-                metrics.record_request("error")
-            raise _api_error_from_response(response, path)
-
-    # -----------------------------------------------------------------
-    # Public read surface
-    # -----------------------------------------------------------------
-
-    async def get_workspace(self) -> dict[str, Any]:
-        """`GET /workspace` — the workspace the token is scoped to.
-
-        Used at seed/install time to resolve the `workspace_id` the planner
-        shards on (a Fireflies token is workspace-scoped). UNVERIFIED — the
-        GraphQL surface exposes this via the `user`/`team` query.
-        """
-        return await self._request("GET", "/workspace")
-
-    async def get_transcript(self, transcript_id: str) -> dict[str, Any]:
-        """`GET /transcript/{id}` — one full transcript body (probe / hydrate)."""
-        return await self._request("GET", f"/transcript/{transcript_id}")
-
-    async def list_transcripts(
-        self,
-        *,
-        limit: int = _DEFAULT_PAGE_SIZE,
-        offset: int = 0,
-        start: str | None = None,
-    ) -> tuple[list[dict[str, Any]], int | None, int]:
-        """`GET /transcripts` — paginated meeting transcripts, newest-first.
-
-        `start` (ISO date) optionally bounds the window for incremental polls.
-        Returns `(transcripts, next_offset, total)`; `next_offset is None`
-        signals no more pages.
-        """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if start:
-            params["start"] = start
-        resp = await self._request("GET", "/transcripts", params=params)
-        items = resp.get("transcripts")
-        items = [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
-        total = int(resp.get("total", len(items)) or 0)
-        next_offset = offset + len(items)
-        is_last = next_offset >= total or not items
-        return items, (None if is_last else next_offset), total
-
-    # -----------------------------------------------------------------
-    # GraphQL read surface (the REAL Fireflies API — finding #5)
-    # -----------------------------------------------------------------
-    # api.fireflies.ai is a single GraphQL endpoint (POST /graphql) exposing a
-    # `transcripts(limit, skip, fromDate)` query, NOT REST paths. The REST
-    # surface above is the synthetic/mock shape; the methods below speak the real
-    # GraphQL protocol and are what production backfill uses when the install's
-    # endpoint is GraphQL. Additive: the REST path is preserved for the mock.
+    def _graphql_url(self) -> str:
+        return (
+            self._api_base_url
+            if self._api_base_url.endswith("/graphql")
+            else f"{self._api_base_url}/graphql"
+        )
 
     async def _graphql(
         self, query: str, variables: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """POST a GraphQL `{query, variables}` to `/graphql` and return `data`.
-
-        Raises FirefliesApiError on a transport error, a non-2xx, or a GraphQL
-        `errors` array (the real API returns 200 with an `errors` extension for
-        rate limits — `code: too_many_requests`)."""
         from services.ingest.integrations.fireflies import metrics
 
-        auth = await self._auth_header()
-        # The GraphQL endpoint is the base when it already ends in /graphql,
-        # else base + /graphql.
-        base = self._api_base_url
-        url = base if base.endswith("/graphql") else f"{base}/graphql"
+        token = await self._token()
         headers = {
-            "Authorization": auth,
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -293,21 +183,23 @@ class FirefliesClient:
         while True:
             attempt += 1
             try:
-                response = await client.post(url, headers=headers, json=payload)
+                response = await client.post(
+                    self._graphql_url(), headers=headers, json=payload,
+                )
             except httpx.TransportError as exc:
                 metrics.record_request("error")
                 raise FirefliesApiError(
                     "transport error calling fireflies graphql",
                     code="fireflies_api_error",
-                    context={"error_type": type(exc).__name__},
+                    context={"error_type": type(exc).__name__, "path": "/graphql"},
                 ) from exc
 
             if response.status_code == 429 and attempt < max_attempts:
                 metrics.record_request("rate_limited")
-                await asyncio.sleep(
-                    min(max_sleep, _parse_retry_after(response.headers.get("Retry-After")))
-                )
+                delay = _parse_retry_after(response.headers.get("Retry-After"))
+                await asyncio.sleep(min(max_sleep, delay))
                 continue
+
             if response.status_code // 100 != 2:
                 if response.status_code in (401, 403):
                     metrics.record_request("unauthorized")
@@ -319,29 +211,65 @@ class FirefliesClient:
             if not isinstance(body, dict):
                 raise FirefliesApiError(
                     "fireflies graphql response was not a JSON object",
-                    code="fireflies_api_error", context={"path": "/graphql"},
+                    code="fireflies_api_error",
+                    context={"path": "/graphql"},
                 )
             errors = body.get("errors")
             if errors:
-                # Rate-limit shows up as a 200 with errors[].extensions.code.
-                code = "fireflies_api_error"
-                if any(
-                    isinstance(e, dict)
-                    and isinstance(e.get("extensions"), dict)
-                    and e["extensions"].get("code") == "too_many_requests"
-                    for e in errors if isinstance(e, dict)
-                ):
-                    code = "fireflies_api_rate_limited"
+                code = _graphql_error_code(errors)
+                if code == "fireflies_api_rate_limited":
                     metrics.record_request("rate_limited")
                 else:
                     metrics.record_request("error")
                 raise FirefliesApiError(
                     "fireflies graphql returned errors",
-                    code=code, context={"errors": str(errors)[:300]},
+                    code=code,
+                    context={"errors": str(errors)[:300], "path": "/graphql"},
                 )
             metrics.record_request("ok")
             data = body.get("data")
             return data if isinstance(data, dict) else {}
+
+    # -----------------------------------------------------------------
+    # Public read surface
+    # -----------------------------------------------------------------
+
+    async def get_workspace(self) -> dict[str, Any]:
+        """Return the API-key owner as the install identity.
+
+        Fireflies has no workspace object in the public GraphQL API. The user
+        object is the durable owner identity we store in the existing
+        workspace_id column.
+        """
+        data = await self._graphql(_USER_QUERY)
+        user = data.get("user")
+        if not isinstance(user, dict):
+            return {}
+        uid = str(user.get("id") or user.get("email") or "")
+        return {
+            **user,
+            "id": uid,
+            "workspace_id": uid,
+            "workspace_name": user.get("name") or user.get("email"),
+        }
+
+    async def get_transcript(self, transcript_id: str) -> dict[str, Any]:
+        data = await self._graphql(_TRANSCRIPT_QUERY, {"id": transcript_id})
+        transcript = data.get("transcript")
+        return _normalise_transcript(transcript) if isinstance(transcript, dict) else {}
+
+    async def list_transcripts(
+        self,
+        *,
+        limit: int = _DEFAULT_PAGE_SIZE,
+        offset: int = 0,
+        start: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None, int]:
+        items, next_skip = await self.list_transcripts_graphql(
+            limit=limit, skip=offset, from_date=start,
+        )
+        total_hint = (next_skip + 1) if next_skip is not None else offset + len(items)
+        return items, next_skip, total_hint
 
     async def list_transcripts_graphql(
         self,
@@ -349,24 +277,68 @@ class FirefliesClient:
         limit: int = _DEFAULT_PAGE_SIZE,
         skip: int = 0,
         from_date: str | None = None,
+        to_date: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
-        """The REAL Fireflies read: `transcripts(limit, skip, fromDate)` GraphQL
-        query → `data.transcripts`. GraphQL has no `total`, so a full page means
-        "maybe more" (next_skip = skip+limit) and a short page is terminal
-        (next_skip None)."""
-        variables = {"limit": limit, "skip": skip}
+        eff_limit = max(1, min(_MAX_PAGE_SIZE, int(limit or _DEFAULT_PAGE_SIZE)))
+        variables: dict[str, Any] = {"limit": eff_limit, "skip": max(0, skip)}
         if from_date:
             variables["fromDate"] = from_date
+        if to_date:
+            variables["toDate"] = to_date
         data = await self._graphql(_TRANSCRIPTS_QUERY, variables)
-        items = data.get("transcripts")
-        items = [t for t in items if isinstance(t, dict)] if isinstance(items, list) else []
-        next_skip = skip + limit if len(items) >= limit and items else None
+        raw_items = data.get("transcripts")
+        items = [
+            _normalise_transcript(t)
+            for t in raw_items
+            if isinstance(t, dict)
+        ] if isinstance(raw_items, list) else []
+        next_skip = skip + eff_limit if len(items) >= eff_limit and items else None
         return items, next_skip
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _normalise_transcript(t: dict[str, Any]) -> dict[str, Any]:
+    out = dict(t)
+    date_value = out.get("date")
+    if "dateTime" not in out and date_value is not None:
+        iso = _epoch_millis_to_iso(date_value)
+        if iso is not None:
+            out["dateTime"] = iso
+    if "organizerEmail" not in out and out.get("organizer_email") is not None:
+        out["organizerEmail"] = out.get("organizer_email")
+    if "transcript_url" in out and "meetingLink" not in out:
+        out["meetingLink"] = out.get("transcript_url")
+    return out
+
+
+def _epoch_millis_to_iso(value: Any) -> str | None:
+    try:
+        millis = float(value)
+    except (TypeError, ValueError):
+        return value if isinstance(value, str) else None
+    if millis <= 0:
+        return None
+    # Fireflies `date` is epoch milliseconds.
+    return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
+
+
+def _graphql_error_code(errors: Any) -> str:
+    if isinstance(errors, list):
+        for err in errors:
+            if not isinstance(err, dict):
+                continue
+            ext = err.get("extensions")
+            if isinstance(ext, dict):
+                raw = str(ext.get("code") or "").lower()
+                if raw in {"too_many_requests", "rate_limited", "rate_limit"}:
+                    return "fireflies_api_rate_limited"
+                if raw in {"unauthorized", "forbidden"}:
+                    return "fireflies_api_unauthorized"
+    return "fireflies_api_error"
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -378,7 +350,6 @@ def _safe_json(response: httpx.Response) -> Any:
 def _api_error_from_response(
     response: httpx.Response, path: str,
 ) -> FirefliesApiError:
-    """Map a non-2xx Fireflies response to a typed `FirefliesApiError`."""
     status = response.status_code
     if status in (401, 403):
         return FirefliesApiError(
@@ -388,7 +359,7 @@ def _api_error_from_response(
         )
     if status == 404:
         return FirefliesApiError(
-            "fireflies 404: transcript/resource not found or not visible to the token",
+            "fireflies 404: transcript/resource not found or not visible",
             code="fireflies_api_not_found",
             context={"http_status": 404, "path": path},
         )

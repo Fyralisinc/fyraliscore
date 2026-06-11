@@ -66,6 +66,17 @@ async def test_summary_and_action_items_captured():
     assert draft.content["duration_minutes"] == 45
 
 
+async def test_epoch_millis_date_and_snake_organizer_are_supported():
+    draft = await handle_fireflies_transcript(_transcript(
+        dateTime=None,
+        date=1_777_593_600_000,
+        version=1_777_593_600_000,
+        organizer_email="owner@example.com",
+    ), {})
+    assert draft.occurred_at.isoformat() == "2026-05-01T00:00:00+00:00"
+    assert draft.content["organizer_email"] == "owner@example.com"
+
+
 async def test_participants_become_entities():
     draft = await handle_fireflies_transcript(_transcript(), {})
     person_entities = [e for e in draft.entities_hint if e["type"] == "person"]

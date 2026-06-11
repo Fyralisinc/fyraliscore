@@ -4,10 +4,10 @@ In-process replacement for `FigmaClient` (services/ingest/integrations/figma/
 client.py). Implements the read methods the Figma chain calls:
 
   - get_file(file_key) -> dict
-      `GET /v1/files/{key}/meta` body (the fetcher's recency probe).
+      `GET /v1/files/{key}` body (the fetcher's recency probe).
   - list_events(file_key, *, limit, offset, start)
       -> (events, next_offset, total)
-      `GET /v1/files/{key}/events`, offset-paginated, honouring `limit`.
+      Derived versions/comments event stream, offset-paginated inside the mock.
       `next_offset is None` is terminal — exactly the real client's contract
       (`is_last = next_offset >= total or not events`).
   - has_events_since(file_key, since)  [reconciler probe convenience]
@@ -48,8 +48,8 @@ class MockFigmaClient(_MockBase):
         self._fixture = fixture
 
     # ---- Read surface ----
-    async def list_files(self) -> list[dict[str, Any]]:
-        """`GET /v1/teams/{id}/files` — the seed-time enumeration."""
+    async def list_files(self, team_id: str | None = None) -> list[dict[str, Any]]:
+        """`GET /v1/teams/{id}/projects` + project file enumeration."""
         self._check_fault()
         files = self._fixture.get("files", {})
         out: list[dict[str, Any]] = []
@@ -62,7 +62,7 @@ class MockFigmaClient(_MockBase):
         return out
 
     async def get_file(self, file_key: str) -> dict[str, Any]:
-        """`GET /v1/files/{key}/meta` — the recency-probe body."""
+        """`GET /v1/files/{key}` — the recency-probe body."""
         self._check_fault()
         fx = self._fixture.get("files", {}).get(file_key)
         if not isinstance(fx, dict):

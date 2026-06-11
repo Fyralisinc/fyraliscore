@@ -18,13 +18,17 @@ SAME normalizer→observation_writer Kafka chain as backfill, landing in
 `observations` while backfill is still in flight. There is no HTTP status to
 assert (the generator returns None for it, like Telegram).
 
-The live `firm_id` is the REAL carta_installations.firm_id for the tenant
-(resolved + cached from the pool), so the live external_id is derived through the
-SAME `carta_entity(firm_id, entity_kind, entity_id, sync_token)` constructor as
-backfill — giving genuine cross-path parity AND per-tenant uniqueness (the firm_id
-namespaces the global observations UNIQUE). Each `simulate_event` uses a
-globally-unique entity id (≥ 1_000_000, disjoint from backfill ids 1..N) and a
-2026-06 timestamp, so N live events ⇒ N distinct observations.
+The minted change is a REAL-shaped Issuer v1alpha1 option grant (camelCase
+fields + protobuf `{"value": ...}` wrappers, `exercisedQuantity > 0` -> an
+"exercised" state_change) so it decodes through the production handler
+untouched. The live `firm_id` is the REAL carta_installations.firm_id for the
+tenant (resolved + cached from the pool), so the live external_id is derived
+through the SAME `carta:{firm}:{kind}:{id}:{version}` constructor as backfill —
+`version = handlers.carta.carta_version(entity)`, the content digest — giving
+genuine cross-path parity AND per-tenant uniqueness (the firm_id namespaces the
+global observations UNIQUE). Each `simulate_event` uses a globally-unique
+entity id (≥ 1_000_000, disjoint from backfill ids 1000..N) and a 2026-06
+timestamp, so N live events ⇒ N distinct observations.
 """
 from __future__ import annotations
 
@@ -47,8 +51,18 @@ _LIVE_BASE = datetime(2026, 6, 15, tzinfo=timezone.utc)
 _LIVE_ID_BASE = 1_000_000
 
 # The cap-table entity kind the synthetic live change defaults to (the live edge
-# re-lists across all kinds; one kind suffices to prove the path).
-_DEFAULT_ENTITY_TYPE = "OptionGrant"
+# re-lists across all kinds; optionGrant — the one delta-filterable collection —
+# suffices to prove the path).
+_DEFAULT_ENTITY_TYPE = "optionGrant"
+
+# entity_type.lower() -> the handler's canonical entity_kind (mirrors
+# handlers/carta._ENTITY_NORMALISE; used only for the external_hint).
+_ENTITY_NORMALISE = {
+    "stakeholder": "stakeholder",
+    "shareclass": "share_class",
+    "optiongrant": "option_grant",
+    "convertiblenote": "convertible_note",
+}
 
 
 @dataclass
@@ -110,20 +124,38 @@ class CartaPollGenerator:
         self._install_cache[tenant_id] = resolved
         return resolved
 
-    def _mint_change(self, content: str, entity_type: str) -> dict[str, Any]:
+    def _mint_change(
+        self, content: str, entity_type: str, firm_id: str,
+    ) -> dict[str, Any]:
+        """One fresh v1alpha1 option-grant change (wrapper-shaped fields).
+
+        `exercisedQuantity > 0` -> the handler classifies an "exercised"
+        cap-table state_change. The unique id + fresh `lastModifiedDatetime`
+        give each live change a distinct content digest (external_id version).
+        """
         self._seq += 1
         entity_id = str(_LIVE_ID_BASE + self._seq)
-        updated = (_LIVE_BASE + timedelta(minutes=self._seq)).isoformat()
+        updated = (
+            (_LIVE_BASE + timedelta(minutes=self._seq))
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
         entity = {
-            "Id": entity_id,
-            # A fresh, globally-unique sync_token keeps each live change distinct.
-            "SyncToken": str(self._seq),
-            "DocNumber": f"{entity_type[:3].upper()}-{entity_id}",
-            "Status": "exercised",  # a lifecycle state_change on the cap table
-            "Quantity": 500,
-            "StrikePrice": 1.25,
-            "StakeholderRef": {"value": str(self._seq), "name": content},
-            "MetaData": {"LastUpdatedTime": updated},
+            "id": entity_id,
+            "issuerId": firm_id,
+            # The label carries the caller's content marker for traceability.
+            "securityLabel": content or f"OG-{entity_id}",
+            "stakeholderId": str(self._seq),
+            "stockOptionType": "ISO",
+            "quantity": {"value": "500"},
+            "outstandingQuantity": {"value": "0"},
+            "vestedQuantity": {"value": "500"},
+            "exercisedQuantity": {"value": "500"},  # exercised -> state_change
+            "exercisePrice": {
+                "currencyCode": {"value": "USD"},
+                "amount": {"value": "1.25"},
+            },
+            "issueDate": {"value": "2026-06-01"},
+            "lastModifiedDatetime": {"value": updated},
         }
         return {"entity_type": entity_type, "entity": entity}
 
@@ -132,6 +164,7 @@ class CartaPollGenerator:
     ) -> CartaPollResult:
         """Mint one fresh cap-table change + dispatch it through the production
         poll path."""
+        from services.ingest.ingestion.handlers.carta import carta_version
         from services.ingest.integrations.carta.poll import (
             PollDeps,
             handle_polled_change,
@@ -139,9 +172,8 @@ class CartaPollGenerator:
 
         installation_id, firm_id = await self._resolve_install(target.tenant_id)
         entity_type = getattr(target, "carta_entity_type", None) or _DEFAULT_ENTITY_TYPE
-        change = self._mint_change(content, entity_type)
-        entity_id = change["entity"]["Id"]
-        sync_token = change["entity"]["SyncToken"]
+        change = self._mint_change(content, entity_type, firm_id)
+        entity = change["entity"]
 
         deps = PollDeps(
             pool=self._pool,
@@ -157,17 +189,12 @@ class CartaPollGenerator:
         )
         await handle_polled_change(change, deps)
 
-        # entity_kind normalisation mirrors the handler's _ENTITY_NORMALISE.
-        entity_kind = entity_type.lower()
-        _NORMALISE = {
-            "shareholder": "shareholder", "shareclass": "share_class",
-            "safenote": "safe_note", "optiongrant": "option_grant",
-        }
-        kind = _NORMALISE.get(entity_kind, entity_kind)
+        kind = _ENTITY_NORMALISE.get(entity_type.lower(), entity_type.lower())
+        version = carta_version(entity)
         return CartaPollResult(
             http_status=None,
             external_hint=(
-                f"carta:{firm_id}:{kind}:{entity_id}:{sync_token}"
+                f"carta:{firm_id}:{kind}:{entity['id']}:{version}"
             ),
             tenant_id=getattr(target, "tenant_id", None),
         )

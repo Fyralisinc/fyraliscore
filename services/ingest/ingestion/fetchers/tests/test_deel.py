@@ -91,8 +91,8 @@ async def test_incremental_warm_start_uses_start_param(monkeypatch):
              "payment_cursor": "2026-05-09T00:00:00Z"}
     res = await fetch_page_deel(_FakeInst(), shard, None)
 
-    # Warm start -> incremental: list_payments called with start=date.
-    assert client.calls[0]["start"] == "2026-05-09"
+    # Warm start -> incremental: list_payments called with the ISO floor.
+    assert client.calls[0]["start"] == "2026-05-09T00:00:00Z"
     payment_records = [r for r in res.records if r["_fyralis_record_type"] == "payment"]
     assert len(payment_records) == 1
     assert payment_records[0]["payment"]["status"] == "failed"

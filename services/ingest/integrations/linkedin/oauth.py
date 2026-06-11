@@ -9,15 +9,18 @@ operator pastes the `organization_urn` + the `access_token` (and `refresh_token`
 they obtained from their LinkedIn OAuth app, and the router verifies them against
 the REAL LinkedIn API before seeding the install.
 
-TODO(human): ACCESS IS PARTNER-GATED — LinkedIn organization/recruiting data
-    (Marketing Developer Platform / Talent Solutions) is invite-only. (1) obtain
-    the partner agreement (or direct-customer own-data access) and the approved
-    prod host before real traffic. (2) confirm the exact OAuth scopes — the
-    organization read scopes are NOT verified here (candidates:
-    r_organization_social, rw_organization_admin, r_organization_followers,
-    r_basicprofile). (3) wire a refresh-on-401 loop in the client — LinkedIn
-    access tokens are ~60 days, refresh tokens ~1 year; `finalize` persists
-    refresh_secret_ref/token_expires_at but no refresh exchange is implemented yet.
+The read surface needs the OAuth scopes `r_organization_social` (posts finder)
+and `rw_organization_admin` (share/follower statistics + the organization
+lookup probe), and the authenticated member must hold the ADMINISTRATOR page
+role for the organization (per the Community-Management docs).
+
+TODO(human): ACCESS IS PARTNER-GATED — the Community Management API tiers are
+    approval-only. (1) obtain the program approval (Standard/Advanced tier or
+    Talent partner agreement) before real traffic. (2) wire a refresh-on-401
+    loop in the client — LinkedIn access tokens are ~60 days, and programmatic
+    refresh tokens (~1 year) are only issued to approved partner programs;
+    `finalize` persists refresh_secret_ref/token_expires_at but no refresh
+    exchange is implemented yet.
 
 LinkedIn is POLL-ONLY: there is NO webhook, so this wizard does NOT accept a
 webhook verifier token and never registers a provider_installations row. The live
@@ -28,7 +31,8 @@ Flow:
 
     POST /integrations/linkedin/connect/preflight
         body: { organization_urn, access_token, base_url? }
-        → LinkedinClient.org_info() to verify the token + organization
+        → LinkedinClient.get_organization() (`GET /rest/organizations/{id}`)
+          to verify the token + organization
         → on auth failure: a structured 400 (no secret is stored)
 
     POST /integrations/linkedin/connect/finalize
@@ -62,10 +66,9 @@ from services.ingest.integrations.linkedin.onboarding import finalize_install
 log = structlog.get_logger("integrations.linkedin.oauth")
 
 
-# TODO(human): confirm LinkedIn production API host. The operator may pass a
-# sandbox/demo host via base_url when testing; this default is a placeholder
-# (the entitled prod host is api.linkedin.com but the REST base path is unverified).
-_DEFAULT_BASE_URL = "https://api.linkedin.com"
+# The versioned Community-Management REST base. The operator may pass a
+# sandbox/demo host via base_url when testing.
+_DEFAULT_BASE_URL = "https://api.linkedin.com/rest"
 
 
 router = APIRouter(prefix="/integrations/linkedin", tags=["linkedin"])
@@ -133,7 +136,8 @@ def _auth_failure_response(exc: LinkedinApiError) -> JSONResponse:
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    """Verify the access token + organization via the orginfo probe."""
+    """Verify the access token + organization via the
+    `GET /rest/organizations/{id}` probe."""
     _tenant_from_request(request)  # auth check
     body = await request.json()
     organization_urn, access_token, base_url = _require_creds(body)
@@ -144,14 +148,16 @@ async def connect_preflight(request: Request) -> JSONResponse:
         access_token=access_token,
     )
     try:
-        info = await client.org_info()
+        info = await client.get_organization()
     except LinkedinApiError as exc:
         return _auth_failure_response(exc)
     finally:
         await client.aclose()
 
-    org = info.get("OrgInfo") if isinstance(info, dict) else None
-    org_name = org.get("Name") if isinstance(org, dict) else None
+    org_name = (
+        info.get("localizedName") or info.get("vanityName")
+        if isinstance(info, dict) else None
+    )
     return JSONResponse(content={
         "ok": True,
         "organization_urn": organization_urn,
@@ -190,7 +196,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         access_token=access_token,
     )
     try:
-        await client.org_info()
+        await client.get_organization()
     except LinkedinApiError as exc:
         return _auth_failure_response(exc)
     finally:

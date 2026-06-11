@@ -13,11 +13,13 @@ import hashlib
 import hmac
 import json
 
+import httpx
 import pytest
 
 from services.app.webhooks.signatures.hibob import verifier as hibob_verifier
 from services.app.webhooks.tenant_resolver import _extract_hibob
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
+from services.ingest.integrations.hibob.client import HibobClient
 from tests.contract.framework import load_fixture
 
 pytestmark = pytest.mark.contract
@@ -68,3 +70,59 @@ async def test_hibob_tampered_signature_rejected():
             secrets=[Secret("hibob", "wrong-secret")],
         )
     assert exc.value.reason == "signature_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_hibob_people_search_uses_post_and_basic_auth():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={
+            "employees": [{"/root/id": 1, "/root/displayName": "Ada"}],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = HibobClient(
+            base_url="https://api.hibob.com",
+            company_id="co-1",
+            service_user_id="svc",
+            token="secret",
+            http_client=http,
+        )
+        rows, next_cursor = await client.list_entities("employee")
+
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/v1/people/search"
+    assert seen[0].headers["Authorization"].startswith("Basic ")
+    assert rows[0]["id"] == 1
+    assert rows[0]["displayName"] == "Ada"
+    assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_hibob_bulk_salary_cursor_shape():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={
+            "results": [{"payrollId": "p1", "modified": "2026-05-01T00:00:00Z"}],
+            "response_metadata": {"next_cursor": "next-page"},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = HibobClient(
+            base_url="https://api.hibob.com",
+            company_id="co-1",
+            service_user_id="svc",
+            token="secret",
+            http_client=http,
+        )
+        rows, next_cursor = await client.list_entities("payroll", page_cursor="abc")
+
+    assert seen[0].method == "GET"
+    assert seen[0].url.path == "/v1/bulk/people/salaries"
+    assert dict(httpx.QueryParams(seen[0].url.query))["cursor"] == "abc"
+    assert rows[0]["payrollId"] == "p1"
+    assert next_cursor == "next-page"

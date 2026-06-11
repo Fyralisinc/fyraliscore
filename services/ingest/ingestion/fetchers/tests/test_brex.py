@@ -29,8 +29,10 @@ class _FakeClient:
     async def get_account(self, account_id):
         return self._account
 
-    async def list_transactions(self, account_id, *, limit=100, offset=0, start=None):
-        self.calls.append({"offset": offset, "start": start})
+    async def list_transactions(
+        self, account_id, *, limit=100, offset=0, start=None, account_kind=None,
+    ):
+        self.calls.append({"offset": offset, "start": start, "account_kind": account_kind})
         pool = self._delta if start else self._full
         page = pool[offset:offset + limit]
         next_offset = offset + len(page)
@@ -88,11 +90,13 @@ async def test_incremental_warm_start_uses_start_param(monkeypatch):
     _wire(monkeypatch, client)
 
     shard = {"shard_kind": SHARD_KIND_ACCOUNT_TXNS, "account_id": _ACCT,
+             "account_kind": "cash",
              "txn_cursor": "2026-05-09T00:00:00Z"}
     res = await fetch_page_brex(_FakeInst(), shard, None)
 
     # Warm start -> incremental: list_transactions called with start=date.
     assert client.calls[0]["start"] == "2026-05-09"
+    assert client.calls[0]["account_kind"] == "cash"
     txn_records = [r for r in res.records if r["_fyralis_record_type"] == "transaction"]
     assert len(txn_records) == 1
     assert txn_records[0]["transaction"]["status"] == "failed"

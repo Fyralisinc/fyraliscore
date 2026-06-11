@@ -1,12 +1,12 @@
-"""services/ingest/ingestion/handlers/linkedin.py — LinkedIn people/recruiting handler.
+"""services/ingest/ingestion/handlers/linkedin.py — LinkedIn organization handler.
 
 ONE channel `linkedin:object` (mirrors carta:object's one-channel/many-record-types
 shape). The handler is a pure function (no DB / network) and branches on the
 input shape to produce exactly ONE observation per call:
 
   - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
-    ∈ {"share","social_action","follower_stat"} (set by the fetcher or the poll
-    dispatcher).
+    ∈ {"post","share_statistics","follower_statistics"} (set by the fetcher or
+    the poll dispatcher), with `entity` = the raw Community-Management element.
   - LIVE POLL: the poll dispatcher (`integrations/linkedin/poll.py`) emits the
     SAME fetcher-shaped tagged record, so a polled change and its backfill twin
     dedup.
@@ -14,16 +14,28 @@ input shape to produce exactly ONE observation per call:
 LinkedIn is POLL-ONLY (no webhook), so there is no webhook-envelope branch — the
 live edge re-uses the backfill record shape exactly.
 
+Wire shapes (Community Management API; epoch-millis timestamps):
+  - post: `{id: "urn:li:share:N"|"urn:li:ugcPost:N", author: "urn:li:…",
+    commentary, lifecycleState, visibility, createdAt, lastModifiedAt,
+    publishedAt, lifecycleStateInfo: {isEditedByAuthor}}`.
+  - share_statistics: `{organizationalEntity, timeRange: {start, end},
+    totalShareStatistics: {clickCount, likeCount, commentCount, shareCount,
+    impressionCount, uniqueImpressionsCount, engagement}}`.
+  - follower_statistics: `{organizationalEntity, timeRange: {start, end},
+    followerGains: {organicFollowerGain, paidFollowerGain}}`.
+
 external_id — DISCRIMINATED by entity_kind, NOT versioned by a sync token (the
 observations repo dedups on (source_channel, external_id) IGNORING occurred_at):
-  - linkedin:{org}:{kind}:{id}
-LinkedIn organization objects are append/stat-shaped (a share is published once,
-a follower-stat snapshot has a window-keyed id), so a fresh id per object is the
-natural dedup key; the entity_kind discriminator keeps multi-entity fixtures with
-the same id from ever colliding.
+  - linkedin:{org}:post:{post URN}                      (a post is created once;
+    edits re-list the same id and dedup)
+  - linkedin:{org}:share_statistics:{timeRange.start}   (snapshot, versioned by
+  - linkedin:{org}:follower_statistics:{timeRange.start} its time bucket — the
+    read path always requests time-bound statistics, so the epoch-millis bucket
+    start is the deterministic id; re-polling a bucket dedups, a new bucket is a
+    new observation)
 
 Trust posture: LinkedIn is the organization system of record for its own
-shares/stats -> `authoritative`.
+posts/statistics -> `authoritative`.
 """
 from __future__ import annotations
 
@@ -42,34 +54,32 @@ from services.ingest.ingestion.handlers import (
 _CHANNEL = "linkedin:object"
 _TRUST = "authoritative"
 
-# Map a LinkedIn record_type (backfill/poll) to a canonical kind. Per the
-# cross-agent CONTRACT the entity types are share | social_action | follower_stat.
+# Map a LinkedIn record_type (backfill/poll) to a canonical kind, keyed to the
+# real read surface: posts finder + the two organizationalEntity statistics.
 _ENTITY_NORMALISE = {
-    "share": "share",
-    "social_action": "social_action",
-    "follower_stat": "follower_stat",
+    "post": "post",
+    "share_statistics": "share_statistics",
+    "follower_statistics": "follower_statistics",
 }
 
-# Organization lifecycle states that constitute a state_change (vs an open
-# signal). LinkedIn shares can be edited/deleted; stats are snapshots.
-_STATE_CHANGE_STATUSES = {
-    "deleted", "removed", "archived", "edited", "expired",
-}
+# Post lifecycle states that constitute a state_change (vs an open signal).
+# lifecycleState ∈ DRAFT | PUBLISHED | PUBLISH_REQUESTED | PUBLISH_FAILED;
+# an author edit is flagged via lifecycleStateInfo.isEditedByAuthor.
+_STATE_CHANGE_LIFECYCLES = {"publish_failed"}
 
 
 def linkedin_entity(
     organization_urn: str, entity_kind: str, entity_id: str,
 ) -> str:
-    """`linkedin:{org}:{kind}:{id}` — DISCRIMINATED by entity_kind so multi-entity
-    fixtures sharing an id never collide. NOT versioned by a sync token (LinkedIn
-    organization objects are append/stat-shaped).
+    """`linkedin:{org}:{kind}:{id}` — DISCRIMINATED by entity_kind so streams
+    sharing an id never collide. Posts use the post URN as id; statistics use
+    the `timeRange.start` epoch-millis bucket (snapshot versioning).
 
-    TODO(human): during the wiring phase move this constructor to
+    TODO(human): during a wiring phase move this constructor to
         `services/ingest/ingestion/idempotency/__init__.py` as
-        `linkedin_entity(organization_urn, entity_kind, entity_id)` (the canonical
-        home, mirroring `carta_entity`) and import it here. That module is a
-        SHARED file this phase must not edit, so the format lives here for now —
-        the format string MUST stay byte-identical across the move.
+        `linkedin_entity(organization_urn, entity_kind, entity_id)` (the
+        canonical home, mirroring `carta_entity`) and import it here. The
+        format string MUST stay byte-identical across the move.
     """
     return f"linkedin:{organization_urn}:{entity_kind}:{entity_id}"
 
@@ -78,27 +88,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_iso(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
+def _parse_epoch_ms(value: Any) -> datetime | None:
+    """LinkedIn timestamps are epoch-millis integers (createdAt /
+    lastModifiedAt / timeRange.start|end)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
-    s = value
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    elif len(s) >= 5 and s[-5] in "+-" and s[-3] != ":":
-        s = s[:-2] + ":" + s[-2:]
     try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
+        ms = int(value)
+    except (TypeError, ValueError):
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
-def _last_updated(entity: dict[str, Any]) -> str | None:
-    meta = entity.get("MetaData") or entity.get("Metadata") or {}
-    if isinstance(meta, dict):
-        v = meta.get("LastUpdatedTime")
-        return v if isinstance(v, str) else None
-    return None
+def _time_range(entity: dict[str, Any]) -> dict[str, Any] | None:
+    tr = entity.get("timeRange")
+    return tr if isinstance(tr, dict) else None
 
 
 def _truncate(text: str, limit: int = 600) -> str:
@@ -106,117 +113,80 @@ def _truncate(text: str, limit: int = 600) -> str:
 
 
 def _author(entity: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
-    """(actor_ref, entity_hint) for the author/member on the LinkedIn object."""
-    ref = entity.get("AuthorRef") or entity.get("MemberRef")
-    if isinstance(ref, dict):
-        name = ref.get("name")
-        rid = ref.get("value")
-        hint: dict[str, Any] = {"type": "person", "role": "author"}
-        if name:
-            hint["id"] = name
-        elif rid:
-            hint["id"] = str(rid)
-        actor = f"linkedin:member:{rid}" if rid else None
-        return actor, (hint if hint.get("id") else None)
+    """(actor_ref, entity_hint) for the author URN on a LinkedIn post
+    (`urn:li:organization:N` or `urn:li:person:…`)."""
+    author = entity.get("author")
+    if isinstance(author, str) and author:
+        hint_type = "person" if ":person:" in author else "organization"
+        hint = {"type": hint_type, "role": "author", "id": author}
+        return f"linkedin:author:{author}", hint
     return None, None
 
 
-def _label(entity_kind: str, entity: dict[str, Any]) -> str:
-    """Human reference like 'Share UGC-12' / 'Follower Stat 2026-06'."""
-    doc = entity.get("DocNumber") or entity.get("Id") or "?"
-    nice = entity_kind.replace("_", " ").title()
-    return f"{nice} {doc}"
+def _short_id(entity_id: str) -> str:
+    """The trailing URN segment for human-readable labels
+    (`urn:li:share:123` -> `123`)."""
+    return entity_id.rpartition(":")[2] or entity_id
 
 
-def _classify(entity: dict[str, Any]) -> tuple[str, str]:
-    """Return (kind, status_word) for a LinkedIn object.
-
-    Objects whose `Status` indicates a lifecycle transition (deleted / archived /
-    edited / …) are `state_change`; everything else is an open `signal`."""
-    status = entity.get("Status")
-    status_word = str(status).strip().lower() if status else "active"
-    if status_word in _STATE_CHANGE_STATUSES:
-        return "state_change", status_word
-    return "signal", status_word
-
-
-def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
-    """The richer LinkedIn organization fields beyond the header. Only present
-    keys are returned so `content` stays lean.
-
-    TODO(human): confirm the real LinkedIn organization field names. These map
-    the placeholder fixture shape; the entitled REST surface exposes
-    likeCount/commentCount/shareCount under socialActions and
-    organicFollowerCount/paidFollowerCount under followerStatistics.
-    """
-    extras: dict[str, Any] = {}
-    for src, dst in (
-        ("Commentary", "commentary"),
-        ("Text", "text"),
-        ("LikeCount", "like_count"),
-        ("CommentCount", "comment_count"),
-        ("ShareCount", "share_count"),
-        ("ClickCount", "click_count"),
-        ("ImpressionCount", "impression_count"),
-        ("EngagementRate", "engagement_rate"),
-        ("FollowerCount", "follower_count"),
-        ("OrganicFollowerCount", "organic_follower_count"),
-        ("PaidFollowerCount", "paid_follower_count"),
-        ("PublishedAt", "published_at"),
-        ("TimeRange", "time_range"),
-    ):
-        if entity.get(src) is not None:
-            extras[dst] = entity.get(src)
-    return extras
+def _classify_post(entity: dict[str, Any]) -> tuple[str, str]:
+    """Return (kind, status_word) for a post. PUBLISH_FAILED and author edits
+    are lifecycle transitions (`state_change`); everything else is an open
+    `signal`."""
+    lifecycle = str(entity.get("lifecycleState") or "PUBLISHED").strip().lower()
+    info = entity.get("lifecycleStateInfo")
+    edited = isinstance(info, dict) and bool(info.get("isEditedByAuthor"))
+    if lifecycle in _STATE_CHANGE_LIFECYCLES:
+        return "state_change", lifecycle
+    if edited:
+        return "state_change", "edited"
+    return "signal", lifecycle
 
 
-def _entity_draft(
-    entity_kind: str, entity: dict[str, Any], organization_urn: str,
+def _post_draft(
+    entity: dict[str, Any], organization_urn: str,
 ) -> ObservationDraft:
-    entity_id = str(entity.get("Id") or "")
+    entity_id = str(entity.get("id") or "")
     if not organization_urn or not entity_id:
         raise ValidationError(
-            "linkedin entity missing organization_urn/Id", channel=_CHANNEL,
+            "linkedin post missing organization_urn/id", channel=_CHANNEL,
         )
-    external_id = linkedin_entity(organization_urn, entity_kind, entity_id)
+    external_id = linkedin_entity(organization_urn, "post", entity_id)
 
-    updated = _last_updated(entity)
-    occurred = _parse_iso(updated) or _utcnow()
-    kind, status_word = _classify(entity)
+    modified_ms = entity.get("lastModifiedAt") or entity.get("createdAt")
+    occurred = _parse_epoch_ms(modified_ms) or _utcnow()
+    kind, status_word = _classify_post(entity)
     actor_ref, author_hint = _author(entity)
 
-    label = _label(entity_kind, entity)
-    who = (author_hint or {}).get("id")
-    parts = [label]
-    if who:
-        parts.append(f"· {who}")
-    amount = (
-        entity.get("ImpressionCount")
-        or entity.get("LikeCount")
-        or entity.get("FollowerCount")
-    )
-    if amount is not None:
-        parts.append(f"· {amount}")
+    commentary = entity.get("commentary")
+    parts = [f"Post {_short_id(entity_id)}"]
+    if isinstance(commentary, str) and commentary.strip():
+        parts.append(f"· {commentary.strip()}")
+    if author_hint:
+        parts.append(f"· {author_hint['id']}")
     parts.append(f"· {status_word}")
     content_text = " ".join(str(p) for p in parts)
 
     entities: list[dict[str, Any]] = [
-        {"type": "linkedin_object", "id": f"{entity_kind}:{entity_id}"},
+        {"type": "linkedin_object", "id": f"post:{entity_id}"},
     ]
     if author_hint:
         entities.append(author_hint)
 
     content: dict[str, Any] = {
-        "object_type": entity_kind,
+        "object_type": "post",
         "organization_urn": organization_urn,
         "entity_id": entity_id,
-        "doc_number": entity.get("DocNumber"),
         "status": status_word,
-        "author": (entity.get("AuthorRef") or {}).get("name")
-        if isinstance(entity.get("AuthorRef"), dict) else None,
-        "last_updated": updated,
+        "author": entity.get("author"),
+        "commentary": commentary,
+        "lifecycle_state": entity.get("lifecycleState"),
+        "visibility": entity.get("visibility"),
+        "created_at_ms": entity.get("createdAt"),
+        "last_modified_at_ms": entity.get("lastModifiedAt"),
+        "published_at_ms": entity.get("publishedAt"),
     }
-    content.update(_entity_extras(entity))
+    content = {k: v for k, v in content.items() if v is not None}
 
     return ObservationDraft(
         source_channel=_CHANNEL,
@@ -228,6 +198,91 @@ def _entity_draft(
         source_actor_ref=actor_ref,
         external_id=external_id,
         entities_hint=entities,
+        raw_payload=entity,
+    )
+
+
+# Statistic counters lifted into `content` (present keys only, snake_cased).
+_SHARE_STAT_FIELDS = (
+    ("clickCount", "click_count"),
+    ("likeCount", "like_count"),
+    ("commentCount", "comment_count"),
+    ("shareCount", "share_count"),
+    ("impressionCount", "impression_count"),
+    ("uniqueImpressionsCount", "unique_impressions_count"),
+    ("engagement", "engagement"),
+)
+_FOLLOWER_GAIN_FIELDS = (
+    ("organicFollowerGain", "organic_follower_gain"),
+    ("paidFollowerGain", "paid_follower_gain"),
+)
+
+
+def _statistics_draft(
+    entity_kind: str, entity: dict[str, Any], organization_urn: str,
+) -> ObservationDraft:
+    time_range = _time_range(entity)
+    bucket_start = time_range.get("start") if time_range else None
+    if not organization_urn or bucket_start is None:
+        raise ValidationError(
+            "linkedin statistics element missing organization_urn/timeRange.start",
+            channel=_CHANNEL,
+        )
+    entity_id = str(int(bucket_start))
+    external_id = linkedin_entity(organization_urn, entity_kind, entity_id)
+
+    bucket_end = time_range.get("end") if time_range else None
+    occurred = (
+        _parse_epoch_ms(bucket_end) or _parse_epoch_ms(bucket_start) or _utcnow()
+    )
+
+    if entity_kind == "share_statistics":
+        counters = entity.get("totalShareStatistics")
+        fields = _SHARE_STAT_FIELDS
+        headline_key = "impressionCount"
+    else:
+        counters = entity.get("followerGains")
+        fields = _FOLLOWER_GAIN_FIELDS
+        headline_key = "organicFollowerGain"
+    counters = counters if isinstance(counters, dict) else {}
+
+    stats: dict[str, Any] = {}
+    for src, dst in fields:
+        if counters.get(src) is not None:
+            stats[dst] = counters.get(src)
+
+    day = occurred.date().isoformat()
+    nice = entity_kind.replace("_", " ").title()
+    parts = [f"{nice} {day}"]
+    headline = counters.get(headline_key)
+    if headline is not None:
+        parts.append(f"· {headline}")
+    parts.append("· snapshot")
+    content_text = " ".join(str(p) for p in parts)
+
+    content: dict[str, Any] = {
+        "object_type": entity_kind,
+        "organization_urn": organization_urn,
+        "entity_id": entity_id,
+        "status": "snapshot",
+        "organizational_entity": entity.get("organizationalEntity"),
+        "time_range": time_range,
+    }
+    content.update(stats)
+    content = {k: v for k, v in content.items() if v is not None}
+
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind="signal",  # type: ignore[arg-type]
+        source_actor_ref=None,
+        external_id=external_id,
+        entities_hint=[
+            {"type": "linkedin_object", "id": f"{entity_kind}:{entity_id}"},
+        ],
         raw_payload=entity,
     )
 
@@ -262,7 +317,9 @@ async def handle_linkedin_object(
                 channel=_CHANNEL,
             )
         entity = payload.get("entity") or {}
-        return _entity_draft(entity_kind, entity, _org_of(payload))
+        if entity_kind == "post":
+            return _post_draft(entity, _org_of(payload))
+        return _statistics_draft(entity_kind, entity, _org_of(payload))
 
     raise ValidationError(
         "linkedin payload is not a tagged organization record",

@@ -1,7 +1,8 @@
 """Contract test: the Brex client parses a REAL cursor-paginated transactions page.
 
 Guards the Phase-3 drift fix (finding #3): the REAL Brex transactions API
-(api.brex.com `GET /v2/transactions/card/primary`) returns CURSOR pagination —
+(`GET /v2/transactions/card/primary` and `/v2/transactions/cash/{account_id}`)
+returns CURSOR pagination —
 `{"items": [...], "next_cursor": "<token or null>"}` with NO `total` field. The
 pre-fix `BrexClient.list_transactions` used Mercury-style offset/`total`
 pagination (`resp.get('total', len(txns))`), so it stopped after page 1 and
@@ -39,7 +40,11 @@ def _body() -> dict:
 
 def _client(transport: httpx.MockTransport) -> BrexClient:
     http = httpx.AsyncClient(transport=transport)
-    return BrexClient(base_url="https://api.brex.com", api_token="t", http_client=http)
+    return BrexClient(
+        base_url="https://platform.brexapis.com",
+        api_token="t",
+        http_client=http,
+    )
 
 
 # --- shape sanity: the fixture really is the doc cursor shape ---------------
@@ -108,6 +113,8 @@ async def test_client_terminal_cursor_page_is_single_call():
     assert total == len(body["items"])
     # cursor pagination => the query carries `cursor`-style params, no `total`
     # bookkeeping leaked into the request.
+    assert calls[0].url.path == "/v2/transactions/cash/acc_primary"
+    assert dict(httpx.QueryParams(calls[0].url.query))["limit"] == "100"
     await client.aclose()
 
 
@@ -141,6 +148,21 @@ async def test_client_follows_next_cursor_until_null():
         "pste_00000000000000000000000002",
     ]
     assert total == 4
+    await client.aclose()
+
+
+async def test_client_uses_card_primary_route_for_card_account_kind():
+    body = _body()
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=body)
+
+    client = _client(httpx.MockTransport(handler))
+    await client.list_transactions("ignored-card-id", account_kind="card")
+
+    assert calls[0].url.path == "/v2/transactions/card/primary"
     await client.aclose()
 
 

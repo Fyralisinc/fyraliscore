@@ -11,8 +11,8 @@ ONE SHARD KIND, TWO SYNC MODES
 A `hibob_entity` shard streams one entity type (employee / lifecycle / timeoff
 / payroll) for the company.
 
-  - FULL (initial backfill): walk `client.list_entities(<type>)` from offset 0,
-    offset-paginated.
+  - FULL (initial backfill): walk `client.list_entities(<type>)` from offset 0
+    or an opaque page cursor, depending on the HiBob endpoint.
   - INCREMENTAL (poll): when warm-started with an `updated_cursor` (the
     high-water `modified` timestamp), the fetcher passes `modified_since=<cursor>`
     so only changed entities come back; the overlap re-fetch dedups via the
@@ -28,11 +28,9 @@ records MUTATE (an employee's lifecycle state, a time-off approval), the
 external_id is versioned by the row's modified/version field so a change lands as
 a NEW observation.
 
-TODO(human): confirm HiBob pagination (offset/limit vs cursor token) + the
-    per-entity "modified since" filter field name. This module clones the
-    Brex offset/limit archetype; HiBob's real list surface + incremental filter
-    are UNVERIFIED (see client.py). Page size is env-overridable via
-    HIBOB_BACKFILL_PAGE_SIZE.
+The client maps employee search to local offset pagination and Bob bulk tables
+to their real opaque cursor (`response_metadata.next_cursor`). Page size is
+env-overridable via HIBOB_BACKFILL_PAGE_SIZE.
 """
 from __future__ import annotations
 
@@ -65,7 +63,8 @@ class HibobCursor(BaseModel):
     """Cursor for one entity shard. Round-trips through the opaque dict in
     workflow_states.state_data.
 
-    - offset            : the list pagination offset within this run.
+    - offset            : local offset pagination within this run.
+    - page_cursor       : opaque HiBob cursor for bulk endpoints.
     - high_water_updated : max row `modified`/version (ISO) observed — the
                            warm-start / incremental lower bound AND the
                            reconciler's gap reference point.
@@ -78,6 +77,7 @@ class HibobCursor(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     offset: int = 0
+    page_cursor: str | None = None
     high_water_updated: str | None = None
     incremental_floor: str | None = None
     rows_seen: int = 0
@@ -144,10 +144,11 @@ async def fetch_page_hibob(
     client, close = await _open_hibob_client(install)
     try:
         try:
-            rows, next_offset = await client.list_entities(
+            rows, next_page = await client.list_entities(
                 entity_type,
                 limit=_page_size(),
                 offset=cur.offset,
+                page_cursor=cur.page_cursor,
                 modified_since=cur.incremental_floor,
             )
         except HibobApiError as exc:
@@ -171,9 +172,15 @@ async def fetch_page_hibob(
             _bump_high_water(cur, _row_modified(row))
 
         cur.rows_seen += len(rows)
-        is_last = next_offset is None
-        if next_offset is not None:
-            cur.offset = next_offset
+        is_last = next_page is None
+        if isinstance(next_page, int):
+            cur.offset = next_page
+            cur.page_cursor = None
+        elif isinstance(next_page, str) and next_page.isdigit():
+            cur.offset = int(next_page)
+            cur.page_cursor = None
+        elif isinstance(next_page, str) and next_page:
+            cur.page_cursor = next_page
 
         log.info(
             "hibob_backfill_page",

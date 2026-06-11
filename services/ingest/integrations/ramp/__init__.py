@@ -1,13 +1,13 @@
 """Ramp integration (finance source).
 
-Cloned from the QuickBooks OAuth archetype. Ramp is a spend/card-management API
-authenticated with OAuth 2.0 (Bearer access token + a rotating refresh token).
-Every call is scoped to a company ``business_id``. The ingestion source key is
-``ramp`` and the single channel is ``ramp:transaction``.
-
-Several external-API specifics are UNVERIFIED (host, read endpoints + OAuth
-scopes, pagination scheme, the incremental "updated since" filter, the webhook
-signature scheme, and OAuth token refresh). Each is kept configurable behind the
-archetype default with a visible ``TODO(human): confirm ...`` marker in the
-relevant module (client.py / oauth.py / fetcher / signatures / endpoints).
+Ramp is a spend/card-management platform; its Developer API (verified
+docs.ramp.com) is plain REST under ``https://api.ramp.com/developer/v1``:
+keyset-paginated collections (``GET /transactions``, ``/reimbursements``,
+``/cards``, ``/users`` — envelope ``{"data": [...], "page": {"next": …}}``)
+authenticated with OAuth 2.0 **client credentials** (Bearer token minted at
+``POST /token``; no refresh token — expiry is handled by re-minting). Every
+install is scoped to a company ``business_id`` (discovered via the
+``GET /business`` probe; the same id every webhook carries at root). The
+ingestion source key is ``ramp`` and the single channel is
+``ramp:transaction``.
 """
