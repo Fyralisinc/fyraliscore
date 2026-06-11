@@ -504,7 +504,6 @@ async def test_think_invokes_second_pass_when_retrieval_decision_runs(
     )
 
     from services.reasoning.retrieval.second_pass import SecondPassDecision
-    from services.reasoning.think import reason as reason_mod
 
     calls = {"n": 0, "dimensions": []}
 

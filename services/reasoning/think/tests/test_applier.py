@@ -21,7 +21,6 @@ from services.reasoning.think.diff_schema import (
     ClaimOp,
     EdgeOp,
     OntologyGapOp,
-    ResourceOp,
     ValidatedDiff,
 )
 from services.reasoning.retrieval.primary import TriggerContext

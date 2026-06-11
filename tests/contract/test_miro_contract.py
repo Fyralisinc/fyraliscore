@@ -22,7 +22,6 @@ team_id/limit/offset/sort; v2 offset-pagination envelope).
 """
 from __future__ import annotations
 
-import json
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
