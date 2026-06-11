@@ -1502,18 +1502,23 @@ async def pathway_b_semantic(
     # event when either event_actors or event_entities is supplied.
     # Semantics: OR between the two dimensions. A Model matches if
     #   (scope_actors && event_actors) OR (scope_entities && event_entities).
-    # Bind format depends on whether asyncpg has the pgvector binary
-    # codec registered on this connection. The encoder accepts a
-    # numpy array (or anything `Vector(...)` can wrap); the no-codec
-    # path needs the stringified `[…]` literal that the `::vector`
-    # cast can parse as text.
-    if _conn_has_vector_codec(conn):
-        import numpy as _np
-        vec_param: Any = _np.asarray(
-            [float(x) for x in vec], dtype="float32"
-        )
-    else:
-        vec_param = "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
+    # Ensure the pgvector codec is registered on THIS connection, then bind a
+    # numpy array — the same pattern ModelsRepo.search_by_embedding uses.
+    #
+    # The previous `if _conn_has_vector_codec(conn): ndarray else: '[…]' string`
+    # branch was unsafe: `_conn_has_vector_codec` keys on a process-wide id-set
+    # (`PGVECTOR_REGISTERED_POOL_IDS`) that goes stale across the
+    # PoolConnectionProxy/inner-Connection id boundary and for pools created
+    # without the codec init. When it reported False while the codec was actually
+    # live on the connection, binding the stringified `'[…]'::vector` literal
+    # crashed asyncpg with "could not convert string to float" — which aborted
+    # the retrieval and therefore every model write that depends on it (0 models
+    # produced). Ensuring the codec + always binding an array removes the
+    # state/bind mismatch entirely.
+    from services.domain.models.repo import _ensure_vector_codec
+    import numpy as _np
+    await _ensure_vector_codec(conn)
+    vec_param: Any = _np.asarray([float(x) for x in vec], dtype="float32")
     scope_clauses: list[str] = []
     scope_params: list[Any] = [tenant_id, vec_param, k]
     actor_list: list[UUID] = []

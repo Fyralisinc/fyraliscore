@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -107,6 +107,22 @@ def _iso_date(iso: str | None) -> str | None:
     return iso[:10]
 
 
+def _cold_backfill_floor() -> str:
+    """`start=` lower bound for a COLD backfill (date, Mercury is date-granular).
+
+    Mercury's `GET /account/{id}/transactions` **defaults `start` to 30 days ago
+    when omitted** (docs.mercury.com/reference/listaccounttransactions), so a
+    cold backfill that sends no `start` silently returns only the last month of
+    history. Pin a far-back floor so the cold backfill walks the full history.
+    Configurable via MERCURY_BACKFILL_FLOOR_DAYS (default 3650 = 10y; Mercury
+    launched in 2019, so this covers all account history)."""
+    try:
+        days = int(os.environ.get("MERCURY_BACKFILL_FLOOR_DAYS", "3650"))
+    except ValueError:
+        days = 3650
+    return (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+
+
 def _bump_high_water(cur: MercuryCursor, created: Any) -> None:
     if isinstance(created, str) and (
         cur.high_water_created is None or created > cur.high_water_created
@@ -135,6 +151,10 @@ async def fetch_page_mercury(
             if isinstance(warm, str) and warm:
                 cur.incremental_floor = warm  # warm start -> incremental
                 cur.high_water_created = warm
+            else:
+                # COLD backfill: pin `start` to a far-back floor, else Mercury's
+                # 30-day `start` default silently truncates history to one month.
+                cur.incremental_floor = _cold_backfill_floor()
             cur.seeded = True
             # Balance snapshot (cash-position signal) — one per shard run.
             try:
