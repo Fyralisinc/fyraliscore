@@ -20,11 +20,16 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from lib.shared.errors import ValidationError
-from lib.shared.memory_grammar import MemoryGrammar, derive_memory_grammar
+from lib.shared.memory_grammar import (
+    MemoryGrammar,
+    derive_memory_grammar,
+    sanitize_explicit_grammar_axes,
+)
 from lib.shared.types import ModelCreate
 
 from services.domain.models.address import build_belief_address
 from services.domain.models.propositions import (
+    apply_stance_grammar_defaults,
     canonicalize_proposition,
     ensure_situation_compositional_defaults,
     validate_proposition,
@@ -129,6 +134,14 @@ def construct_model(proposed: ModelCreate) -> ConstructedModel:
     }
     ensure_situation_compositional_defaults(defaults_entry)
     canonical_prop = dict(defaults_entry["proposition"])
+    # The DB materializes grammar axes as GENERATED columns reading
+    # proposition->>'<axis>' under CHECK constraints; off-enum explicit
+    # values must be dropped here or the INSERT fails wholesale. The
+    # stance defaults then refill the dropped keys: target_actor_id's
+    # generated column reads proposition->>'claim_role' directly, so
+    # the persisted payload must carry the on-enum value.
+    canonical_prop = sanitize_explicit_grammar_axes(canonical_prop)
+    apply_stance_grammar_defaults(canonical_prop)
     validate_proposition(canonical_prop)
 
     grammar = derive_memory_grammar(

@@ -194,7 +194,16 @@ async def _safe_fetchrow(
     take the whole call site down because the predictions table
     hasn't shipped yet. SAVEPOINT + ROLLBACK TO restores the
     transaction to a clean state so subsequent queries succeed.
+
+    On a bare (autocommit) connection SAVEPOINT itself is illegal, and
+    a failed prepare aborts nothing, so the guard is skipped entirely.
     """
+    if not conn.is_in_transaction():
+        try:
+            return await conn.fetchrow(query, *args)
+        except _PREDICTIONS_ABSENT_ERRORS as exc:
+            log.info(log_event, error=str(exc))
+            return None
     sp = f"hist_summary_{savepoint}"
     await conn.execute(f"SAVEPOINT {sp}")
     try:

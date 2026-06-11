@@ -156,6 +156,41 @@ def _explicit_axis(value: Any, allowed: set[str], fallback: Any) -> Any:
     return fallback
 
 
+_AXIS_ALLOWED: dict[str, set[str]] = {
+    "claim_role": _VALID_CLAIM_ROLES,
+    "abstraction_level": _VALID_ABSTRACTION_LEVELS,
+    "time_mode": _VALID_TIME_MODES,
+    "modality": _VALID_MODALITIES,
+    "polarity": _VALID_POLARITIES,
+}
+
+
+def sanitize_explicit_grammar_axes(proposition: dict[str, Any]) -> dict[str, Any]:
+    """Drop off-enum explicit grammar-axis keys from a proposition.
+
+    The models table materializes these axes as STORED GENERATED columns
+    that read ``proposition->>'<axis>'`` before falling back to the
+    kind-derived default (migration 0048), and CHECK constraints guard
+    the result. `derive_memory_grammar` already ignores off-enum values
+    on the Python side; this applies the same policy to the persisted
+    payload, so an LLM-invented value (e.g. ``time_mode='point_in_time'``)
+    degrades to the kind-derived default instead of failing the whole
+    INSERT at the CHECK constraint.
+
+    Returns the proposition unchanged (same object) when nothing needs
+    dropping; otherwise returns a shallow copy without the bad keys.
+    """
+    cleaned = proposition
+    for axis, allowed in _AXIS_ALLOWED.items():
+        value = cleaned.get(axis)
+        if value is None or (isinstance(value, str) and value in allowed):
+            continue
+        if cleaned is proposition:
+            cleaned = dict(proposition)
+        del cleaned[axis]
+    return cleaned
+
+
 def _derive_domain_tags(
     scope_entities: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     natural: str,
@@ -204,4 +239,5 @@ __all__ = [
     "Polarity",
     "TimeMode",
     "derive_memory_grammar",
+    "sanitize_explicit_grammar_axes",
 ]

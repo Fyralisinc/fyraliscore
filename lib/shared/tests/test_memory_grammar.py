@@ -1,4 +1,7 @@
-from lib.shared.memory_grammar import derive_memory_grammar
+from lib.shared.memory_grammar import (
+    derive_memory_grammar,
+    sanitize_explicit_grammar_axes,
+)
 
 
 def test_prediction_derives_future_expected_atomic_role() -> None:
@@ -50,3 +53,37 @@ def test_unknown_kind_falls_back_to_atomic_inferred_fact() -> None:
     assert grammar.time_mode == "unspecified"
     assert grammar.modality == "inferred"
     assert grammar.polarity == "neutral"
+
+
+def test_sanitize_drops_off_enum_explicit_axis_values() -> None:
+    prop = {
+        "kind": "belief",
+        "subject": "brex_account:acct-1",
+        "time_mode": "point_in_time",
+        "modality": "actual",
+        "polarity": "neutral",
+    }
+
+    cleaned = sanitize_explicit_grammar_axes(prop)
+
+    assert "time_mode" not in cleaned
+    assert "modality" not in cleaned
+    assert cleaned["polarity"] == "neutral"
+    assert cleaned["kind"] == "belief"
+    # The input proposition is not mutated.
+    assert prop["time_mode"] == "point_in_time"
+
+
+def test_sanitize_returns_same_object_when_all_axes_valid() -> None:
+    prop = {"kind": "belief", "time_mode": "current", "modality": "inferred"}
+
+    assert sanitize_explicit_grammar_axes(prop) is prop
+
+
+def test_sanitize_drops_non_string_axis_values() -> None:
+    prop = {"kind": "belief", "claim_role": 7, "abstraction_level": ["atomic"]}
+
+    cleaned = sanitize_explicit_grammar_axes(prop)
+
+    assert "claim_role" not in cleaned
+    assert "abstraction_level" not in cleaned
