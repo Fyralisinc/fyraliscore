@@ -5267,7 +5267,8 @@ async def _focused_answerability_index_scan(
         return []
     scope_types = [pair[0] for pair in seed_pairs]
     scope_ids = [pair[1] for pair in seed_pairs]
-    rows = await conn.fetch(
+    rows = await _fetch_bounded_lookup_rows(
+        conn,
         """
         WITH group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
@@ -5348,6 +5349,7 @@ async def _focused_answerability_index_scan(
         json.dumps(groups),
         scope_types,
         scope_ids,
+        label="focused_answerability_index",
     )
     return [
         _FocusedIndexHit(
@@ -5379,7 +5381,8 @@ async def _focused_scope_sparse_scan(
         return []
     scope_types = [pair[0] for pair in seed_pairs]
     scope_ids = [pair[1] for pair in seed_pairs]
-    rows = await conn.fetch(
+    rows = await _fetch_bounded_lookup_rows(
+        conn,
         """
         WITH group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
@@ -5453,6 +5456,7 @@ async def _focused_scope_sparse_scan(
         json.dumps(groups),
         scope_types,
         scope_ids,
+        label="focused_scope_sparse",
     )
     return [
         _FocusedIndexHit(
@@ -5479,7 +5483,8 @@ async def _focused_direct_scope_scan(
         return []
     scope_types = [pair[0] for pair in seed_pairs]
     scope_ids = [pair[1] for pair in seed_pairs]
-    rows = await conn.fetch(
+    rows = await _fetch_bounded_lookup_rows(
+        conn,
         """
         WITH scope_overlap AS MATERIALIZED (
           SELECT mse.model_id,
@@ -5507,6 +5512,7 @@ async def _focused_direct_scope_scan(
         max(1, int(limit)),
         scope_types,
         scope_ids,
+        label="focused_direct_scope",
     )
     return [
         _FocusedIndexHit(
@@ -5691,7 +5697,7 @@ async def _hybrid_lexical_model_scan(
     table = await conn.fetchval("SELECT to_regclass('public.model_search_documents')")
     if table is None:
         return []
-    rows = await _fetch_hybrid_lexical_fallback_rows(
+    rows = await _fetch_bounded_lookup_rows(
         conn,
         """
         WITH patterns AS (
@@ -5740,6 +5746,7 @@ async def _hybrid_lexical_model_scan(
         max(1, int(limit)),
         patterns,
         max(1, int(per_term_limit)),
+        label="hybrid_lexical",
     )
     ids = [row["id"] for row in rows]
     if not ids:
@@ -5767,7 +5774,7 @@ async def _hybrid_sparse_model_scan(
     table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
     if table is None:
         return []
-    rows = await _fetch_hybrid_lexical_fallback_rows(
+    rows = await _fetch_bounded_lookup_rows(
         conn,
         """
         WITH query_terms AS MATERIALIZED (
@@ -5868,6 +5875,7 @@ async def _hybrid_sparse_model_scan(
         max(1, int(per_term_limit)),
         _hybrid_sparse_strong_single_match_terms(lookup_terms),
         _SPARSE_STRONG_SINGLE_MATCH_MAX_DF,
+        label="hybrid_sparse",
     )
     ids = [row["id"] for row in rows]
     if not ids:
@@ -5932,10 +5940,11 @@ def _hybrid_sparse_lookup_groups(terms: list[str] | tuple[str, ...]) -> list[lis
     return out
 
 
-async def _fetch_hybrid_lexical_fallback_rows(
+async def _fetch_bounded_lookup_rows(
     conn: asyncpg.Connection,
     query: str,
     *args: Any,
+    label: str = "lookup",
 ) -> list[asyncpg.Record]:
     try:
         async with conn.transaction():
@@ -5948,10 +5957,24 @@ async def _fetch_hybrid_lexical_fallback_rows(
         import structlog
 
         structlog.get_logger(__name__).warning(
-            "inquiry.lexical_fallback_statement_timeout",
+            "inquiry.bounded_lookup_statement_timeout",
+            label=label,
             timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
         )
         return []
+
+
+async def _fetch_hybrid_lexical_fallback_rows(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> list[asyncpg.Record]:
+    return await _fetch_bounded_lookup_rows(
+        conn,
+        query,
+        *args,
+        label="hybrid_lexical",
+    )
 
 
 def _merge_hybrid_semantic_lexical_models(

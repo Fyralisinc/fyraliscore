@@ -2246,7 +2246,7 @@ async def _fetch_search_document_matches(
     if microquery_enabled and len(patterns) > 1:
         bounded_patterns = patterns[: max(1, int(microquery_terms))]
         per_term_limit = max(1, int(microquery_per_term_limit))
-        rows = await _fetch_lexical_fallback_rows(
+        rows = await _fetch_bounded_lookup_rows(
             conn,
             """
             WITH patterns AS (
@@ -2296,6 +2296,7 @@ async def _fetch_search_document_matches(
             max(1, int(limit)),
             bounded_patterns,
             per_term_limit,
+            label="search_documents_microquery",
         )
         if rows:
             return rows
@@ -2310,7 +2311,7 @@ async def _fetch_search_document_matches(
     match_expr = " + ".join(count_parts)
     where_expr = " OR ".join(like_checks)
 
-    return await _fetch_lexical_fallback_rows(
+    return await _fetch_bounded_lookup_rows(
         conn,
         f"""
         WITH matching AS MATERIALIZED (
@@ -2337,6 +2338,7 @@ async def _fetch_search_document_matches(
         tenant_id,
         max(1, int(limit)),
         *patterns,
+        label="search_documents_like",
     )
 
 
@@ -2355,7 +2357,7 @@ async def _fetch_sparse_term_matches(
     table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
     if table is None:
         return []
-    return await _fetch_lexical_fallback_rows(
+    return await _fetch_bounded_lookup_rows(
         conn,
         """
         WITH query_terms AS MATERIALIZED (
@@ -2457,13 +2459,15 @@ async def _fetch_sparse_term_matches(
         max(1, int(per_term_limit)),
         _sparse_strong_single_match_terms(lookup_terms),
         _SPARSE_STRONG_SINGLE_MATCH_MAX_DF,
+        label="sparse_terms",
     )
 
 
-async def _fetch_lexical_fallback_rows(
+async def _fetch_bounded_lookup_rows(
     conn: asyncpg.Connection,
     query: str,
     *args: Any,
+    label: str = "lookup",
 ) -> list[asyncpg.Record]:
     try:
         async with conn.transaction():
@@ -2474,10 +2478,24 @@ async def _fetch_lexical_fallback_rows(
             return list(await conn.fetch(query, *args))
     except asyncpg.QueryCanceledError:
         _log.warning(
-            "sage.reader.lexical_fallback_statement_timeout",
+            "sage.reader.bounded_lookup_statement_timeout",
+            label=label,
             timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
         )
         return []
+
+
+async def _fetch_lexical_fallback_rows(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> list[asyncpg.Record]:
+    return await _fetch_bounded_lookup_rows(
+        conn,
+        query,
+        *args,
+        label="lexical_fallback",
+    )
 
 
 def _belief_address_primitives_for(primitive: str) -> tuple[str, ...]:
@@ -2566,7 +2584,8 @@ async def _fetch_belief_address_matches(
     match_expr = " + ".join(count_parts) if count_parts else "0"
     lexical_filter = f"AND ({' OR '.join(like_checks)})" if like_checks else ""
 
-    return list(await conn.fetch(
+    return await _fetch_bounded_lookup_rows(
+        conn,
         f"""
         WITH scored AS MATERIALIZED (
           SELECT mba.model_id,
@@ -2612,7 +2631,8 @@ async def _fetch_belief_address_matches(
         primitive_values,
         bool(patterns),
         *patterns,
-    ))
+        label="belief_address_like",
+    )
 
 
 async def _fetch_belief_address_matches_via_address_fts(
@@ -2628,7 +2648,8 @@ async def _fetch_belief_address_matches_via_address_fts(
     )
     if table is None:
         return []
-    return list(await conn.fetch(
+    return await _fetch_bounded_lookup_rows(
+        conn,
         """
         WITH query AS (
           SELECT to_tsquery('simple', $4) AS tsq
@@ -2683,7 +2704,8 @@ async def _fetch_belief_address_matches_via_address_fts(
         max(1, int(limit)),
         primitive_values,
         query,
-    ))
+        label="belief_address_fts",
+    )
 
 
 async def _fetch_belief_address_matches_via_search_documents(
@@ -2705,7 +2727,8 @@ async def _fetch_belief_address_matches_via_search_documents(
     where_expr = " OR ".join(like_checks)
     lexical_limit = max(int(limit) * 8, 96)
 
-    return list(await conn.fetch(
+    return await _fetch_bounded_lookup_rows(
+        conn,
         f"""
         WITH lexical AS MATERIALIZED (
           SELECT msd.model_id,
@@ -2761,7 +2784,8 @@ async def _fetch_belief_address_matches_via_search_documents(
         primitive_values,
         lexical_limit,
         *patterns,
-    ))
+        label="belief_address_search_documents",
+    )
 
 
 async def _fetch_answerability_index_matches(
@@ -2782,7 +2806,8 @@ async def _fetch_answerability_index_matches(
     table = await conn.fetchval("SELECT to_regclass('public.model_answerability_index')")
     if table is None:
         return []
-    return list(await conn.fetch(
+    return await _fetch_bounded_lookup_rows(
+        conn,
         """
         WITH group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
@@ -2869,7 +2894,8 @@ async def _fetch_answerability_index_matches(
         max(1, int(limit)),
         primitive_values,
         json.dumps(lookup_groups),
-    ))
+        label="answerability_index",
+    )
 
 
 def _lexical_activation(
