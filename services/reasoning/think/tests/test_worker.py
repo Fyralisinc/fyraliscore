@@ -99,6 +99,26 @@ async def _lock_trigger(pool, trigger_id: UUID, worker_id: str) -> None:
         )
 
 
+async def test_worker_config_defaults_are_batch_first(monkeypatch):
+    monkeypatch.delenv("THINK_T1_BATCH_WINDOW_S", raising=False)
+    monkeypatch.delenv("THINK_T1_BATCH_MIN_SIZE", raising=False)
+    monkeypatch.delenv("THINK_T1_BATCH_MAX_SIZE", raising=False)
+    monkeypatch.delenv("THINK_DOWNSTREAM_BATCH_WINDOW_S", raising=False)
+    monkeypatch.delenv("THINK_DOWNSTREAM_BATCH_MIN_SIZE", raising=False)
+    monkeypatch.delenv("THINK_T2_BATCH_MAX_SIZE", raising=False)
+    monkeypatch.delenv("THINK_T4_BATCH_MAX_SIZE", raising=False)
+
+    cfg = WorkerConfig.from_env()
+
+    assert cfg.t1_batch_window_s == 30.0
+    assert cfg.t1_batch_min_size == 20
+    assert cfg.t1_batch_max_size == 30
+    assert cfg.downstream_batch_window_s == 60.0
+    assert cfg.downstream_batch_min_size == 2
+    assert cfg.t2_batch_max_size == 8
+    assert cfg.t4_batch_max_size == 4
+
+
 async def _seed_model(
     pool,
     tenant: UUID,
@@ -209,7 +229,11 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
     # Worker polls but we stub `_dispatch_trigger` so no actual Think runs.
     worker = ThinkWorker(
         fresh_db,
-        config=WorkerConfig(poll_batch=50, tenant_filter=tenant),
+        config=WorkerConfig(
+            poll_batch=50,
+            tenant_filter=tenant,
+            t1_batch_window_s=0.0,
+        ),
     )
     dispatched: list = []
 
@@ -257,6 +281,7 @@ async def test_poll_reclaims_stale_locked_rows(
             worker_id="reclaimer",
             trigger_lock_timeout_s=60,
             tenant_filter=tenant,
+            t1_batch_window_s=0.0,
         ),
     )
     dispatched: list[UUID] = []
@@ -292,6 +317,7 @@ async def test_poll_does_not_overlease_when_in_flight_is_full(
             poll_batch=3,
             worker_id=worker_id,
             tenant_filter=tenant,
+            t1_batch_window_s=0.0,
         ),
     )
     release = asyncio.Event()
@@ -376,6 +402,58 @@ async def test_t1_batch_window_holds_fresh_singletons(
     assert row["locked_by"] is None
     assert row["batch_parent_id"] is None
     assert row["completed_at"] is None
+
+
+async def test_default_worker_config_coalesces_ready_t1_batches(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    del tenant_cleanup
+    obs_ids: list[UUID] = []
+    trig_ids: list[UUID] = []
+    for _ in range(20):
+        obs = await _seed_signal_observation(fresh_db, tenant)
+        trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
+        obs_ids.append(obs)
+        trig_ids.append(trig)
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '31 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            trig_ids,
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="default-batcher",
+            tenant_filter=tenant,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert len(dispatched) == 1
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T1"
+    assert batch["trigger_subkind"] == "event_batch"
+    assert set(batch["payload"]["batch_member_trigger_ids"]) == {
+        str(trig_id) for trig_id in trig_ids
+    }
+    assert set(batch["payload"]["batch_observation_ids"]) == {
+        str(obs_id) for obs_id in obs_ids
+    }
 
 
 async def test_t1_batch_window_holds_fresh_partial_batches(
@@ -592,7 +670,7 @@ async def test_t1_batch_terminal_failure_releases_member_triggers(
     async with fresh_db.acquire() as conn:
         members = await conn.fetch(
             """
-            SELECT id, batch_parent_id, completed_at
+            SELECT id, batch_parent_id, completed_at, payload
             FROM think_trigger_queue
             WHERE id = ANY($1::uuid[])
             """,
@@ -605,6 +683,17 @@ async def test_t1_batch_terminal_failure_releases_member_triggers(
     assert batch_completed is not None
     assert all(row["batch_parent_id"] is None for row in members)
     assert all(row["completed_at"] is None for row in members)
+    # Cost-plan §2.3 C7: released members are stamped with the parent id so
+    # they can never re-batch (the dead-letter unbundle amplifier).
+    for row in members:
+        payload = row["payload"]
+        payload = json.loads(payload) if isinstance(payload, str) else payload
+        assert payload.get("unbatched_from") == str(batch["id"])
+    # The stamp must exclude them from a fresh batch-creation pass.
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            rebatched = await worker._create_t1_batch_rows(conn, available_slots=4)
+    assert rebatched == []
 
 
 async def test_downstream_batch_coalesces_t2_belief_updates(
@@ -1045,9 +1134,11 @@ async def test_two_workers_pick_different_rows(fresh_db, tenant, tenant_cleanup)
 
     w1 = ThinkWorker(fresh_db, config=WorkerConfig(
         poll_batch=2, worker_id="w1", tenant_filter=tenant,
+        t1_batch_window_s=0.0,
     ))
     w2 = ThinkWorker(fresh_db, config=WorkerConfig(
         poll_batch=2, worker_id="w2", tenant_filter=tenant,
+        t1_batch_window_s=0.0,
     ))
 
     async def fake_dispatch_w1(row):

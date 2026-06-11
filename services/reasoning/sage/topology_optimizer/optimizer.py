@@ -1297,9 +1297,23 @@ class TopologyOptimizer:
                 if len(local_ids) >= STRUCTURAL_REFRESH_LOCAL_NODE_LIMIT:
                     break
 
-            ordered_local_ids = sorted(local_ids, key=str)[
+            ordered_local_candidates = sorted(local_ids, key=str)[
                 :STRUCTURAL_REFRESH_LOCAL_NODE_LIMIT
             ]
+            existing_local_ids = await self._existing_model_ids(
+                ordered_local_candidates,
+                conn=c,
+            )
+            missing_model_skips += (
+                len(ordered_local_candidates) - len(existing_local_ids)
+            )
+            if not existing_local_ids:
+                return {
+                    "models_written": 0,
+                    "edges_written": 0,
+                    "missing_model_skips": missing_model_skips,
+                }
+            ordered_local_ids = sorted(existing_local_ids, key=str)
             try:
                 edge_rows = await c.fetch(
                     """

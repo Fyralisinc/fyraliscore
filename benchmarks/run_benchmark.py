@@ -14,6 +14,7 @@ from benchmarks.adapters.longmemeval_v2_adapter import LongMemEvalV2Adapter
 from benchmarks.adapters.memtrack_adapter import MemTrackAdapter
 from benchmarks.adapters.stress10_adapter import Stress10Adapter
 from benchmarks.adapters.toy_adapter import ToyMemoryAdapter
+from benchmarks.adapters.truss_adapter import TrussAdapter
 from benchmarks.fyralis_eval.reporting import write_run_artifacts
 from benchmarks.runners.core import BenchmarkRunConfig, run_benchmark
 
@@ -33,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
             "halumem",
             "memtrack",
             "stress10",
+            "truss",
+            "truss_r1",
+            "truss_r2",
+            "truss_full",
         ],
         help="Benchmark adapter to run.",
     )
@@ -122,6 +127,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Candidate count for fyralis_sage_bm25_seed.",
     )
+    parser.add_argument(
+        "--truss-facts",
+        type=Path,
+        default=Path("benchmarks/truss_signal_derivable_facts.json"),
+        help="Frozen signal-derivable fact checklist for the Truss adapter.",
+    )
     args = parser.parse_args(argv)
 
     if args.benchmark in {"toy", "toy_memory"}:
@@ -167,6 +178,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.data is None:
             parser.error("--data is required for --benchmark memtrack")
         adapter = MemTrackAdapter(args.data, max_cases=args.max_cases)
+        system_name = args.system or "bm25_session"
+        score_answers = args.score_answers
+        answerer_name = args.answerer or ("llm" if score_answers else "extractive")
+    elif args.benchmark in {"truss", "truss_r1", "truss_r2", "truss_full"}:
+        data_path = args.data or Path(".")
+        adapter = TrussAdapter(
+            data_path,
+            include_run1=args.benchmark in {"truss", "truss_r1", "truss_full"},
+            include_run2=args.benchmark in {"truss", "truss_r2", "truss_full"},
+            fact_filter_path=args.truss_facts,
+            max_cases=args.max_cases,
+            tenant_id=(
+                "truss_company_replay_run2_only"
+                if args.benchmark == "truss_r2"
+                else "truss_company_replay"
+            ),
+        )
         system_name = args.system or "bm25_session"
         score_answers = args.score_answers
         answerer_name = args.answerer or ("llm" if score_answers else "extractive")

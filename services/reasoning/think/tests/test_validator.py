@@ -350,6 +350,41 @@ async def test_validate_repairs_non_situation_wrong_abstraction_level(fresh_db, 
     assert prop["abstraction_level"] == "atomic"
 
 
+async def test_validate_repairs_hypothesis_assertion_alias(fresh_db, tenant):
+    """Providers sometimes express a hypothesis body as assertion text."""
+    rr = _retrieval_result(tenant)
+    assertion = "A bounded off-sensor transition likely occurred before confirmation."
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(uuid7()),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "hypothesis",
+                        "abstraction_level": "atomic",
+                        "assertion": assertion,
+                    },
+                    "natural": assertion,
+                    "embedding": [0.0] * 768,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.58,
+                    "confidence_at_assertion": 0.58,
+                }),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    prop = validated.claim_ops[0].entry["proposition"]
+    assert prop["claim_role"] == "hypothesis"
+    assert prop["hypothesis_text"] == assertion
+
+
 async def test_validate_marks_empty_situation_members_pending(fresh_db, tenant):
     """
     Sparse retrieval can leave a live LLM with no existing Model ids to

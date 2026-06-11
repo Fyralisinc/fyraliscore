@@ -157,7 +157,7 @@ The Think worker (`scripts/run_think_worker.py`) drains `think_trigger_queue`; t
 | HTTP/WS gateway | **FastAPI on :8000** | `services/app/gateway/main.py`; WS `/stream`, webhooks, OAuth callbacks |
 | Substrate / queues / cache | **PostgreSQL 16 + pgvector** | `pgvector/pgvector:pg16`; holds observations, models, `think_trigger_queue`, `view_ceo_cache` |
 | Embeddings | **Ollama (`nomic-embed-text`)** | 768-d vectors; `lib/embeddings/ollama.py` (`EMBEDDING_DIM = 768`), `VECTOR(768)` columns |
-| Reasoning / rendering LLM | **External providers** | `LLM_PROVIDER` ∈ `anthropic` / `openai` / `deepseek` / `codex` (`lib/llm/provider.py`); README setup defaults to `deepseek` |
+| Reasoning / rendering LLM | **Codex** | App path uses `LLM_PROVIDER=codex`; Think main uses `CODEX_MODEL` / `CODEX_REASONING_EFFORT`, while inquiry question planning uses `INQUIRY_CODEX_QUESTION_MODEL` |
 | Ingestion lanes | **Kafka (KRaft)** | per-source topic quad (raw / normalized / embedding / dlq); full-pipeline mode only |
 | Raw tier | **S3 / MinIO** | bucket `fyralis-raw` (`S3_RAW_BUCKET`) |
 | Rate limiter | **Redis** | backs the embedding-backlog drainer (Lua EVALSHA) |
@@ -205,7 +205,7 @@ graph TD
     S3["S3 / MinIO<br/>raw tier"]
     REDIS[("Redis<br/>rate limiter")]
     OLLAMA["Ollama<br/>embeddings (768-d)"]
-    LLM["LLM providers<br/>Anthropic · OpenAI · DeepSeek"]
+    LLM["Codex LLM<br/>Think + question planning"]
 
     SRC -->|"webhooks / OAuth / polling"| GW
     UI -->|"HTTP /api, WS /stream"| GW
@@ -851,7 +851,7 @@ None of the `services/workers/*` packages ship a `__main__.py`; the undeployed o
 | Package | Key modules | Role |
 |---|---|---|
 | `lib.shared` | `db.py`, `ids.py`, `errors.py`, `types.py`, `memory_grammar.py`, `edge_registry.py`, `claim_role_registry.py`, `trust.py`, `tenant_context.py`, `env.py`, `migrations.py`, `secrets/` | asyncpg pool + savepoint transactions + typed row hydration; `uuid7` + tenant ContextVar; `CompanyOSError` hierarchy; `*Row` schema-mirror models; Model epistemic grammar / edge / claim-role registries; 7-tier `TrustTier`; RLS `app.current_tenant` binding; Fernet `SecretStore`. |
-| `lib.llm` | `provider.py` (~2000 lines) | One `LLMProvider.structured(system, user, schema)` surface returning a validated Pydantic instance with retry/JSON-repair. Providers: Anthropic, OpenAI, DeepSeek, Codex; adds pricing, timeouts, error classification, circuit-breaker routing, usage aggregation, optional response cache. |
+| `lib.llm` | `provider.py` (~2000 lines) | One `LLMProvider.structured(system, user, schema)` surface returning a validated Pydantic instance with retry/JSON-repair. The app path is Codex-only; compatibility providers remain for tests/harnesses. Adds pricing, timeouts, error classification, circuit-breaker routing, usage aggregation, optional response cache. |
 | `lib.embeddings` | `base.py` (`Embedder` Protocol), `factory.py` (`make_embedder()`), `ollama.py`, `openai_backend.py` | Backend-agnostic embedder; Ollama `nomic-embed-text` (default) or OpenAI `text-embedding-3-small`, both pinned to 768-d (matches `VECTOR(768)`). |
 | `lib.integrations` | `endpoints.py` | Single outbound base-URL resolver (per-source env > spammer host > prod default). |
 | `lib.nexus` | `client.py` | Attestation **stub**, no service importers. |
@@ -1266,9 +1266,9 @@ A new engineer goes from clone to a running backend stack (gateway on `:8000`) b
 # 1. Clone + configure
 git clone <repo-url> fyraliscore && cd fyraliscore
 cp .env.example .env
-#    Edit .env: set DEEPSEEK_API_KEY (default LLM_PROVIDER=deepseek).
-#    For another provider set LLM_PROVIDER=anthropic|openai|codex and the
-#    matching ANTHROPIC_API_KEY / OPENAI_API_KEY / CODEX_API_KEY (or LLM_API_KEY).
+#    Edit .env: set LLM_PROVIDER=codex and CODEX_API_KEY.
+#    Think main uses CODEX_MODEL / CODEX_REASONING_EFFORT; question planning
+#    uses INQUIRY_CODEX_QUESTION_MODEL.
 #    Optional .env.dogfood overlay is sourced LAST by dogfood_up.sh (its values win).
 
 # 2. Start infra (Postgres + Ollama only)
@@ -1318,7 +1318,7 @@ flowchart LR
   pc --> pg
   ts --> pg
   ui -. "HTTP /api · WS /stream" .-> gw
-  tw -->|build_provider| llm["LLM provider<br/>(deepseek/…)"]
+  tw -->|build_provider| llm["Codex provider<br/>Think main"]
 ```
 
 ### Running components individually
@@ -1401,7 +1401,7 @@ flowchart LR
 
 | Script | What it does |
 | --- | --- |
-| `scripts/dogfood_up.sh` | Sources `.env` then `.env.dogfood` (overrides win); validates the LLM provider key for `LLM_PROVIDER` (deepseek/openai/anthropic/codex); runs `pg_isready` and `curl $OLLAMA_URL/api/tags`; checks `.venv` exists; truncates the backend logs; launches the backend processes; then polls `GET /healthz` for up to 30s |
+| `scripts/dogfood_up.sh` | Sources `.env` then `.env.dogfood` (overrides win); validates Codex LLM auth for `LLM_PROVIDER=codex`; runs `pg_isready` and `curl $OLLAMA_URL/api/tags`; checks `.venv` exists; truncates the backend logs; launches the backend processes; then polls `GET /healthz` for up to 30s |
 | `scripts/dogfood_down.sh` | Reads `/tmp/company_os_dogfood.pids`, sends `kill -TERM` to each process group (then `-KILL` after 2s), and removes the PID files |
 | `scripts/dogfood_logs.sh` | Tails all five logs (uses `multitail` if present, else prefixed `tail -f`) |
 | `scripts/dogfood_inspect.sh` | One-shot SQL dump of the dogfood tenant: observation/model/commitment/goal counts, recent Think runs, LLM render costs, view-cache age, top active models |
@@ -1416,7 +1416,7 @@ flowchart LR
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `ERROR: .env not found` | No `.env` file (dogfood needs it for LLM creds) | `cp .env.example .env`; set the key for your `LLM_PROVIDER` (`DEEPSEEK_API_KEY` by default, or `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`CODEX_API_KEY`). For Codex, either set a key or `codex login` so `~/.codex/auth.json` exists |
+| `ERROR: .env not found` | No `.env` file (dogfood needs LLM creds) | `cp .env.example .env`; set `LLM_PROVIDER=codex` and `CODEX_API_KEY`, or run `codex login` so `~/.codex/auth.json` exists |
 | `ERROR: Postgres not running` | DB container down (script runs `pg_isready`) | `docker compose up -d postgres` and wait for the `healthy` status |
 | Port `5432` already in use | A host Postgres is bound to 5432 | Stop it (`brew services stop postgresql`) or change the port in `docker-compose.yml` **and** `DATABASE_URL` |
 | `ERROR: Ollama not reachable at http://localhost:11434` | Ollama still cold-starting / model not pulled | Wait ~30s on first run (it pulls `nomic-embed-text`); check `docker compose logs ollama`; manual pull: `docker compose exec ollama ollama pull nomic-embed-text` |
@@ -1447,7 +1447,7 @@ The conventions that keep this codebase navigable at scale live in `CONTRIBUTING
 
 - **Ruff** — the CI ruleset is run inline (no `[tool.ruff]` block): `ruff check --select E9,F63,F7,F82,F821,F811,F401 .` (syntax errors, undefined/redefined names, unused imports).
 - **Type hints** everywhere; modules open with `from __future__ import annotations`.
-- **Structured-output LLM pattern** — the model never emits free text that code then parses. `lib/llm/provider.py` coerces output through JSON schemas (tool-calling / `response_format`); for DeepSeek it uses **strict tool-calling mode** (`/beta`, `strict: True`) with hand-built strict schemas in `services/reasoning/think/strict_schema.py` (a constrained subset of `RawDiff`). Strict mode makes parse errors rare; one repair retry is the fallback.
+- **Structured-output LLM pattern** — the model never emits free text that code then parses. `lib/llm/provider.py` coerces output through JSON schemas (`response_format` / provider-native structured outputs where available). The production path uses Codex, so schemas are treated as enforced contracts by validation even when the transport treats them as hints; one repair retry is the fallback.
 - **`repo.py` system-of-record pattern** — DB access for a package lives in `repo.py` exposing a `*Repo` class on the shared `lib.shared.db` pool (e.g. `services/domain/models/repo.py` `ModelsRepo`, `services/domain/observations/repo.py` `ObservationRepository`). Repos own their table's invariants: dedup, post-commit `NOTIFY` (via `schedule_notify` / `notify_scope`), immutable-column rules (e.g. `confidence_at_assertion` written once at INSERT, never UPDATEd), and generated columns never appearing in INSERT lists. No mocks — tests run against real Postgres.
 
 ### Documentation conventions

@@ -215,3 +215,98 @@ forbidden_modules = [
 # CODEBASE-MANAGEMENT.md, so enforcing transitively here would be a red gate
 # for a pre-existing condition rather than a guard against new regressions.
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "domain does not add new imports of reasoning internals"
+type = "forbidden"
+source_modules = ["services.domain"]
+forbidden_modules = ["services.reasoning"]
+# Ratchet contract from ARCHITECTURE-REPAIR-PLAN D2/D5: these are the
+# currently-known upward edges. New domain -> reasoning imports fail CI; repair
+# moves delete allowlist rows as ModelsRepo side effects are inverted.
+ignore_imports = [
+    "services.domain.models.constructor -> services.reasoning.synthesis.operational_facets",
+    "services.domain.models.edges_repo -> services.reasoning.relationships.ontology_runtime",
+    "services.domain.models.repo -> services.reasoning.sage.affordances.policy",
+    "services.domain.models.repo -> services.reasoning.think.audit",
+    "services.domain.models.repo -> services.reasoning.topology",
+    "services.domain.models.repo -> services.reasoning.topology.anchor",
+    "services.domain.models.tests.test_batch -> services.reasoning.retrieval.config",
+    "services.domain.models.tests.test_batch -> services.reasoning.retrieval.primary",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.relationships.candidates",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.applier",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.diff_schema",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.quality_gate",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.splitter",
+    "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.tests.conftest",
+    "services.domain.models.tests.test_operational_memory_stress -> services.reasoning.synthesis.operational_facets",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain does not add new imports of product code"
+type = "forbidden"
+source_modules = ["services.domain"]
+forbidden_modules = ["services.product"]
+# Ratchet for ARCHITECTURE-REPAIR-PLAN D2: the auto-accept loop in ModelsRepo is
+# tracked debt, not a pattern to extend.
+ignore_imports = [
+    "services.domain.models.repo -> services.product.recommendations.handlers",
+]
+
+[[tool.importlinter.contracts]]
+name = "ingest does not add new imports of app code"
+type = "forbidden"
+source_modules = ["services.ingest"]
+forbidden_modules = ["services.app"]
+# Existing app-coupled integration tests and synthetic live drivers are
+# allowlisted so the contract catches new ingestion runtime dependencies on the
+# gateway/webhook layer without a broad rewrite first.
+ignore_imports = [
+    "services.ingest.ingestion.planners.tests.test_slack_dm -> services.app.gateway.slack_router",
+    "services.ingest.ingestion.tests.conftest -> services.app.gateway.db_bootstrap",
+    "services.ingest.integrations.discord.gateway.dispatch -> services.app.webhooks.tenant_resolver",
+    "services.ingest.integrations.discord.gateway.tests.conftest -> services.app.webhooks.tenant_resolver",
+    "services.ingest.integrations.github.gateway_wiring -> services.app.gateway.logging_config",
+    "services.ingest.integrations.gmail.tests.test_e2e_mock -> services.app.gateway.db_bootstrap",
+    "services.ingest.integrations.gmail.tests.test_oidc_verify -> services.app.webhooks.signatures.google_oidc",
+    "services.ingest.integrations.gmail.tests.test_pubsub_shadow -> services.app.webhooks.gmail_pubsub",
+    "services.ingest.integrations.tests.conftest -> services.app.gateway.main",
+    "services.ingest.integrations.tests.conftest -> services.app.gateway.rate_limit",
+    "services.ingest.integrations.tests.test_google_push_channels -> services.app.webhooks.google_push",
+    "services.ingest.integrations.tests.test_ingest_discord -> services.app.gateway.main",
+    "services.ingest.integrations.tests.test_ingest_discord -> services.app.gateway.rate_limit",
+    "services.ingest.integrations.tests.test_ingest_discord -> services.app.webhooks.tests.conftest",
+    "services.ingest.integrations.tests.test_uninstall -> services.app.gateway.main",
+    "services.ingest.integrations.tests.test_uninstall -> services.app.gateway.rate_limit",
+    "services.ingest.integrations.tests.test_uninstall -> services.app.webhooks.tests.conftest",
+    "services.ingest.integrations.tests.test_uninstall_discord -> services.app.gateway.main",
+    "services.ingest.integrations.tests.test_uninstall_discord -> services.app.gateway.rate_limit",
+    "services.ingest.integrations.tests.test_uninstall_discord -> services.app.webhooks.tests.conftest",
+    "services.ingest.synthetic.live_generators.tests.test_discord_gateway -> services.app.webhooks.tenant_resolver",
+    "services.ingest.synthetic.live_generators.tests.test_github_webhook -> services.app.gateway.main",
+    "services.ingest.synthetic.live_generators.tests.test_github_webhook -> services.app.gateway.rate_limit",
+    "services.ingest.synthetic.live_generators.gmail_pubsub -> services.app.webhooks.gmail_pubsub",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.ashby",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.brex",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.deel",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.figma",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.fireflies",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.grafana",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.gusto",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.hibob",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.jira",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.mercury",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.miro",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.quickbooks",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.ramp",
+    "services.ingest.synthetic.live_generators.tests.test_gmail_pubsub -> services.app.webhooks.gmail_pubsub",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.tenant_resolver",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.verifier",
+    "services.ingest.synthetic.live_generators.tests.test_slack_webhook -> services.app.gateway.main",
+    "services.ingest.synthetic.live_generators.tests.test_slack_webhook -> services.app.gateway.rate_limit",
+    "services.ingest.synthetic.validation_runs.composition -> services.app.gateway.main",
+    "services.ingest.synthetic.validation_runs.composition -> services.app.gateway.rate_limit",
+    "services.ingest.synthetic.validation_runs.composition -> services.app.webhooks.gmail_pubsub",
+    "services.ingest.synthetic.validation_runs.composition -> services.app.webhooks.google_push",
+    "services.ingest.synthetic.validation_runs.composition -> services.app.webhooks.tenant_resolver",
+]

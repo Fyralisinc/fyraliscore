@@ -192,19 +192,21 @@ class BM25MemoryReader:
         self.k1 = k1
         self.b = b
         self.min_score_ratio = min_score_ratio
+        self._index_by_tenant: dict[str, _BM25TenantIndex] = {}
 
     def retrieve(self, query: BenchmarkQuery) -> tuple[list[RetrievedEvidence], int, int]:
         started = time.monotonic()
-        observations = self.store.observations_for_tenant(query.tenant_id)
-        doc_counts = [token_counts(observation.content) for observation in observations]
-        doc_lengths = [sum(counts.values()) for counts in doc_counts]
-        avg_doc_length = (sum(doc_lengths) / len(doc_lengths)) if doc_lengths else 0.0
+        index = self._index_for_tenant(query.tenant_id)
         query_terms = token_counts(query.query_text)
-        doc_freqs = _document_frequencies(doc_counts, query_terms)
 
         rows: list[tuple[float, BenchmarkObservation]] = []
-        total_docs = len(observations)
-        for observation, counts, doc_length in zip(observations, doc_counts, doc_lengths):
+        total_docs = len(index.observations)
+        for observation, counts, doc_length in zip(
+            index.observations,
+            index.doc_counts,
+            index.doc_lengths,
+            strict=False,
+        ):
             score = 0.0
             for term, query_count in query_terms.items():
                 term_frequency = counts.get(term, 0)
@@ -212,10 +214,10 @@ class BM25MemoryReader:
                     continue
                 score += query_count * _bm25_term_score(
                     term_frequency=term_frequency,
-                    doc_frequency=doc_freqs.get(term, 0),
+                    doc_frequency=index.doc_freqs.get(term, 0),
                     total_docs=total_docs,
                     doc_length=doc_length,
-                    avg_doc_length=avg_doc_length,
+                    avg_doc_length=index.avg_doc_length,
                     k1=self.k1,
                     b=self.b,
                 )
@@ -248,6 +250,37 @@ class BM25MemoryReader:
         ]
         elapsed_ms = max(0, math.ceil((time.monotonic() - started) * 1000))
         return evidence, elapsed_ms, 1
+
+    def _index_for_tenant(self, tenant_id: str) -> "_BM25TenantIndex":
+        cached = self._index_by_tenant.get(tenant_id)
+        if cached is not None:
+            return cached
+        observations = self.store.observations_for_tenant(tenant_id)
+        doc_counts = [token_counts(observation.content) for observation in observations]
+        doc_lengths = [sum(counts.values()) for counts in doc_counts]
+        avg_doc_length = (sum(doc_lengths) / len(doc_lengths)) if doc_lengths else 0.0
+        doc_freqs: Counter[str] = Counter()
+        for counts in doc_counts:
+            for term in counts:
+                doc_freqs[term] += 1
+        index = _BM25TenantIndex(
+            observations=observations,
+            doc_counts=doc_counts,
+            doc_lengths=doc_lengths,
+            avg_doc_length=avg_doc_length,
+            doc_freqs=doc_freqs,
+        )
+        self._index_by_tenant[tenant_id] = index
+        return index
+
+
+@dataclass(frozen=True)
+class _BM25TenantIndex:
+    observations: list[BenchmarkObservation]
+    doc_counts: list[Counter[str]]
+    doc_lengths: list[int]
+    avg_doc_length: float
+    doc_freqs: Counter[str]
 
 
 def _phrase_score(query_text: str, content: str) -> float:

@@ -162,6 +162,15 @@ async def run_think_until_drain(
             cfg.trigger_max_attempts,
         )
     )
+    # Durability flow is a sparse single-signal harness. Keep production
+    # batch-first defaults in WorkerConfig, but let this harness drain singles
+    # immediately unless explicitly asked to exercise batching.
+    cfg.t1_batch_window_s = float(
+        os.environ.get("DURABILITY_T1_BATCH_WINDOW_S", 0.0)
+    )
+    cfg.downstream_batch_window_s = float(
+        os.environ.get("DURABILITY_DOWNSTREAM_BATCH_WINDOW_S", 0.0)
+    )
     worker = ThinkWorker(pool=pool, config=cfg, llm_provider=provider)
 
     async def _noop_promote() -> None:

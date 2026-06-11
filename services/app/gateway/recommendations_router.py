@@ -566,6 +566,9 @@ def _serialize_recommendation(view: Any) -> dict[str, Any]:
         "created_at": view.created_at.isoformat(),
         "scope_entities": view.scope_entities,
         "rank_score": view.rank_score,
+        "feedback_adjustment": getattr(view, "feedback_adjustment", 1.0),
+        "feedback_pattern_key": getattr(view, "feedback_pattern_key", None),
+        "consequence_preview": getattr(view, "consequence_preview", None),
         "claim_role": getattr(view, "claim_role", None),
         "is_system_hypothesis": bool(
             getattr(view, "is_system_hypothesis", False)

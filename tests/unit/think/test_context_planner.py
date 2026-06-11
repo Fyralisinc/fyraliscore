@@ -43,7 +43,7 @@ def test_retrieval_question_planning_provider_gates_custom_doubles(monkeypatch):
     )
     assert (
         context_planner.retrieval_question_planning_provider(production_like)
-        is production_like
+        is None
     )
 
     monkeypatch.setenv("INQUIRY_ALLOW_CUSTOM_LLM_QUESTION_PROVIDER", "1")
@@ -67,11 +67,6 @@ def test_retrieval_question_planning_provider_routes_codex_to_spark_low_effort(
         "_QUESTION_PLANNING_PROVIDER_CACHE_KEY",
         None,
     )
-    monkeypatch.delenv(
-        "INQUIRY_CODEX_LOW_EFFORT_QUESTION_PLANNING",
-        raising=False,
-    )
-
     codex = CodexProvider(
         LLMConfig(
             provider="codex",
@@ -124,8 +119,14 @@ def test_retrieval_question_planning_provider_respects_codex_model_override(
     assert provider.config.reasoning_effort == "low"
 
 
-def test_retrieval_question_planning_provider_can_disable_low_effort(monkeypatch):
-    monkeypatch.setenv("INQUIRY_CODEX_LOW_EFFORT_QUESTION_PLANNING", "0")
+def test_retrieval_question_planning_provider_rejects_non_codex_provider():
+    provider = _ProductionLikeProvider()
+    provider.config = SimpleNamespace(provider="deepseek")
+
+    assert context_planner.retrieval_question_planning_provider(provider) is None
+
+
+def test_retrieval_question_planning_provider_always_uses_low_effort_codex():
     codex = CodexProvider(
         LLMConfig(
             provider="codex",
@@ -135,7 +136,12 @@ def test_retrieval_question_planning_provider_can_disable_low_effort(monkeypatch
         )
     )
 
-    assert context_planner.retrieval_question_planning_provider(codex) is codex
+    provider = context_planner.retrieval_question_planning_provider(codex)
+
+    assert isinstance(provider, CodexProvider)
+    assert provider is not codex
+    assert provider.config.provider == "codex"
+    assert provider.config.reasoning_effort == "low"
 
 
 @pytest.mark.asyncio
@@ -255,11 +261,18 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
                 ]
             raise AssertionError(query)
 
-    async def fake_assemble_context(retrieval_result_arg, access, conn):
+    async def fake_assemble_context(
+        retrieval_result_arg,
+        access,
+        conn,
+        *,
+        config=None,
+    ):
         assert retrieval_result_arg is retrieval_result
         assert isinstance(access, AccessContext)
         assert access.tenant_id == trigger.tenant_id
         assert isinstance(conn, FakeConn)
+        assert config is not None
         return bundle
 
     async def fake_load_actor_operating_context(*args, **kwargs):
@@ -281,6 +294,26 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
         context_planner,
         "summarize_actor_operating_context",
         lambda contexts: "actor-summary",
+    )
+
+    async def fake_augment_context(*, conn, trigger, bundle, allowed_region):
+        commitments = await conn.fetch("FROM commitments", trigger.tenant_id)
+        decisions = await conn.fetch("FROM decisions", trigger.tenant_id)
+        bundle.acts_summary["commitments"] = [
+            SimpleNamespace(title=row["title"]) for row in commitments
+        ]
+        bundle.acts_summary["decisions"] = [
+            SimpleNamespace(title=row["title"]) for row in decisions
+        ]
+        return sorted(
+            set(allowed_region)
+            | {("commitment", str(commitment_id)), ("decision", str(decision_id))}
+        )
+
+    monkeypatch.setattr(
+        context_planner,
+        "augment_context",
+        fake_augment_context,
     )
 
     reasoning_context = await context_planner.assemble_reasoning_context(

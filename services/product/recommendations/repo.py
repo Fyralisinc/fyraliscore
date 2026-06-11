@@ -24,6 +24,13 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import CompanyOSError
+from services.product.recommendations.consequence_preview import (
+    build_consequence_preview,
+)
+from services.product.recommendations.feedback import (
+    pattern_key_for_proposition,
+    ranking_multiplier,
+)
 
 
 # ---------------------------------------------------------------------
@@ -71,6 +78,9 @@ class RecommendationView:
     scope_entities: list[dict[str, Any]]
     target_entity: TargetEntitySummary | None
     rank_score: float           # impact * confidence; ties broken on created_at DESC
+    feedback_adjustment: float = 1.0
+    feedback_pattern_key: str | None = None
+    consequence_preview: dict[str, Any] | None = None
     proposition_kind: str | None = None
     claim_role: str | None = None
     # Hypothesis-specific surface (None for recommendation rows).
@@ -159,7 +169,9 @@ async def list_for_actor(
     Act is gone, even if the recommendation Model itself hasn't been
     archived yet (background workers will catch up).
     """
-    rows = await conn.fetch(_LIST_SQL, tenant_id, target_actor_id, max(int(limit), 1))
+    requested_limit = max(int(limit), 1)
+    fetch_limit = max(requested_limit, requested_limit * 4)
+    rows = await conn.fetch(_LIST_SQL, tenant_id, target_actor_id, fetch_limit)
     if not rows:
         return []
 
@@ -224,6 +236,25 @@ async def list_for_actor(
                 archived=er["archived_at"] is not None,
             )
 
+    pattern_keys = {
+        pattern_key_for_proposition(proposition)
+        for _r, proposition, _ref in parsed
+    }
+    feedback_rows = await conn.fetch(
+        """
+        SELECT pattern_key, acted_count, dismissed_count,
+               last_acted_at, last_dismissed_at
+        FROM recommendation_feedback_stats
+        WHERE tenant_id = $1
+          AND target_actor_id = $2
+          AND pattern_key = ANY($3::text[])
+        """,
+        tenant_id,
+        target_actor_id,
+        list(pattern_keys),
+    ) if pattern_keys else []
+    feedback_by_key = {row["pattern_key"]: row for row in feedback_rows}
+
     out: list[RecommendationView] = []
     for r, proposition, ref in parsed:
         if ref is not None:
@@ -246,7 +277,20 @@ async def list_for_actor(
             ei: float | None = float(ei_raw) if ei_raw is not None else None
         except (TypeError, ValueError):
             ei = None
-        rank_score = (ei if ei is not None else 0.0) * float(r["confidence"])
+        base_rank_score = (ei if ei is not None else 0.0) * float(r["confidence"])
+        pattern_key = pattern_key_for_proposition(proposition)
+        stats = feedback_by_key.get(pattern_key)
+        feedback_adjustment = (
+            ranking_multiplier(
+                acted_count=int(stats["acted_count"] or 0),
+                dismissed_count=int(stats["dismissed_count"] or 0),
+                last_acted_at=stats["last_acted_at"],
+                last_dismissed_at=stats["last_dismissed_at"],
+            )
+            if stats is not None
+            else 1.0
+        )
+        rank_score = base_rank_score * feedback_adjustment
 
         claim_role = r["claim_role"]
         is_system_hypothesis = bool(proposition.get("is_system_hypothesis"))
@@ -270,6 +314,18 @@ async def list_for_actor(
                 scope_entities=_coerce_jsonb_list(r["scope_entities"]),
                 target_entity=target,
                 rank_score=rank_score,
+                feedback_adjustment=feedback_adjustment,
+                feedback_pattern_key=pattern_key,
+                consequence_preview=(
+                    await build_consequence_preview(
+                        conn,
+                        tenant_id=tenant_id,
+                        target_act_ref=target_act_ref_out,
+                        proposed_change=proposition.get("proposed_change") or {},
+                    )
+                    if claim_role == "recommendation"
+                    else None
+                ),
                 proposition_kind=r["proposition_kind"],
                 claim_role=claim_role,
                 is_system_hypothesis=is_system_hypothesis,
@@ -277,7 +333,8 @@ async def list_for_actor(
             )
         )
 
-    return out
+    out.sort(key=lambda item: (item.rank_score, item.created_at), reverse=True)
+    return out[:requested_limit]
 
 
 # ---------------------------------------------------------------------

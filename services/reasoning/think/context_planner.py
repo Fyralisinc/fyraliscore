@@ -9,7 +9,7 @@ intentionally mutation-light; validation/apply/cascade stay in
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
@@ -51,6 +51,8 @@ from .region_locks import touched_entity_ids
 
 _log = structlog.get_logger(__name__)
 _diag_log = structlog.get_logger("think.diag")
+_BATCH_CONTEXT_MODEL_BUDGET_DEFAULT = 16
+_BATCH_CONTEXT_HISTORICAL_OBSERVATION_CAP_DEFAULT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +78,11 @@ def retrieval_question_planning_provider(
 ) -> LLMProvider | None:
     """Return the provider allowed for inquiry question planning.
 
-    Production provider objects from ``lib.llm.provider`` are allowed by
-    default, then remapped by the inquiry provider selector when the app-wide
-    provider is Codex. Custom test/double providers opt in explicitly because
-    inquiry question planning can otherwise make unit tests unexpectedly call
-    custom structured-output methods.
+    The production path is Codex-only: a real Codex Think provider is remapped
+    by the inquiry provider selector to the dedicated low-effort Codex planner.
+    Custom test/double providers opt in explicitly because inquiry question
+    planning can otherwise make unit tests unexpectedly call custom
+    structured-output methods.
     """
 
     if llm_provider is None:
@@ -94,8 +96,73 @@ def retrieval_question_planning_provider(
     if isinstance(llm_provider, LLMProvider):
         return select_question_planning_provider(llm_provider)
     if llm_provider.__class__.__module__ == "lib.llm.provider":
-        return llm_provider
+        return select_question_planning_provider(llm_provider)
     return None
+
+
+def _plan_mode_for_trigger(trigger: TriggerContext) -> str:
+    """Cost-plan §2.5: choose the retrieval/planning mode for a trigger.
+
+    Default `deep` (unchanged). `THINK_FAST_PLAN_TRIGGER_KINDS` is a comma-
+    separated allowlist of trigger classes (`kind` or `kind:subkind`) that
+    should use `fast` mode, which the inquiry early-return collapses to a
+    single planning round — cutting the up-to-2 ~900-tok planning calls on
+    low-value triggers. The value policy lives in ops (it needs prod sizing),
+    so by default nothing changes."""
+    fast_kinds = os.environ.get("THINK_FAST_PLAN_TRIGGER_KINDS", "").strip()
+    if not fast_kinds:
+        return "deep"
+    wanted = {part.strip() for part in fast_kinds.split(",") if part.strip()}
+    keys = {trigger.kind}
+    if trigger.subkind:
+        keys.add(f"{trigger.kind}:{trigger.subkind}")
+    return "fast" if keys & wanted else "deep"
+
+
+def _env_int_min(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return max(minimum, default)
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return max(minimum, default)
+
+
+def _is_t1_event_batch(trigger: TriggerContext) -> bool:
+    if trigger.kind != "T1":
+        return False
+    if trigger.subkind == "event_batch":
+        return True
+    seed_signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    return bool(seed_signature.get("batch")) or len(trigger.observation_ids) > 1
+
+
+def _retrieval_config_for_trigger(trigger: TriggerContext):
+    if not _is_t1_event_batch(trigger):
+        return RETRIEVAL_CONFIG
+    model_budget = _env_int_min(
+        "THINK_BATCH_CONTEXT_MODEL_BUDGET",
+        _BATCH_CONTEXT_MODEL_BUDGET_DEFAULT,
+        minimum=1,
+    )
+    historical_observation_cap = _env_int_min(
+        "THINK_BATCH_HISTORICAL_OBSERVATION_CAP",
+        _BATCH_CONTEXT_HISTORICAL_OBSERVATION_CAP_DEFAULT,
+    )
+    return replace(
+        RETRIEVAL_CONFIG,
+        assembler_budget_models=min(
+            RETRIEVAL_CONFIG.assembler_budget_models,
+            model_budget,
+        ),
+        historical_observation_cap=min(
+            RETRIEVAL_CONFIG.historical_observation_cap,
+            historical_observation_cap,
+        ),
+    )
 
 
 async def plan_context(
@@ -118,7 +185,7 @@ async def plan_context(
         conn,
         embedder=embedder,
         llm_provider=retrieval_question_planning_provider(llm_provider),
-        mode="deep",
+        mode=_plan_mode_for_trigger(trigger),
     )
     inquiry_result = (
         active_retrieval
@@ -177,7 +244,12 @@ async def assemble_reasoning_context(
         allowed_region = sorted(set(allowed_region) | set(expanded_region))
 
     access = access_context or AccessContext(tenant_id=trigger.tenant_id)
-    bundle = await assemble_context(retrieval_result, access, conn)
+    bundle = await assemble_context(
+        retrieval_result,
+        access,
+        conn,
+        config=_retrieval_config_for_trigger(trigger),
+    )
     _diag_log.warning(
         "augmentation.entry",
         run_id=str(run_id) if run_id is not None else None,
@@ -345,6 +417,11 @@ async def _attach_dynamic_signals(
                 conn,
                 tenant_id=trigger.tenant_id,
                 signals=dynamic_signals,
+                # Cost-plan §3.2: propagate lineage depth onto emitted T3s.
+                parent_payload=(
+                    trigger.seed_signature
+                    if isinstance(trigger.seed_signature, dict) else None
+                ),
             )
             if emitted:
                 retrieval_result.notes["missing_transition_triggers_emitted"] = [

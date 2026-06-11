@@ -420,6 +420,25 @@ async def test_llm_reason_uses_claims_only_schema_when_edges_are_impossible():
 
     assert "edge_ops" not in provider.calls[0]["schema_hint"]
     assert "This compact pass can only emit" in provider.calls[0]["system"]
+    assert provider.calls[0]["max_tokens"] == 1024
+
+
+async def test_llm_reason_claims_only_output_cap_is_configurable(monkeypatch):
+    monkeypatch.setenv("THINK_CLAIMS_ONLY_MAX_TOKENS", "512")
+    tid = uuid7()
+    trig_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tid,
+        observation_id=trig_id,
+        seed_natural_text="x",
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, ContextBundle(), provider, max_tokens=2048)
+
+    assert provider.calls[0]["max_tokens"] == 512
 
 
 async def test_llm_reason_keeps_edge_schema_when_models_are_available():
@@ -454,6 +473,7 @@ async def test_llm_reason_keeps_edge_schema_when_models_are_available():
 
     assert "edge_ops" in provider.calls[0]["schema_hint"]
     assert "This compact pass can only emit" not in provider.calls[0]["system"]
+    assert provider.calls[0]["max_tokens"] == 2048
 
 
 async def test_llm_reason_keeps_full_schema_when_acts_are_available():

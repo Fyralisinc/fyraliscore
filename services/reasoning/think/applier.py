@@ -97,6 +97,20 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+async def check_already_applied(
+    conn: asyncpg.Connection, trigger_ref: UUID
+) -> str | None:
+    """Cost-plan §2.2: return the prior `applied_triggers.outcome` for a trigger,
+    or None if it has not been applied. Extracted from `apply_diff`'s inline
+    guard so `think()` can short-circuit an already-applied trigger *before*
+    paying for retrieval + LLM reasoning."""
+    row = await conn.fetchrow(
+        "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
+        trigger_ref,
+    )
+    return row["outcome"] if row is not None else None
+
+
 # ---------------------------------------------------------------------
 # Main apply entry point
 # ---------------------------------------------------------------------
@@ -110,6 +124,7 @@ async def apply_diff(
     *,
     models_repo: ModelsRepo | None = None,
     think_run_id: UUID | None = None,
+    parent_cascade_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
@@ -155,15 +170,12 @@ async def apply_diff(
     if _diff_entities:
         await _acquire_region_lock(conn, diff.tenant_id, _diff_entities)
 
-    existing = await conn.fetchrow(
-        "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
-        diff.trigger_ref,
-    )
-    if existing is not None:
+    prior_outcome = await check_already_applied(conn, diff.trigger_ref)
+    if prior_outcome is not None:
         raise AlreadyAppliedError(
             "trigger already applied",
             trigger_id=str(diff.trigger_ref),
-            prior_outcome=existing["outcome"],
+            prior_outcome=prior_outcome,
         )
 
     diff_hash = hash_diff(diff)
@@ -628,6 +640,7 @@ async def apply_diff(
                 tenant_id=diff.tenant_id,
                 model_id=mid,
                 source_observation_id=trigger_cause_event_id,
+                parent_payload=parent_cascade_payload,
             )
 
     # --- 6. Mark applied_triggers success (still in same tx) ------
@@ -2178,8 +2191,26 @@ async def _apply_claim_op(
             k: v for k, v in raw_changes.items()
             if k in _ALLOWED_MODEL_UPDATE_COLUMNS
         }
+        resolution_update_dropped = False
+        resolution_keys = {"resolved_at", "resolution_outcome"} & set(changes)
+        if resolution_keys and resolution_keys != {"resolved_at", "resolution_outcome"}:
+            changes.pop("resolved_at", None)
+            changes.pop("resolution_outcome", None)
+            resolution_update_dropped = True
         if not changes and situation_merge_payload is None:
-            raise ValidationError("apply_claim_op update: no allowed columns")
+            return {
+                "summary": {
+                    "op": "skip",
+                    "reason": (
+                        "inconsistent_resolution_update"
+                        if resolution_update_dropped
+                        else "no_allowed_columns"
+                    ),
+                    "model_id": str(op.model_id),
+                },
+                "model_id": None,
+                "state_changes": 0,
+            }
         emitted = 0
         changed_fields_for_summary = set(changes.keys())
         if "confidence" in changes:
@@ -2238,6 +2269,9 @@ async def _apply_claim_op(
                 ):
                     set_clauses.append(f"{k} = ${i}::uuid[]")
                     params.append(list(v) if isinstance(v, (list, tuple)) else [v])
+                elif k in ("last_confirmed_at", "resolved_at"):
+                    set_clauses.append(f"{k} = ${i}")
+                    params.append(_coerce_dt(v))
                 else:
                     set_clauses.append(f"{k} = ${i}")
                     params.append(v)
@@ -2341,6 +2375,11 @@ async def _apply_claim_op(
                         ],
                     }
                     if situation_merge_summary
+                    else {}
+                ),
+                **(
+                    {"dropped_inconsistent_resolution_update": True}
+                    if resolution_update_dropped
                     else {}
                 ),
             },

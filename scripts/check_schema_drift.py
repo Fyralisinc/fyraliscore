@@ -526,29 +526,6 @@ EXPECTED_TABLES: dict[str, Table] = {
             "model_edges_kind_idx",
         },
     ),
-    "topo_dirty_queue": Table(
-        # 0032_topology_layer.sql — retired S2 propagation queue.
-        # Kept for schema compatibility; active topology now emits
-        # relationship_candidates from services.reasoning.topology.field.
-        columns=dict([
-            _col("id", UUID, False),
-            _col("tenant_id", UUID, False),
-            _col("model_id", UUID, False),
-            _col("cause_model_id", UUID, True),
-            _col("hop_depth", INT, False, default=True),
-            _col("delta_magnitude", FLOAT, True),
-            _col("enqueued_at", TS, False, default=True),
-            _col("processed_at", TS, True),
-            _col("attempts", INT, False, default=True),
-            _col("last_error", TEXT, True),
-        ]),
-        indexes={
-            "topo_dirty_queue_pkey",
-            "topo_dirty_queue_dedup",
-            "topo_dirty_queue_pending_idx",
-            "topo_dirty_queue_model_idx",
-        },
-    ),
     "model_neighborhoods": Table(
         # 0032_topology_layer.sql — retired S2 materialized
         # communities. Kept for map/history compatibility.

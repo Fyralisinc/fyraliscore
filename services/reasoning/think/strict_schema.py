@@ -406,7 +406,14 @@ _EDGE_OP = {
         "explanation": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "review_status": {
             "type": "string",
-            "enum": ["accepted", "candidate", "needs_review", "rejected", "retired"],
+            "enum": [
+                "accepted",
+                "candidate",
+                "needs_review",
+                "disputed",
+                "rejected",
+                "retired",
+            ],
         },
         "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
     },

@@ -208,15 +208,15 @@ async def test_assembler_uses_configured_default_budgets(
     assert len(bundle.resources_summary) <= 2
     assert bundle.notes["budgets"] == {
         "observations": 3,
-        "trigger_observations": 30,
-        "historical_observations": 3,
+        "trigger_observations": 0,
+        "historical_observations": 0,
         "models": 7,
         "acts_total": 4,
         "resources": 2,
     }
 
 
-async def test_assembler_model_first_preserves_trigger_batch_and_caps_history(
+async def test_assembler_model_gap_suppresses_observations_when_models_selected(
     tx_conn, fresh_db, tenant
 ):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
@@ -243,11 +243,53 @@ async def test_assembler_model_first_preserves_trigger_batch_and_caps_history(
         ),
     )
 
+    assert bundle.models
+    assert bundle.observations == []
+    selection = bundle.notes["observation_selection"]
+    assert selection["model_first_context_enabled"] is True
+    assert selection["observation_context_mode"] == "model_gap"
+    assert selection["selected_model_count"] == len(bundle.models)
+    assert selection["suppressed_reason"] == "model_context_sufficient"
+    assert selection["selected_trigger_count"] == 0
+    assert selection["selected_historical_count"] == 0
+    assert selection["dropped_trigger_count"] == len(trigger_ids)
+    assert selection["dropped_historical_count"] == len(historical_ids)
+
+
+async def test_assembler_always_mode_preserves_trigger_batch_and_caps_history(
+    tx_conn, fresh_db, tenant
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    result = await _retrieve(tx_conn, fresh_db, tenant, fs.hero_commitment_id)
+
+    trigger_ids = fs.observation_ids[:6]
+    historical_ids = fs.observation_ids[6:14]
+    result.observations = await _fetch_observation_rows(
+        tx_conn,
+        tenant,
+        [*trigger_ids, *historical_ids],
+    )
+    result.trigger.observation_id = trigger_ids[0]
+    result.trigger.observation_ids = list(trigger_ids)
+
+    bundle = await assemble_context(
+        result,
+        AccessContext(tenant_id=tenant, requestor_actor_id=None),
+        tx_conn,
+        config=RetrievalConfig(
+            assembler_budget_observations=12,
+            observation_context_mode="always",
+            trigger_observation_cap=6,
+            historical_observation_cap=2,
+        ),
+    )
+
     selected_ids = {o.id for o in bundle.observations}
     assert set(trigger_ids).issubset(selected_ids)
     assert len(selected_ids & set(historical_ids)) == 2
     selection = bundle.notes["observation_selection"]
     assert selection["model_first_context_enabled"] is True
+    assert selection["observation_context_mode"] == "always"
     assert selection["selected_trigger_count"] == 6
     assert selection["selected_historical_count"] == 2
     assert selection["dropped_historical_count"] == len(historical_ids) - 2
@@ -275,6 +317,7 @@ async def test_assembler_explicit_observation_budget_remains_hard_total_cap(
         tx_conn,
         budget_observations=5,
         config=RetrievalConfig(
+            observation_context_mode="always",
             trigger_observation_cap=6,
             historical_observation_cap=2,
         ),

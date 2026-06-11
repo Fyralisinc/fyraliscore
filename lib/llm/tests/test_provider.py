@@ -77,12 +77,13 @@ def test_config_from_env_defaults(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
-    assert cfg.provider == "anthropic"
+    assert cfg.provider == "codex"
     assert cfg.api_key == "k"
-    assert cfg.model == "claude-opus-4-7"
-    assert cfg.timeout_s == 60.0
+    assert cfg.model == "gpt-5.5"
+    assert cfg.timeout_s == 180.0
 
 
 def test_config_from_env_openai(monkeypatch):
@@ -101,6 +102,17 @@ def test_config_from_env_openai_prefers_provider_key(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "generic-key")
     cfg = LLMConfig.from_env()
     assert cfg.api_key == "provider-key"
+
+
+def test_config_from_env_reads_max_retries(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    cfg = LLMConfig.from_env()
+
+    assert cfg.max_retries == 0
 
 
 def test_config_from_env_codex_api_key(monkeypatch):

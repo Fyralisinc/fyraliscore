@@ -168,6 +168,97 @@ async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
         assert outcome == "success"
 
 
+async def test_apply_claim_update_coerces_iso_timestamp_fields(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """LLM JSON timestamp strings should not reach asyncpg as raw strings."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    resolved_at = "2026-06-11T10:27:30.575358+00:00"
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="resolved")
+        mid = await _insert_applier_model(conn, tenant, oid, "timestamp model")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=mid,
+                    changes={
+                        "resolved_at": resolved_at,
+                        "resolution_outcome": True,
+                        "last_confirmed_at": resolved_at,
+                    },
+                )
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT resolved_at, resolution_outcome, last_confirmed_at
+            FROM models
+            WHERE id = $1
+            """,
+            mid,
+        )
+
+    assert result["claim_ops"][0]["op"] == "update"
+    assert row["resolved_at"].isoformat() == resolved_at
+    assert row["resolution_outcome"] is True
+    assert row["last_confirmed_at"].isoformat() == resolved_at
+
+
+async def test_apply_claim_update_drops_unpaired_resolution_timestamp(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """A partial resolution update should be skipped instead of failing apply."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="resolved")
+        mid = await _insert_applier_model(conn, tenant, oid, "partial resolution")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=mid,
+                    changes={"resolved_at": "2026-06-11T10:27:30.575358+00:00"},
+                )
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        row = await conn.fetchrow(
+            "SELECT resolved_at, resolution_outcome FROM models WHERE id = $1",
+            mid,
+        )
+
+    assert result["claim_ops"][0]["op"] == "skip"
+    assert result["claim_ops"][0]["reason"] == "inconsistent_resolution_update"
+    assert row["resolved_at"] is None
+    assert row["resolution_outcome"] is None
+
+
 async def test_apply_dedupes_split_situation_members_after_reconcile(
     fresh_db,
     tenant,

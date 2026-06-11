@@ -13,6 +13,7 @@ ops that fail; the retry-at-apply path is a Wave-5 enhancement.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 
 
 _log = structlog.get_logger(__name__)
+_CLAIMS_ONLY_MAX_TOKENS_DEFAULT = 1024
 
 
 class ReasoningFailure(CompanyOSError):
@@ -67,6 +69,7 @@ async def llm_reason(
     already retried internally; if it escapes, we bubble as terminal.
     """
     schema = _select_output_schema(trigger, bundle)
+    effective_max_tokens = _effective_max_tokens(max_tokens, schema)
     pair = build_prompt(
         trigger,
         bundle,
@@ -75,7 +78,28 @@ async def llm_reason(
         reason_for_trigger=reason_for_trigger,
         reasoning_frame=reasoning_frame,
         claims_only=schema is RawDiffClaimsOnly,
+        # Cost-plan §1.2: only lean the shape prose when the provider actually
+        # enforces the schema server-side (DeepSeek strict). The flag itself is
+        # checked inside build_prompt; hint-only providers report False here.
+        lean_output_contract=provider.enforces_output_schema(schema),
     )
+
+    # Cost-plan §2.4: if a prior attempt persisted validator feedback into the
+    # trigger payload, append it so this retry avoids the dropped ops. Only
+    # present when THINK_VALIDATION_MAX_ATTEMPTS drove the worker to persist it.
+    user_message = pair.user
+    feedback = None
+    if isinstance(trigger.seed_signature, dict):
+        raw_feedback = trigger.seed_signature.get("validation_feedback")
+        if isinstance(raw_feedback, str) and raw_feedback.strip():
+            feedback = raw_feedback.strip()
+    if feedback:
+        user_message = (
+            f"{pair.user}\n\n<prior_validation_feedback>\n"
+            "A previous attempt at this trigger had operations dropped by the "
+            "validator. Correct these and do not re-introduce them:\n"
+            f"{feedback}\n</prior_validation_feedback>"
+        )
 
     last_err: Exception | None = None
     started = time.monotonic()
@@ -84,10 +108,10 @@ async def llm_reason(
         try:
             diff_like = await provider.structured(
                 system=pair.system,
-                user=pair.user,
+                user=user_message,
                 schema=schema,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
             diff = _coerce_raw_diff(diff_like)
             elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -141,6 +165,30 @@ def _select_output_schema(
     if not bundle.models and not _has_acts(bundle) and not bundle.resources_summary:
         return RawDiffClaimsOnly
     return RawDiff
+
+
+def _effective_max_tokens(
+    max_tokens: int,
+    schema: type[RawDiff] | type[RawDiffClaimsOnly],
+) -> int:
+    if schema is not RawDiffClaimsOnly:
+        return max_tokens
+    cap = _env_int(
+        "THINK_CLAIMS_ONLY_MAX_TOKENS",
+        _CLAIMS_ONLY_MAX_TOKENS_DEFAULT,
+        minimum=256,
+    )
+    return min(max_tokens, cap)
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
 
 
 def _has_graph_anchor_models(bundle: ContextBundle) -> bool:

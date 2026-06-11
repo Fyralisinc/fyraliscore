@@ -1,4 +1,5 @@
 """Real-LLM test fixtures: provider, response cache, repos, embedder, scenarios."""
+# ruff: noqa: E402
 from __future__ import annotations
 
 import os
@@ -164,6 +165,15 @@ async def think_worker(
             "REAL_LLM_TRIGGER_MAX_ATTEMPTS",
             cfg.trigger_max_attempts,
         )
+    )
+    # Most real-LLM tests inject sparse single signals and assert within a short
+    # timeout. Production defaults are batch-first; this fixture opts out so
+    # those tests keep exercising the single-signal path directly.
+    cfg.t1_batch_window_s = float(
+        os.environ.get("REAL_LLM_T1_BATCH_WINDOW_S", 0.0)
+    )
+    cfg.downstream_batch_window_s = float(
+        os.environ.get("REAL_LLM_DOWNSTREAM_BATCH_WINDOW_S", 0.0)
     )
     worker = ThinkWorker(pool=fresh_db, config=cfg, llm_provider=provider)
 

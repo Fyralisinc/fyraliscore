@@ -11,6 +11,7 @@ doesn't need to know whether we're in mock or live mode.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -18,11 +19,15 @@ from uuid import uuid4
 
 import httpx
 
+from lib.shared.env import is_prod
 from services.product.greeting.snapshot import (
     FounderContext,
     QueryGridSnapshot,
     SubstrateSnapshot,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 # =====================================================================
@@ -1001,6 +1006,13 @@ def build_rendering_adapter() -> RenderingAdapter:
     import os as _os
     base = _os.environ.get("GRT_RENDERING_BASE_URL")
     if not base:
+        message = (
+            "GRT_RENDERING_BASE_URL is unset; greeting rendering is using "
+            "MockRenderingAdapter"
+        )
+        if is_prod():
+            raise RuntimeError(message)
+        log.warning(message)
         return MockRenderingAdapter()
     return HttpRenderingAdapter(base)
 

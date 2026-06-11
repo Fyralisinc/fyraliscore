@@ -283,8 +283,9 @@ class SnapshotComposer:
                         to the Models / Resources in their `region`.
           decision    — active Commitments in 'blocked' or on
                         critical-path with deadline pressure.
-          question    — Models whose `confidence_at_assertion - confidence`
-                        gap is large and unresolved (unexplained drift).
+          question    — genuine epistemic events: contested Models,
+                        overdue/unresolved predictions, confidence drift,
+                        disputed edges, or contradiction edges.
 
         Each candidate snapshot reuses the greeting-style surface but
         with the candidate entity pinned at position-0 of the relevant
@@ -714,37 +715,126 @@ class SnapshotComposer:
             ]
 
         if card_kind == "question":
-            # Question candidates: Models with large post-calibration
-            # confidence drift (contested/unresolved).
-            scored: list[tuple[float, ModelRef]] = []
-            for m in models:
-                drift = abs(m.confidence_at_assertion - m.confidence)
-                if drift > 0.1:
-                    scored.append((drift, m))
-            scored.sort(key=lambda t: t[0], reverse=True)
-            out = [
+            return await self._question_candidates(c, tenant_id, now, models=models)
+
+        return []
+
+    async def _question_candidates(
+        self,
+        c: asyncpg.Connection,
+        tenant_id: UUID,
+        now: datetime,
+        *,
+        models: list[ModelRef],
+    ) -> list[dict[str, Any]]:
+        """Uncertainty-band candidates from real epistemic events only."""
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for m in models:
+            drift = abs(m.confidence_at_assertion - m.confidence)
+            if drift <= 0.1:
+                continue
+            candidates.append(
                 {
                     "kind": "model",
                     "id": str(m.id),
                     "natural": m.natural,
-                    "drift": d,
+                    "uncertainty_kind": "confidence_drift",
+                    "why": "confidence changed after assertion",
+                    "score": drift,
                 }
-                for d, m in scored[: self.TOP_CARDS]
-            ]
-            # Back-fill with anomalies to guarantee TOP_CARDS candidates.
-            for a in anomalies:
-                if len(out) >= self.TOP_CARDS:
-                    break
-                out.append(
-                    {
-                        "kind": "anomaly",
-                        "id": str(a.id),
-                        "subject_kind": a.kind,
-                    }
-                )
-            return out[: self.TOP_CARDS]
+            )
+            seen.add(str(m.id))
 
-        return []
+        rows = await c.fetch(
+            """
+            WITH contested_models AS (
+              SELECT
+                m.id,
+                m."natural" AS natural,
+                'contested_model'::text AS uncertainty_kind,
+                'contested_count exceeds confirmations'::text AS why,
+                (m.contested_count - m.confirmed_count + 1)::float AS score
+              FROM models m
+              WHERE m.tenant_id = $1
+                AND m.status = 'active'
+                AND m.contested_count > m.confirmed_count
+              ORDER BY (m.contested_count - m.confirmed_count) DESC, m.created_at DESC
+              LIMIT 12
+            ),
+            overdue_predictions AS (
+              SELECT
+                m.id,
+                m."natural" AS natural,
+                'overdue_prediction'::text AS uncertainty_kind,
+                'prediction is past evaluate_at without resolution'::text AS why,
+                1.0::float AS score
+              FROM models m
+              WHERE m.tenant_id = $1
+                AND m.status = 'active'
+                AND m.claim_role = 'prediction'
+                AND m.evaluate_at IS NOT NULL
+                AND m.evaluate_at <= $2
+                AND m.resolved_at IS NULL
+              ORDER BY m.evaluate_at ASC
+              LIMIT 12
+            ),
+            edge_disputes AS (
+              SELECT
+                m.id,
+                m."natural" AS natural,
+                CASE
+                  WHEN e.review_status = 'disputed' THEN 'disputed_edge'
+                  ELSE 'contradiction_edge'
+                END AS uncertainty_kind,
+                concat(e.edge_kind, ' edge needs review') AS why,
+                GREATEST(e.confidence, ABS(COALESCE(e.weight, 0.6)))::float AS score
+              FROM model_edges e
+              JOIN models m
+                ON m.tenant_id = e.tenant_id
+               AND m.id = e.source_model_id
+               AND m.status = 'active'
+              WHERE e.tenant_id = $1
+                AND e.status = 'active'
+                AND (e.expires_at IS NULL OR e.expires_at > $2)
+                AND (
+                  e.review_status = 'disputed'
+                  OR e.edge_kind IN ('contradicts', 'weakens')
+                )
+              ORDER BY score DESC, e.created_at DESC
+              LIMIT 12
+            )
+            SELECT * FROM contested_models
+            UNION ALL
+            SELECT * FROM overdue_predictions
+            UNION ALL
+            SELECT * FROM edge_disputes
+            ORDER BY score DESC
+            LIMIT $3
+            """,
+            tenant_id,
+            now,
+            self.TOP_CARDS * 4,
+        )
+        for row in rows:
+            model_id = str(row["id"])
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            candidates.append(
+                {
+                    "kind": "model",
+                    "id": model_id,
+                    "natural": row["natural"],
+                    "uncertainty_kind": row["uncertainty_kind"],
+                    "why": row["why"],
+                    "score": float(row["score"] or 0.0),
+                }
+            )
+
+        candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+        return candidates[: self.TOP_CARDS]
 
     # -----------------------------------------------------------------
     # Situation-tied queries

@@ -16,6 +16,8 @@ path categorizes).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import random
 import time
@@ -54,7 +56,7 @@ from .anomaly_integration import (
     check_anomalies,
     publish_anomalies,
 )
-from .applier import AlreadyAppliedError, apply_diff
+from .applier import AlreadyAppliedError, apply_diff, check_already_applied
 from .cascade import CascadeEvent, CascadeResult, cascade
 from .context_planner import assemble_reasoning_context, plan_context
 from .debug_capture import capture as debug_capture
@@ -92,6 +94,56 @@ def _raise_if_postgres_error(exc: Exception) -> None:
 
 def _tx_health_check_enabled() -> bool:
     return os.environ.get("THINK_TX_HEALTH_CHECK", "0") == "1"
+
+
+def _diff_reuse_on_tx_retry_enabled() -> bool:
+    """Cost-plan §2.2 step 3 flag `THINK_REUSE_DIFF_ON_TX_RETRY`. Default off.
+    When on, a deadlock/serialization retry reuses the prior `raw_diff` if the
+    rebuilt context bundle is byte-identical — skipping the dominant `llm_reason`
+    call. OutOfRegion retries always re-reason (cache cleared)."""
+    return os.environ.get("THINK_REUSE_DIFF_ON_TX_RETRY", "0").strip().lower() in {
+        "1", "on", "true", "yes",
+    }
+
+
+def _hash_context_bundle(trigger: TriggerContext, bundle: Any) -> str:
+    """Stable hash of the reasoning inputs (model ids+versions, observation ids,
+    trigger ref + payload) used to decide whether a prior `raw_diff` is still
+    valid to reuse across a transaction retry (cost-plan §2.2 step 3)."""
+    from .deterministic import _trigger_ref  # type: ignore
+    models = sorted(
+        f"{getattr(m, 'id', None)}:"
+        f"{getattr(m, 'version', getattr(m, 'updated_at', ''))}"
+        for m in (getattr(bundle, "models", None) or [])
+    )
+    observations = sorted(
+        str(getattr(o, "id", None))
+        for o in (getattr(bundle, "observations", None) or [])
+    )
+    payload = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    blob = json.dumps(
+        {
+            "trigger_ref": str(_trigger_ref(trigger)),
+            "models": models,
+            "observations": observations,
+            "payload": payload,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _early_idempotency_skip_enabled() -> bool:
+    """Cost-plan §2.2: when set, check `applied_triggers` at the top of `think()`
+    and skip retrieval + reasoning entirely for an already-applied trigger.
+    Default off — the in-apply AlreadyAppliedError guard is the correctness
+    backstop either way; this only saves the wasted reasoning spend."""
+    return os.environ.get("THINK_EARLY_IDEMPOTENCY_SKIP", "0").strip().lower() in {
+        "1", "on", "true", "yes",
+    }
 
 
 def _narrow_inferential_transaction_enabled() -> bool:
@@ -145,6 +197,9 @@ class ThinkRunOutcome:
     llm_output_tokens: int = 0
     llm_cost_usd: float = 0.0
     llm_model_name: str | None = None
+    # Cost-plan §0.1: cached-input subset of llm_input_tokens.
+    llm_cache_read_tokens: int = 0
+    llm_cache_creation_tokens: int = 0
     # Raised exception for caller's failure classification.
     exception: BaseException | None = None
 
@@ -209,6 +264,30 @@ async def think(
          trigger_kind=trigger_kind_full,
          tenant_id=str(trigger.tenant_id))
 
+    # Cost-plan §2.2: short-circuit an already-applied trigger before paying for
+    # retrieval + reasoning. Best-effort; the in-apply guard remains the
+    # correctness backstop. Flag-gated (default off).
+    if _early_idempotency_skip_enabled():
+        prior_outcome: str | None = None
+        try:
+            async with pool.acquire() as conn:
+                prior_outcome = await check_already_applied(conn, trigger_id)
+        except Exception as exc:  # noqa: BLE001 — pre-check never fails the run
+            _log.warning("think.early_idempotency_check_failed", error=str(exc))
+        if prior_outcome is not None:
+            emit("think.skipped_idempotent",
+                 run_id=str(run_id), reason="early_precheck",
+                 prior_outcome=prior_outcome)
+            out = ThinkRunOutcome(
+                run_id=run_id,
+                trigger_id=trigger_id,
+                trigger_kind=trigger_kind_full,
+                status="skipped_idempotent",
+                elapsed_ms=(time.monotonic() - started_at) * 1000.0,
+            )
+            await _record_cost_for_outcome(pool, out, trigger.tenant_id)
+            return out
+
     rerun_count = 0
     transaction_retry_count = 0
     max_transaction_retries = int(
@@ -226,6 +305,11 @@ async def think(
         usage_ctx = using_usage_aggregator(usage_agg)
         usage_ctx.__enter__()
         llm_provider.set_usage_aggregator(usage_agg)
+
+    # Cost-plan §2.2 step 3: carries the prior attempt's (bundle_hash, raw_diff)
+    # so a deadlock/serialization retry can reuse it instead of re-running the
+    # dominant llm_reason call. Cleared on OutOfRegion (the region changed).
+    reason_cache: dict[str, Any] = {}
 
     try:
         while True:
@@ -247,6 +331,7 @@ async def think(
                                 reason_for_trigger=reason_for_trigger,
                                 record=record,
                                 expanded_region=expanded_region,
+                                reason_cache=reason_cache,
                             )
                     else:
                         outcome = await _run_once(
@@ -259,6 +344,7 @@ async def think(
                             reason_for_trigger=reason_for_trigger,
                             record=record,
                             expanded_region=expanded_region,
+                            reason_cache=reason_cache,
                         )
             except OutOfRegionError as e:
                 # Re-run retrieval with the missing entities explicitly
@@ -290,6 +376,8 @@ async def think(
                     await _record_failed_run(pool, record, out.error)
                     await _record_cost_for_outcome(
                         pool, out, trigger.tenant_id,
+                        retry_count=transaction_retry_count + rerun_count,
+                        usage_agg=usage_agg,
                     )
                     return out
                 emit(
@@ -302,6 +390,9 @@ async def think(
                 missing = e.context.get("missing") or []
                 prev.update((t, i) for (t, i) in missing)
                 expanded_region = prev
+                # The retrieval region changed — a cached diff is no longer
+                # valid to reuse (cost-plan §2.2 step 3 invalidation).
+                reason_cache.clear()
                 continue
             except (
                 asyncpg.exceptions.DeadlockDetectedError,
@@ -333,10 +424,16 @@ async def think(
                 outcome.llm_input_tokens = usage_agg.total_input_tokens
                 outcome.llm_output_tokens = usage_agg.total_output_tokens
                 outcome.llm_cost_usd = usage_agg.total_cost_usd
+                outcome.llm_cache_read_tokens = usage_agg.total_cache_read_tokens
+                outcome.llm_cache_creation_tokens = (
+                    usage_agg.total_cache_creation_tokens
+                )
                 if llm_provider is not None:
                     outcome.llm_model_name = llm_provider.config.model
             await _record_cost_for_outcome(
                 pool, outcome, trigger.tenant_id,
+                retry_count=transaction_retry_count + rerun_count,
+                usage_agg=usage_agg,
             )
             # Post-commit region_lock_log write (best-effort).
             if outcome.region_acquisition is not None:
@@ -367,7 +464,11 @@ async def think(
         )
         _snapshot_usage(out, usage_agg, llm_provider)
         await _record_failed_run(pool, record, out.error)
-        await _record_cost_for_outcome(pool, out, trigger.tenant_id)
+        await _record_cost_for_outcome(
+            pool, out, trigger.tenant_id,
+            retry_count=transaction_retry_count + rerun_count,
+            usage_agg=usage_agg,
+        )
         return out
     except Exception as e:
         out = _fail_outcome(
@@ -375,7 +476,11 @@ async def think(
         )
         _snapshot_usage(out, usage_agg, llm_provider)
         await _record_failed_run(pool, record, out.error)
-        await _record_cost_for_outcome(pool, out, trigger.tenant_id)
+        await _record_cost_for_outcome(
+            pool, out, trigger.tenant_id,
+            retry_count=transaction_retry_count + rerun_count,
+            usage_agg=usage_agg,
+        )
         return out
     finally:
         # Always detach the aggregator so it doesn't leak across runs.
@@ -404,18 +509,40 @@ def _snapshot_usage(
     outcome.llm_input_tokens = agg.total_input_tokens
     outcome.llm_output_tokens = agg.total_output_tokens
     outcome.llm_cost_usd = agg.total_cost_usd
+    outcome.llm_cache_read_tokens = agg.total_cache_read_tokens
+    outcome.llm_cache_creation_tokens = agg.total_cache_creation_tokens
     if provider is not None:
         outcome.llm_model_name = provider.config.model
+
+
+def _raw_diff_op_count(diff: Any) -> int:
+    """Total ops across all op lists of a RawDiff (cost-plan §2.1 shadow log)."""
+    return sum(
+        len(getattr(diff, name, []) or [])
+        for name in (
+            "claim_ops", "edge_ops", "ontology_gap_ops",
+            "act_ops", "resource_ops", "new_predictions",
+        )
+    )
 
 
 async def _record_cost_for_outcome(
     pool: asyncpg.Pool,
     outcome: ThinkRunOutcome,
     tenant_id: UUID,
+    *,
+    retry_count: int = 0,
+    usage_agg: LLMUsageAggregator | None = None,
 ) -> None:
     """Map the outcome's status to the `think_run_costs.outcome` check
-    constraint value, then emit the row. Best-effort — failures inside
-    `record_think_run_cost` are already logged + swallowed."""
+    constraint value, then emit the cost row(s). Best-effort — failures inside
+    `record_think_run_cost` are already logged + swallowed.
+
+    Cost-plan §0.1: when a usage aggregator is available, emit one row per
+    `purpose` (main_reasoning / question_planning / parse_repair) so planning
+    and repair spend is no longer hidden inside the main call. `retry_count` is
+    the real `transaction_retry_count + rerun_count` (was hardcoded 0) and is
+    attributed to the main_reasoning row; run-level latency likewise."""
     status_map = {
         "success": "success",
         "skipped_idempotent": "skipped_idempotent",
@@ -429,20 +556,51 @@ async def _record_cost_for_outcome(
             outcome_kind = "validation_failure"
         elif "Reasoning" in exc_name or "ReasoningFailure" in exc_name:
             outcome_kind = "reasoning_exhausted"
-    await record_think_run_cost(
-        pool,
-        trigger_id=outcome.trigger_id,
-        tenant_id=tenant_id,
-        trigger_kind=outcome.trigger_kind,
-        outcome=outcome_kind,
-        llm_calls_count=outcome.llm_calls_count,
-        llm_input_tokens_total=outcome.llm_input_tokens,
-        llm_output_tokens_total=outcome.llm_output_tokens,
-        llm_cost_usd=outcome.llm_cost_usd,
-        latency_total_ms=int(outcome.elapsed_ms),
-        retry_count=0,
-        model_name=outcome.llm_model_name,
-    )
+
+    by_purpose = usage_agg.by_purpose() if usage_agg is not None else {}
+    if not by_purpose:
+        # No per-call breakdown (e.g. deterministic run with no LLM calls) —
+        # a single aggregate row from the outcome fields, as before.
+        await record_think_run_cost(
+            pool,
+            trigger_id=outcome.trigger_id,
+            tenant_id=tenant_id,
+            trigger_kind=outcome.trigger_kind,
+            outcome=outcome_kind,
+            llm_calls_count=outcome.llm_calls_count,
+            llm_input_tokens_total=outcome.llm_input_tokens,
+            llm_output_tokens_total=outcome.llm_output_tokens,
+            llm_cost_usd=outcome.llm_cost_usd,
+            latency_total_ms=int(outcome.elapsed_ms),
+            retry_count=retry_count,
+            model_name=outcome.llm_model_name,
+            purpose="main_reasoning",
+            cache_read_input_tokens=outcome.llm_cache_read_tokens,
+            cache_creation_input_tokens=outcome.llm_cache_creation_tokens,
+        )
+        return
+
+    for purpose, usage in by_purpose.items():
+        is_main = purpose == "main_reasoning"
+        await record_think_run_cost(
+            pool,
+            trigger_id=outcome.trigger_id,
+            tenant_id=tenant_id,
+            trigger_kind=outcome.trigger_kind,
+            outcome=outcome_kind,
+            llm_calls_count=usage_agg.call_count_for(purpose),
+            llm_input_tokens_total=usage.input_tokens,
+            llm_output_tokens_total=usage.output_tokens,
+            llm_cost_usd=usage.cost_usd,
+            # Latency + retries are run-level; attribute to the main row only so
+            # SUM across purposes doesn't double-count them.
+            latency_total_ms=int(outcome.elapsed_ms) if is_main else 0,
+            retry_count=retry_count if is_main else 0,
+            model_name=usage.model_name or outcome.llm_model_name,
+            purpose=purpose,
+            cache_read_input_tokens=usage.cache_read_tokens,
+            cache_creation_input_tokens=usage.cache_creation_tokens,
+        )
 
 
 async def _record_failed_run(
@@ -526,6 +684,7 @@ async def _run_once(
     record: ThinkRunRecord,
     expanded_region: set[tuple[str, str]] | None,
     embedder: Any | None = None,
+    reason_cache: dict[str, Any] | None = None,
 ) -> ThinkRunOutcome:
     """
     Run one Think attempt. Called by `think()`.
@@ -763,13 +922,33 @@ async def _run_once(
                 "inferential trigger requires llm_provider",
                 trigger_kind=trigger.kind,
             )
-        raw_diff, llm_latency_ms = await llm_reason(
-            trigger, bundle, llm_provider,
-            triggering_content=triggering_content,
-            triggering_actor_summary=actor_operating_summary,
-            reason_for_trigger=reason_for_trigger,
-            reasoning_frame=reasoning_frame,
-        )
+        # Cost-plan §2.2 step 3: on a transaction retry, reuse the prior
+        # raw_diff when the rebuilt bundle is identical — skipping the dominant
+        # llm_reason call. Re-validation still runs against fresh DB state below.
+        bundle_hash: str | None = None
+        reused_diff = None
+        if reason_cache is not None and _diff_reuse_on_tx_retry_enabled():
+            bundle_hash = _hash_context_bundle(trigger, bundle)
+            if (
+                reason_cache.get("bundle_hash") == bundle_hash
+                and reason_cache.get("raw_diff") is not None
+            ):
+                reused_diff = reason_cache["raw_diff"]
+        if reused_diff is not None:
+            raw_diff = reused_diff
+            llm_latency_ms = 0
+            emit("think.diff_reused_on_tx_retry", run_id=str(record.id))
+        else:
+            raw_diff, llm_latency_ms = await llm_reason(
+                trigger, bundle, llm_provider,
+                triggering_content=triggering_content,
+                triggering_actor_summary=actor_operating_summary,
+                reason_for_trigger=reason_for_trigger,
+                reasoning_frame=reasoning_frame,
+            )
+            if reason_cache is not None and bundle_hash is not None:
+                reason_cache["bundle_hash"] = bundle_hash
+                reason_cache["raw_diff"] = raw_diff
     # Ensure trigger_ref / tenant_id match what the caller expects —
     # even if the LLM hallucinated the fields, we overwrite for safety.
     from .deterministic import _trigger_ref  # type: ignore
@@ -898,6 +1077,12 @@ async def _run_once(
                  run_id=str(record.id),
                  dropped=validated.dropped_op_count,
                  errors=validated.dropped_op_errors[:5])
+            # Cost-plan §2.2 step 3: a diff the validator largely rejects is not
+            # worth reusing on a later tx retry — drop it from the reuse cache.
+            if reason_cache is not None:
+                total_ops = _raw_diff_op_count(raw_diff)
+                if total_ops > 0 and validated.dropped_op_count / total_ops > 0.5:
+                    reason_cache.clear()
         await update_think_run(
             conn, record.id,
             validation_error_count=validated.dropped_op_count,
@@ -926,6 +1111,12 @@ async def _run_once(
                 trigger_kind=trigger_kind_full,
                 trigger_cause_event_id=trigger.observation_id,
                 think_run_id=record.id,
+                # Cost-plan §3.2: propagate this run's lineage depth onto the
+                # T2:belief_updated triggers the apply spawns.
+                parent_cascade_payload=(
+                    trigger.seed_signature
+                    if isinstance(trigger.seed_signature, dict) else None
+                ),
             )
         except AlreadyAppliedError as e:
             await update_think_run(

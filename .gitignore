@@ -54,8 +54,6 @@ docker-compose.override.yml
 .claude/worktrees/
 
 # ---- Simulation run artifacts ----
-truss_run/
-truss_run_*/
 test-results/
 
 # ---- External tools / large local dirs ----

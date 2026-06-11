@@ -24,6 +24,8 @@ from lib.llm.provider import (
     compute_cost_usd,
     get_pricing_for_model,
     MODEL_PRICING,
+    using_usage_aggregator,
+    using_usage_purpose,
 )
 
 from services.reasoning.think.observability import (
@@ -120,6 +122,93 @@ def test_aggregator_reset():
 
 
 # ---------------------------------------------------------------------
+# Cost-plan §0.1 — cache-tier pricing + cache-token extraction + purpose
+# ---------------------------------------------------------------------
+
+
+def test_compute_cost_usd_backward_compatible_without_cache():
+    # No cache args = identical to the pre-§0.1 number.
+    cost = compute_cost_usd(
+        input_tokens=1_000_000, output_tokens=0, model_name="gpt-5.5",
+    )
+    assert abs(cost - 5.0) < 1e-9
+
+
+def test_compute_cost_usd_cache_read_discount():
+    # gpt-5.5: input 5.0, output 30.0, cache_read 0.50 /MTok.
+    # 1M input (800k cache-read) + 100k output:
+    #   uncached 200k @5.0 = 1.0 ; cache 800k @0.50 = 0.4 ; out 100k @30 = 3.0
+    cost = compute_cost_usd(
+        input_tokens=1_000_000, output_tokens=100_000,
+        model_name="gpt-5.5", cache_read_tokens=800_000,
+    )
+    assert abs(cost - (1.0 + 0.4 + 3.0)) < 1e-9
+
+
+def test_compute_cost_usd_cache_creation_premium_anthropic():
+    # opus cache_write 18.75 /MTok; 100k creation, no uncached/out.
+    cost = compute_cost_usd(
+        input_tokens=100_000, output_tokens=0,
+        model_name="claude-opus-4-7", cache_creation_tokens=100_000,
+    )
+    assert abs(cost - (100_000 * 18.75 / 1_000_000.0)) < 1e-9
+
+
+def test_extract_openai_usage_cached_tokens_details():
+    from types import SimpleNamespace
+    from lib.llm.provider import _extract_openai_usage
+    resp = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=1000, completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=600),
+    ))
+    assert _extract_openai_usage(resp) == (1000, 200, 600, 0)
+
+
+def test_extract_openai_usage_deepseek_flat_cache_field():
+    from types import SimpleNamespace
+    from lib.llm.provider import _extract_openai_usage
+    resp = SimpleNamespace(usage={
+        "prompt_tokens": 1000, "completion_tokens": 200,
+        "prompt_cache_hit_tokens": 300,
+    })
+    assert _extract_openai_usage(resp) == (1000, 200, 300, 0)
+
+
+def test_extract_anthropic_usage_full_input_includes_cache():
+    from types import SimpleNamespace
+    from lib.llm.provider import _extract_anthropic_usage
+    resp = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=100, output_tokens=50,
+        cache_read_input_tokens=400, cache_creation_input_tokens=200,
+    ))
+    # full_input = 100 + 400 + 200 = 700
+    assert _extract_anthropic_usage(resp) == (700, 50, 400, 200)
+
+
+def test_aggregator_by_purpose_breakdown():
+    agg = LLMUsageAggregator()
+    agg.record(LLMUsage(
+        input_tokens=100, output_tokens=10, cost_usd=1.0,
+        purpose="main_reasoning",
+    ))
+    agg.record(LLMUsage(
+        input_tokens=50, output_tokens=5, cost_usd=0.5,
+        cache_read_tokens=20, purpose="question_planning",
+    ))
+    agg.record(LLMUsage(
+        input_tokens=20, output_tokens=2, cost_usd=0.2,
+        purpose="question_planning",
+    ))
+    bp = agg.by_purpose()
+    assert set(bp) == {"main_reasoning", "question_planning"}
+    assert bp["question_planning"].input_tokens == 70
+    assert bp["question_planning"].cache_read_tokens == 20
+    assert abs(bp["question_planning"].cost_usd - 0.7) < 1e-9
+    assert agg.call_count_for("question_planning") == 2
+    assert agg.call_count_for("main_reasoning") == 1
+
+
+# ---------------------------------------------------------------------
 # Provider bridge — _record_usage calls into the installed aggregator.
 # ---------------------------------------------------------------------
 
@@ -161,6 +250,23 @@ def test_provider_bridge_noop_without_aggregator():
     ))
     # No aggregator installed.
     provider._record_usage(100, 50)  # must not raise
+
+
+def test_contextvar_usage_tags_dedicated_question_planning_provider():
+    provider = _MockProvider(LLMConfig(
+        provider="codex",
+        api_key="x",
+        model="gpt-5.3-codex-spark",
+    ))
+    agg = LLMUsageAggregator()
+
+    with using_usage_aggregator(agg), using_usage_purpose("question_planning"):
+        provider._record_usage(120, 20)
+
+    by_purpose = agg.by_purpose()
+    assert set(by_purpose) == {"question_planning"}
+    assert by_purpose["question_planning"].input_tokens == 120
+    assert agg.call_count_for("question_planning") == 1
 
 
 # ---------------------------------------------------------------------

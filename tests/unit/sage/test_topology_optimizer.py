@@ -47,6 +47,7 @@ from services.reasoning.sage.topology_optimizer import (
     TopologyOptimizer,
     optimize_topology,
 )
+from ._seed import seed_edge as _shared_seed_edge
 from ._seed import seed_model as _shared_seed_model
 
 
@@ -163,6 +164,50 @@ async def test_reinforces_affordance_after_node_used_in_valid_diff(
         baseline_utility + REINFORCE_DELTA,
     )
     assert updated.last_reinforced_at is not None
+
+
+@pytest.mark.asyncio
+async def test_structural_refresh_skips_stale_incident_edge_endpoint(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    session_id = await _seed_inquiry_session(gateway_pool, tenant_id=tenant_id)
+    model_id = await _seed_model(gateway_pool, tenant_id=tenant_id)
+    stale_endpoint = uuid4()
+    await _shared_seed_edge(
+        gateway_pool,
+        tenant_id=tenant_id,
+        source_model_id=model_id,
+        target_model_id=stale_endpoint,
+    )
+
+    events = OutcomeEventsRepo(gateway_pool, tenant_id=tenant_id)
+    await events.append(
+        session_id,
+        "node_used_in_valid_diff",
+        {"model_id": str(model_id)},
+    )
+
+    report = await TopologyOptimizer(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+    ).optimize(
+        inquiry_session_id=session_id,
+        trigger_event="validated_synthesis_diff_applied",
+    )
+
+    assert report.metrics["structural_missing_model_skips"] == 1.0
+    assert report.metrics["structural_models_written"] == 1.0
+    assert report.metrics["structural_edges_written"] == 0.0
+    async with gateway_pool.acquire() as conn:
+        feature_model_ids = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_structural_features
+            WHERE tenant_id = $1
+            """,
+            tenant_id,
+        )
+    assert [row["model_id"] for row in feature_model_ids] == [model_id]
 
 
 @pytest.mark.asyncio

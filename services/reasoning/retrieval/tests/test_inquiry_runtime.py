@@ -36,6 +36,7 @@ from services.platform.execution.inquiry import (
     _has_broad_signal_language,
     _hybrid_lexical_model_scan,
     _hybrid_lexical_terms,
+    _hybrid_sparse_lookup_terms,
     _merge_llm_and_safety_questions,
     _merge_hybrid_semantic_lexical_models,
     _model_coverage_features,
@@ -51,9 +52,27 @@ from services.reasoning.retrieval.pathways import PathwayResult
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.primary import RetrievalResult
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
+from services.reasoning.sage.reader import _fetch_sparse_term_matches
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_hybrid_sparse_lookup_terms_stays_bounded_for_long_raw_query():
+    terms = _hybrid_sparse_lookup_terms([
+        "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo"
+    ])
+
+    assert terms == [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+    ]
 
 
 class _BadQuestionEmbedder:
@@ -63,7 +82,15 @@ class _BadQuestionEmbedder:
 
 class _ScriptedQuestionProvider(LLMProvider):
     def __init__(self, responses: list[str]):
-        super().__init__(LLMConfig(provider="anthropic", api_key="test", model="m"))
+        super().__init__(
+            LLMConfig(
+                provider="codex",
+                api_key="test",
+                model="gpt-5.3-codex",
+                reasoning_effort="low",
+            )
+        )
+        self._is_question_planning_provider = True
         self.responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
@@ -90,7 +117,16 @@ class _ScriptedQuestionProvider(LLMProvider):
 
 class _SlowQuestionProvider(LLMProvider):
     def __init__(self):
-        super().__init__(LLMConfig(provider="anthropic", api_key="test", model="m"))
+        super().__init__(
+            LLMConfig(
+                provider="codex",
+                api_key="test",
+                model="gpt-5.3-codex",
+                timeout_s=0.01,
+                reasoning_effort="low",
+            )
+        )
+        self._is_question_planning_provider = True
 
     async def _raw_call(
         self,
@@ -204,7 +240,7 @@ def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
 
 
 async def test_question_planning_timeout_falls_back_to_deterministic(monkeypatch, tenant):
-    monkeypatch.setenv("INQUIRY_LLM_QUESTION_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.delenv("INQUIRY_CODEX_QUESTION_TIMEOUT_SECONDS", raising=False)
     trigger = TriggerContext(
         kind="T1",
         tenant_id=tenant,
@@ -542,6 +578,71 @@ async def test_semantic_hybrid_lexical_promotes_exact_anchor_within_budget(
     assert exact_model.id in {model.id for model, _match_count in hits}
     assert len(merged) == 3
     assert exact_model.id in {model.id for model in merged}
+
+
+async def test_sage_sparse_lookup_returns_partial_bounded_term_hits(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    target = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "assertion": "procurement renewal security evidence is the blocker",
+            },
+            natural=(
+                "Procurement renewal security evidence packet is the blocker "
+                "for enterprise approval."
+            ),
+            embedding=make_embedding("sparse partial lexical candidate"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+            scope_temporal={"type": "now"},
+            confidence=0.67,
+            confidence_at_assertion=0.67,
+        ),
+        conn=tx_conn,
+    )
+    noisy_singleton = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "assertion": "security posture reminder",
+            },
+            natural="Security posture reminder for routine review.",
+            embedding=make_embedding("sparse noisy singleton candidate"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+            scope_temporal={"type": "now"},
+            confidence=0.67,
+            confidence_at_assertion=0.67,
+        ),
+        conn=tx_conn,
+    )
+
+    rows = await _fetch_sparse_term_matches(
+        tx_conn,
+        tenant_id=tenant,
+        terms=["Atlas Retail Group renewal security evidence procurement"],
+        limit=4,
+        max_terms=8,
+        per_term_limit=4,
+    )
+
+    assert target.id in {row["id"] for row in rows}
+    assert noisy_singleton.id not in {row["id"] for row in rows}
+    assert max(int(row["match_count"] or 0) for row in rows) >= 4
 
 
 async def test_focused_index_uses_question_terms_answerability_and_scope(
@@ -1509,6 +1610,123 @@ def test_context_packet_preserves_state_workflow_gotcha_and_premise_under_distra
     } <= set(packet["state_contract"]["covered_slots"])
     assert packet["state_contract"]["premise_check"]["counterevidence_refs"]
     assert packet["budget"]["reservoir_evidence_count"] <= 12
+
+
+def test_context_packet_model_first_suppresses_redundant_observation_evidence():
+    tenant = uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_natural_text="Customer escalation says renewal risk increased.",
+    )
+    hypotheses = (
+        Hypothesis(
+            id="H1",
+            claim="Renewal risk increased",
+            confidence=0.72,
+            impact_if_true="Account team needs an owner and mitigation plan.",
+        ),
+    )
+    question = InquiryQuestion(
+        question_id="Q_RISK",
+        question="Is renewal risk increasing?",
+        primitive="CONSTRAINT",
+        tests_hypotheses=("H1",),
+        expected_value=0.8,
+        expected_cost=0.1,
+        retrieval_target="model",
+        stop_condition="risk evidence found",
+        score=0.8,
+    )
+    model_card = EvidenceCard(
+        evidence_id=uuid4(),
+        source_type="model",
+        source_ref="model:risk",
+        source_ref_id=uuid4(),
+        summary="Model says renewal risk increased because security review is blocked.",
+        trust_tier="model",
+        timestamp=datetime.now(timezone.utc),
+        retrieval_paths={"focused_index"},
+        retrieved_for_questions={"Q_RISK"},
+        supports_hypotheses={"H1"},
+        raw_content_ref="model:risk",
+        token_estimate=16,
+        score=0.9,
+    )
+    redundant_observation = EvidenceCard(
+        evidence_id=uuid4(),
+        source_type="observation",
+        source_ref="observation:duplicate",
+        source_ref_id=uuid4(),
+        summary="Raw message repeats that renewal risk increased.",
+        trust_tier="authoritative",
+        timestamp=datetime.now(timezone.utc),
+        retrieval_paths={"sage_reader"},
+        retrieved_for_questions={"Q_RISK"},
+        supports_hypotheses={"H1"},
+        raw_content_ref="observation:duplicate",
+        token_estimate=14,
+        score=0.7,
+    )
+    counter_observation = EvidenceCard(
+        evidence_id=uuid4(),
+        source_type="observation",
+        source_ref="observation:counter",
+        source_ref_id=uuid4(),
+        summary="Latest AE note says the customer accepted the mitigation.",
+        trust_tier="authoritative",
+        timestamp=datetime.now(timezone.utc),
+        retrieval_paths={"sage_reader"},
+        retrieved_for_questions={"Q_RISK"},
+        weakens_hypotheses={"H1"},
+        raw_content_ref="observation:counter",
+        token_estimate=14,
+        score=0.8,
+    )
+    answers = [
+        QuestionAnswer(
+            question_id="Q_RISK",
+            answer_status="supported",
+            summary="Model-backed risk evidence was found, with a counter-signal.",
+            supporting_evidence=(str(model_card.evidence_id),),
+            counterevidence=(str(counter_observation.evidence_id),),
+        )
+    ]
+
+    packet = _compile_context_packet(
+        trigger,
+        "DEEP_INQUIRY_PATH",
+        hypotheses,
+        [question],
+        answers,
+        [model_card, redundant_observation, counter_observation],
+        SufficiencyVerdict(
+            "sufficient_for_reasoning",
+            "model-first evidence test",
+            3,
+            1,
+            (),
+        ),
+        token_budget=4000,
+        evidence_mode="model_first",
+    )
+
+    decisive_refs = {
+        item["raw_content_ref"]
+        for item in packet["tiers"]["decisive_evidence"]
+    }
+    supporting_refs = {
+        ref
+        for group in packet["tiers"]["supporting_evidence_groups"]
+        for ref in group["source_refs"]
+    }
+    assert "model:risk" in supporting_refs
+    assert "observation:counter" in decisive_refs
+    assert "observation:duplicate" not in decisive_refs | supporting_refs
+    policy = packet["budget"]["evidence_policy"]
+    assert policy["mode"] == "model_first"
+    assert policy["packet_evidence_count"] == 2
+    assert policy["suppressed_observation_count"] == 1
 
 
 async def test_inquiry_runtime_builds_questions_reservoir_and_packet(

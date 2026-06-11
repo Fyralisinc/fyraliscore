@@ -12,7 +12,7 @@ Converts a RetrievalResult into a ContextBundle:
     `visible_to_subjects` + `scope_actors` membership; real roles /
     materialized views are Wave 5-A).
   - Compresses to configured size budgets:
-        * observations  ≤ trigger cap + small historical evidence cap
+        * observations  ≤ model-gap fallback / explicit observation caps
         * models        ≤ 24 by default
         * acts          ≤ 10 (across goals + commitments + decisions
                              combined, deviation (c) documented below)
@@ -23,8 +23,10 @@ Converts a RetrievalResult into a ContextBundle:
 Compression ordering (deviation (c) BUILD-LOG):
   - Models — by `model_scores` descending (from primary_retrieve).
     Tie-break on activation descending.
-  - Observations — current trigger observations first, then a small
-    historical evidence tail by occurred_at descending.
+  - Observations — in model-first mode, raw rows are suppressed when
+    selected Models provide usable context. If Models are absent or the
+    policy is overridden, current trigger observations come first, then
+    a small historical evidence tail by occurred_at descending.
   - Acts — we flatten the three kinds into one list and take the top
     10 by last_state_change_at / created_at descending. The cap of 10
     is per BUILD-PLAN (not 10 per kind).
@@ -50,8 +52,6 @@ import asyncpg
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import (
     CommitmentRow,
-    DecisionRow,
-    GoalRow,
     ModelRow,
     ObservationRow,
     ResourceRow,
@@ -168,6 +168,7 @@ def _select_observations(
     cfg: RetrievalConfig,
     budget_observations: int,
     explicit_budget: bool,
+    selected_model_count: int = 0,
 ) -> tuple[list[ObservationRow], dict[str, Any]]:
     observations.sort(key=lambda o: (o.occurred_at, o.id), reverse=True)
     if not cfg.model_first_context_enabled:
@@ -182,6 +183,11 @@ def _select_observations(
             "historical_candidate_count": len(observations),
             "trigger_cap": 0,
             "historical_cap": budget_observations,
+            "observation_context_mode": "legacy",
+            "observation_context_min_models": 0,
+            "selected_model_count": int(selected_model_count),
+            "model_context_sufficient": False,
+            "suppressed_reason": None,
         }
 
     trigger_ids = _trigger_observation_ids(retrieval_result)
@@ -192,6 +198,36 @@ def _select_observations(
             trigger_observations.append(observation)
         else:
             historical_observations.append(observation)
+
+    mode = str(getattr(cfg, "observation_context_mode", "model_gap")).strip().lower()
+    if mode not in {"always", "model_gap", "none"}:
+        mode = "model_gap"
+    min_models = max(0, int(getattr(cfg, "observation_context_min_models", 1)))
+    model_context_sufficient = selected_model_count >= max(1, min_models)
+    suppressed_reason: str | None = None
+    if mode == "none":
+        suppressed_reason = "mode_none"
+    elif mode == "model_gap" and model_context_sufficient:
+        suppressed_reason = "model_context_sufficient"
+    if suppressed_reason is not None:
+        return [], {
+            "model_first_context_enabled": True,
+            "retrieved_count": len(observations),
+            "selected_count": 0,
+            "selected_trigger_count": 0,
+            "selected_historical_count": 0,
+            "trigger_candidate_count": len(trigger_observations),
+            "historical_candidate_count": len(historical_observations),
+            "trigger_cap": 0,
+            "historical_cap": 0,
+            "dropped_trigger_count": len(trigger_observations),
+            "dropped_historical_count": len(historical_observations),
+            "observation_context_mode": mode,
+            "observation_context_min_models": min_models,
+            "selected_model_count": int(selected_model_count),
+            "model_context_sufficient": bool(model_context_sufficient),
+            "suppressed_reason": suppressed_reason,
+        }
 
     trigger_cap = max(0, int(cfg.trigger_observation_cap))
     if explicit_budget:
@@ -218,6 +254,11 @@ def _select_observations(
         "historical_candidate_count": len(historical_observations),
         "trigger_cap": trigger_cap,
         "historical_cap": historical_cap,
+        "observation_context_mode": mode,
+        "observation_context_min_models": min_models,
+        "selected_model_count": int(selected_model_count),
+        "model_context_sufficient": bool(model_context_sufficient),
+        "suppressed_reason": None,
         "dropped_trigger_count": max(
             0, len(trigger_observations) - len(selected_trigger)
         ),
@@ -814,6 +855,7 @@ async def assemble_context(
         cfg=cfg,
         budget_observations=budget_observations,
         explicit_budget=explicit_observation_budget,
+        selected_model_count=len(models_cap),
     )
 
     # --- Acts: combined cap of `budget_acts` across all three kinds ---
@@ -881,11 +923,7 @@ async def assemble_context(
     notes: dict[str, Any] = {
         "budgets": {
             "observations": budget_observations,
-            "trigger_observations": (
-                int(cfg.trigger_observation_cap)
-                if cfg.model_first_context_enabled
-                else 0
-            ),
+            "trigger_observations": int(observation_selection["trigger_cap"]),
             "historical_observations": (
                 int(observation_selection["historical_cap"])
                 if cfg.model_first_context_enabled

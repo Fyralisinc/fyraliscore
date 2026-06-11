@@ -149,6 +149,38 @@ _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
 _DEFAULT_TOP_N = 80
 
 
+def _trigger_weights(kind: TriggerKind, cfg: RetrievalConfig) -> dict[str, float] | None:
+    weights = _TRIGGER_WEIGHTS.get(kind)
+    if weights is None:
+        return None
+    if not cfg.trigger_weights_json:
+        return dict(weights)
+    try:
+        payload = json.loads(cfg.trigger_weights_json)
+    except json.JSONDecodeError:
+        return dict(weights)
+    if not isinstance(payload, dict):
+        return dict(weights)
+    override = payload.get(kind)
+    if override is None and all(pathway in payload for pathway in weights):
+        override = payload
+    if not isinstance(override, dict):
+        return dict(weights)
+    merged = dict(weights)
+    for pathway, raw_weight in override.items():
+        key = str(pathway).upper()
+        if key not in weights:
+            continue
+        try:
+            merged[key] = max(0.0, float(raw_weight))
+        except (TypeError, ValueError):
+            continue
+    total = sum(merged.values())
+    if total <= 0:
+        return dict(weights)
+    return {key: value / total for key, value in merged.items()}
+
+
 class RetrievalError(CompanyOSError):
     default_code = "retrieval_error"
 
@@ -264,6 +296,8 @@ def _merge_and_rank_models(
     top_n: int,
     *,
     scoring_mode: str = "linear",
+    rrf_k: int = 60,
+    recency_decay_half_life_days: float = 0.0,
 ) -> tuple[list[ModelRow], dict[UUID, float]]:
     """
     Given the per-pathway results and the trigger's weight map, compute
@@ -279,7 +313,13 @@ def _merge_and_rank_models(
         pathway→dimension), folded with activation + provenance ranks.
     """
     if scoring_mode == "rrf":
-        return _merge_and_rank_models_rrf(pathway_results, weights, top_n)
+        return _merge_and_rank_models_rrf(
+            pathway_results,
+            weights,
+            top_n,
+            rrf_k=rrf_k,
+            recency_decay_half_life_days=recency_decay_half_life_days,
+        )
     # "linear" (legacy) — unchanged path.
     scores: dict[UUID, float] = {}
     by_id: dict[UUID, ModelRow] = {}
@@ -299,11 +339,24 @@ def _merge_and_rank_models(
     ordered_ids = sorted(
         scores.keys(),
         key=lambda mid: (
-            -scores[mid],
+            -_score_with_recency_decay(
+                scores[mid],
+                by_id[mid],
+                half_life_days=recency_decay_half_life_days,
+            ),
             -by_id[mid].activation,
             str(mid),
         ),
     )
+    if recency_decay_half_life_days > 0:
+        scores = {
+            mid: _score_with_recency_decay(
+                score,
+                by_id[mid],
+                half_life_days=recency_decay_half_life_days,
+            )
+            for mid, score in scores.items()
+        }
     chosen = [by_id[mid] for mid in ordered_ids[:top_n]]
     return chosen, scores
 
@@ -312,6 +365,9 @@ def _merge_and_rank_models_rrf(
     pathway_results: list[PathwayResult],
     weights: dict[str, float],
     top_n: int,
+    *,
+    rrf_k: int,
+    recency_decay_half_life_days: float = 0.0,
 ) -> tuple[list[ModelRow], dict[UUID, float]]:
     """RRF-backed merge + rank.
 
@@ -349,10 +405,54 @@ def _merge_and_rank_models_rrf(
     rrf = merge_and_rank_rrf(
         pathway_results,
         per_trigger_dimension_weights=dim_weights,
-        top_n=top_n,
+        k=max(1, int(rrf_k)),
+        top_n=None,
     )
+    by_id = {m.id: m for m in rrf.ordered_items}
+    scores = dict(rrf.scores)
+    if recency_decay_half_life_days > 0:
+        scores = {
+            mid: _score_with_recency_decay(
+                score,
+                by_id[mid],
+                half_life_days=recency_decay_half_life_days,
+            )
+            for mid, score in scores.items()
+            if mid in by_id
+        }
+    ordered_ids = sorted(
+        scores,
+        key=lambda mid: (
+            -scores[mid],
+            -(getattr(by_id[mid], "activation", 0.0) or 0.0),
+            str(mid),
+        ),
+    )
+    ordered = [by_id[mid] for mid in ordered_ids[:top_n]]
     # Preserve the legacy return shape: list[ModelRow], dict[UUID, float].
-    return list(rrf.ordered_items), dict(rrf.scores)
+    return ordered, scores
+
+
+def _score_with_recency_decay(
+    score: float,
+    model: ModelRow,
+    *,
+    half_life_days: float,
+) -> float:
+    if half_life_days <= 0:
+        return score
+    created_at = getattr(model, "created_at", None)
+    if not isinstance(created_at, datetime):
+        return score
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age_days = max(
+        0.0,
+        (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
+        / 86400.0,
+    )
+    multiplier = math.exp(-math.log(2.0) * age_days / max(half_life_days, 0.001))
+    return score * multiplier
 
 
 def _merge_observations(pathway_results: list[PathwayResult]) -> list[ObservationRow]:
@@ -663,7 +763,7 @@ async def primary_retrieve(
     """
     cfg = config or CONFIG
     _coerce_trigger_seed_occurred_at(trigger)
-    weights = _TRIGGER_WEIGHTS.get(trigger.kind)
+    weights = _trigger_weights(trigger.kind, cfg)
     if weights is None:
         raise ValidationError(
             f"unknown trigger kind {trigger.kind!r}",
@@ -685,6 +785,9 @@ async def primary_retrieve(
             "temporal_max_models": cfg.temporal_max_models,
             "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
             "scoring_mode": cfg.scoring_mode,
+            "rrf_k": cfg.rrf_k,
+            "trigger_weights_overridden": bool(cfg.trigger_weights_json),
+            "recency_decay_half_life_days": cfg.recency_decay_half_life_days,
             "assembler_use_mmr": cfg.assembler_use_mmr,
             "assembler_budget_models": cfg.assembler_budget_models,
             "assembler_budget_observations": cfg.assembler_budget_observations,
@@ -941,6 +1044,8 @@ async def primary_retrieve(
     models, scores = _merge_and_rank_models(
         pathway_results, weights, top_n=top_n,
         scoring_mode=cfg.scoring_mode,
+        rrf_k=cfg.rrf_k,
+        recency_decay_half_life_days=cfg.recency_decay_half_life_days,
     )
     observations = _merge_observations(pathway_results)
     trigger_observations = await _fetch_trigger_observations(trigger, conn)

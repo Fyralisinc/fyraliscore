@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.http_headers import safe_headers
 from services.app.gateway.auth import AuthContext, create_session
 from services.ingest.ingestion.core import (
     IngestResult,
@@ -181,7 +182,7 @@ def build_core_router() -> APIRouter:
                 actor_repo=deps.actor_repo,
                 alias_repo=deps.alias_repo,
                 embedder=deps.embedder,
-                request_headers=dict(request.headers),
+                request_headers=safe_headers(request.headers),
             )
         except HandlerNotFound:
             return JSONResponse(

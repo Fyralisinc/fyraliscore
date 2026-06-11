@@ -425,6 +425,9 @@ async def record_think_run_cost(
     latency_total_ms: int,
     retry_count: int = 0,
     model_name: str | None = None,
+    purpose: str = "main_reasoning",
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> None:
     """Insert a row into `think_run_costs`. Runs post-commit, best-effort.
 
@@ -454,6 +457,15 @@ async def record_think_run_cost(
         )
         outcome = "failed"
 
+    allowed_purposes = {"main_reasoning", "question_planning", "parse_repair"}
+    if purpose not in allowed_purposes:
+        _log.warning(
+            "think.cost_record.unknown_purpose",
+            purpose=purpose,
+            trigger_id=str(trigger_id),
+        )
+        purpose = "main_reasoning"
+
     # Also update the in-process counter. Callers that want synchronous
     # cost totals (tests, dashboards) can read METRICS.
     METRICS.record_cost(
@@ -472,9 +484,12 @@ async def record_think_run_cost(
                   (trigger_id, tenant_id, trigger_kind,
                    llm_calls_count, llm_input_tokens_total,
                    llm_output_tokens_total, llm_cost_usd,
-                   latency_total_ms, retry_count, outcome, model_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT (trigger_id, computed_at) DO NOTHING
+                   latency_total_ms, retry_count, outcome, model_name,
+                   purpose, cache_read_input_tokens,
+                   cache_creation_input_tokens)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                        $12, $13, $14)
+                ON CONFLICT (trigger_id, computed_at, purpose) DO NOTHING
                 """,
                 trigger_id,
                 tenant_id,
@@ -487,6 +502,9 @@ async def record_think_run_cost(
                 int(retry_count),
                 outcome,
                 model_name,
+                purpose,
+                int(cache_read_input_tokens),
+                int(cache_creation_input_tokens),
             )
     except Exception as e:
         # Cost recording is advisory — never crash the run for it.

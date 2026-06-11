@@ -61,6 +61,8 @@ from services.reasoning.synthesis.operational_facets import infer_operational_qu
 
 _log = structlog.get_logger(__name__)
 _MAX_LEXICAL_DISCOVERY_PATTERNS = 12
+_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS = 1500
+_SPARSE_STRONG_SINGLE_MATCH_MAX_DF = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -2123,6 +2125,15 @@ def _sparse_lookup_terms(
     return out
 
 
+def _sparse_strong_single_match_terms(terms: list[str]) -> list[str]:
+    return [
+        term
+        for term in terms
+        if len(term) >= 4
+        and any(ch.isdigit() or ch in {"-", "_"} for ch in term)
+    ]
+
+
 def _sparse_lookup_groups(
     terms: list[str] | tuple[str, ...],
     *,
@@ -2187,7 +2198,8 @@ async def _fetch_search_document_matches(
     if microquery_enabled and len(patterns) > 1:
         bounded_patterns = patterns[: max(1, int(microquery_terms))]
         per_term_limit = max(1, int(microquery_per_term_limit))
-        rows = list(await conn.fetch(
+        rows = await _fetch_lexical_fallback_rows(
+            conn,
             """
             WITH patterns AS (
               SELECT pattern, ord
@@ -2236,7 +2248,7 @@ async def _fetch_search_document_matches(
             max(1, int(limit)),
             bounded_patterns,
             per_term_limit,
-        ))
+        )
         if rows:
             return rows
 
@@ -2250,7 +2262,8 @@ async def _fetch_search_document_matches(
     match_expr = " + ".join(count_parts)
     where_expr = " OR ".join(like_checks)
 
-    return list(await conn.fetch(
+    return await _fetch_lexical_fallback_rows(
+        conn,
         f"""
         WITH matching AS MATERIALIZED (
             SELECT msd.model_id,
@@ -2276,7 +2289,7 @@ async def _fetch_search_document_matches(
         tenant_id,
         max(1, int(limit)),
         *patterns,
-    ))
+    )
 
 
 async def _fetch_sparse_term_matches(
@@ -2288,74 +2301,135 @@ async def _fetch_sparse_term_matches(
     max_terms: int,
     per_term_limit: int,
 ) -> list[asyncpg.Record]:
-    lookup_groups = _sparse_lookup_groups(terms, max_groups=max_terms)
-    if not lookup_groups or limit <= 0:
+    lookup_terms = _sparse_lookup_terms(terms, max_terms=max_terms)
+    if not lookup_terms or limit <= 0:
         return []
     table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
     if table is None:
         return []
-    return list(await conn.fetch(
+    return await _fetch_lexical_fallback_rows(
+        conn,
         """
-        WITH group_tokens AS MATERIALIZED (
-          SELECT g.group_ord::int,
-                 token.value::text AS term
-          FROM jsonb_array_elements($3::jsonb)
-               WITH ORDINALITY AS g(tokens, group_ord)
-          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        WITH query_terms AS MATERIALIZED (
+          SELECT term::text,
+                 ord::int AS term_ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS q(term, ord)
         ),
-        group_sizes AS MATERIALIZED (
-          SELECT group_ord,
-                 count(DISTINCT term)::int AS token_count
-          FROM group_tokens
-          GROUP BY group_ord
+        query_meta AS MATERIALIZED (
+          SELECT count(*)::int AS query_term_count
+          FROM query_terms
         ),
-        matched AS MATERIALIZED (
-          SELECT mst.model_id,
-                 gt.group_ord,
-                 count(DISTINCT gt.term)::int AS matched_terms
-          FROM group_tokens gt
-          JOIN model_sparse_terms mst
+        active_models AS MATERIALIZED (
+          SELECT greatest(1, count(*)::int)::float8 AS active_model_count
+          FROM models
+          WHERE tenant_id = $1
+            AND status = 'active'
+        ),
+        term_stats AS MATERIALIZED (
+          SELECT qt.term,
+                 qt.term_ord,
+                 count(mstat.id)::int AS term_df
+          FROM query_terms qt
+          LEFT JOIN model_sparse_terms mst
             ON mst.tenant_id = $1
            AND mst.status = 'active'
-           AND mst.term = gt.term
-          GROUP BY mst.model_id, gt.group_ord
+           AND mst.term = qt.term
+          LEFT JOIN models mstat
+            ON mstat.id = mst.model_id
+           AND mstat.tenant_id = mst.tenant_id
+           AND mstat.status = 'active'
+          GROUP BY qt.term, qt.term_ord
         ),
-        group_hits AS MATERIALIZED (
-          SELECT matched.model_id,
-                 matched.group_ord,
-                 group_sizes.token_count
-          FROM matched
-          JOIN group_sizes
-            ON group_sizes.group_ord = matched.group_ord
-          WHERE matched.matched_terms = group_sizes.token_count
+        term_hits AS MATERIALIZED (
+          SELECT ts.term,
+                 ts.term_ord,
+                 ts.term_df,
+                 hit.model_id,
+                 hit.weight,
+                 (
+                   ln((am.active_model_count + 1.0) / (ts.term_df::float8 + 1.0))
+                   + 1.0
+                 )::float8 AS idf
+          FROM term_stats ts
+          CROSS JOIN active_models am
+          CROSS JOIN LATERAL (
+            SELECT mst.model_id,
+                   mst.weight
+            FROM model_sparse_terms mst
+            JOIN models mhit
+              ON mhit.id = mst.model_id
+             AND mhit.tenant_id = mst.tenant_id
+             AND mhit.status = 'active'
+            WHERE mst.tenant_id = $1
+              AND mst.status = 'active'
+              AND mst.term = ts.term
+            ORDER BY mst.weight DESC,
+                     mhit.activation DESC,
+                     mhit.created_at DESC,
+                     mst.model_id
+            LIMIT $4
+          ) hit
         ),
         scored AS MATERIALIZED (
           SELECT model_id,
-                 count(*)::int AS match_count,
-                 sum(token_count)::int AS term_match_count,
-                 min(group_ord)::int AS first_group_ord
-          FROM group_hits
+                 count(DISTINCT term)::int AS match_count,
+                 sum(weight * idf)::real AS weighted_score,
+                 min(term_ord)::int AS first_term_ord,
+                 bool_or(
+                   term = ANY($5::text[])
+                   AND term_df <= $6::int
+                 ) AS has_strong_singleton
+          FROM term_hits
           GROUP BY model_id
         )
         SELECT m.id,
                m."natural",
-               scored.term_match_count AS match_count
+               scored.match_count
         FROM scored
+        CROSS JOIN query_meta
         JOIN models m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
-        ORDER BY scored.term_match_count DESC,
-                 scored.match_count DESC,
-                 scored.first_group_ord ASC,
+          AND (
+            query_meta.query_term_count <= 1
+            OR scored.match_count >= LEAST(2, query_meta.query_term_count)
+            OR scored.has_strong_singleton
+          )
+        ORDER BY scored.match_count DESC,
+                 scored.weighted_score DESC,
+                 scored.first_term_ord ASC,
                  m.activation DESC,
                  m.created_at DESC
         LIMIT $2
         """,
         tenant_id,
         max(1, int(limit)),
-        json.dumps(lookup_groups),
-    ))
+        lookup_terms,
+        max(1, int(per_term_limit)),
+        _sparse_strong_single_match_terms(lookup_terms),
+        _SPARSE_STRONG_SINGLE_MATCH_MAX_DF,
+    )
+
+
+async def _fetch_lexical_fallback_rows(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> list[asyncpg.Record]:
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SET LOCAL statement_timeout = "
+                f"{_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS}"
+            )
+            return list(await conn.fetch(query, *args))
+    except asyncpg.QueryCanceledError:
+        _log.warning(
+            "sage.reader.lexical_fallback_statement_timeout",
+            timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
+        )
+        return []
 
 
 def _belief_address_primitives_for(primitive: str) -> tuple[str, ...]:

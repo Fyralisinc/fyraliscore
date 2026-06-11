@@ -94,7 +94,6 @@ LOCAL_COMPACTION_EXTRA_TABLES = {
     "retrieval_plans",
     "sage_reader_activations",
     "sage_reader_decision_attributions",
-    "signal_routing_decisions",
     "think_run_artifacts",
     "think_runs",
 }

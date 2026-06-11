@@ -207,6 +207,12 @@ class BeliefProposition(_PropositionBase):
     affected_teams: list[str] | None = None
     evidence_event_ids: list[str] | None = None
     open_falsifier: str | None = None
+    # Informal second-order belief support: e.g. "Maya doubts the deadline".
+    # Stored in the existing proposition JSONB; no schema migration required.
+    about_model_id: str | None = None
+    belief_holder_actor_id: str | None = None
+    second_order_attitude: str | None = None
+    belief_target_text: str | None = None
 
     @model_validator(mode="after")
     def _check_belief_content(self) -> "BeliefProposition":
@@ -223,11 +229,13 @@ class BeliefProposition(_PropositionBase):
                 "matched_context",
                 "assessment",
                 "hypothesis_text",
+                "belief_target_text",
                 "nature",
                 "situation",
             ),
         )
         _check_situation_shape(self)
+        _check_second_order_shape(self)
         return self
 
 
@@ -306,6 +314,31 @@ def _check_situation_shape(model: BaseModel) -> None:
             raise ValueError(f"{field_name} must be non-empty when provided")
 
 
+def _check_second_order_shape(model: BaseModel) -> None:
+    extras = getattr(model, "__pydantic_extra__", None) or {}
+    attitude = (
+        getattr(model, "second_order_attitude", None)
+        or extras.get("second_order_attitude")
+    )
+    about_model_id = getattr(model, "about_model_id", None) or extras.get("about_model_id")
+    holder_id = (
+        getattr(model, "belief_holder_actor_id", None)
+        or extras.get("belief_holder_actor_id")
+    )
+    if attitude is None and about_model_id is None and holder_id is None:
+        return
+    if attitude is not None and (not isinstance(attitude, str) or not attitude.strip()):
+        raise ValueError("second_order_attitude must be non-empty when provided")
+    if about_model_id is not None and (
+        not isinstance(about_model_id, str) or not about_model_id.strip()
+    ):
+        raise ValueError("about_model_id must be non-empty when provided")
+    if holder_id is not None and (
+        not isinstance(holder_id, str) or not holder_id.strip()
+    ):
+        raise ValueError("belief_holder_actor_id must be non-empty when provided")
+
+
 def _check_recommendation_shape(model: NormProposition) -> None:
     if "target_actor_id" not in model.model_fields_set:
         raise ValueError("recommendation.target_actor_id field is required")
@@ -377,6 +410,7 @@ def canonicalize_proposition(raw: dict[str, Any]) -> dict[str, Any]:
     if kind in _CANONICAL_KINDS:
         canonical = dict(raw)
         _apply_stance_defaults(canonical)
+        _normalize_role_aliases(canonical)
         return canonical
     stance = _LEGACY_TO_STANCE.get(kind)
     if stance is None:
@@ -399,6 +433,7 @@ def canonicalize_proposition(raw: dict[str, Any]) -> dict[str, Any]:
         else:
             canonical.setdefault(key, value)
     _apply_stance_defaults(canonical)
+    _normalize_role_aliases(canonical)
     return canonical
 
 
@@ -485,6 +520,17 @@ def _apply_stance_defaults(prop: dict[str, Any]) -> None:
     elif kind == "norm":
         for key, value in _LEGACY_GRAMMAR["recommendation"].items():
             prop.setdefault(key, value)
+
+
+def _normalize_role_aliases(prop: dict[str, Any]) -> None:
+    """Canonicalize provider-friendly aliases for strict role contracts."""
+    if prop.get("kind") != "belief" or prop.get("claim_role") != "hypothesis":
+        return
+    if isinstance(prop.get("hypothesis_text"), str) and prop["hypothesis_text"].strip():
+        return
+    assertion = prop.get("assertion")
+    if isinstance(assertion, str) and assertion.strip():
+        prop["hypothesis_text"] = assertion.strip()
 
 
 def validate_proposition(raw: dict[str, Any]) -> _PropositionBase:

@@ -17,10 +17,12 @@ Shape:
     )
 
 The provider picks up config from env:
-    LLM_PROVIDER   = "anthropic" | "openai" | "deepseek" | "codex"
-    LLM_API_KEY    = ...   # or provider-specific key
-    LLM_MODEL      = "claude-opus-4-7" | "gpt-4o" | "gpt-5.3-codex" | ...
+    LLM_PROVIDER   = "codex" for the Fyralis app path
+    CODEX_API_KEY  = ...
+    CODEX_MODEL    = "gpt-5.5" | "gpt-5.3-codex" | ...
+    CODEX_REASONING_EFFORT = "medium"
     LLM_TIMEOUT_SECONDS = 30
+    LLM_MAX_RETRIES = 1   # parse/schema repair retries; 0 disables repair calls
 
 Implements retry-on-parse-failure per Prompt 0.2 + TK-5. After
 strict mode, parse errors are rare; the default `max_retries=1` yields
@@ -51,9 +53,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
+import structlog
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from lib.shared.errors import CompanyOSError
+
+_log = structlog.get_logger(__name__)
+
+
+def _llm_strict_config() -> bool:
+    """Cost-plan §3.1: when set, config footguns raise instead of warning."""
+    return os.environ.get("LLM_STRICT_CONFIG", "0").strip().lower() in {
+        "1", "on", "true", "yes",
+    }
+
+
+def _config_footgun(message: str, **fields: Any) -> None:
+    """Surface a provider-config footgun. Logs a warning so it is visible (it
+    was silent before), and raises `LLMConfigError` when `LLM_STRICT_CONFIG` is
+    set for environments that prefer fail-fast."""
+    _log.warning("llm.config_footgun", message=message, **fields)
+    if _llm_strict_config():
+        raise LLMConfigError(message, **fields)
 
 
 # ---------------------------------------------------------------------
@@ -68,22 +89,57 @@ from lib.shared.errors import CompanyOSError
 # Unknown models fall through to `default`.
 # ---------------------------------------------------------------------
 
+# OP-2 cost-plan §0.1: each row may carry optional cache-tier rates so
+# `compute_cost_usd` stops pricing cache-read/-write tokens at the full input
+# rate. `cache_read_per_mtok` = price of a prompt-cache *hit* token;
+# `cache_write_per_mtok` = price of a cache *creation* token (Anthropic only;
+# OpenAI/DeepSeek caching is automatic with no write premium). When a rate is
+# absent, the full `input_per_mtok` is used — conservative (never understates).
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    # DeepSeek — May 2025 on-demand tiers.
-    "deepseek-reasoner": {"input_per_mtok": 0.55, "output_per_mtok": 2.19},
-    "deepseek-chat": {"input_per_mtok": 0.27, "output_per_mtok": 1.10},
-    # Anthropic — rough tier; the exact number is subject to model-rev drift,
-    # but the scale is right. Edit when a new Claude rev ships.
-    "claude-opus-4-7": {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
-    "claude-sonnet-4-5": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
-    # OpenAI — rough placeholders; update with the live pricing page before
-    # relying on cost numbers in dashboards.
-    "gpt-4o": {"input_per_mtok": 2.5, "output_per_mtok": 10.0},
-    # Codex / GPT-5 models. Keep these on fallback pricing until the
-    # deployed API pricing table is intentionally pinned for Fyralis.
-    "gpt-5.3-codex": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
-    "gpt-5.3-codex-spark": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
-    "gpt-5.5": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
+    # DeepSeek — on-demand tiers; cache-hit ≈ 0.1× input (approximate, repriced
+    # periodically — DeepSeek is not the production provider, verify before use).
+    "deepseek-reasoner": {
+        "input_per_mtok": 0.55, "output_per_mtok": 2.19,
+        "cache_read_per_mtok": 0.14,
+    },
+    "deepseek-chat": {
+        "input_per_mtok": 0.27, "output_per_mtok": 1.10,
+        "cache_read_per_mtok": 0.07,
+    },
+    # Anthropic — base tier subject to model-rev drift; non-production path
+    # (prod is Codex), so these are dashboards-only. Cache rates follow
+    # Anthropic's standard multipliers: read = 0.1× input, write (5-min TTL)
+    # = 1.25× input. TODO: pin the base tier to a live quote before relying on
+    # absolute Anthropic $ in dashboards.
+    "claude-opus-4-7": {
+        "input_per_mtok": 15.0, "output_per_mtok": 75.0,
+        "cache_read_per_mtok": 1.5, "cache_write_per_mtok": 18.75,
+    },
+    "claude-sonnet-4-5": {
+        "input_per_mtok": 3.0, "output_per_mtok": 15.0,
+        "cache_read_per_mtok": 0.30, "cache_write_per_mtok": 3.75,
+    },
+    # OpenAI — gpt-4o cached input is 50% off standard input.
+    "gpt-4o": {
+        "input_per_mtok": 2.5, "output_per_mtok": 10.0,
+        "cache_read_per_mtok": 1.25,
+    },
+    # Codex / GPT-5 family — production path. Cached input ≈ 0.1× input for the
+    # GPT-5/Codex generation (e.g. gpt-5.5 $5→$0.50, codex $1.75→$0.175). These
+    # remain approximate until the deployed table is pinned for Fyralis, but are
+    # close enough that 1.1's cache savings show up directionally in dashboards.
+    "gpt-5.3-codex": {
+        "input_per_mtok": 1.75, "output_per_mtok": 14.0,
+        "cache_read_per_mtok": 0.175,
+    },
+    "gpt-5.3-codex-spark": {
+        "input_per_mtok": 1.75, "output_per_mtok": 14.0,
+        "cache_read_per_mtok": 0.175,
+    },
+    "gpt-5.5": {
+        "input_per_mtok": 5.0, "output_per_mtok": 30.0,
+        "cache_read_per_mtok": 0.50,
+    },
     # Fallback — conservative enough that an unknown model is not free.
     "default": {"input_per_mtok": 1.0, "output_per_mtok": 3.0},
 }
@@ -110,13 +166,29 @@ def compute_cost_usd(
     input_tokens: int,
     output_tokens: int,
     model_name: str | None,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> float:
-    """Compute call cost in USD for the given token counts + model."""
+    """Compute call cost in USD for the given token counts + model.
+
+    `input_tokens` is the *full* prompt-token count (cached + uncached);
+    `cache_read_tokens` / `cache_creation_tokens` are the cached subsets, billed
+    at the model's discounted cache rates. The uncached remainder is billed at
+    the full input rate. Cache rates default to the full input rate when a model
+    has no cache tier configured, so this never understates cost. Backward
+    compatible: callers that pass only `input_tokens`/`output_tokens` get the
+    same number as before (cache subsets default to 0)."""
     pricing = get_pricing_for_model(model_name)
+    input_rate = pricing["input_per_mtok"]
+    cache_read_rate = pricing.get("cache_read_per_mtok", input_rate)
+    cache_write_rate = pricing.get("cache_write_per_mtok", input_rate)
+    uncached_input = max(0, input_tokens - cache_read_tokens - cache_creation_tokens)
     return (
-        input_tokens * pricing["input_per_mtok"] / 1_000_000.0
-        + output_tokens * pricing["output_per_mtok"] / 1_000_000.0
-    )
+        uncached_input * input_rate
+        + cache_read_tokens * cache_read_rate
+        + cache_creation_tokens * cache_write_rate
+        + output_tokens * pricing["output_per_mtok"]
+    ) / 1_000_000.0
 
 
 def _estimate_tokens_from_text(*parts: str | None) -> int:
@@ -127,17 +199,40 @@ def _estimate_tokens_from_text(*parts: str | None) -> int:
     return max(1, (char_count + 3) // 4)
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
 @dataclass
 class LLMUsage:
     """One call's usage + cost accounting. Accumulated across a Think
     run by `LLMUsageAggregator`. Populated when the provider can extract
     token counts from the SDK response (Anthropic + OpenAI both return
     usage metadata; DeepSeek via the OpenAI-compatible endpoint does
-    too). Zeroed when not available so callers can always sum safely."""
+    too). Zeroed when not available so callers can always sum safely.
+
+    Cost-plan §0.1: `cache_read_tokens` / `cache_creation_tokens` are the cached
+    subsets of `input_tokens` (which stays the *full* input count), so existing
+    `total_input_tokens` consumers are unaffected. Populated only on transports
+    that surface cache metadata (OpenAI/DeepSeek `prompt_*cache*`, Anthropic
+    `cache_*_input_tokens`); the Codex CLI/app-server estimated path leaves them
+    at 0."""
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     model_name: str | None = None
     cost_usd: float = 0.0
+    # Cost-plan §0.1: which slice of a Think run made this call —
+    # 'main_reasoning' (default), 'question_planning', or 'parse_repair'.
+    # Set from the `_CURRENT_USAGE_PURPOSE` contextvar at record time.
+    purpose: str = "main_reasoning"
 
 
 @dataclass
@@ -168,8 +263,46 @@ class LLMUsageAggregator:
         return sum(c.output_tokens for c in self.calls)
 
     @property
+    def total_cache_read_tokens(self) -> int:
+        return sum(c.cache_read_tokens for c in self.calls)
+
+    @property
+    def total_cache_creation_tokens(self) -> int:
+        return sum(c.cache_creation_tokens for c in self.calls)
+
+    @property
     def total_cost_usd(self) -> float:
         return sum(c.cost_usd for c in self.calls)
+
+    def by_purpose(self) -> dict[str, "LLMUsage"]:
+        """Cost-plan §0.1: aggregate calls per `purpose` so the ledger can
+        separate main-reasoning spend from question-planning and parse-repair.
+        Returns a `{purpose: summed LLMUsage}` map (cost summed, model_name from
+        the last call of that purpose). Empty when no calls were recorded."""
+        out: dict[str, LLMUsage] = {}
+        for c in self.calls:
+            agg = out.get(c.purpose)
+            if agg is None:
+                out[c.purpose] = LLMUsage(
+                    input_tokens=c.input_tokens,
+                    output_tokens=c.output_tokens,
+                    cache_read_tokens=c.cache_read_tokens,
+                    cache_creation_tokens=c.cache_creation_tokens,
+                    model_name=c.model_name,
+                    cost_usd=c.cost_usd,
+                    purpose=c.purpose,
+                )
+            else:
+                agg.input_tokens += c.input_tokens
+                agg.output_tokens += c.output_tokens
+                agg.cache_read_tokens += c.cache_read_tokens
+                agg.cache_creation_tokens += c.cache_creation_tokens
+                agg.cost_usd += c.cost_usd
+                agg.model_name = c.model_name or agg.model_name
+        return out
+
+    def call_count_for(self, purpose: str) -> int:
+        return sum(1 for c in self.calls if c.purpose == purpose)
 
     def reset(self) -> None:
         self.calls.clear()
@@ -198,6 +331,24 @@ _CURRENT_USAGE_AGG: contextvars.ContextVar[LLMUsageAggregator | None] = (
 )
 
 
+_CURRENT_USAGE_PURPOSE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_CURRENT_USAGE_PURPOSE", default="main_reasoning"
+)
+
+
+@contextmanager
+def using_usage_purpose(purpose: str) -> Iterator[str]:
+    """Cost-plan §0.1: tag every `_record_usage` call made within this block
+    with `purpose` (e.g. 'question_planning', 'parse_repair') so the ledger can
+    attribute spend per slice of a Think run. Task-local; nests/restores on exit.
+    """
+    token = _CURRENT_USAGE_PURPOSE.set(purpose)
+    try:
+        yield purpose
+    finally:
+        _CURRENT_USAGE_PURPOSE.reset(token)
+
+
 @contextmanager
 def using_usage_aggregator(agg: LLMUsageAggregator) -> Iterator[LLMUsageAggregator]:
     """Context manager: route `_record_usage` to `agg` for the duration.
@@ -213,44 +364,62 @@ def using_usage_aggregator(agg: LLMUsageAggregator) -> Iterator[LLMUsageAggregat
         _CURRENT_USAGE_AGG.reset(token)
 
 
-def _extract_anthropic_usage(response: Any) -> tuple[int, int]:
-    """Anthropic response `.usage.input_tokens` / `.usage.output_tokens`."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0, 0
-    return int(getattr(usage, "input_tokens", 0) or 0), int(
-        getattr(usage, "output_tokens", 0) or 0
-    )
+def _usage_field(obj: Any, *names: str) -> Any:
+    """First truthy value among `names`, supporting dict or attribute access.
+    Used to read provider usage blocks that may be SDK objects or plain dicts."""
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if value:
+            return value
+    return None
 
 
-def _extract_openai_usage(response: Any) -> tuple[int, int]:
-    """OpenAI-compatible usage from Chat Completions or Responses."""
+def _extract_anthropic_usage(response: Any) -> tuple[int, int, int, int]:
+    """Anthropic usage → (full_input, output, cache_read, cache_creation).
+
+    Anthropic reports `input_tokens` *excluding* cached/created tokens, plus
+    separate `cache_read_input_tokens` / `cache_creation_input_tokens`. We
+    return `full_input` = the sum so callers see total prompt size; the cache
+    subsets are priced at their discounted/premium rates in `compute_cost_usd`.
+    """
     usage = getattr(response, "usage", None)
     if usage is None:
-        return 0, 0
-    if isinstance(usage, dict):
-        input_tokens = (
-            usage.get("prompt_tokens")
-            or usage.get("input_tokens")
-            or 0
-        )
-        output_tokens = (
-            usage.get("completion_tokens")
-            or usage.get("output_tokens")
-            or 0
-        )
-        return int(input_tokens), int(output_tokens)
-    input_tokens = (
-        getattr(usage, "prompt_tokens", None)
-        or getattr(usage, "input_tokens", None)
-        or 0
+        return 0, 0, 0, 0
+    base_input = int(_usage_field(usage, "input_tokens") or 0)
+    output = int(_usage_field(usage, "output_tokens") or 0)
+    cache_read = int(_usage_field(usage, "cache_read_input_tokens") or 0)
+    cache_creation = int(_usage_field(usage, "cache_creation_input_tokens") or 0)
+    return base_input + cache_read + cache_creation, output, cache_read, cache_creation
+
+
+def _extract_openai_usage(response: Any) -> tuple[int, int, int, int]:
+    """OpenAI-compatible usage → (full_input, output, cache_read, cache_creation).
+
+    For OpenAI/Codex/DeepSeek the reported `prompt_tokens` already *includes*
+    cached tokens, so `full_input` = prompt_tokens and the cached subset is read
+    from `prompt_tokens_details.cached_tokens` (OpenAI/Codex Responses + Chat) or
+    the flat `prompt_cache_hit_tokens` field (DeepSeek). There is no cache-write
+    premium on these providers, so cache_creation is always 0.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0, 0, 0
+    full_input = int(_usage_field(usage, "prompt_tokens", "input_tokens") or 0)
+    output = int(_usage_field(usage, "completion_tokens", "output_tokens") or 0)
+    details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage, dict)
+        else getattr(usage, "prompt_tokens_details", None)
     )
-    output_tokens = (
-        getattr(usage, "completion_tokens", None)
-        or getattr(usage, "output_tokens", None)
-        or 0
-    )
-    return int(input_tokens), int(output_tokens)
+    cache_read = 0
+    if details is not None:
+        cache_read = int(_usage_field(details, "cached_tokens") or 0)
+    if cache_read == 0:
+        # DeepSeek surfaces cache hits as a flat top-level field.
+        cache_read = int(_usage_field(usage, "prompt_cache_hit_tokens") or 0)
+    # Cached subset can't exceed the full prompt size.
+    cache_read = min(cache_read, full_input)
+    return full_input, output, cache_read, 0
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -527,7 +696,7 @@ def get_timeout_for_model(model_name: str | None) -> int:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    provider: str                  # "anthropic" | "openai" | "deepseek" | "codex"
+    provider: str                  # Fyralis app path uses "codex"
     api_key: str
     model: str
     timeout_s: float = 30.0
@@ -543,7 +712,14 @@ class LLMConfig:
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
-        provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+        raw_provider = os.environ.get("LLM_PROVIDER")
+        provider = (raw_provider or "codex").lower()
+        if raw_provider is None:
+            _config_footgun(
+                "LLM_PROVIDER unset — defaulting to 'codex'. Set "
+                "LLM_PROVIDER=codex explicitly in deployment env files.",
+                provider=provider,
+            )
         if provider == "deepseek":
             api_key = (
                 os.environ.get("DEEPSEEK_API_KEY", "")
@@ -564,6 +740,14 @@ class LLMConfig:
         else:
             api_key = os.environ.get("LLM_API_KEY", "")
         model = _model_from_env(provider)
+        if provider == "deepseek" and not os.environ.get("LLM_MODEL"):
+            # Compatibility-only path. Fyralis production uses Codex, but old
+            # harnesses can still opt into DeepSeek; make its implicit model loud.
+            _config_footgun(
+                "Compatibility-only LLM_PROVIDER=deepseek without LLM_MODEL "
+                f"— defaulting to {model!r}. Set LLM_MODEL explicitly.",
+                provider=provider, model=model,
+            )
         # TK-1: if LLM_TIMEOUT_SECONDS is explicitly set, honour it (back-compat);
         # otherwise derive from per-model tier. `get_timeout_for_model` itself
         # respects LLM_TIMEOUT_OVERRIDE_MS for test forcing.
@@ -589,6 +773,7 @@ class LLMConfig:
             api_key=api_key,
             model=model,
             timeout_s=timeout,
+            max_retries=_env_int("LLM_MAX_RETRIES", cls.max_retries, minimum=0),
             reasoning_effort=(
                 _codex_reasoning_effort()
                 if provider == "codex"
@@ -619,7 +804,7 @@ def _codex_model_from_env() -> str:
     config_model = _codex_config_model()
     # Local Codex transports should behave like the Codex CLI/IDE: the
     # user's ~/.codex/config.toml selects the subscription-backed model.
-    # `LLM_MODEL` is a provider-generic knob and can accidentally pin a
+    # `LLM_MODEL` is a legacy provider-generic knob and can accidentally pin a
     # platform/API model in local dogfood. Use CODEX_MODEL for an explicit
     # Codex override.
     if _codex_transport() in {"app-server", "cli"} and config_model:
@@ -838,8 +1023,27 @@ class LLMProvider(abc.ABC):
     def set_usage_aggregator(self, agg: LLMUsageAggregator | None) -> None:
         self._usage_aggregator = agg
 
+    # -----------------------------------------------------------------
+    # Cost-plan §1.2 — output-schema enforcement capability.
+    # -----------------------------------------------------------------
+    def enforces_output_schema(self, schema: type[BaseModel]) -> bool:
+        """True only when this provider *server-side enforces* `schema` (so
+        prose that merely re-enumerates the JSON shape the schema already
+        constrains is redundant and can be leaned out of the prompt).
+
+        Default False: most transports (Anthropic, OpenAI Chat, Codex
+        Responses/CLI) send the schema as a non-binding hint, so the prose
+        contract is load-bearing and must stay. Only DeepSeek strict
+        tool-calling overrides this to True."""
+        return False
+
     def _record_usage(
-        self, input_tokens: int, output_tokens: int,
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
     ) -> None:
         # Week 5: prefer a task-local aggregator (set via
         # `using_usage_aggregator`) over the instance-wide one so
@@ -851,13 +1055,18 @@ class LLMProvider(abc.ABC):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             model_name=self.config.model,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
         agg.record(
             LLMUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
                 model_name=self.config.model,
                 cost_usd=cost,
+                purpose=_CURRENT_USAGE_PURPOSE.get(),
             )
         )
 
@@ -989,13 +1198,26 @@ class LLMProvider(abc.ABC):
                 else f"{base_user}\n\nPrior attempt failed validation. "
                      f"Fix: {repair_note}. Return ONLY valid JSON matching the schema."
             )
-            raw = await self._raw_call(
-                system=system,
-                user=user_msg,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                schema_hint=schema_hint,
-            )
+            # Cost-plan §0.1: attribute repair re-calls to the 'parse_repair'
+            # purpose so they're distinguishable in the cost ledger from the
+            # first (ambient-purpose) attempt.
+            if attempt == 0:
+                raw = await self._raw_call(
+                    system=system,
+                    user=user_msg,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    schema_hint=schema_hint,
+                )
+            else:
+                with using_usage_purpose("parse_repair"):
+                    raw = await self._raw_call(
+                        system=system,
+                        user=user_msg,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        schema_hint=schema_hint,
+                    )
 
             _, err = _try_parse(raw, schema)
             if err is None:
@@ -1119,8 +1341,12 @@ class AnthropicProvider(LLMProvider):
         if not response.content:
             raise LLMError("empty response from anthropic", model=self.config.model)
         # OP-2: record input/output tokens if an aggregator is installed.
-        inp, outp = _extract_anthropic_usage(response)
-        self._record_usage(inp, outp)
+        inp, outp, cache_read, cache_creation = _extract_anthropic_usage(response)
+        self._record_usage(
+            inp, outp,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+        )
         # Concatenate text blocks.
         return "".join(
             getattr(b, "text", "") for b in response.content
@@ -1191,8 +1417,12 @@ class OpenAIProvider(LLMProvider):
         if not content:
             raise LLMError("empty response from openai", model=self.config.model)
         # OP-2: record input/output tokens if an aggregator is installed.
-        inp, outp = _extract_openai_usage(response)
-        self._record_usage(inp, outp)
+        inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
+        self._record_usage(
+            inp, outp,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+        )
         return content
 
 
@@ -1296,8 +1526,12 @@ class CodexProvider(LLMProvider):
             )
 
         response = await _through_breaker(self.config.provider, _do_call)
-        inp, outp = _extract_openai_usage(response)
-        self._record_usage(inp, outp)
+        inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
+        self._record_usage(
+            inp, outp,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+        )
         content = _responses_output_text(response)
         if not content:
             raise LLMError("empty response from codex", model=self.config.model)
@@ -1821,6 +2055,16 @@ class DeepSeekProvider(OpenAIProvider):
     base_url = "https://api.deepseek.com"
     strict_base_url = "https://api.deepseek.com"
 
+    def enforces_output_schema(self, schema: type[BaseModel]) -> bool:
+        """Cost-plan §1.2: DeepSeek strict tool-calling constrains the decoder
+        server-side for schemas with a registered strict variant — the only
+        path where the JSON-shape prose is redundant. Mirrors the gate in
+        `_structured_raw`."""
+        return (
+            _strict_schema_for(schema) is not None
+            and _deepseek_supports_strict_tool_calling(self.config.model)
+        )
+
     async def _structured_raw(
         self,
         *,
@@ -1893,8 +2137,12 @@ class DeepSeekProvider(OpenAIProvider):
                     model=self.config.model,
                 )
             # OP-2: record usage (strict-mode responses carry the same usage block).
-            inp, outp = _extract_openai_usage(response)
-            self._record_usage(inp, outp)
+            inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
+            self._record_usage(
+                inp, outp,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+            )
             raw = tool_calls[0].function.arguments
             # DeepSeek strict mode occasionally drops the closing quote
             # on a key, producing `"key: value` instead of `"key": value`.
@@ -1976,6 +2224,15 @@ def _strict_schema_for(schema: type[BaseModel]) -> dict | None:
 
 def build_provider(config: LLMConfig | None = None) -> LLMProvider:
     cfg = config or LLMConfig.from_env()
+    # Cost-plan §3.1: log the resolved provider/model + its pricing so a
+    # misconfigured (e.g. accidentally-Opus) run is visible at startup instead
+    # of only showing up as a cost spike days later.
+    _log.info(
+        "llm.provider_initialized",
+        provider=cfg.provider,
+        model=cfg.model,
+        pricing=get_pricing_for_model(cfg.model),
+    )
     if cfg.provider == "anthropic":
         return AnthropicProvider(cfg)
     if cfg.provider == "openai":
@@ -2025,4 +2282,6 @@ __all__ = [
     "compute_cost_usd",
     # Week 5: task-local aggregator.
     "using_usage_aggregator",
+    # Cost-plan §0.1: per-call purpose attribution.
+    "using_usage_purpose",
 ]

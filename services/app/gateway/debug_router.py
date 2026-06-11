@@ -151,17 +151,6 @@ def build_debug_router() -> APIRouter:
                 "ORDER BY enqueued_at",
                 tid, oid,
             )
-            routing_decisions = await conn.fetch(
-                "SELECT id, route, decision_status, score, score_breakdown, "
-                "       estimated_cost, risk_level, sensitivity, reason, "
-                "       enqueued_trigger_id, created_at "
-                "FROM signal_routing_decisions "
-                "WHERE tenant_id = $1 "
-                "  AND signal_ref_type = 'observation' "
-                "  AND signal_ref_id = $2 "
-                "ORDER BY created_at DESC",
-                tid, oid,
-            )
             inquiry_sessions = await conn.fetch(
                 "SELECT id, route, status, stop_status, round_count, "
                 "       question_count, evidence_count, context_packet, "
@@ -232,7 +221,6 @@ def build_debug_router() -> APIRouter:
         return {
             "observation": _jsonify(obs),
             "triggers": [_jsonify(r) for r in triggers],
-            "routing_decisions": [_jsonify(r) for r in routing_decisions],
             "inquiry_sessions": [_jsonify(r) for r in inquiry_sessions],
             "inquiry_questions": inquiry_questions,
             "inquiry_evidence": inquiry_evidence,

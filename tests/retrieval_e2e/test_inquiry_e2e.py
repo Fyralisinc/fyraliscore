@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,11 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.platform.execution.contracts import SignalEnvelope
 from services.platform.execution.inquiry import (
     InquiryConfig,
     InquiryResult,
     run_inquiry_retrieval,
 )
-from services.platform.execution.routing import decide_route
 from services.domain.models.repo import pgvector_pool_init
 from services.reasoning.retrieval.assembler import AccessContext, assemble_context
 from services.reasoning.retrieval.primary import TriggerContext
@@ -39,6 +38,13 @@ if _FIXTURES_SPEC is None or _FIXTURES_SPEC.loader is None:
     raise ImportError(f"cannot load synthesis harness fixtures from {_FIXTURES_PATH}")
 F = importlib.util.module_from_spec(_FIXTURES_SPEC)
 _FIXTURES_SPEC.loader.exec_module(F)
+
+
+@dataclass(frozen=True)
+class _RouteDecision:
+    route: str
+    score: float
+    reason: str
 
 
 class _QuestionAwareEmbedder:
@@ -635,24 +641,10 @@ async def test_deep_blocker_retrieval_finds_decisive_context_efficiently(fresh_d
         await pgvector_pool_init(conn)
         async with conn.transaction():
             ctx = await _seed_blocker_case(conn)
-            route = decide_route(
-                SignalEnvelope(
-                    tenant_id=ctx["tenant"],
-                    signal_ref_type="observation",
-                    signal_id=ctx["signal_obs"],
-                    source_channel="slack:message",
-                    occurred_at=ctx["observed_at"],
-                    author=ctx["owner"],
-                    summary=ctx["signal_text"],
-                    trust_tier="authoritative",
-                    explicit_entities=(
-                        {"type": "commitment", "id": str(ctx["commitment"])},
-                        {"type": "goal", "id": str(ctx["goal"])},
-                        {"type": "customer_resource", "id": str(ctx["customer"])},
-                    ),
-                    observation_kind="signal",
-                    signal_type="slack:message/message",
-                )
+            route = _RouteDecision(
+                route="DEEP_INQUIRY_PATH",
+                score=1.0,
+                reason="routing gate retired; e2e fixture exercises deep inquiry",
             )
             trigger = _trigger(
                 tenant_id=ctx["tenant"],
@@ -984,22 +976,10 @@ async def test_human_validation_route_stays_bounded_and_refuses_deep_inquiry(fre
         async with conn.transaction():
             ctx = await _seed_blocker_case(conn)
             text = "No recorded decision exists for Acme launch, but offline alignment says the scope changed."
-            route = decide_route(
-                SignalEnvelope(
-                    tenant_id=ctx["tenant"],
-                    signal_ref_type="observation",
-                    signal_id=ctx["signal_obs"],
-                    source_channel="slack:message",
-                    occurred_at=ctx["observed_at"],
-                    author=ctx["owner"],
-                    summary=text,
-                    trust_tier="attested_agent",
-                    explicit_entities=(
-                        {"type": "commitment", "id": str(ctx["commitment"])},
-                    ),
-                    observation_kind="signal",
-                    signal_type="slack:message/message",
-                )
+            route = _RouteDecision(
+                route="HUMAN_VALIDATION_PATH",
+                score=1.0,
+                reason="routing gate retired; e2e fixture exercises human validation",
             )
             trigger = _trigger(
                 tenant_id=ctx["tenant"],

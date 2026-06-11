@@ -215,6 +215,7 @@ class EdgesRepo:
             "accepted",
             "candidate",
             "needs_review",
+            "disputed",
             "rejected",
             "retired",
         }:
@@ -420,6 +421,9 @@ class EdgesRepo:
                     review_status = CASE
                       WHEN model_edges.review_status IN ('rejected', 'retired')
                         THEN model_edges.review_status
+                      WHEN model_edges.review_status = 'disputed'
+                           OR EXCLUDED.review_status = 'disputed'
+                        THEN 'disputed'
                       WHEN model_edges.review_status = 'accepted'
                            OR EXCLUDED.review_status = 'accepted'
                         THEN 'accepted'

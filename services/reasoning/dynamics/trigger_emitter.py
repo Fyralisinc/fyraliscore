@@ -81,6 +81,7 @@ async def emit_missing_transition_triggers(
     completed_gap_suppression_window: timedelta = (
         DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW
     ),
+    parent_payload: dict | None = None,
 ) -> list[UUID]:
     """For each missing_transition signal, enqueue a T3 trigger if one
     isn't already pending. Returns the list of newly-enqueued trigger
@@ -192,6 +193,9 @@ async def emit_missing_transition_triggers(
             },
             "trigger_id": str(trig_id),
         }
+        # Cost-plan §3.2: carry cross-trigger lineage depth onto the T3.
+        from services.reasoning.think.cascade import propagate_cascade_depth
+        payload.update(propagate_cascade_depth(parent_payload))
         await conn.execute(
             """
             INSERT INTO think_trigger_queue (

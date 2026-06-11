@@ -23,7 +23,7 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, Field
 
-from lib.llm.provider import LLMProvider
+from lib.llm.provider import LLMProvider, using_usage_purpose
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import (
@@ -48,12 +48,20 @@ from services.reasoning.retrieval.pathways import (
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext, primary_retrieve
 from services.reasoning.synthesis.state_contract import StateSource, compile_state_contract
 
-from .contracts import SignalRoute
 from .question_planning_provider import (
     question_planning_provider_metadata,
     select_question_planning_provider,
 )
 
+
+SignalRoute = Literal[
+    "IGNORE_OR_ARCHIVE",
+    "DETERMINISTIC_UPDATE",
+    "FAST_PATH",
+    "DEEP_INQUIRY_PATH",
+    "BACKGROUND_PATH",
+    "HUMAN_VALIDATION_PATH",
+]
 
 InquiryStopStatus = Literal[
     "sufficient_for_reasoning",
@@ -77,6 +85,8 @@ RetrievalActionPath = Literal[
 _BROAD_DISCOVERY_ACTION_PATHS = frozenset({"semantic", "temporal", "pattern"})
 _READER_ATTRIBUTION_NONSELECTED_LIMIT_DEFAULT = 16
 _READER_ATTRIBUTION_NONSELECTED_MIN_SCORE_DEFAULT = 0.55
+_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS = 1500
+_SPARSE_STRONG_SINGLE_MATCH_MAX_DF = 32
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -104,6 +114,16 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None or raw.strip() == "":
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_literal(name: str, default: str, allowed: set[str]) -> str:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    value = raw.strip().lower()
+    if value in allowed:
+        return value
+    return default
 
 
 def _reader_attribution_nonselected_limit() -> int:
@@ -192,6 +212,7 @@ class InquiryConfig:
     relevance_score_cliff: float = 0.18
     relevance_min_material_models: int = 3
     reasoning_packet_token_budget: int = 24000
+    context_packet_evidence_mode: str = "model_first"
     temporal_window_days: int = 30
     semantic_budget: int = 30
     semantic_hybrid_lexical_enabled: bool = True
@@ -265,6 +286,11 @@ class InquiryConfig:
             ),
             reasoning_packet_token_budget=int(
                 os.environ.get("INQUIRY_REASONING_PACKET_TOKENS", "24000")
+            ),
+            context_packet_evidence_mode=_env_literal(
+                "INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE",
+                "model_first",
+                {"all", "model_first", "models_only"},
             ),
             temporal_window_days=int(os.environ.get("INQUIRY_TEMPORAL_WINDOW_DAYS", "30")),
             semantic_budget=int(os.environ.get("INQUIRY_SEMANTIC_BUDGET", "30")),
@@ -1247,6 +1273,7 @@ async def run_inquiry_retrieval(
         evidence_cards,
         verdict,
         token_budget=cfg.reasoning_packet_token_budget,
+        evidence_mode=cfg.context_packet_evidence_mode,
     )
     _append_stage_timing(
         stage_timing_notes,
@@ -1932,7 +1959,6 @@ def _focus_sentence_score(sentence: str) -> float:
 
 def _specific_question(primitive: str, anchors: _QuestionAnchors) -> str:
     subject = anchors.subject or "this signal"
-    claim = _safe_question_focus(anchors.claim, subject)
     focus = _safe_question_focus(anchors.focus or anchors.claim, subject)
     constraint = anchors.constraint
 
@@ -2130,10 +2156,13 @@ async def _candidate_questions_for_round(
             max_tokens=_question_planning_max_tokens(config, planning_provider),
         )
         timeout_s = _question_planning_timeout_seconds(planning_provider)
-        if timeout_s > 0:
-            plan = await asyncio.wait_for(plan_call, timeout=timeout_s)
-        else:
-            plan = await plan_call
+        # Cost-plan §0.1: tag planning LLM spend as 'question_planning' in the
+        # cost ledger (the task spawned by wait_for inherits this contextvar).
+        with using_usage_purpose("question_planning"):
+            if timeout_s > 0:
+                plan = await asyncio.wait_for(plan_call, timeout=timeout_s)
+            else:
+                plan = await plan_call
         belief_delta_hypotheses = _normalize_llm_belief_delta_hypotheses(
             plan.belief_deltas,
             trigger=trigger,
@@ -5662,7 +5691,8 @@ async def _hybrid_lexical_model_scan(
     table = await conn.fetchval("SELECT to_regclass('public.model_search_documents')")
     if table is None:
         return []
-    rows = await conn.fetch(
+    rows = await _fetch_hybrid_lexical_fallback_rows(
+        conn,
         """
         WITH patterns AS (
           SELECT pattern, ord
@@ -5731,72 +5761,113 @@ async def _hybrid_sparse_model_scan(
     limit: int,
     per_term_limit: int,
 ) -> list[tuple[ModelRow, int]]:
-    lookup_groups = _hybrid_sparse_lookup_groups(terms)
-    if not lookup_groups or limit <= 0:
+    lookup_terms = _hybrid_sparse_lookup_terms(terms)
+    if not lookup_terms or limit <= 0:
         return []
     table = await conn.fetchval("SELECT to_regclass('public.model_sparse_terms')")
     if table is None:
         return []
-    rows = await conn.fetch(
+    rows = await _fetch_hybrid_lexical_fallback_rows(
+        conn,
         """
-        WITH group_tokens AS MATERIALIZED (
-          SELECT g.group_ord::int,
-                 token.value::text AS term
-          FROM jsonb_array_elements($3::jsonb)
-               WITH ORDINALITY AS g(tokens, group_ord)
-          CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
+        WITH query_terms AS MATERIALIZED (
+          SELECT term::text,
+                 ord::int AS term_ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS q(term, ord)
         ),
-        group_sizes AS MATERIALIZED (
-          SELECT group_ord,
-                 count(DISTINCT term)::int AS token_count
-          FROM group_tokens
-          GROUP BY group_ord
+        query_meta AS MATERIALIZED (
+          SELECT count(*)::int AS query_term_count
+          FROM query_terms
         ),
-        matched AS MATERIALIZED (
-          SELECT mst.model_id,
-                 gt.group_ord,
-                 count(DISTINCT gt.term)::int AS matched_terms
-          FROM group_tokens gt
-          JOIN model_sparse_terms mst
+        active_models AS MATERIALIZED (
+          SELECT greatest(1, count(*)::int)::float8 AS active_model_count
+          FROM models
+          WHERE tenant_id = $1
+            AND status = 'active'
+        ),
+        term_stats AS MATERIALIZED (
+          SELECT qt.term,
+                 qt.term_ord,
+                 count(mstat.id)::int AS term_df
+          FROM query_terms qt
+          LEFT JOIN model_sparse_terms mst
             ON mst.tenant_id = $1
            AND mst.status = 'active'
-           AND mst.term = gt.term
-          GROUP BY mst.model_id, gt.group_ord
+           AND mst.term = qt.term
+          LEFT JOIN models mstat
+            ON mstat.id = mst.model_id
+           AND mstat.tenant_id = mst.tenant_id
+           AND mstat.status = 'active'
+          GROUP BY qt.term, qt.term_ord
         ),
-        group_hits AS MATERIALIZED (
-          SELECT matched.model_id,
-                 matched.group_ord,
-                 group_sizes.token_count
-          FROM matched
-          JOIN group_sizes
-            ON group_sizes.group_ord = matched.group_ord
-          WHERE matched.matched_terms = group_sizes.token_count
+        term_hits AS MATERIALIZED (
+          SELECT ts.term,
+                 ts.term_ord,
+                 ts.term_df,
+                 hit.model_id,
+                 hit.weight,
+                 (
+                   ln((am.active_model_count + 1.0) / (ts.term_df::float8 + 1.0))
+                   + 1.0
+                 )::float8 AS idf
+          FROM term_stats ts
+          CROSS JOIN active_models am
+          CROSS JOIN LATERAL (
+            SELECT mst.model_id,
+                   mst.weight
+            FROM model_sparse_terms mst
+            JOIN models mhit
+              ON mhit.id = mst.model_id
+             AND mhit.tenant_id = mst.tenant_id
+             AND mhit.status = 'active'
+            WHERE mst.tenant_id = $1
+              AND mst.status = 'active'
+              AND mst.term = ts.term
+            ORDER BY mst.weight DESC,
+                     mhit.activation DESC,
+                     mhit.created_at DESC,
+                     mst.model_id
+            LIMIT $4
+          ) hit
         ),
         scored AS MATERIALIZED (
           SELECT model_id,
-                 count(*)::int AS match_count,
-                 sum(token_count)::int AS term_match_count,
-                 min(group_ord)::int AS first_group_ord
-          FROM group_hits
+                 count(DISTINCT term)::int AS match_count,
+                 sum(weight * idf)::real AS weighted_score,
+                 min(term_ord)::int AS first_term_ord,
+                 bool_or(
+                   term = ANY($5::text[])
+                   AND term_df <= $6::int
+                 ) AS has_strong_singleton
+          FROM term_hits
           GROUP BY model_id
         )
         SELECT m.id,
-               scored.term_match_count AS match_count
+               scored.match_count
         FROM scored
+        CROSS JOIN query_meta
         JOIN models m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
-        ORDER BY scored.term_match_count DESC,
-                 scored.match_count DESC,
-                 scored.first_group_ord ASC,
+          AND (
+            query_meta.query_term_count <= 1
+            OR scored.match_count >= LEAST(2, query_meta.query_term_count)
+            OR scored.has_strong_singleton
+          )
+        ORDER BY scored.match_count DESC,
+                 scored.weighted_score DESC,
+                 scored.first_term_ord ASC,
                  m.activation DESC,
                  m.created_at DESC
         LIMIT $2
         """,
         trigger.tenant_id,
         max(1, int(limit)),
-        json.dumps(lookup_groups),
+        lookup_terms,
+        max(1, int(per_term_limit)),
+        _hybrid_sparse_strong_single_match_terms(lookup_terms),
+        _SPARSE_STRONG_SINGLE_MATCH_MAX_DF,
     )
     ids = [row["id"] for row in rows]
     if not ids:
@@ -5807,6 +5878,31 @@ async def _hybrid_sparse_model_scan(
         (by_id[row["id"]], int(row["match_count"] or 1))
         for row in rows
         if row["id"] in by_id
+    ]
+
+
+def _hybrid_sparse_lookup_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    for raw in terms:
+        for token in re.findall(
+            r"[a-z0-9][a-z0-9_-]{2,}",
+            str(raw or "").casefold(),
+        ):
+            if token in _RELEVANCE_STOPWORDS or token.isdigit():
+                continue
+            if token not in out:
+                out.append(token)
+                if len(out) >= 8:
+                    return out
+    return out[:8]
+
+
+def _hybrid_sparse_strong_single_match_terms(terms: list[str]) -> list[str]:
+    return [
+        term
+        for term in terms
+        if len(term) >= 4
+        and any(ch.isdigit() or ch in {"-", "_"} for ch in term)
     ]
 
 
@@ -5834,6 +5930,28 @@ def _hybrid_sparse_lookup_groups(terms: list[str] | tuple[str, ...]) -> list[lis
         if len(out) >= 8:
             break
     return out
+
+
+async def _fetch_hybrid_lexical_fallback_rows(
+    conn: asyncpg.Connection,
+    query: str,
+    *args: Any,
+) -> list[asyncpg.Record]:
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SET LOCAL statement_timeout = "
+                f"{_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS}"
+            )
+            return list(await conn.fetch(query, *args))
+    except asyncpg.QueryCanceledError:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "inquiry.lexical_fallback_statement_timeout",
+            timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
+        )
+        return []
 
 
 def _merge_hybrid_semantic_lexical_models(
@@ -7813,6 +7931,77 @@ def _evidence_card_confidence(card: EvidenceCard) -> float:
     return round(max(0.05, min(0.99, base)), 2)
 
 
+def _filter_context_packet_evidence(
+    evidence: list[EvidenceCard],
+    mode: str,
+    answers: list[QuestionAnswer],
+) -> tuple[list[EvidenceCard], dict[str, Any], set[str]]:
+    normalized = str(mode or "model_first").strip().lower()
+    if normalized not in {"all", "model_first", "models_only"}:
+        normalized = "model_first"
+    model_cards = [card for card in evidence if card.source_type == "model"]
+    model_ref_ids = {str(card.evidence_id) for card in model_cards}
+    answer_questions_by_ref: dict[str, set[str]] = {}
+    model_answer_questions: set[str] = set()
+    for answer in answers:
+        refs = [*answer.supporting_evidence, *answer.counterevidence]
+        if any(ref in model_ref_ids for ref in refs):
+            model_answer_questions.add(answer.question_id)
+        for ref in refs:
+            answer_questions_by_ref.setdefault(ref, set()).add(answer.question_id)
+
+    def required_answer_ref(card: EvidenceCard) -> bool:
+        question_ids = answer_questions_by_ref.get(str(card.evidence_id), set())
+        return any(qid not in model_answer_questions for qid in question_ids)
+
+    answer_required_ids = {
+        str(card.evidence_id)
+        for card in evidence
+        if card.source_type != "model" and required_answer_ref(card)
+    }
+    if normalized == "all":
+        selected = list(evidence)
+        fallback_reason = None
+    elif not model_cards:
+        selected = list(evidence)
+        fallback_reason = "no_model_evidence"
+    elif normalized == "models_only":
+        selected = model_cards
+        fallback_reason = None
+    else:
+        selected = [
+            card
+            for card in evidence
+            if card.source_type == "model"
+            or card.source_type in {"commitment", "goal", "decision", "resource"}
+            or bool(card.weakens_hypotheses or card.contradicts_hypotheses)
+            or required_answer_ref(card)
+        ]
+        fallback_reason = None
+
+    selected_ids = {id(card) for card in selected}
+    suppressed = [card for card in evidence if id(card) not in selected_ids]
+    return selected, {
+        "mode": normalized,
+        "input_evidence_count": len(evidence),
+        "packet_evidence_count": len(selected),
+        "model_evidence_count": len(model_cards),
+        "non_model_evidence_count": len(evidence) - len(model_cards),
+        "suppressed_observation_count": sum(
+            1 for card in suppressed if card.source_type == "observation"
+        ),
+        "suppressed_non_model_count": sum(
+            1 for card in suppressed if card.source_type != "model"
+        ),
+        "answer_required_non_model_count": sum(
+            1
+            for card in selected
+            if card.source_type != "model" and required_answer_ref(card)
+        ),
+        "fallback_reason": fallback_reason,
+    }, answer_required_ids
+
+
 def _compile_context_packet(
     trigger: TriggerContext,
     route: SignalRoute,
@@ -7823,18 +8012,29 @@ def _compile_context_packet(
     sufficiency: SufficiencyVerdict,
     *,
     token_budget: int,
+    evidence_mode: str = "model_first",
 ) -> dict[str, Any]:
+    packet_evidence, evidence_policy, answer_required_ids = _filter_context_packet_evidence(
+        evidence,
+        evidence_mode,
+        answers,
+    )
+    observation_fallback = (
+        evidence_policy.get("fallback_reason") == "no_model_evidence"
+    )
     decisive: list[dict[str, Any]] = []
     supporting_groups: dict[str, list[EvidenceCard]] = {}
     omitted: list[dict[str, Any]] = []
     used_tokens = 0
-    for card in evidence:
+    for card in packet_evidence:
         item = _evidence_to_dict(card)
         cost = int(item.get("token_estimate") or 1)
         if used_tokens + cost <= token_budget and (
             card.contradicts_hypotheses
             or card.weakens_hypotheses
-            or card.source_type in {"observation", "commitment", "goal", "decision", "resource"}
+            or card.source_type in {"commitment", "goal", "decision", "resource"}
+            or (card.source_type == "observation" and observation_fallback)
+            or str(card.evidence_id) in answer_required_ids
         ) and len(decisive) < 30:
             decisive.append(item)
             used_tokens += cost
@@ -7889,7 +8089,7 @@ def _compile_context_packet(
                 }
             )
     background = []
-    for item in _background_summaries(evidence):
+    for item in _background_summaries(packet_evidence):
         cost = _estimate_tokens(item.get("summary", ""))
         if used_tokens + cost <= token_budget:
             background.append(item)
@@ -7903,7 +8103,7 @@ def _compile_context_packet(
                     "expand_if": "debugging retrieval pathway breadth",
                 }
             )
-    state_contract = _state_contract_for_context_packet(trigger, evidence)
+    state_contract = _state_contract_for_context_packet(trigger, packet_evidence)
     important_unknowns = _dedupe_unknowns(
         [
             *list(sufficiency.remaining_unknowns),
@@ -7927,7 +8127,11 @@ def _compile_context_packet(
         "question_path": [_jsonable(asdict(q)) for q in questions],
         "question_answers": [_jsonable(asdict(a)) for a in answers],
         "sufficiency_verdict": _jsonable(asdict(sufficiency)),
-        "candidate_state_changes": _candidate_state_changes(hypotheses, evidence, sufficiency),
+        "candidate_state_changes": _candidate_state_changes(
+            hypotheses,
+            packet_evidence,
+            sufficiency,
+        ),
         "important_unknowns": important_unknowns,
         "state_contract": state_contract,
         "answer_obligations": {
@@ -7946,6 +8150,8 @@ def _compile_context_packet(
             "token_budget": token_budget,
             "estimated_tokens_used": used_tokens,
             "reservoir_evidence_count": len(evidence),
+            "packet_evidence_count": len(packet_evidence),
+            "evidence_policy": evidence_policy,
         },
     }
 

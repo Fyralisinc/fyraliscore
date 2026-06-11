@@ -628,18 +628,7 @@ async def test_e2e_redetect_does_not_loop_after_dismiss(
 
     # Re-run detect + emit. The detector still sees the gap (the
     # substrate state didn't change), but the emitter's dedup keys off
-    # the previously-queued T3 row (which is now completed_at-marked
-    # in production by the Think worker). The completed row no longer
-    # blocks emission, so a new T3 fires — that's the design.
-    #
-    # The protective invariant is: after the *new* T3 runs the imputer,
-    # the reconciler upstream catches that an archived hypothesis
-    # already explains this gap and either dedupes against it (via
-    # cosine on the dismissed Model's embedding) or surfaces a
-    # human-review reconciliation. In v1 the reconciler is wired but
-    # cosine-against-archived dedup is not — so what we assert here is
-    # weaker: a *second* T3 trigger is emitted (substrate stays
-    # responsive), but only after the prior is marked completed.
+    # the previously queued T3 row while it remains pending.
     async with gateway_pool.acquire() as conn:
         signals = await detect_dynamic_signals(
             conn,
@@ -657,9 +646,11 @@ async def test_e2e_redetect_does_not_loop_after_dismiss(
         "T3 row is still pending"
     )
 
-    # After explicit completion (the worker's terminal state) the
-    # emitter does re-fire. This is what keeps the loop honest if a
-    # gap is never user-resolved — the system asks again.
+    # After explicit completion (the worker's terminal state), the
+    # emitter still suppresses immediate re-fire of the same completed
+    # gap under the default completed-gap suppression window. A lower
+    # level trigger_emitter test covers the override path that permits
+    # delayed or explicitly configured re-emission.
     await gateway_pool.execute(
         "UPDATE think_trigger_queue SET completed_at = now() "
         "WHERE tenant_id = $1 AND trigger_subkind = 'missing_transition'",
@@ -675,7 +666,7 @@ async def test_e2e_redetect_does_not_loop_after_dismiss(
             third = await emit_missing_transition_triggers(
                 conn, tenant_id=state["tenant_id"], signals=signals,
             )
-    assert len(third) == 1, (
-        "after the prior T3 is marked completed, the substrate "
-        "discontinuity should be re-surfaced"
+    assert third == [], (
+        "after dismissal and recent completion, the same substrate "
+        "discontinuity should not immediately loop"
     )

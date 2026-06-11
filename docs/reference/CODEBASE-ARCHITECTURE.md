@@ -45,7 +45,7 @@ PostgreSQL 16 + pgvector
   (demo tables are overlay-owned)
         |
         +--> Ollama /api/embeddings (nomic-embed-text, 768 dimensions)
-        +--> LLM providers (Anthropic/OpenAI/DeepSeek)
+        +--> Codex LLM provider (Think + low-effort question planning)
 
 Background execution:
   ThinkWorker              drains think_trigger_queue and model_reeval_queue
@@ -78,7 +78,7 @@ source event
 | Database | [db/migrations](db/migrations) | Schema for substrate data, queues, cache, topology, predictions, RLS policies. (The demo tables were dropped from core by `0093_drop_demo_scaffolding.sql`; the overlay re-creates them.) |
 | Execution routing | [services/platform/execution](services/platform/execution) | Deterministic route gate for signals and future query/job entry points. The current rollout records shadow decisions without changing T1 Think enqueue behavior. |
 | Embeddings | [lib/embeddings](lib/embeddings) | Ollama/OpenAI embedder abstraction. Current schemas expect 768-dimensional vectors. |
-| LLM | [lib/llm/provider.py](lib/llm/provider.py) | Structured-output provider abstraction over Anthropic, OpenAI, and DeepSeek, with retry and cost tracking. |
+| LLM | [lib/llm/provider.py](lib/llm/provider.py) | Structured-output provider abstraction; the Fyralis app path is Codex-only, with separate main Think and low-effort question-planning Codex models. |
 | Think worker | [services/reasoning/think/worker.py](services/reasoning/think/worker.py) | Polls reasoning queues and invokes the `think()` pipeline. |
 | Post-commit worker | [services/reasoning/think/post_commit.py](services/reasoning/think/post_commit.py) | Durable at-least-once side effects after reasoning commits. |
 | Topology sweeper | [services/workers/topology_sweeper](services/workers/topology_sweeper) | Periodically refreshes latent relationship candidates over a bounded high-activation frontier. |
@@ -99,7 +99,7 @@ Core [docker-compose.yml](docker-compose.yml) is backend-only: `postgres`, `olla
 
 **Vectors.** `observations`, `models`, and `entity_aliases` store `VECTOR(768)`. Ollama's `nomic-embed-text` is the default local backend; [lib/embeddings/factory.py](lib/embeddings/factory.py) can choose OpenAI when configured.
 
-**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's provider schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. Each Think system prompt also starts with a source-tuned reasoning profile: ingestion carries normalized `signal_type`/trust metadata into the queue, and [services/reasoning/think/prompt.py](services/reasoning/think/prompt.py) chooses a working stance and abstraction level based on signal provenance, trigger kind, and whether the call can touch claims, graph edges, Acts, Resources, or topology. `.env.example` sets DeepSeek as the local default; `LLM_PROVIDER=codex` uses OpenAI Responses when API-key auth is present and a persistent Codex app-server for local ChatGPT/Codex login auth. For local Codex dogfood, app-server/CLI transport follows the model in `~/.codex/config.toml`; use `CODEX_MODEL`, not generic `LLM_MODEL`, only when deliberately overriding that local Codex model. The provider library itself falls back to Anthropic if no provider env is set.
+**Structured LLM calls.** Reasoning and rendering ask providers for Pydantic-shaped outputs through [lib/llm/provider.py](lib/llm/provider.py). Think's provider schemas include a full diff schema with `claim_ops`, `edge_ops`, `act_ops`, and resource/prediction buckets, plus a smaller claims-only schema for reasoning calls where graph/action/resource surfaces are not available. Think's prompt is cost-tuned but graph-forward: selected and graph-anchor Models are explicitly surfaced, empty diffs must cite full UUIDs, and new same-workstream claims are instructed to attach back to graph anchors. Each Think system prompt also starts with a source-tuned reasoning profile: ingestion carries normalized `signal_type`/trust metadata into the queue, and [services/reasoning/think/prompt.py](services/reasoning/think/prompt.py) chooses a working stance and abstraction level based on signal provenance, trigger kind, and whether the call can touch claims, graph edges, Acts, Resources, or topology. The app path is Codex-only: `LLM_PROVIDER=codex`, `CODEX_MODEL` / `CODEX_REASONING_EFFORT` select the main Think model, and inquiry question planning uses `INQUIRY_CODEX_QUESTION_MODEL` as a separate low-effort Codex planner. Codex uses OpenAI Responses when API-key auth is present and a persistent Codex app-server for local ChatGPT/Codex login auth. For local Codex dogfood, app-server/CLI transport follows the model in `~/.codex/config.toml`; use `CODEX_MODEL`, not generic `LLM_MODEL`, only when deliberately overriding that local Codex model.
 
 **Observability records.** Runtime state is heavily persisted: `think_runs`, `think_run_costs`, `think_run_artifacts`, `view_render_costs`, `audit_events`, `reconciliation_events`, `relationship_maintenance_log`, and debug routes all exist to make reasoning inspectable.
 
@@ -441,7 +441,7 @@ Important env groups:
 | Group | Examples |
 |---|---|
 | Database/embedding | `DATABASE_URL`, `OLLAMA_URL`, `OLLAMA_EMBED_MODEL`. |
-| LLM | `LLM_PROVIDER`, `LLM_MODEL`, provider API keys, Codex `CODEX_MODEL`/auth file overrides, timeouts. |
+| LLM | `LLM_PROVIDER=codex`, `CODEX_API_KEY`, `CODEX_MODEL`, `CODEX_REASONING_EFFORT`, `CODEX_TRANSPORT`, `INQUIRY_CODEX_QUESTION_MODEL`, Codex auth file overrides, timeouts. |
 | Tenant identity | `DEFAULT_TENANT_ID`, `COMPANY_OS_CEO_ACTOR_ID`, `DEV_BEARER_TOKEN`, `VIEW_CEO_TOKEN`. |
 | Gateway | `COMPANY_OS_ENV`, `GATEWAY_OWNS_POOL`, `GATEWAY_CEO_VIEW_ENABLED`, `GATEWAY_START_GRT_SCHEDULER`. (The former `GATEWAY_MOUNT_SIM` / `SIMULATION_TENANT_ID` vars were removed from core env templates; the simulation mount is now overlay-contributed.) |
 | Workers | `THINK_*`, `POST_COMMIT_WORKER_POLL_INTERVAL_S`, `GREETING_REFRESH_INTERVAL_SECONDS`. |

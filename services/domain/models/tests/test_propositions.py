@@ -119,6 +119,37 @@ def test_claim_role_contract_rejects_malformed_relation() -> None:
     assert "requires one of" in exc.value.message
 
 
+def test_hypothesis_role_accepts_assertion_alias() -> None:
+    raw = {
+        "kind": "belief",
+        "claim_role": "hypothesis",
+        "abstraction_level": "atomic",
+        "assertion": "An off-sensor approval transition likely occurred.",
+    }
+
+    canonical = canonicalize_proposition(raw)
+    parsed = validate_proposition(raw)
+
+    assert canonical["hypothesis_text"] == raw["assertion"]
+    assert parsed.hypothesis_text == raw["assertion"]
+
+
+def test_hypothesis_can_represent_second_order_belief_without_schema_migration() -> None:
+    parsed = validate_proposition({
+        "kind": "belief",
+        "claim_role": "hypothesis",
+        "about_model_id": "018f0000-0000-7000-8000-000000000001",
+        "belief_holder_actor_id": "018f0000-0000-7000-8000-000000000002",
+        "second_order_attitude": "doubts",
+        "belief_target_text": "Maya doubts the Atlas deadline is still credible.",
+    })
+
+    assert parsed.kind == "belief"
+    assert parsed.claim_role == "hypothesis"
+    assert parsed.about_model_id == "018f0000-0000-7000-8000-000000000001"
+    assert parsed.second_order_attitude == "doubts"
+
+
 def test_state_proposition_accepts_dict_subject() -> None:
     raw = {
         "kind": "state",

@@ -32,7 +32,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Sequence
 from uuid import UUID
 
@@ -231,6 +231,27 @@ def _hydrate_model(record: asyncpg.Record) -> ModelRow:
     return ModelRow.model_validate(raw)
 
 
+def _model_temporally_valid(model: ModelRow, *, now: datetime | None = None) -> bool:
+    scope = model.scope_temporal or {}
+    if not isinstance(scope, dict):
+        return True
+    raw_until = scope.get("valid_until")
+    if raw_until in (None, ""):
+        return True
+    if isinstance(raw_until, datetime):
+        valid_until = raw_until
+    elif isinstance(raw_until, str):
+        try:
+            valid_until = datetime.fromisoformat(raw_until.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
+        return True
+    if valid_until.tzinfo is None:
+        valid_until = valid_until.replace(tzinfo=timezone.utc)
+    return valid_until > (now or datetime.now(timezone.utc))
+
+
 def _hydrate_obs(record: asyncpg.Record) -> ObservationRow:
     raw = dict(record)
     for key in ("content", "entities_mentioned"):
@@ -369,13 +390,20 @@ def _hydrate_many(
     """
     out: list[Any] = []
     skipped = 0
+    expired = 0
     for r in records:
         try:
-            out.append(hydrate_fn(r))
+            item = hydrate_fn(r)
+            if isinstance(item, ModelRow) and not _model_temporally_valid(item):
+                expired += 1
+                continue
+            out.append(item)
         except Exception:
             skipped += 1
     if skipped:
         notes.setdefault("hydration_skipped", {})[bucket] = skipped
+    if expired:
+        notes.setdefault("expired_scope_temporal_skipped", {})[bucket] = expired
     return out
 
 
@@ -472,67 +500,51 @@ async def _fetch_pathway_a_entity_sidecar_rows(
 ) -> list[asyncpg.Record]:
     if not entity_ids:
         return []
-    rows = await conn.fetch(
-        f"""
-        WITH seeded_entities AS (
-          SELECT * FROM unnest($2::text[], $3::uuid[], $4::int[], $5::int[])
-            AS e(entity_type, entity_id, seed_order, seed_priority)
-        ),
-        candidate_ids AS (
-          SELECT
-            se.seed_priority,
-            se.seed_order,
-            scoped.local_rank,
-            scoped.model_id
-          FROM seeded_entities se
-          CROSS JOIN LATERAL (
-            SELECT
-              mse.model_id,
-              ROW_NUMBER() OVER (
-                ORDER BY m.activation DESC, m.created_at DESC
-              ) AS local_rank
-            FROM model_scope_entities mse
-            JOIN models m ON m.id = mse.model_id
-            WHERE mse.tenant_id = $1
-              AND mse.entity_type = se.entity_type
-              AND mse.entity_id = se.entity_id
-              AND m.tenant_id = $1
-              AND m.status = 'active'
-            ORDER BY m.activation DESC, m.created_at DESC
-            LIMIT $6
-          ) scoped
-        ),
-        scoped_models AS (
-          SELECT
-            model_id,
-            MIN(seed_priority) AS seed_priority,
-            MIN(seed_order) AS seed_order,
-            MIN(local_rank) AS local_rank
-          FROM candidate_ids
-          GROUP BY model_id
+    rows: list[asyncpg.Record] = []
+    per_seed_cap = max(1, int(per_seed_limit))
+    for entity_type, entity_id, seed_order, seed_priority in zip(
+        entity_types,
+        entity_ids,
+        entity_orders,
+        entity_priorities,
+        strict=False,
+    ):
+        model_id_rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_entities
+            WHERE tenant_id = $1
+              AND entity_type = $2
+              AND entity_id = $3
+            """,
+            tenant_id,
+            str(entity_type),
+            entity_id,
         )
-        SELECT sm.seed_priority AS _seed_priority,
-               sm.seed_order AS _seed_order,
-               sm.local_rank AS _local_rank,
-               {_MODEL_SELECT_SQL}
-        FROM models m
-        JOIN scoped_models sm ON sm.model_id = m.id
-        WHERE m.tenant_id = $1
-          AND m.status = 'active'
-        ORDER BY sm.seed_priority ASC, sm.local_rank ASC, sm.seed_order ASC,
-                 m.activation DESC, m.created_at DESC
-        LIMIT $7
-        """,
-        tenant_id,
-        list(entity_types),
-        list(entity_ids),
-        list(entity_orders),
-        list(entity_priorities),
-        max(1, int(per_seed_limit)),
-        max(1, int(global_limit)),
-    )
-    return list(rows)
-
+        model_ids = [row["model_id"] for row in model_id_rows]
+        if not model_ids:
+            continue
+        seed_rows = await conn.fetch(
+            f"""
+            SELECT $2::int AS _seed_priority,
+                   $3::int AS _seed_order,
+                   0::int AS _local_rank,
+                   {_MODEL_SELECT_SQL}
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND id = ANY($4::uuid[])
+            ORDER BY activation DESC, created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            int(seed_priority),
+            int(seed_order),
+            model_ids,
+            per_seed_cap,
+        )
+        rows.extend(seed_rows)
+    return _rank_sidecar_records(rows, limit=global_limit)
 
 async def _fetch_pathway_a_actor_sidecar_rows(
     conn: asyncpg.Connection,
@@ -545,60 +557,50 @@ async def _fetch_pathway_a_actor_sidecar_rows(
 ) -> list[asyncpg.Record]:
     if not actor_ids:
         return []
-    rows = await conn.fetch(
-        f"""
-        WITH seeded_actors AS (
-          SELECT * FROM unnest($2::uuid[], $3::int[])
-            AS a(actor_id, seed_order)
-        ),
-        candidate_ids AS (
-          SELECT
-            sa.seed_order,
-            scoped.local_rank,
-            scoped.model_id
-          FROM seeded_actors sa
-          CROSS JOIN LATERAL (
-            SELECT
-              msa.model_id,
-              ROW_NUMBER() OVER (
-                ORDER BY m.activation DESC, m.created_at DESC
-              ) AS local_rank
-            FROM model_scope_actors msa
-            JOIN models m ON m.id = msa.model_id
-            WHERE msa.tenant_id = $1
-              AND msa.actor_id = sa.actor_id
-              AND m.tenant_id = $1
-              AND m.status = 'active'
-            ORDER BY m.activation DESC, m.created_at DESC
-            LIMIT $4
-          ) scoped
-        ),
-        scoped_models AS (
-          SELECT
-            model_id,
-            MIN(seed_order) AS seed_order,
-            MIN(local_rank) AS local_rank
-          FROM candidate_ids
-          GROUP BY model_id
+    rows: list[asyncpg.Record] = []
+    per_seed_cap = max(1, int(per_seed_limit))
+    for actor_id, seed_order in zip(actor_ids, actor_orders, strict=False):
+        model_id_rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_actors
+            WHERE tenant_id = $1
+              AND actor_id = $2
+            """,
+            tenant_id,
+            actor_id,
         )
-        SELECT sm.seed_order AS _seed_order,
-               sm.local_rank AS _local_rank,
-               {_MODEL_SELECT_SQL}
-        FROM models m
-        JOIN scoped_models sm ON sm.model_id = m.id
-        WHERE m.tenant_id = $1
-          AND m.status = 'active'
-        ORDER BY sm.local_rank ASC, sm.seed_order ASC,
-                 m.activation DESC, m.created_at DESC
-        LIMIT $5
-        """,
-        tenant_id,
-        list(actor_ids),
-        list(actor_orders),
-        max(1, int(per_seed_limit)),
-        max(1, int(global_limit)),
+        model_ids = [row["model_id"] for row in model_id_rows]
+        if not model_ids:
+            continue
+        seed_rows = await conn.fetch(
+            f"""
+            SELECT $2::int AS _seed_order,
+                   0::int AS _local_rank,
+                   {_MODEL_SELECT_SQL}
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND id = ANY($3::uuid[])
+            ORDER BY activation DESC, created_at DESC
+            LIMIT $4
+            """,
+            tenant_id,
+            int(seed_order),
+            model_ids,
+            per_seed_cap,
+        )
+        rows.extend(seed_rows)
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            int(_record_value(row, "_local_rank", 0) or 0),
+            int(_record_value(row, "_seed_order", 0) or 0),
+            -float(_record_value(row, "activation", 0.0) or 0.0),
+            str(_record_value(row, "id", "") or ""),
+        ),
     )
-    return list(rows)
+    return ranked[:max(1, int(global_limit))]
 
 
 async def _fetch_pathway_a_entity_sidecar_rows_fanout(
@@ -1273,7 +1275,12 @@ async def pathway_a_structural(
                 continue
             seen_ids.add(r["id"])
             try:
-                models_out.append(_hydrate_model(r))
+                model = _hydrate_model(r)
+                if not _model_temporally_valid(model):
+                    notes.setdefault("expired_scope_temporal_skipped", {}).setdefault("models", 0)
+                    notes["expired_scope_temporal_skipped"]["models"] += 1
+                    continue
+                models_out.append(model)
             except Exception:
                 notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
                 notes["hydration_skipped"]["models"] += 1
@@ -1331,9 +1338,15 @@ async def pathway_a_structural(
                     continue
                 seen_ids.add(r["id"])
                 try:
-                    models_out.append(_hydrate_model(r))
+                    model = _hydrate_model(r)
+                    if not _model_temporally_valid(model):
+                        notes.setdefault("expired_scope_temporal_skipped", {}).setdefault("models", 0)
+                        notes["expired_scope_temporal_skipped"]["models"] += 1
+                        continue
+                    models_out.append(model)
                 except Exception:
                     notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+                    notes["hydration_skipped"]["models"] += 1
                     notes["hydration_skipped"]["models"] += 1
             notes["scope_jsonb_fallback_used"] = True
             notes["scope_jsonb_rows"] = len(rows)
@@ -1853,7 +1866,7 @@ async def pathway_d_pattern(
               FROM model_edges e
               WHERE e.tenant_id = $1
                 AND e.status = 'active'
-                AND e.review_status IN ('accepted', 'candidate', 'needs_review')
+                AND e.review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
                 AND (e.expires_at IS NULL OR e.expires_at > now())
                 AND e.edge_kind = 'instance_of'
                 AND e.target_model_id = ANY($2::uuid[])
@@ -1950,40 +1963,89 @@ async def pathway_g_model_edges(
             continue
 
     if entity_ids or scope_actors:
-        scoped_seed_rows = await conn.fetch(
-            f"""
-            WITH seeded_entities AS (
-              SELECT * FROM unnest($2::text[], $3::uuid[])
-                AS e(entity_type, entity_id)
-            ),
-            scoped_models AS (
-              SELECT mse.model_id
-              FROM model_scope_entities mse
-              JOIN seeded_entities se
-                ON se.entity_type = mse.entity_type
-               AND se.entity_id = mse.entity_id
-              WHERE mse.tenant_id = $1
-              UNION
-              SELECT msa.model_id
-              FROM model_scope_actors msa
-              WHERE msa.tenant_id = $1
-                AND msa.actor_id = ANY($4::uuid[])
+        seed_model_limit = min(limit, 50)
+        scoped_seed_candidates: list[asyncpg.Record] = []
+        for entity_type, entity_id in zip(entity_types, entity_ids, strict=False):
+            model_id_rows = await conn.fetch(
+                """
+                SELECT model_id
+                FROM model_scope_entities
+                WHERE tenant_id = $1
+                  AND entity_type = $2
+                  AND entity_id = $3
+                """,
+                tenant_id,
+                entity_type,
+                entity_id,
             )
-            SELECT m.id
-            FROM models m
-            JOIN scoped_models sm ON sm.model_id = m.id
-            WHERE m.tenant_id = $1 AND m.status = 'active'
-            ORDER BY m.activation DESC, m.created_at DESC
-            LIMIT $5
-            """,
-            tenant_id,
-            entity_types,
-            entity_ids,
-            list(scope_actors or []),
-            min(limit, 50),
+            model_ids = [row["model_id"] for row in model_id_rows]
+            if not model_ids:
+                continue
+            scoped_seed_candidates.extend(
+                await conn.fetch(
+                    """
+                    SELECT id, activation, created_at
+                    FROM models
+                    WHERE tenant_id = $1
+                      AND status = 'active'
+                      AND id = ANY($2::uuid[])
+                    ORDER BY activation DESC, created_at DESC
+                    LIMIT $3
+                    """,
+                    tenant_id,
+                    model_ids,
+                    seed_model_limit,
+                )
+            )
+        for actor_id in scope_actors or []:
+            model_id_rows = await conn.fetch(
+                """
+                SELECT model_id
+                FROM model_scope_actors
+                WHERE tenant_id = $1
+                  AND actor_id = $2
+                """,
+                tenant_id,
+                actor_id,
+            )
+            model_ids = [row["model_id"] for row in model_id_rows]
+            if not model_ids:
+                continue
+            scoped_seed_candidates.extend(
+                await conn.fetch(
+                    """
+                    SELECT id, activation, created_at
+                    FROM models
+                    WHERE tenant_id = $1
+                      AND status = 'active'
+                      AND id = ANY($2::uuid[])
+                    ORDER BY activation DESC, created_at DESC
+                    LIMIT $3
+                    """,
+                    tenant_id,
+                    model_ids,
+                    seed_model_limit,
+                )
+            )
+        scoped_seed_candidates.sort(
+            key=lambda row: (
+                -float(row["activation"] or 0.0),
+                -float(row["created_at"].timestamp() if row["created_at"] else 0.0),
+                str(row["id"]),
+            )
         )
-        seeds.update(r["id"] for r in scoped_seed_rows)
-        notes["scope_seed_models"] = len(scoped_seed_rows)
+        scoped_seed_ids: list[UUID] = []
+        seen_scoped_seeds: set[UUID] = set()
+        for row in scoped_seed_candidates:
+            model_id = row["id"]
+            if model_id in seen_scoped_seeds:
+                continue
+            seen_scoped_seeds.add(model_id)
+            scoped_seed_ids.append(model_id)
+            if len(scoped_seed_ids) >= seed_model_limit:
+                break
+        seeds.update(scoped_seed_ids)
+        notes["scope_seed_models"] = len(scoped_seed_ids)
 
     if not seeds:
         return PathwayResult(source_pathway="G", notes={**notes, "reason": "empty_seed"})
@@ -2034,7 +2096,7 @@ async def pathway_g_model_edges(
             FROM model_edges
             WHERE tenant_id = $1
               AND status = 'active'
-              AND review_status IN ('accepted', 'candidate', 'needs_review')
+              AND review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
               AND (expires_at IS NULL OR expires_at > now())
               AND edge_kind = ANY($2::text[])
               AND (source_model_id = ANY($3::uuid[])

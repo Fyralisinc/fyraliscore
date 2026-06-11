@@ -7,8 +7,13 @@ from scripts.run_storyline_batch_benchmark import (
     _company_intelligence_scorecard,
     _latent_pattern_assessment,
     _render_benchmark_markdown,
+    _render_variance_markdown,
+    _story_id_from_external_id,
+    _storyline_calibration_report,
+    build_variance_report,
     build_storyline_scenario,
 )
+import json
 
 
 def test_storyline_scenario_builds_expected_batch_waves() -> None:
@@ -32,9 +37,17 @@ def test_storyline_scenario_builds_expected_batch_waves() -> None:
         wave = scenario.signal_sequences[f"{story.id}_wave"]
         assert len(wave) == 20
         assert {
-            (signal.get("content_dict") or {}).get("storyline_id")
+            _story_id_from_external_id(signal.get("external_id"))
             for signal in wave
         } == {story.id}
+        assert all(
+            "storyline_id" not in (signal.get("content_dict") or {})
+            for signal in wave
+        )
+        assert all(
+            "storyline_title" not in (signal.get("content_dict") or {})
+            for signal in wave
+        )
 
 
 def test_storyline_scenario_builds_long_horizon_400_t1_batches() -> None:
@@ -62,6 +75,50 @@ def test_storyline_scenario_builds_long_horizon_400_t1_batches() -> None:
     assert (scenario.raw or {})["target_t1_batches"] == 400
 
 
+def test_storyline_scenario_builds_append_horizon_without_reused_signal_ids() -> None:
+    base, _gold = build_storyline_scenario(
+        run_id="unit-storyline-long-horizon",
+        signals_per_storyline=25,
+        noise_signals=0,
+        future_validation_signals_per_storyline=3,
+        target_t1_batches=400,
+    )
+    append, _gold = build_storyline_scenario(
+        run_id="unit-storyline-long-horizon-plus-200",
+        foundation_namespace="unit-storyline-long-horizon",
+        signals_per_storyline=25,
+        noise_signals=0,
+        future_validation_signals_per_storyline=3,
+        target_t1_batches=200,
+        horizon_start_batch=400,
+    )
+
+    assert len(append.signal_sequences) == 200
+    assert sum(len(v) for v in append.signal_sequences.values()) == 5000
+    assert next(iter(append.signal_sequences)).endswith("_wave_401")
+    assert (append.raw or {})["horizon_start_batch"] == 400
+    assert (append.raw or {})["horizon_end_batch"] == 600
+    assert (append.raw or {})["foundation_namespace"] == (
+        "unit-storyline-long-horizon"
+    )
+
+    base_external_ids = {
+        signal["external_id"]
+        for signals in base.signal_sequences.values()
+        for signal in signals
+    }
+    append_external_ids = {
+        signal["external_id"]
+        for signals in append.signal_sequences.values()
+        for signal in signals
+    }
+    assert not (base_external_ids & append_external_ids)
+
+    first_signal = next(iter(append.signal_sequences.values()))[0]
+    assert first_signal["content_dict"]["signal_index"] == 10000
+    assert first_signal["content_dict"]["horizon_wave_index"] == 401
+
+
 def test_latent_bridge_storyline_has_sensor_gap_without_initial_hallway_leak() -> None:
     scenario, _gold = build_storyline_scenario(
         run_id="unit-storyline-benchmark",
@@ -77,7 +134,7 @@ def test_latent_bridge_storyline_has_sensor_gap_without_initial_hallway_leak() -
     future_bridge_text = "\n".join(
         signal["content"].lower()
         for signal in scenario.signal_sequences["future_validation"]
-        if (signal.get("content_dict") or {}).get("storyline_id")
+        if _story_id_from_external_id(signal.get("external_id"))
         == _LATENT_BRIDGE_STORYLINE_ID
     )
 
@@ -98,6 +155,8 @@ def test_storyline_signal_metadata_does_not_persist_gold_answers() -> None:
         "expected_term",
         "expected_action",
         "expected_relationship",
+        "storyline_id",
+        "storyline_title",
     }
     forbidden_text = (
         "Important term:",
@@ -109,7 +168,21 @@ def test_storyline_signal_metadata_does_not_persist_gold_answers() -> None:
             content = signal.get("content_dict") or {}
             assert content["benchmark"] == "storyline_batch"
             assert not (forbidden_metadata_keys & set(content))
-            assert all(marker not in signal["content"] for marker in forbidden_text)
+        assert all(marker not in signal["content"] for marker in forbidden_text)
+
+
+def test_story_id_from_external_id_accepts_run_prefixed_ids() -> None:
+    assert _story_id_from_external_id("storyline:atlas:001") == "atlas"
+    assert (
+        _story_id_from_external_id("capability-400:storyline:atlas:001")
+        == "atlas"
+    )
+    assert (
+        _story_id_from_external_id(
+            "capability-400-plus-200:storyline:northstar_gap:future:004"
+        )
+        == "northstar_gap"
+    )
 
 
 def test_storyline_signals_do_not_leak_hidden_thesis() -> None:
@@ -122,8 +195,7 @@ def test_storyline_signals_do_not_leak_hidden_thesis() -> None:
     thesis_by_story = {story.id: story.thesis for story in STORYLINES}
     for signals in scenario.signal_sequences.values():
         for signal in signals:
-            content = signal.get("content_dict") or {}
-            story_id = content.get("storyline_id")
+            story_id = _story_id_from_external_id(signal.get("external_id"))
             thesis = thesis_by_story.get(story_id)
             if thesis:
                 assert thesis not in signal["content"]
@@ -393,16 +465,77 @@ def test_company_intelligence_scorecard_scores_latent_bridge_inference() -> None
 def test_benchmark_summary_renders_company_intelligence_scorecard() -> None:
     summary = _benchmark_summary(
         model_summary=_sample_model_summary(),
-        storyline_scores=[_sample_storyline_score()],
+        storyline_scores=[_sample_storyline_score_with_calibration()],
         waves=[_sample_success_wave()],
         elapsed_seconds=12.0,
     )
     markdown = _render_benchmark_markdown(summary)
 
     assert "company_intelligence_scorecard" in summary
+    assert summary["calibration"]["n"] == 2
+    assert summary["calibration"]["expected_calibration_error"] is not None
     assert "## Company Intelligence Scorecard" in markdown
+    assert "## Calibration" in markdown
     assert "### Product Value Evals" in markdown
     assert "### Proof Gaps" in markdown
+
+
+def test_storyline_calibration_report_bins_future_validation_samples() -> None:
+    report = _storyline_calibration_report([
+        _sample_storyline_score_with_calibration(),
+    ])
+
+    assert report["n"] == 2
+    assert report["positive_outcomes"] == 1
+    assert report["negative_outcomes"] == 1
+    assert 0.0 <= report["expected_calibration_error"] <= 1.0
+    assert any(bucket["n"] for bucket in report["bins"])
+
+
+def test_storyline_calibration_report_is_empty_without_future_validation_samples() -> None:
+    report = _storyline_calibration_report([_sample_storyline_score()])
+
+    assert report["n"] == 0
+    assert report["expected_calibration_error"] is None
+
+
+def test_variance_report_summarizes_scores_and_judged_rate(tmp_path) -> None:
+    report_root = tmp_path / "runs"
+    _write_run_artifact(
+        report_root,
+        "run-a",
+        average=0.70,
+        company=0.80,
+        product=0.60,
+        thesis_average=0.75,
+        thesis_correct=7,
+        thesis_incorrect=2,
+    )
+    _write_run_artifact(
+        report_root,
+        "run-b",
+        average=0.76,
+        company=0.84,
+        product=0.63,
+        thesis_average=0.80,
+        thesis_correct=8,
+        thesis_incorrect=1,
+    )
+    report = build_variance_report(report_root, ["run-a", "run-b"])
+    markdown = _render_variance_markdown(report)
+
+    average = report["metrics"]["average_storyline_score"]
+    thesis_rate = report["judged_rates"]["thesis_recovery_correct_rate"]
+
+    assert average["n"] == 2
+    assert average["mean"] == 0.73
+    assert average["min"] == 0.70
+    assert average["max"] == 0.76
+    assert average["stddev"] > 0
+    assert thesis_rate["n"] == 18
+    assert thesis_rate["correct"] == 15
+    assert thesis_rate["wilson_95_ci"]["low"] < thesis_rate["rate"]
+    assert "Wilson 95% CI" in markdown
 
 
 def _sample_storyline_score() -> StorylineScore:
@@ -430,6 +563,68 @@ def _sample_storyline_score() -> StorylineScore:
         missing_latent_pattern_groups=[],
         latent_pattern_model_ids=["model-1"],
         score=0.85,
+    )
+
+
+def _sample_storyline_score_with_calibration() -> StorylineScore:
+    score = _sample_storyline_score()
+    score.calibration_samples = [
+        {
+            "storyline_id": score.storyline_id,
+            "model_id": "model-1",
+            "confidence": 0.82,
+            "outcome": 1.0,
+            "basis": "future_validation_wave_proxy",
+        },
+        {
+            "storyline_id": score.storyline_id,
+            "model_id": "model-2",
+            "confidence": 0.74,
+            "outcome": 0.0,
+            "basis": "future_validation_wave_proxy",
+        },
+    ]
+    return score
+
+
+def _write_run_artifact(
+    report_root,
+    run_id: str,
+    *,
+    average: float,
+    company: float,
+    product: float,
+    thesis_average: float,
+    thesis_correct: int,
+    thesis_incorrect: int,
+) -> None:
+    run_dir = report_root / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "storyline_scores.json").write_text(
+        json.dumps({
+            "run_id": run_id,
+            "signals": 225,
+            "storyline_count": 9,
+            "elapsed_seconds": 12.0,
+            "average_storyline_score": average,
+            "company_intelligence_scorecard": {
+                "overall_score": company,
+                "product_value_evals": {"overall_score": product},
+            },
+            "thesis_recovery_judge": {
+                "enabled": True,
+                "n": thesis_correct + thesis_incorrect,
+                "average_score": thesis_average,
+                "correct_count": thesis_correct,
+                "incorrect_count": thesis_incorrect,
+            },
+        })
+    )
+    (run_dir / "run_config.json").write_text(
+        json.dumps({
+            "run_id": run_id,
+            "cache_bypass_env": {"LLM_CACHE_BYPASS": "1"},
+        })
     )
 
 

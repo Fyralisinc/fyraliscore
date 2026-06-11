@@ -1,8 +1,9 @@
 """Provider selection for inquiry question planning.
 
 Question planning is latency-sensitive and does not need the same reasoning
-budget as Think's main model-update pass. When the app-wide provider is Codex,
-use a dedicated small Codex provider configured for low effort.
+budget as Think's main model-update pass. The production path is Codex-only:
+Think uses the app's Codex provider, while question planning uses a dedicated
+low-effort Codex provider.
 """
 from __future__ import annotations
 
@@ -24,9 +25,10 @@ def select_question_planning_provider(
 
     if llm_provider is None:
         return None
-    if not _codex_low_effort_question_planning_enabled():
-        return llm_provider
-    if getattr(llm_provider.config, "provider", None) != "codex":
+    config = getattr(llm_provider, "config", None)
+    if getattr(config, "provider", None) != "codex":
+        return None
+    if getattr(llm_provider, "_is_question_planning_provider", False):
         return llm_provider
     return _codex_low_effort_provider(llm_provider)
 
@@ -51,12 +53,6 @@ def question_planning_provider_metadata(
         "llm_reasoning_effort": effort,
         "uses_codex_low_effort": provider_name == "codex" and effort == "low",
     }
-
-
-def _codex_low_effort_question_planning_enabled() -> bool:
-    raw = os.environ.get("INQUIRY_CODEX_LOW_EFFORT_QUESTION_PLANNING", "1")
-    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
-
 
 def _codex_low_effort_provider(source: LLMProvider) -> LLMProvider:
     global _QUESTION_PLANNING_PROVIDER_CACHE

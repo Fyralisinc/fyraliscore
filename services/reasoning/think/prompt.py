@@ -24,6 +24,7 @@ prevent a stray 100KB content_text from blowing the window.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,12 +34,32 @@ from services.reasoning.retrieval.primary import TriggerContext
 from .reasoning_frame import ReasoningFrame, reasoning_job_from_trigger
 
 
-# Per-section char budgets.
-_OBS_CHAR_BUDGET = 4000
-_MODELS_CHAR_BUDGET = 4000
-_MODELS_INQUIRY_CHAR_BUDGET = 2400
-_ACTS_CHAR_BUDGET = 12000
-_RESOURCES_CHAR_BUDGET = 1000
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Cost-plan §1.3: env-overridable prompt budgets. Read once at import;
+    operators tune via env before the worker starts (the deployment model).
+    Falls back to `default` on missing/blank/non-int, never below `minimum`."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+# Per-section char budgets. Cost-plan §1.3 makes these env-overridable
+# (THINK_*_CHAR_BUDGET) so a prompt section can be tightened without a deploy.
+# Defaults are the historical hardcoded values, so unset env = no behavior
+# change.
+_OBS_CHAR_BUDGET = _env_int("THINK_OBS_CHAR_BUDGET", 4000)
+_MODELS_CHAR_BUDGET = _env_int("THINK_MODELS_CHAR_BUDGET", 4000)
+_MODELS_INQUIRY_CHAR_BUDGET = _env_int("THINK_MODELS_INQUIRY_CHAR_BUDGET", 2400)
+_ACTS_CHAR_BUDGET = _env_int("THINK_ACTS_CHAR_BUDGET", 12000)
+_RESOURCES_CHAR_BUDGET = _env_int("THINK_RESOURCES_CHAR_BUDGET", 1000)
+# Previously-unbudgeted sections (cost-plan §1.3 tail protection). The
+# relationship-candidates cap layers a char budget on top of the existing
+# count cap; both fold into the same "omitted" marker.
+_CANDIDATES_CHAR_BUDGET = _env_int("THINK_CANDIDATES_CHAR_BUDGET", 12000)
 _PER_ITEM_CHAR_LIMIT = 1500
 _MODEL_DETAIL_CHAR_LIMIT = 700
 _MODEL_MANIFEST_CHAR_LIMIT = 220
@@ -267,7 +288,7 @@ edge_ops:
   "evidence_event_ids":["<observation uuid>",...],
   "evidence_model_ids":["<model uuid>",...],
   "explanation":"<grounded reason>", "metadata":{},
-  "review_status":"accepted|candidate|needs_review", "reason":"<for retire>" }
+  "review_status":"accepted|candidate|needs_review|disputed", "reason":"<for retire>" }
 - Use edge_ops for relationships between Models: support, contradiction,
   weakening, causal/explanatory links, blockers/enablers, shared issues,
   co-occurrence, analogy, alternatives, early warnings, instance_of,
@@ -289,6 +310,8 @@ edge_ops:
   true; `enables` = source makes target possible; `contributes_to_resolution`
   = source helps settle or resolve target; `supports` = source adds evidence
   without a sharper relationship.
+- Use `review_status="disputed"` when the relation itself is actively contested
+  and both endpoints should remain visible for uncertainty/review.
 - Causal edges (`causes`, `explains`, `blocks`, `enables`) require a concrete
   mechanism in `explanation`. If the mechanism is plausible but unconfirmed,
   set `review_status` to `candidate` or `needs_review` and put causal metadata
@@ -473,6 +496,64 @@ Return only well-formed JSON, no prose outside the JSON object.
 class PromptPair:
     system: str
     user: str
+
+
+def _cache_optimized_layout_enabled() -> bool:
+    """Cost-plan §1.1 flag `THINK_PROMPT_LAYOUT`. Default `standard` (off).
+
+    When `cache_optimized`, the static system base + per-trigger-kind operating
+    instructions form a stable `system` prefix (so the Codex/OpenAI prompt cache
+    can hit), and the dynamic per-trigger reasoning profile moves to the top of
+    the user message. Content is token-identical to `standard`; only position
+    changes."""
+    return os.environ.get("THINK_PROMPT_LAYOUT", "standard").strip().lower() in {
+        "cache_optimized", "cache-optimized", "cached", "1", "on", "true",
+    }
+
+
+def _strict_lean_prompt_enabled() -> bool:
+    """Cost-plan §1.2 flag `THINK_STRICT_LEAN_PROMPT`. Default off. Only takes
+    effect when the provider also *enforces* the output schema (DeepSeek strict
+    tool-calling); on hint-only providers (Codex/OpenAI/Anthropic) the prose
+    contract is load-bearing and is always kept."""
+    return os.environ.get("THINK_STRICT_LEAN_PROMPT", "0").strip().lower() in {
+        "1", "on", "true", "yes",
+    }
+
+
+# Cost-plan §1.2: the ONLY prose safely droppable when the strict tool schema
+# is server-enforced is the top-level JSON-shape skeleton (the schema's
+# `required` + field set enforce exactly this). Every *semantic* rule stays —
+# the edge_kind vocabulary (the strict schema validates edge_kind as a regex,
+# not the 16-kind enum), falsifier kinds, payload examples, scoping/confidence
+# discipline — because the schema validates shape, not meaning.
+_DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
+{
+  "trigger_ref": "<uuid echoed from triggering_event>",
+  "tenant_id": "<uuid echoed from triggering_event>",
+  "claim_ops": [],
+  "edge_ops": [],
+  "ontology_gap_ops": [],
+  "act_ops": [],
+  "resource_ops": [],
+  "new_predictions": [],
+  "reasoning_trace": "<brief rationale>"
+}"""
+
+_DIFF_SHAPE_POINTER = (
+    "Diff schema: the strict tool schema enforces the exact top-level shape "
+    "(trigger_ref, tenant_id, claim_ops, edge_ops, ontology_gap_ops, act_ops, "
+    "resource_ops, new_predictions, reasoning_trace)."
+)
+
+
+def _lean_strict_base(base: str) -> str:
+    """Return `base` with schema-enforced shape prose collapsed to a pointer.
+    Guarded: if the target block is absent (prompt was edited), `base` is
+    returned unchanged — never silently drops more than the known block."""
+    if _DIFF_SHAPE_SKELETON in base:
+        return base.replace(_DIFF_SHAPE_SKELETON, _DIFF_SHAPE_POINTER)
+    return base
 
 
 def _profiled_system_prompt(
@@ -715,6 +796,7 @@ def build_prompt(
     reason_for_trigger: str | None = None,
     reasoning_frame: ReasoningFrame | None = None,
     claims_only: bool = False,
+    lean_output_contract: bool = False,
 ) -> PromptPair:
     """
     Produce (system, user) messages for `LLMProvider.structured`.
@@ -731,16 +813,30 @@ def build_prompt(
     frame = reasoning_frame.to_prompt_section() if reasoning_frame else None
     context = _build_context_section(trigger, bundle, triggering_actor_summary)
     instructions = _build_instructions(trigger)
-    parts = [triggering]
-    if frame:
-        parts.append(frame)
-    parts.extend([context, instructions])
-    user_msg = "\n\n".join(parts)
-    system_prompt = _profiled_system_prompt(
-        trigger,
-        bundle,
-        claims_only=claims_only,
-    )
+    base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
+    # Cost-plan §1.2: lean only when the caller says the provider enforces the
+    # schema AND the flag is on. Hint-only providers keep the full prose.
+    if lean_output_contract and _strict_lean_prompt_enabled():
+        base = _lean_strict_base(base)
+    profile = _build_reasoning_profile(trigger, bundle, claims_only=claims_only)
+
+    if _cache_optimized_layout_enabled():
+        # Cost-plan §1.1: stable system prefix = static base + per-trigger-kind
+        # operating instructions (one cache bucket per kind×schema-variant); the
+        # dynamic profile leads the user message. Same tokens, cacheable prefix.
+        system_prompt = f"{base}\n\n{instructions}"
+        parts = [profile, triggering]
+        if frame:
+            parts.append(frame)
+        parts.append(context)
+        user_msg = "\n\n".join(parts)
+    else:
+        parts = [triggering]
+        if frame:
+            parts.append(frame)
+        parts.extend([context, instructions])
+        user_msg = "\n\n".join(parts)
+        system_prompt = f"{profile}\n\n{base}"
     return PromptPair(system=system_prompt, user=user_msg)
 
 
@@ -787,12 +883,24 @@ def _build_triggering_section(
     )
     candidates = signature.get("relationship_candidates")
     if isinstance(candidates, list):
+        # Cost-plan §1.3: cap by count (8) AND by char budget; the tail folds
+        # into the omitted-count marker. At least one candidate always emits.
+        emitted = 0
+        used = 0
         for candidate in candidates[:8]:
-            if isinstance(candidate, dict):
-                lines.extend(_relationship_candidate_lines(candidate))
-        if len(candidates) > 8:
+            if not isinstance(candidate, dict):
+                continue
+            cand_lines = _relationship_candidate_lines(candidate)
+            cand_len = sum(len(line) + 1 for line in cand_lines)
+            if emitted > 0 and used + cand_len > _CANDIDATES_CHAR_BUDGET:
+                break
+            lines.extend(cand_lines)
+            used += cand_len
+            emitted += 1
+        omitted = len(candidates) - emitted
+        if omitted > 0:
             lines.append(
-                f"  relationship_candidate_omitted_count: {len(candidates) - 8}"
+                f"  relationship_candidate_omitted_count: {omitted}"
             )
     else:
         candidate = signature.get("relationship_candidate")

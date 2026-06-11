@@ -39,6 +39,10 @@ from services.domain.acts import decisions as decisions_svc
 from services.domain.acts import goals as goals_svc
 from services.domain.observations.state_change import emit_state_change
 from services.domain.resources import repo as resources_repo
+from services.product.recommendations.feedback import (
+    bump_supporting_model_confirmations,
+    record_recommendation_feedback,
+)
 
 
 # Ratification action vocabulary for hypothesis Models.
@@ -117,7 +121,7 @@ async def _load_active_recommendation(
         """
         SELECT id, tenant_id, born_from_event_id, proposition,
                "natural" AS natural, status, archived_at, archive_reason,
-               target_actor_id
+               target_actor_id, supporting_model_ids
         FROM models
         WHERE id = $1 AND tenant_id = $2
           AND claim_role = 'recommendation'
@@ -144,6 +148,7 @@ async def _load_active_recommendation(
         "proposition": proposition,
         "natural": row["natural"],
         "target_actor_id": row["target_actor_id"],
+        "supporting_model_ids": list(row["supporting_model_ids"] or []),
     }
 
 
@@ -302,6 +307,23 @@ async def act_on_recommendation(
         change_id,
     )
 
+    feedback_actor_id = rec.get("target_actor_id") or actor_id
+    pattern_key = await record_recommendation_feedback(
+        conn,
+        tenant_id=tenant_id,
+        target_actor_id=feedback_actor_id,
+        proposition=proposition,
+        action="acted",
+        reason=notes.strip() if notes and notes.strip() else None,
+    )
+    confirmed_supporters = await bump_supporting_model_confirmations(
+        conn,
+        tenant_id=tenant_id,
+        supporting_model_ids=rec.get("supporting_model_ids") or [],
+    )
+    archive_metadata["feedback_pattern_key"] = pattern_key
+    archive_metadata["supporting_models_confirmed"] = confirmed_supporters
+
     await emit_state_change(
         conn,
         kind="recommendation_acted_upon",
@@ -372,6 +394,16 @@ async def dismiss_recommendation(
         datetime.now(timezone.utc),
     )
 
+    feedback_actor_id = rec.get("target_actor_id") or actor_id
+    pattern_key = await record_recommendation_feedback(
+        conn,
+        tenant_id=tenant_id,
+        target_actor_id=feedback_actor_id,
+        proposition=rec["proposition"],
+        action="dismissed",
+        reason=reason.strip(),
+    )
+
     await emit_state_change(
         conn,
         kind="recommendation_dismissed",
@@ -383,6 +415,7 @@ async def dismiss_recommendation(
         metadata={
             "actor_id": str(actor_id),
             "reason": reason.strip(),
+            "feedback_pattern_key": pattern_key,
         },
     )
 

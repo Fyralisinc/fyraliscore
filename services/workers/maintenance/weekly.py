@@ -37,6 +37,7 @@ from services.domain.resources.partitions import (
 from services.reasoning.retrieval.maintenance import (
     background_relationship_maintenance,
 )
+from services.reasoning.relationships.promoter import promote_high_confidence_edges
 
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class WeeklyReport:
     relationship_orphans_flagged: int = 0
     relationship_outliers: int = 0
     relationship_archival_suggestions: int = 0
+    relationship_candidates_promoted: int = 0
+    relationship_candidates_retired: int = 0
     calibration_status: str = "not_run"
     partitions_created: list[str] = field(default_factory=list)
     smf_rows_deleted: int = 0
@@ -70,9 +73,9 @@ async def relationship_maintenance_per_tenant(
     *,
     conn: asyncpg.Connection,
     tenant_ids: list[UUID] | None = None,
-) -> tuple[int, int, int, int]:
-    """Run ``background_relationship_maintenance`` across tenants. Returns
-    (tenants_processed, orphans, outliers, archival_suggestions).
+) -> tuple[int, int, int, int, int, int]:
+    """Run relationship maintenance across tenants. Returns
+    (tenants_processed, orphans, outliers, archival_suggestions, promoted, retired).
     """
     if tenant_ids is None:
         rows = await conn.fetch(
@@ -82,14 +85,17 @@ async def relationship_maintenance_per_tenant(
         )
         tenant_ids = [r["tenant_id"] for r in rows]
     processed = 0
-    orphans = outliers = arch = 0
+    orphans = outliers = arch = promoted = retired = 0
     for tid in tenant_ids:
         report = await background_relationship_maintenance(tid, conn)
+        promotion = await promote_high_confidence_edges(conn, tenant_id=tid)
         processed += 1
         orphans += report.orphans_flagged
         outliers += report.activation_outliers
         arch += report.archival_suggestions
-    return processed, orphans, outliers, arch
+        promoted += promotion.promoted_candidates
+        retired += promotion.retired_stale_candidates
+    return processed, orphans, outliers, arch, promoted, retired
 
 
 async def calibration_updater_run_once(
@@ -207,13 +213,15 @@ async def run_weekly(
     try:
         async with the_pool.acquire() as conn:
             async with conn.transaction():
-                processed, orph, out, arch = (
+                processed, orph, out, arch, promoted, retired = (
                     await relationship_maintenance_per_tenant(conn=conn)
                 )
                 report.tenants_processed = processed
                 report.relationship_orphans_flagged = orph
                 report.relationship_outliers = out
                 report.relationship_archival_suggestions = arch
+                report.relationship_candidates_promoted = promoted
+                report.relationship_candidates_retired = retired
     except Exception as e:
         report.errors.append(f"relationship_maintenance:{type(e).__name__}:{e}")
         log.warning("weekly relationship_maintenance failed: %s", e)

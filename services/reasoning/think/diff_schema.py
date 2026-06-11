@@ -159,7 +159,7 @@ class EdgeOp(BaseModel):
     explanation: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     review_status: Literal[
-        "accepted", "candidate", "needs_review", "rejected", "retired"
+        "accepted", "candidate", "needs_review", "disputed", "rejected", "retired"
     ] = "accepted"
     detected_by: str | None = None
     decay_after: datetime | None = None

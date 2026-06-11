@@ -403,6 +403,19 @@ def _mark_empty_situation_members_pending(entry: dict[str, Any]) -> None:
     entry["member_model_pending"] = True
 
 
+def _normalize_hypothesis_assertion_alias(entry: dict[str, Any]) -> None:
+    prop = entry.get("proposition")
+    if not isinstance(prop, dict):
+        return
+    if prop.get("kind") != "belief" or prop.get("claim_role") != "hypothesis":
+        return
+    if isinstance(prop.get("hypothesis_text"), str) and prop["hypothesis_text"].strip():
+        return
+    assertion = prop.get("assertion")
+    if isinstance(assertion, str) and assertion.strip():
+        prop["hypothesis_text"] = assertion.strip()
+
+
 def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
     """
     Every entity id this diff mutates. Used by the out-of-region check.
@@ -918,6 +931,7 @@ async def _validate_claim_op(
         # instead of letting the applier fail the whole transaction.
         _repair_non_situation_abstraction_level(entry)
         _mark_empty_situation_members_pending(entry)
+        _normalize_hypothesis_assertion_alias(entry)
         validate_proposition(entry.get("proposition"))
         # confidence_at_assertion — if the LLM doesn't supply one, use
         # the pre-calibration raw confidence (clipped). This becomes the

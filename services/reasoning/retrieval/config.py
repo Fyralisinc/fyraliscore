@@ -124,10 +124,13 @@ class RetrievalConfig:
     assembler_budget_acts_total: int = 10
     assembler_budget_resources: int = 5
     # Model-first context keeps Models as the historical memory substrate.
-    # Trigger observations are raw input that has not been compressed yet,
-    # so they get their own cap. Older observations are only evidence
-    # anchors/counterevidence, not a second memory layer.
+    # Raw observations are prompt-facing only as a fallback/override:
+    #   model_gap: include observations only when selected Models are absent.
+    #   always: preserve the legacy trigger + historical evidence caps.
+    #   none: never include raw observations in the assembled bundle.
     model_first_context_enabled: bool = True
+    observation_context_mode: str = "model_gap"
+    observation_context_min_models: int = 1
     trigger_observation_cap: int = 30
     historical_observation_cap: int = 4
     mmr_lambda_diversity: float = 0.5
@@ -143,6 +146,13 @@ class RetrievalConfig:
     # rank-fusion ("rrf"). RRF is the new default (audit §6 arg 1).
     # Override via env `RETRIEVAL_SCORING_MODE=linear` for rollback.
     scoring_mode: str = "rrf"
+    # Capability-plan C6: expose the RRF smoothing constant and trigger
+    # pathway weights to offline grid search without editing code.
+    rrf_k: int = 60
+    trigger_weights_json: str = ""
+    # Optional age-based score decay. 0 disables decay. When positive,
+    # model scores are multiplied by 0.5 every N days since created_at.
+    recency_decay_half_life_days: float = 0.0
 
     # ---- Second-pass ----
     second_pass_sparse_threshold: int = 5
@@ -188,6 +198,12 @@ class RetrievalConfig:
                 kwargs[f.name] = _env_str_literal(
                     envname, str(default), {"linear", "rrf"},
                 )
+            elif f.name == "observation_context_mode":
+                kwargs[f.name] = _env_str_literal(
+                    envname, str(default), {"always", "model_gap", "none"},
+                )
+            elif f.type is str or f.type == "str":
+                kwargs[f.name] = os.environ.get(envname, str(default))
             else:
                 kwargs[f.name] = default
         return cls(**kwargs)

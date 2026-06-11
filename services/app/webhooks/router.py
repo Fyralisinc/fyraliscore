@@ -42,6 +42,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.http_headers import safe_headers
 from services.ingest.ingestion.core import (
     IngestResult,
     MAX_PAYLOAD_BYTES,
@@ -847,7 +848,7 @@ async def _process_qbo_unit(
         actor_repo=deps.actor_repo,
         alias_repo=deps.alias_repo,
         embedder=deps.embedder,
-        request_headers=dict(request.headers),
+        request_headers=safe_headers(request.headers),
     )
     # Mirror the generic tail: shadow-write only when NOT on the cutover path.
     if not flag_enabled:
@@ -1364,7 +1365,7 @@ def build_webhooks_router() -> APIRouter:
                 actor_repo=deps.actor_repo,
                 alias_repo=deps.alias_repo,
                 embedder=deps.embedder,
-                request_headers=dict(request.headers),
+                request_headers=safe_headers(request.headers),
             )
         except HandlerNotFound:
             return JSONResponse(

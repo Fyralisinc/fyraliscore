@@ -57,6 +57,48 @@ jobs:
       - name: Check layer boundaries
         run: lint-imports
 
+  benchmark-baselines:
+    name: Benchmark baselines (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Run offline benchmark canaries
+        run: |
+          .venv/bin/python -m benchmarks.run_benchmark \
+            --benchmark toy \
+            --out benchmarks/reports/generated/ci/toy
+          .venv/bin/python -m benchmarks.run_benchmark \
+            --benchmark stress10 \
+            --system bm25_session \
+            --out benchmarks/reports/generated/ci/stress10_bm25
+          .venv/bin/python scripts/run_storyline_batch_benchmark.py \
+            --mode build-only \
+            --signals-per-storyline 20 \
+            --noise-signals 5 \
+            --run-id ci-storyline-build \
+            --report-root benchmarks/reports/generated/ci/storyline
+
+      - name: Compare retained retrieval baseline
+        run: |
+          .venv/bin/python -m benchmarks.check_baseline_metrics \
+            --baseline benchmarks/baselines/stress10_bm25/metrics_summary.json \
+            --current benchmarks/reports/generated/ci/stress10_bm25/metrics_summary.json \
+            --absolute-tolerance 0.02
+
   migration-filenames:
     name: Migrations (unique prefixes)
     runs-on: ubuntu-latest

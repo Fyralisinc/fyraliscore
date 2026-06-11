@@ -52,9 +52,15 @@ def test_ra5_config_defaults_match_spec():
     assert cfg.assembler_budget_acts_total == 10
     assert cfg.assembler_budget_resources == 5
     assert cfg.model_first_context_enabled is True
+    assert cfg.observation_context_mode == "model_gap"
+    assert cfg.observation_context_min_models == 1
     assert cfg.trigger_observation_cap == 30
     assert cfg.historical_observation_cap == 4
     assert cfg.mmr_lambda_diversity == 0.5
+    assert cfg.scoring_mode == "rrf"
+    assert cfg.rrf_k == 60
+    assert cfg.trigger_weights_json == ""
+    assert cfg.recency_decay_half_life_days == 0.0
     assert cfg.second_pass_sparse_threshold == 5
     assert cfg.second_pass_customer_confidence_threshold == 0.7
 
@@ -65,12 +71,26 @@ def test_ra5_config_env_overrides_int(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_ASSEMBLER_BUDGET_MODELS", "18")
     monkeypatch.setenv("RETRIEVAL_TRIGGER_OBSERVATION_CAP", "25")
     monkeypatch.setenv("RETRIEVAL_HISTORICAL_OBSERVATION_CAP", "2")
+    monkeypatch.setenv("RETRIEVAL_OBSERVATION_CONTEXT_MIN_MODELS", "3")
     cfg = RetrievalConfig.from_env()
     assert cfg.semantic_k == 40
     assert cfg.semantic_hnsw_ef_search == 200
     assert cfg.assembler_budget_models == 18
     assert cfg.trigger_observation_cap == 25
     assert cfg.historical_observation_cap == 2
+    assert cfg.observation_context_min_models == 3
+
+
+def test_ra5_config_env_overrides_retrieval_tuning_knobs(monkeypatch):
+    monkeypatch.setenv("RETRIEVAL_RRF_K", "35")
+    monkeypatch.setenv("RETRIEVAL_TRIGGER_WEIGHTS_JSON", '{"T1":{"B":0.9,"A":0.1}}')
+    monkeypatch.setenv("RETRIEVAL_RECENCY_DECAY_HALF_LIFE_DAYS", "14")
+
+    cfg = RetrievalConfig.from_env()
+
+    assert cfg.rrf_k == 35
+    assert cfg.trigger_weights_json == '{"T1":{"B":0.9,"A":0.1}}'
+    assert cfg.recency_decay_half_life_days == 14.0
 
 
 def test_ra5_config_env_overrides_bool(monkeypatch):
@@ -83,6 +103,16 @@ def test_ra5_config_env_overrides_bool(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_MODEL_FIRST_CONTEXT_ENABLED", "false")
     cfg = RetrievalConfig.from_env()
     assert cfg.model_first_context_enabled is False
+
+
+def test_ra5_config_env_overrides_observation_context_mode(monkeypatch):
+    monkeypatch.setenv("RETRIEVAL_OBSERVATION_CONTEXT_MODE", "always")
+    cfg = RetrievalConfig.from_env()
+    assert cfg.observation_context_mode == "always"
+
+    monkeypatch.setenv("RETRIEVAL_OBSERVATION_CONTEXT_MODE", "invalid")
+    cfg = RetrievalConfig.from_env()
+    assert cfg.observation_context_mode == "model_gap"
 
 
 def test_ra5_config_env_overrides_float(monkeypatch):
@@ -370,7 +400,13 @@ async def test_ra5_primary_retrieve_threads_config_through(
 ):
     """primary_retrieve should report the active config in notes."""
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
-    cfg = RetrievalConfig(semantic_k=11, semantic_hnsw_ef_search=99)
+    cfg = RetrievalConfig(
+        semantic_k=11,
+        semantic_hnsw_ef_search=99,
+        rrf_k=35,
+        trigger_weights_json='{"T1":{"A":0.1,"B":0.7,"C":0.1,"G":0.1}}',
+        recency_decay_half_life_days=21.0,
+    )
     trigger = TriggerContext(
         kind="T1",
         tenant_id=tenant,
@@ -384,3 +420,8 @@ async def test_ra5_primary_retrieve_threads_config_through(
     assert cs["semantic_k"] == 11
     assert cs["semantic_hnsw_ef_search"] == 99
     assert cs["temporal_include_entity_mentions"] is True
+    assert cs["rrf_k"] == 35
+    assert cs["trigger_weights_overridden"] is True
+    assert cs["recency_decay_half_life_days"] == 21.0
+    assert abs(sum(r.notes["weights"].values()) - 1.0) < 1e-9
+    assert r.notes["weights"]["B"] > r.notes["weights"]["A"]

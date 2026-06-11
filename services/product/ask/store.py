@@ -477,20 +477,30 @@ class PostgresAskStore:
     ) -> UUID:
         fid = uuid7()
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO ask_feedback (
-                  id, session_id, answer_id, viewer_id, feedback_type, payload
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO ask_feedback (
+                      id, session_id, answer_id, viewer_id, feedback_type, payload
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                    """,
+                    fid,
+                    session_id,
+                    answer_id,
+                    viewer_id,
+                    feedback_type,
+                    _jsonb(payload),
                 )
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-                """,
-                fid,
-                session_id,
-                answer_id,
-                viewer_id,
-                feedback_type,
-                _jsonb(payload),
-            )
+                if feedback_type == "helpful" and answer_id is not None:
+                    await _enqueue_accepted_answer_writeback(
+                        conn,
+                        feedback_id=fid,
+                        session_id=session_id,
+                        answer_id=answer_id,
+                        viewer_id=viewer_id,
+                        payload=payload,
+                    )
         return fid
 
 
@@ -563,6 +573,7 @@ class InMemoryAskStore:
         self.evidence: dict[UUID, list[AskEvidenceItem]] = {}
         self.changes: dict[UUID, AskProposedStateChange] = {}
         self.feedback: list[dict[str, Any]] = []
+        self.accepted_answer_writebacks: list[dict[str, Any]] = []
 
     async def create_session(
         self,
@@ -725,4 +736,100 @@ class InMemoryAskStore:
             "feedback_type": feedback_type,
             "payload": payload,
         })
+        if feedback_type == "helpful" and answer_id is not None:
+            self.accepted_answer_writebacks.append({
+                "feedback_id": fid,
+                "session_id": session_id,
+                "answer_id": answer_id,
+                "viewer_id": viewer_id,
+                "confidence_cap": 0.72,
+                "falsifier_required": True,
+            })
         return fid
+
+
+async def _enqueue_accepted_answer_writeback(
+    conn: asyncpg.Connection,
+    *,
+    feedback_id: UUID,
+    session_id: UUID,
+    answer_id: UUID,
+    viewer_id: UUID,
+    payload: dict[str, Any],
+) -> None:
+    row = await conn.fetchrow(
+        """
+        SELECT
+          s.tenant_id,
+          s.current_scope,
+          a.answer_payload,
+          a.confidence,
+          a.retrieval_run_id
+        FROM ask_answers a
+        JOIN ask_sessions s ON s.id = a.session_id
+        WHERE a.id = $1
+          AND a.session_id = $2
+        """,
+        answer_id,
+        session_id,
+    )
+    if row is None:
+        return
+    evidence_rows = await conn.fetch(
+        """
+        SELECT source_ref, source_kind, summary, strength, supports_answer,
+               is_counterevidence
+        FROM ask_evidence_items
+        WHERE retrieval_run_id = $1
+          AND omitted_reason IS NULL
+        ORDER BY supports_answer DESC, is_counterevidence ASC, created_at ASC
+        LIMIT 16
+        """,
+        row["retrieval_run_id"],
+    )
+    confidence = row["confidence"]
+    try:
+        capped_confidence = min(float(confidence), 0.72)
+    except (TypeError, ValueError):
+        capped_confidence = 0.6
+    trigger_id = uuid7()
+    await conn.execute(
+        """
+        INSERT INTO think_trigger_queue (
+          id, tenant_id, trigger_kind, trigger_subkind, payload
+        )
+        VALUES ($1, $2, 'T4', 'ask_answer_accepted', $3::jsonb)
+        """,
+        trigger_id,
+        row["tenant_id"],
+        _jsonb({
+            "source": "ask_fyralis",
+            "feedback_id": str(feedback_id),
+            "answer_id": str(answer_id),
+            "session_id": str(session_id),
+            "viewer_id": str(viewer_id),
+            "feedback_payload": payload,
+            "answer_payload": _coerce_json(row["answer_payload"]),
+            "scope": _coerce_json(row["current_scope"]),
+            "confidence_cap": capped_confidence,
+            "claim_role": "hypothesis",
+            "falsifier_required": True,
+            "writeback_instruction": (
+                "If the accepted Ask answer contains a durable company-memory "
+                "claim supported by the evidence, emit it as a capped-confidence "
+                "hypothesis/fact with a concrete falsifier and provenance. "
+                "Do not write back conversational phrasing or unsupported advice."
+            ),
+            "provenance": [
+                {
+                    "source_ref": str(r["source_ref"]) if r["source_ref"] else None,
+                    "source_kind": r["source_kind"],
+                    "summary": r["summary"],
+                    "strength": r["strength"],
+                    "supports_answer": bool(r["supports_answer"]),
+                    "is_counterevidence": bool(r["is_counterevidence"]),
+                }
+                for r in evidence_rows
+            ],
+        }),
+    )

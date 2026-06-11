@@ -75,6 +75,7 @@ CLAIM_ROLE_REGISTRY: dict[ClaimRole, ClaimRoleContract] = {
         allowed_stances=("belief",),
         required_field_groups=(
             ("hypothesis_text",),
+            ("belief_target_text",),
             ("claim",),
             ("summary",),
         ),

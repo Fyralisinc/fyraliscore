@@ -833,6 +833,7 @@ class LatentTopologyService:
         self,
         conn: asyncpg.Connection,
         record: dict[str, Any],
+        parent_payload: dict[str, Any] | None = None,
     ) -> bool:
         candidate_id = record["id"]
         existing = await conn.fetchval(
@@ -864,6 +865,11 @@ class LatentTopologyService:
                 "metadata": record.get("metadata") or {},
             },
         }
+        # Cost-plan §3.2: stamp lineage depth (parent + 1; a topology sweep with
+        # no parent trigger is a lineage root at depth 1) so the worker's
+        # cascade-bound check applies to insert-time T4 candidates too.
+        from services.reasoning.think.cascade import propagate_cascade_depth
+        payload.update(propagate_cascade_depth(parent_payload))
         await conn.execute(
             """
             INSERT INTO think_trigger_queue (

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -50,6 +52,7 @@ from scripts.run_1000_signal_model_layer_probe import (
     _build_cached_provider,
     _fetch_distribution,
     _insert_extra_aliases,
+    _render_markdown as _render_model_layer_markdown,
     build_scenario as build_base_scenario,
     collect_model_layer_report,
     drain_post_commit_actions,
@@ -109,6 +112,11 @@ class StorylineScore:
     unsupported_bridge_specific_claim_count: int = 0
     bridge_epistemic_marker_hits: list[str] = field(default_factory=list)
     bridge_forbidden_detail_hits: list[str] = field(default_factory=list)
+    thesis_judge_score: float | None = None
+    thesis_judge_correct: bool | None = None
+    thesis_judge_rationale: str | None = None
+    thesis_judge_metadata: dict[str, Any] = field(default_factory=dict)
+    calibration_samples: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -125,6 +133,15 @@ _PRODUCT_VALUE_EVAL_KEYS: tuple[str, ...] = (
     "negative_learning",
     "question_policy",
     "customer_value",
+)
+
+
+_THESIS_JUDGE_NAME = "storyline_thesis_recovery"
+_THESIS_JUDGE_AGREEMENT_SET = (
+    REPO_ROOT
+    / "benchmarks"
+    / "fyralis_eval"
+    / "storyline_thesis_judge_agreement.json"
 )
 
 
@@ -583,14 +600,21 @@ def build_storyline_scenario(
     noise_signals: int,
     future_validation_signals_per_storyline: int = 0,
     target_t1_batches: int = 0,
+    foundation_namespace: str | None = None,
+    horizon_start_batch: int = 0,
 ) -> tuple[Scenario, list[dict[str, Any]]]:
     if signals_per_storyline <= 0:
         raise ValueError("signals_per_storyline must be positive")
+    if horizon_start_batch < 0:
+        raise ValueError("horizon_start_batch must be >= 0")
+    namespace = foundation_namespace or run_id
     if target_t1_batches > 0:
         return _build_long_horizon_storyline_scenario(
             run_id=run_id,
+            foundation_namespace=namespace,
             signals_per_batch=signals_per_storyline,
             target_t1_batches=target_t1_batches,
+            horizon_start_batch=horizon_start_batch,
         )
     future_validation_count = (
         len(STORYLINES) * max(0, future_validation_signals_per_storyline)
@@ -600,7 +624,7 @@ def build_storyline_scenario(
         + max(0, noise_signals)
         + future_validation_count
     )
-    scenario = build_base_scenario(total_signals, namespace=run_id)
+    scenario = build_base_scenario(total_signals, namespace=namespace)
     sequences: dict[str, list[dict[str, Any]]] = {}
     signal_index = 0
     gold: list[dict[str, Any]] = []
@@ -646,6 +670,7 @@ def build_storyline_scenario(
         "generated": True,
         "benchmark": "storyline_batch",
         "run_id": run_id,
+        "foundation_namespace": namespace,
         "signals_per_storyline": signals_per_storyline,
         "future_validation_signals_per_storyline": (
             future_validation_signals_per_storyline
@@ -659,24 +684,41 @@ def build_storyline_scenario(
 def _build_long_horizon_storyline_scenario(
     *,
     run_id: str,
+    foundation_namespace: str,
     signals_per_batch: int,
     target_t1_batches: int,
+    horizon_start_batch: int = 0,
 ) -> tuple[Scenario, list[dict[str, Any]]]:
     if target_t1_batches <= 0:
         raise ValueError("target_t1_batches must be positive")
     if signals_per_batch <= 0:
         raise ValueError("signals_per_batch must be positive")
+    if horizon_start_batch < 0:
+        raise ValueError("horizon_start_batch must be >= 0")
     total_signals = target_t1_batches * signals_per_batch
-    scenario = build_base_scenario(total_signals, namespace=run_id)
+    scenario = build_base_scenario(total_signals, namespace=foundation_namespace)
     sequences: dict[str, list[dict[str, Any]]] = {}
     gold = [asdict(story) for story in STORYLINES]
-    signal_index = 0
+    signal_index = horizon_start_batch * signals_per_batch
     story_offsets = {story.id: 0 for story in STORYLINES}
     future_offsets = {story.id: 0 for story in STORYLINES}
     noise_offset = 0
-    warmup_batches = min(len(STORYLINES) * 2, target_t1_batches)
+    horizon_end_batch = horizon_start_batch + target_t1_batches
+    warmup_batches = min(len(STORYLINES) * 2, horizon_end_batch)
 
-    for batch_index in range(target_t1_batches):
+    for batch_index in range(horizon_start_batch):
+        sequence_kind = _long_horizon_sequence_kind(batch_index, warmup_batches)
+        if sequence_kind == "noise":
+            noise_offset += signals_per_batch
+        elif sequence_kind == "future_validation":
+            for item_index in range(signals_per_batch):
+                story = STORYLINES[(batch_index + item_index) % len(STORYLINES)]
+                future_offsets[story.id] += 1
+        else:
+            story = STORYLINES[batch_index % len(STORYLINES)]
+            story_offsets[story.id] += signals_per_batch
+
+    for batch_index in range(horizon_start_batch, horizon_end_batch):
         sequence_kind = _long_horizon_sequence_kind(batch_index, warmup_batches)
         signals: list[dict[str, Any]] = []
         if sequence_kind == "noise":
@@ -741,8 +783,11 @@ def _build_long_horizon_storyline_scenario(
         "benchmark": "storyline_batch",
         "scenario_mode": "long_horizon",
         "run_id": run_id,
+        "foundation_namespace": foundation_namespace,
         "signals_per_batch": signals_per_batch,
         "target_t1_batches": target_t1_batches,
+        "horizon_start_batch": horizon_start_batch,
+        "horizon_end_batch": horizon_end_batch,
         "storyline_gold": gold,
     }
     return scenario, gold
@@ -822,8 +867,6 @@ def _make_story_signal(
     content = {
         "text": text,
         "benchmark": "storyline_batch",
-        "storyline_id": story.id,
-        "storyline_title": story.title,
         "family": family,
         "signal_index": signal_index,
         "local_index": local_index,
@@ -902,8 +945,6 @@ def _make_latent_bridge_signal(
     content = {
         "text": text,
         "benchmark": "storyline_batch",
-        "storyline_id": story.id,
-        "storyline_title": story.title,
         "family": story.families[local_index % len(story.families)],
         "signal_index": signal_index,
         "local_index": local_index,
@@ -1021,8 +1062,6 @@ def _make_future_validation_signal(
     content = {
         "text": text,
         "benchmark": "storyline_batch",
-        "storyline_id": story.id,
-        "storyline_title": story.title,
         "family": "future_validation",
         "phase": "future_validation",
         "future_validation_event": True,
@@ -1080,8 +1119,6 @@ def _make_latent_bridge_future_signal(
     content = {
         "text": text,
         "benchmark": "storyline_batch",
-        "storyline_id": story.id,
-        "storyline_title": story.title,
         "family": "future_validation",
         "phase": "future_validation",
         "transition_phase": "future_confirmation",
@@ -1125,7 +1162,6 @@ def _make_noise_signal(signal_index: int, local_index: int) -> dict[str, Any]:
         "content_dict": {
             "text": text,
             "benchmark": "storyline_batch",
-            "storyline_id": "noise",
             "family": "noise",
             "signal_index": signal_index,
             "local_index": local_index,
@@ -1136,22 +1172,252 @@ def _make_noise_signal(signal_index: int, local_index: int) -> dict[str, Any]:
     }
 
 
-async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
-    run_id = args.run_id or (
-        "storyline-batch-"
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+def _read_json_obj(path: Path) -> dict[str, Any]:
+    try:
+        parsed = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _load_append_context(args: argparse.Namespace) -> dict[str, Any] | None:
+    base_run_id = getattr(args, "append_to_run_id", None)
+    if not base_run_id:
+        return None
+    base_report_dir = args.report_root / str(base_run_id)
+    base_config = _read_json_obj(base_report_dir / "run_config.json")
+    base_summary = _read_json_obj(base_report_dir / "storyline_scores.json")
+    base_run_summary = _read_json_obj(base_report_dir / "run_summary.json")
+    tenant_id = (
+        getattr(args, "append_tenant_id", None)
+        or base_summary.get("tenant_id")
+        or base_run_summary.get("tenant_id")
     )
+    if not tenant_id:
+        raise SystemExit(
+            "--append-to-run-id requires a tenant id in the base report, "
+            "or an explicit --append-tenant-id"
+        )
+    horizon_start_batch = getattr(args, "horizon_start_batch", None)
+    if horizon_start_batch is None:
+        horizon_start_batch = base_config.get("target_t1_batches")
+    if horizon_start_batch is None:
+        signals = int(base_summary.get("signals") or 0)
+        per_batch = max(1, int(getattr(args, "signals_per_storyline", 1) or 1))
+        horizon_start_batch = signals // per_batch
+    horizon_start_batch = int(horizon_start_batch)
+    if horizon_start_batch < 0:
+        raise SystemExit("--horizon-start-batch must be >= 0")
+    return {
+        "enabled": True,
+        "base_run_id": str(base_run_id),
+        "base_report_dir": str(base_report_dir),
+        "tenant_id": str(tenant_id),
+        "foundation_namespace": str(base_run_id),
+        "horizon_start_batch": horizon_start_batch,
+        "additional_t1_batches": int(args.target_t1_batches),
+        "base_target_t1_batches": int(base_config.get("target_t1_batches") or 0),
+        "base_signal_count": int(base_summary.get("signals") or 0),
+        "base_seed_status": base_run_summary.get("seed_status") or {},
+    }
+
+
+async def _attach_existing_storyline_tenant_context(
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    *,
+    tenant_id: UUID,
+) -> None:
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)",
+            tenant_id,
+        )
+        if not exists:
+            raise RuntimeError(f"append tenant does not exist: {tenant_id}")
+        scenario.tenant_id = tenant_id
+        scenario.base_time = await conn.fetchval(
+            """
+            SELECT occurred_at
+            FROM observations
+            WHERE tenant_id = $1
+              AND source_channel = 'internal:scenario_loader'
+            ORDER BY occurred_at ASC
+            LIMIT 1
+            """,
+            tenant_id,
+        ) or await conn.fetchval(
+            """
+            SELECT MIN(occurred_at)
+            FROM observations
+            WHERE tenant_id = $1
+            """,
+            tenant_id,
+        ) or datetime.now(timezone.utc)
+
+        actor_rows = await conn.fetch(
+            """
+            SELECT id, metadata->>'scenario_actor_name' AS name
+            FROM actors
+            WHERE tenant_id = $1
+              AND metadata->>'scenario_actor_name' IS NOT NULL
+            """,
+            tenant_id,
+        )
+        scenario.actors = {
+            str(row["name"]): row["id"]
+            for row in actor_rows
+            if row["name"] is not None
+        }
+
+        customer_names = [
+            str(item["name"])
+            for item in scenario.foundation.get("customers") or []
+            if item.get("name")
+        ]
+        customer_rows = await conn.fetch(
+            """
+            SELECT id, identity, metadata->>'scenario_customer_name' AS scenario_name
+            FROM resources
+            WHERE tenant_id = $1
+              AND kind = 'relational'
+              AND (
+                identity = ANY($2::text[])
+                OR metadata->>'scenario_customer_name' = ANY($2::text[])
+              )
+            """,
+            tenant_id,
+            customer_names,
+        )
+        scenario.customers = {}
+        for row in customer_rows:
+            key = row["scenario_name"] or row["identity"]
+            if key in customer_names:
+                scenario.customers[str(key)] = row["id"]
+
+        goal_titles = [
+            str(item["title"])
+            for item in scenario.foundation.get("goals") or []
+            if item.get("title")
+        ]
+        commitment_titles = [
+            str(item["title"])
+            for item in scenario.foundation.get("commitments") or []
+            if item.get("title")
+        ]
+        decision_titles = [
+            str(item["title"])
+            for item in scenario.foundation.get("decisions") or []
+            if item.get("title")
+        ]
+        scenario.goals = await _fetch_title_id_map(conn, "goals", goal_titles, tenant_id)
+        scenario.commitments = await _fetch_title_id_map(
+            conn,
+            "commitments",
+            commitment_titles,
+            tenant_id,
+        )
+        scenario.decisions = await _fetch_title_id_map(
+            conn,
+            "decisions",
+            decision_titles,
+            tenant_id,
+        )
+
+    missing = {
+        "customers": sorted(set(customer_names) - set(scenario.customers)),
+        "goals": sorted(set(goal_titles) - set(scenario.goals)),
+        "commitments": sorted(set(commitment_titles) - set(scenario.commitments)),
+        "decisions": sorted(set(decision_titles) - set(scenario.decisions)),
+    }
+    missing = {key: value for key, value in missing.items() if value}
+    if missing:
+        raise RuntimeError(
+            "append tenant is missing expected storyline foundation ids: "
+            + json.dumps(missing, sort_keys=True)
+        )
+
+
+async def _fetch_title_id_map(
+    conn: asyncpg.Connection,
+    table: str,
+    titles: list[str],
+    tenant_id: UUID,
+) -> dict[str, UUID]:
+    if not titles:
+        return {}
+    if table not in {"goals", "commitments", "decisions"}:
+        raise ValueError(f"unsupported title map table: {table}")
+    rows = await conn.fetch(
+        f"""
+        SELECT id, title
+        FROM {table}
+        WHERE tenant_id = $1
+          AND title = ANY($2::text[])
+        ORDER BY created_at ASC
+        """,
+        tenant_id,
+        titles,
+    )
+    out: dict[str, UUID] = {}
+    for row in rows:
+        out.setdefault(str(row["title"]), row["id"])
+    return out
+
+
+async def _count_storyline_benchmark_observations(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> int:
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'benchmark' = 'storyline_batch'
+            """,
+            tenant_id,
+        )
+    return int(value or 0)
+
+
+async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
+    run_id = args.run_id
+    if not run_id:
+        if getattr(args, "append_to_run_id", None):
+            run_id = (
+                f"{args.append_to_run_id}-append-{args.target_t1_batches}-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            )
+        else:
+            run_id = (
+                "storyline-batch-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            )
     report_dir = args.report_root / run_id
+    append_context = _load_append_context(args)
+    foundation_namespace = (
+        str(append_context["foundation_namespace"]) if append_context else None
+    )
+    horizon_start_batch = (
+        int(append_context["horizon_start_batch"]) if append_context else 0
+    )
     scenario, gold = build_storyline_scenario(
         run_id=run_id,
+        foundation_namespace=foundation_namespace,
         signals_per_storyline=args.signals_per_storyline,
         noise_signals=args.noise_signals,
         future_validation_signals_per_storyline=(
             args.future_validation_signals_per_storyline
         ),
         target_t1_batches=args.target_t1_batches,
+        horizon_start_batch=horizon_start_batch,
     )
-    run_config = _run_config(args, run_id)
+    run_config = _run_config(args, run_id, append_context=append_context)
     _write_build_artifacts(report_dir, scenario, gold, run_config)
     if args.mode == "build-only":
         return {
@@ -1187,17 +1453,37 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         if not args.skip_migrations:
             async with pool.acquire() as conn:
                 await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
-        await materialize(scenario, pool=pool)
-        if scenario.tenant_id is None:
-            raise RuntimeError("scenario materialize did not set tenant_id")
-        tenant_id = scenario.tenant_id
-        print(f"tenant={tenant_id} run_id={run_id}", flush=True)
-
         actor_repo = ActorRepo(pool)
         alias_repo = EntityAliasRepo(pool)
-        await _insert_extra_aliases(scenario, alias_repo)
+        if append_context:
+            tenant_id = UUID(str(append_context["tenant_id"]))
+            await _attach_existing_storyline_tenant_context(
+                pool,
+                scenario,
+                tenant_id=tenant_id,
+            )
+            seed_status = {
+                "requested_models": 0,
+                "families": 0,
+                "models": 0,
+                "skipped": "append_to_existing_tenant",
+                "base_seed_status": append_context.get("base_seed_status") or {},
+            }
+            print(
+                f"tenant={tenant_id} run_id={run_id} "
+                f"append_to={append_context['base_run_id']} "
+                f"horizon_start_batch={append_context['horizon_start_batch']}",
+                flush=True,
+            )
+        else:
+            await materialize(scenario, pool=pool)
+            if scenario.tenant_id is None:
+                raise RuntimeError("scenario materialize did not set tenant_id")
+            tenant_id = scenario.tenant_id
+            print(f"tenant={tenant_id} run_id={run_id}", flush=True)
+            await _insert_extra_aliases(scenario, alias_repo)
 
-        if args.seed_models:
+        if args.seed_models and not append_context:
             from scripts.run_incremental_feedback_loop_stress import _seed_company
 
             seeded = await _seed_company(
@@ -1223,7 +1509,11 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 max_concurrency_per_tenant=1,
                 tenant_filter=tenant_id,
                 worker_id=f"storyline-{run_id}",
-                t1_batch_window_s=args.t1_batch_window_s,
+                # Cost-plan §2.3 A/B arm: window=0 disables T1 batching so the
+                # unbatched arm drains each event_arrival trigger as a single run.
+                t1_batch_window_s=(
+                    0.0 if args.unbatched_run else args.t1_batch_window_s
+                ),
                 t1_batch_min_size=args.t1_batch_min_size,
                 t1_batch_max_size=args.t1_batch_max_size,
                 downstream_batch_window_s=args.downstream_batch_window_s,
@@ -1273,12 +1563,20 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "signals": len(signals),
                 "enqueued_t1": enqueued,
             }
-            t1_batch = await _process_one_t1_batch(
-                pool,
-                worker,
-                tenant_id=tenant_id,
-                force_window_elapsed_s=args.t1_batch_window_s + 1.0,
-            )
+            if args.unbatched_run:
+                t1_batch = await _process_t1_unbatched(
+                    pool,
+                    worker,
+                    tenant_id=tenant_id,
+                    force_window_elapsed_s=args.t1_batch_window_s + 1.0,
+                )
+            else:
+                t1_batch = await _process_one_t1_batch(
+                    pool,
+                    worker,
+                    tenant_id=tenant_id,
+                    force_window_elapsed_s=args.t1_batch_window_s + 1.0,
+                )
             wave["t1_batch"] = t1_batch
             if args.downstream_steps_per_wave > 0:
                 wave["downstream"] = await _drain_downstream_limited(
@@ -1328,12 +1626,33 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             pool,
             tenant_id=tenant_id,
         )
+        if append_context:
+            cumulative_signal_count = await _count_storyline_benchmark_observations(
+                pool,
+                tenant_id=tenant_id,
+            )
+            model_summary["append"] = {
+                **append_context,
+                "additional_signal_count": len(observation_ids),
+                "cumulative_signal_count": cumulative_signal_count,
+                "horizon_end_batch": horizon_start_batch + args.target_t1_batches,
+            }
+            model_summary["additional_signal_count"] = len(observation_ids)
+            model_summary["run_observation_count"] = model_summary.get(
+                "observation_count"
+            )
+            model_summary["signal_count"] = cumulative_signal_count
+            (report_dir / "model_layer_summary.md").write_text(
+                _render_model_layer_markdown(model_summary)
+            )
         _write_json(report_dir / "run_summary.json", model_summary)
         scores = await score_storylines(
             pool,
             tenant_id=tenant_id,
             scenario=scenario,
             gold_specs=STORYLINES,
+            enable_thesis_judge=args.enable_thesis_judge,
+            thesis_judge_limit=args.thesis_judge_limit,
         )
         benchmark_summary = _benchmark_summary(
             model_summary=model_summary,
@@ -1393,6 +1712,135 @@ async def _process_one_t1_batch(
         "observation_count": len(payload.get("batch_observation_ids") or []),
         "elapsed_s": round(time.monotonic() - started, 3),
         "run": run,
+    }
+
+
+def _merge_numeric_tree(items: list[Any]) -> dict[str, Any]:
+    """Deep-merge a list of `ops_applied`-shaped dicts: sum numbers, OR bools,
+    recurse into dicts, last-wins for everything else. Lets the unbatched arm
+    present an aggregate run the existing report pipeline can read unchanged."""
+    dicts = [it for it in items if isinstance(it, dict)]
+    if not dicts:
+        return {}
+    out: dict[str, Any] = {}
+    keys: set[str] = set()
+    for it in dicts:
+        keys.update(it.keys())
+    for k in keys:
+        vals = [it[k] for it in dicts if k in it]
+        if all(isinstance(v, bool) for v in vals):
+            out[k] = any(vals)
+        elif all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            out[k] = sum(vals)
+        elif all(isinstance(v, dict) for v in vals):
+            out[k] = _merge_numeric_tree(vals)
+        else:
+            out[k] = vals[-1]
+    return out
+
+
+def _aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Collapse N single-trigger runs into one wave-level run dict shaped like
+    `_run_for_trigger`'s output, so `_wave_stats`/report code is unchanged.
+    `status='success'` only when every single succeeded."""
+    runs = [r for r in runs if r]
+    if not runs:
+        return None
+    return {
+        "id": runs[0].get("id"),
+        "trigger_kind": "T1",
+        "status": (
+            "success" if all(r.get("status") == "success" for r in runs) else "error"
+        ),
+        "error": next((r.get("error") for r in runs if r.get("error")), None),
+        "retrieval_model_count": sum(
+            int(r.get("retrieval_model_count") or 0) for r in runs
+        ),
+        "retrieval_observation_count": sum(
+            int(r.get("retrieval_observation_count") or 0) for r in runs
+        ),
+        "llm_latency_ms": sum(int(r.get("llm_latency_ms") or 0) for r in runs),
+        "validation_error_count": sum(
+            int(r.get("validation_error_count") or 0) for r in runs
+        ),
+        "ops_applied": _merge_numeric_tree([r.get("ops_applied") for r in runs]),
+    }
+
+
+async def _process_t1_unbatched(
+    pool: asyncpg.Pool,
+    worker: ThinkWorker,
+    *,
+    tenant_id: UUID,
+    force_window_elapsed_s: float,
+) -> dict[str, Any]:
+    """Cost-plan §2.3 unbatched arm: drain the wave's pending T1 event_arrival
+    triggers as individual single-trigger runs (T1 batching is disabled via
+    window=0 on the worker config). Returns the same shape as
+    `_process_one_t1_batch`, aggregated, plus a `singles` list and
+    `unbatched=True` for downstream analysis."""
+    async with pool.acquire() as conn:
+        trigger_ids = [
+            r["id"]
+            for r in await conn.fetch(
+                """
+                SELECT id FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND trigger_kind = 'T1'
+                  AND trigger_subkind = 'event_arrival'
+                ORDER BY enqueued_at ASC
+                """,
+                tenant_id,
+            )
+        ]
+        async with conn.transaction():
+            await conn.execute(
+                """
+                UPDATE think_trigger_queue
+                SET enqueued_at = now() - ($2 || ' seconds')::interval
+                WHERE tenant_id = $1
+                  AND completed_at IS NULL
+                  AND batch_parent_id IS NULL
+                  AND trigger_kind = 'T1'
+                  AND trigger_subkind = 'event_arrival'
+                """,
+                tenant_id,
+                str(max(0.0, force_window_elapsed_s)),
+            )
+    started = time.monotonic()
+    guard = 0
+    while trigger_ids:
+        async with pool.acquire() as conn:
+            pending = await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint FROM think_trigger_queue
+                WHERE id = ANY($1::uuid[]) AND completed_at IS NULL
+                """,
+                trigger_ids,
+            )
+        if int(pending or 0) == 0:
+            break
+        await worker._poll_and_dispatch()
+        if worker._in_flight:
+            await asyncio.gather(*list(worker._in_flight), return_exceptions=False)
+        guard += 1
+        if guard > len(trigger_ids) + 5:
+            break
+    singles: list[dict[str, Any]] = []
+    for tid in trigger_ids:
+        run = await _run_for_trigger(pool, tid)
+        if run is not None:
+            singles.append({"trigger_id": str(tid), "run": run})
+    return {
+        "unbatched": True,
+        "trigger_id": str(trigger_ids[0]) if trigger_ids else None,
+        "member_count": len(trigger_ids),
+        "observation_count": len(trigger_ids),
+        "elapsed_s": round(time.monotonic() - started, 3),
+        "run": _aggregate_runs([s["run"] for s in singles]),
+        "singles": singles,
     }
 
 
@@ -1582,12 +2030,14 @@ async def score_storylines(
     tenant_id: UUID,
     scenario: Scenario,
     gold_specs: tuple[StorylineSpec, ...],
+    enable_thesis_judge: bool = False,
+    thesis_judge_limit: int = 0,
 ) -> list[StorylineScore]:
     async with pool.acquire() as conn:
         model_rows = await conn.fetch(
             """
             SELECT id, proposition_kind, proposition, "natural", scope_entities,
-                   supporting_event_ids, status
+                   supporting_event_ids, status, confidence, confidence_at_assertion
             FROM models
             WHERE tenant_id = $1
             """,
@@ -1611,7 +2061,7 @@ async def score_storylines(
         )
         observation_rows = await conn.fetch(
             """
-            SELECT id, content
+            SELECT id, external_id, content
             FROM observations
             WHERE tenant_id = $1
               AND content->>'benchmark' = 'storyline_batch'
@@ -1629,7 +2079,7 @@ async def score_storylines(
     transition_phase_by_observation: dict[str, str] = {}
     for observation in observations:
         content = _json_obj(observation.get("content"))
-        story_id = content.get("storyline_id")
+        story_id = _story_id_from_external_id(observation.get("external_id"))
         if isinstance(story_id, str):
             observation_id = str(observation["id"])
             observations_by_story.setdefault(story_id, set()).add(observation_id)
@@ -1641,10 +2091,18 @@ async def score_storylines(
             if isinstance(transition_phase, str):
                 transition_phase_by_observation[observation_id] = transition_phase
 
+    thesis_judge: Any | None = None
+    if enable_thesis_judge:
+        from benchmarks.fyralis_eval.judge import LLMAnswerJudge
+
+        thesis_judge = LLMAnswerJudge(name=_THESIS_JUDGE_NAME)
+    thesis_judged = 0
+
     scores: list[StorylineScore] = []
     for spec in gold_specs:
         scope_refs = _scope_refs_for_story(scenario, spec)
         story_observations = observations_by_story.get(spec.id, set())
+        future_observations = future_observations_by_story.get(spec.id, set())
         relevant_models = [
             model for model in models
             if _model_matches_story(model, scope_refs, story_observations)
@@ -1712,7 +2170,6 @@ async def score_storylines(
         bridge_forbidden_detail_hits: set[str] = set()
         bridge_score = 0.0
         if spec.id == _LATENT_BRIDGE_STORYLINE_ID:
-            future_observations = future_observations_by_story.get(spec.id, set())
             for model in relevant_models:
                 bridge_assessment = _latent_bridge_assessment(model)
                 if bridge_assessment["coverage"] < 0.5:
@@ -1834,6 +2291,12 @@ async def score_storylines(
         )
         if spec.id == _LATENT_BRIDGE_STORYLINE_ID:
             score = max(score, bridge_score)
+        calibration_samples = _storyline_calibration_samples(
+            spec=spec,
+            relevant_models=relevant_models,
+            story_observations=story_observations,
+            future_observations=future_observations,
+        )
         notes: list[str] = []
         if not latent_pattern_models:
             notes.append(
@@ -1867,6 +2330,24 @@ async def score_storylines(
                 notes.append(
                     "Bridge model invented specific off-sensor details before validation."
                 )
+        thesis_judge_score: float | None = None
+        thesis_judge_correct: bool | None = None
+        thesis_judge_rationale: str | None = None
+        thesis_judge_metadata: dict[str, Any] = {}
+        if thesis_judge is not None and (
+            thesis_judge_limit <= 0 or thesis_judged < thesis_judge_limit
+        ):
+            judge_result = await _judge_storyline_thesis(
+                thesis_judge,
+                tenant_id=tenant_id,
+                spec=spec,
+                relevant_models=relevant_models,
+            )
+            thesis_judged += 1
+            thesis_judge_score = round(judge_result.score, 4)
+            thesis_judge_correct = bool(judge_result.correct)
+            thesis_judge_rationale = judge_result.rationale
+            thesis_judge_metadata = dict(judge_result.metadata)
         scores.append(
             StorylineScore(
                 storyline_id=spec.id,
@@ -1908,10 +2389,64 @@ async def score_storylines(
                 ),
                 bridge_epistemic_marker_hits=sorted(bridge_epistemic_marker_hits),
                 bridge_forbidden_detail_hits=sorted(bridge_forbidden_detail_hits),
+                thesis_judge_score=thesis_judge_score,
+                thesis_judge_correct=thesis_judge_correct,
+                thesis_judge_rationale=thesis_judge_rationale,
+                thesis_judge_metadata=thesis_judge_metadata,
+                calibration_samples=calibration_samples,
                 notes=notes,
             )
         )
     return scores
+
+
+async def _judge_storyline_thesis(
+    judge: Any,
+    *,
+    tenant_id: UUID,
+    spec: StorylineSpec,
+    relevant_models: list[dict[str, Any]],
+) -> Any:
+    from benchmarks.adapters.base import BenchmarkQuery
+
+    predicted_answer = _thesis_recovery_prediction_text(relevant_models)
+    query = BenchmarkQuery(
+        query_id=f"storyline-thesis:{spec.id}",
+        tenant_id=str(tenant_id),
+        query_text=(
+            "Does this belief stream recover the benchmark storyline thesis? "
+            "Credit the answer only when the main causal operating pattern is "
+            "present; exact wording is not required."
+        ),
+        query_type="storyline_thesis_recovery",
+        gold_answer=spec.thesis,
+        metadata={
+            "benchmark": "storyline_batch",
+            "storyline_id": spec.id,
+            "storyline_title": spec.title,
+            "judge": _THESIS_JUDGE_NAME,
+        },
+    )
+    return await judge.judge_async(
+        query=query,
+        expected_answer=spec.thesis,
+        predicted_answer=predicted_answer,
+    )
+
+
+def _thesis_recovery_prediction_text(
+    relevant_models: list[dict[str, Any]],
+    *,
+    max_models: int = 16,
+    max_chars_per_model: int = 1200,
+) -> str:
+    excerpts: list[str] = []
+    for index, model in enumerate(relevant_models[:max_models], start=1):
+        text = " ".join(_model_text(model).split())
+        if not text:
+            continue
+        excerpts.append(f"[{index}] {text[:max_chars_per_model]}")
+    return "\n".join(excerpts) or "No relevant models were recovered."
 
 
 def _scope_refs_for_story(
@@ -1957,6 +2492,61 @@ def _model_text(model: dict[str, Any]) -> str:
         + "\n"
         + json.dumps(model.get("proposition") or {}, sort_keys=True, default=str)
     )
+
+
+def _storyline_calibration_samples(
+    *,
+    spec: StorylineSpec,
+    relevant_models: list[dict[str, Any]],
+    story_observations: set[str],
+    future_observations: set[str],
+) -> list[dict[str, Any]]:
+    if not future_observations:
+        return []
+    samples: list[dict[str, Any]] = []
+    prior_observations = story_observations - future_observations
+    for model in relevant_models:
+        support_ids = set(map(str, model.get("supporting_event_ids") or []))
+        if not (support_ids & prior_observations):
+            continue
+        confidence = _coerce_confidence(
+            model.get("confidence_at_assertion", model.get("confidence"))
+        )
+        if confidence is None:
+            continue
+        assessment = _latent_pattern_assessment(model, spec)
+        keyword_hits = [
+            term for term in spec.expected_terms
+            if term.lower() in _model_text(model).lower()
+        ]
+        future_touched = bool(support_ids & future_observations)
+        outcome = 1.0 if (
+            future_touched
+            or (
+                float(assessment["coverage"]) >= 0.6
+                and len(keyword_hits) >= max(1, min(2, len(spec.expected_terms)))
+            )
+        ) else 0.0
+        if spec.id == _LATENT_BRIDGE_STORYLINE_ID:
+            bridge = _latent_bridge_assessment(model)
+            if bridge["forbidden_detail_hits"] and not future_touched:
+                outcome = 0.0
+        samples.append({
+            "storyline_id": spec.id,
+            "model_id": str(model.get("id")),
+            "confidence": round(confidence, 4),
+            "outcome": outcome,
+            "future_touched": future_touched,
+            "basis": "future_validation_wave_proxy",
+        })
+    return samples
+
+
+def _coerce_confidence(value: Any) -> float | None:
+    try:
+        return _clamp01(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_situation_model(model: dict[str, Any]) -> bool:
@@ -2074,6 +2664,84 @@ def _latent_bridge_assessment(model: dict[str, Any]) -> dict[str, Any]:
 
 def _latent_group_label(group: tuple[str, ...]) -> str:
     return "/".join(group)
+
+
+def _storyline_calibration_report(
+    storyline_scores: list[StorylineScore],
+    *,
+    bin_count: int = 10,
+) -> dict[str, Any]:
+    samples = [
+        sample
+        for score in storyline_scores
+        for sample in score.calibration_samples
+        if isinstance(sample, dict)
+    ]
+    if not samples:
+        return {
+            "source": "storyline_future_validation_proxy",
+            "n": 0,
+            "bin_count": bin_count,
+            "expected_calibration_error": None,
+            "bins": [],
+            "note": (
+                "No future-validation-backed calibration samples were available "
+                "for this run."
+            ),
+        }
+    bins: list[dict[str, Any]] = []
+    total = len(samples)
+    ece = 0.0
+    for bin_index in range(bin_count):
+        low = bin_index / bin_count
+        high = (bin_index + 1) / bin_count
+        if bin_index == bin_count - 1:
+            bucket = [
+                sample for sample in samples
+                if low <= float(sample["confidence"]) <= high
+            ]
+        else:
+            bucket = [
+                sample for sample in samples
+                if low <= float(sample["confidence"]) < high
+            ]
+        if not bucket:
+            bins.append({
+                "low": round(low, 4),
+                "high": round(high, 4),
+                "n": 0,
+                "accuracy": None,
+                "avg_confidence": None,
+                "gap": None,
+            })
+            continue
+        avg_conf = sum(float(sample["confidence"]) for sample in bucket) / len(bucket)
+        accuracy = sum(float(sample["outcome"]) for sample in bucket) / len(bucket)
+        gap = abs(accuracy - avg_conf)
+        ece += (len(bucket) / total) * gap
+        bins.append({
+            "low": round(low, 4),
+            "high": round(high, 4),
+            "n": len(bucket),
+            "accuracy": round(accuracy, 4),
+            "avg_confidence": round(avg_conf, 4),
+            "gap": round(gap, 4),
+        })
+    return {
+        "source": "storyline_future_validation_proxy",
+        "n": total,
+        "bin_count": bin_count,
+        "expected_calibration_error": round(ece, 4),
+        "positive_outcomes": int(sum(float(sample["outcome"]) for sample in samples)),
+        "negative_outcomes": int(total - sum(float(sample["outcome"]) for sample in samples)),
+        "bins": bins,
+        "note": (
+            "ECE is computed only over Models supported by pre-validation "
+            "storyline evidence, then checked against the run's "
+            "future-validation waves. It is a benchmark proxy, not a production "
+            "resolution-outcome audit."
+        ),
+    }
 
 
 def _company_intelligence_scorecard(
@@ -3626,6 +4294,12 @@ def _benchmark_summary(
     latent_pattern_scores = [
         score.latent_pattern_score for score in storyline_scores
     ]
+    thesis_judge_scores = [
+        float(score.thesis_judge_score)
+        for score in storyline_scores
+        if score.thesis_judge_score is not None
+    ]
+    calibration = _storyline_calibration_report(storyline_scores)
     concrete_latent_count = sum(
         1 for score in storyline_scores
         if score.latent_pattern_evidence_supported_model_count > 0
@@ -3651,6 +4325,7 @@ def _benchmark_summary(
     summary = {
         "run_id": model_summary.get("run_id"),
         "tenant_id": model_summary.get("tenant_id"),
+        "append": model_summary.get("append"),
         "elapsed_seconds": round(elapsed_seconds, 3),
         "signals": total_signals,
         "storyline_count": len(storyline_scores),
@@ -3675,6 +4350,20 @@ def _benchmark_summary(
                 4,
             ) if storyline_scores else 0.0,
         },
+        "thesis_recovery_judge": {
+            "enabled": bool(thesis_judge_scores),
+            "n": len(thesis_judge_scores),
+            "average_score": _avg(thesis_judge_scores),
+            "correct_count": sum(
+                1 for score in storyline_scores
+                if score.thesis_judge_correct is True
+            ),
+            "incorrect_count": sum(
+                1 for score in storyline_scores
+                if score.thesis_judge_correct is False
+            ),
+        },
+        "calibration": calibration,
         "run_amplification": {
             "think_runs_per_signal": (
                 round(think_runs / total_signals, 4) if total_signals else 0.0
@@ -3726,6 +4415,7 @@ def _benchmark_summary(
 
 
 def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
+    append = summary.get("append") or {}
     lines = [
         "# Storyline Batch Benchmark",
         "",
@@ -3736,15 +4426,32 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
         f"- Average storyline score: {summary.get('average_storyline_score')}",
         f"- Average latent pattern score: "
         f"{(summary.get('latent_pattern_fitness') or {}).get('average_latent_pattern_score')}",
+        f"- Thesis judge: "
+        f"{(summary.get('thesis_recovery_judge') or {}).get('average_score')} "
+        f"(n={(summary.get('thesis_recovery_judge') or {}).get('n')})",
+        f"- Calibration ECE: "
+        f"{(summary.get('calibration') or {}).get('expected_calibration_error')} "
+        f"(n={(summary.get('calibration') or {}).get('n')})",
         f"- Think runs per signal: "
         f"{(summary.get('run_amplification') or {}).get('think_runs_per_signal')}",
         f"- Pending triggers: "
         f"{(summary.get('run_amplification') or {}).get('pending_triggers')}",
+    ]
+    if append:
+        lines.extend([
+            f"- Append base run: `{append.get('base_run_id')}`",
+            f"- Additional T1 batches: {append.get('additional_t1_batches')}",
+            f"- Additional signals: {append.get('additional_signal_count')}",
+            f"- Horizon batches: "
+            f"{int(append.get('horizon_start_batch') or 0) + 1}-"
+            f"{append.get('horizon_end_batch')}",
+        ])
+    lines.extend([
         "",
         "## Storyline Scores",
         "| Storyline | Score | Pattern | Pattern Models | Models | Situations | Recommendations | Edges | Edge Kinds Hit | Missing Edge Kinds | Review Debt | Missing Keywords |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
-    ]
+    ])
     for score in summary.get("storyline_scores") or []:
         lines.append(
             "| {title} | {score:.2f} | {pattern:.2f} | {pattern_models} | "
@@ -3842,6 +4549,11 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
         json.dumps(summary.get("run_amplification") or {}, indent=2, sort_keys=True),
         "```",
         "",
+        "## Calibration",
+        "```json",
+        json.dumps(summary.get("calibration") or {}, indent=2, sort_keys=True),
+        "```",
+        "",
         "## Retrieval Fitness Proxy",
         "```json",
         json.dumps(
@@ -3860,6 +4572,211 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_variance_report(report_root: Path, run_ids: list[str]) -> dict[str, Any]:
+    run_summaries: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        run_dir = report_root / run_id
+        summary_path = run_dir / "storyline_scores.json"
+        config_path = run_dir / "run_config.json"
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Missing benchmark summary: {summary_path}")
+        summary = json.loads(summary_path.read_text())
+        config = (
+            json.loads(config_path.read_text())
+            if config_path.exists()
+            else {}
+        )
+        run_summaries.append({
+            "run_id": run_id,
+            "signals": summary.get("signals"),
+            "storyline_count": summary.get("storyline_count"),
+            "elapsed_seconds": summary.get("elapsed_seconds"),
+            "average_storyline_score": summary.get("average_storyline_score"),
+            "company_intelligence_overall": (
+                (summary.get("company_intelligence_scorecard") or {})
+                .get("overall_score")
+            ),
+            "product_value_overall": (
+                ((summary.get("company_intelligence_scorecard") or {})
+                 .get("product_value_evals") or {})
+                .get("overall_score")
+            ),
+            "thesis_recovery_judge": summary.get("thesis_recovery_judge") or {},
+            "run_config": config,
+            "cache_bypass_env": (
+                config.get("cache_bypass_env")
+                if isinstance(config, dict)
+                else None
+            ),
+        })
+
+    metric_names = (
+        "average_storyline_score",
+        "company_intelligence_overall",
+        "product_value_overall",
+    )
+    metrics = {
+        name: _variance_metric([
+            run.get(name) for run in run_summaries
+            if run.get(name) is not None
+        ])
+        for name in metric_names
+    }
+    thesis_scores = [
+        (run.get("thesis_recovery_judge") or {}).get("average_score")
+        for run in run_summaries
+        if (run.get("thesis_recovery_judge") or {}).get("average_score") is not None
+    ]
+    metrics["thesis_recovery_judge_average_score"] = _variance_metric(thesis_scores)
+
+    thesis_correct = sum(
+        int((run.get("thesis_recovery_judge") or {}).get("correct_count") or 0)
+        for run in run_summaries
+    )
+    thesis_incorrect = sum(
+        int((run.get("thesis_recovery_judge") or {}).get("incorrect_count") or 0)
+        for run in run_summaries
+    )
+    thesis_n = thesis_correct + thesis_incorrect
+    thesis_ci = _wilson_interval(thesis_correct, thesis_n)
+
+    return {
+        "report_kind": "storyline_variance_band",
+        "report_root": str(report_root),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_count": len(run_summaries),
+        "run_ids": run_ids,
+        "runs": run_summaries,
+        "metrics": metrics,
+        "judged_rates": {
+            "thesis_recovery_correct_rate": {
+                "n": thesis_n,
+                "correct": thesis_correct,
+                "incorrect": thesis_incorrect,
+                "rate": _ratio(thesis_correct, thesis_n),
+                "wilson_95_ci": thesis_ci,
+            },
+        },
+        "standing_rule": (
+            "Judged rates carry n and Wilson 95% confidence intervals; do not "
+            "gate on deltas inside the interval."
+        ),
+        "cache_note": (
+            "Use at least one cache-bypassed arm for run variance. Cache-on arms "
+            "measure pipeline determinism more than model variance."
+        ),
+    }
+
+
+def _variance_metric(values: list[Any]) -> dict[str, Any]:
+    numeric_values = [float(value) for value in values if value is not None]
+    if not numeric_values:
+        return {
+            "n": 0,
+            "mean": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "stddev": 0.0,
+            "values": [],
+        }
+    mean = sum(numeric_values) / len(numeric_values)
+    variance = (
+        sum((value - mean) ** 2 for value in numeric_values)
+        / (len(numeric_values) - 1)
+        if len(numeric_values) > 1
+        else 0.0
+    )
+    return {
+        "n": len(numeric_values),
+        "mean": round(mean, 4),
+        "min": round(min(numeric_values), 4),
+        "max": round(max(numeric_values), 4),
+        "stddev": round(math.sqrt(variance), 4),
+        "values": [round(value, 4) for value in numeric_values],
+    }
+
+
+def _wilson_interval(successes: int, n: int, z: float = 1.96) -> dict[str, float]:
+    if n <= 0:
+        return {"low": 0.0, "high": 0.0}
+    phat = successes / n
+    denominator = 1.0 + z**2 / n
+    center = (phat + z**2 / (2 * n)) / denominator
+    margin = (
+        z
+        * math.sqrt((phat * (1.0 - phat) + z**2 / (4 * n)) / n)
+        / denominator
+    )
+    return {
+        "low": round(max(0.0, center - margin), 4),
+        "high": round(min(1.0, center + margin), 4),
+    }
+
+
+def _render_variance_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Storyline Variance Band",
+        "",
+        f"- Runs: {report.get('run_count')}",
+        f"- Run ids: {', '.join(report.get('run_ids') or [])}",
+        f"- Rule: {report.get('standing_rule')}",
+        f"- Cache note: {report.get('cache_note')}",
+        "",
+        "## Score Metrics",
+        "| Metric | n | Mean | Min | Max | Stddev | Values |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for name, metric in (report.get("metrics") or {}).items():
+        lines.append(
+            "| {name} | {n} | {mean:.4f} | {min:.4f} | {max:.4f} | "
+            "{stddev:.4f} | {values} |".format(
+                name=name,
+                n=int(metric.get("n") or 0),
+                mean=float(metric.get("mean") or 0.0),
+                min=float(metric.get("min") or 0.0),
+                max=float(metric.get("max") or 0.0),
+                stddev=float(metric.get("stddev") or 0.0),
+                values=", ".join(map(str, metric.get("values") or [])) or "-",
+            )
+        )
+    thesis_rate = (report.get("judged_rates") or {}).get(
+        "thesis_recovery_correct_rate"
+    ) or {}
+    interval = thesis_rate.get("wilson_95_ci") or {}
+    lines.extend([
+        "",
+        "## Judged Rates",
+        "| Rate | n | Correct | Incorrect | Estimate | Wilson 95% CI |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+        "| thesis_recovery_correct_rate | {n} | {correct} | {incorrect} | "
+        "{rate:.4f} | [{low:.4f}, {high:.4f}] |".format(
+            n=int(thesis_rate.get("n") or 0),
+            correct=int(thesis_rate.get("correct") or 0),
+            incorrect=int(thesis_rate.get("incorrect") or 0),
+            rate=float(thesis_rate.get("rate") or 0.0),
+            low=float(interval.get("low") or 0.0),
+            high=float(interval.get("high") or 0.0),
+        ),
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def run_variance_report(args: argparse.Namespace) -> dict[str, Any]:
+    run_ids = list(args.variance_run_ids or [])
+    report = build_variance_report(args.report_root, run_ids)
+    output_id = args.run_id or (
+        "storyline_variance_"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    )
+    output_dir = args.report_root / output_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(output_dir / "variance_report.json", report)
+    (output_dir / "variance_report.md").write_text(_render_variance_markdown(report))
+    report["report_dir"] = str(output_dir)
+    return report
+
+
 def _write_build_artifacts(
     report_dir: Path,
     scenario: Scenario,
@@ -3875,7 +4792,9 @@ def _write_build_artifacts(
             {
                 "sequence": sequence,
                 "index": index,
-                "storyline_id": (signal.get("content_dict") or {}).get("storyline_id"),
+                "storyline_id": _story_id_from_external_id(
+                    signal.get("external_id")
+                ),
                 "family": (signal.get("content_dict") or {}).get("family"),
                 "customer": (signal.get("content_dict") or {}).get("customer_name"),
                 "content": signal.get("content"),
@@ -3889,7 +4808,7 @@ def _write_build_artifacts(
 
 def _render_plan_markdown(scenario: Scenario) -> str:
     counts = Counter(
-        (signal.get("content_dict") or {}).get("storyline_id", "<none>")
+        _story_id_from_external_id(signal.get("external_id")) or "<none>"
         for signals in scenario.signal_sequences.values()
         for signal in signals
     )
@@ -3914,7 +4833,12 @@ def _render_plan_markdown(scenario: Scenario) -> str:
     return "\n".join(lines)
 
 
-def _run_config(args: argparse.Namespace, run_id: str) -> dict[str, Any]:
+def _run_config(
+    args: argparse.Namespace,
+    run_id: str,
+    *,
+    append_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     keys = (
         "mode",
         "target_t1_batches",
@@ -3933,12 +4857,95 @@ def _run_config(args: argparse.Namespace, run_id: str) -> dict[str, Any]:
         "downstream_steps_per_wave",
         "skip_migrations",
         "skip_topology_optimizer",
+        "enable_thesis_judge",
+        "thesis_judge_limit",
     )
-    return {"run_id": run_id, **{key: getattr(args, key) for key in keys}}
+    config = {
+        "run_id": run_id,
+        **{key: getattr(args, key) for key in keys},
+        "truth_gate": {
+            "label_mapping": "external_id",
+            "reasoner_visible_label_keys_removed": [
+                "storyline_id",
+                "storyline_title",
+            ],
+        },
+        "thesis_judge": {
+            "name": _THESIS_JUDGE_NAME,
+            "enabled": bool(args.enable_thesis_judge),
+            "limit": int(args.thesis_judge_limit),
+            "identity": _judge_identity_from_env(),
+            "agreement_set": _judge_agreement_set_metadata(),
+        },
+        "cache_bypass_env": {
+            "LLM_CACHE_BYPASS": os.environ.get("LLM_CACHE_BYPASS"),
+            "RUN_REAL_LLM": os.environ.get("RUN_REAL_LLM"),
+        },
+    }
+    if append_context:
+        config["append"] = append_context
+    return config
 
 
 def _signal_count(scenario: Scenario) -> int:
     return sum(len(signals) for signals in scenario.signal_sequences.values())
+
+
+def _story_id_from_external_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    parts = value.split(":")
+    if len(parts) < 3:
+        return None
+    if parts[0] == "storyline":
+        story_index = 0
+    else:
+        try:
+            story_index = parts.index("storyline")
+        except ValueError:
+            return None
+    if story_index + 1 >= len(parts):
+        return None
+    story_id = parts[story_index + 1].strip()
+    return story_id or None
+
+
+def _judge_identity_from_env() -> dict[str, Any]:
+    try:
+        from lib.llm.provider import LLMConfig
+
+        config = LLMConfig.from_env()
+    except Exception as exc:  # pragma: no cover - defensive config metadata.
+        return {
+            "provider": os.environ.get("LLM_PROVIDER", "anthropic").lower(),
+            "model": os.environ.get("LLM_MODEL"),
+            "config_error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "provider": config.provider,
+        "model": config.model,
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+
+
+def _judge_agreement_set_metadata() -> dict[str, Any]:
+    if not _THESIS_JUDGE_AGREEMENT_SET.exists():
+        return {"path": str(_THESIS_JUDGE_AGREEMENT_SET), "present": False}
+    raw = _THESIS_JUDGE_AGREEMENT_SET.read_bytes()
+    count: int | None = None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        count = len(parsed)
+    return {
+        "path": str(_THESIS_JUDGE_AGREEMENT_SET),
+        "present": True,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "items": count,
+    }
 
 
 def _avg(values: list[Any]) -> float:
@@ -4004,7 +5011,11 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("build-only", "run"), default="build-only")
+    parser.add_argument(
+        "--mode",
+        choices=("build-only", "run", "variance-report"),
+        default="build-only",
+    )
     parser.add_argument(
         "--target-t1-batches",
         type=int,
@@ -4022,6 +5033,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--t1-batch-window-s", type=float, default=0.1)
     parser.add_argument("--t1-batch-min-size", type=int, default=20)
     parser.add_argument("--t1-batch-max-size", type=int, default=30)
+    parser.add_argument(
+        "--unbatched-run",
+        action="store_true",
+        help=(
+            "Cost-plan §2.3: process each wave's T1 event_arrival triggers as "
+            "individual single-trigger runs (window=0, no T1 batching) instead "
+            "of one coalesced batch. Run this and the batched default with the "
+            "same scenario seed to A/B cost and CI, and to establish the "
+            "same-config variance band before reading any batching delta."
+        ),
+    )
     parser.add_argument("--downstream-batch-window-s", type=float, default=1.0)
     parser.add_argument("--downstream-batch-min-size", type=int, default=2)
     parser.add_argument("--t2-batch-max-size", type=int, default=8)
@@ -4036,9 +5058,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-topology-optimizer", action="store_true")
     parser.add_argument("--skip-migrations", action="store_true")
     parser.add_argument("--skip-noise-think", action="store_true")
+    parser.add_argument(
+        "--enable-thesis-judge",
+        action="store_true",
+        help=(
+            "After scoring, run the pinned LLM thesis-recovery judge over each "
+            "storyline's relevant Models."
+        ),
+    )
+    parser.add_argument(
+        "--thesis-judge-limit",
+        type=int,
+        default=0,
+        help="Maximum storylines to judge when enabled; 0 judges all storylines.",
+    )
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--pool-max-size", type=int, default=8)
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--append-to-run-id",
+        help=(
+            "Append generated long-horizon batches to the tenant recorded by "
+            "this prior run id under --report-root."
+        ),
+    )
+    parser.add_argument(
+        "--append-tenant-id",
+        help=(
+            "Tenant id to append to when the base report does not contain one."
+        ),
+    )
+    parser.add_argument(
+        "--horizon-start-batch",
+        type=int,
+        default=None,
+        help=(
+            "Absolute zero-based T1 batch offset for append generation. "
+            "Defaults to the base run's target_t1_batches."
+        ),
+    )
+    parser.add_argument(
+        "--variance-run-ids",
+        nargs="*",
+        default=None,
+        help=(
+            "Run ids under --report-root to aggregate when --mode variance-report "
+            "is selected."
+        ),
+    )
     parser.add_argument(
         "--report-root",
         type=Path,
@@ -4047,11 +5114,27 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.target_t1_batches < 0:
         raise SystemExit("--target-t1-batches must be >= 0")
+    if args.horizon_start_batch is not None and args.horizon_start_batch < 0:
+        raise SystemExit("--horizon-start-batch must be >= 0")
     if args.signals_per_storyline < 1:
         raise SystemExit("--signals-per-storyline must be positive")
     if args.future_validation_signals_per_storyline < 0:
         raise SystemExit("--future-validation-signals-per-storyline must be >= 0")
+    if args.thesis_judge_limit < 0:
+        raise SystemExit("--thesis-judge-limit must be >= 0")
+    if args.mode == "variance-report":
+        if len(args.variance_run_ids or []) < 2:
+            raise SystemExit(
+                "--mode variance-report requires at least two --variance-run-ids"
+            )
+        return args
     if args.mode == "run":
+        if args.append_to_run_id and args.target_t1_batches <= 0:
+            raise SystemExit(
+                "--append-to-run-id requires --target-t1-batches > 0"
+            )
+        if args.append_to_run_id and args.cleanup:
+            raise SystemExit("--cleanup is not allowed with --append-to-run-id")
         if args.signals_per_storyline < args.t1_batch_min_size:
             raise SystemExit(
                 "--signals-per-storyline must be >= --t1-batch-min-size in run mode"
@@ -4079,7 +5162,11 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
-    summary = await run_benchmark(parse_args())
+    args = parse_args()
+    if args.mode == "variance-report":
+        summary = run_variance_report(args)
+    else:
+        summary = await run_benchmark(args)
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     return 0
 

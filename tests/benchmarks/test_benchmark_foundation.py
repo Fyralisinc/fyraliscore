@@ -4,6 +4,7 @@ import json
 
 from benchmarks.adapters import BenchmarkObservation, BenchmarkQuery, ToyMemoryAdapter
 from benchmarks.adapters.base import observed_at
+from benchmarks.adapters.truss_adapter import TrussAdapter
 from benchmarks.fyralis_eval.ingestion import InMemoryBenchmarkStore
 from benchmarks.fyralis_eval.reporting import write_run_artifacts
 from benchmarks.fyralis_eval.reader import (
@@ -72,6 +73,22 @@ def test_adapter_shapes_are_json_serializable():
     json.dumps(observation.to_json())
     json.dumps(query.to_json())
     json.dumps(adapter.gold(query.query_id).to_json())
+
+
+def test_truss_adapter_loads_committed_fixture_and_frozen_facts():
+    adapter = TrussAdapter(
+        ".",
+        fact_filter_path="benchmarks/truss_signal_derivable_facts.json",
+    )
+
+    observations = list(adapter.iter_observations())
+    queries = list(adapter.iter_queries())
+
+    assert len(observations) == 983
+    assert len(queries) >= 10
+    assert all(obs.trust_tier in {"authoritative", "reputable", "inferential", "unvetted"} for obs in observations)
+    assert any(query.metadata["requires_run1_memory"] for query in queries)
+    assert adapter.gold(queries[0].query_id).evidence_ids
 
 
 def test_lexical_reader_filters_adjacent_stale_state_evidence():

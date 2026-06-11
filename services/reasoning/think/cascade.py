@@ -606,6 +606,7 @@ async def enqueue_t2_belief_updated(
     tenant_id: UUID,
     model_id: UUID,
     source_observation_id: UUID | None,
+    parent_payload: dict[str, Any] | None = None,
 ) -> UUID:
     """Enqueue a T2:belief_updated trigger for a newly-inserted prediction
     model so the deterministic resolver can reevaluate it when appropriate.
@@ -629,14 +630,16 @@ async def enqueue_t2_belief_updated(
         scope_actors = [str(a) for a in raw_actors]
 
     new_id = uuid7()
-    payload = _json.dumps(
-        {
-            "source_model_id": str(model_id),
-            "source_observation_id": str(source_observation_id) if source_observation_id else None,
-            "seed_natural_text": natural_text,
-            "scope_actors": scope_actors,
-        }
-    )
+    payload_dict: dict[str, Any] = {
+        "source_model_id": str(model_id),
+        "source_observation_id": str(source_observation_id) if source_observation_id else None,
+        "seed_natural_text": natural_text,
+        "scope_actors": scope_actors,
+    }
+    # Cost-plan §3.2: carry cross-trigger lineage depth (parent + 1) so the
+    # worker's cascade-bound check sees the real depth on this T2, not 0.
+    payload_dict.update(propagate_cascade_depth(parent_payload))
+    payload = _json.dumps(payload_dict)
     await conn.execute(
         """
         INSERT INTO think_trigger_queue (

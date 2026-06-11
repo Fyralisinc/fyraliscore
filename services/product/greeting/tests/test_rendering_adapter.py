@@ -6,11 +6,18 @@ under development.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
 
-from services.product.greeting.rendering_adapter import MockRenderingAdapter
+import pytest
+
+from services.product.greeting.rendering_adapter import (
+    HttpRenderingAdapter,
+    MockRenderingAdapter,
+    build_rendering_adapter,
+)
 from services.product.greeting.snapshot import (
     AnomalyRef,
     CommitmentRef,
@@ -43,6 +50,42 @@ def _founder() -> FounderContext:
         display_name="Test CEO",
         timezone_name="Asia/Kathmandu",
     )
+
+
+def test_build_rendering_adapter_warns_before_dev_mock_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.delenv("GRT_RENDERING_BASE_URL", raising=False)
+    monkeypatch.setenv("FYRALIS_ENV", "dev")
+    monkeypatch.setenv("COMPANY_OS_ENV", "dev")
+
+    with caplog.at_level(logging.WARNING):
+        adapter = build_rendering_adapter()
+
+    assert isinstance(adapter, MockRenderingAdapter)
+    assert "GRT_RENDERING_BASE_URL is unset" in caplog.text
+
+
+def test_build_rendering_adapter_fails_closed_in_prod(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("GRT_RENDERING_BASE_URL", raising=False)
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+
+    with pytest.raises(RuntimeError, match="GRT_RENDERING_BASE_URL is unset"):
+        build_rendering_adapter()
+
+
+def test_build_rendering_adapter_uses_http_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("GRT_RENDERING_BASE_URL", "http://rendering:8000")
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+
+    assert isinstance(build_rendering_adapter(), HttpRenderingAdapter)
 
 
 async def test_mock_greeting_quiet():

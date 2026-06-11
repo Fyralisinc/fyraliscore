@@ -241,13 +241,7 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
             "DELETE FROM inquiry_sessions WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
-            "DELETE FROM signal_routing_decisions WHERE tenant_id = $1", tenant,
-        )
-        await conn.execute(
             "DELETE FROM relationship_maintenance_log WHERE tenant_id = $1", tenant,
-        )
-        await conn.execute(
-            "DELETE FROM topo_dirty_queue WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
             "DELETE FROM topology_events WHERE tenant_id = $1", tenant,

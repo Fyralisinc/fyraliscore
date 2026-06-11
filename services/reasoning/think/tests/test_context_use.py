@@ -10,8 +10,10 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ObservationRow
 from services.domain.models.edges_repo import EdgesRepo
 from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
+from services.reasoning.think.context_planner import _retrieval_config_for_trigger
 from services.reasoning.think.context_use import summarize_context_use
 from services.reasoning.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff
 from services.reasoning.think.observability import METRICS
@@ -88,6 +90,46 @@ def _bundle_with_selection(
             }
         }
     )
+
+
+def test_t1_event_batch_uses_compact_historical_context_budget(monkeypatch):
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_HISTORICAL_OBSERVATION_CAP", raising=False)
+    tenant_id = uuid4()
+    first_obs = uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=first_obs,
+        observation_ids=[first_obs, uuid4()],
+        seed_signature={"batch": True},
+    )
+
+    cfg = _retrieval_config_for_trigger(trigger)
+
+    assert cfg.assembler_budget_models == min(
+        RETRIEVAL_CONFIG.assembler_budget_models,
+        16,
+    )
+    assert cfg.historical_observation_cap == min(
+        RETRIEVAL_CONFIG.historical_observation_cap,
+        2,
+    )
+    assert cfg.trigger_observation_cap == RETRIEVAL_CONFIG.trigger_observation_cap
+    assert cfg.observation_context_mode == RETRIEVAL_CONFIG.observation_context_mode
+
+
+def test_single_t1_keeps_default_context_budget(monkeypatch):
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_HISTORICAL_OBSERVATION_CAP", raising=False)
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        observation_id=uuid4(),
+    )
+
+    assert _retrieval_config_for_trigger(trigger) is RETRIEVAL_CONFIG
 
 
 def test_context_use_counts_edge_ops_between_selected_graph_models():
