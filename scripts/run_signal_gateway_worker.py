@@ -30,11 +30,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import sys
 
 import structlog
 
+from worker_observability import (
+    install_signal_handlers,
+    register_pool,
+    start_worker_health,
+)
 
 log = structlog.get_logger("scripts.run_signal_gateway_worker")
 
@@ -76,8 +80,11 @@ async def _main() -> int:
     )
 
     pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=4)
+    register_pool("signal_gateway_worker", pool)
     redis: AsyncRedis | None = None
     stop_event = asyncio.Event()
+    install_signal_handlers(stop_event)
+    health_shutdown = start_worker_health("signal_gateway_worker", stop_event)
     refresh_task: asyncio.Task | None = None
     worker: SignalGatewayWorker | None = None
     kafka_producer = None
@@ -173,13 +180,6 @@ async def _main() -> int:
             tenant_flags=tenant_flags,
         )
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(sig, stop_event.set)
-            except NotImplementedError:
-                pass
-
         # ---- single-instance lease (acquire BEFORE connecting) ----
         redis = AsyncRedis.from_url(redis_url, decode_responses=False)
         lock = LeaderLock(redis, key=_LEASE_KEY)
@@ -228,6 +228,7 @@ async def _main() -> int:
                 await redis.aclose()
             except Exception:  # noqa: BLE001
                 pass
+        await health_shutdown()
         await pool.close()
 
 

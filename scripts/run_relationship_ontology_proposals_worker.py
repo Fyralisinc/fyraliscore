@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 from uuid import UUID
 
 import asyncpg
 import structlog
 
+from worker_observability import (
+    install_signal_handlers,
+    register_pool,
+    start_worker_health,
+)
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.workers.relationship_ontology_proposals.worker import (
     DEFAULT_INTERVAL_S,
@@ -63,13 +67,12 @@ async def _main() -> None:
         max_size=3,
         init=_register_codecs,
     )
+    register_pool("relationship_ontology_proposals_worker", pool)
     shutdown = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, shutdown.set)
-        except NotImplementedError:
-            pass
+    install_signal_handlers(shutdown)
+    health_shutdown = start_worker_health(
+        "relationship_ontology_proposals_worker", shutdown
+    )
 
     log.info(
         "relationship_ontology_proposals.starting",
@@ -104,9 +107,9 @@ async def _main() -> None:
             )
     finally:
         log.info("relationship_ontology_proposals.stopping")
+        await health_shutdown()
         await pool.close()
 
 
 if __name__ == "__main__":
     asyncio.run(_main())
-

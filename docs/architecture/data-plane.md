@@ -32,6 +32,8 @@ full ingestion pipeline) Kafka + an S3-compatible raw tier.
 | **Redis** | Rate-limiter state (token-bucket via Lua `EVALSHA`); optional cache backend. |
 | **Kafka (KRaft)** | Per-source ingestion lanes (`ingestion.{raw,normalized,embedding,dlq}.{source}`) + a control-plane `tenant_traffic_signal` topic. Used only when the full pipeline is enabled. |
 | **S3 / MinIO** | Raw-tier object storage (`fyralis-raw`) for ingestion payloads. |
+| **Prometheus** | Metrics TSDB (15d / 2GB retention, loopback `:9090`). Scrapes the gateway, every worker's `:9300` health/metrics port, and the postgres/kafka/redis exporters. Config in `observability/prometheus/`. |
+| **Grafana** | Dashboards + alerting (loopback `:3000`), fully provisioned from `observability/grafana/` (six dashboards, alert rules, contact point). See [Observability](observability_architecture.md). |
 
 ## Runtime topology
 

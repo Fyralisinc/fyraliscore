@@ -15,6 +15,7 @@ per BUILD-PLAN §0.5 non-negotiable #4.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
@@ -23,6 +24,11 @@ from urllib.parse import urlparse
 import asyncpg
 from pydantic import BaseModel
 
+from lib.observability.pools import (
+    observe_acquire_wait,
+    register_pool,
+    unregister_pool,
+)
 from lib.shared.errors import CompanyOSError
 
 
@@ -130,6 +136,8 @@ async def init_pool(
         command_timeout=command_timeout,
         **extra_kwargs,
     )
+    # Scrape-time db_pool_* gauges (docs/architecture/observability_architecture.md §3).
+    register_pool("shared", _pool)
     return _pool
 
 
@@ -140,6 +148,7 @@ async def close_pool() -> None:
         return
     pool = _pool
     _pool = None
+    unregister_pool("shared")
     try:
         await pool.close()
     except RuntimeError as exc:
@@ -178,7 +187,10 @@ async def transaction(
                 await tx2.execute("INSERT INTO observations ...")
     """
     actual_pool = pool or get_pool()
+    pool_label = "shared" if actual_pool is _pool else "external"
+    acquire_started = time.monotonic()
     async with actual_pool.acquire() as conn:
+        observe_acquire_wait(pool_label, time.monotonic() - acquire_started)
         async with conn.transaction(isolation=isolation):
             yield conn
 

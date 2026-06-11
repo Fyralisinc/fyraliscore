@@ -151,6 +151,8 @@ services:
     environment:
       MINIO_ROOT_USER: fyralis
       MINIO_ROOT_PASSWORD: fyralis-secret-change-me
+      # Prometheus scrapes MinIO on the private compose network only.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
       - company_os_minio:/data
     healthcheck:
@@ -225,26 +227,31 @@ services:
     <<: *worker
     container_name: company_os_oauth_poller
     command: python -m services.ingest.ingestion.workflows.oauth_poller
+    healthcheck: *consumer-healthcheck
 
   tenant_onboarding:
     <<: *worker
     container_name: company_os_tenant_onboarding
     command: python -m services.ingest.ingestion.workflows.tenant_onboarding
+    healthcheck: *consumer-healthcheck
 
   source_onboarding:
     <<: *worker
     container_name: company_os_source_onboarding
     command: python -m services.ingest.ingestion.workflows.source_onboarding
+    healthcheck: *consumer-healthcheck
 
   shard_fetch:
     <<: *worker
     container_name: company_os_shard_fetch
     command: python -m services.ingest.ingestion.workflows.shard_fetch
+    healthcheck: *consumer-healthcheck
 
   reconciler:
     <<: *worker
     container_name: company_os_reconciler
     command: python -m services.ingest.ingestion.workflows.reconciler
+    healthcheck: *consumer-healthcheck
 
   # Emits the `onboarding.progress` Kafka events Bridge consumes (LLD §6).
   # The lifecycle producers (started/complete/shard.fetched) live in the
@@ -256,6 +263,7 @@ services:
     <<: *worker
     container_name: company_os_feels_onboarded_monitor
     command: python -m services.ingest.ingestion.workflows.feels_onboarded_monitor
+    healthcheck: *consumer-healthcheck
 
   # Steady-state safety net: re-runs per-source gap detection for
   # already-reconciled runs on a schedule, re-sharing when a live event
@@ -331,57 +339,72 @@ services:
     <<: *worker
     container_name: company_os_discord_gateway_worker
     command: python scripts/run_discord_gateway_worker.py
+    healthcheck: *consumer-healthcheck
 
   telegram_gateway_worker:
     <<: *worker
     container_name: company_os_telegram_gateway_worker
     command: python scripts/run_telegram_gateway_worker.py
+    healthcheck: *consumer-healthcheck
 
   signal_gateway_worker:
     <<: *worker
     container_name: company_os_signal_gateway_worker
     command: python scripts/run_signal_gateway_worker.py
+    healthcheck: *consumer-healthcheck
 
   gmail_watch_scheduler:
     <<: *worker
     container_name: company_os_gmail_watch_scheduler
     command: python scripts/run_gmail_watch_scheduler.py
+    healthcheck: *consumer-healthcheck
 
   gmail_history_poller:
     <<: *worker
     container_name: company_os_gmail_history_poller
     command: python scripts/run_gmail_history_poller.py
+    healthcheck: *consumer-healthcheck
 
   google_calendar_live_poller:
     <<: *worker
     container_name: company_os_google_calendar_live_poller
     command: python scripts/run_google_calendar_live_poller.py
+    healthcheck: *consumer-healthcheck
 
   google_drive_live_poller:
     <<: *worker
     container_name: company_os_google_drive_live_poller
     command: python scripts/run_google_drive_live_poller.py
+    healthcheck: *consumer-healthcheck
 
   google_calendar_watch_scheduler:
     <<: *worker
     container_name: company_os_google_calendar_watch_scheduler
     command: python scripts/run_google_calendar_watch_scheduler.py
+    healthcheck: *consumer-healthcheck
 
   google_drive_watch_scheduler:
     <<: *worker
     container_name: company_os_google_drive_watch_scheduler
     command: python scripts/run_google_drive_watch_scheduler.py
+    healthcheck: *consumer-healthcheck
 
   # ---- think / post-commit application workers ---------------------
+  # Both expose /healthz + /metrics on INGESTION_HEALTH_PORT (P2-13):
+  # /healthz goes 503 when the poll loop wedges; /metrics serves the
+  # Think families (runs, latency, queue depth, LLM cost/tokens) and
+  # post-commit WorkerStats respectively.
   think_worker:
     <<: *worker
     container_name: company_os_think_worker
     command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
 
   post_commit_worker:
     <<: *worker
     container_name: company_os_post_commit_worker
     command: python scripts/run_post_commit_worker.py
+    healthcheck: *consumer-healthcheck
 
   # GitHub Intelligence Layer — ordered FSM/state + signal-enrichment worker.
   # Sweeps github:webhook observations, advances the authoritative GitHub-state
@@ -393,6 +416,7 @@ services:
     <<: *worker
     container_name: company_os_github_intel_worker
     command: python scripts/run_github_intel_worker.py
+    healthcheck: *consumer-healthcheck
     # NB: a service-level `environment:` REPLACES the *worker anchor's env (YAML
     # merge keys don't deep-merge mappings), so the base worker vars are
     # re-declared here alongside the github-intel additions.
@@ -412,6 +436,7 @@ services:
     <<: *worker
     container_name: company_os_sage_structural_features_worker
     command: python scripts/run_sage_structural_features_worker.py
+    healthcheck: *consumer-healthcheck
     environment:
       <<: *app-env
       SAGE_STRUCTURAL_FEATURES_INTERVAL_S: "3600"
@@ -420,6 +445,7 @@ services:
     <<: *worker
     container_name: company_os_sage_topology_optimizer_worker
     command: python scripts/run_sage_topology_optimizer_worker.py
+    healthcheck: *consumer-healthcheck
     environment:
       <<: *app-env
       SAGE_TOPOLOGY_OPTIMIZER_INTERVAL_S: "60"
@@ -430,6 +456,7 @@ services:
     <<: *worker
     container_name: company_os_relationship_ontology_proposals_worker
     command: python scripts/run_relationship_ontology_proposals_worker.py
+    healthcheck: *consumer-healthcheck
     environment:
       <<: *app-env
       RELATIONSHIP_ONTOLOGY_PROPOSALS_INTERVAL_S: "900"
@@ -440,8 +467,109 @@ services:
   # (demo.fyralis.xyz) live in the demo overlay repo's docker-compose.demo.yml.
   # Core ships the backend gateway (exposed on :8000) + workers + data plane.
 
+  # ---- observability stack (Prometheus + Grafana + exporters) -------
+  # Design: docs/architecture/observability_architecture.md. Config and
+  # dashboards live under observability/ (provisioned as code). Host
+  # ports bind to loopback only — put Grafana behind the TLS edge + auth
+  # proxy before exposing it beyond the box (it carries a Postgres
+  # datasource with read access to tenant data).
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: company_os_prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+    ports:
+      # Loopback-only; override the host port if it collides (e.g. another
+      # Prometheus on the box): PROMETHEUS_HOST_PORT=9091 docker compose up.
+      - "127.0.0.1:${PROMETHEUS_HOST_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - company_os_prometheus:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: company_os_grafana
+    restart: unless-stopped
+    ports:
+      # Loopback-only; the grafana-source sandbox (fyralis_grafana) often
+      # holds :3000 on dev boxes — override: GRAFANA_HOST_PORT=3001.
+      - "127.0.0.1:${GRAFANA_HOST_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Override in .env.production; the default is for local bring-up only.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-fyralis-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_METRICS_ENABLED: "true"
+      # Postgres datasource credentials (read path for think_run_costs etc.).
+      FYRALIS_PG_DATASOURCE_URL: postgres:5432
+      FYRALIS_PG_DATASOURCE_USER: company_os
+      FYRALIS_PG_DATASOURCE_PASSWORD: company_os
+      # Provisioned alert contact point (same ops webhook dlq_writer uses).
+      # The placeholder default keeps provisioning valid when unset;
+      # notifications to it fail visibly in Grafana's notification log.
+      INGESTION_ALERT_WEBHOOK_URL: ${INGESTION_ALERT_WEBHOOK_URL:-http://127.0.0.1:9/unconfigured-ops-webhook}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - company_os_grafana:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: company_os_postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://company_os:company_os@postgres:5432/company_os?sslmode=disable
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ./observability/postgres-exporter/queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: company_os_kafka_exporter
+    restart: unless-stopped
+    command:
+      - --kafka.server=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    container_name: company_os_redis_exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   company_os_pgdata:
   company_os_ollama:
   company_os_kafka:
   company_os_minio:
+  company_os_prometheus:
+  company_os_grafana:

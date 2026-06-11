@@ -28,13 +28,35 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from confluent_kafka import Producer
 
+from lib.observability import counter, histogram
+
 
 log = logging.getLogger(__name__)
+
+
+# Delivery reports fire on librdkafka's background poll thread; the shared
+# registry counters are thread-safe. `topic` is bounded by the provisioned
+# topic list (ingestion.raw.<source> / .normalized / .embedding / .dlq).
+_DELIVERY = counter(
+    "kafka_producer_delivery_total",
+    "Broker delivery reports by topic and outcome (success|failure).",
+    ("topic", "outcome"),
+)
+_FLUSH_DURATION = histogram(
+    "kafka_producer_flush_duration_seconds",
+    "Time spent in producer flush() (shutdown + synchronous publish paths).",
+    buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+)
+_FLUSH_INCOMPLETE = counter(
+    "kafka_producer_flush_incomplete_total",
+    "flush() calls that timed out with messages still undelivered.",
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +155,13 @@ class IdempotentProducer:
         if self._producer is None:
             raise RuntimeError("producer not started — call start() first")
 
+        def _report_delivery(err: Any, msg: Any) -> None:
+            _DELIVERY.inc(
+                topic=topic, outcome="failure" if err is not None else "success"
+            )
+            if on_delivery is not None:
+                on_delivery(err, msg)
+
         def _produce_sync() -> None:
             assert self._producer is not None
             self._producer.produce(
@@ -140,7 +169,7 @@ class IdempotentProducer:
                 value=value,
                 key=key,
                 headers=headers,
-                on_delivery=on_delivery,
+                on_delivery=_report_delivery,
             )
             # poll(0) drains delivery-report callbacks without blocking;
             # without this, callbacks pile up and memory grows.
@@ -155,7 +184,12 @@ class IdempotentProducer:
         """
         if self._producer is None:
             return 0
-        return await asyncio.to_thread(self._producer.flush, timeout_seconds)
+        started = time.monotonic()
+        remaining = await asyncio.to_thread(self._producer.flush, timeout_seconds)
+        _FLUSH_DURATION.observe(time.monotonic() - started)
+        if remaining:
+            _FLUSH_INCOMPLETE.inc()
+        return remaining
 
     async def stop(self, timeout_seconds: float = 10.0) -> None:
         """Flush remaining messages and tear down."""

@@ -42,6 +42,16 @@ _log = structlog.get_logger(__name__)
 # Metrics — simple in-memory prometheus-compatible counters/histograms
 # ---------------------------------------------------------------------
 
+# Rolling-window cap for sample lists (latency, cascade depth, lock waits,
+# context ratios). Before the worker exposed /metrics these lists only lived
+# for a test's lifetime; a long-running scraped worker must bound them.
+_SAMPLE_CAP = 4096
+
+
+def _trim(samples: list) -> None:
+    if len(samples) > _SAMPLE_CAP:
+        del samples[: len(samples) - _SAMPLE_CAP]
+
 
 @dataclass
 class Metrics:
@@ -88,16 +98,21 @@ class Metrics:
         self.runs_failed[trigger_kind] = self.runs_failed.get(trigger_kind, 0) + 1
 
     def observe_latency(self, trigger_kind: str, ms: float) -> None:
-        self.run_latency_ms.setdefault(trigger_kind, []).append(ms)
+        samples = self.run_latency_ms.setdefault(trigger_kind, [])
+        samples.append(ms)
+        _trim(samples)
 
     def inc_op(self, op_kind: str, n: int = 1) -> None:
         self.ops_by_kind[op_kind] = self.ops_by_kind.get(op_kind, 0) + n
 
     def observe_cascade_depth(self, trigger_kind: str, depth: int) -> None:
-        self.cascade_depth_reached.setdefault(trigger_kind, []).append(depth)
+        samples = self.cascade_depth_reached.setdefault(trigger_kind, [])
+        samples.append(depth)
+        _trim(samples)
 
     def observe_region_lock_wait(self, ms: float) -> None:
         self.region_lock_waits_ms.append(ms)
+        _trim(self.region_lock_waits_ms)
 
     def set_queue_depth(self, tenant_id: UUID | str, depth: int) -> None:
         self.queue_depth[str(tenant_id)] = depth
@@ -138,9 +153,11 @@ class Metrics:
         )
         ratio = report.get("selected_context_reference_ratio")
         if isinstance(ratio, (int, float)):
-            self.context_use_selected_ratios.setdefault(trigger_kind, []).append(
-                float(ratio)
+            samples = self.context_use_selected_ratios.setdefault(
+                trigger_kind, []
             )
+            samples.append(float(ratio))
+            _trim(samples)
 
     # --- OP-4 --------------------------------------------------------
     def inc_dropped_op(self, reason: str, op_type: str, n: int = 1) -> None:
@@ -222,6 +239,152 @@ class Metrics:
 
 
 METRICS = Metrics()
+
+
+# ---------------------------------------------------------------------
+# Prometheus text exposition for the Think worker's /metrics endpoint.
+# Hand-rolled (no prometheus_client — constitution principle X), labeled,
+# grouped per family. tenant_id is NEVER a label: the per-tenant queue
+# gauge exports only the aggregate "all" series plus a tracked-tenant
+# count; per-tenant cost attribution lives in think_run_costs (Postgres).
+# ---------------------------------------------------------------------
+
+
+def _esc(value: str) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+    )
+
+
+def _quantile(samples: list[float], q: float) -> float | None:
+    """Nearest-rank quantile; pure copy-in so callers hold no lock."""
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    n = len(ordered)
+    idx = max(0, min(n - 1, -(-int(q * 100) * n // 100) - 1))
+    return ordered[idx]
+
+
+def _family(
+    lines: list[str],
+    name: str,
+    kind: str,
+    help_text: str,
+    label_names: tuple[str, ...],
+    rows: list[tuple[tuple[str, ...], float]],
+) -> None:
+    if not rows:
+        return
+    lines.append(f"# HELP {name} {help_text}")
+    lines.append(f"# TYPE {name} {kind}")
+    for values, v in sorted(rows):
+        labels = ",".join(
+            f'{n}="{_esc(val)}"' for n, val in zip(label_names, values)
+        )
+        label_str = "{" + labels + "}" if labels else ""
+        lines.append(f"{name}{label_str} {v:g}")
+
+
+def render_prometheus_text() -> str:
+    """Render METRICS as Prometheus exposition for the worker /metrics."""
+    m = METRICS
+    lines: list[str] = []
+
+    _family(lines, "think_runs_total", "counter",
+            "Think runs started, by trigger kind.", ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.runs_total.items()])
+    _family(lines, "think_runs_failed_total", "counter",
+            "Think runs that raised, by trigger kind.", ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.runs_failed.items()])
+    _family(lines, "think_ops_applied_total", "counter",
+            "Claim/edge/resource ops applied, by op kind.", ("op_kind",),
+            [((k,), float(v)) for k, v in m.ops_by_kind.items()])
+
+    # Latency: rolling-window quantiles + lifetime-ish count/sum (window-capped).
+    for q, suffix in ((0.50, "p50"), (0.95, "p95"), (0.99, "p99")):
+        _family(
+            lines, f"think_run_latency_seconds_{suffix}", "gauge",
+            f"Think run latency {suffix} over a rolling sample window.",
+            ("trigger_kind",),
+            [
+                ((k,), val / 1000.0)
+                for k, samples in m.run_latency_ms.items()
+                if (val := _quantile(samples, q)) is not None
+            ],
+        )
+    _family(lines, "think_run_latency_seconds_window_count", "gauge",
+            "Samples currently in the latency window.", ("trigger_kind",),
+            [((k,), float(len(v))) for k, v in m.run_latency_ms.items()])
+
+    # Queue depth: aggregate series only (tenant safety).
+    if "all" in m.queue_depth:
+        _family(lines, "think_queue_depth", "gauge",
+                "think_trigger_queue pending depth (all tenants).", (),
+                [((), float(m.queue_depth["all"]))])
+    tracked = [k for k in m.queue_depth if k != "all"]
+    if tracked:
+        _family(lines, "think_queue_tracked_tenants", "gauge",
+                "Distinct tenants with a recorded queue-depth sample.", (),
+                [((), float(len(tracked)))])
+
+    _family(
+        lines, "think_cascade_depth_p95", "gauge",
+        "Cascade depth p95 over a rolling window, by trigger kind.",
+        ("trigger_kind",),
+        [
+            ((k,), float(val))
+            for k, samples in m.cascade_depth_reached.items()
+            if (val := _quantile([float(s) for s in samples], 0.95)) is not None
+        ],
+    )
+    lock_p95 = _quantile(list(m.region_lock_waits_ms), 0.95)
+    if lock_p95 is not None:
+        _family(lines, "think_region_lock_wait_seconds_p95", "gauge",
+                "Region-lock acquisition wait p95 (rolling window).", (),
+                [((), lock_p95 / 1000.0)])
+
+    _family(lines, "think_validation_dropped_ops_total", "counter",
+            "Ops dropped by validation, by reason and op type (OP-4).",
+            ("reason", "op_type"),
+            [((r, t), float(v))
+             for (r, t), v in m.validation_dropped_ops.items()])
+
+    _family(lines, "think_llm_cost_usd_total", "counter",
+            "Cumulative LLM spend in USD, by trigger kind (OP-2).",
+            ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.cost_usd_by_kind.items()])
+    _family(lines, "think_llm_calls_total", "counter",
+            "LLM calls, by trigger kind.", ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.llm_calls_by_kind.items()])
+    _family(lines, "think_llm_input_tokens_total", "counter",
+            "LLM input tokens, by trigger kind.", ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.input_tokens_by_kind.items()])
+    _family(lines, "think_llm_output_tokens_total", "counter",
+            "LLM output tokens, by trigger kind.", ("trigger_kind",),
+            [((k,), float(v)) for k, v in m.output_tokens_by_kind.items()])
+
+    _family(lines, "think_cascade_invariant_violations_total", "counter",
+            "Cascade steps rejected by Acts/Resources invariants (T1b).",
+            ("branch",),
+            [((k,), float(v))
+             for k, v in m.cascade_invariant_violations.items()])
+    _family(lines, "think_reconcile_decisions_total", "counter",
+            "Reconciliation decisions on claim inserts (T5).", ("decision",),
+            [((k,), float(v)) for k, v in m.reconcile_decisions_total.items()])
+
+    grade_rows: list[tuple[tuple[str, ...], float]] = []
+    for key, v in m.context_use_grades_total.items():
+        kind, _, grade = key.partition("|")
+        grade_rows.append(((kind, grade or "unknown"), float(v)))
+    _family(lines, "think_context_use_grades_total", "counter",
+            "Context-use grades for successful runs (T5).",
+            ("trigger_kind", "grade"), grade_rows)
+
+    return ("\n".join(lines) + "\n") if lines else ""
 
 
 # ---------------------------------------------------------------------
@@ -603,6 +766,7 @@ async def aggregate_costs_for_tenant(
 __all__ = [
     "METRICS",
     "Metrics",
+    "render_prometheus_text",
     "ThinkRunRecord",
     "insert_think_run",
     "update_think_run",

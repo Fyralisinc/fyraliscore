@@ -1,0 +1,16 @@
+# Dashboard provider — loads the six JSON dashboards from the repo into
+# the "Fyralis" folder. Dashboards are code; UI edits are disabled so the
+# repo stays the source of truth.
+apiVersion: 1
+
+providers:
+  - name: fyralis
+    orgId: 1
+    folder: Fyralis
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

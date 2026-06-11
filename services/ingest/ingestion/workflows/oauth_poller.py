@@ -407,6 +407,19 @@ async def _run_poller() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
+    # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT). The
+    # oauth_refresh_* counters fire in this process; /metrics exposes them
+    # via the shared registry appended by render_prometheus.
+    from services.ingest.ingestion.observability import (
+        Heartbeat,
+        run_heartbeat_ticker,
+        start_health_server,
+    )
+
+    heartbeat = Heartbeat()
+    health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
+    ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
+
     log.info("workflow.oauth_poller.started", extra={
         "instance": config.instance_name,
     })
@@ -414,6 +427,10 @@ async def _run_poller() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.oauth_poller.shutting_down")
+        ticker.cancel()
+        await asyncio.gather(ticker, return_exceptions=True)
+        if health is not None:
+            health.shutdown()
         await pool.close()
     log.info("workflow.oauth_poller.exited")
 

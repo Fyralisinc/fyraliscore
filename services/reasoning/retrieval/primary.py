@@ -65,8 +65,25 @@ from .pathways import (
 )
 from .scoring import merge_and_rank_rrf
 
+from lib.observability import counter, histogram
+
 
 TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
+
+
+# Retrieval-layer Prometheus families (one per primary-retrieval stage;
+# pgvector query timing lives in pathways.py). Exposed by whichever worker
+# process serves /metrics (think worker today).
+_STAGE_DURATION = histogram(
+    "retrieval_stage_duration_seconds",
+    "Primary-retrieval stage latency (derive_scope, pathway_A..G, merge/rank).",
+    ("stage",),
+)
+_STAGE_TOTAL = counter(
+    "retrieval_stage_total",
+    "Primary-retrieval stage executions by outcome (ok|skipped).",
+    ("stage", "status"),
+)
 
 
 def _raise_if_postgres_error(exc: Exception) -> None:
@@ -125,14 +142,21 @@ def _append_pathway_timing(
     started: float,
     **extra: Any,
 ) -> None:
+    elapsed_ms = _elapsed_ms(started)
     note = {
         "stage": stage,
-        "elapsed_ms": _elapsed_ms(started),
+        "elapsed_ms": elapsed_ms,
     }
     for key, value in extra.items():
         if value is not None:
             note[key] = value
     timings.append(note)
+    # Prometheus twin of the debug-notes timing. `stage` is a bounded
+    # literal set (derive_scope, pathway_A..G, merge/rank stages).
+    _STAGE_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
+    _STAGE_TOTAL.inc(
+        stage=stage, status="skipped" if extra.get("skipped") else "ok"
+    )
 
 # Per-spec-§8 weighting mix. Live topology now writes relationship/
 # situation candidates, and those candidates reach Think through T4
