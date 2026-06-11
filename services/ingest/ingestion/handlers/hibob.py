@@ -101,7 +101,17 @@ def _external_id(company_id: str, entity_kind: str, entity_id: str, ver: str) ->
 # ---------------------------------------------------------------------
 
 def _entity_id_of(entity: dict[str, Any]) -> str:
-    for key in ("id", "employeeId", "requestId", "payrollId"):
+    for key in (
+        "id",
+        "/root/id",
+        "root.id",
+        "employeeId",
+        "employee_id",
+        "requestId",
+        "request_id",
+        "payrollId",
+        "payroll_id",
+    ):
         v = entity.get(key)
         if v not in (None, ""):
             return str(v)
@@ -125,7 +135,13 @@ def _status_of(entity: dict[str, Any]) -> str:
 
 
 def _display_name(entity: dict[str, Any]) -> str | None:
-    name = entity.get("displayName") or entity.get("fullName") or entity.get("name")
+    name = (
+        entity.get("displayName")
+        or entity.get("/root/displayName")
+        or entity.get("root.displayName")
+        or entity.get("fullName")
+        or entity.get("name")
+    )
     if isinstance(name, str) and name:
         return name
     first = entity.get("firstName") or ""
@@ -184,9 +200,13 @@ def _entity_draft(
         "entity_id": entity_id,
         "status": status_word or None,
         "display_name": name,
-        "department": entity.get("department"),
-        "title": entity.get("title") or entity.get("jobTitle"),
-        "email": entity.get("email"),
+        "department": entity.get("department") or entity.get("/work/department"),
+        "title": (
+            entity.get("title")
+            or entity.get("jobTitle")
+            or entity.get("/work/title")
+        ),
+        "email": entity.get("email") or entity.get("/root/email"),
         "effective_date": entity.get("effectiveDate") or entity.get("startDate"),
         "modified": modified,
     }
@@ -267,8 +287,8 @@ def _normalise_kind(value: Any) -> str | None:
 
 def _company_of(payload: dict[str, Any]) -> str:
     rid = payload.get("_fyralis_company_id") or payload.get("companyId")
-    if isinstance(rid, str) and rid:
-        return rid
+    if rid not in (None, ""):
+        return str(rid)
     return ""
 
 

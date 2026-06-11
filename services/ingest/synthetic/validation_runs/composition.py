@@ -344,7 +344,7 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         # resolves the install from carta_installations by tenant_id.
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           carta_firm=fixture_params.get("firm_id"),
-                          carta_entity_type="OptionGrant")
+                          carta_entity_type="optionGrant")
     if source == "hibob":
         # HMAC webhook; installation_id == the fixture's company_id (the SAME
         # value the harness seeds into provider_installations for backfill), so
@@ -362,7 +362,7 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         # generator resolves the install from linkedin_installations by tenant_id.
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           linkedin_org=fixture_params["organization_urn"],
-                          linkedin_entity_type="share")
+                          linkedin_entity_type="post")
     raise ValueError(f"unknown source {source!r}")
 
 

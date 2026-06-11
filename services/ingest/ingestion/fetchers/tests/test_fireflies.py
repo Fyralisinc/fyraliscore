@@ -80,11 +80,23 @@ async def test_incremental_warm_start_uses_start_param(monkeypatch):
              "transcript_cursor": "2026-05-09T00:00:00Z"}
     res = await fetch_page_fireflies(_FakeInst(), shard, None)
 
-    # Warm start -> incremental: list_transcripts called with start=date.
-    assert client.calls[0]["start"] == "2026-05-09"
+    # Warm start -> incremental: list_transcripts called with the ISO floor.
+    assert client.calls[0]["start"] == "2026-05-09T00:00:00Z"
     txn_records = [r for r in res.records if r["_fyralis_record_type"] == "transcript"]
     assert len(txn_records) == 1
     assert txn_records[0]["transcript"]["id"] == "t9"
+
+
+async def test_epoch_millis_date_bumps_high_water(monkeypatch):
+    epoch_ms = 1_777_593_600_000
+    client = _FakeClient([{"id": "t-ms", "title": "Millis", "date": epoch_ms}], [])
+    _wire(monkeypatch, client)
+
+    shard = {"shard_kind": SHARD_KIND_TRANSCRIPTS, "workspace_id": _WS}
+    res = await fetch_page_fireflies(_FakeInst(), shard, None)
+
+    cur = FirefliesCursor.model_validate(res.next_cursor)
+    assert cur.high_water_created == "2026-05-01T00:00:00+00:00"
 
 
 async def test_empty_workspace_terminates(monkeypatch):

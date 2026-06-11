@@ -47,9 +47,9 @@ _LIVE_BASE = datetime(2026, 6, 15, tzinfo=timezone.utc)
 # Live entity ids start far above any backfill id (fixtures use 1000..N).
 _LIVE_ID_BASE = 1_000_000
 
-# The organization entity kind the synthetic live change defaults to (the live
-# edge re-lists across all kinds; one kind suffices to prove the path).
-_DEFAULT_ENTITY_TYPE = "share"
+# The organization stream the synthetic live change defaults to (the live
+# edge re-lists across all streams; one suffices to prove the path).
+_DEFAULT_ENTITY_TYPE = "post"
 
 
 @dataclass
@@ -113,17 +113,44 @@ class LinkedinPollGenerator:
         return resolved
 
     def _mint_change(self, content: str, entity_type: str) -> dict[str, Any]:
+        """One real-shaped Community-Management element: a `post` carries a
+        share-URN `id` + epoch-millis stamps; the statistics streams carry a
+        `timeRange`-bucketed snapshot (the bucket start is the external_id
+        basis)."""
         self._seq += 1
-        entity_id = str(_LIVE_ID_BASE + self._seq)
-        updated = (_LIVE_BASE + timedelta(minutes=self._seq)).isoformat()
+        stamp = _LIVE_BASE + timedelta(minutes=self._seq)
+        stamp_ms = int(stamp.timestamp() * 1000)
+
+        if entity_type in ("share_statistics", "follower_statistics"):
+            time_range = {"start": stamp_ms, "end": stamp_ms + 86_400_000}
+            if entity_type == "share_statistics":
+                entity: dict[str, Any] = {
+                    "timeRange": time_range,
+                    "totalShareStatistics": {
+                        "impressionCount": 500, "likeCount": 12,
+                        "clickCount": 3, "commentCount": 1, "shareCount": 0,
+                    },
+                }
+            else:
+                entity = {
+                    "timeRange": time_range,
+                    "followerGains": {
+                        "organicFollowerGain": 21, "paidFollowerGain": 2,
+                    },
+                }
+            return {"entity_type": entity_type, "entity": entity}
+
+        entity_id = f"urn:li:share:{_LIVE_ID_BASE + self._seq}"
         entity = {
-            "Id": entity_id,
-            "DocNumber": f"{entity_type[:3].upper()}-{entity_id}",
-            "Status": "active",
-            "ImpressionCount": 500,
-            "LikeCount": 12,
-            "AuthorRef": {"value": str(self._seq), "name": content},
-            "MetaData": {"LastUpdatedTime": updated},
+            "id": entity_id,
+            "author": f"urn:li:organization:{self._seq}",
+            "commentary": content,
+            "visibility": "PUBLIC",
+            "lifecycleState": "PUBLISHED",
+            "lifecycleStateInfo": {"isEditedByAuthor": False},
+            "createdAt": stamp_ms,
+            "publishedAt": stamp_ms,
+            "lastModifiedAt": stamp_ms,
         }
         return {"entity_type": entity_type, "entity": entity}
 
@@ -144,7 +171,12 @@ class LinkedinPollGenerator:
             getattr(target, "linkedin_entity_type", None) or _DEFAULT_ENTITY_TYPE
         )
         change = self._mint_change(content, entity_type)
-        entity_id = change["entity"]["Id"]
+        entity = change["entity"]
+        # The external_id basis: posts use the post URN; statistics streams use
+        # the timeRange.start snapshot bucket (mirrors handlers/linkedin.py).
+        entity_id = entity.get("id") or str(
+            (entity.get("timeRange") or {}).get("start"),
+        )
 
         deps = PollDeps(
             pool=self._pool,
@@ -163,9 +195,9 @@ class LinkedinPollGenerator:
         # entity_kind normalisation mirrors the handler's _ENTITY_NORMALISE.
         entity_kind = entity_type.lower()
         _NORMALISE = {
-            "share": "share",
-            "social_action": "social_action",
-            "follower_stat": "follower_stat",
+            "post": "post",
+            "share_statistics": "share_statistics",
+            "follower_statistics": "follower_statistics",
         }
         kind = _NORMALISE.get(entity_kind, entity_kind)
         return LinkedinPollResult(

@@ -46,6 +46,7 @@ from services.ingest.ingestion.fetchers import fireflies as _fireflies_fetcher
 from services.ingest.ingestion.fetchers import github as _github_fetcher
 from services.ingest.ingestion.fetchers import gmail as _gmail_fetcher
 from services.ingest.ingestion.fetchers import gusto as _gusto_fetcher
+from services.ingest.ingestion.fetchers import hibob as _hibob_fetcher
 from services.ingest.ingestion.fetchers import miro as _miro_fetcher
 from services.ingest.ingestion.fetchers import ramp as _ramp_fetcher
 from services.ingest.ingestion.fetchers import signal as _signal_fetcher
@@ -63,6 +64,7 @@ from services.ingest.synthetic.fixtures import (
     make_github_repos,
     make_gmail_mailbox,
     make_gusto,
+    make_hibob,
     make_miro,
     make_ramp,
     make_signal,
@@ -79,6 +81,7 @@ from services.ingest.synthetic.mock_clients import (
     MockGithubClient,
     MockGmailClient,
     MockGustoClient,
+    MockHibobClient,
     MockMiroClient,
     MockRampClient,
     MockSignalClient,
@@ -223,7 +226,7 @@ async def _deel_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def _ramp_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
-    # Ramp (OAuth / QuickBooks archetype): shard per entity_type.
+    # Ramp (OAuth client-credentials, keyset REST): shard per entity_type.
     client = MockRampClient(fixture=fixture)
     _patch_client(_ramp_fetcher, "_open_ramp_client", client)
     entity_type = next(iter(fixture["entities"].keys()))
@@ -237,7 +240,7 @@ async def _ramp_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def _gusto_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
-    # Gusto (OAuth / QuickBooks archetype): shard per entity_type.
+    # Gusto (OAuth payroll REST): shard per entity kind (employee/payroll).
     client = MockGustoClient(fixture=fixture)
     _patch_client(_gusto_fetcher, "_open_gusto_client", client)
     entity_type = next(iter(fixture["entities"].keys()))
@@ -340,10 +343,33 @@ async def _figma_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return list(result.records)
 
 
+async def _hibob_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    client = MockHibobClient(fixture=fixture)
+    _patch_client(_hibob_fetcher, "_open_hibob_client", client)
+    entity_type = next(iter(fixture["entities"].keys()))
+    install = {
+        "id": uuid4(),
+        "tenant_id": uuid4(),
+        "company_id": fixture["company_id"],
+        "service_user_id": "svc-pre",
+        "base_url": "https://api.hibob.com",
+    }
+    shard = {
+        "shard_kind": _hibob_fetcher.SHARD_KIND_ENTITY,
+        "entity_type": entity_type,
+        "company_id": fixture["company_id"],
+        "installation_id": str(install["id"]),
+        "updated_cursor": None,
+    }
+    result = await _hibob_fetcher.fetch_page_hibob(install, shard, None)
+    return list(result.records)
+
+
 async def _carta_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     # Carta (poll / Gusto-backfill archetype): shard per entity_type; the fetcher
     # reads `shard_identifier["entity_type"]` + install firm_id (external_id
-    # namespace: carta:{firm_id}:{entity_kind}:{entity_id}:{sync_token}).
+    # namespace: carta:{firm_id}:{entity_kind}:{entity_id}:{version} — the
+    # version is a content digest; see handlers/carta.carta_version).
     client = MockCartaClient(fixture=fixture)
     _patch_client(_carta_fetcher, "_open_carta_client", client)
     entity_type = next(iter(fixture["entities"].keys()))
@@ -372,9 +398,9 @@ _SOURCE_SPECS: dict[str, Any] = {
     # IN-FIN2 finance sources (additive — finance was not previously covered).
     "brex": (lambda: make_brex(accounts=1, transactions_per_account=3,
                                seed="pre"), _brex_records),
-    "ramp": (lambda: make_ramp(business_id="r-pre", entities=["Invoice"],
+    "ramp": (lambda: make_ramp(business_id="r-pre", entities=["transaction"],
                                rows_per_entity=2), _ramp_records),
-    "gusto": (lambda: make_gusto(company_uuid="c-pre", entities=["Invoice"],
+    "gusto": (lambda: make_gusto(company_uuid="c-pre", entities=["employee"],
                                  rows_per_entity=2), _gusto_records),
     "deel": (lambda: make_deel(contracts=1, payments_per_contract=3,
                                seed="pre"), _deel_records),
@@ -390,6 +416,10 @@ _SOURCE_SPECS: dict[str, Any] = {
                                seed="pre"), _miro_records),
     "figma": (lambda: make_figma(team_id="team-pre", events=3,
                                  seed="pre"), _figma_records),
+    "hibob": (lambda: make_hibob(company_id="hibob-co-pre",
+                                 entities=["employee", "lifecycle", "timeoff", "payroll"],
+                                 rows_per_entity=1, seed="pre"),
+              _hibob_records),
     "carta": (lambda: make_carta(firm_id="firm-pre", rows_per_entity=1,
                                  seed="pre"), _carta_records),
 }

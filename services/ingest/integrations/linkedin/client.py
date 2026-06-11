@@ -1,32 +1,51 @@
 """services/ingest/integrations/linkedin/client.py — outbound LinkedIn client.
 
-Single outbound surface for backfill + poll-incremental. LinkedIn is
-authenticated with an OAuth 2.0 Bearer **access token** (short-lived) and every
-call is scoped to an ``organization_urn`` (the scope-id, analogous to Carta's
-``firm_id`` / Gusto's ``company_uuid`` / QuickBooks' ``realmId``). The access
-token is resolved once from the secret store (or preset in spammer mode) and
-reused for the life of the client.
+Single outbound surface for backfill + poll-incremental against the REAL
+LinkedIn Community Management API (Rest.li finders under
+``https://api.linkedin.com/rest``). LinkedIn is authenticated with an OAuth 2.0
+Bearer **access token** (3-legged; the org read surface is partner-gated) and
+every call is scoped to an ``organization_urn`` (the scope-id, analogous to
+Carta's ``firm_id`` / QuickBooks' ``realmId``). The access token is resolved
+once from the secret store (or preset in spammer mode) and reused for the life
+of the client.
 
-TODO(human): implement LinkedIn OAuth token refresh — NONE exists yet (this is
-    the documented-but-unbuilt seam, exactly as the Carta / Gusto / QuickBooks
-    archetype ships). The install row persists `refresh_secret_ref` +
-    `token_expires_at`; wire either a refresh-on-401 exchange here (exchange
-    refresh token -> persist rotated token -> retry once) OR an oauth_poller. Do
-    NOT assume tokens never expire. (LinkedIn access tokens are ~60 days,
-    refresh tokens ~1 year — confirm against your partner entitlement.)
+Wire contract (pinned against Microsoft Learn, 2026-06):
+  - Posts finder:  ``GET /rest/posts?q=author&author={encoded org URN}``
+    — OFFSET-paginated via ``start``/``count`` (count max 100, default 10),
+    response envelope ``{"elements": [...], "paging": {start, count, links}}``,
+    sorted by ``lastModifiedAt`` DESC by default (``sortBy=LAST_MODIFIED``).
+    https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
+  - Share statistics:
+    ``GET /rest/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity={URN}``
+    — NOT paginated; optional Rest.li-2.0 ``timeIntervals=(timeRange:(start:ms,
+    end:ms),timeGranularityType:DAY|MONTH)`` for time-bound buckets (rolling
+    12-month window).
+    https://learn.microsoft.com/en-us/linkedin/marketing/community-management/organizations/share-statistics
+  - Follower statistics:
+    ``GET /rest/organizationalEntityFollowerStatistics?q=organizationalEntity&…``
+    — time-bound buckets carry ``followerGains`` + ``timeRange``
+    (DAY/WEEK/MONTH; data from 12 months back until ~2 days before now).
+    https://learn.microsoft.com/en-us/linkedin/marketing/community-management/organizations/follower-statistics
+  - Org probe: ``GET /rest/organizations/{numeric id}``.
+    https://learn.microsoft.com/en-us/linkedin/marketing/community-management/organizations/organization-lookup-api
 
-TODO(human): confirm LinkedIn API host + read endpoints + OAuth scopes. The host
-    is intended to be set in `lib/integrations/endpoints.py` (`linkedin_api`) and
-    is overridable per env (`LINKEDIN_API_BASE_URL`) and per install (`base_url`).
-    The read surface below clones the Gusto/QuickBooks query endpoint as a
-    placeholder; LinkedIn's real read surface is REST collections under
-    `/rest/...` or `/v2/...` scoped by an `organization` URN query param
-    (shares/posts, organizationalEntityShareStatistics / socialActions,
-    organizationFollowerStatistics). Implement only the verified read surface and
-    tag speculative endpoints. ACCESS IS PARTNER-GATED (Marketing Developer
-    Platform / Talent Solutions, invite-only).
+EVERY call carries the two REQUIRED headers (missing → 400/426):
+  - ``LinkedIn-Version: YYYYMM`` (pinned default below, env-overridable via
+    ``LINKEDIN_VERSION``), and
+  - ``X-Restli-Protocol-Version: 2.0.0``.
+URN query params are Rest.li-2.0 / URL encoded (``urn%3Ali%3Aorganization%3A123``).
+All timestamps on the wire are **epoch-millis integers** (``createdAt``,
+``lastModifiedAt``, ``timeRange.start/end``).
 
-Rate limits: default to 429 + Retry-After (env knobs LINKEDIN_RL_MAX_ATTEMPTS /
+TODO(human): implement LinkedIn OAuth token refresh — NONE exists yet. The
+    install row persists `refresh_secret_ref` + `token_expires_at`; LinkedIn
+    access tokens are ~60 days, and *programmatic refresh tokens* (~1 year,
+    refresh-token grant at https://www.linkedin.com/oauth/v2/accessToken) are
+    only issued to approved partner programs — confirm against your partner
+    entitlement before wiring a refresh-on-401 exchange or an oauth_poller
+    section in `integrations/oauth_refresh.py`.
+
+Rate limits: 429 + Retry-After (env knobs LINKEDIN_RL_MAX_ATTEMPTS /
 LINKEDIN_RL_MAX_SLEEP_SEC). Non-2xx maps to ``LinkedinApiError``.
 
 Logging redaction: the access token / auth header are NEVER logged.
@@ -42,48 +61,25 @@ from urllib.parse import quote
 import httpx
 import structlog
 
-# Import the canonical `LinkedinApiError(CompanyOSError)` from the shared error
-# module (another agent defines it during the wiring phase, mirroring
-# `BrexApiError` / `CartaApiError`). `lib/shared/errors.py` is a SHARED file this
-# phase must NOT edit, so until the canonical class lands a local subclass with
-# the same stable `code` contract keeps the pipeline self-contained. The local
-# fallback is NEVER preferred once the canonical class is importable.
-try:  # pragma: no cover - prefer the canonical error once wired
-    from lib.shared.errors import LinkedinApiError  # type: ignore[attr-defined]
-except ImportError:  # pragma: no cover
-    from lib.shared.errors import CompanyOSError
-
-    class LinkedinApiError(CompanyOSError):  # type: ignore[no-redef]
-        """Outbound LinkedIn REST call failure (people/recruiting source —
-        OAuth/Carta archetype). Stable `code` values mirror Carta:
-          - linkedin_api_unauthorized / linkedin_api_not_found /
-            linkedin_api_rate_limited / linkedin_api_error.
-        The access/refresh tokens are NEVER placed on context.
-        """
-
-        default_code = "linkedin_api_error"
-
-        def __init__(
-            self,
-            message: str,
-            *,
-            code: str | None = None,
-            context: dict[str, Any] | None = None,
-            **extra: Any,
-        ) -> None:
-            merged = dict(context or {})
-            merged.update(extra)
-            super().__init__(message, **merged)
-            if code is not None:
-                self._code = code
+from lib.shared.errors import LinkedinApiError
 
 
 log = structlog.get_logger("integrations.linkedin.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
+# Posts finder caps `count` at 100 (default 10); we default to the cap.
 _DEFAULT_PAGE_SIZE = 100
-_MINOR_VERSION = "1"
+_MAX_PAGE_SIZE = 100
+# Pinned versioned-API month (the latest GA moniker at pin time). Override per
+# env via LINKEDIN_VERSION when LinkedIn sunsets this version.
+_DEFAULT_LINKEDIN_VERSION = "202605"
+_RESTLI_PROTOCOL_VERSION = "2.0.0"
+
+
+def linkedin_version() -> str:
+    """The dated `LinkedIn-Version: YYYYMM` header value (env-overridable)."""
+    return os.environ.get("LINKEDIN_VERSION", _DEFAULT_LINKEDIN_VERSION)
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -95,11 +91,37 @@ def _parse_retry_after(value: str | None) -> float:
         return 1.0
 
 
-class LinkedinClient:
-    """Outbound LinkedIn client, one per backfill/poll shard open.
+def organization_id_of(organization_urn: str) -> str:
+    """The numeric organization id from `urn:li:organization:{id}` (a bare id
+    passes through unchanged — synthetic installs use opaque scope ids)."""
+    return organization_urn.rpartition(":")[2] or organization_urn
 
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_linkedin_client`
-    (added during the wiring phase).
+
+def _author_urn(organization_urn: str) -> str:
+    """The full author/organizationalEntity URN for the wire. Installs SHOULD
+    configure the full `urn:li:organization:{id}`; a bare id is up-converted."""
+    if organization_urn.startswith("urn:"):
+        return organization_urn
+    return f"urn:li:organization:{organization_urn}"
+
+
+def _time_intervals_param(
+    start_ms: int, end_ms: int | None, granularity: str,
+) -> str:
+    """Rest.li-2.0 `timeIntervals` value, encoded the way the documented sample
+    requests are: parens stay raw, inner colons/commas are percent-encoded —
+    `(timeRange%3A(start%3A...%2Cend%3A...)%2CtimeGranularityType%3ADAY)`."""
+    inner = f"start:{int(start_ms)}"
+    if end_ms is not None:
+        inner += f",end:{int(end_ms)}"
+    raw = f"(timeRange:({inner}),timeGranularityType:{granularity})"
+    return quote(raw, safe="()")
+
+
+class LinkedinClient:
+    """Outbound LinkedIn REST (Rest.li) client, one per backfill/poll shard open.
+
+    Built by `services/ingest/ingestion/fetchers/_clients.py::build_linkedin_client`.
     """
 
     def __init__(
@@ -122,8 +144,8 @@ class LinkedinClient:
         self._organization_urn = organization_urn
         self._access_token: str | None = access_token
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical LINKEDIN host; a spammer/test
-        # override (api_base_url) wins so backfill points at the mock.
+        # In production the base is https://api.linkedin.com/rest; a spammer/
+        # test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
@@ -173,9 +195,10 @@ class LinkedinClient:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            # TODO(human): confirm whether LinkedIn requires the versioned
-            # protocol headers (X-Restli-Protocol-Version: 2.0.0 and the dated
-            # LinkedIn-Version) on the entitled REST surface.
+            # BOTH headers are REQUIRED on every Community-Management call;
+            # missing/expired version → 400/426.
+            "LinkedIn-Version": linkedin_version(),
+            "X-Restli-Protocol-Version": _RESTLI_PROTOCOL_VERSION,
         }
         max_attempts = int(os.environ.get("LINKEDIN_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("LINKEDIN_RL_MAX_SLEEP_SEC", "30"))
@@ -220,62 +243,120 @@ class LinkedinClient:
             raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
-    # Public read surface
+    # Public read surface (Rest.li finders)
     # -----------------------------------------------------------------
 
-    async def query(
+    async def list_posts(
         self,
-        entity: str,
         *,
-        where: str | None = None,
-        order_by: str = "Metadata.LastUpdatedTime",
-        start_position: int = 1,
-        max_results: int = _DEFAULT_PAGE_SIZE,
+        start: int = 0,
+        count: int = _DEFAULT_PAGE_SIZE,
+        sort_by: str = "LAST_MODIFIED",
     ) -> tuple[list[dict[str, Any]], int | None]:
-        """Run a SELECT against one entity. Returns `(rows, next_start_position)`;
-        `next_start_position is None` is terminal.
+        """`GET /posts?q=author&author={org URN}` — one offset page of the
+        organization's posts. Returns `(elements, next_start)`;
+        `next_start is None` is terminal.
 
-        TODO(human): confirm LinkedIn's real list/pagination shape. This clones
-        the Carta/Gusto/QuickBooks query-language placeholder (`SELECT * FROM
-        <Entity> [WHERE ...] ORDERBY <f> STARTPOSITION n MAXRESULTS m`).
-        LinkedIn's real REST surface is page/cursor-based collections scoped by an
-        `organization` URN query param — shares/posts (`/rest/posts?q=author`),
-        organizationalEntityShareStatistics / socialActions, and
-        organizationFollowerStatistics — paginated via start/count or an opaque
-        page token. Replace `client.query(...)` + the WHERE filter with the
-        verified shape. `Metadata.LastUpdatedTime` is the incremental cursor field
-        placeholder.
+        Results are sorted DESC by `lastModifiedAt` (`sortBy=LAST_MODIFIED`,
+        the API default) — callers doing incremental sync early-stop once an
+        element's `lastModifiedAt` drops at/under their high-water. Scope:
+        `r_organization_social`. NOTE (per the Posts-API doc): a short page is
+        NOT always terminal — when more posts exist, `paging.links` carries a
+        `next` link, so termination is `elements empty, or short page with no
+        next link`.
         """
-        sql = f"SELECT * FROM {entity}"
-        if where:
-            sql += f" WHERE {where}"
-        sql += f" ORDERBY {order_by} STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        path = f"/v1/organizations/{quote(self._organization_urn, safe='')}/query"
-        params = {"query": sql, "minorversion": _MINOR_VERSION}
-        resp = await self._request("GET", path, params=params)
-        qr = resp.get("QueryResponse")
-        if not isinstance(qr, dict):
-            return [], None
-        rows = qr.get(entity)
-        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-        # LINKEDIN returns maxResults == page length; a short page is terminal.
-        returned = int(qr.get("maxResults", len(rows)) or 0)
-        next_start = start_position + len(rows)
-        is_last = returned < max_results or not rows
-        return rows, (None if is_last else next_start)
+        count = max(1, min(_MAX_PAGE_SIZE, int(count)))
+        params: dict[str, Any] = {
+            "q": "author",
+            "author": _author_urn(self._organization_urn),
+            "start": int(start),
+            "count": count,
+            "sortBy": sort_by,
+        }
+        resp = await self._request("GET", "/posts", params=params)
+        elements = resp.get("elements")
+        rows = (
+            [e for e in elements if isinstance(e, dict)]
+            if isinstance(elements, list) else []
+        )
+        paging = resp.get("paging") if isinstance(resp.get("paging"), dict) else {}
+        links = paging.get("links") if isinstance(paging.get("links"), list) else []
+        has_next = any(
+            isinstance(link, dict) and link.get("rel") == "next" for link in links
+        )
+        is_last = not rows or (len(rows) < count and not has_next)
+        return rows, (None if is_last else int(start) + len(rows))
 
-    async def org_info(self) -> dict[str, Any]:
-        """`GET /v1/organizations/{org}/orginfo/{org}` — connectivity probe.
-
-        TODO(human): confirm the real connectivity probe. LinkedIn's equivalent
-        is `GET /rest/organizations/{id}` (or `/v2/organizations/{id}`) for the
-        organization the token is entitled to; this clones the Carta firminfo
-        probe shape as a placeholder.
+    async def share_statistics(
+        self,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        granularity: str = "DAY",
+    ) -> list[dict[str, Any]]:
+        """`GET /organizationalEntityShareStatistics?q=organizationalEntity&…`
+        — the org's share statistics. With `start_ms`, time-bound buckets
+        (each element carries `timeRange` + `totalShareStatistics`); without,
+        the single lifetime aggregate. NOT paginated (per the doc). The API
+        only serves a rolling 12-month window. Scope: `rw_organization_admin`.
+        Granularity ∈ {DAY, MONTH}.
         """
-        org = quote(self._organization_urn, safe="")
-        path = f"/v1/organizations/{org}/orginfo/{org}"
+        return await self._organizational_entity_statistics(
+            "/organizationalEntityShareStatistics",
+            start_ms=start_ms, end_ms=end_ms, granularity=granularity,
+        )
+
+    async def follower_statistics(
+        self,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        granularity: str = "DAY",
+    ) -> list[dict[str, Any]]:
+        """`GET /organizationalEntityFollowerStatistics?q=organizationalEntity&…`
+        — with `start_ms`, time-bound buckets (each element carries `timeRange`
+        + `followerGains{organicFollowerGain, paidFollowerGain}`); without, the
+        lifetime facet breakdown. Time-bound data spans 12 months back until
+        ~2 days before now. Scope: `rw_organization_admin`. Granularity ∈
+        {DAY, WEEK, MONTH}.
+        """
+        return await self._organizational_entity_statistics(
+            "/organizationalEntityFollowerStatistics",
+            start_ms=start_ms, end_ms=end_ms, granularity=granularity,
+        )
+
+    async def _organizational_entity_statistics(
+        self,
+        resource_path: str,
+        *,
+        start_ms: int | None,
+        end_ms: int | None,
+        granularity: str,
+    ) -> list[dict[str, Any]]:
+        # The query string is built by hand: the Rest.li-2.0 `timeIntervals`
+        # value must keep its parens raw, which httpx params= would escape.
+        query = (
+            "q=organizationalEntity&organizationalEntity="
+            + quote(_author_urn(self._organization_urn), safe="")
+        )
+        if start_ms is not None:
+            query += "&timeIntervals=" + _time_intervals_param(
+                start_ms, end_ms, granularity,
+            )
+        resp = await self._request("GET", f"{resource_path}?{query}")
+        elements = resp.get("elements")
+        if not isinstance(elements, list):
+            return []
+        return [e for e in elements if isinstance(e, dict)]
+
+    async def get_organization(self) -> dict[str, Any]:
+        """`GET /organizations/{numeric id}` — connectivity/entitlement probe
+        for the organization the token administers (403 without the
+        ADMINISTRATOR page role). Returns the organization object
+        (`id`, `localizedName`, `vanityName`, …)."""
+        org_id = organization_id_of(self._organization_urn)
         return await self._request(
-            "GET", path, params={"minorversion": _MINOR_VERSION},
+            "GET", f"/organizations/{quote(org_id, safe='')}",
         )
 
 
@@ -297,7 +378,7 @@ def _api_error_from_response(
     if status in (401, 403):
         return LinkedinApiError(
             f"linkedin {status}: access token rejected or insufficient scope "
-            "(may need refresh, or the partner entitlement is missing)",
+            "(may need refresh, or the partner entitlement / page role is missing)",
             code="linkedin_api_unauthorized",
             context={"http_status": status, "path": path},
         )
@@ -324,11 +405,18 @@ def _api_error_from_response(
     )
 
 
-# The people/recruiting entity kinds we shard on. LinkedIn organization data is
-# entity-shaped (NOT transactional), so the entity_kind discriminates the
-# external_id. Per the cross-agent CONTRACT the entity types are:
-#   share | social_action | follower_stat
-DEFAULT_ENTITIES = ("share", "social_action", "follower_stat")
+# The organization streams we shard on, keyed to the real Community-Management
+# read surface. The entity_kind discriminates the external_id:
+#   post                — /rest/posts?q=author (org posts, epoch-millis stamps)
+#   share_statistics    — /rest/organizationalEntityShareStatistics (time-bound)
+#   follower_statistics — /rest/organizationalEntityFollowerStatistics (time-bound)
+DEFAULT_ENTITIES = ("post", "share_statistics", "follower_statistics")
 
 
-__all__ = ["LinkedinClient", "LinkedinApiError", "DEFAULT_ENTITIES"]
+__all__ = [
+    "LinkedinClient",
+    "LinkedinApiError",
+    "DEFAULT_ENTITIES",
+    "linkedin_version",
+    "organization_id_of",
+]

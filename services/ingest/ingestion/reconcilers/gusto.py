@@ -1,14 +1,20 @@
-"""services/ingest/ingestion/reconcilers/gusto.py — gap detection (finance).
+"""services/ingest/ingestion/reconcilers/gusto.py — gap detection (finance/payroll).
 
-After an entity shard completes, its cursor carries `high_water_updated` — the
-max Metadata.LastUpdatedTime the fetcher walked. The reconciler probes the LIVE
-company for any entity of that type updated after the high-water; if one exists, a
-reshare is emitted for that entity type, warm-started at the high-water
+After a `payroll` shard completes, its cursor carries `high_water` — the max
+`check_date` the fetcher walked. The reconciler probes the LIVE company for any
+payroll with a check_date strictly after the high-water (one cheap
+`start_date=<hw>&date_filter_by=check_date` page, filtered strictly-greater
+client-side because the server-side date filter is day-granular and inclusive);
+if one exists, a reshare is emitted warm-started at the high-water
 (incremental mode).
 
-`external_id` parity (versioned by SyncToken) means re-walked entities dedup
-against what backfill already wrote — only genuinely new/changed entities produce
-new observations. Pragmatic v1: one cheap 1-row query per entity type; it can
+`employee` shards have no updated-since semantics (the endpoint is a full
+re-walk each poll cycle, deduped by the version-discriminated external_id), so
+they are skipped here — the periodic re-walk IS their reconciliation.
+
+`external_id` parity (versioned by employee `version` / payroll processed
+state) means re-walked rows dedup against what backfill already wrote — only
+genuinely new/changed rows produce new observations. Pragmatic v1: it can
 over-reshare but never under-reshares, and dedup makes re-walks idempotent.
 """
 from __future__ import annotations
@@ -71,7 +77,7 @@ async def _load_shard_high_water(pool: Any, shard_id: Any) -> str | None:
         return None
     cursor = state.state_data.get("cursor")
     if isinstance(cursor, dict):
-        hw = cursor.get("high_water_updated")
+        hw = cursor.get("high_water")
         return hw if isinstance(hw, str) else None
     return None
 
@@ -82,8 +88,9 @@ async def _check_one_shard_for_gap(
     identifier = _decode_identifier(shard["shard_identifier"])
     if identifier.get("shard_kind") != SHARD_KIND_ENTITY:
         return None
-    entity_type = identifier.get("entity_type")
-    if not entity_type:
+    # Only payroll shards carry a date high-water (employee shards full
+    # re-walk every poll cycle — nothing to gap-check against).
+    if identifier.get("entity_type") != "payroll":
         return None
 
     high_water = await _load_shard_high_water(pool, shard["id"])
@@ -91,11 +98,12 @@ async def _check_one_shard_for_gap(
         return None
 
     try:
-        rows, _ = await client.query(
-            entity_type,
-            where=f"Metadata.LastUpdatedTime > '{high_water}'",
-            start_position=1,
-            max_results=1,
+        rows, _ = await client.list_payrolls(
+            page=1,
+            per=100,
+            start_date=high_water,
+            date_filter_by="check_date",
+            payroll_types=("regular", "off_cycle"),
         )
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
@@ -104,7 +112,14 @@ async def _check_one_shard_for_gap(
         )
         return None
 
-    if not rows:
+    # The server date filter is inclusive at day granularity; only a payroll
+    # with a check_date strictly past the high-water is a genuine gap.
+    fresh = [
+        r for r in rows
+        if isinstance(r.get("check_date"), str)
+        and r["check_date"] > high_water
+    ]
+    if not fresh:
         return None
 
     gap_identifier = dict(identifier)

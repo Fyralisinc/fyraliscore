@@ -945,19 +945,20 @@ class AwsApiError(CompanyOSError):
 
 class CartaApiError(CompanyOSError):
     """
-    Outbound Carta REST call failure (cap-table source — OAuth/QuickBooks
-    archetype). Carta uses an OAuth2 access token (+ rotating refresh token);
-    scope id is `firm_id`. Mirrors QuickBooksApiError. Poll-only (no webhook).
+    Outbound Carta REST call failure (cap-table source — issuer `/v1alpha1`
+    REST suite). Carta uses an OAuth2 access token (~1 h; NO refresh grant —
+    re-minted via client_credentials); scope id is the issuer id (stored in
+    `carta_installations.firm_id`). Poll-only (no webhook).
 
     Stable `code` values:
       - carta_api_unauthorized: 401/403 — access token expired / no scope
-        (the caller may need to refresh via the rotating refresh token)
-      - carta_api_not_found: 404 — entity/firm not visible
+        (the client retries once after a client_credentials re-mint)
+      - carta_api_not_found: 404 — issuer/collection not visible
       - carta_api_rate_limited: 429 with retry budget exhausted
       - carta_api_error: other terminal 4xx/5xx
 
-    `context` carries `{http_status?, retry_after?, path?}`. The access/refresh
-    tokens are NEVER placed on context.
+    `context` carries `{http_status?, retry_after?, path?}`. The access token
+    and client-credentials secret are NEVER placed on context.
     """
     default_code = "carta_api_error"
 
@@ -1044,10 +1045,11 @@ class AshbyApiError(CompanyOSError):
 
 class LinkedinApiError(CompanyOSError):
     """
-    Outbound LinkedIn (Recruiting) REST call failure (IN-PEOPLE, Carta-structure
-    archetype). LinkedIn uses OAuth2; the organization-scoped recruitment APIs are
-    PARTNER-GATED (invite-only). Poll-only live edge (no webhook). Mirrors
-    CartaApiError.
+    Outbound LinkedIn (Community Management) REST call failure (IN-PEOPLE,
+    Carta-structure archetype). LinkedIn uses OAuth2 Bearer tokens; the
+    organization read surface (Rest.li finders under
+    https://api.linkedin.com/rest) is PARTNER-GATED (approval-only tiers).
+    Poll-only live edge (no webhook). Mirrors CartaApiError.
 
     Stable `code` values:
       - linkedin_api_unauthorized: 401/403 — access token expired / no scope /

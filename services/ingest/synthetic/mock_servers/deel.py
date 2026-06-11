@@ -1,33 +1,4 @@
-"""services/ingest/synthetic/mock_servers/deel.py — local Deel REST mock.
-
-A real, threaded HTTP server that mimics the Deel v1 endpoints the ingestion
-path touches, so a sandbox can drive the REAL DeelClient + fetcher +
-reconciler against it with no Deel credentials:
-
-  GET /contracts
-      All contracts visible to the token (seed-time enumeration).
-  GET /contract/{id}
-      One contract (the fetcher's state-snapshot probe).
-  GET /contract/{id}/payments?limit&offset&start
-      Paginated payments. Two modes:
-        - full  (no `start`)              -> all payments for the contract.
-        - incremental (`start=<date>`)    -> the contract's delta payments.
-
-Fixtures: {contract_id: {"contract": {...}, "payments": [...], "delta": [...]}}
-where each payment is a raw Deel payment object. The mock does not
-synthesize them so the sandbox controls exactly what lands.
-
-The client is pointed here via the spammer single-host base
-(`SYNTHETIC_SOURCE_API_BASE=<base>` -> `<base>/deel`); the handler matches on
-the `/contracts` / `/contract/...` path SUFFIX so the prefix doesn't matter.
-
-Usage:
-    server, base_url = start_mock_deel(fixtures)
-    try:
-        ...  # base_url -> SYNTHETIC_SOURCE_API_BASE
-    finally:
-        server.shutdown()
-"""
+"""Local Deel REST v2 mock for running the real DeelClient in sandboxes."""
 from __future__ import annotations
 
 import json
@@ -40,13 +11,12 @@ from urllib.parse import parse_qs, urlparse
 
 DeelFixtures = dict[str, dict[str, Any]]
 
-_CONTRACT_PAYMENTS_RE = re.compile(r"/contract/([^/]+)/payments$")
-_CONTRACT_RE = re.compile(r"/contract/([^/]+)$")
+_CONTRACT_RE = re.compile(r"/contracts/([^/]+)$")
 
 
 def _make_handler(fixtures: DeelFixtures, hits: dict[str, int]):
     class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # noqa: D401
+        def log_message(self, *args: Any) -> None:
             return
 
         def _json(self, status: int, body: Any) -> None:
@@ -62,17 +32,9 @@ def _make_handler(fixtures: DeelFixtures, hits: dict[str, int]):
             path = parsed.path
             params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
 
-            m = _CONTRACT_PAYMENTS_RE.search(path)
-            if m:
-                self._handle_payments(m.group(1), params)
-                return
             if path.endswith("/contracts"):
                 hits["contracts"] = hits.get("contracts", 0) + 1
-                contracts = [
-                    fx.get("contract", {"id": cid})
-                    for cid, fx in fixtures.items()
-                ]
-                self._json(200, {"contracts": contracts, "total": len(contracts)})
+                self._json(200, _page(_contracts(), params))
                 return
             m = _CONTRACT_RE.search(path)
             if m:
@@ -82,41 +44,68 @@ def _make_handler(fixtures: DeelFixtures, hits: dict[str, int]):
                 if fx is None:
                     self._json(404, {"error": f"no contract {cid}"})
                     return
-                self._json(200, fx.get("contract", {"id": cid}))
+                self._json(200, {"data": fx.get("contract", {"id": cid})})
+                return
+            if path.endswith("/invoices"):
+                hits["invoices"] = hits.get("invoices", 0) + 1
+                self._json(200, _page(_invoices(params), params))
                 return
             self._json(404, {"error": f"no GET route {path}"})
 
-        def _handle_payments(self, contract_id: str, params: dict[str, str]) -> None:
-            hits[f"payments:{contract_id}"] = hits.get(f"payments:{contract_id}", 0) + 1
-            fx = fixtures.get(contract_id)
-            if fx is None:
-                self._json(200, {"payments": [], "total": 0})
-                return
-            incremental = bool(params.get("start"))
-            pool = list(fx.get("delta", [])) if incremental else list(fx.get("payments", []))
-            try:
-                limit = int(params.get("limit", "100") or "100")
-            except ValueError:
-                limit = 100
-            try:
-                offset = int(params.get("offset", "0") or "0")
-            except ValueError:
-                offset = 0
-            page = pool[offset:offset + limit]
-            self._json(200, {"payments": page, "total": len(pool)})
+    def _contracts() -> list[dict[str, Any]]:
+        return [
+            dict(fx.get("contract", {"id": cid}))
+            for cid, fx in fixtures.items()
+        ]
+
+    def _invoices(params: dict[str, str]) -> list[dict[str, Any]]:
+        contract_id = params.get("contract_id")
+        floor = params.get("created_after")
+        out: list[dict[str, Any]] = []
+        for cid, fx in fixtures.items():
+            if contract_id and contract_id != cid:
+                continue
+            source_key = "delta" if floor and isinstance(fx.get("delta"), list) else "payments"
+            for payment in fx.get(source_key, []):
+                if not isinstance(payment, dict):
+                    continue
+                row = dict(payment)
+                row.setdefault("contract_id", cid)
+                if floor and _invoice_date(row) < floor[:10]:
+                    continue
+                out.append(row)
+        return out
 
     return _Handler
+
+
+def _page(items: list[dict[str, Any]], params: dict[str, str]) -> dict[str, Any]:
+    try:
+        limit = int(params.get("limit", "100") or "100")
+    except ValueError:
+        limit = 100
+    try:
+        offset = int(params.get("offset", "0") or "0")
+    except ValueError:
+        offset = 0
+    page = items[offset:offset + limit]
+    return {"data": page, "page": {"cursor": None, "total_rows": len(items)}}
+
+
+def _invoice_date(invoice: dict[str, Any]) -> str:
+    value = (
+        invoice.get("createdAt")
+        or invoice.get("created_at")
+        or invoice.get("issued_at")
+        or invoice.get("invoice_date")
+        or ""
+    )
+    return value[:10] if isinstance(value, str) else ""
 
 
 def start_mock_deel(
     fixtures: DeelFixtures, *, host: str = "127.0.0.1", port: int = 0,
 ) -> tuple[ThreadingHTTPServer, str]:
-    """Start the mock on a background daemon thread.
-
-    Returns `(server, base_url)`. Point the client at `base_url` via
-    `SYNTHETIC_SOURCE_API_BASE` (spammer mode, served under `/deel`). Call
-    `server.shutdown()` to stop.
-    """
     hits: dict[str, int] = {}
     handler = _make_handler(fixtures, hits)
     server = ThreadingHTTPServer((host, port), handler)

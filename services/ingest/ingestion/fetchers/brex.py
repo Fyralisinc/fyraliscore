@@ -121,6 +121,16 @@ def _bump_high_water(cur: BrexCursor, created: Any) -> None:
         cur.high_water_created = created
 
 
+def _txn_high_water(txn: dict[str, Any]) -> Any:
+    return (
+        txn.get("createdAt")
+        or txn.get("created_at")
+        or txn.get("postedAt")
+        or txn.get("posted_at")
+        or txn.get("initiated_at")
+    )
+
+
 async def fetch_page_brex(
     install: asyncpg.Record,
     shard_identifier: dict[str, Any],
@@ -130,6 +140,7 @@ async def fetch_page_brex(
     account_id = shard_identifier.get("account_id")
     if not isinstance(account_id, str) or not account_id:
         return FetchResult(records=[], next_cursor=cursor, end_of_data=True)
+    account_kind = shard_identifier.get("account_kind")
 
     cur = _decode_cursor(cursor)
     records: list[dict[str, Any]] = []
@@ -163,6 +174,7 @@ async def fetch_page_brex(
                 limit=_page_size(),
                 offset=cur.offset,
                 start=_iso_date(cur.incremental_floor),
+                account_kind=account_kind if isinstance(account_kind, str) else None,
             )
         except BrexApiError as exc:
             if (exc.context or {}).get("code") == "brex_api_rate_limited" or \
@@ -181,7 +193,7 @@ async def fetch_page_brex(
                 "_fyralis_account_id": account_id,
                 "transaction": txn,
             })
-            _bump_high_water(cur, txn.get("createdAt") or txn.get("postedAt"))
+            _bump_high_water(cur, _txn_high_water(txn))
 
         cur.txns_seen += len(txns)
         is_last = next_offset is None

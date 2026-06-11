@@ -1,56 +1,19 @@
-"""services/ingest/synthetic/mock_servers/fireflies.py — local Fireflies REST mock.
-
-A real, threaded HTTP server that mimics the Fireflies endpoints the ingestion
-path touches, so a sandbox can drive the REAL FirefliesClient + fetcher +
-reconciler against it with no Fireflies credentials:
-
-  GET /workspace
-      The workspace the token is scoped to (seed-time probe).
-  GET /transcript/{id}
-      One transcript (hydrate probe).
-  GET /transcripts?limit&offset&start
-      Paginated transcripts. Two modes:
-        - full  (no `start`)              -> all transcripts for the workspace.
-        - incremental (`start=<date>`)    -> the workspace's delta transcripts.
-
-Fixtures: {"workspace": {...}, "transcripts": [...], "delta": [...]} where each
-transcript is a raw Fireflies transcript object. The mock does not synthesize
-them so the sandbox controls exactly what lands.
-
-The client is pointed here via the spammer single-host base
-(`SYNTHETIC_SOURCE_API_BASE=<base>` -> `<base>/fireflies`); the handler matches
-on the `/workspace` / `/transcripts` / `/transcript/...` path SUFFIX so the
-prefix doesn't matter.
-
-Usage:
-    server, base_url = start_mock_fireflies(fixtures)
-    try:
-        ...  # base_url -> SYNTHETIC_SOURCE_API_BASE
-    finally:
-        server.shutdown()
-"""
+"""Local Fireflies GraphQL mock for running the real FirefliesClient."""
 from __future__ import annotations
 
 import json
-import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 
 FirefliesFixtures = dict[str, Any]
 
-_TRANSCRIPT_RE = re.compile(r"/transcript/([^/]+)$")
-
-
-def _transcript_id(t: dict[str, Any]) -> str:
-    return str(t.get("id") or t.get("transcript_id") or t.get("transcriptId") or "")
-
 
 def _make_handler(fixtures: FirefliesFixtures, hits: dict[str, int]):
     class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # noqa: D401
+        def log_message(self, *args: Any) -> None:
             return
 
         def _json(self, status: int, body: Any) -> None:
@@ -61,57 +24,85 @@ def _make_handler(fixtures: FirefliesFixtures, hits: dict[str, int]):
             self.end_headers()
             self.wfile.write(payload)
 
-        def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
-            params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-
-            if path.endswith("/transcripts"):
-                self._handle_transcripts(params)
+        def do_POST(self) -> None:  # noqa: N802
+            path = urlparse(self.path).path
+            if not path.endswith("/graphql"):
+                self._json(404, {"error": f"no POST route {path}"})
                 return
-            if path.endswith("/workspace"):
-                hits["workspace"] = hits.get("workspace", 0) + 1
-                self._json(200, fixtures.get("workspace", {"id": "ws-mock"}))
-                return
-            m = _TRANSCRIPT_RE.search(path)
-            if m:
-                tid = m.group(1)
-                hits[f"transcript:{tid}"] = hits.get(f"transcript:{tid}", 0) + 1
-                for t in fixtures.get("transcripts", []):
-                    if _transcript_id(t) == tid:
-                        self._json(200, t)
-                        return
-                self._json(404, {"error": f"no transcript {tid}"})
-                return
-            self._json(404, {"error": f"no GET route {path}"})
-
-        def _handle_transcripts(self, params: dict[str, str]) -> None:
-            hits["transcripts"] = hits.get("transcripts", 0) + 1
-            incremental = bool(params.get("start"))
-            pool = list(fixtures.get("delta", [])) if incremental else list(fixtures.get("transcripts", []))
+            hits["graphql"] = hits.get("graphql", 0) + 1
             try:
-                limit = int(params.get("limit", "50") or "50")
-            except ValueError:
-                limit = 50
-            try:
-                offset = int(params.get("offset", "0") or "0")
-            except ValueError:
-                offset = 0
-            page = pool[offset:offset + limit]
-            self._json(200, {"transcripts": page, "total": len(pool)})
+                size = int(self.headers.get("Content-Length", "0") or "0")
+                body = json.loads(self.rfile.read(size) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"errors": [{"message": "invalid json"}]})
+                return
+            query = str(body.get("query") or "")
+            variables = body.get("variables") if isinstance(body.get("variables"), dict) else {}
+            if "user" in query and "transcripts" not in query and "transcript(" not in query:
+                self._json(200, {"data": {"user": _user()}})
+                return
+            if "transcript(" in query:
+                self._json(200, {"data": {"transcript": _transcript(str(variables.get("id") or ""))}})
+                return
+            if "transcripts" in query:
+                self._json(200, {"data": {"transcripts": _transcripts(variables)}})
+                return
+            self._json(200, {"data": {}})
+
+    def _user() -> dict[str, Any]:
+        workspace = fixtures.get("workspace")
+        if isinstance(workspace, dict):
+            return {
+                "id": workspace.get("id") or workspace.get("workspace_id") or fixtures.get("workspace_id") or "ws-mock",
+                "email": workspace.get("email") or "mock-fireflies@example.com",
+                "name": workspace.get("name") or workspace.get("workspace_name") or "Synthetic Workspace",
+            }
+        return {
+            "id": fixtures.get("workspace_id") or "ws-mock",
+            "email": "mock-fireflies@example.com",
+            "name": fixtures.get("workspace_name") or "Synthetic Workspace",
+        }
+
+    def _transcript(transcript_id: str) -> dict[str, Any] | None:
+        for item in fixtures.get("transcripts", []):
+            if isinstance(item, dict) and _transcript_id(item) == transcript_id:
+                return item
+        return None
+
+    def _transcripts(variables: dict[str, Any]) -> list[dict[str, Any]]:
+        floor = variables.get("fromDate")
+        source_key = "delta" if isinstance(floor, str) and floor and isinstance(fixtures.get("delta"), list) else "transcripts"
+        items = [t for t in fixtures.get(source_key, []) if isinstance(t, dict)]
+        if isinstance(floor, str) and floor:
+            items = [t for t in items if _transcript_date(t) >= floor[:10]]
+        try:
+            skip = int(variables.get("skip") or 0)
+        except (TypeError, ValueError):
+            skip = 0
+        try:
+            limit = int(variables.get("limit") or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        return items[skip:skip + limit]
 
     return _Handler
+
+
+def _transcript_id(item: dict[str, Any]) -> str:
+    return str(item.get("id") or item.get("transcript_id") or item.get("transcriptId") or "")
+
+
+def _transcript_date(item: dict[str, Any]) -> str:
+    value = item.get("dateTime") or item.get("date") or item.get("createdAt") or ""
+    if isinstance(value, (int, float)):
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).date().isoformat()
+    return value[:10] if isinstance(value, str) else ""
 
 
 def start_mock_fireflies(
     fixtures: FirefliesFixtures, *, host: str = "127.0.0.1", port: int = 0,
 ) -> tuple[ThreadingHTTPServer, str]:
-    """Start the mock on a background daemon thread.
-
-    Returns `(server, base_url)`. Point the client at `base_url` via
-    `SYNTHETIC_SOURCE_API_BASE` (spammer mode, served under `/fireflies`). Call
-    `server.shutdown()` to stop.
-    """
     hits: dict[str, int] = {}
     handler = _make_handler(fixtures, hits)
     server = ThreadingHTTPServer((host, port), handler)

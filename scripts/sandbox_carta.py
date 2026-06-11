@@ -2,22 +2,25 @@
 """scripts/sandbox_carta.py — local end-to-end sandbox for Carta ingestion
 (cap-table), with NO real Carta credentials.
 
-Carta is a cap-table REST API (OAuth 2.0, firm-scoped) with a list/query surface
-and a POLL-ONLY live edge (NO webhook). This sandbox stands up a REAL local mock
-of the CARTA v1 query endpoint and drives the REAL pipeline:
+Carta's API Platform is an **issuer** cap-table REST suite under `/v1alpha1`
+(OAuth 2.0 access token, ~1 h, no refresh grant) with AIP-158 pageToken list
+pagination and a POLL-ONLY live edge (NO webhook). This sandbox stands up a
+REAL local mock of that wire contract (`mock_servers/carta.py`) and drives the
+REAL pipeline:
 
-    CartaClient (real httpx, spammer auth) -> fetch_page_carta (real cursor +
-    query) -> handle_carta_object (real ObservationDraft) -> ingest() (real
-    observation insert + dedup)
+    CartaClient (real httpx, spammer auth) -> fetch_page_carta (real pageToken
+    cursor) -> handle_carta_object (real ObservationDraft, wrapper decoding) ->
+    ingest() (real observation insert + dedup)
 
-It exercises: entity enumeration (install), per-entity backfill, the incremental
-LastUpdatedTime delta (an option grant exercised -> state_change), the live-poll
-path (handle_polled_change), cross-path dedup, and the reconciler gap probe.
+It exercises: issuer enumeration (install), per-entity backfill across the four
+`/v1alpha1` collections, the optionGrants `lastModifiedDatetimeAfter` delta (a
+grant exercised -> state_change), the live-poll path (handle_polled_change),
+cross-path content-digest dedup, and the reconciler gap probe.
 
 Because `_clients.py` / `source_onboarding.py` are SHARED files owned by the
 wiring phase, this sandbox is SELF-CONTAINED: it rebinds the fetcher's
 `_open_carta_client` seam to a real CartaClient pointed at the mock, and loads
-the install row with an inline SQL clone of the (future) _LOAD_CARTA_INSTALL_SQL.
+the install row with an inline SQL clone of the loader SQL.
 
 Database: DATABASE_URL if set, else a throwaway DB on SANDBOX_ADMIN_URL
 (postgresql://company_os:company_os@localhost:5434/company_os), dropped on exit.
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import os
 import pathlib
 import sys
@@ -48,9 +52,11 @@ import asyncpg
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000006501")
 _BASE_URL = "https://api.carta.com"
-_FIRM = "firm_9341452000000001"
+# The Carta issuer id (stored in carta_installations.firm_id — the column
+# predates the issuer naming).
+_FIRM = "f6e1d4a0-0000-4000-8000-00000000ca01"
 
-# Inline clone of the (future) _LOAD_CARTA_INSTALL_SQL loader — aggregates the
+# Inline clone of the _LOAD_CARTA_INSTALL_SQL loader — aggregates the
 # active entity list onto the install so the planner stays stateless.
 _LOAD_CARTA_INSTALL_SQL = """
 SELECT ci.id, ci.tenant_id, ci.firm_id, ci.base_url, ci.secret_ref,
@@ -85,69 +91,63 @@ def _check(label: str, ok: bool) -> None:
     print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
 
 
-def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S-08:00")
+def _iso_z(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _dec(value) -> dict:
+    """v1alpha1Decimal / date / datetime wrapper."""
+    return {"value": str(value)}
+
+
+def _money(amount, currency: str = "USD") -> dict:
+    """v1alpha1Money."""
+    return {"currencyCode": _dec(currency), "amount": _dec(amount)}
 
 
 def _build_fixtures() -> dict:
+    """A make_carta-shaped fixture: one issuer, one row per /v1alpha1
+    collection, REAL wrapper-shaped fields. The mock server reads this dict
+    LIVE, so mutating a row simulates a poll-window change."""
     now = datetime.now(timezone.utc)
-
-    def grant(gid, sync, qty, strike, status, holder, updated):
-        return {
-            "Id": gid, "SyncToken": str(sync), "DocNumber": f"OG-{gid}",
-            "Status": status, "Quantity": qty, "StrikePrice": strike,
-            "StakeholderRef": {"value": "1", "name": holder},
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
-    def shareholder(sid, sync, shares, holder, updated):
-        return {
-            "Id": sid, "SyncToken": str(sync), "DocNumber": f"SH-{sid}",
-            "Status": "active", "ShareCount": shares,
-            "StakeholderRef": {"value": "2", "name": holder},
-            "ShareClassRef": {"value": "1", "name": "Common"},
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
-    def safe(fid, sync, amount, cap, updated):
-        return {
-            "Id": fid, "SyncToken": str(sync), "DocNumber": f"SAFE-{fid}",
-            "Status": "outstanding", "InvestmentAmount": amount,
-            "ValuationCap": cap, "DiscountRate": 0.2,
-            "StakeholderRef": {"value": "3", "name": "Seed Fund"},
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
-    def share_class(cid, sync, pps, updated):
-        return {
-            "Id": cid, "SyncToken": str(sync), "DocNumber": f"SC-{cid}",
-            "Status": "active", "ShareCount": 10_000_000, "PricePerShare": pps,
-            "MetaData": {"LastUpdatedTime": updated},
-        }
-
     return {
-        "Shareholder": {
-            "rows": [shareholder("2001", 0, 50000, "Founder",
-                                 _iso(now - timedelta(days=3)))],
-            "delta": [],
-        },
-        "ShareClass": {
-            "rows": [share_class("3001", 0, 1.50,
-                                 _iso(now - timedelta(days=3)))],
-            "delta": [],
-        },
-        "SafeNote": {
-            "rows": [safe("4001", 0, 250000.00, 8000000.00,
-                          _iso(now - timedelta(days=2)))],
-            "delta": [],
-        },
-        "OptionGrant": {
-            "rows": [grant("5001", 0, 1000, 0.25, "active", "Employee-1",
-                           _iso(now - timedelta(days=2)))],
-            # Incremental: grant 5001 gets EXERCISED (Status flips, SyncToken
-            # bumps) — a cap-table state_change.
-            "delta": [grant("5001", 1, 1000, 0.25, "exercised", "Employee-1",
-                            _iso(now - timedelta(hours=1)))],
+        "firm_id": _FIRM,
+        "page_size": 50,
+        "issuer": {"id": _FIRM, "legalName": "Sandbox Issuer Inc."},
+        "entities": {
+            "stakeholder": [{
+                "id": "2001", "issuerId": _FIRM,
+                "fullName": "Founder One",
+                "email": "founder@sandbox.example",
+                "employeeId": "EMP-2001",
+                "relationship": "FOUNDER", "entityType": "INDIVIDUAL",
+            }],
+            "shareClass": [{
+                "id": "3001", "issuerId": _FIRM, "name": "Common",
+                "prefix": "CS", "type": "COMMON",
+                "authorizedShareCount": _dec(10_000_000),
+                "parValue": _money("0.0001"),
+                "seniority": 1, "pariPassu": False,
+            }],
+            "convertibleNote": [{
+                "id": "4001", "issuerId": _FIRM, "securityLabel": "CN-4001",
+                "stakeholderId": "3",
+                "cashPaid": _money("250000.00"),
+                "priceCap": _money("8000000.00"),
+                "discountPercentage": _dec("20"), "interestRate": _dec("5"),
+                "issueDatetime": _dec(_iso_z(now - timedelta(days=200))),
+                "maturityDatetime": _dec(_iso_z(now + timedelta(days=530))),
+            }],
+            "optionGrant": [{
+                "id": "5001", "issuerId": _FIRM, "securityLabel": "OG-5001",
+                "stakeholderId": "1", "shareClassId": "1",
+                "stockOptionType": "ISO",
+                "quantity": _dec(1000), "outstandingQuantity": _dec(1000),
+                "vestedQuantity": _dec(250), "exercisedQuantity": _dec(0),
+                "exercisePrice": _money("0.25"),
+                "issueDate": _dec((now - timedelta(days=400)).date().isoformat()),
+                "lastModifiedDatetime": _dec(_iso_z(now - timedelta(days=2))),
+            }],
         },
     }
 
@@ -177,7 +177,7 @@ def _make_real_client(base_url: str):
     """Build a REAL CartaClient pointed at the mock (spammer auth, no secrets)."""
     from services.ingest.integrations.carta.client import CartaClient
     return CartaClient(
-        base_url=base_url, firm_id=_FIRM, access_token="spam-carta",
+        base_url=base_url, issuer_id=_FIRM, access_token="spam-carta",
         api_base_url=base_url,
     )
 
@@ -259,11 +259,26 @@ async def run(args) -> int:
         )
         print("  Migrations applied, partitions ensured, tenant seeded.")
 
-        # 2. Connectivity probe via the REAL client.
-        _hr("PROBE (CartaClient.firm_info)")
+        # 2. Connectivity probe + issuer enumeration via the REAL client.
+        _hr("PROBE (CartaClient.probe / list_issuers)")
         client = _make_real_client(base_url)
-        info = await client.firm_info()
-        _check("firm_info probe succeeds", "FirmInfo" in info)
+        body = await client.probe()
+        _check("probe (GET /v1alpha1/issuers?pageSize=1) succeeds",
+               bool(body.get("issuers")))
+        issuers, _tok = await client.list_issuers()
+        _check("issuer enumeration sees the sandbox issuer",
+               len(issuers) == 1 and issuers[0].get("id") == _FIRM)
+
+        # 2b. OAuth client_credentials mint endpoint (the re-mint edge).
+        import httpx
+        async with httpx.AsyncClient() as http:
+            tok = await http.post(f"{base_url}/o/access_token/", data={
+                "grant_type": "client_credentials", "scope": "read_issuer_info",
+            })
+        _check("POST /o/access_token/ mints an access token (no refresh_token)",
+               tok.status_code == 200
+               and tok.json().get("access_token")
+               and "refresh_token" not in tok.json())
 
         # 3. Provision the install (poll-only — NO webhook registration).
         _hr("PROVISION (carta.onboarding.finalize_install)")
@@ -296,7 +311,7 @@ async def run(args) -> int:
         _check("one shard per entity type", len(shards) == len(DEFAULT_ENTITIES))
 
         # 5. Backfill — 4 entity kinds x 1 row = 4 observations.
-        _hr("BACKFILL (query -> ingest)")
+        _hr("BACKFILL (AIP pageToken walk -> ingest)")
         for shard in shards:
             ext = await _drain_shard(pool, install_row, shard.shard_identifier)
             print(f"  {shard.shard_identifier['entity_type']}: ingested {len(ext)} observations")
@@ -309,13 +324,23 @@ async def run(args) -> int:
         print(f"  observations: total={counts['tot']} signal={counts['sig']} state_change={counts['sc']}")
         _check("backfill produced 4 observations", counts["tot"] == 4)
 
-        # 6. Incremental: option grant 5001 exercised (Status flips, SyncToken bumps).
+        # 6. Incremental: grant 5001 gets EXERCISED in the poll window. The mock
+        #    serves the fixtures dict LIVE, so mutating the row in place is the
+        #    delta; lastModifiedDatetimeAfter (optionGrants only) picks it up
+        #    and the content-digest version re-observes the mutation.
         _hr("INCREMENTAL (option grant exercised: cap-table state_change)")
         hw = await pool.fetchval(
-            "SELECT max(content->>'last_updated') FROM observations "
+            "SELECT max(content->>'last_modified') FROM observations "
             "WHERE tenant_id=$1 AND content->>'object_type'='option_grant'", _TENANT_ID,
         )
-        incr_shard = {"shard_kind": "carta_entity", "entity_type": "OptionGrant",
+        orig_grant = copy.deepcopy(fixtures["entities"]["optionGrant"][0])
+        grant = fixtures["entities"]["optionGrant"][0]
+        grant["exercisedQuantity"] = _dec(1000)
+        grant["outstandingQuantity"] = _dec(0)
+        grant["lastModifiedDatetime"] = _dec(
+            _iso_z(datetime.now(timezone.utc) - timedelta(hours=1)),
+        )
+        incr_shard = {"shard_kind": "carta_entity", "entity_type": "optionGrant",
                       "firm_id": _FIRM, "updated_cursor": hw}
         incr = await _drain_shard(pool, install_row, incr_shard)
         print(f"  incremental ingested {len(incr)} new observations: {incr}")
@@ -323,15 +348,16 @@ async def run(args) -> int:
             "SELECT count(*) FROM observations WHERE tenant_id=$1 "
             "AND content->>'status'='exercised'", _TENANT_ID,
         )
-        _check("incremental delta surfaced an exercised grant (new SyncToken)", exercised == 1)
+        _check("incremental delta surfaced an exercised grant (new digest version)",
+               exercised == 1)
 
-        # 7. Dedup: re-ingest a backfilled grant twin -> deduped.
+        # 7. Dedup: re-ingest the ORIGINAL (pre-mutation) grant twin -> deduped.
         _hr("DEDUP (backfill vs re-fetch twin)")
         from services.ingest.ingestion.core import ingest
         twin = {"_fyralis_record_type": "optiongrant", "_fyralis_firm_id": _FIRM,
-                "entity": fixtures["OptionGrant"]["rows"][0]}
+                "entity": orig_grant}
         res = await ingest("carta:object", twin, pool=pool, tenant_id=_TENANT_ID)
-        _check("re-ingesting an existing grant dedups (SyncToken external_id parity)",
+        _check("re-ingesting an unchanged grant dedups (content-digest parity)",
                res.deduped is True)
 
         # 8. LIVE POLL path: a polled change lands as a fresh observation through
@@ -339,12 +365,16 @@ async def run(args) -> int:
         _hr("LIVE POLL (handle_polled_change)")
         from services.ingest.integrations.carta.poll import PollDeps, handle_polled_change
         change = {
-            "entity_type": "OptionGrant",
+            "entity_type": "optionGrant",
             "entity": {
-                "Id": "1000001", "SyncToken": "9", "DocNumber": "OG-1000001",
-                "Status": "exercised", "Quantity": 500, "StrikePrice": 1.25,
-                "StakeholderRef": {"value": "9", "name": "Live Holder"},
-                "MetaData": {"LastUpdatedTime": _iso(datetime.now(timezone.utc))},
+                "id": "1000001", "issuerId": _FIRM,
+                "securityLabel": "OG-1000001", "stakeholderId": "9",
+                "stockOptionType": "ISO",
+                "quantity": _dec(500), "outstandingQuantity": _dec(0),
+                "vestedQuantity": _dec(500), "exercisedQuantity": _dec(500),
+                "exercisePrice": _money("1.25"),
+                "issueDate": _dec("2026-06-01"),
+                "lastModifiedDatetime": _dec(_iso_z(datetime.now(timezone.utc))),
             },
         }
         deps = PollDeps(pool=pool, tenant_id=_TENANT_ID, installation_id=str(install_id),
@@ -358,12 +388,11 @@ async def run(args) -> int:
             "AND source_channel='carta:object'", _TENANT_ID)
         _check("live poll change lands as a fresh observation", after == before + 1)
 
-        # 9. Reconciler gap probe.
-        _hr("RECONCILER GAP PROBE (query since high-water)")
-        rows, _ = await client.query("OptionGrant",
-                                     where=f"Metadata.LastUpdatedTime > '{hw}'",
-                                     start_position=1, max_results=1)
-        _check("reconciler probe detects a grant updated since the high-water",
+        # 9. Reconciler gap probe (optionGrants — the one delta-filterable
+        #    collection).
+        _hr("RECONCILER GAP PROBE (lastModifiedDatetimeAfter since high-water)")
+        rows, _ = await client.list_option_grants(page_size=1, modified_after=hw)
+        _check("reconciler probe detects a grant modified since the high-water",
                len(rows) >= 1)
 
         # 10. Inspect.

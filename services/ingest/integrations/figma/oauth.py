@@ -10,9 +10,9 @@ reach the install tables).
 Flow:
 
     POST /integrations/figma/connect/preflight
-        body: { api_token, base_url? }
-        → FigmaClient.list_files() to verify the token + enumerate the files for
-          the selector UI
+        body: { api_token, team_id, base_url? }
+        → FigmaClient.list_files(team_id) to verify the token + enumerate the
+          files for the selector UI
         → on auth failure: a structured 400 (no secret is stored)
 
     POST /integrations/figma/connect/finalize
@@ -97,6 +97,16 @@ def _require_token(body: dict[str, Any]) -> tuple[str, str]:
     return api_token, base_url
 
 
+def _require_team_id(body: dict[str, Any]) -> str:
+    team_id = (body.get("team_id") or "").strip()
+    if not team_id:
+        raise HTTPException(
+            status_code=400,
+            detail="team_id is required to enumerate Figma projects/files",
+        )
+    return team_id
+
+
 def _auth_failure_response(exc: FigmaApiError) -> JSONResponse:
     """Map a credential/connectivity failure to a structured 400. The token is
     never echoed back (FigmaApiError keeps it off context by design)."""
@@ -134,10 +144,11 @@ async def connect_preflight(request: Request) -> JSONResponse:
     _tenant_from_request(request)  # auth check
     body = await request.json()
     api_token, base_url = _require_token(body)
+    team_id = _require_team_id(body)
 
-    client = FigmaClient(base_url=base_url, api_token=api_token)
+    client = FigmaClient(base_url=base_url, api_token=api_token, team_id=team_id)
     try:
-        files = await client.list_files()
+        files = await client.list_files(team_id)
     except FigmaApiError as exc:
         return _auth_failure_response(exc)
     finally:
@@ -147,6 +158,7 @@ async def connect_preflight(request: Request) -> JSONResponse:
     return JSONResponse(content={
         "ok": True,
         "base_url": base_url,
+        "team_id": team_id,
         "files": [f for f in normalized if f["file_key"]],
     })
 
@@ -163,11 +175,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
     store = _secret_store_from_request(request)
     body = await request.json()
     api_token, base_url = _require_token(body)
+    team_id = _require_team_id(body)
 
     requested_keys = body.get("file_keys")
     if requested_keys is not None and not isinstance(requested_keys, list):
         raise HTTPException(status_code=400, detail="file_keys must be a list")
-    team_id = (body.get("team_id") or "").strip() or None
     # R2: the connect wizard captures the Figma-assigned webhook_id from the
     # POST /v2/webhooks response and supplies it here; it keys the live
     # provider_installations row (the real Figma V2 body carries no team_id).
@@ -175,9 +187,9 @@ async def connect_finalize(request: Request) -> JSONResponse:
     webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
     # 1. Verify creds + resolve the file set — before any write.
-    client = FigmaClient(base_url=base_url, api_token=api_token)
+    client = FigmaClient(base_url=base_url, api_token=api_token, team_id=team_id)
     try:
-        raw_files = await client.list_files()
+        raw_files = await client.list_files(team_id)
     except FigmaApiError as exc:
         return _auth_failure_response(exc)
     finally:

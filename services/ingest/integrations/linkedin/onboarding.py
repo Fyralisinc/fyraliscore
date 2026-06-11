@@ -4,8 +4,8 @@ LinkedIn authenticates with OAuth 2.0; every call is scoped to an
 ``organization_urn``. Onboarding mirrors the Carta/Gusto dedicated-table shape:
 
   finalize_install() — UPSERT a linkedin_installations row, INSERT one
-  linkedin_entities row per entity type to shard (share/social_action/
-  follower_stat), and emit an onboarding_triggers row (source='linkedin')
+  linkedin_entities row per stream to shard (post / share_statistics /
+  follower_statistics), and emit an onboarding_triggers row (source='linkedin')
   so the existing M6 backfill chain fires. All in one tenant-scoped transaction.
 
 LinkedIn is POLL-ONLY: there is NO webhook, so there is NO

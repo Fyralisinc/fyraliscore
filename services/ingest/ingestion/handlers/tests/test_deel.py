@@ -107,6 +107,43 @@ async def test_contract_snapshot_is_signal():
     assert "Eng Monthly" in draft.content_text
 
 
+async def test_real_deel_invoice_shape_is_payment():
+    draft = await handle_deel_payment({
+        "_fyralis_record_type": "payment",
+        "payment": {
+            "id": "inv-1",
+            "contract_id": _CONTRACT,
+            "total_amount": "-1200.50",
+            "status": "paid",
+            "contractor": {"name": "Jane Contractor"},
+            "issued_at": "2026-05-20T12:30:00Z",
+        },
+    }, {})
+    assert draft.external_id == f"deel:{_CONTRACT}:payment:inv-1:paid"
+    assert draft.content["amount"] == "-1200.50"
+    assert draft.content["direction"] == "outflow"
+    assert draft.content["counterparty"] == "Jane Contractor"
+    assert draft.content["issued_at"] == "2026-05-20T12:30:00Z"
+
+
+async def test_contract_snapshot_reads_snake_case_fields():
+    draft = await handle_deel_payment({
+        "_fyralis_record_type": "contract_snapshot",
+        "updated": "2026-05-31T00:00:00Z",
+        "contract": {
+            "contract_id": _CONTRACT,
+            "contract_name": "Snake Case Agreement",
+            "contract_type": "fixed",
+            "status": "active",
+            "total_amount": "99.00",
+            "worker_name": "Jane Contractor",
+        },
+    }, {})
+    assert draft.content["contract_name"] == "Snake Case Agreement"
+    assert draft.content["contract_type"] == "fixed"
+    assert draft.content["worker_name"] == "Jane Contractor"
+
+
 # --- live webhook path -----------------------------------------------------
 
 async def test_webhook_payment_created():

@@ -4,10 +4,12 @@ In-process replacement for `BrexClient` (services/ingest/integrations/brex/
 client.py). Implements the read methods the planner-less Brex chain calls:
 
   - get_account(account_id) -> dict
-      `GET /account/{id}` body (the fetcher's first-page balance snapshot probe).
-  - list_transactions(account_id, *, limit, offset, start)
+      Real client enumerates Brex v2 cash/card account lists and returns one
+      matching account (the fetcher's first-page balance snapshot probe).
+  - list_transactions(account_id, *, limit, offset, start, account_kind)
       -> (txns, next_offset, total)
-      `GET /account/{id}/transactions`, offset-paginated, honouring `limit`.
+      Brex v2 cash/card transaction stream, offset-paginated inside the mock,
+      honouring `limit`.
       `next_offset is None` is terminal — exactly the real client's contract
       (`is_last = next_offset >= total or not txns`).
   - has_transactions_since(account_id, since)  [reconciler probe convenience]
@@ -70,6 +72,7 @@ class MockBrexClient(_MockBase):
         limit: int = 100,
         offset: int = 0,
         start: str | None = None,
+        account_kind: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
         """`GET /account/{id}/transactions` — offset-paginated, newest-first.
 
@@ -141,7 +144,13 @@ class MockBrexClient(_MockBase):
 
 def _txn_date(txn: dict[str, Any]) -> str:
     """Date portion of a txn's posted/created timestamp (for `start` filtering)."""
-    iso = txn.get("postedAt") or txn.get("createdAt") or ""
+    iso = (
+        txn.get("postedAt")
+        or txn.get("posted_at")
+        or txn.get("createdAt")
+        or txn.get("created_at")
+        or ""
+    )
     return iso[:10] if isinstance(iso, str) else ""
 
 

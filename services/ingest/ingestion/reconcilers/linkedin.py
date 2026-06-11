@@ -1,15 +1,22 @@
 """services/ingest/ingestion/reconcilers/linkedin.py — gap detection.
 
-After an entity shard completes, its cursor carries `high_water_updated` — the
-max Metadata.LastUpdatedTime the fetcher walked. The reconciler probes the LIVE
-organization for any entity of that type updated after the high-water; if one
-exists, a reshare is emitted for that entity type, warm-started at the high-water
-(incremental mode).
+After a stream shard completes, its cursor carries `high_water_ms` — the max
+epoch-millis watermark the fetcher walked (posts: `lastModifiedAt`;
+statistics: `timeRange.start`). The reconciler probes the LIVE organization
+for anything newer than the high-water; if found, a reshare is emitted for
+that stream, warm-started at the high-water (incremental mode).
 
-`external_id` parity (discriminated by entity_kind) means re-walked entities
-dedup against what backfill already wrote — only genuinely new entities produce
-new observations. Pragmatic v1: one cheap 1-row query per entity type; it can
-over-reshare but never under-reshares, and dedup makes re-walks idempotent.
+Per-stream probe (one cheap call each):
+  - post: `list_posts(start=0, count=1)` — the finder sorts DESC by
+    `lastModifiedAt`, so the FIRST element is the newest; newer than the
+    high-water ⇒ gap.
+  - share_statistics / follower_statistics: the time-bound finder from
+    `high_water + 1` — any element ⇒ a new snapshot bucket exists ⇒ gap.
+
+`external_id` parity (discriminated by entity_kind) means re-walked elements
+dedup against what backfill already wrote — only genuinely new elements produce
+new observations. Pragmatic v1: it can over-reshare but never under-reshares,
+and dedup makes re-walks idempotent.
 """
 from __future__ import annotations
 
@@ -33,6 +40,8 @@ log = logging.getLogger(__name__)
 
 SHARD_KIND_ENTITY = "linkedin_entity"
 RESHARE_RECENCY_SCORE = 1.5
+
+_STATISTICS_TYPES = ("share_statistics", "follower_statistics")
 
 
 _pool_provider: Any = None
@@ -65,15 +74,40 @@ def _decode_identifier(raw: Any) -> dict[str, Any]:
     return dict(raw)
 
 
-async def _load_shard_high_water(pool: Any, shard_id: Any) -> str | None:
+async def _load_shard_high_water(pool: Any, shard_id: Any) -> int | None:
     state = await load_state(pool, "shard_fetch", str(shard_id))
     if state is None or not state.state_data:
         return None
     cursor = state.state_data.get("cursor")
     if isinstance(cursor, dict):
-        hw = cursor.get("high_water_updated")
-        return hw if isinstance(hw, str) else None
+        hw = cursor.get("high_water_ms")
+        return hw if isinstance(hw, int) and not isinstance(hw, bool) else None
     return None
+
+
+def _newest_modified_ms(rows: list[dict[str, Any]]) -> int | None:
+    for row in rows:
+        value = row.get("lastModifiedAt") or row.get("createdAt")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+async def _probe_has_gap(
+    client: Any, entity_type: str, high_water: int,
+) -> bool:
+    if entity_type == "post":
+        rows, _ = await client.list_posts(start=0, count=1)
+        newest = _newest_modified_ms(rows)
+        return newest is not None and newest > high_water
+    if entity_type in _STATISTICS_TYPES:
+        method = (
+            client.share_statistics
+            if entity_type == "share_statistics" else client.follower_statistics
+        )
+        elements = await method(start_ms=high_water + 1)
+        return bool(elements)
+    return False
 
 
 async def _check_one_shard_for_gap(
@@ -91,12 +125,7 @@ async def _check_one_shard_for_gap(
         return None
 
     try:
-        rows, _ = await client.query(
-            entity_type,
-            where=f"Metadata.LastUpdatedTime > '{high_water}'",
-            start_position=1,
-            max_results=1,
-        )
+        has_gap = await _probe_has_gap(client, str(entity_type), high_water)
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
             "reconcilers.linkedin.probe_failed",
@@ -104,7 +133,7 @@ async def _check_one_shard_for_gap(
         )
         return None
 
-    if not rows:
+    if not has_gap:
         return None
 
     gap_identifier = dict(identifier)

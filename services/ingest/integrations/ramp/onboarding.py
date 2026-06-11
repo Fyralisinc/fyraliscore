@@ -1,23 +1,25 @@
 """services/ingest/integrations/ramp/onboarding.py — install + provision (finance).
 
-Cloned from the QuickBooks archetype. Ramp authenticates with OAuth 2.0; every
-call is scoped to a company ``business_id``. Onboarding mirrors the Jira
-dedicated-table shape:
+Ramp authenticates with OAuth 2.0 client credentials (docs.ramp.com); the
+install is scoped to the company ``business_id`` (discovered via the
+``GET /business`` probe). Onboarding mirrors the Jira dedicated-table shape:
 
   finalize_install() — UPSERT a ramp_installations row, INSERT one
-  ramp_entities row per entity type to shard, and emit an onboarding_triggers
+  ramp_entities row per entity type to shard (the verified taxonomy:
+  transaction / reimbursement / card / user), and emit an onboarding_triggers
   row (source='ramp') so the existing M6 backfill chain fires. All in one
-  tenant-scoped transaction. (Entity taxonomy is the archetype default for now —
-  see the planner/fetcher TODO for the verified Ramp taxonomy.)
+  tenant-scoped transaction.
 
   register_webhook_installation() — register the LIVE-path row in
   provider_installations (provider='ramp', installation_id=business_id,
   secret_ref=webhook verifier token) so the webhook edge resolves the tenant +
   loads the signing secret via the existing machinery.
 
-The access + refresh tokens are stored in encrypted_secrets; the install row
-carries `secret_ref` (access token) and `refresh_secret_ref` (rotating refresh
-token, owned by the oauth_poller in production).
+The access token is stored in encrypted_secrets; the install row carries
+`secret_ref` (access token) + `token_expires_at`. `refresh_secret_ref` is kept
+for column parity but stays NULL for Ramp: client_credentials issues NO refresh
+token — expiry is handled by RE-MINTING with the app-level env credentials
+(see oauth_refresh.py).
 """
 from __future__ import annotations
 

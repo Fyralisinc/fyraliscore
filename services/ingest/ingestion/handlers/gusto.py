@@ -1,29 +1,36 @@
-"""services/ingest/ingestion/handlers/gusto.py — Gusto entity handler (finance).
+"""services/ingest/ingestion/handlers/gusto.py — Gusto entity handler (payroll/HR).
 
-ONE channel `gusto:object` (mirrors jira:issue's one-channel/many-record-
-types shape). The handler is a pure function (no DB / network) and branches on
-the input shape to produce exactly ONE observation per call:
+ONE channel `gusto:object` (mirrors jira:issue's one-channel/many-record-types
+shape). The handler is a pure function (no DB / network) and branches on the
+input shape to produce exactly ONE observation per call:
 
   - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
-    ∈ {"invoice","bill","billpayment","payment"} (set by the fetcher).
-  - LIVE WEBHOOK: an Intuit `eventNotifications` entity entry (or a CloudEvents
-    wrapper); the handler maps the entity `name`+`operation` onto the same record
-    builders so a webhook-delivered change and its backfill twin dedup. The
-    webhook only carries the entity id + operation, so when no full entity body
-    is present the handler emits a thin change observation keyed the same way.
+    ∈ {"employee", "payroll"} (set by the fetcher); `entity` carries the raw
+    Gusto object exactly as the `/v1/companies/{company_uuid}/...` list
+    endpoints return it (VERIFIED against docs.gusto.com — bare-array
+    responses, snake_case fields, dollar amounts as decimal STRINGS).
+  - LIVE WEBHOOK: a real Gusto thin notification (flat snake_case, no entity
+    body); the handler emits a thin change observation keyed the same way so
+    the poll re-fetch's full-bodied twin lands distinct only when the entity
+    actually changed.
 
 Signal mapping (the reasoning value):
-  - invoice/bill that is fully paid (Balance == 0)          -> kind="state_change"
-    (the AR/AP-health signal: receivable collected / payable cleared)
-  - invoice/bill past due with an open balance              -> kind="state_change"
-    (overdue — the cash-risk signal)
-  - everything else (created / updated, payments)           -> kind="signal"
+  - payroll with processed == true        -> kind="state_change"
+    (the cash event: a payroll run debited / pay hit employees)
+  - employee with terminated == true      -> kind="state_change"
+    (headcount loss — the offboarding signal)
+  - everything else (active/onboarding employees, pending payrolls)
+                                          -> kind="signal"
 
-external_id — VERSIONED by `SyncToken` (the mutable-source dedup lesson; the
-observations repo dedups on (source_channel, external_id) IGNORING occurred_at):
-  - gusto:{company}:{entity}:{id}:{SyncToken}
+external_id — VERSIONED (the mutable-source dedup lesson; the observations repo
+dedups on (source_channel, external_id) IGNORING occurred_at):
+  - employee: gusto:{company}:employee:{uuid}:{version}
+      (`version` is the employee object's own concurrency token — it changes
+      whenever the record changes, so a re-walk only lands changed employees)
+  - payroll:  gusto:{company}:payroll:{uuid}:{processed|unprocessed}
+      (a payroll flipping to processed lands as a NEW state_change)
 
-Trust posture: Gusto is the accounting system of record -> `authoritative`.
+Trust posture: Gusto is the payroll system of record -> `authoritative`.
 """
 from __future__ import annotations
 
@@ -43,13 +50,7 @@ from services.ingest.ingestion.handlers import (
 _CHANNEL = "gusto:object"
 _TRUST = "authoritative"
 
-# Map a GUSTO entity `name` (webhook) / record_type (backfill) to a canonical kind.
-_ENTITY_NORMALISE = {
-    "invoice": "invoice",
-    "bill": "bill",
-    "billpayment": "bill_payment",
-    "payment": "payment",
-}
+_RECORD_TYPES = ("employee", "payroll")
 
 
 def _utcnow() -> datetime:
@@ -57,12 +58,13 @@ def _utcnow() -> datetime:
 
 
 def _parse_iso(value: Any) -> datetime | None:
+    """Parse an ISO datetime OR bare date (Gusto dates are YYYY-MM-DD)."""
     if not isinstance(value, str) or not value:
         return None
     s = value
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    elif len(s) >= 5 and s[-5] in "+-" and s[-3] != ":":
+    elif len(s) >= 5 and s[-5] in "+-" and s[-3] != ":" and "T" in s:
         s = s[:-2] + ":" + s[-2:]
     try:
         dt = datetime.fromisoformat(s)
@@ -71,15 +73,8 @@ def _parse_iso(value: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _last_updated(entity: dict[str, Any]) -> str | None:
-    meta = entity.get("MetaData") or entity.get("Metadata") or {}
-    if isinstance(meta, dict):
-        v = meta.get("LastUpdatedTime")
-        return v if isinstance(v, str) else None
-    return None
-
-
 def _num(value: Any) -> float | None:
+    """Gusto money is a decimal STRING in dollars (e.g. '1234.56')."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -91,250 +86,224 @@ def _fmt_money(amount: Any) -> str:
     return f"${val:,.2f}" if val is not None else str(amount)
 
 
-def _doc_label(entity_kind: str, entity: dict[str, Any]) -> str:
-    """Human reference like 'Invoice #1037' / 'Bill 9921'."""
-    doc = entity.get("DocNumber") or entity.get("Id") or "?"
-    nice = entity_kind.replace("_", " ").title()
-    return f"{nice} #{doc}"
-
-
-def _party(entity: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
-    """(actor_ref, entity_hint) for the customer/vendor on the doc."""
-    ref = entity.get("CustomerRef") or entity.get("VendorRef")
-    if isinstance(ref, dict):
-        name = ref.get("name")
-        rid = ref.get("value")
-        role = "customer" if "CustomerRef" in entity else "vendor"
-        hint: dict[str, Any] = {"type": "organization", "role": role}
-        if name:
-            hint["id"] = name
-        elif rid:
-            hint["id"] = str(rid)
-        actor = f"gusto:{role}:{rid}" if rid else None
-        return actor, (hint if hint.get("id") else None)
-    return None, None
-
-
 def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _clean(d: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in d.items() if v is not None}
+
+
 # ---------------------------------------------------------------------
-# Rich-field extraction (the signals beyond the AR/AP-health header)
+# Employee records
 # ---------------------------------------------------------------------
 
-def _ref_name(ref: Any) -> str | None:
-    """Human name of a GUSTO ReferenceType ({value, name}), value as fallback."""
-    if isinstance(ref, dict):
-        name = ref.get("name")
-        if isinstance(name, str) and name:
-            return name
-        val = ref.get("value")
-        return str(val) if val not in (None, "") else None
+def _employee_name(e: dict[str, Any]) -> str:
+    first = e.get("preferred_first_name") or e.get("first_name") or ""
+    last = e.get("last_name") or ""
+    name = f"{first} {last}".strip()
+    return name or str(e.get("uuid") or "?")
+
+
+def _primary_job(e: dict[str, Any]) -> dict[str, Any] | None:
+    jobs = e.get("jobs")
+    if isinstance(jobs, list):
+        for job in jobs:
+            if isinstance(job, dict) and job.get("primary"):
+                return job
+        for job in jobs:
+            if isinstance(job, dict):
+                return job
     return None
 
 
-def _line_summary(line: dict[str, Any]) -> dict[str, Any]:
-    """Flatten one GUSTO Line into the bits that carry revenue/expense meaning.
-
-    Covers sales (SalesItemLineDetail) and expense
-    (Account-/Item-BasedExpenseLineDetail) lines — the *what was sold / bought*
-    that header TotalAmt hides."""
-    summary: dict[str, Any] = {
-        "amount": line.get("Amount"),
-        "description": line.get("Description"),
-        "detail_type": line.get("DetailType"),
-    }
-    sid = line.get("SalesItemLineDetail")
-    if isinstance(sid, dict):
-        summary["item"] = _ref_name(sid.get("ItemRef"))
-        summary["quantity"] = sid.get("Qty")
-        summary["unit_price"] = sid.get("UnitPrice")
-        summary["class"] = _ref_name(sid.get("ClassRef"))
-    for key in ("AccountBasedExpenseLineDetail", "ItemBasedExpenseLineDetail"):
-        d = line.get(key)
-        if isinstance(d, dict):
-            summary["account"] = _ref_name(d.get("AccountRef"))
-            summary.setdefault("item", _ref_name(d.get("ItemRef")))
-            summary["class"] = _ref_name(d.get("ClassRef"))
-            billable = _ref_name(d.get("CustomerRef"))
-            if billable:
-                summary["billable_customer"] = billable
-    return {k: v for k, v in summary.items() if v is not None}
+def _employee_status(e: dict[str, Any]) -> tuple[str, str]:
+    """(kind, status_word). Termination is the state_change (headcount loss)."""
+    if e.get("terminated") is True:
+        return "state_change", "terminated"
+    if e.get("onboarded") is False:
+        return "signal", "onboarding"
+    return "signal", "active"
 
 
-def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
-    """The richer GUSTO entity fields beyond the header money signal.
-
-    Already returned by `SELECT *`; the handler is where they were dropped.
-    Only present keys are returned so `content` stays lean."""
-    extras: dict[str, Any] = {}
-
-    # Line items — product-level revenue / expense-category breakdown.
-    lines = entity.get("Line")
-    if isinstance(lines, list):
-        summaries = [
-            s for ln in lines
-            if isinstance(ln, dict)
-            and ln.get("DetailType") not in ("SubTotalLineDetail",)
-            for s in (_line_summary(ln),) if s
-        ]
-        if summaries:
-            extras["line_items"] = summaries
-
-    # LinkedTxn — the AR/AP graph edges (Invoice<->Payment, PO->Bill->Payment).
-    linked = entity.get("LinkedTxn")
-    if isinstance(linked, list) and linked:
-        edges = [
-            {"txn_id": lt.get("TxnId"), "txn_type": lt.get("TxnType")}
-            for lt in linked if isinstance(lt, dict) and lt.get("TxnId")
-        ]
-        if edges:
-            extras["linked_txns"] = edges
-
-    # Tax — total + (if present) the lightweight rate breakdown.
-    tax = entity.get("TxnTaxDetail")
-    if isinstance(tax, dict) and tax:
-        tax_out: dict[str, Any] = {}
-        if tax.get("TotalTax") is not None:
-            tax_out["total_tax"] = tax.get("TotalTax")
-        if isinstance(tax.get("TaxLine"), list):
-            tax_out["lines"] = len(tax["TaxLine"])
-        if tax_out:
-            extras["tax"] = tax_out
-
-    # Multi-currency normalization.
-    for src, dst in (
-        ("HomeTotalAmt", "home_total_amount"),
-        ("HomeBalance", "home_balance"),
-        ("ExchangeRate", "exchange_rate"),
-    ):
-        if entity.get(src) is not None:
-            extras[dst] = entity.get(src)
-
-    # Cash-position nuance on Payments.
-    if entity.get("UnappliedAmt") is not None:
-        extras["unapplied_amount"] = entity.get("UnappliedAmt")
-    dep = _ref_name(entity.get("DepositToAccountRef"))
-    if dep:
-        extras["deposit_to_account"] = dep
-    ar = _ref_name(entity.get("ARAccountRef"))
-    if ar:
-        extras["ar_account"] = ar
-    ap = _ref_name(entity.get("APAccountRef"))
-    if ap:
-        extras["ap_account"] = ap
-
-    # Payment channel (how cash moved + funding account).
-    pm = _ref_name(entity.get("PaymentMethodRef"))
-    if pm:
-        extras["payment_method"] = pm
-    if entity.get("PaymentRefNum"):
-        extras["payment_ref_num"] = entity.get("PaymentRefNum")
-    if entity.get("PayType"):
-        extras["pay_type"] = entity.get("PayType")
-
-    # Segmentation dimensions for P&L attribution.
-    for src, dst in (
-        ("ClassRef", "class"),
-        ("DepartmentRef", "department"),
-        ("ProjectRef", "project"),
-    ):
-        name = _ref_name(entity.get(src))
-        if name:
-            extras[dst] = name
-
-    return extras
+def _employee_occurred(e: dict[str, Any]) -> datetime:
+    # Employees carry no updated-at timestamp. Best event anchor: the latest
+    # termination's effective_date when terminated, else the (primary) job
+    # hire_date, else ingestion time.
+    if e.get("terminated") is True:
+        terms = e.get("terminations")
+        if isinstance(terms, list) and terms:
+            last = terms[-1]
+            if isinstance(last, dict):
+                dt = _parse_iso(last.get("effective_date"))
+                if dt is not None:
+                    return dt
+    job = _primary_job(e)
+    if job is not None:
+        dt = _parse_iso(job.get("hire_date"))
+        if dt is not None:
+            return dt
+    return _utcnow()
 
 
-def _classify(entity_kind: str, entity: dict[str, Any]) -> tuple[str, str]:
-    """Return (kind, status_word) for the entity.
-
-    Invoices/bills with a zero balance are 'paid' (a state_change — AR collected
-    / AP cleared); those past their due date with an open balance are 'overdue'
-    (a state_change — cash-risk). Everything else is an 'open' signal.
-    """
-    if entity_kind in ("invoice", "bill"):
-        balance = _num(entity.get("Balance"))
-        if balance is not None and balance <= 0:
-            return "state_change", "paid"
-        due = _parse_iso(entity.get("DueDate"))
-        if due is not None and due < _utcnow() and (balance or 0) > 0:
-            return "state_change", "overdue"
-        return "signal", "open"
-    # Payments / bill payments are cash events — always a signal.
-    return "signal", "recorded"
-
-
-# ---------------------------------------------------------------------
-# Record builder (shared by backfill + webhook paths)
-# ---------------------------------------------------------------------
-
-def _entity_draft(
-    entity_kind: str, entity: dict[str, Any], company_uuid: str,
+def _employee_draft(
+    entity: dict[str, Any], company_uuid: str,
 ) -> ObservationDraft:
-    entity_id = str(entity.get("Id") or "")
-    if not company_uuid or not entity_id:
+    employee_uuid = str(entity.get("uuid") or "")
+    if not company_uuid or not employee_uuid:
         raise ValidationError(
-            "gusto entity missing company_uuid/Id", channel=_CHANNEL,
+            "gusto employee missing company_uuid/uuid", channel=_CHANNEL,
         )
-    sync_token = str(entity.get("SyncToken") or "0")
+    # `version` is Gusto's own concurrency token — the dedup discriminator.
+    version = str(entity.get("version") or "0")
     external_id = idempotency.gusto_entity(
-        company_uuid, entity_kind, entity_id, sync_token,
+        company_uuid, "employee", employee_uuid, version,
     )
 
-    updated = _last_updated(entity)
-    occurred = _parse_iso(updated) or _utcnow()
-    kind, status_word = _classify(entity_kind, entity)
-    actor_ref, party_hint = _party(entity)
+    kind, status_word = _employee_status(entity)
+    name = _employee_name(entity)
+    job = _primary_job(entity) or {}
+    title = job.get("title")
+    department = entity.get("department")
 
-    total = entity.get("TotalAmt")
-    balance = entity.get("Balance")
-    label = _doc_label(entity_kind, entity)
-    who = (party_hint or {}).get("id")
-    parts = [label]
-    if who:
-        parts.append(f"· {who}")
-    parts.append(f"· {_fmt_money(total)}")
-    if entity_kind in ("invoice", "bill"):
-        parts.append(f"· {status_word} (bal {_fmt_money(balance)})")
-    else:
-        parts.append(f"· {status_word}")
+    parts = [f"Employee {name}"]
+    if title:
+        parts.append(f"· {title}")
+    if department:
+        parts.append(f"· {department}")
+    parts.append(f"· {status_word}")
     content_text = " ".join(parts)
 
-    entities: list[dict[str, Any]] = [
-        {"type": "gusto_object", "id": f"{entity_kind}:{entity_id}"},
+    entities_hint: list[dict[str, Any]] = [
+        {"type": "gusto_object", "id": f"employee:{employee_uuid}"},
     ]
-    if party_hint:
-        entities.append(party_hint)
+    person_id = entity.get("work_email") or entity.get("email") or name
+    if person_id:
+        entities_hint.append(
+            {"type": "person", "role": "employee", "id": str(person_id)},
+        )
 
-    content: dict[str, Any] = {
-        "object_type": entity_kind,
+    content = _clean({
+        "object_type": "employee",
         "company_uuid": company_uuid,
-        "entity_id": entity_id,
-        "sync_token": sync_token,
-        "doc_number": entity.get("DocNumber"),
+        "entity_id": employee_uuid,
+        "version": version,
         "status": status_word,
-        "total_amount": total,
-        "balance": balance,
-        "currency": (entity.get("CurrencyRef") or {}).get("value")
-        if isinstance(entity.get("CurrencyRef"), dict) else None,
-        "txn_date": entity.get("TxnDate"),
-        "due_date": entity.get("DueDate"),
-        "customer": (entity.get("CustomerRef") or {}).get("name")
-        if isinstance(entity.get("CustomerRef"), dict) else None,
-        "vendor": (entity.get("VendorRef") or {}).get("name")
-        if isinstance(entity.get("VendorRef"), dict) else None,
-        "last_updated": updated,
-    }
-    # Merge the richer fields (line items, linked txns, tax, multi-currency,
-    # payment channel, P&L dimensions) — additive, only present keys.
-    content.update(_entity_extras(entity))
-    # Surface line-item depth inline so the reasoning layer sees there's detail.
-    line_items = content.get("line_items")
-    if isinstance(line_items, list) and line_items:
-        n = len(line_items)
-        content_text = f"{content_text} · {n} line{'s' if n != 1 else ''}"
+        "first_name": entity.get("first_name"),
+        "last_name": entity.get("last_name"),
+        "preferred_first_name": entity.get("preferred_first_name"),
+        "work_email": entity.get("work_email"),
+        "department": department,
+        "manager_uuid": entity.get("manager_uuid"),
+        "employee_code": entity.get("employee_code"),
+        "current_employment_status": entity.get("current_employment_status"),
+        "onboarded": entity.get("onboarded"),
+        "terminated": entity.get("terminated"),
+        "payment_method": entity.get("payment_method"),
+        "job_title": title,
+        "hire_date": job.get("hire_date"),
+        # Compensation rate is a decimal string in dollars — kept verbatim.
+        "rate": job.get("rate"),
+        "payment_unit": job.get("payment_unit"),
+    })
+
+    return ObservationDraft(
+        source_channel=_CHANNEL,
+        content_text=_truncate(content_text),
+        content=content,
+        occurred_at=_employee_occurred(entity),
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind=kind,  # type: ignore[arg-type]
+        source_actor_ref=f"gusto:employee:{employee_uuid}",
+        external_id=external_id,
+        entities_hint=entities_hint,
+        raw_payload=entity,
+    )
+
+
+# ---------------------------------------------------------------------
+# Payroll records
+# ---------------------------------------------------------------------
+
+def _payroll_totals(entity: dict[str, Any]) -> dict[str, Any]:
+    totals = entity.get("totals")
+    return totals if isinstance(totals, dict) else {}
+
+
+def _payroll_draft(
+    entity: dict[str, Any], company_uuid: str,
+) -> ObservationDraft:
+    payroll_uuid = str(entity.get("payroll_uuid") or entity.get("uuid") or "")
+    if not company_uuid or not payroll_uuid:
+        raise ValidationError(
+            "gusto payroll missing company_uuid/payroll_uuid", channel=_CHANNEL,
+        )
+    processed = entity.get("processed") is True
+    # No top-level `version` on Payroll (unlike Employee) — the processed flip
+    # is the meaningful mutation, so it discriminates the external_id.
+    version = "processed" if processed else "unprocessed"
+    external_id = idempotency.gusto_entity(
+        company_uuid, "payroll", payroll_uuid, version,
+    )
+
+    kind = "state_change" if processed else "signal"
+    status_word = "processed" if processed else "pending"
+
+    check_date = entity.get("check_date")
+    occurred = (
+        _parse_iso(check_date)
+        or _parse_iso(entity.get("processed_date"))
+        or _parse_iso(entity.get("payroll_deadline"))
+        or _utcnow()
+    )
+
+    pay_period = entity.get("pay_period")
+    pay_period = pay_period if isinstance(pay_period, dict) else {}
+    totals = _payroll_totals(entity)
+    comps = entity.get("employee_compensations")
+    employee_count = len(comps) if isinstance(comps, list) else None
+
+    parts = [f"Payroll {check_date or payroll_uuid}"]
+    period_start = pay_period.get("start_date")
+    period_end = pay_period.get("end_date")
+    if period_start and period_end:
+        parts.append(f"({period_start} – {period_end})")
+    gross = totals.get("gross_pay")
+    if gross is not None:
+        parts.append(f"· gross {_fmt_money(gross)}")
+    parts.append(f"· {status_word}")
+    if entity.get("off_cycle") is True:
+        parts.append("· off-cycle")
+    if employee_count:
+        parts.append(
+            f"· {employee_count} employee{'s' if employee_count != 1 else ''}"
+        )
+    content_text = " ".join(parts)
+
+    # All totals are decimal strings in dollars — kept verbatim.
+    content = _clean({
+        "object_type": "payroll",
+        "company_uuid": company_uuid,
+        "entity_id": payroll_uuid,
+        "status": status_word,
+        "processed": entity.get("processed"),
+        "processed_date": entity.get("processed_date"),
+        "check_date": check_date,
+        "payroll_deadline": entity.get("payroll_deadline"),
+        "off_cycle": entity.get("off_cycle"),
+        "external": entity.get("external"),
+        "pay_period_start": period_start,
+        "pay_period_end": period_end,
+        "pay_schedule_uuid": pay_period.get("pay_schedule_uuid"),
+        "gross_pay": gross,
+        "net_pay": totals.get("net_pay"),
+        "employee_taxes": totals.get("employee_taxes"),
+        "employer_taxes": totals.get("employer_taxes"),
+        "company_debit": totals.get("company_debit"),
+        "benefits": totals.get("benefits"),
+        "reimbursements": totals.get("reimbursements"),
+        "employee_count": employee_count,
+    })
 
     return ObservationDraft(
         source_channel=_CHANNEL,
@@ -343,39 +312,51 @@ def _entity_draft(
         occurred_at=occurred,
         trust_tier=_TRUST,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
-        source_actor_ref=actor_ref,
+        source_actor_ref=None,
         external_id=external_id,
-        entities_hint=entities,
+        entities_hint=[
+            {"type": "gusto_object", "id": f"payroll:{payroll_uuid}"},
+        ],
         raw_payload=entity,
     )
 
+
+_RECORD_BUILDERS = {
+    "employee": _employee_draft,
+    "payroll": _payroll_draft,
+}
+
+
+# ---------------------------------------------------------------------
+# Thin webhook change (shared shape with the poll re-fetch)
+# ---------------------------------------------------------------------
 
 def _thin_change_draft(
     entity_kind: str, entity_id: str, company_uuid: str, *,
     operation: str | None, last_updated: str | None,
     version: str | None = None,
 ) -> ObservationDraft:
-    """A webhook notification with no full entity body (thin notifications carry
-    only id + operation). Emit a thin change observation; the next backfill/poll
-    re-fetch fills the full body (and dedups by SyncToken if unchanged).
+    """A webhook notification with no full entity body (real Gusto deliveries
+    are thin — id + event_type only). Emit a thin change observation; the next
+    backfill/poll re-fetch fills the full body (and dedups by the entity's own
+    version if unchanged).
 
-    `version` overrides the dedup discriminator (the real Gusto delivery carries
-    its own event `uuid`, a stronger key than the timestamp); when absent the
-    change is versioned by LastUpdatedTime, as the Intuit-shaped path does."""
+    `version` is the delivery's own `uuid` (a stronger key than the timestamp)
+    so re-deliveries dedup and distinct events stay distinct; when absent the
+    change is versioned by the timestamp."""
     if not company_uuid or not entity_id:
         raise ValidationError(
             "gusto change missing company_uuid/id", channel=_CHANNEL,
         )
-    # Version by the explicit `version` (event uuid) when given, else by
-    # LastUpdatedTime, to keep each change event distinct (the poll re-fetch
-    # carries the authoritative body).
     ver = version or last_updated or _utcnow().isoformat()
     external_id = idempotency.gusto_change(
         company_uuid, entity_kind, entity_id, ver,
     )
     occurred = _parse_iso(last_updated) or _utcnow()
-    op = operation or "Update"
-    content_text = f"{entity_kind.replace('_', ' ').title()} #{entity_id} {op.lower()} (live)"
+    op = operation or "update"
+    content_text = (
+        f"{entity_kind.replace('_', ' ').title()} #{entity_id} {op.lower()} (live)"
+    )
     return ObservationDraft(
         source_channel=_CHANNEL,
         content_text=content_text,
@@ -396,13 +377,6 @@ def _thin_change_draft(
                         "id": f"{entity_kind}:{entity_id}"}],
         raw_payload=None,
     )
-
-
-def _company_of(payload: dict[str, Any], entity: dict[str, Any] | None) -> str:
-    rid = payload.get("_fyralis_company_uuid") or payload.get("companyId")
-    if isinstance(rid, str) and rid:
-        return rid
-    return ""
 
 
 # ---------------------------------------------------------------------
@@ -454,64 +428,20 @@ async def handle_gusto_object(
             version=str(payload.get("uuid") or "") or None,
         )
 
-    # --- LIVE WEBHOOK path (legacy Intuit eventNotifications / harness) ---
-    # Shape: {"eventNotifications":[{"companyId":"...","dataChangeEvent":
-    #   {"entities":[{"name":"Invoice","id":"1","operation":"Update",
-    #   "lastUpdated":"..."}]}}]}. The finance harness may also send a single
-    # flattened {"companyId","name","id","operation","entity"?} for convenience.
-    notifications = payload.get("eventNotifications")
-    if isinstance(notifications, list) and notifications:
-        first = notifications[0]
-        company_uuid = str(first.get("companyId") or "") if isinstance(first, dict) else ""
-        dce = first.get("dataChangeEvent") if isinstance(first, dict) else None
-        ents = dce.get("entities") if isinstance(dce, dict) else None
-        if isinstance(ents, list) and ents:
-            ent = ents[0]
-            name = str(ent.get("name") or "").lower()
-            entity_kind = _ENTITY_NORMALISE.get(name)
-            if entity_kind is None:
-                raise ValidationError(
-                    f"unsupported gusto entity {ent.get('name')!r}",
-                    channel=_CHANNEL,
-                )
-            return _thin_change_draft(
-                entity_kind, str(ent.get("id") or ""), company_uuid,
-                operation=ent.get("operation"),
-                last_updated=ent.get("lastUpdated"),
-            )
-        raise ValidationError("gusto webhook missing entities", channel=_CHANNEL)
-
-    # Flattened webhook (harness convenience): a `name` + `id` (+ optional full
-    # `entity` body).
-    if "name" in payload and "id" in payload and "_fyralis_record_type" not in payload:
-        name = str(payload.get("name") or "").lower()
-        entity_kind = _ENTITY_NORMALISE.get(name)
-        if entity_kind is None:
-            raise ValidationError(
-                f"unsupported gusto entity {payload.get('name')!r}",
-                channel=_CHANNEL,
-            )
-        company_uuid = str(payload.get("companyId") or "")
-        body = payload.get("entity")
-        if isinstance(body, dict) and body.get("Id"):
-            return _entity_draft(entity_kind, body, company_uuid)
-        return _thin_change_draft(
-            entity_kind, str(payload.get("id") or ""), company_uuid,
-            operation=payload.get("operation"),
-            last_updated=payload.get("lastUpdated"),
-        )
-
     # --- BACKFILL / POLL path (fetcher-tagged records) ---
     record_type = payload.get("_fyralis_record_type")
     if isinstance(record_type, str) and record_type:
-        entity_kind = _ENTITY_NORMALISE.get(record_type.lower())
-        if entity_kind is None:
+        builder = _RECORD_BUILDERS.get(record_type.lower())
+        if builder is None:
             raise ValidationError(
-                f"unsupported gusto record_type {record_type!r}",
+                f"unsupported gusto record_type {record_type!r} "
+                f"(expected one of {_RECORD_TYPES})",
                 channel=_CHANNEL,
             )
-        entity = payload.get("entity") or {}
-        return _entity_draft(entity_kind, entity, _company_of(payload, entity))
+        entity = payload.get("entity")
+        entity = entity if isinstance(entity, dict) else {}
+        company_uuid = str(payload.get("_fyralis_company_uuid") or "")
+        return builder(entity, company_uuid)
 
     raise ValidationError(
         "gusto payload is neither a webhook event nor a tagged record",

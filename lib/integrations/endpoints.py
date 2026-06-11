@@ -67,17 +67,22 @@ _PROD: dict[str, str] = {
     # uniformly; the prod default is intentionally empty (build_grafana_client
     # passes the per-install base_url instead).
     "grafana_api": "",
-    # Finance (IN-FIN2): Brex — Bearer/Mercury archetype. Single global host
+    # Finance (IN-FIN2): Brex — Bearer auth, real v2 cash/card endpoints.
+    # Single global host
     # (per-install base_url still wins via build_brex_client when present).
-    "brex_api": "https://platform.brexapis.com",       # TODO(human): confirm host
-    # Finance (IN-FIN2): Ramp — OAuth/QuickBooks archetype. Business-scoped
-    # paths ride per-install base_url in production.
-    "ramp_api": "https://api.ramp.com/developer/v1",    # TODO(human): confirm host
-    # Finance (IN-FIN2): Gusto — OAuth/QuickBooks archetype. Company-scoped
-    # paths ride per-install base_url in production.
-    "gusto_api": "https://api.gusto.com",               # TODO(human): confirm host
-    # Finance (IN-FIN2): Deel — Bearer/Mercury archetype.
-    "deel_api": "https://api.letsdeel.com",             # TODO(human): confirm host
+    "brex_api": "https://platform.brexapis.com",
+    # Finance (IN-FIN2): Ramp — OAuth client-credentials, REST collections.
+    # CONFIRMED host https://api.ramp.com/developer/v1 (docs.ramp.com OpenAPI);
+    # the token endpoint is POST {base}/token on the same host.
+    "ramp_api": "https://api.ramp.com/developer/v1",
+    # Finance (IN-FIN2): Gusto — OAuth payroll source. CONFIRMED host
+    # https://api.gusto.com (demo: https://api.gusto-demo.com) per
+    # docs.gusto.com; resource paths start at /v1 (the client prepends
+    # /v1/companies/{company_uuid}/...). Company-scoped paths ride per-install
+    # base_url in production.
+    "gusto_api": "https://api.gusto.com",
+    # Finance (IN-FIN2): Deel — Bearer auth, REST v2 paths under /rest/v2.
+    "deel_api": "https://api.letsdeel.com/rest/v2",
     # IN-FIN3 comms: Fireflies.ai — Bearer/token archetype. CONFIRMED: the API is
     # GraphQL at https://api.fireflies.ai/graphql (docs.fireflies.ai/fundamentals/
     # authorization); this is the host prefix (build_fireflies_client posts /graphql).
@@ -88,7 +93,7 @@ _PROD: dict[str, str] = {
     "miro_api": "https://api.miro.com/v2",
     # IN-FIN3 design: Figma — PAT (X-Figma-Token) or OAuth Bearer. CONFIRMED host
     # https://api.figma.com (base /v1; webhooks mgmt /v2) — developers.figma.com.
-    "figma_api": "https://api.figma.com/v1",
+    "figma_api": "https://api.figma.com",
     # IN-FIN3 cap-table: Carta — OAuth2 (auth_code / client_credentials; NO refresh
     # grant — re-mint hourly). API is v1alpha1, poll-only (no webhook). ACCESS IS
     # PARTNER-GATED (invite-only + SOC 2 since 2025); the prod host is issued on
@@ -103,13 +108,14 @@ _PROD: dict[str, str] = {
     # username + empty password. CONFIRMED host https://api.ashbyhq.com (RPC POST
     # /CATEGORY.list|.info on this host).
     "ashby_api": "https://api.ashbyhq.com",
-    # IN-PEOPLE: LinkedIn (Recruiting) — Carta-structure (OAuth2, poll-only, no
-    # webhook). CONFIRMED host https://api.linkedin.com. NOTE: LinkedIn
-    # recruitment APIs are PARTNER-GATED / invite-only — production access
-    # requires an approved LinkedIn Marketing/Talent partner entitlement.
-    # TODO(human): confirm the exact partner entitlement + OAuth scopes once the
+    # IN-PEOPLE: LinkedIn (Community Management) — Carta-structure (OAuth2,
+    # poll-only, no webhook). CONFIRMED base https://api.linkedin.com/rest —
+    # the versioned Rest.li surface (requires LinkedIn-Version +
+    # X-Restli-Protocol-Version headers on every call; the client sends both).
+    # NOTE: the Community Management API tiers are PARTNER-GATED /
+    # approval-only. TODO(human): confirm the granted tier/entitlement once the
     # LinkedIn partner agreement is in place.
-    "linkedin_api": "https://api.linkedin.com",
+    "linkedin_api": "https://api.linkedin.com/rest",
 }
 
 # name -> explicit per-source env var (highest precedence).

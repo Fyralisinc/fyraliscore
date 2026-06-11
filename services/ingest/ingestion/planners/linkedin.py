@@ -6,17 +6,17 @@ one shard per entity type. The enrichment lives in `linkedin_entities`; the
 SourceOnboarding loader JSON-aggregates it into `ctx.install["entities"]` so the
 planner stays stateless.
 
-Each shard is one people/recruiting entity type's stream for the organization.
-The fetcher walks the read endpoint, then incrementally via the per-entity
-updated-at high-water cursor.
+Each shard is one Community-Management stream for the organization. The
+fetcher walks the read endpoint, then incrementally via the per-stream
+epoch-millis high-water cursor (`updated_cursor`).
 
-TODO(human): confirm the LinkedIn resource taxonomy to shard. This planner is
-    entity-type-agnostic (it reads the active entity list from the
-    `linkedin_entities` child table), but the seeded LinkedIn entities are
-    `share`, `social_action`, and `follower_stat`, each scoped by the
-    organization URN. ACCESS IS PARTNER-GATED — confirm the high-signal entity
-    set against the approved entitlement and add the others as their read surface
-    is confirmed.
+The planner is entity-type-agnostic (it reads the active entity list from the
+`linkedin_entities` child table); the seeded streams are `post` (the
+`/rest/posts?q=author` finder), `share_statistics`
+(`/rest/organizationalEntityShareStatistics`), and `follower_statistics`
+(`/rest/organizationalEntityFollowerStatistics`), each scoped by the
+organization URN. ACCESS IS PARTNER-GATED (Community Management API tiers are
+approval-only) — add further streams as entitlement allows.
 
 `ctx.source_client` is None — entities are read from DB state.
 """
@@ -74,7 +74,7 @@ async def plan_shards_linkedin(ctx: PlannerContext) -> list[Shard]:
                 "entity_type": entity_type,
                 "organization_urn": organization_urn,
                 "installation_id": install_id,
-                # The high-water LastUpdatedTime cursor — None on first sync.
+                # The epoch-millis high-water cursor — None on first sync.
                 "updated_cursor": ent.get("updated_cursor"),
             },
             recency_score=1.0,

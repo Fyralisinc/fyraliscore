@@ -406,17 +406,17 @@ they authenticate and how live data arrives.
 | 10 | **quickbooks** | OAuth2 + `realm_id` | webhook (verifier token) | query-language `SinceToken` | invoices, expenses, journal |
 | 11 | **grafana** | service-account Bearer | webhook (**bare-hex HMAC**, opaque-URL token) | — (alerts only) | alert state-changes, annotations |
 | 12 | **telegram** | **MTProto `auth_key` session** | **Gateway (MTProto updates)** | `messages.getHistory`/`offset_id` | messages, group updates |
-| 13 | **brex** | Bearer API token | HMAC webhook | cursor pagination | card/transaction data |
+| 13 | **brex** | Bearer API token | HMAC webhook | Brex v2 `next_cursor` | cash/card accounts, transactions |
 | 14 | **ramp** | OAuth2 (access+refresh) | HMAC webhook | cursor pagination | spend transactions |
 | 15 | **gusto** | OAuth2 (operator-pasted) | HMAC webhook | cursor pagination | employees, payroll, benefits |
-| 16 | **deel** | Bearer API token | HMAC webhook | cursor pagination | contractor payments |
-| 17 | **fireflies** | Bearer API token | HMAC webhook | cursor pagination | meeting transcripts |
+| 16 | **deel** | Bearer API token (`X-Version` REST v2) | HMAC webhook | invoice stream offset/cursor | contracts, contractor invoices/payments |
+| 17 | **fireflies** | Bearer API token | HMAC webhook | GraphQL `skip`/`limit` | meeting transcripts |
 | 18 | **signal** | linked-device session | **Gateway** | message-timestamp cursor | messages, group updates |
 | 19 | **aws** | IAM creds (assume-role / static; SigV4) | **poll** (CloudTrail) | date-range | CloudTrail API events |
 | 20 | **miro** | org-app Bearer | HMAC webhook | cursor pagination | boards, items, comments |
-| 21 | **figma** | org/team Bearer | HMAC webhook | cursor pagination | files, components, changes |
+| 21 | **figma** | PAT / org-team token (`X-Figma-Token`) | webhook (passcode-in-body) | versions/comments merge | files, versions, comments |
 | 22 | **carta** | OAuth2 | **poll-only** | cursor pagination | cap-table, shares, investors |
-| 23 | **hibob** | service-user HTTP Basic | webhook (**SHA512/base64 `Bob-Signature`**) | cursor pagination | HR records, lifecycle, time-off |
+| 23 | **hibob** | service-user HTTP Basic | webhook (**SHA512/base64 `Bob-Signature`**) | people search + Bob bulk cursors | HR records, lifecycle, time-off |
 | 24 | **ashby** | API token (Bearer/Basic) | HMAC webhook | cursor pagination | ATS candidates, jobs, activities |
 | 25 | **linkedin** | OAuth2 (org URN scope; **partner-gated**) | **poll-only** scaffold | `updated_at` | org data, shares, followers |
 
@@ -436,6 +436,8 @@ they authenticate and how live data arrives.
 **Novel auth/verification worth knowing (verified):**
 - **HiBob** verifies webhooks with **HMAC-SHA512, base64-encoded** in a
   `Bob-Signature` header — unique among the sources.
+- **Figma** Webhooks V2 uses a provider-assigned `webhook_id` plus a shared
+  passcode in the JSON body; the body carries no `team_id` and no HMAC header.
 - **Grafana** uses a **bare lowercase-hex** HMAC (no `sha256=` prefix) plus an
   **opaque per-channel URL token**.
 - **Telegram/Signal/Discord** authenticate a *connection*, not a request — there

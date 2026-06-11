@@ -1,16 +1,32 @@
 """services/ingest/ingestion/reconcilers/carta.py — gap detection (cap-table).
 
-After an entity shard completes, its cursor carries `high_water_updated` — the
-max Metadata.LastUpdatedTime the fetcher walked. The reconciler probes the LIVE
-firm for any entity of that type updated after the high-water; if one exists, a
-reshare is emitted for that entity type, warm-started at the high-water
-(incremental mode).
+After an `optionGrant` entity shard completes, its cursor carries
+`high_water_modified` — the max `lastModifiedDatetime` the fetcher walked. The
+reconciler probes the LIVE issuer for any grant modified after the high-water
+(`GET /v1alpha1/issuers/{issuer}/optionGrants?pageSize=1&
+lastModifiedDatetimeAfter=<hw>`); if one exists, a reshare is emitted for that
+shard, warm-started at the high-water (incremental mode).
 
-`external_id` parity (versioned by SyncToken, discriminated by entity_kind) means
-re-walked entities dedup against what backfill already wrote — only genuinely
-new/changed entities produce new observations. Pragmatic v1: one cheap 1-row
-query per entity type; it can over-reshare but never under-reshares, and dedup
-makes re-walks idempotent.
+ONLY optionGrants is probeable: it is the one `/v1alpha1` collection with a
+server-side modified-since filter (CONFIRMED — see
+integrations/carta/client.py). The other entity types (stakeholder /
+shareClass / convertibleNote) carry no modification timestamp and no delta
+filter, so there is no cheap gap probe for them — their shards are skipped here
+and rely on the periodic full re-walk, which is idempotent via the
+content-digest-versioned external_id
+(`carta:{issuer}:{kind}:{id}:{version}`).
+
+`external_id` parity means re-walked entities dedup against what backfill
+already wrote — only genuinely new/changed entities produce new observations.
+Pragmatic v1: one cheap 1-row query per grant shard; it can over-reshare but
+never under-reshares, and dedup makes re-walks idempotent.
+
+> **TODO(human):** the rendered docs don't state whether
+> `lastModifiedDatetimeAfter` is inclusive ("on or after") or strictly after.
+> The gap-probe's clean-termination assumes STRICTLY-after (an inclusive bound
+> would re-match the high-water row every pass and reshare forever); the
+> synthetic mock implements strictly-after. Verify on first real
+> (partner-gated) traffic and, if inclusive, nudge the probe bound.
 """
 from __future__ import annotations
 
@@ -34,6 +50,8 @@ log = logging.getLogger(__name__)
 
 SHARD_KIND_ENTITY = "carta_entity"
 RESHARE_RECENCY_SCORE = 1.5
+# The only /v1alpha1 collection with a modified-since filter to probe.
+_PROBEABLE_ENTITY_TYPE = "optionGrant"
 
 
 _pool_provider: Any = None
@@ -72,7 +90,7 @@ async def _load_shard_high_water(pool: Any, shard_id: Any) -> str | None:
         return None
     cursor = state.state_data.get("cursor")
     if isinstance(cursor, dict):
-        hw = cursor.get("high_water_updated")
+        hw = cursor.get("high_water_modified")
         return hw if isinstance(hw, str) else None
     return None
 
@@ -84,7 +102,9 @@ async def _check_one_shard_for_gap(
     if identifier.get("shard_kind") != SHARD_KIND_ENTITY:
         return None
     entity_type = identifier.get("entity_type")
-    if not entity_type:
+    if entity_type != _PROBEABLE_ENTITY_TYPE:
+        # No server-side delta filter for the other collections — nothing
+        # cheap to probe; full re-walks stay idempotent (module docstring).
         return None
 
     high_water = await _load_shard_high_water(pool, shard["id"])
@@ -92,11 +112,8 @@ async def _check_one_shard_for_gap(
         return None
 
     try:
-        rows, _ = await client.query(
-            entity_type,
-            where=f"Metadata.LastUpdatedTime > '{high_water}'",
-            start_position=1,
-            max_results=1,
+        rows, _ = await client.list_option_grants(
+            page_size=1, modified_after=high_water,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(

@@ -1,95 +1,37 @@
-"""services/ingest/integrations/figma/client.py — outbound Figma REST client.
+"""services/ingest/integrations/figma/client.py - outbound Figma REST client.
 
-Single outbound surface for backfill + poll-incremental + the planner's file
-enumeration. Figma is authenticated with a long-lived org/team access token
-presented as a **Bearer** token. The token is resolved once from the secret store
-(or preset in spammer mode) and reused for the life of the client — same posture
-as the Brex/Jira clients. No token refresh (Bearer archetype; OAuth refresh is
-out of v1 scope).
+Verified Figma read surface:
 
-TODO(human): confirm Figma API host + read endpoints/scopes. The host defaults
-via the endpoint resolver (`endpoint("figma_api")` -> https://api.figma.com) and
-is overridable per-install (`base_url`) and per-env (`FIGMA_API_BASE_URL`); the
-read surface below (`/v1/teams/{id}/files`, `/v1/files/{key}`,
-`/v1/files/{key}/events`) is CLONED from Brex's account/transaction shape and is
-UNVERIFIED for Figma — Figma's real reads are `GET /v1/files/:key` (whole tree),
-`GET /v1/files/:key/versions`, `GET /v1/files/:key/comments`,
-`GET /v1/teams/:id/projects` + `GET /v1/projects/:id/files`. There is NO single
-`/events` list endpoint in the real API — backfill must derive "events" from
-versions + comments. The required OAuth scopes (`file_content:read`,
-`file_versions:read`, `file_comments:read`, `projects:read`) must be confirmed
-and the read methods adjusted. Implement only the verified read surface.
+  * GET /v1/teams/{team_id}/projects
+  * GET /v1/projects/{project_id}/files
+  * GET /v1/files/{file_key}
+  * GET /v1/files/{file_key}/versions
+  * GET /v1/files/{file_key}/comments
 
-TODO(human): confirm Figma rate-limit signalling. Defaults to 429 +
-`Retry-After` (Brex's scheme); tune via `FIGMA_RL_MAX_ATTEMPTS` /
-`FIGMA_RL_MAX_SLEEP_SEC`. Figma uses a leaky-bucket scheme with three endpoint
-tiers; Tier-1 file reads are ~10-20/min (Dev/Full seat) and as low as ~6/MONTH
-on View/Collab seats — the token identity MUST be Dev/Full-seat.
-
-Pagination: `list_events` returns `(items, next_offset, total)`, `next_offset is
-None` terminal — offset/limit, CLONED from Brex and UNVERIFIED for Figma (the
-real file-list endpoints' pagination shape — cursor vs full list — is unverified;
-see the fetcher's pagination TODO).
-
-Logging redaction: the access token and the auth header are NEVER logged.
+There is no `/v1/files` list endpoint and no `/events` endpoint. The public
+`list_events` method derives the event stream by merging file versions and
+comments into the handler's existing event shape.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 from typing import Any
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
 import structlog
 
-from lib.shared.errors import CompanyOSError
+from lib.shared.errors import FigmaApiError
 
 
 log = structlog.get_logger("integrations.figma.client")
 
 
 _DEFAULT_TIMEOUT_S = 30.0
-# Default to 100 to bound payload size and keep parity with the other sources.
-# The 500 page cap is CLONED from Brex and UNVERIFIED for Figma.
-_DEFAULT_PAGE_SIZE = 100
-
-
-class FigmaApiError(CompanyOSError):
-    """Outbound Figma REST call failure (design source — Bearer/Brex archetype).
-
-    Figma uses a long-lived org/team access token (`Authorization: Bearer
-    {token}`, no refresh in v1). Mirrors BrexApiError.
-
-    TODO(human): promote this to `lib/shared/errors.py` alongside BrexApiError /
-    RampApiError (the shared-file / wiring agent owns that edit — see the source
-    summary `notes`). It is defined locally here so this vertical compiles and
-    runs standalone without touching the shared errors module.
-
-    Stable `code` values:
-      - figma_api_unauthorized: 401/403 — token rejected / insufficient scope
-      - figma_api_not_found: 404 — file/resource not visible to the token
-      - figma_api_rate_limited: 429 with retry budget exhausted
-      - figma_api_error: other terminal 4xx/5xx
-
-    `context` carries `{http_status?, retry_after?, path?}`. The access token is
-    NEVER placed on context.
-    """
-    default_code = "figma_api_error"
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str | None = None,
-        context: dict[str, Any] | None = None,
-        **extra: Any,
-    ) -> None:
-        merged = dict(context or {})
-        merged.update(extra)
-        super().__init__(message, **merged)
-        if code is not None:
-            self._code = code
+_DEFAULT_PAGE_SIZE = 50
+_MAX_VERSION_PAGE_SIZE = 50
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -102,12 +44,7 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class FigmaClient:
-    """Outbound Figma REST client, one per backfill/poll shard open.
-
-    Built by `services/ingest/ingestion/fetchers/_clients.py::build_figma_client`
-    (production / spammer) and by the seed/onboarding file probe. Shares the
-    process-wide httpx client when one is injected.
-    """
+    """Outbound Figma REST client, one per backfill/poll shard open."""
 
     def __init__(
         self,
@@ -120,17 +57,15 @@ class FigmaClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        team_id: str | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
-        # resolved lazily from the secret store on first request.
         self._api_token: str | None = api_token
+        self._team_id = team_id
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Figma API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
@@ -170,12 +105,14 @@ class FigmaClient:
             )
             return self._api_token
 
-    async def _auth_header(self) -> str:
+    async def _headers(self) -> dict[str, str]:
         token = await self._token()
-        # TODO(human): confirm Figma's bearer header. The REST API historically
-        # also accepted `X-Figma-Token: {token}` for personal access tokens;
-        # OAuth uses `Authorization: Bearer {token}`. We send Bearer (Brex parity).
-        return f"Bearer {token}"
+        # Personal access tokens use X-Figma-Token. OAuth bearer tokens are also
+        # accepted by Figma, but the connect wizard stores PAT-style API tokens.
+        return {
+            "X-Figma-Token": token,
+            "Accept": "application/json",
+        }
 
     async def _request(
         self,
@@ -183,37 +120,30 @@ class FigmaClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        url: str | None = None,
     ) -> dict[str, Any]:
-        """One Figma API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `FigmaApiError`.
-        """
         from services.ingest.integrations.figma import metrics
 
-        auth = await self._auth_header()
-        url = f"{self._api_base_url}{path}"
-        headers = {
-            "Authorization": auth,
-            "Accept": "application/json",
-        }
+        target = url or f"{self._api_base_url}{path}"
+        headers = await self._headers()
         max_attempts = int(os.environ.get("FIGMA_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("FIGMA_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
         attempt = 0
+        log_path = path or urlsplit(target).path
         while True:
             attempt += 1
             try:
                 response = await client.request(
-                    method, url, headers=headers, params=params,
+                    method, target, headers=headers, params=params,
                 )
             except httpx.TransportError as exc:
                 metrics.record_request("error")
                 raise FigmaApiError(
                     "transport error calling figma",
                     code="figma_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                    context={"error_type": type(exc).__name__, "path": log_path},
                 ) from exc
 
             if response.status_code == 429 and attempt < max_attempts:
@@ -229,7 +159,7 @@ class FigmaClient:
                     raise FigmaApiError(
                         "figma response was not a JSON object",
                         code="figma_api_error",
-                        context={"path": path},
+                        context={"path": log_path},
                     )
                 return body
 
@@ -237,29 +167,44 @@ class FigmaClient:
                 metrics.record_request("unauthorized")
             else:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+            raise _api_error_from_response(response, log_path)
 
     # -----------------------------------------------------------------
     # Public read surface
     # -----------------------------------------------------------------
 
-    async def list_files(self) -> list[dict[str, Any]]:
-        """`GET /v1/teams/{id}/files` — all files visible to the token.
-
-        Used at seed/install time to populate `figma_files`, and as the planner's
-        shard list. (Real Figma enumerates teams→projects→files; this single-call
-        shape is CLONED from Brex `list_accounts` and UNVERIFIED.)
-        """
-        resp = await self._request("GET", "/v1/files")
-        files = resp.get("files")
-        if not isinstance(files, list):
-            # Some responses may return the bare list.
-            files = resp if isinstance(resp, list) else []  # type: ignore[assignment]
-        return [f for f in files if isinstance(f, dict)]
+    async def list_files(self, team_id: str | None = None) -> list[dict[str, Any]]:
+        """Enumerate team projects, then project files."""
+        tid = team_id or self._team_id
+        if not tid:
+            raise FigmaApiError(
+                "figma list_files requires a team_id",
+                code="figma_api_error",
+            )
+        projects_body = await self._request(
+            "GET", f"/v1/teams/{quote(tid, safe='')}/projects",
+        )
+        projects = _extract_list(projects_body, "projects")
+        files: list[dict[str, Any]] = []
+        for project in projects:
+            project_id = str(project.get("id") or "")
+            if not project_id:
+                continue
+            body = await self._request(
+                "GET", f"/v1/projects/{quote(project_id, safe='')}/files",
+            )
+            for item in _extract_list(body, "files"):
+                item.setdefault("project_id", project_id)
+                item.setdefault("project_name", project.get("name"))
+                item.setdefault("team_id", tid)
+                files.append(item)
+        return files
 
     async def get_file(self, file_key: str) -> dict[str, Any]:
-        """`GET /v1/files/{key}/meta` — one file's lightweight metadata."""
-        return await self._request("GET", f"/v1/files/{file_key}/meta")
+        """`GET /v1/files/{key}` - file metadata/tree visible to the token."""
+        return await self._request(
+            "GET", f"/v1/files/{quote(file_key, safe='')}",
+        )
 
     async def list_events(
         self,
@@ -269,30 +214,141 @@ class FigmaClient:
         offset: int = 0,
         start: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
-        """`GET /v1/files/{key}/events` — paginated file events/versions.
-
-        `start` (ISO date) optionally bounds the window for incremental polls.
-        Returns `(events, next_offset, total)`; `next_offset is None` signals no
-        more pages. (Real Figma derives "events" from /versions + /comments;
-        this single-stream shape is CLONED from Brex `list_transactions`.)
-        """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        versions = await self._list_versions(file_key)
+        comments = await self._list_comments(file_key)
+        events = [
+            _version_event(file_key, v)
+            for v in versions
+            if isinstance(v, dict)
+        ] + [
+            _comment_event(file_key, c)
+            for c in comments
+            if isinstance(c, dict)
+        ]
         if start:
-            params["start"] = start
-        resp = await self._request(
-            "GET", f"/v1/files/{file_key}/events", params=params,
+            floor = start[:10]
+            events = [e for e in events if _event_date(e) >= floor]
+        events.sort(key=_event_sort_key, reverse=True)
+
+        eff_limit = max(1, int(limit or _DEFAULT_PAGE_SIZE))
+        page = events[offset:offset + eff_limit]
+        total = len(events)
+        next_offset = offset + len(page)
+        is_last = next_offset >= total or not page
+        return page, (None if is_last else next_offset), total
+
+    async def _list_versions(self, file_key: str) -> list[dict[str, Any]]:
+        path = f"/v1/files/{quote(file_key, safe='')}/versions"
+        params: dict[str, Any] = {"page_size": _MAX_VERSION_PAGE_SIZE}
+        body = await self._request("GET", path, params=params)
+        out = _extract_list(body, "versions")
+        next_url = _pagination_next(body)
+        while next_url:
+            body = await self._request("GET", "", url=next_url)
+            out.extend(_extract_list(body, "versions"))
+            next_url = _pagination_next(body)
+        return out
+
+    async def _list_comments(self, file_key: str) -> list[dict[str, Any]]:
+        body = await self._request(
+            "GET", f"/v1/files/{quote(file_key, safe='')}/comments",
         )
-        events = resp.get("events")
-        events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
-        total = int(resp.get("total", len(events)) or 0)
-        next_offset = offset + len(events)
-        is_last = next_offset >= total or not events
-        return events, (None if is_last else next_offset), total
+        return _extract_list(body, "comments")
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _extract_list(body: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = body.get(key)
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _pagination_next(body: dict[str, Any]) -> str | None:
+    pagination = body.get("pagination")
+    if isinstance(pagination, dict):
+        value = pagination.get("next_page") or pagination.get("next")
+        return value if isinstance(value, str) and value else None
+    links = body.get("links")
+    if isinstance(links, dict):
+        value = links.get("next")
+        return value if isinstance(value, str) and value else None
+    return None
+
+
+def _version_event(file_key: str, version: dict[str, Any]) -> dict[str, Any]:
+    version_id = str(version.get("id") or version.get("version") or "")
+    created = (
+        version.get("created_at")
+        or version.get("createdAt")
+        or version.get("timestamp")
+    )
+    label = version.get("label") or version.get("description") or version_id
+    user = version.get("user")
+    actor = None
+    if isinstance(user, dict):
+        actor = user.get("handle") or user.get("name") or user.get("id")
+    elif isinstance(user, str):
+        actor = user
+    return {
+        "id": version_id or f"version:{created or 'unknown'}",
+        "event_id": version_id or f"version:{created or 'unknown'}",
+        "event_type": "FILE_VERSION_UPDATE",
+        "type": "FILE_VERSION_UPDATE",
+        "file_key": file_key,
+        "fileKey": file_key,
+        "version": version_id or created or "none",
+        "label": label,
+        "description": version.get("description"),
+        "user": actor,
+        "triggered_by": {"handle": actor} if actor else None,
+        "createdAt": created,
+        "created_at": created,
+        "raw_version": version,
+    }
+
+
+def _comment_event(file_key: str, comment: dict[str, Any]) -> dict[str, Any]:
+    comment_id = str(comment.get("id") or comment.get("comment_id") or "")
+    created = (
+        comment.get("created_at")
+        or comment.get("createdAt")
+        or comment.get("timestamp")
+    )
+    user = comment.get("user")
+    actor = None
+    if isinstance(user, dict):
+        actor = user.get("handle") or user.get("name") or user.get("id")
+    elif isinstance(user, str):
+        actor = user
+    return {
+        "id": comment_id or f"comment:{created or 'unknown'}",
+        "event_id": comment_id or f"comment:{created or 'unknown'}",
+        "event_type": "FILE_COMMENT",
+        "type": "FILE_COMMENT",
+        "file_key": file_key,
+        "fileKey": file_key,
+        "version": comment.get("updated_at") or created or "none",
+        "label": "File comment",
+        "message": comment.get("message"),
+        "user": actor,
+        "triggered_by": {"handle": actor} if actor else None,
+        "createdAt": created,
+        "created_at": created,
+        "raw_comment": comment,
+    }
+
+
+def _event_date(event: dict[str, Any]) -> str:
+    value = event.get("createdAt") or event.get("created_at") or ""
+    return value[:10] if isinstance(value, str) else ""
+
+
+def _event_sort_key(event: dict[str, Any]) -> str:
+    value = event.get("createdAt") or event.get("created_at")
+    return value if isinstance(value, str) else ""
+
 
 def _safe_json(response: httpx.Response) -> Any:
     try:
@@ -304,7 +360,6 @@ def _safe_json(response: httpx.Response) -> Any:
 def _api_error_from_response(
     response: httpx.Response, path: str,
 ) -> FigmaApiError:
-    """Map a non-2xx Figma response to a typed `FigmaApiError`."""
     status = response.status_code
     if status in (401, 403):
         return FigmaApiError(
@@ -316,7 +371,7 @@ def _api_error_from_response(
         return FigmaApiError(
             "figma 404: file/resource not found or not visible to the token",
             code="figma_api_not_found",
-            context={"http_status": 404, "path": path},
+            context={"http_status": status, "path": path},
         )
     if status == 429:
         return FigmaApiError(

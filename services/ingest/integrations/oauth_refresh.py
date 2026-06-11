@@ -13,14 +13,21 @@ Provider matrix (VERIFIED against official docs — see each fixture's
     (client_id:client_secret), **rotates** the refresh token on every exchange
     (the new `refresh_token` MUST be persisted or the next refresh 400s),
     `expires_in=3600`. Endpoint: `oauth.platform.intuit.com/oauth2/v1/tokens/bearer`.
-  - **Ramp** — `grant_type=refresh_token`, HTTP Basic, `expires_in` (~7200),
-    returns a (possibly rotated) `refresh_token`.
+  - **Ramp** — has NO long-lived refresh credential in our flow: access tokens
+    (~1 h) are **RE-MINTED** via `grant_type=client_credentials` at
+    `POST https://api.ramp.com/developer/v1/token`, HTTP Basic
+    (client_id:client_secret), with the REQUIRED `scope` form field
+    (docs.ramp.com authorization — `scope` is mandatory for this grant). No
+    refresh token is returned for client_credentials.
   - **Gusto** — `grant_type=refresh_token`, client creds in the **body**,
     rotates, `expires_in` (~7200).
   - **Carta** — has **NO refresh-token grant**. Access tokens expire hourly and
-    are **RE-MINTED** via `grant_type=client_credentials` (the stored
+    are **RE-MINTED** via `grant_type=client_credentials` at
+    `POST https://login.app.carta.com/o/access_token/` (trailing slash), HTTP
+    Basic (client_id:client_secret) + the REQUIRED space-delimited `scope`
+    form field (docs.carta.com/carta/docs/client-credentials-flow). The stored
     `refresh_secret_ref` holds the client-credentials *secret*, not an OAuth
-    refresh token). No refresh token is returned.
+    refresh token. No refresh token is returned.
 
 Token-endpoint URLs + client credentials are **app-level config** (env), not
 per-install secrets:
@@ -35,6 +42,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -42,8 +50,31 @@ from typing import Any, Literal
 import httpx
 import structlog
 
+from lib.observability import counter, histogram
+
 
 log = structlog.get_logger("integrations.oauth_refresh")
+
+
+# Provider is bounded by the refresh-capable source set (QBO/Ramp/Gusto/Carta
+# today); outcome is a closed enum so silent token-rotation failure becomes
+# an alertable rate instead of a slow-burn outage.
+_ATTEMPTS = counter(
+    "oauth_refresh_attempts_total",
+    "OAuth token-endpoint exchanges attempted, by provider and grant type.",
+    ("provider", "grant_type"),
+)
+_OUTCOMES = counter(
+    "oauth_refresh_outcomes_total",
+    "OAuth refresh outcomes (success|transport_error|http_4xx|http_5xx|invalid_response|bad_request_config).",
+    ("provider", "outcome"),
+)
+_DURATION = histogram(
+    "oauth_refresh_duration_seconds",
+    "Token-endpoint exchange latency by provider.",
+    ("provider",),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
 
 
 class OAuthRefreshError(Exception):
@@ -73,6 +104,10 @@ class RefreshConfig:
     # SECRET (not an OAuth refresh token), so the client_secret is resolved from
     # the install rather than the app-level env var.
     client_secret_from_install: bool = False
+    # client_credentials grants that REQUIRE a `scope` form field (Ramp —
+    # docs.ramp.com; Carta — docs.carta.com client-credentials flow). None →
+    # no scope is sent.
+    scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +127,7 @@ class RefreshedToken:
 def _cfg(
     provider: str, default_url: str, grant: GrantType, auth: AuthStyle,
     rotates: bool, install_table: str, default_expires_in: int = 3600,
-    client_secret_from_install: bool = False,
+    client_secret_from_install: bool = False, scope: str | None = None,
 ) -> RefreshConfig:
     url = os.environ.get(f"{provider.upper()}_TOKEN_URL", default_url)
     return RefreshConfig(
@@ -100,6 +135,7 @@ def _cfg(
         rotates_refresh_token=rotates, install_table=install_table,
         default_expires_in=default_expires_in,
         client_secret_from_install=client_secret_from_install,
+        scope=scope,
     )
 
 
@@ -112,20 +148,53 @@ REFRESH_CONFIGS: dict[str, RefreshConfig] = {
         install_table="quickbooks_installations", default_expires_in=3600,
     ),
     "ramp": _cfg(
+        # Ramp client-credentials RE-MINT (verified docs.ramp.com authorization
+        # + OpenAPI /developer/v1/token): HTTP Basic client creds, form body
+        # grant_type=client_credentials + REQUIRED scope; access_token
+        # expires_in ~3600; NO refresh token for this grant.
         "ramp", "https://api.ramp.com/developer/v1/token",
-        "refresh_token", "basic", rotates=True,
-        install_table="ramp_installations", default_expires_in=7200,
+        "client_credentials", "basic", rotates=False,
+        install_table="ramp_installations", default_expires_in=3600,
+        scope=os.environ.get(
+            "RAMP_OAUTH_SCOPES",
+            "transactions:read reimbursements:read cards:read users:read "
+            "business:read",
+        ),
     ),
     "gusto": _cfg(
+        # Gusto refresh (verified docs.gusto.com/app-integrations/docs/oauth2):
+        # POST https://api.gusto.com/oauth/token, client creds in the BODY
+        # (client_id/client_secret, no Basic), grant_type=refresh_token;
+        # access_token expires in 7200 s and the refresh token ROTATES
+        # (single-use). TODO(human): the doc example sends the body as
+        #   Content-Type application/json; the shared exchange posts RFC-6749
+        #   x-www-form-urlencoded. Verify accepted on the first real exchange.
         "gusto", "https://api.gusto.com/oauth/token",
         "refresh_token", "body", rotates=True,
         install_table="gusto_installations", default_expires_in=7200,
     ),
     "carta": _cfg(
-        "carta", "https://login.app.carta.com/o/oauth2/token",
-        "client_credentials", "body", rotates=False,
+        # Carta client-credentials RE-MINT (verified
+        # docs.carta.com/carta/docs/client-credentials-flow): the token
+        # endpoint is POST https://login.app.carta.com/o/access_token/ (note
+        # the trailing slash) with HTTP **Basic** client auth
+        # (base64(client_id:client_secret)) + x-www-form-urlencoded body
+        # carrying the REQUIRED space-delimited `scope`. Access tokens live
+        # ~1 h; NO refresh token is returned — re-mint hourly. Default scopes
+        # are the four the /v1alpha1 read surface needs (from the Issuer OAS
+        # security entries); override via CARTA_OAUTH_SCOPES.
+        # TODO(human): Carta's doc example sends `grant_type=CLIENT_CREDENTIALS`
+        #   (uppercase); the shared exchange sends the RFC-6749 lowercase
+        #   value. Verify on the first real (partner-gated) exchange.
+        "carta", "https://login.app.carta.com/o/access_token/",
+        "client_credentials", "basic", rotates=False,
         install_table="carta_installations", default_expires_in=3600,
         client_secret_from_install=True,
+        scope=os.environ.get(
+            "CARTA_OAUTH_SCOPES",
+            "read_issuer_info read_issuer_stakeholders "
+            "read_issuer_shareclasses read_issuer_securities",
+        ),
     ),
 }
 
@@ -159,14 +228,21 @@ async def refresh_access_token(
     transport error, a non-2xx, or a response missing `access_token`.
     """
     now = now or datetime.now(timezone.utc)
+    _ATTEMPTS.inc(provider=config.provider, grant_type=config.grant_type)
 
     form: dict[str, str] = {"grant_type": config.grant_type}
     if config.grant_type == "refresh_token":
         if not refresh_token:
+            _OUTCOMES.inc(provider=config.provider, outcome="bad_request_config")
             raise OAuthRefreshError(
                 config.provider, "refresh_token grant requires a refresh_token",
             )
         form["refresh_token"] = refresh_token
+    elif config.grant_type == "client_credentials" and config.scope:
+        # Ramp (docs.ramp.com) and Carta (docs.carta.com client-credentials
+        # flow) both REQUIRE `scope` for this grant; providers without a
+        # configured scope send none.
+        form["scope"] = config.scope
 
     headers = {
         "Accept": "application/json",
@@ -174,6 +250,7 @@ async def refresh_access_token(
     }
     if config.auth_style == "basic":
         if not (client_id and client_secret):
+            _OUTCOMES.inc(provider=config.provider, outcome="bad_request_config")
             raise OAuthRefreshError(
                 config.provider,
                 "missing client_id/client_secret for Basic auth "
@@ -190,16 +267,24 @@ async def refresh_access_token(
         if client_secret is not None:
             form["client_secret"] = client_secret
 
+    started = time.monotonic()
     try:
         resp = await http.post(config.token_url, data=form, headers=headers)
     except httpx.TransportError as exc:
+        _DURATION.observe(time.monotonic() - started, provider=config.provider)
+        _OUTCOMES.inc(provider=config.provider, outcome="transport_error")
         raise OAuthRefreshError(
             config.provider, f"transport error: {type(exc).__name__}",
         ) from exc
+    _DURATION.observe(time.monotonic() - started, provider=config.provider)
 
     if resp.status_code // 100 != 2:
         # 400 invalid_grant (revoked / stale rotated refresh token) and 401
         # (bad client creds) are the auth-degraded signals.
+        _OUTCOMES.inc(
+            provider=config.provider,
+            outcome="http_5xx" if resp.status_code >= 500 else "http_4xx",
+        )
         raise OAuthRefreshError(
             config.provider,
             f"token endpoint returned {resp.status_code}",
@@ -208,14 +293,17 @@ async def refresh_access_token(
 
     body = _safe_json(resp)
     if not isinstance(body, dict):
+        _OUTCOMES.inc(provider=config.provider, outcome="invalid_response")
         raise OAuthRefreshError(
             config.provider, "token endpoint response was not a JSON object",
         )
     access = body.get("access_token")
     if not isinstance(access, str) or not access:
+        _OUTCOMES.inc(provider=config.provider, outcome="invalid_response")
         raise OAuthRefreshError(
             config.provider, "token endpoint response missing access_token",
         )
+    _OUTCOMES.inc(provider=config.provider, outcome="success")
 
     new_refresh: str | None = None
     if config.grant_type == "refresh_token" and config.rotates_refresh_token:

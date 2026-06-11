@@ -433,7 +433,7 @@ async def build_telegram_client(
 async def build_brex_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Brex read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    """Brex read-client (IN-FIN2, Bearer auth over real v2 cash/card APIs). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
     (or preset in spammer mode). The base URL routes through the endpoint
     resolver so backfill can point at the local spammer's `/brex` sub-path."""
@@ -461,12 +461,14 @@ async def build_brex_client(
 async def build_ramp_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Ramp read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
-    token is resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The scope id `business_id` (realm_id-equivalent)
-    is per-install and scopes every request; in spammer mode the base URL is
-    overridden via the endpoint resolver so backfill points at the local
-    spammer's `/ramp` sub-path."""
+    """Ramp read-client (IN-FIN2, OAuth client-credentials — verified
+    docs.ramp.com Developer API). The Bearer access token is resolved once from
+    the secret store via `install['secret_ref']` (or preset in spammer mode);
+    on 401 it is RE-MINTED via client_credentials (no refresh token exists for
+    that grant). `business_id` is the per-install identity carried on records
+    (it scopes external_ids, not the URL — the REST collections are
+    token-scoped); in spammer mode the base URL is overridden via the endpoint
+    resolver so backfill points at the local spammer's `/ramp` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.ramp.client import RampClient
 
@@ -495,10 +497,11 @@ async def build_ramp_client(
 async def build_gusto_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Gusto read-client (IN-FIN2, OAuth/QuickBooks archetype). OAuth access
-    token is resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The scope id `company_uuid` (realm_id-equivalent)
-    is per-install and scopes every request; in spammer mode the base URL is
+    """Gusto read-client (IN-FIN2, OAuth payroll REST — /v1 bare-array
+    endpoints, header pagination). OAuth access token is resolved once from
+    the secret store via `install['secret_ref']` (or preset in spammer mode).
+    The scope id `company_uuid` is per-install and scopes every request
+    (`/v1/companies/{company_uuid}/...`); in spammer mode the base URL is
     overridden via the endpoint resolver so backfill points at the local
     spammer's `/gusto` sub-path."""
     from lib.integrations.endpoints import endpoint
@@ -529,7 +532,7 @@ async def build_gusto_client(
 async def build_deel_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Deel read-client (IN-FIN2, Bearer/Mercury archetype). API token is
+    """Deel read-client (IN-FIN2, Bearer auth over /rest/v2). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
     (or preset in spammer mode). The base URL routes through the endpoint
     resolver so backfill can point at the local spammer's `/deel` sub-path."""
@@ -557,7 +560,7 @@ async def build_deel_client(
 async def build_fireflies_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Fireflies read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
+    """Fireflies read-client (IN-VERTICALS, GraphQL-only Bearer API). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
     (or preset in spammer mode). The base URL routes through the endpoint
     resolver so backfill can point at the local spammer's `/fireflies`
@@ -610,7 +613,7 @@ async def build_miro_client(
 async def build_figma_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Figma read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
+    """Figma read-client (IN-VERTICALS, PAT/Bearer REST API). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
     (or preset in spammer mode). The base URL routes through the endpoint
     resolver so backfill can point at the local spammer's `/figma` sub-path."""
@@ -620,6 +623,7 @@ async def build_figma_client(
     spammer = _spammer_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    team_id = str(install["team_id"]) if "team_id" in install else ""
     client = FigmaClient(
         base_url=base_url,
         pool=await _effective_pool(pool, spammer=spammer),
@@ -629,6 +633,7 @@ async def build_figma_client(
         api_token=("spam-figma" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("figma_api") if spammer else None),
+        team_id=team_id,
     )
     return client
 
@@ -638,8 +643,9 @@ async def build_carta_client(
 ) -> Any:
     """Carta read-client (IN-VERTICALS, Gusto/OAuth archetype). OAuth access
     token is resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The scope id `firm_id` (realm_id-equivalent) is
-    per-install and scopes every request; in spammer mode the base URL is
+    (or preset in spammer mode). The scope id is the Carta **issuer id**
+    (stored in `carta_installations.firm_id` — the column predates the issuer
+    naming) and scopes every per-issuer read; in spammer mode the base URL is
     overridden via the endpoint resolver so backfill points at the local
     spammer's `/carta` sub-path."""
     from lib.integrations.endpoints import endpoint
@@ -647,11 +653,11 @@ async def build_carta_client(
 
     spammer = _spammer_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
-    firm_id = str(install["firm_id"]) if "firm_id" in install else ""
+    issuer_id = str(install["firm_id"]) if "firm_id" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = CartaClient(
         base_url=base_url,
-        firm_id=firm_id,
+        issuer_id=issuer_id,
         pool=await _effective_pool(pool, spammer=spammer),
         secret_store=None if spammer else await _get_secret_store(),
         tenant_id=install["tenant_id"],

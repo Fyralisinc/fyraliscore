@@ -4,8 +4,8 @@ In-process replacement for `HibobClient` at the `_open_hibob_client` fetcher sea
 (services/ingest/ingestion/fetchers/hibob.py). Implements ONLY what the
 backfill/poll fetcher + reconciler call:
 
-  - list_entities(entity_type, limit=..., offset=..., modified_since=...)
-        -> (rows, next_offset | None)
+  - list_entities(entity_type, limit=..., offset=..., page_cursor=...,
+        modified_since=...) -> (rows, next_page | None)
   - company_info()  -> connectivity probe (the reconciler does not call it, but
     parity with the real client surface keeps the seam swap total)
 
@@ -68,9 +68,10 @@ class MockHibobClient(_MockBase):
         *,
         limit: int = 100,
         offset: int = 0,
+        page_cursor: str | None = None,
         modified_since: str | None = None,
-    ) -> tuple[list[dict[str, Any]], int | None]:
-        """One offset page of `entity_type` rows + the next offset (or None).
+    ) -> tuple[list[dict[str, Any]], int | str | None]:
+        """One page of `entity_type` rows + the next offset/cursor (or None).
 
         Returns `(rows, next_offset)`; `next_offset is None` is terminal. Honours
         the `modified_since` incremental filter when present.
@@ -82,7 +83,7 @@ class MockHibobClient(_MockBase):
 
         # The page cap the fetcher actually honours is min(requested, fixture).
         per_page = min(limit, self._default_page_size)
-        start = max(0, offset)
+        start = int(page_cursor) if isinstance(page_cursor, str) and page_cursor.isdigit() else max(0, offset)
         page = rows_all[start:start + per_page]
 
         # Terminal exactly as the real client computes it: a short (or empty)

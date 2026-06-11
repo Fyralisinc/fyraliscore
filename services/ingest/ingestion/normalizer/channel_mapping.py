@@ -171,15 +171,17 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("brex", "backfill"): "brex:transaction",
     ("brex", "poll"): "brex:transaction",
     ("brex", "webhook"): "brex:transaction",
-    # Ramp — backfill + poll + webhook (finance, IN-FIN2, OAuth/QuickBooks
-    # archetype). Ramp (card/spend) has BOTH a live push surface (HMAC-signed
-    # webhooks) AND a historical query surface (transactions list). Backfill
-    # walks each business entity once; the incremental driver re-runs under
-    # ingress_kind="poll" using the `updated` high-water; the webhook ingress
-    # delivers live transaction events. ALL route to the single
-    # `ramp:transaction` channel; external_id parity
-    # (`ramp:{business}:txn:{id}:{state}`) collapses a backfilled transaction and
-    # its live twin to one observation.
+    # Ramp — backfill + poll + webhook (finance, IN-FIN2, OAuth
+    # client-credentials, keyset-paginated REST — verified docs.ramp.com).
+    # Ramp (card/spend) has BOTH a live push surface (HMAC-signed flat
+    # webhooks) AND a historical query surface (the /transactions,
+    # /reimbursements, /cards, /users collections). Backfill walks each
+    # entity stream once via `page.next` keyset pagination; the incremental
+    # driver re-runs under ingress_kind="poll" using the per-stream high-water
+    # (`from_date` / `updated_after`); the webhook ingress delivers live
+    # transaction events. ALL route to the single `ramp:transaction` channel;
+    # external_id parity (`ramp:{business}:txn:{id}:{state}`) collapses a
+    # backfilled transaction and its live twin to one observation.
     ("ramp", "backfill"): "ramp:transaction",
     ("ramp", "poll"): "ramp:transaction",
     ("ramp", "webhook"): "ramp:transaction",

@@ -1,39 +1,40 @@
 """services/ingest/integrations/ramp/oauth.py — admin connect wizard (finance).
 
-Cloned from the QuickBooks OAuth archetype. Ramp authenticates with OAuth 2.0 —
-a short-lived access token plus a rotating refresh token, every call scoped to a
-company ``businessId``. As in the QBO archetype this repo deliberately does NOT
-implement the full OAuth bounce (authorize → callback → code exchange): the read
-client consumes the current access token and the `oauth_poller` owns refresh. So
-the genuine production install surface is operator-mediated credential
-submission: the operator pastes the `business_id` + the `access_token` (and
-`refresh_token`) they obtained from their Ramp OAuth app, and the router verifies
-them against the REAL Ramp API before seeding the install.
+Ramp authenticates with OAuth 2.0 **client credentials** (verified
+docs.ramp.com authorization): a Bearer access token is minted at
+``POST {base}/token`` (HTTP Basic ``client_id:client_secret``, form body
+``grant_type=client_credentials&scope=…``), lives ~1 h, and is RE-MINTED on
+expiry — there is NO refresh token for this grant. The production install
+surface is operator-mediated credential submission: the operator pastes either
 
-TODO(human): implement Ramp OAuth token refresh (refresh-on-401 or poller; none
-exists — this is the QBO seam). refresh_secret_ref + token_expires_at are
-persisted (see finalize_install / the migration); the exchange endpoint + grant
-flow + rotation are UNVERIFIED. Do NOT assume tokens never expire.
+  - the ``client_id`` + ``client_secret`` of the Ramp app (the router mints a
+    token and verifies it), or
+  - a pre-minted ``access_token`` directly.
 
-This is the production surface the audit flagged as missing: `finalize_install`
-/ `register_webhook_installation` were reachable only through the dev
-`finance_router` panel (synthetic data, `X-Tenant-Id` header). Here the tenant
-comes from Bearer auth and the tokens are real + persisted encrypted via the
-gateway `secret_store` (only opaque refs reach the install tables).
+``business_id`` is DISCOVERED via the ``GET /business`` probe (its ``id`` is
+the same business_id every Ramp webhook carries at root); a provided
+``business_id`` is validated against the probe when both exist.
+
+Re-mint credentials for the poll path are app-level env config
+(``RAMP_CLIENT_ID`` / ``RAMP_CLIENT_SECRET`` — see oauth_refresh.py).
+> **TODO(human):** decide whether tenants bring their OWN Ramp app
+> (per-install client credentials, Carta-style `client_secret_from_install`)
+> or share one platform app via the env creds — a product decision the docs
+> don't make for us. The env-cred model is wired today.
 
 Flow:
 
     POST /integrations/ramp/connect/preflight
-        body: { business_id, access_token, base_url? }
-        → RampClient.company_info() to verify the token + business
+        body: { access_token? | (client_id, client_secret), base_url?, scopes? }
+        → mint (if needed) + RampClient.business() to verify the credential
         → on auth failure: a structured 400 (no secret is stored)
 
     POST /integrations/ramp/connect/finalize
-        body: { business_id, access_token, refresh_token?, base_url?, entities?,
-                token_expires_at?, webhook_verifier_token? }
-        → re-verify creds
-        → store the access token (+ refresh token, + webhook verifier token,
-          if given) in the secret store
+        body: preflight fields + { business_id?, entities?,
+                webhook_verifier_token? }
+        → re-verify creds (mint + probe)
+        → store the access token (+ webhook verifier token, if given) in the
+          secret store
         → finalize_install(): UPSERT ramp_installations + ramp_entities
           + an onboarding_triggers row (source='ramp') so the M6 backfill
           chain fires; when a webhook verifier token is supplied,
@@ -43,6 +44,7 @@ Flow:
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -65,9 +67,8 @@ from services.ingest.integrations.ramp.onboarding import (
 log = structlog.get_logger("integrations.ramp.oauth")
 
 
-# Ramp production host (UNVERIFIED — plausible default, overridable per-install
-# via the base_url field and per-env via RAMP_API_BASE_URL).
-# TODO(human): confirm Ramp API host + sandbox host.
+# Ramp production host (VERIFIED docs.ramp.com; overridable per-install via the
+# base_url field and per-env via RAMP_API_BASE_URL).
 _DEFAULT_BASE_URL = "https://api.ramp.com/developer/v1"
 
 
@@ -96,22 +97,33 @@ def _secret_store_from_request(request: Request) -> Any:
     return store
 
 
-def _require_creds(body: dict[str, Any]) -> tuple[str, str, str]:
-    business_id = (body.get("business_id") or "").strip()
-    access_token = (body.get("access_token") or "").strip()
+def _require_creds(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate the credential material: a preset access_token OR a
+    client_id+client_secret pair to mint with."""
+    access_token = (body.get("access_token") or "").strip() or None
+    client_id = (body.get("client_id") or "").strip() or None
+    client_secret = (body.get("client_secret") or "").strip() or None
+    scopes = (body.get("scopes") or "").strip() or None
     base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
-    if not business_id:
-        raise HTTPException(status_code=400, detail="business_id is required")
-    if not access_token:
-        raise HTTPException(status_code=400, detail="access_token is required")
+    if not access_token and not (client_id and client_secret):
+        raise HTTPException(
+            status_code=400,
+            detail="provide either access_token or client_id + client_secret",
+        )
     if not base_url.startswith(("https://", "http://")):
         raise HTTPException(status_code=400, detail="base_url must be a full URL")
-    return business_id, access_token, base_url
+    return {
+        "access_token": access_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scopes": scopes,
+        "base_url": base_url,
+    }
 
 
 def _auth_failure_response(exc: RampApiError) -> JSONResponse:
-    """Map a credential/connectivity failure to a structured 400. The access
-    token is never echoed back (RampApiError keeps it off context)."""
+    """Map a credential/connectivity failure to a structured 400. The token /
+    client secret are never echoed back (RampApiError keeps them off context)."""
     unauthorized = getattr(exc, "code", "") == "ramp_api_unauthorized"
     return JSONResponse(
         status_code=400,
@@ -121,60 +133,85 @@ def _auth_failure_response(exc: RampApiError) -> JSONResponse:
                 "ramp_auth_failed" if unauthorized else "ramp_api_error"
             ),
             "message": (
-                "Ramp rejected the access token / business. The token may be "
-                "expired — refresh it via your Ramp OAuth app and retry, and "
-                "confirm the business_id matches the connected company."
+                "Ramp rejected the credentials. Check the client_id/"
+                "client_secret (and that client_credentials is a permitted "
+                "grant type with the read scopes on the Ramp app), or that "
+                "the pasted access_token has not expired."
                 if unauthorized
                 else "Could not reach the Ramp API. Check the base_url "
-                "(production vs sandbox) and the business_id."
+                "(production vs sandbox)."
             ),
             "underlying_error": str(exc)[:300],
         },
     )
 
 
-@router.post("/connect/preflight")
-async def connect_preflight(request: Request) -> JSONResponse:
-    """Verify the access token + business via the companyinfo probe."""
-    _tenant_from_request(request)  # auth check
-    body = await request.json()
-    business_id, access_token, base_url = _require_creds(body)
+async def _verify_and_probe(
+    creds: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, datetime | None]:
+    """Mint a token if needed and probe `GET /business`.
 
+    Returns `(business_info, access_token, token_expires_at)` — the token is
+    the minted one (or the pasted one), expiry only known when minted."""
     client = RampClient(
-        base_url=base_url, business_id=business_id, access_token=access_token,
+        base_url=creds["base_url"],
+        access_token=creds["access_token"],
+        client_id=creds["client_id"],
+        client_secret=creds["client_secret"],
+        scopes=creds["scopes"],
     )
     try:
-        info = await client.company_info()
-    except RampApiError as exc:
-        return _auth_failure_response(exc)
+        expires_at: datetime | None = None
+        access_token = creds["access_token"]
+        if not access_token:
+            minted = await client.mint_token()
+            access_token = minted.get("access_token")
+            expires_in = minted.get("expires_in")
+            if isinstance(expires_in, (int, float)):
+                expires_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=int(expires_in),
+                )
+        info = await client.business()
+        return info, access_token, expires_at
     finally:
         await client.aclose()
 
-    company = info.get("CompanyInfo") if isinstance(info, dict) else None
-    company_name = company.get("CompanyName") if isinstance(company, dict) else None
+
+@router.post("/connect/preflight")
+async def connect_preflight(request: Request) -> JSONResponse:
+    """Verify the credentials via mint (if needed) + the `GET /business` probe."""
+    _tenant_from_request(request)  # auth check
+    body = await request.json()
+    creds = _require_creds(body)
+
+    try:
+        info, _, _ = await _verify_and_probe(creds)
+    except RampApiError as exc:
+        return _auth_failure_response(exc)
+
     return JSONResponse(content={
         "ok": True,
-        "business_id": business_id,
-        "base_url": base_url,
-        "company_name": company_name,
+        "business_id": str(info.get("id") or ""),
+        "business_name": info.get("business_name_legal")
+        or info.get("business_name_on_card"),
+        "base_url": creds["base_url"],
         "entities": list(DEFAULT_ENTITIES),
     })
 
 
 @router.post("/connect/finalize")
 async def connect_finalize(request: Request) -> JSONResponse:
-    """Persist tokens + install the source.
+    """Persist the token + install the source.
 
-    Credentials are verified BEFORE any secret is written, so an invalid token
-    leaves no `encrypted_secrets` / install rows behind.
+    Credentials are verified BEFORE any secret is written, so an invalid
+    credential leaves no `encrypted_secrets` / install rows behind.
     """
     tenant_id = _tenant_from_request(request)
     pool = _pool_from_request(request)
     store = _secret_store_from_request(request)
     body = await request.json()
-    business_id, access_token, base_url = _require_creds(body)
+    creds = _require_creds(body)
 
-    refresh_token = (body.get("refresh_token") or "").strip() or None
     webhook_verifier_token = (body.get("webhook_verifier_token") or "").strip() or None
     requested_entities = body.get("entities")
     if requested_entities is not None and not isinstance(requested_entities, list):
@@ -184,27 +221,30 @@ async def connect_finalize(request: Request) -> JSONResponse:
         if requested_entities else list(DEFAULT_ENTITIES)
     )
 
-    # 1. Verify creds — before any write.
-    client = RampClient(
-        base_url=base_url, business_id=business_id, access_token=access_token,
-    )
+    # 1. Verify creds + discover the business — before any write.
     try:
-        await client.company_info()
+        info, access_token, token_expires_at = await _verify_and_probe(creds)
     except RampApiError as exc:
         return _auth_failure_response(exc)
-    finally:
-        await client.aclose()
 
-    # 2. Persist tokens encrypted-at-rest; only opaque refs reach the DB.
+    discovered = str(info.get("id") or "")
+    provided = (body.get("business_id") or "").strip()
+    if provided and discovered and provided != discovered:
+        raise HTTPException(
+            status_code=400,
+            detail="business_id does not match the connected Ramp business",
+        )
+    business_id = discovered or provided
+    if not business_id:
+        raise HTTPException(
+            status_code=400,
+            detail="could not determine business_id from the Ramp API",
+        )
+
+    # 2. Persist the token encrypted-at-rest; only opaque refs reach the DB.
     secret_ref = await store.put(
         access_token, label=f"ramp_access_token:{business_id}", tenant_id=tenant_id,
     )
-    refresh_secret_ref = None
-    if refresh_token:
-        refresh_secret_ref = await store.put(
-            refresh_token, label=f"ramp_refresh_token:{business_id}",
-            tenant_id=tenant_id,
-        )
     webhook_secret_ref = None
     if webhook_verifier_token:
         webhook_secret_ref = await store.put(
@@ -212,15 +252,17 @@ async def connect_finalize(request: Request) -> JSONResponse:
             tenant_id=tenant_id,
         )
 
-    # 3. Install: ramp_installations + ramp_entities + trigger.
+    # 3. Install: ramp_installations + ramp_entities + trigger. (No rotating
+    # refresh token exists for client_credentials — refresh_secret_ref stays
+    # NULL; expiry is handled by the env-cred re-mint.)
     install_id = await finalize_install(
         pool,
         tenant_id=tenant_id,
         business_id=business_id,
-        base_url=base_url,
+        base_url=creds["base_url"],
         entities=entities,
         secret_ref=secret_ref,
-        refresh_secret_ref=refresh_secret_ref,
+        token_expires_at=token_expires_at,
         webhook_secret_ref=webhook_secret_ref,
     )
 
@@ -245,6 +287,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
     return JSONResponse(content={
         "ok": True,
         "installation_id": str(install_id),
+        "business_id": business_id,
         "entity_count": len(entities),
         "webhook_registered": webhook_registered,
     })

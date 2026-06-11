@@ -51,7 +51,7 @@ def test_build_raw_s3_key_rejects_unknown_source() -> None:
     with pytest.raises(ValueError, match="unknown source"):
         build_raw_s3_key(
             env="dev",
-            source="linkedin",  # type: ignore[arg-type]
+            source="not_a_source",  # type: ignore[arg-type]
             tenant_id=UUID("019e34fb-ab3a-7000-9463-5f51662b2be3"),
             ymd=date(2026, 5, 17),
             content_hash="x" * 40,

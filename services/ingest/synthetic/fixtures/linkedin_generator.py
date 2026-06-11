@@ -1,37 +1,36 @@
 """LinkedIn organization fixture generator (IN-PEOPLE, source 25, partner-gated).
 
 `make_linkedin(organization_urn=..., entities=[...], rows_per_entity=N, seed=...)`
-produces a deterministic per-entity-type fixture shaped to feed
-`MockLinkedinClient`. The mock paginates each entity list by LinkedIn's offset
-cursor (`STARTPOSITION` / `start_position`) — cloning the Carta/Gusto query shape
-— and the fetcher drives one `linkedin_entity` shard per entity type.
+produces a deterministic per-stream fixture shaped to feed
+`MockLinkedinClient`, mirroring the REAL Community-Management API shapes:
 
-Each generated entity carries exactly the fields the `linkedin:object` handler
-reads (handlers/linkedin.py):
-  - `Id`, `MetaData.LastUpdatedTime` (every entity) — `Id` is the external_id key
-    (`linkedin:{org}:{kind}:{id}`, NOT version-suffixed per the CONTRACT),
-    `LastUpdatedTime` is the high-water + occurred_at,
-  - `Status` (the handler's state_change/open classifier),
-  - `AuthorRef` + per-entity extras (ImpressionCount / LikeCount / FollowerCount).
+  - "post" — `/rest/posts?q=author` finder elements: `id` is a share URN
+    (`urn:li:share:{n}`), `author` is the organization URN, and `createdAt` /
+    `lastModifiedAt` / `publishedAt` are **epoch-millis integers**. The mock
+    serves these DESC by `lastModifiedAt` with `start`/`count` offset paging.
+  - "share_statistics" — time-bound `organizationalEntityShareStatistics`
+    elements: `timeRange{start,end}` (epoch millis) + `totalShareStatistics`
+    counters. `timeRange.start` is the snapshot-bucket id the handler keys the
+    external_id on.
+  - "follower_statistics" — time-bound `organizationalEntityFollowerStatistics`
+    elements: `timeRange{start,end}` + `followerGains{organicFollowerGain,
+    paidFollowerGain}`.
 
-DEFAULT: 3 entity kinds (share / social_action / follower_stat) × 1 row =
-exactly 3 backfill observations per tenant. Because the entity_kind is baked into
-the external_id (`linkedin:{org}:{kind}:{id}`), the rows stay distinct even if
-their `Id`s repeat — so multi-entity fixtures never collide (organization-data
-shaped, NOT transaction-shaped).
+DEFAULT: 3 streams (post / share_statistics / follower_statistics) × 1 row =
+exactly 3 backfill observations per tenant. The entity_kind is baked into the
+external_id (`linkedin:{org}:{kind}:{id}`), so streams stay distinct even if
+their ids repeat — multi-stream fixtures never collide.
 
 Determinism: timestamps are spaced one minute apart, oldest first, anchored at
-`base_iso`; ids/values are derived from a stable SHA-256 digest of
-(seed, organization_urn, entity_type, idx). Re-running with the same args yields
-byte-identical output. The `seed` kwarg, when set, salts the digest so distinct
-tenants get distinct ids without colliding (the organization_urn namespaces the
-global observations UNIQUE; the entity_kind discriminator keeps same-id rows
-distinct WITHIN a tenant).
+`base_iso` (converted to epoch millis); ids/values are derived from a stable
+SHA-256 digest of (seed, organization_urn, entity_type, idx). Re-running with
+the same args yields byte-identical output. The `seed` kwarg, when set, salts
+the digest so distinct tenants get distinct values (the organization_urn
+namespaces the global observations UNIQUE).
 
-NOTE: LinkedIn recruitment APIs are PARTNER-GATED (Marketing Developer Platform /
-Talent Solutions, invite-only). This fixture mirrors the placeholder read surface
-the production client clones from Carta/Gusto; the real per-entity data shapes are
-UNVERIFIED pending partner entitlement (see integrations/linkedin/client.py).
+NOTE: keep `base_iso` within the API's rolling 12-month statistics window of
+the clock the harness runs under — the fetcher requests time-bound statistics
+from `now - 12 months`, and the mock honours that floor like the wire does.
 """
 from __future__ import annotations
 
@@ -40,8 +39,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-# The three organization entities the planner shards on (client.DEFAULT_ENTITIES).
-DEFAULT_ENTITIES: tuple[str, ...] = ("share", "social_action", "follower_stat")
+# The three organization streams the planner shards on (client.DEFAULT_ENTITIES).
+DEFAULT_ENTITIES: tuple[str, ...] = (
+    "post", "share_statistics", "follower_statistics",
+)
+
+_DAY_MS = 24 * 3600 * 1000
 
 
 def make_linkedin(
@@ -56,20 +59,21 @@ def make_linkedin(
     """Build a LinkedIn organization fixture.
 
     Args:
-      organization_urn: LinkedIn organization URN scope-id (stamped into refs +
-        returned at top level).
-      entities: Entity types to generate; defaults to the three organization
-        entities ("share", "social_action", "follower_stat").
-      rows_per_entity: Number of rows generated for EACH entity type. The default
-        3 entities × 1 row = exactly 3 backfill observations per tenant.
-      seed: Optional salt mixed into the deterministic digest so distinct tenants
-        get distinct ids (the organization_urn namespaces the global observations
-        UNIQUE; the entity_kind discriminator already keeps same-id rows distinct
-        WITHIN a tenant).
-      base_iso: Anchor for the (deterministic, 1-min-spaced) LastUpdatedTime
+      organization_urn: LinkedIn organization URN scope-id (stamped into post
+        authors / organizationalEntity refs + returned at top level). A bare
+        id is up-converted to `urn:li:organization:{id}` on wire-shaped fields
+        only — the top-level scope-id stays verbatim (it namespaces the
+        external_id exactly as the install row does).
+      entities: Streams to generate; defaults to the three organization
+        streams ("post", "share_statistics", "follower_statistics").
+      rows_per_entity: Number of rows generated for EACH stream. The default
+        3 streams × 1 row = exactly 3 backfill observations per tenant.
+      seed: Optional salt mixed into the deterministic digest so distinct
+        tenants get distinct values.
+      base_iso: Anchor for the (deterministic, 1-min-spaced) epoch-millis
         timestamps. Accepts "...Z" or an explicit offset.
-      page_size: The mock client's per-query MAXRESULTS cap (so callers can drive
-        multi-page pagination by setting rows_per_entity > page_size).
+      page_size: The mock client's per-call `count` cap (so callers can drive
+        multi-page posts pagination by setting rows_per_entity > page_size).
 
     Returns:
       Fixture dict consumed by `MockLinkedinClient(fixture=...)`:
@@ -77,20 +81,20 @@ def make_linkedin(
           "organization_urn": "...",
           "page_size": 100,
           "entities": {
-            "share":         [ {<full LinkedIn entity>}, ... ],   # oldest-first
-            "social_action": [ ... ],
-            "follower_stat": [ ... ],
+            "post":                [ {<post element>}, ... ],     # oldest-first
+            "share_statistics":    [ {<stat element>}, ... ],
+            "follower_statistics": [ {<stat element>}, ... ],
           },
         }
     """
     ents = list(entities) if entities is not None else list(DEFAULT_ENTITIES)
-    base = _parse_iso(base_iso)
+    base_ms = _epoch_ms(_parse_iso(base_iso))
     salt = "" if seed is None else str(seed)
 
     entities_out: dict[str, list[dict[str, Any]]] = {}
     for entity_type in ents:
         rows = [
-            _entity(organization_urn, entity_type, idx, base, salt)
+            _entity(organization_urn, entity_type, idx, base_ms, salt)
             for idx in range(rows_per_entity)
         ]
         entities_out[entity_type] = rows
@@ -103,50 +107,73 @@ def make_linkedin(
 
 
 # ---------------------------------------------------------------------
-# Per-entity builders
+# Per-stream builders
 # ---------------------------------------------------------------------
 
 def _entity(
-    organization_urn: str, entity_type: str, idx: int, base: datetime, salt: str,
+    organization_urn: str, entity_type: str, idx: int, base_ms: int, salt: str,
 ) -> dict[str, Any]:
-    # ISO LastUpdatedTime spaced 1 minute apart, oldest first, with offset.
-    updated = (base + timedelta(minutes=idx)).isoformat()
+    # Epoch-millis timestamps spaced 1 minute apart, oldest first.
+    stamp_ms = base_ms + idx * 60_000
     digest = _digest(salt, organization_urn, entity_type, idx)
-    entity_id = str(1000 + idx)
+    author_urn = _org_wire_urn(organization_urn)
 
-    entity: dict[str, Any] = {
-        "Id": entity_id,
-        "DocNumber": f"{entity_type[:3].upper()}-{entity_id}",
-        "Status": "active",
-        "AuthorRef": {
-            "value": str(1 + idx), "name": f"Member-{digest[:6]}",
-        },
-        "MetaData": {
-            "CreateTime": (base - timedelta(days=1)).isoformat(),
-            "LastUpdatedTime": updated,
+    if entity_type == "post":
+        return {
+            "id": f"urn:li:share:{1000 + idx}",
+            "author": author_urn,
+            "commentary": f"Org update {digest[:6]}",
+            "visibility": "PUBLIC",
+            "lifecycleState": "PUBLISHED",
+            "lifecycleStateInfo": {"isEditedByAuthor": False},
+            "isReshareDisabledByAuthor": False,
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "thirdPartyDistributionChannels": [],
+            },
+            "createdAt": stamp_ms - _DAY_MS,
+            "publishedAt": stamp_ms - _DAY_MS,
+            "lastModifiedAt": stamp_ms,
+        }
+
+    # Statistics streams: one time-bound bucket per row, window-keyed by
+    # timeRange.start (the snapshot version the handler uses as the id).
+    time_range = {"start": stamp_ms, "end": stamp_ms + _DAY_MS}
+    if entity_type == "share_statistics":
+        return {
+            "organizationalEntity": author_urn,
+            "timeRange": time_range,
+            "totalShareStatistics": {
+                "clickCount": 7 * (idx + 1),
+                "likeCount": 10 * (idx + 1),
+                "commentCount": idx + 1,
+                "shareCount": idx,
+                "impressionCount": 1000 * (idx + 1),
+                "uniqueImpressionsCount": 800 * (idx + 1),
+                "engagement": round(0.005 * (idx + 1), 6),
+            },
+        }
+    # follower_statistics (and any custom stream name falls through to this
+    # follower-shaped default, keeping unknown-entity fixtures harmless).
+    return {
+        "organizationalEntity": author_urn,
+        "timeRange": time_range,
+        "followerGains": {
+            "organicFollowerGain": 100 * (idx + 1) + (int(digest[:4], 16) % 50),
+            "paidFollowerGain": 10 * (idx + 1),
         },
     }
-
-    if entity_type == "share":
-        entity["ImpressionCount"] = 1000 * (idx + 1)
-        entity["LikeCount"] = 10 * (idx + 1)
-        entity["CommentCount"] = idx + 1
-        entity["Text"] = f"Org update {digest[:6]}"
-    elif entity_type == "social_action":
-        entity["LikeCount"] = 50 * (idx + 1)
-        entity["CommentCount"] = 5 * (idx + 1)
-        entity["ShareCount"] = idx + 1
-    else:  # follower_stat
-        entity["FollowerCount"] = 10_000 + (int(digest[:6], 16) % 90_000)
-        entity["OrganicFollowerGain"] = 100 * (idx + 1)
-        entity["PaidFollowerGain"] = 10 * (idx + 1)
-
-    return entity
 
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+def _org_wire_urn(organization_urn: str) -> str:
+    if organization_urn.startswith("urn:"):
+        return organization_urn
+    return f"urn:li:organization:{organization_urn}"
+
 
 def _parse_iso(value: str) -> datetime:
     s = value
@@ -154,6 +181,10 @@ def _parse_iso(value: str) -> datetime:
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _epoch_ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
 
 
 def _digest(*parts: Any) -> str:
