@@ -37,14 +37,14 @@ path by seeding `ingestion.kafka_path_enabled=FALSE` for its tenants
 full-mode write path).
 
 ============================================================
-PER-ENVELOPE TRANSACTION CONTRACT (M5 Finding 4)
+PER-ENVELOPE TRANSACTION + BATCHED CONSUME CONTRACT
 ============================================================
-Each envelope gets ONE call to `ingest_from_draft`, which opens its
-own transaction. There is NO batched-transaction wrapper. The
-performance floor is ~50 obs/sec/process — acceptable for M5/M6
-load profiles; a future M-Throughput work-unit may refactor
-`ingest_from_draft` to share a transaction across envelopes if
-M-Load binds.
+Each envelope still gets ONE call to `ingest_from_draft`, which opens
+its own transaction and preserves the existing DLQ / partition self-heal
+semantics. The writer can now batch-consume Kafka records and process
+independent tenant groups concurrently; offsets commit only after the
+whole batch reaches a definitive outcome. A crash before commit replays
+the batch, and the observation unique key dedups already-written rows.
 
 ============================================================
 ERROR HANDLING
@@ -64,6 +64,7 @@ import datetime as dt
 import json
 import logging
 import os
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -163,6 +164,8 @@ _metrics: dict[str, float] = {
     "writer.dlq_publish.success": 0.0,
     "writer.dlq_publish.failure": 0.0,
     "writer.dlq_publish.skipped": 0.0,
+    "writer.batches_consumed": 0.0,
+    "writer.batch_messages_consumed": 0.0,
 }
 
 
@@ -453,6 +456,12 @@ class WriterConfig:
     # used for DLQ publishes (one IdempotentProducer can publish to
     # multiple topics).
     embedding_producer: Any = None
+    # Batch-consume normalized messages and process tenant groups
+    # concurrently. Defaults preserve the historical serial loop; prod
+    # enables this via WRITER_BATCH_SIZE / WRITER_MAX_CONCURRENCY.
+    batch_size: int = 1
+    batch_timeout_ms: int = 500
+    max_batch_concurrency: int = 1
 
 
 async def _handle_message(
@@ -701,21 +710,91 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
     health = start_health_server(get_metrics=get_metrics, heartbeat=heartbeat)
     ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
     try:
-        while True:
-            msg = await next_or_stop(consumer, stop_event)
-            if msg is None:
-                break
-            consumed += 1
-            await _handle_message_with_retry(
-                msg, config=config, dlq_producer=dlq_producer,
-                embedding_producer=embedding_producer, stop_event=stop_event,
-            )
-            await consumer.commit()
-            if (
-                config.stop_after is not None
-                and consumed >= config.stop_after
-            ):
-                break
+        if config.batch_size <= 1 and config.max_batch_concurrency <= 1:
+            while True:
+                msg = await next_or_stop(consumer, stop_event)
+                if msg is None:
+                    break
+                consumed += 1
+                await _handle_message_with_retry(
+                    msg, config=config, dlq_producer=dlq_producer,
+                    embedding_producer=embedding_producer, stop_event=stop_event,
+                )
+                await consumer.commit()
+                if (
+                    config.stop_after is not None
+                    and consumed >= config.stop_after
+                ):
+                    break
+        else:
+            sem = asyncio.Semaphore(max(1, config.max_batch_concurrency))
+
+            async def _process_group(group: list[Any]) -> None:
+                # Concurrency is between tenant groups. Messages within one
+                # Kafka key stay serial, preserving the ordering contract for
+                # a tenant while independent tenants overlap DB/S3/Kafka I/O.
+                async with sem:
+                    for m in group:
+                        await _handle_message_with_retry(
+                            m,
+                            config=config,
+                            dlq_producer=dlq_producer,
+                            embedding_producer=embedding_producer,
+                            stop_event=stop_event,
+                        )
+
+            while not stop_event.is_set():
+                try:
+                    batches = await consumer.getmany(
+                        timeout_ms=config.batch_timeout_ms,
+                        max_records=config.batch_size,
+                    )
+                except TypeError:
+                    # Test fakes in this repo predate aiokafka's
+                    # max_records parameter.
+                    batches = await consumer.getmany(
+                        timeout_ms=config.batch_timeout_ms,
+                    )
+                messages: list[Any] = []
+                for partition_messages in batches.values():
+                    messages.extend(partition_messages)
+                if not messages:
+                    if (
+                        config.stop_after is not None
+                        and consumed >= config.stop_after
+                    ):
+                        break
+                    continue
+
+                consumed += len(messages)
+                _bump("writer.batches_consumed")
+                _bump("writer.batch_messages_consumed", float(len(messages)))
+
+                groups: dict[bytes, list[Any]] = defaultdict(list)
+                for msg in messages:
+                    groups[msg.key or b""].append(msg)
+
+                results = await asyncio.gather(
+                    *(_process_group(group) for group in groups.values()),
+                    return_exceptions=True,
+                )
+                first_error = next(
+                    (r for r in results if isinstance(r, Exception)),
+                    None,
+                )
+                if first_error is not None:
+                    raise first_error
+
+                # Commit only after the entire batch has reached a definitive
+                # outcome. A crash before this point replays the batch, and
+                # observation-level dedup handles already-inserted rows.
+                await consumer.commit()
+
+                if (
+                    config.stop_after is not None
+                    and consumed >= config.stop_after
+                ):
+                    break
     finally:
         ticker.cancel()
         if health is not None:
@@ -831,6 +910,13 @@ def main() -> None:
                 # embedding_pending=TRUE and the M3.2 embedding
                 # worker (or M3.3 backlog drainer) picks them up.
                 embedder=None,
+                batch_size=int(os.environ.get("WRITER_BATCH_SIZE", "1")),
+                batch_timeout_ms=int(
+                    os.environ.get("WRITER_BATCH_TIMEOUT_MS", "500")
+                ),
+                max_batch_concurrency=int(
+                    os.environ.get("WRITER_MAX_CONCURRENCY", "1")
+                ),
             )
             try:
                 await run_writer(config)

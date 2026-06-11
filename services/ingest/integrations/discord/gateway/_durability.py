@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
+
 
 async def pre_save_flush(
     kafka_producer: Any,
@@ -56,7 +58,9 @@ async def pre_save_flush(
     """
     if kafka_producer is None:
         return
-    remaining = await kafka_producer.flush(timeout_seconds)
+    remaining = await coalesced_flush(
+        kafka_producer, timeout_seconds=timeout_seconds,
+    )
     if remaining > 0:
         raise TimeoutError(
             f"Kafka flush returned with {remaining} message(s) still "

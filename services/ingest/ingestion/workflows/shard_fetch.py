@@ -228,6 +228,7 @@ PATTERN-ALIGNMENT MAPPING
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from dataclasses import dataclass
@@ -635,6 +636,12 @@ class ShardFetchConfig:
     # Bound on a single page fetch's rate-limit wait (LLD §13 FetchPage
     # gate). Past this, the loop exits transiently for orphan-scan retry.
     rate_limit_max_wait_seconds: float = DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS
+    # Independent shards can drain concurrently; each shard still preserves
+    # its internal page order and N1 cursor barrier.
+    max_concurrent_shards: int = 1
+    # Per-page raw-tier S3 write fan-out. All writes must finish before the
+    # page's Kafka flush/cursor advance barrier runs.
+    s3_write_concurrency: int = 1
 
 
 # ---------------------------------------------------------------------
@@ -857,18 +864,32 @@ class ShardFetch(LongRunningService):
     async def tick(self) -> None:
         """One tick: drain signals + scan for orphans.
 
-        Each signal handler runs the FULL fetch loop for its shard
-        synchronously (the loop is not gated by tick interval). One
-        slow fetcher can therefore consume an entire tick — that is
-        the intended back-pressure. Concurrent replicas drain
-        signals via SKIP LOCKED.
+        Signal handlers run the FULL fetch loop for their shard. Work
+        is concurrent only across independent shards; each shard keeps
+        its own cursor loop serial so the N1 publish-before-cursor
+        barrier remains intact. Concurrent replicas drain signals via
+        SKIP LOCKED.
         """
         signals_processed = 0
-        for _ in range(self._config.max_signals_per_tick):
-            processed = await self._process_one_signal()
-            if not processed:
+        remaining = self._config.max_signals_per_tick
+        width = max(1, self._config.max_concurrent_shards)
+        while remaining > 0:
+            wave_size = min(width, remaining)
+            results = await asyncio.gather(
+                *(self._process_one_signal() for _ in range(wave_size)),
+                return_exceptions=True,
+            )
+            first_error = next(
+                (r for r in results if isinstance(r, Exception)),
+                None,
+            )
+            if first_error is not None:
+                raise first_error
+            processed_in_wave = sum(1 for r in results if r is True)
+            signals_processed += processed_in_wave
+            remaining -= wave_size
+            if processed_in_wave < wave_size:
                 break
-            signals_processed += 1
 
         orphans_resumed = await self._scan_and_resume_orphans()
 
@@ -957,17 +978,27 @@ class ShardFetch(LongRunningService):
             lease_timeout_seconds=self._config.lease_timeout_seconds,
             limit=self._config.max_signals_per_tick,
         )
-        resumed = 0
-        for orphan in orphans:
+        sem = asyncio.Semaphore(max(1, self._config.max_concurrent_shards))
+
+        async def _resume_one(orphan: asyncpg.Record) -> int:
             shard_id = orphan["id"]
-            async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    won = await _refresh_shard_lease(conn, shard_id)
-            if not won:
-                continue
-            resumed += 1
-            await self._run_fetch_loop(orphan)
-        return resumed
+            async with sem:
+                async with self._pool.acquire() as conn:
+                    async with conn.transaction():
+                        won = await _refresh_shard_lease(conn, shard_id)
+                if not won:
+                    return 0
+                await self._run_fetch_loop(orphan)
+                return 1
+
+        results = await asyncio.gather(
+            *(_resume_one(orphan) for orphan in orphans),
+            return_exceptions=True,
+        )
+        first_error = next((r for r in results if isinstance(r, Exception)), None)
+        if first_error is not None:
+            raise first_error
+        return sum(int(r) for r in results)
 
     async def _bootstrap_workflow_state(
         self, conn: asyncpg.Connection, shard_id: UUID,
@@ -1112,15 +1143,22 @@ class ShardFetch(LongRunningService):
                         "s3_client=… to ShardFetch."
                     )
                 try:
-                    msgs = [
-                        await _write_record_and_build_message(
-                            self._s3_client,
-                            tenant_id=tenant_id, source=source,
-                            shard_id=shard_id, cursor=cursor, record=rec,
-                            env=self._config.ingestion_env,
-                        )
-                        for rec in result.records
-                    ]
+                    write_sem = asyncio.Semaphore(
+                        max(1, self._config.s3_write_concurrency)
+                    )
+
+                    async def _write_one(rec: dict[str, Any]) -> KafkaMessage:
+                        async with write_sem:
+                            return await _write_record_and_build_message(
+                                self._s3_client,
+                                tenant_id=tenant_id, source=source,
+                                shard_id=shard_id, cursor=cursor, record=rec,
+                                env=self._config.ingestion_env,
+                            )
+
+                    msgs = await asyncio.gather(
+                        *(_write_one(rec) for rec in result.records)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     # Transient raw-tier (S3) write failure — missing bucket,
                     # 5xx, network. This is infra, not a poison shard: leave
@@ -1363,6 +1401,9 @@ class ShardFetch(LongRunningService):
 #   SHARD_FETCH_BATCH         — max signals per tick (default 10).
 #   SHARD_FETCH_LEASE_SEC     — orphan lease timeout (default 30.0).
 #   SHARD_FETCH_FLUSH_SEC     — Kafka flush timeout (default 5.0).
+#   SHARD_FETCH_CONCURRENCY   — concurrent independent shard loops
+#                               (default 1).
+#   SHARD_FETCH_S3_WRITE_CONCURRENCY — per-page S3 PUT fan-out (default 1).
 #   SHARD_FETCH_INSTANCE      — instance name for diagnostics.
 #   REDIS_URL                 — Redis for the FetchPage rate-limit gate
 #                               (LLD §13). Unset → gate disabled.
@@ -1425,6 +1466,12 @@ async def _run_service() -> None:
                 "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
                 str(DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS),
             ),
+        ),
+        max_concurrent_shards=int(
+            os.environ.get("SHARD_FETCH_CONCURRENCY", "1"),
+        ),
+        s3_write_concurrency=int(
+            os.environ.get("SHARD_FETCH_S3_WRITE_CONCURRENCY", "1"),
         ),
     )
 

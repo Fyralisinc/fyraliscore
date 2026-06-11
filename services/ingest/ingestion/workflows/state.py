@@ -52,6 +52,8 @@ import asyncpg
 import orjson
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
+
 
 log = logging.getLogger(__name__)
 
@@ -309,7 +311,9 @@ async def advance_cursor_atomic_with_kafka_publish(
         ) from exc
 
     # ---- Step 2: flush — broker-ack barrier (A6 precedent). ----
-    remaining = await kafka_producer.flush(flush_timeout_seconds)
+    remaining = await coalesced_flush(
+        kafka_producer, timeout_seconds=flush_timeout_seconds,
+    )
     if remaining > 0:
         log.warning(
             "workflow.cursor_advance_flush_failed",

@@ -286,6 +286,68 @@ async def test_fast_path_ambiguous_returns_none(
     assert any(a["normalized"] == "paula" for a in ambiguous)
 
 
+async def test_fast_path_resolve_many_returns_unambiguous_refs(
+    repo: EntityAliasRepo, tenant: uuid.UUID, fresh_db: asyncpg.Pool
+) -> None:
+    from services.domain.actors.repo import ActorRepo
+
+    product_ref = {"type": "product", "canonical_ref": "prod:search"}
+    customer_ref = {"type": "customer", "canonical_ref": "acct:acme"}
+    await repo.insert_alias(
+        phrase="Search V2",
+        resolved_entity_ref=product_ref,
+        source="manual",
+        confidence=0.95,
+        tenant_id=tenant,
+    )
+    await repo.insert_alias(
+        phrase="Acme Corp",
+        resolved_entity_ref=customer_ref,
+        source="manual",
+        confidence=0.9,
+        tenant_id=tenant,
+    )
+
+    actors = ActorRepo(fresh_db)
+    paula_eng = await actors.create_actor(
+        email="paula.bulk.eng@example.com",
+        display_name="Paula Bulk Engineering",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    paula_mkt = await actors.create_actor(
+        email="paula.bulk.mkt@example.com",
+        display_name="Paula Bulk Marketing",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    await repo.insert_alias(
+        phrase="Paula Bulk",
+        resolved_entity_ref={"type": "actor", "id": str(paula_eng.id)},
+        source="manual",
+        confidence=0.8,
+        actor_id=paula_eng.id,
+        tenant_id=tenant,
+    )
+    await repo.insert_alias(
+        phrase="Paula Bulk",
+        resolved_entity_ref={"type": "actor", "id": str(paula_mkt.id)},
+        source="manual",
+        confidence=0.8,
+        actor_id=paula_mkt.id,
+        tenant_id=tenant,
+    )
+
+    resolved = await repo.fast_path_resolve_many(
+        ["search   v2", "ACME CORP", "Paula Bulk", "missing"], tenant,
+    )
+
+    assert resolved == {
+        "search v2": product_ref,
+        "acme corp": customer_ref,
+    }
+
+
 # ---------------------------------------------------------------------
 # record_usage
 # ---------------------------------------------------------------------

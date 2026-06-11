@@ -9,7 +9,9 @@ brittle and offers little signal.
 """
 from __future__ import annotations
 
+import asyncio
 
+from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.kafka import IdempotentProducer, ProducerConfig
 
 
@@ -69,3 +71,30 @@ async def test_idempotent_producer_starts_idempotently() -> None:
     # anything; the queue is empty.
     await p.stop(timeout_seconds=1.0)
     assert p.is_started is False
+
+
+async def test_coalesced_flush_batches_concurrent_waiters() -> None:
+    class _FlushSpy:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.timeouts: list[float] = []
+
+        async def flush(self, timeout_seconds: float) -> int:
+            self.calls += 1
+            self.timeouts.append(timeout_seconds)
+            await asyncio.sleep(0)
+            return 0
+
+    producer = _FlushSpy()
+    results = await asyncio.gather(
+        *(
+            coalesced_flush(
+                producer, timeout_seconds=2.0, max_delay_ms=1,
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert results == [0, 0, 0, 0, 0]
+    assert producer.calls == 1
+    assert producer.timeouts == [2.0]

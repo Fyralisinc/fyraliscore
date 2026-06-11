@@ -39,6 +39,9 @@ _DEFAULT_TICK_S = 60.0          # how often the loop wakes
 _POLL_GAP_S = 120              # min seconds between live polls per target
 _LEASE_BATCH = 50
 _MAX_FAILURES = 5
+_MAX_CONCURRENCY = int(
+    os.environ.get("GOOGLE_DRIVE_LIVE_POLLER_MAX_CONCURRENCY", "1")
+)
 
 _CHANNEL = "google_drive:file"
 
@@ -154,20 +157,30 @@ async def _bump_failure(
                 )
 
 
-async def tick(pool: asyncpg.Pool) -> int:
+async def tick(
+    pool: asyncpg.Pool, *, max_concurrency: int | None = None,
+) -> int:
     async with pool.acquire() as conn:
         rows = await _lease_due_targets(conn, limit=_LEASE_BATCH)
-    n = 0
-    for row in rows:
-        try:
-            await poll_one(pool, row)
-            n += 1
-        except Exception as exc:  # noqa: BLE001
-            log.exception(
-                "gdrive.live.tick_error",
-                drive_id=row["drive_id"], error=str(exc)[:200],
-            )
-    return n
+    if not rows:
+        return 0
+
+    sem = asyncio.Semaphore(max(1, max_concurrency or _MAX_CONCURRENCY))
+
+    async def _run_one(row: asyncpg.Record) -> int:
+        async with sem:
+            try:
+                await poll_one(pool, row)
+                return 1
+            except Exception as exc:  # noqa: BLE001
+                log.exception(
+                    "gdrive.live.tick_error",
+                    drive_id=row["drive_id"], error=str(exc)[:200],
+                )
+                return 0
+
+    results = await asyncio.gather(*(_run_one(row) for row in rows))
+    return sum(results)
 
 
 async def run_forever(
