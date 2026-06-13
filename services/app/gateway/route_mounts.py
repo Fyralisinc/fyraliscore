@@ -117,7 +117,3 @@ def mount_gateway_routes(
             app.include_router(build_slack_router())
         except Exception as exc:  # noqa: BLE001 - never block startup
             log.error("slack_router_mount_failed", error=str(exc))
-
-    from services.ingest.github_intel.api import build_github_intel_router
-
-    app.include_router(build_github_intel_router())

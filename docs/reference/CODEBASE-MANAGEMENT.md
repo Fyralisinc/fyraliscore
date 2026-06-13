@@ -130,8 +130,7 @@ services/
   reasoning/  think, retrieval, topology, judgment,
               relationships, dynamics, contestability,
               calibration                                — Think pipeline & retrieval
-  ingest/     ingestion, integrations, synthetic,
-              code_intel, github_intel                   — signal intake
+  ingest/     ingestion, integrations, synthetic         — signal intake
   domain/     models, acts, resources, observations,
               actors, entity_aliases, bridge, falsifiers — persisted substrate
   platform/   access_control, execution                 — cross-cutting infra

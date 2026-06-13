@@ -7,9 +7,9 @@ runs** — is each ingested.
 
 It deliberately stops at the point where a GitHub event becomes an
 `ObservationDraft`. Everything downstream of that (the ingestion core, Kafka,
-embeddings, the Memory Fabric) is out of scope. (The code-intelligence layer
-that consumes the resulting observations lives in `services/github_intel` and is
-also out of scope here.)
+embeddings, the Memory Fabric) is out of scope. (The GitHub Intelligence layer
+that consumes the resulting observations has been extracted to a separate repo,
+`Fyralisinc/github-intel`, and is also out of scope here.)
 
 ---
 
@@ -354,7 +354,8 @@ Highlights:
   `github_repo`, `github_branch`, `github_commit` — using `node_id`s and the
   repo full name (e.g. [handlers/github.py:199‑205](../../../services/ingestion/handlers/github.py#L199-L205)).
 - **Changed files** for PRs/pushes are gathered into `content.changed_files` /
-  `content.files` to drive the `services/github_intel` blast‑radius layer
+  `content.files` to drive the GitHub Intelligence blast‑radius layer (now a
+  separate repo, `Fyralisinc/github-intel`)
   ([handlers/github.py:172](../../../services/ingestion/handlers/github.py#L172), [253‑267](../../../services/ingestion/handlers/github.py#L253-L267)).
 - An unknown `X-GitHub-Event` is rejected with a `ValidationError` listing the
   supported set ([handlers/github.py:539‑545](../../../services/ingestion/handlers/github.py#L539-L545)).

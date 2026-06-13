@@ -53,7 +53,6 @@ graph TD
     subgraph reasoning["Reasoning & maintenance workers"]
       THINK["think_worker"]
       PCW["post_commit_worker"]
-      GHI["github_intel_worker"]
       SWEEP["topology_sweeper"]
     end
 
@@ -86,7 +85,6 @@ graph TD
     THINK -->|"poll think_trigger_queue"| PG
     THINK --> LLM
     PCW -->|"poll pending_post_commit_actions"| PG
-    GHI --> PG
     SWEEP -->|"enqueue model_reeval_queue"| PG
 ```
 
@@ -105,7 +103,7 @@ The `docker-compose.yml` stack (init one-shots, infra, then app processes):
 - **Ingestion consumer chain:** `normalizer`, `observation_writer`,
   `embedding_worker`, `embedding_backlog`, `dlq_writer`.
 - **Live source workers:** `discord_gateway`, `gmail_watch`, `gmail_history`.
-- **Reasoning:** `think_worker`, `post_commit_worker`, `github_intel_worker`.
+- **Reasoning:** `think_worker`, `post_commit_worker`.
 
 !!! warning "`topology_sweeper` is not a compose service"
     Despite appearing in the runtime diagram above, `topology_sweeper` is **not**
@@ -125,7 +123,6 @@ Kafka + a moto-S3 mock.
 | Gateway | `uvicorn services.app.gateway:app` (compose `gateway`). |
 | Think worker | `scripts/run_think_worker.py`. |
 | Post-commit worker | `scripts/run_post_commit_worker.py`. |
-| GitHub intel worker | `scripts/run_github_intel_worker.py`. |
 | Discord gateway / Gmail watch / Gmail history | `scripts/run_discord_gateway_worker.py`, `run_gmail_watch_scheduler.py`, `run_gmail_history_poller.py`. |
 | Migrations | `scripts/docker-migrate.sh` (idempotent; tracks `schema_migrations`). |
 | Kafka topics | `scripts/provision_kafka_topics.py` (derived from `RawEnvelope.SourceLiteral`). |

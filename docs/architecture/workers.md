@@ -12,7 +12,7 @@ Postgres tables/queues to enqueue Think triggers and maintain the substrate.
     only one with a launcher is `topology_sweeper` (`scripts/run_topology_sweeper.py`,
     also started by `scripts/dogfood_up.sh`). The rest are **implemented but not
     deployed** as first-class processes here. (The compose stack *does* run the
-    `think_worker`, `post_commit_worker`, `github_intel_worker`, and the ingestion
+    `think_worker`, `post_commit_worker`, and the ingestion
     consumer workers — but those live in [`services/reasoning`](reasoning.md) and
     [`services/ingest`](ingest.md), **not** in `services/workers/`.) This matches
     `CODEBASE-ARCHITECTURE.md` §12 ("implemented but not first-class compose

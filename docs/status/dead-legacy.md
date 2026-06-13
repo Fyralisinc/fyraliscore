@@ -45,7 +45,6 @@ gaps worth tracking.
 | `integrations/discord/gateway/{leader_lock,lifecycle,session_state}.py` | Discord HA single-instance lease + crash-RESUME | Built+tested but the launcher bypasses them → 2 replicas double-deliver; restart drops buffered frames. |
 | `ingestion/feature_flags/{circuit_breaker,__main__}.py` | Kafka-cutover auto circuit breaker | Built+tested, no launcher (and would watch a now-dead default topic). |
 | `ingestion/workflows/__main__.py` | `WORKFLOW_SERVICE` env dispatcher | The 6 deployed workflow services use explicit module commands; this selector isn't invoked. |
-| `code_intel/embed.py` | Code-RAG embedding fill | Only the demo script calls `fill_pending_embeddings`; reindex never fills → code-search empty in prod. |
 | `reasoning/calibration/{__init__,hit_rate}.py` | Per-class 30-day calibration anchor (`classify_card`) | Only tests + the package `__init__` import it → calibration anchors not surfaced at runtime. |
 | `product/demo/{budget,model_routing,notifications}.py` | Demo cost-cap, per-tenant LLM model override, notification suppression | Imported only by tests → the demo router doesn't enforce the cost cap / model routing / suppression at runtime. |
 | `workers/deadline_resolver/evaluators.py` | Kind-specific falsifier evaluators | Reached only via the unwired deadline resolver + the falsifier test harness. |

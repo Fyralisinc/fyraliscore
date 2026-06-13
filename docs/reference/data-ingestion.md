@@ -5,7 +5,7 @@
 > where every moving part lives* — without first reading the whole codebase.
 >
 > **Source of truth:** `services/ingest/` (packages `ingestion`, `integrations`,
-> `synthetic`, `code_intel`, `github_intel`), the `db/migrations/` tree, and
+> `synthetic`), the `db/migrations/` tree, and
 > `docker-compose.yml`. This document is a *companion* to the shorter
 > [architecture page](../architecture/ingest.md); it goes deeper and is written
 > to be self-contained.
@@ -576,20 +576,13 @@ transitions are durable even if a progress publish is lost.
 
 ## 12. Intelligence enrichment
 
-Two subsystems enrich GitHub signals *inline* so the **same observation row**
-carries reasoning, not just raw payload:
-
-- **`github_intel`** (`services/ingest/github_intel/`) maintains
-  PR/CI/branch/issue **finite-state machines** from `github:webhook` observations,
-  and (step 1.5 of ingest) writes causal context into the observation's
-  `content['intelligence']` (state transition + code blast radius + a causal
-  "why"). It is **raw-on-failure**: any error is swallowed and the raw draft
-  persists. An ordered, per-repo worker (`github_intel_worker`, draining
-  `github_intel_queue`) does the heavier enrichment and writes
-  `github_signal_enrichment`. A read-only `/github-intel/*` router exposes it.
-- **`code_intel`** (`services/ingest/code_intel/`) maintains a commit-SHA-versioned
-  per-repo **code graph + code-RAG embeddings** ("blast radius") that `github_intel`
-  consults to answer "what does this change touch?"
+> **Extracted.** The two subsystems that enriched GitHub signals — **`github_intel`**
+> (PR/CI/branch/issue FSMs + inline `content['intelligence']` enrichment + the ordered
+> `github_intel_queue` worker + the `/github-intel/*` read API) and **`code_intel`**
+> (per-repo code graph + code-RAG "blast radius") — have been **extracted to a separate
+> repo (`Fyralisinc/github-intel`)** as the first step of the interface-platform plan.
+> The inline step-1.5 hook is removed from core; github webhook *ingestion* stays. They
+> return as the first external interface (see ADR-0004).
 
 ---
 
@@ -740,7 +733,7 @@ A fast lookup for "I need to change/understand X":
 | Kill-switch / circuit breaker | `services/ingest/ingestion/feature_flags/` |
 | Embedding retry / backlog | `services/ingest/ingestion/writers/embedding_worker/`, `…/recovery/embedding_backlog/` |
 | DLQ | `services/ingest/ingestion/dlq/`, `…/writers/dlq_writer/` |
-| GitHub/code enrichment | `services/ingest/github_intel/`, `services/ingest/code_intel/` |
+| GitHub/code enrichment *(extracted)* | `Fyralisinc/github-intel` (separate repo) |
 | Prove ingestion correctness | `services/ingest/synthetic/validation_runs/run_all_sources.py` |
 | Gateway workers (Discord/Telegram/Signal) | `services/ingest/integrations/{discord,telegram,signal}/gateway/`, `scripts/run_*_gateway_worker.py` |
 

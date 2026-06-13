@@ -15,7 +15,7 @@ Core is **backend-only**: the FastAPI gateway, domain services, workers, and mig
 | [services/app](services/app) | gateway, webhooks, realtime | HTTP/WS entrypoints and request dispatch. |
 | [services/product](services/product) | greeting, today, forecasts, query, conversations, recommendations, decision_deltas, history, model_trace, rendering | CEO-facing surfaces composed from substrate + reasoning. (The demo runtime moved to the overlay.) |
 | [services/reasoning](services/reasoning) | think, retrieval, sage, topology, judgment, relationships, dynamics, contestability, calibration | Think pipeline, retrieval, adaptive synthesis, topology, scoring. |
-| [services/ingest](services/ingest) | ingestion, integrations, synthetic, code_intel, github_intel | Signal intake, third-party integrations, synthetic signals. |
+| [services/ingest](services/ingest) | ingestion, integrations, synthetic | Signal intake, third-party integrations, synthetic signals. (The GitHub/code intelligence layer was extracted to `Fyralisinc/github-intel`.) |
 | [services/domain](services/domain) | models, acts, resources, observations, actors, entity_aliases, bridge, falsifiers | The core persisted substrate. |
 | [services/platform](services/platform) | access_control, execution | Cross-cutting infrastructure (authz, execution routing). |
 | [services/workers](services/workers) | anomaly_processor, entity_resolver, calibration_updater, deadline_resolver, precipitation, edge_drift, topology_sweeper, maintenance, … | Background worker packages. |

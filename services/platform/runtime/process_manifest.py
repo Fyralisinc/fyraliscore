@@ -307,14 +307,6 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         compose_service="google_drive_watch_scheduler",
     ),
     _proc(
-        "github_intel_worker",
-        "live-source",
-        ("python", "scripts/run_github_intel_worker.py"),
-        ("production",),
-        "GitHub ordered intelligence worker.",
-        compose_service="github_intel_worker",
-    ),
-    _proc(
         "sage_structural_features_worker",
         "reasoning",
         ("python", "scripts/run_sage_structural_features_worker.py"),
