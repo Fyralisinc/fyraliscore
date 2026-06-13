@@ -95,6 +95,7 @@ nav:
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
       - Interfaces & Extensions: architecture/interfaces.md
+      - Interface platform roadmap: architecture/interface-platform-roadmap.md
       - Observability — Prometheus & Grafana: architecture/observability_architecture.md
       - Observability audit (2026-06-11): architecture/observability_audit.md
   - Services: services.md

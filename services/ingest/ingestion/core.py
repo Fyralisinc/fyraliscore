@@ -255,6 +255,17 @@ async def ingest_from_draft(
             f"channel={channel!r}"
         )
 
+    # ---- step 1.5: draft enrichment (registered enrichers; raw-on-failure) ----
+    # Channel-keyed enrichers may augment draft.content IN PLACE before
+    # persistence, so the same observation row carries the derived signal (e.g.
+    # the github-intel extension's inline causal enrichment). Core discovers
+    # enrichers via the company_os.draft_enrichers entry-point group — it never
+    # imports an extension. No-op when none are registered; any enricher failure
+    # is swallowed inside run_enrichers so the RAW draft still persists.
+    from services.ingest.ingestion.enrichers import run_enrichers
+
+    await run_enrichers(channel, draft, pool=pool, tenant_id=tenant_id)
+
     # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
 

@@ -215,3 +215,16 @@ forbidden_modules = [
 # CODEBASE-MANAGEMENT.md, so enforcing transitively here would be a red gate
 # for a pre-existing condition rather than a guard against new regressions.
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "extension host API hides internals (lib.extensions never imports services)"
+type = "forbidden"
+# The published host-API surface (manifest, host_api/v1, registry) lives under
+# lib.extensions so external code binds to a stable, internals-free contract.
+# Subsumed by the broad "lib is independent of services" rule, but named
+# explicitly here as the load-bearing guard for ADR-0004: a host refactor must
+# never leak a services.* type across the extension boundary. The concrete,
+# DB-touching enforcement (SubstrateReader impl, extension_can_read) lives under
+# services.platform.extensions / services.platform.access_control by design.
+source_modules = ["lib.extensions"]
+forbidden_modules = ["services"]

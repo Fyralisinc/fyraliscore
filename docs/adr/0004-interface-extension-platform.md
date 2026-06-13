@@ -1,6 +1,6 @@
 # ADR-0004: Interface/extension platform — developer-hosted third-party extensions on a governed host boundary
 
-- **Status:** Proposed <!-- Proposed | Accepted | Superseded by ADR-XXXX | Deprecated -->
+- **Status:** Accepted — E0–E2 + DP-1 implemented 2026-06-13 (first-party/verified governance + the developer foundation are production-grade; E3/E4 — the third-party data plane + marketplace — remain demand-gated). <!-- Proposed | Accepted | Superseded by ADR-XXXX | Deprecated -->
 - **Date:** 2026-06-13
 - **Deciders:** Core / platform team <!-- TODO(human): confirm named deciders -->
 - **Related:** [Interfaces & Extensions](../architecture/interfaces.md) · [ADR-0001 (Kafka-first ingestion)](0001-kafka-first-ingestion-default.md) · `CODEBASE-MANAGEMENT.md` (layering/monorepo decisions)
@@ -63,11 +63,45 @@ Rejected alternatives:
   becomes belief (mirrors Backstage's entity-provider-at-the-edge vs host-owned
   processor split).
 
+**Governance specifics (resolved 2026-06-13).** Four points the proposal had left open
+are now decided (rationale grounded in how the substrate actually behaves — `trust_tier`
+is a continuous *weight* in retrieval/edge scoring, not a binary gate):
+
+- **Egress redaction.** The filtered stream emits versioned read *projections*
+  (`ObservationView`), never raw `observations` rows; each streamed channel ships a
+  redaction projection authored *alongside its handler*, default-stripping the raw
+  payload (`content["_raw"]`) and actor-identity fields. The channel/source owner
+  defines "sensitive"; a tenant admin may **tighten, never loosen**.
+- **Edge-ingest trust ceiling.** Third-party edge-ingested observations **default to
+  `inferential_external`** (extensions *derive*, they do not witness a system of record)
+  and are **capped at `attested_agent`** — granted only with a recorded re-attestation
+  justification. `authoritative` / `authoritative_external` are **unreachable** for any
+  non-first-party; over-ceiling writes are **rejected, not silently downgraded**;
+  unreviewed/private extensions floor at `unvetted`. Because trust is a weight, this
+  ceiling — not a gate — is the primary limiter on how much third-party signal can move
+  synthesis.
+- **Review rigor scales with blast radius (tenants exposed), not code trust.** Both
+  private and public extensions pass an automated gate (manifest lint + scope
+  justification + callback-domain verification); **manual review + signing is required
+  only for *public listing***. Private per-tenant extensions are self-attested with a
+  louder consent screen; the data-processing/legal gate applies to **both**.
+- **Reasoning-substrate isolation.** Ownership-scoped isolation alone is **insufficient**
+  for a synthesis substrate — an edge observation still influences shared inferences via
+  trust-weighted scoring. Keeping **E5 (reasoning writes) first-party is therefore the
+  load-bearing containment**, not conservatism; together with the trust-weight discount
+  above it is what stops a third party authoring a belief. Models materially driven by a
+  single third-party extension are tagged and surfaced as **contestable**.
+
 Delivery is **phased** so each phase ships standalone value and the expensive
 third-party security/marketplace spend is deferred until real demand: first-party
 consolidation (manifest + generalize the inline hook into a registered enricher) →
 versioned host API → capability model → developer foundation (public SDK + local dev
-harness + docs) → trust + data plane → curated marketplace → commerce/scale.
+harness + docs) → trust + data plane → curated marketplace → commerce/scale. The
+story-level breakdown, dependencies, and trust tiers are in the
+[Interface platform roadmap](../architecture/interface-platform-roadmap.md). The
+first-party consolidation has begun: `github_intel` + `code_intel` are now **extracted**
+to a separate repo and the inline hook is **removed** from `services/ingest/ingestion/core.py`;
+the generalized draft-enricher seam it re-attaches through is the first roadmap step.
 
 ## Consequences
 
@@ -84,11 +118,16 @@ pipeline, per-extension observability, and developer ToS + Data Processing Agree
 
 **New constraints / forbidden:** third-party extensions are **async-only** (no inline,
 in-hot-path enrichment — that stays first-party); third parties cannot mutate
-Models/Acts/Resources; edge-ingested third-party observations are written at a
-constrained trust tier.
+Models/Acts/Resources (E5 first-party, indefinitely); edge-ingested third-party
+observations are written at a constrained trust tier (default `inferential_external`,
+ceiling `attested_agent`, never `authoritative` — see *Governance specifics* above).
 
 **Revisited / falsified when:** a class of integrations genuinely needs synchronous,
 in-loop, low-latency participation (→ add the deferred hosted-sandbox tier), or a
 verified partner needs deeper access than the developer-hosted boundary allows (→
-the verified-partner sidecar tier). Open questions tracked on the
+the verified-partner sidecar tier). **Precondition:** because the reasoning substrate is
+contained by *E5-first-party + the trust-weight discount* rather than by hard isolation,
+any move to relax E5-first-party or raise the trust ceiling **must** re-open the
+"does the reasoning substrate need a stronger sandbox?" question before shipping.
+Remaining open questions tracked on the
 [Interfaces & Extensions](../architecture/interfaces.md) page.

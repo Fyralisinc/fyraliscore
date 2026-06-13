@@ -612,6 +612,69 @@ def build_debug_router() -> APIRouter:
             )
         return {"stats": _jsonify(row), "tenant_id": str(tid)}
 
+    # ---------- Interfaces / extensions (ADR-0004) ---------------
+    @router.get("/interfaces")
+    async def list_interfaces(req: Request):
+        """Discovered interface manifests + the live attach seams.
+
+        Read-only, no tenant scope: one place to see every installed extension's
+        declared manifest, the draft-enricher channels currently registered, and
+        the gateway extensions discovered. A bad/missing manifest is simply absent
+        (discovery is failure-isolated) — never a 500.
+        """
+        from lib.extensions.manifest import host_api_version
+        from lib.extensions.registry import load_manifests
+        from services.ingest.ingestion import enrichers as _enrichers
+
+        active, rejected = load_manifests()
+        manifests = [
+            {
+                "id": m.id,
+                "version": m.version,
+                "publisher": m.publisher,
+                "trust_tier": m.trust_tier,
+                "engines_fyralis_host_api": m.engines_fyralis_host_api,
+                "contributes": list(m.contributes),
+                "activation_events": list(m.activation_events),
+                "feature_flag": m.feature_flag,
+                "capabilities": m.capabilities,
+            }
+            for m in active
+        ]
+        rejected_manifests = [
+            {"id": r.manifest.id, "version": r.manifest.version, "reason": r.reason}
+            for r in rejected
+        ]
+
+        draft_enrichers = {
+            ch: _enrichers.enricher_names(ch)
+            for ch in _enrichers.registered_channels()
+        }
+
+        gateway_extensions: list[dict[str, Any]] = []
+        try:
+            from services.app.gateway.extensions import discovered_extensions
+
+            for ext in discovered_extensions():
+                gateway_extensions.append(
+                    {
+                        "name": ext.name,
+                        "routers": len(ext.routers),
+                        "startup_hooks": len(ext.startup_hooks),
+                        "public_path_prefixes": list(ext.public_path_prefixes),
+                    }
+                )
+        except Exception:  # noqa: BLE001 - discovery must never 500 this endpoint
+            pass
+
+        return {
+            "host_api_version": host_api_version(),
+            "interfaces": manifests,
+            "rejected_interfaces": rejected_manifests,
+            "draft_enrichers": draft_enrichers,
+            "gateway_extensions": gateway_extensions,
+        }
+
     return router
 
 
