@@ -253,6 +253,19 @@ services:
     command: python -m services.ingest.ingestion.workflows.reconciler
     healthcheck: *consumer-healthcheck
 
+  # Generic supervisor for EXTENSION-contributed background workers (ADR-0004).
+  # Discovers every installed extension's `company_os.workers` BackgroundWorker
+  # and runs it under one process — e.g. the github-intel ordered FSM worker +
+  # code reindexer. Adding an extension needs only a reinstall + restart of this
+  # one service (discovery is import-time), never a new bespoke compose stanza.
+  # CODE_INTEL_REINDEX_ROOT (optional) points the github-intel reindex loop at a
+  # local working copy; omit it to keep enrichment/state without the code graph.
+  extension_workers:
+    <<: *worker
+    container_name: company_os_extension_workers
+    command: python -m lib.extensions.run_workers
+    healthcheck: *consumer-healthcheck
+
   # Emits the `onboarding.progress` Kafka events Bridge consumes (LLD §6).
   # The lifecycle producers (started/complete/shard.fetched) live in the
   # backfill services above; this poller owns the two run-level signals:

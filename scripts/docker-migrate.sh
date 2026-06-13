@@ -59,4 +59,13 @@ for f in db/migrations/*.sql; do
   applied=$((applied+1))
 done
 
-echo "Migrations complete. Applied: ${applied}"
+echo "Core migrations complete. Applied: ${applied}"
+
+# ADR-0004 extension-owned schema: after the core set, apply each installed
+# extension's own migrations (company_os.migrations entry-point group), each under
+# its own per-extension ledger so filenames never collide with the host's. A
+# no-op when no extension contributes migrations. Idempotent + ledger-tracked.
+echo "Applying extension-owned migrations…"
+python scripts/apply_extension_migrations.py
+
+echo "All migrations complete."

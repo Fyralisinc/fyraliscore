@@ -142,7 +142,7 @@ async def test_capability_scoped_reader_channel_filtering(db_pool, committed_con
         await reader.get_model(uuid.uuid4())
 
 
-async def test_reader_for_first_party_vs_third_party(db_pool, committed_conn, tenant):
+async def test_reader_for_first_party_vs_third_party(db_pool, committed_conn, tenant, monkeypatch):
     await _seed_tenant(committed_conn, tenant)
 
     fp = ExtensionManifest(
@@ -158,8 +158,15 @@ async def test_reader_for_first_party_vs_third_party(db_pool, committed_conn, te
         capabilities={"read_channels": ["github:webhook"], "substrate_read": ["observation"]},
     )
 
-    # First-party with no grant → fully granted (auditable, no consent migration).
+    # Self-declared first_party is NOT trusted unless the operator allowlists it:
+    # with no allowlist + no grant → nothing (closes the trust_tier spoof).
+    monkeypatch.delenv("FYRALIS_FIRST_PARTY_EXTENSION_IDS", raising=False)
+    assert await reader_for(db_pool, tenant_id=tenant, manifest=fp) is None
+
+    # Host-allowlisted first-party with no grant → fully granted (auditable).
+    monkeypatch.setenv("FYRALIS_FIRST_PARTY_EXTENSION_IDS", fp.id)
     assert await reader_for(db_pool, tenant_id=tenant, manifest=fp) is not None
+    monkeypatch.delenv("FYRALIS_FIRST_PARTY_EXTENSION_IDS", raising=False)
 
     # Third-party with no grant + flag off → nothing.
     assert await is_enabled(db_pool, tenant_id=tenant, manifest=tp) is False

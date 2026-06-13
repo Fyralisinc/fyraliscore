@@ -56,13 +56,21 @@ of the proposed boundary is *composing* these:
 
 ## The externally-extensible layer
 
-!!! success "Status (ADR-0004): the host boundary + governance are implemented for first-party/verified extensions (E0–E2 + DP-1, 2026-06-13)"
+!!! success "Status (ADR-0004): the host boundary + governance are implemented AND wired at runtime for first-party/verified extensions (E0–E2 + DP-1, 2026-06-13)"
     The discovery seam, the versioned + **enforced** host API (`lib/extensions/host_api/v1`),
     the capability model (`extension_grants` + the `fyralis_ext_readonly` RLS role,
     migration 0127), and a public developer SDK (`Fyralisinc/fyralis-ext`) are live —
-    see the [interface platform roadmap](interface-platform-roadmap.md). The
-    **third-party data plane + marketplace** (E3/E4 — filtered/redacted stream, edge-ingest,
-    consent, review/billing) remain demand-gated. The six host offerings:
+    see the [interface platform roadmap](interface-platform-roadmap.md). As of this
+    revision the platform is also **runtime-complete for any extension**: a generic
+    **background-worker** seam (`company_os.workers` + `python -m lib.extensions.run_workers`),
+    **per-tenant capability enforcement actually applied** at the ingest seam
+    (`enricher_allowed`), an **install/enable lifecycle** (`lifecycle.install` + the
+    `manage_extension` CLI), and **extension-owned schema** (`company_os.migrations`,
+    per-extension ledger). `github-intel` consumes all of them as the first interface
+    and is exercised end-to-end by `scripts/demo_extension_e2e.py` (see *Running it*
+    below). The **third-party data plane + marketplace** (E3/E4 — filtered/redacted
+    stream, edge-ingest, consent, review/billing) remain demand-gated. The six host
+    offerings:
 
 The core **inverts its dependency**: instead of importing interfaces, it exposes a
 fixed **host boundary** that extensions bind to and are *discovered* through. The
@@ -151,8 +159,12 @@ enricher.
 
 | Concern | Path | Role |
 |---------|------|------|
-| Draft-enricher registry | `services/ingest/ingestion/enrichers.py` | the generalized replacement for the former hardcoded github hook — `register_enricher` (in-repo) + `company_os.draft_enrichers` discovery (installed extensions), run at the step-1.5 site in `ingest_from_draft`, raw-on-failure |
-| Host API + manifest | `lib/extensions/host_api/v1`, `lib/extensions/manifest.py` | the stable contract (`DraftEnricher`, read projections, `HOST_API_VERSION`) + `ExtensionManifest` discovery (`company_os.interfaces`); surfaced at `/debug/interfaces` |
+| Draft-enricher registry | `services/ingest/ingestion/enrichers.py` | the generalized replacement for the former hardcoded github hook — `register_enricher` (in-repo) + `company_os.draft_enrichers` discovery (installed extensions), run at the step-1.5 site in `ingest_from_draft`, raw-on-failure. **Now gated**: a contributed enricher carrying a `manifest_id` runs only after the per-tenant capability gate passes |
+| Host API + manifest | `lib/extensions/host_api/v1`, `lib/extensions/manifest.py` | the stable contract (`DraftEnricher`, `BackgroundWorker`, read projections, `HOST_API_VERSION`) + `ExtensionManifest` discovery (`company_os.interfaces`); surfaced at `/debug/interfaces` |
+| **Background-worker seam** | `lib/extensions/host_api/v1/workers.py`, `lib/extensions/run_workers.py` | `BackgroundWorker` contract + the `company_os.workers` discovery group + a generic supervisor (`python -m lib.extensions.run_workers`, the `extension_workers` compose service) that runs every installed extension's worker — host-API-gated, shutdown-aware, one `/healthz` per process. Lib-only (no `services` import) |
+| **Runtime capability enforcement** | `services/platform/extensions/access.py` (`enricher_allowed`) | the host gate joining an executing contribution back to its manifest + `extension_grants` + feature flag; fail-closed on the ingest hot path |
+| **Install/enable lifecycle** | `services/platform/extensions/lifecycle.py`, `scripts/manage_extension.py` | `install`/`uninstall`/`list_installed` — grant (intersected caps) + flag flip in one governed step; operator CLI; per-tenant state surfaced at `/debug/interfaces` |
+| **Extension-owned schema** | `lib/extensions/migrations.py`, `scripts/apply_extension_migrations.py` | the `company_os.migrations` group: each extension owns its `*.sql` dir, applied after core under a per-extension ledger (`schema_migrations_ext_<id>`) so its numbering never collides with the host's |
 | Version enforcement | `lib/extensions/registry.py` | rejects an extension whose `engines.fyralis_host_api` range excludes the running host version |
 | Capability model | `db/migrations/0127_extension_grants.sql`, `services/platform/extensions/` | `extension_grants` (RLS) + the `fyralis_ext_readonly` role (writes denied structurally) + `CapabilityScopedReader` + `resolve_capabilities` (first-party-fully-granted) |
 | Capability check | `services/platform/access_control/extension_caps.py` | `extension_can_read` — the structural (channel/kind/resource-kind) layers of `can_read`, skipping actor-relationship layers |
@@ -162,6 +174,65 @@ enricher.
 | Feature flags | `services/ingest/ingestion/feature_flags/client.py` | per-tenant activation/enablement + kill-switch |
 | Tenant isolation | `lib/shared/tenant_context.py` | RLS + `tenant_transaction` — the isolation substrate |
 | Access control | `services/platform/access_control/checks.py` | `can_read` — the capability vocabulary |
+
+## Running it end-to-end (install → enforce → supervise → observe)
+
+The lifecycle of an externally-developed extension a tenant uses, with `github-intel`
+as the worked example. Everything below treats it like any installed package — core
+discovers it, never imports it.
+
+**1. Install the extension into the deployment.** Bake it into the shared image
+(`Dockerfile` `ARG GITHUB_INTEL_REF`, installed `--no-deps`) so the gateway,
+`observation_writer` (inline enricher), and `extension_workers` all discover its
+`company_os.*` entry points; locally, `pip install -e ../github-intel --no-deps`.
+Verify discovery: `GET /debug/interfaces` lists it under `interfaces`,
+`draft_enrichers`, and `gateway_extensions`.
+
+**2. Apply its schema.** `scripts/docker-migrate.sh` runs the core set, then
+`scripts/apply_extension_migrations.py` applies each extension's own
+`company_os.migrations` directory under a per-extension ledger.
+
+**3. A tenant installs it** (grant capabilities + enable the flag, in one step):
+
+```bash
+python scripts/manage_extension.py install --tenant <uuid> \
+  --extension github_intel --granted-by ops@fyralis \
+  --flag code_intel.enabled=true
+```
+
+**4. Enforcement is now real.** The ingest seam runs the inline enricher only for
+tenants where `enricher_allowed` passes (enabled + granted) — a tenant *without* the
+grant gets the **raw** github signal, no `content["intelligence"]`. The background
+worker (FSM state + `github_signal_enrichment` + code reindex) is supervised by the
+generic launcher; in compose it is the **`extension_workers`** service
+(`python -m lib.extensions.run_workers`).
+
+!!! warning "trust_tier is operator-asserted, not manifest-asserted"
+    A manifest's `trust_tier` is self-declared, so it is **not** trusted on its own.
+    The first-party fast-paths (implicit enablement + no-grant capability fallback)
+    apply only to ids the operator lists in `FYRALIS_FIRST_PARTY_EXTENSION_IDS`.
+    With the default (empty) every extension — github-intel included — must be
+    granted + enabled through the install lifecycle to do anything; a package that
+    merely *claims* `first_party` gets nothing it wasn't granted.
+
+**5. Observe it (pgAdmin).** A one-command end-to-end against a throwaway DB plus a
+pre-wired pgAdmin:
+
+```bash
+# populate a fresh DB the way a tenant would (install → ingest → worker → index)
+DEMO_RESET=1 python scripts/demo_extension_e2e.py        # DB: fyralis_ext_demo
+
+# bring up pgAdmin (pre-registers the demo DB server)
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
+  -f docker-compose.pgadmin.yml up -d pgadmin             # http://localhost:5050
+```
+
+Open pgAdmin (`admin@fyralis.com` / `admin`), expand **Fyralis — extension demo →
+fyralis_ext_demo**, and run [`ops/pgadmin/inspect_github_intel.sql`](https://github.com/Fyralisinc/fyraliscore/blob/main/ops/pgadmin/inspect_github_intel.sql).
+The evidence the extension is live: the `extension_grants` row, `tenant_flags`,
+`observations.content->'intelligence'` (enriched for the installed tenant, **absent**
+for the control tenant — enforcement proof), the `github_signal_enrichment`
+system-of-record, the FSM `github_*_state`, and the `code_snapshots` graph.
 
 ## Design rationale
 

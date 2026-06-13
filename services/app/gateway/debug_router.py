@@ -667,12 +667,41 @@ def build_debug_router() -> APIRouter:
         except Exception:  # noqa: BLE001 - discovery must never 500 this endpoint
             pass
 
+        # Per-tenant install state (grant + enablement) when a tenant + pool are
+        # resolvable. Best-effort: never 500 this endpoint (the grants table may
+        # be unmigrated, or no tenant header present).
+        installed: list[dict[str, Any]] | None = None
+        tenant_for_install: str | None = None
+        try:
+            tid = _resolve_tenant(req)
+            pool = await _pool_from_request(req)
+            from services.platform.extensions.lifecycle import list_installed
+
+            rows = await list_installed(pool, tenant_id=tid, manifests=active)
+            installed = [
+                {
+                    "extension_id": r.extension_id,
+                    "enabled": r.enabled,
+                    "granted": r.granted,
+                    "feature_flag": r.feature_flag,
+                    "trust_ceiling": r.trust_ceiling,
+                    "granted_by": r.granted_by,
+                    "capabilities": r.capabilities,
+                }
+                for r in rows
+            ]
+            tenant_for_install = str(tid)
+        except Exception:  # noqa: BLE001 - install state is best-effort
+            installed = None
+
         return {
             "host_api_version": host_api_version(),
             "interfaces": manifests,
             "rejected_interfaces": rejected_manifests,
             "draft_enrichers": draft_enrichers,
             "gateway_extensions": gateway_extensions,
+            "tenant": tenant_for_install,
+            "installed": installed,
         }
 
     return router

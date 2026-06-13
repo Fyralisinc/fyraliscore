@@ -50,6 +50,11 @@ class DraftEnricher:
     channel: str
     fn: EnricherFn
     name: str = "enricher"
+    # The owning ExtensionManifest id, so the host can join this executing
+    # contribution back to its manifest + extension_grants row and apply
+    # per-tenant capability enforcement at the ingest seam. ``None`` for an
+    # in-repo first-party enricher (ungated, back-compat).
+    manifest_id: str | None = None
 
 
 # Read projections, the capability-checked read contract, and the capability
@@ -68,11 +73,19 @@ from lib.extensions.host_api.v1.views import (  # noqa: E402
     ModelView,
     ObservationView,
 )
+from lib.extensions.host_api.v1.workers import (  # noqa: E402
+    WORKER_MODES,
+    BackgroundWorker,
+    WorkerRunFn,
+)
 
 __all__ = [
     "HOST_API_VERSION",
     "EnricherFn",
     "DraftEnricher",
+    "BackgroundWorker",
+    "WorkerRunFn",
+    "WORKER_MODES",
     "ObservationView",
     "DraftView",
     "ModelView",

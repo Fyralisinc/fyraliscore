@@ -105,6 +105,22 @@ the generalized draft-enricher seam it re-attaches through is the first roadmap 
 
 ## Consequences
 
+!!! note "Implementation status (2026-06-13): runtime-complete for first-party/verified extensions"
+    Beyond the discovery seam + host API + capability *store* (E0–E2, DP-1), the platform
+    is now wired at runtime for **any** extension: (a) a generic **background-worker**
+    contribution point (`company_os.workers` + the `lib.extensions.run_workers`
+    supervisor / `extension_workers` compose service) — declared workers actually run;
+    (b) **per-tenant capability enforcement applied** at the ingest seam
+    (`access.enricher_allowed` gating `run_enrichers` via each contribution's
+    `manifest_id`) — a non-granted tenant gets the raw signal; (c) a tenant
+    **install/enable lifecycle** (`services/platform/extensions/lifecycle.py` +
+    `scripts/manage_extension.py`); (d) **extension-owned schema** via the
+    `company_os.migrations` group + a per-extension migration ledger. `github-intel`
+    consumes all four as the first interface; `scripts/demo_extension_e2e.py` exercises
+    install → enforce → supervise → index → observe end-to-end against a throwaway DB
+    (observable in pgAdmin). E3/E4 (third-party data plane + marketplace) remain
+    demand-gated and unchanged.
+
 **Easier / now possible:** one consistent interface model and a single place to see
 every interface; an external developer ecosystem; auditable, capability-scoped
 substrate access for *all* interfaces (first-party included); host refactors stop

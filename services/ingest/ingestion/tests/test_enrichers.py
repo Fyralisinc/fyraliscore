@@ -52,6 +52,11 @@ def _patch_entry_points(monkeypatch, eps):
     monkeypatch.setattr(enrichers.importlib_metadata, "entry_points", fake_entry_points)
 
 
+async def _allow_gate(enr, *, pool, tenant_id):
+    """Gate stub for discovery-mechanism tests (the gate itself is tested separately)."""
+    return True
+
+
 async def test_no_op_when_none_registered():
     draft = _Draft()
     # Must not raise and must not mutate the draft.
@@ -119,9 +124,12 @@ async def test_entry_point_discovery(monkeypatch):
 
     ep = _FakeEP(
         "github_intel",
-        DraftEnricher(channel="github:webhook", fn=_ext_enricher, name="github_intel.inline"),
+        DraftEnricher(channel="github:webhook", fn=_ext_enricher,
+                      name="github_intel.inline", manifest_id="github_intel"),
     )
     _patch_entry_points(monkeypatch, [ep])
+    # This test exercises discovery + execution, not the gate — allow it.
+    monkeypatch.setattr(enrichers, "_gate_allows", _allow_gate)
     enrichers.reset_for_tests()  # force re-discovery under the patch
 
     draft = _Draft()
@@ -142,16 +150,80 @@ async def test_entry_point_callable_returning_list(monkeypatch):
 
     def _factory():
         return [
-            DraftEnricher(channel="github:webhook", fn=_a, name="a"),
-            DraftEnricher(channel="github:webhook", fn=_b, name="b"),
+            DraftEnricher(channel="github:webhook", fn=_a, name="a", manifest_id="multi"),
+            DraftEnricher(channel="github:webhook", fn=_b, name="b", manifest_id="multi"),
         ]
 
     _patch_entry_points(monkeypatch, [_FakeEP("multi", _factory)])
+    monkeypatch.setattr(enrichers, "_gate_allows", _allow_gate)
     enrichers.reset_for_tests()
 
     draft = _Draft()
     await enrichers.run_enrichers("github:webhook", draft, pool=None, tenant_id=uuid4())
     assert draft.content["seen"] == ["a", "b"]
+
+
+def _gated_ep(monkeypatch, ran, *, manifest_present=True):
+    """Register a discovered enricher carrying manifest_id='x' and a matching
+    (or absent) manifest, returning a knob to set the gate decision."""
+    from lib.extensions.manifest import ExtensionManifest
+
+    async def _fn(draft, *, pool, tenant_id):
+        ran.append("x")
+        draft.content["ran"] = True
+
+    ep = _FakeEP(
+        "x",
+        DraftEnricher(channel="github:webhook", fn=_fn, name="x.inline", manifest_id="x"),
+    )
+    _patch_entry_points(monkeypatch, [ep])
+    enrichers.reset_for_tests()
+    mans = [ExtensionManifest(id="x", trust_tier="third_party")] if manifest_present else []
+    monkeypatch.setattr(enrichers, "active_manifests", lambda: mans)
+
+
+async def test_gated_enricher_skipped_when_not_allowed(monkeypatch):
+    import services.platform.extensions.access as access
+
+    ran: list[str] = []
+    _gated_ep(monkeypatch, ran)
+
+    async def _deny(pool, *, tenant_id, manifest):
+        return False
+
+    monkeypatch.setattr(access, "enricher_allowed", _deny)
+
+    draft = _Draft()
+    await enrichers.run_enrichers("github:webhook", draft, pool=None, tenant_id=uuid4())
+    assert ran == []  # gate blocked it
+    assert draft.content == {}
+
+
+async def test_gated_enricher_runs_when_allowed(monkeypatch):
+    import services.platform.extensions.access as access
+
+    ran: list[str] = []
+    _gated_ep(monkeypatch, ran)
+
+    async def _allow(pool, *, tenant_id, manifest):
+        assert manifest.id == "x"
+        return True
+
+    monkeypatch.setattr(access, "enricher_allowed", _allow)
+
+    draft = _Draft()
+    await enrichers.run_enrichers("github:webhook", draft, pool=None, tenant_id=uuid4())
+    assert ran == ["x"]
+    assert draft.content.get("ran") is True
+
+
+async def test_gated_enricher_skipped_when_manifest_undiscoverable(monkeypatch):
+    ran: list[str] = []
+    _gated_ep(monkeypatch, ran, manifest_present=False)
+    # No manifest → governance unverifiable → skip (and never crash).
+    draft = _Draft()
+    await enrichers.run_enrichers("github:webhook", draft, pool=None, tenant_id=uuid4())
+    assert ran == []
 
 
 async def test_bad_entry_point_is_isolated(monkeypatch):
@@ -168,8 +240,10 @@ async def test_bad_entry_point_is_isolated(monkeypatch):
     async def _good(draft, *, pool, tenant_id):
         draft.content["ok"] = True
 
-    good = _FakeEP("good", DraftEnricher(channel="github:webhook", fn=_good, name="good"))
+    good = _FakeEP("good", DraftEnricher(channel="github:webhook", fn=_good,
+                                         name="good", manifest_id="good"))
     _patch_entry_points(monkeypatch, [_Exploding(), good])
+    monkeypatch.setattr(enrichers, "_gate_allows", _allow_gate)
     enrichers.reset_for_tests()
 
     draft = _Draft()
