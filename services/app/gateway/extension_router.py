@@ -75,16 +75,22 @@ def _tenant_id(request: Request) -> UUID:
         raise ExtensionAuthError("invalid_tenant_header", status=400) from exc
 
 
-async def _reader_for_request(request: Request) -> tuple[ExtensionPrincipal, UUID, CapabilityScopedReader]:
-    """Authenticate the extension, resolve the target tenant, and build a
-    capability-scoped reader from the ACTIVE grant. Raises ExtensionAuthError
-    (→ JSON error) on auth/tenant/grant failure."""
+async def _authz_grant(request: Request):
+    """Authenticate the extension + resolve the target tenant's ACTIVE grant.
+    Returns (principal, tenant_id, grant). Raises ExtensionAuthError on failure."""
     principal = require_extension(request)
     tenant_id = _tenant_id(request)
     pool = get_gateway_deps(request).pool
     grant = await ExtensionGrantsRepo(pool).get(tenant_id=tenant_id, extension_id=principal.extension_id)
     if grant is None:
         raise ExtensionAuthError("no_active_grant_for_tenant", status=403)
+    return principal, tenant_id, grant
+
+
+async def _reader_for_request(request: Request) -> tuple[ExtensionPrincipal, UUID, CapabilityScopedReader]:
+    """Auth + grant, then build a capability-scoped reader from it."""
+    principal, tenant_id, grant = await _authz_grant(request)
+    pool = get_gateway_deps(request).pool
     reader = CapabilityScopedReader(pool=pool, tenant_id=tenant_id, capabilities=grant.capabilities)
     return principal, tenant_id, reader
 
@@ -206,6 +212,53 @@ def build_extension_router() -> APIRouter:
         if view is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
         return JSONResponse(_obs_json(view))
+
+    @router.post("/v1/ingest")
+    async def ingest(request: Request):
+        """Edge-ingest a derived observation (E3.2). Requires bearer +
+        X-Fyralis-Tenant + an active grant with write_observations. The stored
+        trust tier is capped at the grant ceiling (reject-not-downgrade); the
+        channel is host-namespaced ``ext:<id>:<sub>``."""
+        from services.platform.extensions.edge_ingest import edge_ingest, EdgeIngestError
+        try:
+            principal, tenant_id, grant = await _authz_grant(request)
+            body = await request.body()
+            payload = json.loads(body) if body else {}
+            if not isinstance(payload, dict):
+                raise EdgeIngestError("invalid_body", 400)
+        except ExtensionAuthError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        except (ValueError, EdgeIngestError) as exc:
+            code = exc.code if isinstance(exc, EdgeIngestError) else "invalid_json"
+            status = exc.status if isinstance(exc, EdgeIngestError) else 400
+            return JSONResponse({"error": code}, status_code=status)
+
+        deps = get_gateway_deps(request)
+        # Per-extension rate limit (best-effort; skipped if no limiter wired).
+        limiter = getattr(deps, "rate_limiter", None)
+        if limiter is not None:
+            try:
+                allowed = await limiter.consume(("ext_ingest", principal.extension_id))
+                if allowed is False:
+                    return JSONResponse({"error": "rate_limited"}, status_code=429)
+            except Exception:  # noqa: BLE001 — limiter optional; never block on it
+                pass
+        try:
+            ack = await edge_ingest(
+                deps.pool, extension_id=principal.extension_id, tenant_id=tenant_id,
+                trust_ceiling=grant.trust_ceiling,
+                can_write=grant.capabilities.write_observations,
+                sub_channel=payload.get("channel", ""),
+                content=payload.get("content", {}),
+                content_text=payload.get("content_text", ""),
+                external_id=payload.get("external_id"),
+                requested_trust_tier=payload.get("trust_tier"),
+                occurred_at=payload.get("occurred_at"),
+                deps=deps,
+            )
+        except EdgeIngestError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        return JSONResponse(ack)
 
     @router.get("/v1/stream")
     async def stream(request: Request):
