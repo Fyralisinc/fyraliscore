@@ -119,6 +119,7 @@ nav:
       - 0002 · Main is the single integration trunk: adr/0002-main-is-the-single-integration-trunk.md
       - 0003 · Telegram MTProto ingestion: adr/0003-telegram-mtproto-user-account-ingestion.md
       - 0004 · Interface/extension platform: adr/0004-interface-extension-platform.md
+      - 0005 · Large Object Pipeline: adr/0005-large-object-pipeline.md
   - Subsystem deep-dives:
       - About these docs: deep-dives.md
       - Ingestion:

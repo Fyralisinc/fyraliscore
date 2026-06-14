@@ -30,8 +30,8 @@ full ingestion pipeline) Kafka + an S3-compatible raw tier.
 | **PostgreSQL 16 + pgvector** | The substrate and control plane: actors/observations/models/acts/resources, durable queues, cache, audit/reconciliation/topology tables, plus `VECTOR(768)` semantic search. ~79 migrations in `db/migrations/`. |
 | **Ollama** | Local embedding service (`nomic-embed-text`, 768-d) at `/api/embeddings`. |
 | **Redis** | Rate-limiter state (token-bucket via Lua `EVALSHA`); optional cache backend. |
-| **Kafka (KRaft)** | Per-source ingestion lanes (`ingestion.{raw,normalized,embedding,dlq}.{source}`) + a control-plane `tenant_traffic_signal` topic. Used only when the full pipeline is enabled. |
-| **S3 / MinIO** | Raw-tier object storage (`fyralis-raw`) for ingestion payloads. |
+| **Kafka (KRaft)** | Per-source ingestion lanes (`ingestion.{raw,normalized,embedding,dlq}.{source}`) + a control-plane `tenant_traffic_signal` topic. Used only when the full pipeline is enabled. **Planned (ADR-0005):** adds a per-source `ingestion.blob.{source}` fetch lane and shared `ingestion.extract` / `ingestion.chunk_embed` lanes for the Large Object Pipeline. |
+| **S3 / MinIO** | Raw-tier object storage (`fyralis-raw`) for ingestion payloads. **Planned (ADR-0005):** a second `fyralis-blobs` bucket holds full file/attachment bytes for the Large Object Pipeline (retained indefinitely; separate lifecycle from the days-retention raw tier). |
 | **Prometheus** | Metrics TSDB (15d / 2GB retention, loopback `:9090`). Scrapes the gateway, every worker's `:9300` health/metrics port, and the postgres/kafka/redis exporters. Config in `observability/prometheus/`. |
 | **Grafana** | Dashboards + alerting (loopback `:3000`), fully provisioned from `observability/grafana/` (six dashboards, alert rules, contact point). See [Observability](observability_architecture.md). |
 

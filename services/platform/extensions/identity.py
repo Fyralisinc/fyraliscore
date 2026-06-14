@@ -111,6 +111,7 @@ class RegisteredClient:
     client_secret: str  # plaintext — returned ONCE, never persisted
     extension_id: str
     environment: str
+    webhook_secret: str = ""  # plaintext shared secret for webhook HMAC (stored host-side)
 
 
 class ExtensionOAuthClientsRepo:
@@ -125,16 +126,35 @@ class ExtensionOAuthClientsRepo:
     ) -> RegisteredClient:
         client_id = "ext_" + secrets.token_hex(12)
         client_secret = secrets.token_urlsafe(32)
+        webhook_secret = "whsec_" + secrets.token_urlsafe(32)
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO extension_oauth_clients "
                 "(client_id, extension_id, environment, client_secret_hash, "
-                " display_name, callback_url, created_by) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                " display_name, callback_url, created_by, webhook_secret) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                 client_id, extension_id, environment, hash_secret(client_secret),
-                display_name, callback_url, created_by,
+                display_name, callback_url, created_by, webhook_secret,
             )
-        return RegisteredClient(client_id, client_secret, extension_id, environment)
+        return RegisteredClient(client_id, client_secret, extension_id, environment, webhook_secret)
+
+    async def webhook_target(
+        self, extension_id: str, *, environment: str | None = None
+    ) -> tuple[str, str] | None:
+        """Return (callback_url, webhook_secret) for the extension's most recent
+        active client with a callback. ``environment`` optionally narrows the match
+        (the egress row doesn't carry one, so delivery looks up by extension)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT callback_url, webhook_secret FROM extension_oauth_clients "
+                "WHERE extension_id=$1 AND ($2::text IS NULL OR environment=$2) "
+                "AND callback_url IS NOT NULL AND revoked_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 1",
+                extension_id, environment,
+            )
+        if row is None or not row["callback_url"]:
+            return None
+        return row["callback_url"], row["webhook_secret"] or ""
 
     async def verify_credentials(self, client_id: str, client_secret: str) -> ExtensionPrincipal | None:
         """Return the principal for valid, non-revoked credentials, else None."""

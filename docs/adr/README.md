@@ -33,6 +33,7 @@ way it is, not just *what* it is.
 | [0002](0002-main-is-the-single-integration-trunk.md) | Main is the single integration trunk | Accepted | 2026-06-03 |
 | [0003](0003-telegram-mtproto-user-account-ingestion.md) | Telegram ingestion uses the MTProto user-account API, with a two-session backfill+live topology | Proposed | 2026-06-07 |
 | [0004](0004-interface-extension-platform.md) | Interface/extension platform — developer-hosted third-party extensions on a governed host boundary | Proposed | 2026-06-13 |
+| [0005](0005-large-object-pipeline.md) | Large payloads ingest through a dedicated Large Object Pipeline (blob tier → extract → chunk → multi-vector), no truncation/exclusion | Proposed | 2026-06-14 |
 
 ## Related: existing decision records
 

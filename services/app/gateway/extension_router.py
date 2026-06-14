@@ -207,6 +207,29 @@ def build_extension_router() -> APIRouter:
             return JSONResponse({"error": "not_found"}, status_code=404)
         return JSONResponse(_obs_json(view))
 
+    @router.get("/v1/stream")
+    async def stream(request: Request):
+        """Cursor pull of the capability-filtered, redacted egress feed (E3.1).
+
+        Returns items already projected for this (extension, tenant) by the egress
+        plane, newest-after-cursor. Pass the returned ``cursor`` back to page
+        forward. Requires bearer + X-Fyralis-Tenant + an active grant."""
+        from services.platform.extensions.egress.store import EgressStore
+        try:
+            principal, tenant_id, _ = await _reader_for_request(request)
+            cursor = int(request.query_params.get("cursor", "0"))
+            limit = int(request.query_params.get("limit", "100"))
+        except ExtensionAuthError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        except ValueError:
+            return JSONResponse({"error": "invalid_cursor"}, status_code=400)
+        store = EgressStore(get_gateway_deps(request).pool)
+        items, next_cursor = await store.read(
+            extension_id=principal.extension_id, tenant_id=tenant_id,
+            after_seq=cursor, limit=limit,
+        )
+        return JSONResponse({"items": items, "cursor": next_cursor})
+
     @router.get("/v1/models/{model_id}")
     async def get_model(request: Request, model_id: str):
         try:

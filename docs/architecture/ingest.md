@@ -58,6 +58,20 @@ inline `200`. The request-path flush is bounded by `CUTOVER_FLUSH_TIMEOUT_SEC`
 (default 2.0s) so a slow broker trips the inline fallback fast. Per-source topic
 lanes prevent head-of-line blocking across sources.
 
+!!! note "Planned: large payloads bypass the 1 MB inline shape (ADR-0005)"
+    Today every payload must fit the *one event = one small JSON = one
+    `content_text` = one vector* shape (1 MB gateway cap; per-source `content_text`
+    truncation; Drive's 10 MB / 64 KB / 50-page caps). The
+    [Large Object Pipeline](../adr/0005-large-object-pipeline.md) changes that:
+    handlers will emit a typed `LargeContentRef` instead of fetching/extracting big
+    content inline, and an async chain (`ingestion.blob.{source}` →
+    `ingestion.extract` → `ingestion.chunk_embed`) streams full bytes into the
+    `fyralis-blobs` tier, extracts them in full, and writes one row per chunk to a
+    new `observation_chunks` multi-vector table. Class-B oversized structured JSON
+    (Carta/Jira/QuickBooks/HiBob/AWS) fans out into child observations. None of this
+    is built yet — it is a Proposed ADR with a phased plan at
+    `specs/large-object-pipeline/plan.md`.
+
 ## How it's wired
 
 ```mermaid
