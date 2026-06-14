@@ -17,16 +17,21 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from datetime import datetime
 from urllib.parse import parse_qs
+from uuid import UUID
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from lib.extensions.host_api.v1 import CapabilityError
 from services.app.gateway.deps import get_gateway_deps
+from services.platform.extensions.grants import ExtensionGrantsRepo
 from services.platform.extensions.identity import (
     ExtensionOAuthClientsRepo, ExtensionPrincipal, IdentityError,
     mint_access_token, verify_access_token,
 )
+from services.platform.extensions.substrate_reader import CapabilityScopedReader
 
 
 class ExtensionAuthError(Exception):
@@ -55,6 +60,52 @@ def require_extension(request: Request) -> ExtensionPrincipal:
         return verify_access_token(token)
     except IdentityError as exc:
         raise ExtensionAuthError("invalid_token") from exc
+
+
+_TENANT_HEADER = "x-fyralis-tenant"
+
+
+def _tenant_id(request: Request) -> UUID:
+    raw = request.headers.get(_TENANT_HEADER, "").strip()
+    if not raw:
+        raise ExtensionAuthError("missing_tenant_header", status=400)
+    try:
+        return UUID(raw)
+    except ValueError as exc:
+        raise ExtensionAuthError("invalid_tenant_header", status=400) from exc
+
+
+async def _reader_for_request(request: Request) -> tuple[ExtensionPrincipal, UUID, CapabilityScopedReader]:
+    """Authenticate the extension, resolve the target tenant, and build a
+    capability-scoped reader from the ACTIVE grant. Raises ExtensionAuthError
+    (→ JSON error) on auth/tenant/grant failure."""
+    principal = require_extension(request)
+    tenant_id = _tenant_id(request)
+    pool = get_gateway_deps(request).pool
+    grant = await ExtensionGrantsRepo(pool).get(tenant_id=tenant_id, extension_id=principal.extension_id)
+    if grant is None:
+        raise ExtensionAuthError("no_active_grant_for_tenant", status=403)
+    reader = CapabilityScopedReader(pool=pool, tenant_id=tenant_id, capabilities=grant.capabilities)
+    return principal, tenant_id, reader
+
+
+def _obs_json(view) -> dict:
+    return {
+        "id": str(view.id), "tenant_id": str(view.tenant_id),
+        "occurred_at": view.occurred_at.isoformat() if isinstance(view.occurred_at, datetime) else view.occurred_at,
+        "kind": view.kind, "source_channel": view.source_channel,
+        "content": view.content, "content_text": view.content_text,
+        "trust_tier": view.trust_tier, "external_id": view.external_id,
+        "entities_mentioned": view.entities_mentioned,
+    }
+
+
+def _model_json(view) -> dict:
+    out = {}
+    for k, v in vars(view).items():
+        out[k] = (str(v) if isinstance(v, UUID)
+                  else v.isoformat() if isinstance(v, datetime) else v)
+    return out
 
 
 def _basic_credentials(request: Request) -> tuple[str, str] | None:
@@ -118,6 +169,58 @@ def build_extension_router() -> APIRouter:
         return JSONResponse(
             {"extension_id": principal.extension_id, "environment": principal.environment}
         )
+
+    # ---- read-API (M2): SubstrateReader over HTTP --------------------------------
+    # All routes require a bearer token (the extension) + X-Fyralis-Tenant (the
+    # tenant whose data is requested) + an ACTIVE grant for that pair. Reads run
+    # under the fyralis_ext_readonly role + RLS; views are baseline-redacted.
+
+    @router.get("/v1/observations")
+    async def list_observations(request: Request):
+        try:
+            _, _, reader = await _reader_for_request(request)
+            channel = request.query_params.get("channel") or None
+            since_raw = request.query_params.get("since")
+            since = datetime.fromisoformat(since_raw) if since_raw else None
+            limit = int(request.query_params.get("limit", "100"))
+            views = await reader.query_observations(channel=channel, since=since, limit=limit)
+        except ExtensionAuthError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        except CapabilityError as exc:
+            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
+        except ValueError as exc:
+            return JSONResponse({"error": "invalid_query", "detail": str(exc)}, status_code=400)
+        return JSONResponse({"observations": [_obs_json(v) for v in views]})
+
+    @router.get("/v1/observations/{observation_id}")
+    async def get_observation(request: Request, observation_id: str):
+        try:
+            _, _, reader = await _reader_for_request(request)
+            view = await reader.get_observation(UUID(observation_id))
+        except ExtensionAuthError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        except CapabilityError as exc:
+            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
+        except ValueError:
+            return JSONResponse({"error": "invalid_observation_id"}, status_code=400)
+        if view is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse(_obs_json(view))
+
+    @router.get("/v1/models/{model_id}")
+    async def get_model(request: Request, model_id: str):
+        try:
+            _, _, reader = await _reader_for_request(request)
+            view = await reader.get_model(UUID(model_id))
+        except ExtensionAuthError as exc:
+            return JSONResponse({"error": exc.code}, status_code=exc.status)
+        except CapabilityError as exc:
+            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
+        except ValueError:
+            return JSONResponse({"error": "invalid_model_id"}, status_code=400)
+        if view is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse(_model_json(view))
 
     return router
 
