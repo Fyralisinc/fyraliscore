@@ -15,6 +15,7 @@ def register_gateway_routes(app: FastAPI) -> None:
     from services.app.gateway.contest_router import build_contest_router
     from services.app.gateway.core_router import build_core_router
     from services.app.gateway.dashboard_router import build_dashboard_router
+    from services.app.gateway.extension_router import build_extension_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -32,6 +33,7 @@ def register_gateway_routes(app: FastAPI) -> None:
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
     app.include_router(build_today_core_router())
+    app.include_router(build_extension_router())
     register_map_routes(app)
 
 
