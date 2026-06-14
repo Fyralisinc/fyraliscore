@@ -26,7 +26,9 @@ from fastapi.responses import JSONResponse
 
 from lib.extensions.host_api.v1 import CapabilityError
 from services.app.gateway.deps import get_gateway_deps
+from services.platform.extensions.audit import AuditLog
 from services.platform.extensions.grants import ExtensionGrantsRepo
+from services.platform.extensions.killswitch import KillSwitch
 from services.platform.extensions.identity import (
     ExtensionOAuthClientsRepo, ExtensionPrincipal, IdentityError,
     mint_access_token, verify_access_token,
@@ -81,6 +83,8 @@ async def _authz_grant(request: Request):
     principal = require_extension(request)
     tenant_id = _tenant_id(request)
     pool = get_gateway_deps(request).pool
+    if await KillSwitch(pool).is_killed(principal.extension_id):
+        raise ExtensionAuthError("extension_disabled", status=403)
     grant = await ExtensionGrantsRepo(pool).get(tenant_id=tenant_id, extension_id=principal.extension_id)
     if grant is None:
         raise ExtensionAuthError("no_active_grant_for_tenant", status=403)
@@ -156,10 +160,12 @@ def build_extension_router() -> APIRouter:
         if not client_id or not client_secret:
             return JSONResponse({"error": "invalid_request"}, status_code=400)
 
-        repo = ExtensionOAuthClientsRepo(get_gateway_deps(request).pool)
-        principal = await repo.verify_credentials(client_id, client_secret)
+        pool = get_gateway_deps(request).pool
+        principal = await ExtensionOAuthClientsRepo(pool).verify_credentials(client_id, client_secret)
         if principal is None:
             return JSONResponse({"error": "invalid_client"}, status_code=401)
+        if await KillSwitch(pool).is_killed(principal.extension_id):
+            return JSONResponse({"error": "extension_disabled"}, status_code=403)
 
         return JSONResponse(
             mint_access_token(principal.extension_id, environment=principal.environment)
@@ -184,7 +190,7 @@ def build_extension_router() -> APIRouter:
     @router.get("/v1/observations")
     async def list_observations(request: Request):
         try:
-            _, _, reader = await _reader_for_request(request)
+            principal, tenant_id, reader = await _reader_for_request(request)
             channel = request.query_params.get("channel") or None
             since_raw = request.query_params.get("since")
             since = datetime.fromisoformat(since_raw) if since_raw else None
@@ -196,6 +202,9 @@ def build_extension_router() -> APIRouter:
             return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
         except ValueError as exc:
             return JSONResponse({"error": "invalid_query", "detail": str(exc)}, status_code=400)
+        await AuditLog(get_gateway_deps(request).pool).record(
+            extension_id=principal.extension_id, action="read_observations",
+            tenant_id=tenant_id, item_count=len(views), detail={"channel": channel})
         return JSONResponse({"observations": [_obs_json(v) for v in views]})
 
     @router.get("/v1/observations/{observation_id}")
@@ -258,6 +267,10 @@ def build_extension_router() -> APIRouter:
             )
         except EdgeIngestError as exc:
             return JSONResponse({"error": exc.code}, status_code=exc.status)
+        await AuditLog(deps.pool).record(
+            extension_id=principal.extension_id, action="edge_ingest", tenant_id=tenant_id,
+            item_count=1, detail={"source_channel": ack["source_channel"],
+                                  "trust_tier": ack["trust_tier"], "deduped": ack["deduped"]})
         return JSONResponse(ack)
 
     @router.get("/v1/stream")
@@ -276,11 +289,16 @@ def build_extension_router() -> APIRouter:
             return JSONResponse({"error": exc.code}, status_code=exc.status)
         except ValueError:
             return JSONResponse({"error": "invalid_cursor"}, status_code=400)
-        store = EgressStore(get_gateway_deps(request).pool)
+        pool = get_gateway_deps(request).pool
+        store = EgressStore(pool)
         items, next_cursor = await store.read(
             extension_id=principal.extension_id, tenant_id=tenant_id,
             after_seq=cursor, limit=limit,
         )
+        if items:
+            await AuditLog(pool).record(
+                extension_id=principal.extension_id, action="stream_pull",
+                tenant_id=tenant_id, item_count=len(items), detail={"cursor": next_cursor})
         return JSONResponse({"items": items, "cursor": next_cursor})
 
     @router.get("/v1/models/{model_id}")

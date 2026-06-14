@@ -79,6 +79,10 @@ class _FakeConn:
         return self._row
 
     async def fetchval(self, q, *a):
+        # KillSwitch.is_killed issues a SELECT EXISTS(...) → must read as a bool,
+        # not the canned client row.
+        if "EXISTS" in q.upper():
+            return False
         return self._row
 
     async def execute(self, q, *a):
