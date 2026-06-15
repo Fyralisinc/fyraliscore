@@ -97,6 +97,7 @@ benchmarks/.cache/
 benchmarks/datasets/raw/
 benchmarks/datasets/tmp/
 benchmarks/reports/generated/
+benchmarks/reports/think-*/
 truss_run/
 truss_run_*/
 .codex-run-logs/
