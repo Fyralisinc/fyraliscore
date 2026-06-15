@@ -864,12 +864,11 @@ poison the sweep. Env: `TOPOLOGY_SWEEPER_INTERVAL_S`,
 
 Migration 0032 adds `models.topo_embedding VECTOR(128)` + `topo_updated_at` and
 the `models_topo_embedding_idx` HNSW index. The tables from the *old* design —
-`topo_dirty_queue`, `model_neighborhoods`, `model_neighborhood_membership`,
-`topology_events` (migrations 0032–0034) — remain for schema/map compatibility
-but are **not populated by the latent field** (PR #42 P8 found only
-`topo_dirty_queue` truly dead and judged a cleanup migration not worth the
-overhead). `services/topology/umap_projector.py` projects `topo_embedding` to 2D
-for the CEO map view, caching coordinates with a trustworthiness score.
+`model_neighborhoods`, `model_neighborhood_membership`, and `topology_events`
+(migrations 0032-0034) — remain for schema/map compatibility but are **not
+populated by the latent field**. `topo_dirty_queue` was dropped by migration
+`0127`. `services/topology/umap_projector.py` projects `topo_embedding` to 2D for
+the CEO map view, caching coordinates with a trustworthiness score.
 
 ---
 

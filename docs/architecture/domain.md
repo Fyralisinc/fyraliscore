@@ -30,8 +30,8 @@ every row carries `tenant_id` and queries scope by it.
   to `[0.05, 0.95]` → scope-actor existence → embedding → INSERT
   (`proposition_kind` is a GENERATED column; `confidence_at_assertion` is
   write-once) → dual-write typed edges via the `_set_model_relations` chokepoint →
-  positional `topo_embedding` + latent topology candidates → `state_change` +
-  `audit_events`. `EdgesRepo` is the single writer for `model_edges`.
+  topology-discovered relationship proposals → `state_change` + `audit_events`.
+  `EdgesRepo` is the single writer for `model_edges`.
 - **Acts** (`acts/`) — goals/commitments/decisions with **pure declarative
   transition tables** in `state_machines.py` (the only source of truth for legal
   transitions), invariants C1–C10/G1–G4, a deadlock-retry shim, and the edge

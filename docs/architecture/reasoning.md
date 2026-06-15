@@ -8,7 +8,8 @@
 **One-line:** the cognitive runtime — it drains trigger queues, retrieves context,
 reasons (deterministically or via LLM), validates and applies diffs to the
 [Models substrate](domain.md) under region locks, then cascades, enqueues durable
-post-commit work, and proposes latent relationship/topology candidates.
+post-commit work, and proposes relationship candidates, some discovered by the
+latent topology field.
 
 ## Responsibilities
 
@@ -57,11 +58,12 @@ top-level service namespace.
 `topology/field.py::LatentTopologyService` converts a new/changed Model into an
 `ImpactSignature` (flows/pressures/surfaces/stakes/time-shape), searches bounded
 neighbor pools, scores consequence interactions, and persists high-yield
-candidates to `relationship_candidates` (enqueuing at most a small `T4` pass). It
-runs **inline on Model insert** (called from `domain.models.repo`) and
-periodically from the [topology_sweeper](workers.md). `relationships/` generates
-and adjudicates per-edge-kind candidates; `judgment/scoring.py` provides the
-shared `judgment_leverage` attention score.
+relationship proposals to `relationship_candidates` with lifecycle metadata
+(enqueuing at most a small `T4` pass). It runs **inline on Model insert** (called
+from `domain.models.repo`) and periodically from the
+[topology_sweeper](workers.md). `relationships/` owns the single candidate
+lifecycle and adjudicates per-edge-kind candidates; `judgment/scoring.py`
+provides the shared `judgment_leverage` attention score.
 
 ### Calibration, contestability, dynamics
 

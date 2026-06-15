@@ -32,7 +32,8 @@ contract): **`lib` must not import `services`.**
   an optional response cache.
 - **`embeddings`** — the `Embedder` Protocol + `make_embedder()` factory choosing
   Ollama (`nomic-embed-text`) or OpenAI (`text-embedding-3-small`), both pinned to
-  768-d (matches `VECTOR(768)`).
+  768-d (matches `VECTOR(768)`). Dev/test may infer the backend from local env,
+  but production requires explicit `EMBEDDER_BACKEND`.
 - **`integrations`** — `endpoints.py`, the single outbound base-URL resolver
   (per-source env var > synthetic spammer host > production default).
 

@@ -79,10 +79,11 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    and made source-aware: it measures every `ingestion.raw.<source>` lane and trips
    a tenant on its worst lane. See
    [Cutover circuit breaker](../architecture/ingest.md#cutover-circuit-breaker).
-6. **Several "v2/spec" surfaces are fixture- or mock-backed.** `spec_routes.py`
-   serves in-code seed payloads (not substrate); the Query/Ask layer defaults to a
-   `MockRenderingAdapter` + in-process cache unless `QUERY_RENDERING_BASE_URL` /
-   `QUERY_CACHE_BACKEND=pg` are set; the CEO Map reads compat-only topology tables.
+6. **Several "v2/spec" surfaces are fixture- or compat-backed.** `spec_routes.py`
+   serves in-code seed payloads (not substrate); Query/Ask now fails closed in
+   production unless `QUERY_RENDERING_BASE_URL` and `QUERY_CACHE_BACKEND=pg` are
+   wired, while dev/test still use deterministic fallbacks; the CEO Map reads
+   compat-only topology tables.
 7. **`code_intel` is read-only in prod.** Blast-radius/code-search read paths are
    live via `github_intel`, but the index/embed/reindex write path has no production
    caller (reindex is gated on `CODE_INTEL_REINDEX_ROOT`, absent from the worker's

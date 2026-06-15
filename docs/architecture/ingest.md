@@ -121,11 +121,11 @@ see [ADR-0003](../adr/0003-telegram-mtproto-user-account-ingestion.md) and the
 [Telegram source spec](../ingestion/sources/telegram.md).
 
 !!! note "Doc-vs-code discrepancies (verified)"
-    - `CODEBASE-ARCHITECTURE.md` §6 (steps 9–11) describes a routing decision via
+    - Older architecture notes described a routing decision via
       `services/platform/execution/routing.py` writing `signal_routing_decisions`.
-      **No such import exists in `services/ingest/`** — the ingest path does not
-      call routing today (routing lives in [Platform](platform.md) and is
-      shadow-only). **TODO(human):** confirm intended ownership/wiring of routing.
+      **No such import exists in `services/ingest/`**, and migration `0127`
+      dropped that retired ledger. Active ingest writes `think_trigger_queue`
+      directly through the shared trigger helper.
     - `docs/ingestion/README.md` says "eight production sources" while the code
       defines **ten** source families (adds Google Drive + the Mercury/QuickBooks
       finance pair). **TODO(human):** are finance/Drive non-production, or is the

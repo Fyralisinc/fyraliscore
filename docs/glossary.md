@@ -135,9 +135,9 @@ The executable organizational state.
 | **Manager chain** | The ancestor list following `actors.metadata.manager_id` pointers (with cycle guards), enabling observation visibility for non-HR channels. |
 | **Shared channel** | A channel marked in `shared_channels` (or implicitly `internal:*`/`system:*`) that actors with `audience='all'` can see. |
 | **HR channel** | A `hr:` / `legal:` / `incident:` channel, exempt from manager-chain and shared-channel visibility and from admin overrides. |
-| **Execution routing** | A deterministic gate (`decide_route`) classifying each signal into one of six routes; records shadow decisions to `signal_routing_decisions`. |
+| **Execution routing** | A deterministic gate (`decide_route`) classifying each signal into one of six routes. It is retained as an experimental helper; the old shadow-decision ledger was dropped by migration `0127`. |
 | **Routing route** | `IGNORE_OR_ARCHIVE`, `DETERMINISTIC_UPDATE`, `FAST_PATH`, `DEEP_INQUIRY_PATH`, `BACKGROUND_PATH`, `HUMAN_VALIDATION_PATH`. |
-| **Shadow mode / enforced mode** | `EXECUTION_ROUTING_SHADOW=1` (default) records routing decisions without changing Think enqueue; enforced mode gates the queue and enables T3/T4 work. |
+| **Shadow mode / enforced mode** | Historical routing rollout modes. Active ingest currently writes Think triggers directly and does not persist routing decisions. |
 | **Inquiry sufficiency** | The evidence-loop gate: `sufficient_for_reasoning`, `human_validation_required`, `no_update_needed`, `budget_exhausted`. |
 | **Context packet** | The synthesis input compiled by the sufficiency gate: frame, decisive evidence, supporting groups, background, omission ledger. |
 | **Materialized view** | `actor_visible_commitments/goals/models`, refreshed nightly and on role/hierarchy changes, as a fast path for common visibility queries. |

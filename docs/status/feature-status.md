@@ -14,23 +14,24 @@ workers), 64 low** — the high/medium are below; low
 findings are summarized at the end. _Resolutions 2026-06-02; see
 [ADR-0001](../adr/0001-kafka-first-ingestion-default.md)._
 
-## 🔴 Background worker fabric (Wave-4) — built, not deployed
+## 🟠 Background worker fabric (Wave-4) — partially wired
 
-The single largest theme. Only `topology_sweeper` has a launcher; every other
-`services/workers/*` package is absent from compose and `scripts/`. See
+The single largest theme. A `housekeeper_worker` now runs the low-frequency
+lifecycle jobs that previously only existed in tests, but several source- and
+LLM-heavy workers still need deliberate deployment decisions. See
 [Workers](../architecture/workers.md).
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Worker deployment | 8 worker packages run as compose/cron processes | Only `topology_sweeper` launched (dogfood/`start.sh`); 7 others have no launcher | high |
-| Activation decay + archival | `hourly_decay`/`archive_decayed` run via maintenance worker | `decay.py` implemented, wrapped by `maintenance/daily.py` — but maintenance has no launcher → **Models never decay/auto-archive**; activation stays inflated | high |
-| Maintenance scheduler (Wave-4-D) | In-proc scheduler runs daily/weekly/monthly upkeep | `MaintenanceScheduler` never instantiated outside tests → decay, partition-extend, calibration refresh all dormant | high |
+| Worker deployment | 8 worker packages run as compose/cron processes | **Partially resolved (2026-06-12).** `housekeeper_worker` is now in `docker-compose.yml` and the runtime manifest; it runs low-frequency lifecycle jobs by default and keeps expensive jobs opt-in. Anomaly/entity-resolution deployment is still open. | medium |
+| Activation decay + archival | `hourly_decay`/`archive_decayed` run via maintenance worker | ✅ **Resolved (2026-06-12).** Housekeeper schedules `hourly_decay` and `archive_decayed` through the existing `MaintenanceScheduler`, so Models can decay/archive outside tests. | ✅ resolved |
+| Maintenance scheduler (Wave-4-D) | In-proc scheduler runs daily/weekly/monthly upkeep | ✅ **Resolved for default lifecycle jobs (2026-06-12).** `housekeeper_worker` instantiates `MaintenanceScheduler` for deadline resolution, obligations, decay/archive, relationship maintenance, calibration, and edge drift. Monthly/expensive jobs remain separately flagged. | ✅ resolved |
 | Anomaly → `T3` generation | `anomaly_processor` detects 6 kinds, debounces, enqueues `T3` | Fully implemented, not-wired → **no `T3` anomaly triggers in prod**; `signal_memory_fabric` never accumulates | high |
-| Deadline → `T2` generation | `deadline_resolver` polls overdue predictions → `T2` | Implemented, not-wired → predictions past `evaluate_at` **never auto-resolved** | high |
+| Deadline → `T2` generation | `deadline_resolver` polls overdue predictions → `T2` | ✅ **Resolved (2026-06-12).** Housekeeper runs `DeadlineResolver.run_once()` on `HOUSEKEEPER_DEADLINE_RESOLVER_INTERVAL_S`. | ✅ resolved |
 | Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | Implemented, not-wired → unresolved phrases never aliased/re-triggered; `entity_review_queue` has no consumer | high |
-| Calibration pipeline | `calibration_updater` refreshes `calibration_offsets` weekly | Live read path consumes offsets, but the **writer worker never runs** → offsets never refreshed; only cold-start defaults apply | high |
-| Precipitation pattern formation | Nightly clustering writes `pattern_candidates` + `T4` | Think's *promotion* half is live (`T4 pattern_review`); the *production* half (clustering/write) is not-wired → **`T4` starved of inputs** | high |
-| `edge_drift` parity check | Worker samples `model_edges` vs. legacy arrays to catch divergence | Not-wired → the guard for the dual-write migration never runs (silent divergence undetected) | medium |
+| Calibration pipeline | `calibration_updater` refreshes `calibration_offsets` weekly | ✅ **Resolved (2026-06-12).** Housekeeper runs `calibration_updater.run_once()` weekly by default, so offsets are no longer test/manual-only. | ✅ resolved |
+| Precipitation pattern formation | Nightly clustering writes `pattern_candidates` + `T4` | Partially wired: housekeeper can run precipitation, but it is disabled by default behind `HOUSEKEEPER_ENABLE_PRECIPITATION` / `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS` until runtime cost is characterized. | medium |
+| `edge_drift` parity check | Worker samples `model_edges` vs. legacy arrays to catch divergence | ✅ **Resolved (2026-06-12).** Housekeeper runs `edge_drift.run_once()` on `HOUSEKEEPER_EDGE_DRIFT_INTERVAL_S`. | ✅ resolved |
 | `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | Live ingest uses only `fast_path_resolve`; slow-path funcs consumed only by the unwired worker | medium |
 | `actor_visible_*` matview refresh | Daily `refresh_all` keeps scope views current; `checks.py` reads them | Sole caller is the undeployed `maintenance/daily.py` → matviews **never refreshed** at runtime (stale/empty scope data) | high |
 
@@ -49,7 +50,7 @@ See [Platform](../architecture/platform.md).
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
 | Post-commit side-effects | Dispatch anomaly handoff / prediction scheduling / realtime broadcast / metric invalidation | Queue + `post_commit_worker` are live, but all 4 dispatchers are **no-op loggers** ("left for a later integration PR") | high |
-| Execution signal routing (`decide_route`) | Classify every signal; persist shadow decisions (`EXECUTION_ROUTING_SHADOW=1`) | `decide_route`/`record_routing_decision` have **no caller outside tests**; ingestion never builds a `SignalEnvelope` → **no `signal_routing_decisions` rows ever** | high |
+| Execution signal routing (`decide_route`) | Classify every signal | `decide_route` has **no caller outside tests**; ingestion never builds a `SignalEnvelope`, and the old `signal_routing_decisions` ledger was dropped by migration `0127` | high |
 
 ## 🟠 Ingestion pipeline & data plane
 
@@ -97,8 +98,8 @@ See [Product](../architecture/product.md).
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Query/Ask rendering adapter | `HttpRenderingAdapter` → `/rendering/conversation-turn` | Code default is `MockRenderingAdapter` (stub HTML, no voice rules) unless `QUERY_RENDERING_BASE_URL` set → Ask silently degrades to mock if env missing | high |
-| Query/Ask cache adapter | `PostgresCacheAdapter` persisting to `view_ceo_cache` | Code default is process-local `InMemoryCacheAdapter` unless `QUERY_CACHE_BACKEND=pg` → cache lost on restart, not shared across workers | medium |
+| Query/Ask rendering adapter | `HttpRenderingAdapter` → `/rendering/conversation-turn` | ✅ **Resolved (2026-06-12).** `build_rendering_adapter()` still allows the deterministic `MockRenderingAdapter` in dev/test, but now fails closed in production (`FYRALIS_ENV` or `COMPANY_OS_ENV` = prod) when `QUERY_RENDERING_BASE_URL` is unset. `.env.production.example` now sets `QUERY_RENDERING_BASE_URL=http://gateway:8000`, matching the existing greeting renderer guard. | ✅ resolved |
+| Query/Ask cache adapter | `PostgresCacheAdapter` persisting to `view_ceo_cache` | ✅ **Resolved (2026-06-12).** Dev/test may still use the process-local `InMemoryCacheAdapter`, but production now fails closed unless `QUERY_CACHE_BACKEND=pg` and a DB pool are supplied. `.env.production.example` sets `QUERY_CACHE_BACKEND=pg`, and gateway wiring already calls `build_cache_adapter(pool=pool)`. | ✅ resolved |
 | Confidence calibration (insert path) | `apply_calibration` reads empirical `calibration_offsets` (n≥20) | Active in insert/validate, but offsets table never populated (writer worker undeployed) → **permanently cold-start**; `apply_calibration_sync` is dead | medium |
 | `model_edges` ↔ legacy arrays | Stage-2/3 cutover drops `supporting_model_ids`/`contributing_models` | Still permanent dual-write (both cycle-checks + cascades run); the `edge_drift` parity guard is itself unwired | medium |
 | CEO Map (`/api/map/*`) | Map populated from live neighborhood/topology data | Reads `model_neighborhoods`/`topology_events` (compat-only) + UMAP cache populated only by `topology_sweeper` → empty/degraded on tenants without sweeper output | medium |
@@ -112,7 +113,7 @@ Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
   is shadowed/unreachable).
 - **Orphaned helpers:** `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
 - **Schema/migration tidy-ups:** orphan tables from `0021` (`anomaly_thresholds`,
-  `dedup_keys_seen`); `topo_dirty_queue` unused; tables for undeployed workers
+  `dedup_keys_seen`); tables for undeployed workers
   (`entity_review_queue`, `signal_memory_fabric`, `orphan_log`).
 
 These are itemized in [Wiring gaps](wiring-gaps.md) and

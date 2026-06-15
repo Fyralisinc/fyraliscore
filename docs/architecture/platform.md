@@ -34,9 +34,9 @@ reason, override_applied)` and is enforced at the HTTP layer via the
 - **`decide_route`** — a deterministic gate that scores a signal on text patterns
   (risk/commitment/decision/human-validation language), trust tier, entity
   overlap, and source importance, emitting one of six routes with a score
-  breakdown and estimated cost. It currently records **shadow** decisions to
-  `signal_routing_decisions` without changing Think enqueue behavior
-  (`EXECUTION_ROUTING_SHADOW=1` default); enforced mode gates the queue.
+  breakdown and estimated cost. This helper is retained for experiments, but it
+  is not wired into active ingest and no longer has a routing-decision table;
+  migration `0127` dropped the retired `signal_routing_decisions` ledger.
 - **Adaptive inquiry** (`retrieve_for_execution` / `run_inquiry_retrieval`) — wraps
   the low-level reasoning retrieval pathways in a question-planning loop: baseline
   seeding → hypothesis generation → (optional LLM-planned) discriminating
@@ -63,7 +63,7 @@ graph TD
     DOMAIN["services/domain<br/>models · acts · observations · resources"]
     RETR["services/reasoning retrieval<br/>primary · pathways · assembler"]
     LLM["lib/llm provider"]
-    PG[("PostgreSQL<br/>actor_roles · signal_routing_decisions · inquiry_*")]
+    PG[("PostgreSQL<br/>actor_roles · inquiry_*")]
     MAINT["services/workers maintenance<br/>daily refresh"]
 
     GW -->|"can_read_by_id"| AC
@@ -110,10 +110,10 @@ contestability standing checks — several via deliberate lazy imports.
 **Outbound** *(verified)*: reads `services.domain` model/act/observation/resource
 rows (read-only — `domain` does **not** call back into access control);
 `services.reasoning.retrieval` pathways; `lib.llm.provider` for question planning;
-PostgreSQL for `actor_roles`, `signal_routing_decisions`, and `inquiry_*` tables.
+PostgreSQL for `actor_roles` and `inquiry_*` tables.
 
 **Data stores touched:** `actor_roles`, `shared_channels`, `actor_visible_*`,
-`access_override_log`, `signal_routing_decisions`, `inquiry_sessions`,
+`access_override_log`, `inquiry_sessions`,
 `inquiry_questions`, `inquiry_evidence_items`, `actor_sessions`.
 
 ## Design rationale

@@ -779,7 +779,7 @@ The platform layer (`services/platform/`) is the cross-cutting runtime that deci
 | `DEEP_INQUIRY_PATH` | score ≥ 0.45 with enough entity/trust/risk/commitment weight | deep_inquiry, up to ~3 small + 1 frontier |
 | `IGNORE_OR_ARCHIVE` | low-value chatter, low-trust+low-score, or below materiality | none |
 
-**Shadow vs enforced**: `should_record_routing_decisions()` and `routing_decision_status_from_env()` read `EXECUTION_ROUTING_SHADOW` (default `1`) and `EXECUTION_ROUTING_ENABLED` (default `0`). With the defaults, decisions are persisted to `signal_routing_decisions` with `decision_status='shadow'` (via `record_routing_decision`, which probes `to_regclass` to survive rolling deploys) and **Think enqueue behaviour is unchanged**; `enabled and not shadow` flips to `enforced`. `decide_route` currently has **no production caller** — it is infrastructure-ready, exercised only by `execution/tests/test_routing.py`.
+**Routing status**: `decide_route` currently has **no production caller** and is exercised only by execution tests. The former shadow-decision ledger (`signal_routing_decisions`) was dropped by migration `0127`, so active ingest writes Think triggers directly instead of persisting routing decisions.
 
 ```mermaid
 graph TD
@@ -790,7 +790,7 @@ graph TD
     DR -->|authoritative state| DU[DETERMINISTIC_UPDATE]
     DR -->|score >= 0.45| DI[DEEP_INQUIRY_PATH]
     DR -->|below materiality| IA[IGNORE_OR_ARCHIVE]
-    DR -.->|EXECUTION_ROUTING_SHADOW=1 default| SRD[("signal_routing_decisions<br/>status=shadow")]
+    DR -.->|retired by migration 0127| SRD[("no routing-decision ledger")]
 ```
 
 ### Adaptive inquiry engine
@@ -1224,7 +1224,7 @@ Grouped by domain; one line each. File column is the migration that creates the 
 | `signal_memory_fabric` | 0009 | Decaying signal substrate. |
 | `pattern_candidates` | 0010 | Candidate cross-model patterns. |
 | `calibration_stats`, `calibration_offsets` | 0011 | Confidence-calibration tables. |
-| `model_neighborhoods`, `model_neighborhood_membership`, `topo_dirty_queue` | 0032 | Topology layer (driven by `topology_sweeper`, a host process — not a compose service). |
+| `model_neighborhoods`, `model_neighborhood_membership` | 0032 | Legacy topology read models retained for compatibility. `topo_dirty_queue` was dropped by migration `0127`. |
 | `realtime_replay_cursors`, `orphan_log` | 0012/0013 | Realtime replay bookkeeping + orphan-edge log surfaced by the drift detector. |
 
 ```mermaid
